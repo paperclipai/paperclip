@@ -113,11 +113,18 @@ import {
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
+import {
+  buildIssueTechnicalSpecMarkdown,
+  normalizeTechnicalSpecLanguage,
+} from "../services/issue-technical-spec.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
+});
+const generateTechnicalSpecSchema = z.object({
+  language: z.string().optional(),
 });
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
@@ -2283,6 +2290,95 @@ export function issueRoutes(
       workProducts,
     });
   });
+
+  router.post(
+    "/issues/:id/technical-spec/generate",
+    validate(generateTechnicalSpecSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+
+      const [{ project, goal }, documentPayload, documents, currentExecutionWorkspace] = await Promise.all([
+        resolveIssueProjectAndGoal(issue),
+        documentsSvc.getIssueDocumentPayload(issue, { includeSystem: true }),
+        documentsSvc.listIssueDocuments(issue.id, { includeSystem: true }),
+        issue.executionWorkspaceId ? executionWorkspacesSvc.getById(issue.executionWorkspaceId) : Promise.resolve(null),
+      ]);
+
+      const requestedLanguage =
+        typeof req.body.language === "string"
+          ? req.body.language
+          : (typeof req.headers["accept-language"] === "string" ? req.headers["accept-language"] : null);
+      const language = normalizeTechnicalSpecLanguage(requestedLanguage);
+      const markdown = buildIssueTechnicalSpecMarkdown({
+        language,
+        issue: {
+          id: issue.id,
+          identifier: issue.identifier ?? null,
+          title: issue.title,
+          description: issue.description ?? null,
+          status: issue.status,
+          priority: issue.priority,
+          labels: (issue.labels ?? []).map((label) => ({ name: label.name })),
+        },
+        project: project
+          ? {
+              id: project.id,
+              name: project.name,
+              description: project.description ?? null,
+            }
+          : null,
+        goal: goal
+          ? {
+              id: goal.id,
+              title: goal.title,
+              description: goal.description ?? null,
+              status: goal.status,
+            }
+          : null,
+        workspace: currentExecutionWorkspace
+          ? {
+              id: currentExecutionWorkspace.id,
+              name: currentExecutionWorkspace.name,
+              cwd: currentExecutionWorkspace.cwd ?? null,
+            }
+          : null,
+        planContext: documentPayload.planDocument?.body ?? documentPayload.legacyPlanDocument?.body ?? null,
+        projectContext: project?.description ?? null,
+        documents: documents.map((document) => ({
+          key: document.key,
+          title: document.title,
+          body: document.body ?? "",
+        })),
+      });
+
+      logger.info(
+        {
+          issueId: issue.id,
+          companyId: issue.companyId,
+          language,
+          hasProject: Boolean(project),
+          hasGoal: Boolean(goal),
+          hasWorkspace: Boolean(currentExecutionWorkspace),
+          documentCount: documents.length,
+          generatedChars: markdown.length,
+        },
+        "issue technical spec generated",
+      );
+
+      res.json({
+        key: "technical-spec",
+        language,
+        markdown,
+        generatedAt: new Date().toISOString(),
+      });
+    },
+  );
 
   router.get("/issues/:id/recovery-actions", async (req, res) => {
     const id = req.params.id as string;

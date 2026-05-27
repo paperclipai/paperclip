@@ -1,0 +1,108 @@
+{
+  "top": {
+    "openSearch": "Abrir busca",
+    "newIssue": "Nova tarefa"
+  },
+  "sections": {
+    "work": "Trabalho",
+    "company": "Empresa",
+    "projects": "Projetos",
+    "agents": "Agentes"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "inbox": "Inbox",
+    "issues": "Tarefas",
+    "routines": "Rotinas",
+    "goals": "Objetivos",
+    "workspaces": "Workspaces",
+    "org": "Org",
+    "skills": "Skills",
+    "costs": "Custos",
+    "activity": "Atividade",
+    "settings": "Configurações"
+  },
+  "mobile": {
+    "aria": "Navegação mobile",
+    "home": "Início",
+    "create": "Criar",
+    "issues": "Tarefas",
+    "agents": "Agentes",
+    "inbox": "Inbox"
+  },
+  "section": {
+    "actions": "Ações de {{label}}",
+    "collapse": "Recolher {{label}}",
+    "expand": "Expandir {{label}}"
+  },
+  "instanceSettings": {
+    "title": "Configurações da instância",
+    "profile": "Perfil",
+    "general": "Geral",
+    "access": "Acesso",
+    "heartbeats": "Heartbeats",
+    "experimental": "Experimental",
+    "plugins": "Plugins",
+    "adapters": "Adaptadores"
+  },
+  "companySettings": {
+    "companyFallback": "Empresa",
+    "title": "Configurações da empresa",
+    "general": "Geral",
+    "environments": "Ambientes",
+    "cloudUpstream": "Cloud upstream",
+    "members": "Membros",
+    "invites": "Convites",
+    "secrets": "Segredos"
+  },
+  "projects": {
+    "newProject": "Novo projeto",
+    "menuActions": "Ações da seção de projetos",
+    "browse": "Ver projetos",
+    "sort": "Ordenação de projetos",
+    "sortTop": "Topo",
+    "sortAlphabetical": "Alfabética",
+    "sortRecent": "Recentes",
+    "openActions": "Abrir ações de {{projectName}}",
+    "leaveProject": "Sair do projeto",
+    "leaving": "Saindo...",
+    "budgetPaused": "Projeto pausado por orçamento"
+  },
+  "agents": {
+    "newAgent": "Novo agente",
+    "menuActions": "Ações da seção de agentes",
+    "browse": "Ver agentes",
+    "sort": "Ordenação de agentes",
+    "sortTop": "Topo",
+    "sortAlphabetical": "Alfabética",
+    "sortRecent": "Recentes",
+    "openActions": "Abrir ações de {{agentName}}",
+    "editAgent": "Editar agente",
+    "resumeAgent": "Retomar agente",
+    "pauseAgent": "Pausar agente",
+    "updating": "Atualizando...",
+    "budgetPaused": "Pausado por orçamento",
+    "pausedByBudgetHint": "O agente foi pausado por limite de orçamento",
+    "leaveAgent": "Sair do agente",
+    "leaving": "Saindo...",
+    "liveCount": "{{count}} ao vivo",
+    "liveSuffix": "ao vivo",
+    "budgetPausedMarker": "Agente pausado por orçamento"
+  },
+  "companyMenu": {
+    "reorder": "Reordenar {{companyName}}",
+    "openWorkspaceSwitcher": "Abrir seletor de workspace de {{companyName}}",
+    "openWorkspaceSwitcherFallback": "Abrir seletor de workspace",
+    "selectWorkspace": "Selecionar workspace",
+    "switchWorkspace": "Trocar workspace",
+    "done": "Concluir",
+    "edit": "Editar",
+    "noWorkspaces": "Sem workspaces",
+    "addCompany": "Adicionar empresa...",
+    "invitePeopleTo": "Convidar pessoas para {{companyName}}",
+    "invitePeople": "Convidar pessoas",
+    "companySettings": "Configurações da empresa",
+    "signOut": "Sair",
+    "signingOut": "Saindo..."
+  }
+}

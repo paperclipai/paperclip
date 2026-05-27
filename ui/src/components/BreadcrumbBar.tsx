@@ -1,5 +1,6 @@
 import { Link } from "@/lib/router";
 import { Menu } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
@@ -18,6 +19,20 @@ import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
 
+function breadcrumbKey(label: string) {
+  const normalized = label
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Za-z0-9]+/g, " ")
+    .trim();
+  if (!normalized) return null;
+  const words = normalized.split(/\s+/).map((word) => word.toLowerCase());
+  if (words.length === 0) return null;
+  return words
+    .map((word, index) => (index === 0 ? word : `${word[0]?.toUpperCase() ?? ""}${word.slice(1)}`))
+    .join("");
+}
+
 function GlobalToolbarPlugins({ context }: { context: GlobalToolbarContext }) {
   const { slots } = usePluginSlots({ slotTypes: ["globalToolbarButton"], companyId: context.companyId });
   const { launchers } = usePluginLaunchers({ placementZones: ["globalToolbarButton"], companyId: context.companyId, enabled: !!context.companyId });
@@ -34,6 +49,13 @@ export function BreadcrumbBar() {
   const { breadcrumbs, mobileToolbar } = useBreadcrumbs();
   const { toggleSidebar, isMobile } = useSidebar();
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const { t } = useTranslation();
+
+  const translateBreadcrumb = (label: string) => {
+    const key = breadcrumbKey(label);
+    if (!key) return label;
+    return t(`breadcrumbs.${key}`, { ns: "common", defaultValue: label });
+  };
 
   const globalToolbarSlotContext = useMemo(
     () => ({
@@ -67,7 +89,10 @@ export function BreadcrumbBar() {
       size="icon-sm"
       className="mr-2 shrink-0"
       onClick={toggleSidebar}
-      aria-label="Open sidebar"
+      aria-label={t("navigation.openSidebar", {
+        ns: "common",
+        defaultValue: "Open sidebar",
+      })}
     >
       <Menu className="h-5 w-5" />
     </Button>
@@ -80,7 +105,7 @@ export function BreadcrumbBar() {
         {menuButton}
         <div className="min-w-0 overflow-hidden flex-1">
           <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
-            {breadcrumbs[0].label}
+            {translateBreadcrumb(breadcrumbs[0].label)}
           </h1>
         </div>
         {globalToolbarSlots}
@@ -102,10 +127,10 @@ export function BreadcrumbBar() {
                   {i > 0 && <BreadcrumbSeparator />}
                   <BreadcrumbItem className={isLast ? "min-w-0" : "shrink-0"}>
                     {isLast || !crumb.href ? (
-                      <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
+                      <BreadcrumbPage className="truncate">{translateBreadcrumb(crumb.label)}</BreadcrumbPage>
                     ) : (
                       <BreadcrumbLink asChild>
-                        <Link to={crumb.href}>{crumb.label}</Link>
+                        <Link to={crumb.href}>{translateBreadcrumb(crumb.label)}</Link>
                       </BreadcrumbLink>
                     )}
                   </BreadcrumbItem>

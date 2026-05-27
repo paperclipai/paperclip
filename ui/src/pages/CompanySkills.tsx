@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState, type SVGProps } from "react";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  BrabrixSkillHubSkillSummary,
+  CompanySkillImportProvider,
   CompanySkillCreateRequest,
   CompanySkillDetail,
   CompanySkillFileDetail,
@@ -53,6 +55,7 @@ import {
   Plus,
   Copy,
   RefreshCw,
+  Sparkles,
   Save,
   Search,
   Trash2,
@@ -69,6 +72,7 @@ type SkillTreeNode = {
 const SKILL_TREE_BASE_INDENT = 16;
 const SKILL_TREE_STEP_INDENT = 24;
 const SKILL_TREE_ROW_HEIGHT_CLASS = "min-h-9";
+const BRABRIX_PAGE_SIZE = 12;
 
 function VercelMark(props: SVGProps<SVGSVGElement>) {
   return (
@@ -160,6 +164,8 @@ function sourceMeta(sourceBadge: CompanySkillSourceBadge, sourceLabel: string | 
         : { icon: Github, label: sourceLabel ?? "GitHub", managedLabel: "GitHub managed" };
     case "url":
       return { icon: Link2, label: sourceLabel ?? "URL", managedLabel: "URL managed" };
+    case "brabrix":
+      return { icon: Sparkles, label: sourceLabel ?? "Brabrix SkillHub", managedLabel: "Brabrix SkillHub managed" };
     case "local":
       return { icon: Folder, label: sourceLabel ?? "Folder", managedLabel: "Folder managed" };
     case "paperclip":
@@ -778,6 +784,11 @@ export function CompanySkills() {
   const { pushToast } = useToastActions();
   const [skillFilter, setSkillFilter] = useState("");
   const [source, setSource] = useState("");
+  const [importProvider, setImportProvider] = useState<CompanySkillImportProvider>("github");
+  const [brabrixCategory, setBrabrixCategory] = useState("");
+  const [brabrixTagsRaw, setBrabrixTagsRaw] = useState("");
+  const [selectedBrabrixSkillId, setSelectedBrabrixSkillId] = useState<string | null>(null);
+  const [brabrixListLimit, setBrabrixListLimit] = useState(BRABRIX_PAGE_SIZE);
   const [createOpen, setCreateOpen] = useState(false);
   const [emptySourceHelpOpen, setEmptySourceHelpOpen] = useState(false);
   const [expandedSkillId, setExpandedSkillId] = useState<string | null>(null);
@@ -841,6 +852,64 @@ export function CompanySkills() {
     staleTime: 60_000,
   });
 
+  const importProvidersQuery = useQuery({
+    queryKey: queryKeys.companySkills.providers(selectedCompanyId ?? ""),
+    queryFn: () => companySkillsApi.listProviders(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+    staleTime: 60_000,
+  });
+
+  const brabrixTags = useMemo(() => brabrixTagsRaw
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0), [brabrixTagsRaw]);
+
+  const shouldSearchBrabrix = importProvider === "brabrix_skillhub"
+    && (source.trim().length > 0 || brabrixCategory.trim().length > 0 || brabrixTags.length > 0);
+  const brabrixSearchQuery = useQuery({
+    queryKey: queryKeys.companySkills.brabrixSearch(
+      selectedCompanyId ?? "",
+      source.trim(),
+      brabrixCategory.trim() || null,
+      brabrixTags,
+      brabrixListLimit,
+      0,
+    ),
+    queryFn: () => companySkillsApi.searchBrabrixSkillHub(selectedCompanyId!, {
+      q: source.trim() || null,
+      category: brabrixCategory.trim() || null,
+      tags: brabrixTags,
+      limit: brabrixListLimit,
+      offset: 0,
+    }),
+    enabled: Boolean(selectedCompanyId && shouldSearchBrabrix),
+    staleTime: 30_000,
+  });
+
+  const brabrixFeaturedQuery = useQuery({
+    queryKey: queryKeys.companySkills.brabrixFeatured(selectedCompanyId ?? "", brabrixListLimit),
+    queryFn: () => companySkillsApi.getBrabrixSkillHubFeatured(selectedCompanyId!, brabrixListLimit),
+    enabled: Boolean(selectedCompanyId && importProvider === "brabrix_skillhub" && !shouldSearchBrabrix),
+    staleTime: 60_000,
+  });
+
+  const brabrixCategoriesQuery = useQuery({
+    queryKey: queryKeys.companySkills.brabrixCategories(selectedCompanyId ?? ""),
+    queryFn: () => companySkillsApi.getBrabrixSkillHubCategories(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId && importProvider === "brabrix_skillhub"),
+    staleTime: 5 * 60_000,
+  });
+
+  const brabrixSkillDetailQuery = useQuery({
+    queryKey: queryKeys.companySkills.brabrixSkillDetail(
+      selectedCompanyId ?? "",
+      selectedBrabrixSkillId ?? "",
+    ),
+    queryFn: () => companySkillsApi.getBrabrixSkillHubSkill(selectedCompanyId!, selectedBrabrixSkillId!),
+    enabled: Boolean(selectedCompanyId && importProvider === "brabrix_skillhub" && selectedBrabrixSkillId),
+    staleTime: 60_000,
+  });
+
   useEffect(() => {
     setExpandedSkillId(selectedSkillId);
   }, [selectedSkillId]);
@@ -865,6 +934,15 @@ export function CompanySkills() {
   useEffect(() => {
     setEditMode(false);
   }, [selectedSkillId, selectedPath]);
+
+  useEffect(() => {
+    setSelectedBrabrixSkillId(null);
+  }, [importProvider]);
+
+  useEffect(() => {
+    if (importProvider !== "brabrix_skillhub") return;
+    setBrabrixListLimit(BRABRIX_PAGE_SIZE);
+  }, [importProvider, source, brabrixCategory, brabrixTagsRaw]);
 
   useEffect(() => {
     if (detailQuery.data) {
@@ -903,7 +981,11 @@ export function CompanySkills() {
   }
 
   const importSkill = useMutation({
-    mutationFn: (importSource: string) => companySkillsApi.importFromSource(selectedCompanyId!, importSource),
+    mutationFn: (payload: {
+      source?: string;
+      provider?: CompanySkillImportProvider;
+      skillId?: string;
+    }) => companySkillsApi.importFromSource(selectedCompanyId!, payload),
     onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
       if (result.imported[0]) navigate(skillRoute(result.imported[0].id));
@@ -916,6 +998,7 @@ export function CompanySkills() {
         pushToast({ tone: "warn", title: "Import warnings", body: result.warnings[0] });
       }
       setSource("");
+      setSelectedBrabrixSkillId(null);
     },
     onError: (error) => {
       pushToast({
@@ -1085,12 +1168,48 @@ export function CompanySkills() {
 
   function handleAddSkillSource() {
     const trimmedSource = source.trim();
+    if (importProvider === "brabrix_skillhub") {
+      const selectedSkillId = selectedBrabrixSkillId ?? trimmedSource;
+      if (selectedSkillId.length === 0) {
+        setEmptySourceHelpOpen(true);
+        return;
+      }
+      importSkill.mutate({
+        provider: "brabrix_skillhub",
+        skillId: selectedSkillId,
+        source: trimmedSource || undefined,
+      });
+      return;
+    }
+
     if (trimmedSource.length === 0) {
       setEmptySourceHelpOpen(true);
       return;
     }
-    importSkill.mutate(trimmedSource);
+    importSkill.mutate({
+      provider: importProvider,
+      source: trimmedSource,
+    });
   }
+
+  const providerOptions = importProvidersQuery.data ?? [
+    { key: "github", label: "GitHub", enabled: true },
+    { key: "skills_sh", label: "skills.sh", enabled: true },
+    { key: "brabrix_skillhub", label: "Brabrix SkillHub", enabled: false },
+  ];
+  const isBrabrixProvider = importProvider === "brabrix_skillhub";
+  const brabrixVisibleSkills: BrabrixSkillHubSkillSummary[] = shouldSearchBrabrix
+    ? (brabrixSearchQuery.data?.skills ?? [])
+    : (brabrixFeaturedQuery.data?.skills ?? []);
+  const brabrixSelectedSkillFromList = brabrixVisibleSkills.find((skill) => skill.slug === selectedBrabrixSkillId) ?? null;
+  const brabrixSelectedSkill = brabrixSkillDetailQuery.data ?? brabrixSelectedSkillFromList;
+  const brabrixListLoading = shouldSearchBrabrix
+    ? brabrixSearchQuery.isLoading
+    : brabrixFeaturedQuery.isLoading;
+  const brabrixCanLoadMore = brabrixVisibleSkills.length >= brabrixListLimit;
+  const brabrixDisabled = providerOptions
+    .find((entry) => entry.key === "brabrix_skillhub")
+    ?.enabled === false;
 
   return (
     <>
@@ -1147,7 +1266,7 @@ export function CompanySkills() {
           <DialogHeader>
             <DialogTitle>Add a skill source</DialogTitle>
             <DialogDescription>
-              Paste a local path, GitHub URL, or `skills.sh` command into the field first.
+              Provide a local path, GitHub URL, `skills.sh` command, or Brabrix skill id before importing.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
@@ -1220,21 +1339,154 @@ export function CompanySkills() {
               />
             </div>
 
-            <div className="mt-3 flex items-center gap-2 border-b border-border pb-2">
-              <input
-                value={source}
-                onChange={(event) => setSource(event.target.value)}
-                placeholder="Paste path, GitHub URL, or skills.sh command"
-                className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-              />
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={handleAddSkillSource}
-                disabled={importSkill.isPending}
-              >
-                {importSkill.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Add"}
-              </Button>
+            <div className="mt-3 border-b border-border pb-2">
+              <div className="flex items-center gap-2">
+                <select
+                  value={importProvider}
+                  onChange={(event) => setImportProvider(event.target.value as CompanySkillImportProvider)}
+                  className="w-full bg-transparent text-sm outline-none"
+                >
+                  {providerOptions.map((provider) => (
+                    <option key={provider.key} value={provider.key} disabled={!provider.enabled}>
+                      {provider.label}{provider.enabled ? "" : " (disabled)"}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={handleAddSkillSource}
+                  disabled={importSkill.isPending || (isBrabrixProvider && brabrixDisabled)}
+                >
+                  {importSkill.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Import"}
+                </Button>
+              </div>
+
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  value={source}
+                  onChange={(event) => {
+                    setSource(event.target.value);
+                    if (isBrabrixProvider) {
+                      setSelectedBrabrixSkillId(null);
+                    }
+                  }}
+                  placeholder={isBrabrixProvider ? "Search or paste Brabrix skill id/slug" : "Paste path, GitHub URL, or skills.sh command"}
+                  className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                />
+              </div>
+
+              {isBrabrixProvider && (
+                <div className="mt-2 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={brabrixCategory}
+                      onChange={(event) => setBrabrixCategory(event.target.value)}
+                      className="w-full bg-transparent text-xs outline-none"
+                    >
+                      <option value="">All categories</option>
+                      {(brabrixCategoriesQuery.data?.categories ?? []).map((category) => (
+                        <option key={category.key} value={category.key}>{category.label}</option>
+                      ))}
+                    </select>
+                    <input
+                      value={brabrixTagsRaw}
+                      onChange={(event) => setBrabrixTagsRaw(event.target.value)}
+                      placeholder="tags: backend, qa"
+                      className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+                    />
+                  </div>
+
+                  {brabrixDisabled ? (
+                    <p className="text-xs text-muted-foreground">
+                      Brabrix SkillHub disabled by deployment settings. Check `BRABRIX_SKILLHUB_ENABLED` and API URL.
+                    </p>
+                  ) : brabrixListLoading ? (
+                    <p className="text-xs text-muted-foreground">Loading Brabrix skills...</p>
+                  ) : brabrixVisibleSkills.length > 0 ? (
+                    <div className="space-y-2">
+                      <div className="max-h-44 space-y-1 overflow-auto">
+                        {brabrixVisibleSkills.map((skill) => (
+                          <button
+                            key={skill.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedBrabrixSkillId(skill.slug);
+                            }}
+                            className={cn(
+                              "w-full rounded border px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent/30",
+                              selectedBrabrixSkillId === skill.slug && "border-primary/60 bg-accent/40",
+                            )}
+                          >
+                            <span className="block font-medium">{skill.name}</span>
+                            <span className="block text-muted-foreground">{skill.slug}</span>
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[11px] text-muted-foreground">
+                          Showing {brabrixVisibleSkills.length} results
+                        </p>
+                        {brabrixCanLoadMore && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => setBrabrixListLimit((current) => current + BRABRIX_PAGE_SIZE)}
+                            disabled={brabrixListLoading}
+                          >
+                            Load more
+                          </Button>
+                        )}
+                      </div>
+
+                      {selectedBrabrixSkillId && brabrixSkillDetailQuery.isLoading && (
+                        <p className="text-xs text-muted-foreground">Loading skill details...</p>
+                      )}
+
+                      {brabrixSkillDetailQuery.error && (
+                        <p className="text-xs text-destructive">{brabrixSkillDetailQuery.error.message}</p>
+                      )}
+
+                      {brabrixSelectedSkill && (
+                        <div className="space-y-2 rounded border border-border bg-accent/10 px-2.5 py-2 text-xs">
+                          <div>
+                            <p className="font-medium">{brabrixSelectedSkill.name}</p>
+                            <p className="text-muted-foreground">{brabrixSelectedSkill.slug}</p>
+                          </div>
+                          {brabrixSelectedSkill.summary && (
+                            <p className="text-muted-foreground">{brabrixSelectedSkill.summary}</p>
+                          )}
+                          {!brabrixSelectedSkill.summary && brabrixSelectedSkill.description && (
+                            <p className="text-muted-foreground">{brabrixSelectedSkill.description}</p>
+                          )}
+                          <div className="flex flex-wrap gap-1">
+                            {brabrixSelectedSkill.category && (
+                              <span className="rounded border border-border px-1.5 py-0.5 text-[10px]">
+                                {brabrixSelectedSkill.category}
+                              </span>
+                            )}
+                            {brabrixSelectedSkill.tags.slice(0, 6).map((tag) => (
+                              <span key={tag} className="rounded border border-border px-1.5 py-0.5 text-[10px]">
+                                {tag}
+                              </span>
+                            ))}
+                            <span className="rounded border border-border px-1.5 py-0.5 text-[10px]">
+                              ~{brabrixSelectedSkill.contextSizeChars} chars
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      {shouldSearchBrabrix ? "No Brabrix skills matched this search." : "Featured skills unavailable right now."}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
             {scanStatusMessage && (
               <p className="mt-3 text-xs text-muted-foreground">

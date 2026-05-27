@@ -1,0 +1,11 @@
+{
+  "pageTitle": "Objetivos",
+  "empty": {
+    "selectCompany": "Selecione uma empresa para ver os objetivos.",
+    "noGoals": "Ainda não há objetivos.",
+    "addGoal": "Adicionar objetivo"
+  },
+  "actions": {
+    "newGoal": "Novo objetivo"
+  }
+}

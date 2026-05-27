@@ -1,437 +1,272 @@
-<p align="center">
-  <img src="doc/assets/header.png" alt="Paperclip — runs your business" width="720" />
-</p>
+# Brabrix Agent
 
-<p align="center">
-  <a href="#quickstart"><strong>Quickstart</strong></a> &middot;
-  <a href="https://paperclip.ing/docs"><strong>Docs</strong></a> &middot;
-  <a href="https://github.com/paperclipai/paperclip"><strong>GitHub</strong></a> &middot;
-  <a href="https://discord.gg/m4HZY7xNG3"><strong>Discord</strong></a> &middot;
-  <a href="https://x.com/papercliping"><strong>Twitter</strong></a>
-</p>
+Plataforma de agentes de IA com execucao local, orientada a workflow de desenvolvimento e integrada ao ecossistema Brabrix Dev.
 
-<p align="center">
-  <a href="https://github.com/paperclipai/paperclip/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" /></a>
-  <a href="https://github.com/paperclipai/paperclip/stargazers"><img src="https://img.shields.io/github/stars/paperclipai/paperclip?style=flat" alt="Stars" /></a>
-  <a href="https://discord.gg/m4HZY7xNG3"><img src="https://img.shields.io/discord/000000000?label=discord" alt="Discord" /></a>
-</p>
+![Status](https://img.shields.io/badge/status-active%20development-0f766e)
+![Fork](https://img.shields.io/badge/fork-paperclipai%2Fpaperclip-1d4ed8)
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Node](https://img.shields.io/badge/node-%3E%3D20-16a34a)
+![pnpm](https://img.shields.io/badge/pnpm-%3E%3D9-f97316)
 
-<br/>
+> [!IMPORTANT]
+> Este projeto e um fork/modificacao do Paperclip. O objetivo do Brabrix Agent e evoluir o runtime para fluxos de engenharia assistida por IA no ecossistema Brabrix, sem remover os creditos e os termos da licenca MIT do projeto original.
 
-<div align="center">
-  <video src="https://github.com/user-attachments/assets/773bdfb2-6d1e-4e30-8c5f-3487d5b70c8f" width="600" controls></video>
-</div>
+## Status do projeto
 
-<br/>
+- Em desenvolvimento ativo.
+- Fork funcional com foco em execucao local, backlog orientado por IA e integracoes Brabrix.
+- Mantem compatibilidade com conceitos e estruturas do upstream sempre que possivel.
 
-## What is Paperclip?
+## O que e o Brabrix Agent
 
-# Open-source orchestration for zero-human companies
+O Brabrix Agent e uma plataforma para operar agentes de IA em projetos reais, com controle de contexto e execucao local no workspace.
 
-**If OpenClaw is an _employee_, Paperclip is the _company_**
+Ele combina:
 
-Paperclip is a Node.js server and React UI that orchestrates a team of AI agents to run a business. Bring your own agents, assign goals, and track your agents' work and costs from one dashboard.
+- runtime local para agentes (com board, goals/issues e execucoes)
+- ingestao de contexto de produto e engenharia (PRD, specs, regras, skills)
+- fluxo de backlog orientado por IA, conectado ao Brabrix Dev
+- integracoes de skills via GitHub, `skills.sh` e Brabrix SkillHub
+- workflow observavel com logs, timeline e visao de mudancas
 
-It looks like a task manager — but under the hood it has org charts, budgets, governance, goal alignment, and agent coordination.
+## Fork do Paperclip
 
-**Manage business goals, not pull requests.**
+> "This project is based on the amazing open source project Paperclip."
 
-|        | Step            | Example                                                            |
-| ------ | --------------- | ------------------------------------------------------------------ |
-| **01** | Define the goal | _"Build the #1 AI note-taking app to $1M MRR."_                    |
-| **02** | Hire the team   | CEO, CTO, engineers, designers, marketers — any bot, any provider. |
-| **03** | Approve and run | Review strategy. Set budgets. Hit go. Monitor from the dashboard.  |
+O Brabrix Agent:
 
-<br/>
+- e um fork do Paperclip
+- preserva a licenca MIT e os creditos originais
+- busca manter compatibilidade com o modelo de orquestracao do upstream
+- adiciona integracoes e capacidades focadas no ecossistema Brabrix Dev
 
-> **COMING SOON: Clipmart** — Download and run entire companies with one click. Browse pre-built company templates — full org structures, agent configs, and skills — and import them into your Paperclip instance in seconds.
+Links importantes:
 
-<br/>
+- Projeto original Paperclip: [paperclipai/paperclip](https://github.com/paperclipai/paperclip)
+- Licenca MIT original: [LICENSE upstream](https://github.com/paperclipai/paperclip/blob/master/LICENSE)
+- Licenca deste fork: [LICENSE](LICENSE)
 
-<div align="center">
-<table>
-  <tr>
-    <td align="center"><strong>Works<br/>with</strong></td>
-    <td align="center"><img src="doc/assets/logos/openclaw.svg" width="32" alt="OpenClaw" /><br/><sub>OpenClaw</sub></td>
-    <td align="center"><img src="doc/assets/logos/claude.svg" width="32" alt="Claude" /><br/><sub>Claude Code</sub></td>
-    <td align="center"><img src="doc/assets/logos/codex.svg" width="32" alt="Codex" /><br/><sub>Codex</sub></td>
-    <td align="center"><img src="doc/assets/logos/cursor.svg" width="32" alt="Cursor" /><br/><sub>Cursor</sub></td>
-    <td align="center"><img src="doc/assets/logos/bash.svg" width="32" alt="Bash" /><br/><sub>Bash</sub></td>
-    <td align="center"><img src="doc/assets/logos/http.svg" width="32" alt="HTTP" /><br/><sub>HTTP</sub></td>
-  </tr>
-</table>
+## Principais funcionalidades
 
-<em>If it can receive a heartbeat, it's hired.</em>
+Legenda:
+- `✅` disponivel
+- `🧪` em implementacao/evolucao
+- `🗺️` roadmap
 
-</div>
+| Funcionalidade | Status | Observacao |
+| --- | --- | --- |
+| Agentes locais | ✅ | Adapters locais como `claude_local`, `codex_local`, `gemini_local`, `opencode_local` e outros |
+| Execucao de tasks | ✅ | Fluxo por goals/issues com execucao no projeto local |
+| Integracao com Brabrix Dev | ✅ | Importa task/contexto via endpoint de sincronizacao |
+| SkillHub integration | ✅ | Provider `brabrix_skillhub` com busca/import de skills |
+| Contexto persistente | ✅ | Estado, historico e contexto de execucao permanecem rastreaveis |
+| Backlog orientado por IA | 🧪 | Pipeline `BrabrixTask -> AgentGoal -> Context` implementado e evoluindo |
+| Multi-provider AI | ✅ | Modelo de adapters plugavel por provider/runtime |
+| Workspace local | ✅ | Execucao ligada a workspaces de projeto e execucao |
+| Timeline / logs | ✅ | Logs e eventos de execucao com visibilidade operacional |
+| Diff preview | 🧪 | Fluxo de diff via recursos/plugins de workspace diff |
+| Integracao VS Code | 🧪 | Integracao de ecossistema com Brabrix Dev VS Code extension |
+| Suporte a multiplos idiomas | ✅ | UI com i18n e locale `pt-BR` disponivel |
+| OpenAI / Claude / Gemini | ✅ | Suporte via adapters/configuracao de modelos |
+| GitHub skills | ✅ | Importacao de skills por URL/repositorio GitHub |
+| `skills.sh` | ✅ | Compatibilidade de importacao como provider de skills |
+| Brabrix SkillHub | ✅ | Busca, categorias, destaque e import quando habilitado |
 
-<br/>
+## Como funciona
 
-## Paperclip is right for you if
-
-- ✅ You want to build **autonomous AI companies**
-- ✅ You **coordinate many different agents** (OpenClaw, Codex, Claude, Cursor) toward a common goal
-- ✅ You have **20 simultaneous Claude Code terminals** open and lose track of what everyone is doing
-- ✅ You want agents running **autonomously 24/7**, but still want to audit work and chime in when needed
-- ✅ You want to **monitor costs** and enforce budgets
-- ✅ You want a process for managing agents that **feels like using a task manager**
-- ✅ You want to manage your autonomous businesses **from your phone**
-
-<br/>
-
-## Features
-
-<table>
-<tr>
-<td align="center" width="33%">
-<h3>🔌 Bring Your Own Agent</h3>
-Any agent, any runtime, one org chart. If it can receive a heartbeat, it's hired.
-</td>
-<td align="center" width="33%">
-<h3>🎯 Goal Alignment</h3>
-Every task traces back to the company mission. Agents know <em>what</em> to do and <em>why</em>.
-</td>
-<td align="center" width="33%">
-<h3>💓 Heartbeats</h3>
-Agents wake on a schedule, check work, and act. Delegation flows up and down the org chart.
-</td>
-</tr>
-<tr>
-<td align="center">
-<h3>💰 Cost Control</h3>
-Monthly budgets per agent. When they hit the limit, they stop. No runaway costs.
-</td>
-<td align="center">
-<h3>🏢 Multi-Company</h3>
-One deployment, many companies. Complete data isolation. One control plane for your portfolio.
-</td>
-<td align="center">
-<h3>🎫 Ticket System</h3>
-Every conversation traced. Every decision explained. Full tool-call tracing and immutable audit log.
-</td>
-</tr>
-<tr>
-<td align="center">
-<h3>🛡️ Governance</h3>
-You're the board. Approve hires, override strategy, pause or terminate any agent — at any time.
-</td>
-<td align="center">
-<h3>📊 Org Chart</h3>
-Hierarchies, roles, reporting lines. Your agents have a boss, a title, and a job description.
-</td>
-<td align="center">
-<h3>📱 Mobile Ready</h3>
-Monitor and manage your autonomous businesses from anywhere.
-</td>
-</tr>
-</table>
-
-<br/>
-
-## Problems Paperclip solves
-
-| Without Paperclip                                                                                                                     | With Paperclip                                                                                                                         |
-| ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| ❌ You have 20 Claude Code tabs open and can't track which one does what. On reboot you lose everything.                              | ✅ Tasks are ticket-based, conversations are threaded, sessions persist across reboots.                                                |
-| ❌ You manually gather context from several places to remind your bot what you're actually doing.                                     | ✅ Context flows from the task up through the project and company goals — your agent always knows what to do and why.                  |
-| ❌ Folders of agent configs are disorganized and you're re-inventing task management, communication, and coordination between agents. | ✅ Paperclip gives you org charts, ticketing, delegation, and governance out of the box — so you run a company, not a pile of scripts. |
-| ❌ Runaway loops waste hundreds of dollars of tokens and max your quota before you even know what happened.                           | ✅ Cost tracking surfaces token budgets and throttles agents when they're out. Management prioritizes with budgets.                    |
-| ❌ You have recurring jobs (customer support, social, reports) and have to remember to manually kick them off.                        | ✅ Heartbeats handle regular work on a schedule. Management supervises.                                                                |
-| ❌ You have an idea, you have to find your repo, fire up Claude Code, keep a tab open, and babysit it.                                | ✅ Add a task in Paperclip. Your coding agent works on it until it's done. Management reviews their work.                              |
-
-<br/>
-
-## Why Paperclip is special
-
-Paperclip handles the hard orchestration details correctly.
-
-|                                   |                                                                                                               |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| **Atomic execution.**             | Task checkout and budget enforcement are atomic, so no double-work and no runaway spend.                      |
-| **Persistent agent state.**       | Agents resume the same task context across heartbeats instead of restarting from scratch.                     |
-| **Runtime skill injection.**      | Agents can learn Paperclip workflows and project context at runtime, without retraining.                      |
-| **Governance with rollback.**     | Approval gates are enforced, config changes are revisioned, and bad changes can be rolled back safely.        |
-| **Goal-aware execution.**         | Tasks carry full goal ancestry so agents consistently see the "why," not just a title.                        |
-| **Portable company templates.**   | Export/import orgs, agents, and skills with secret scrubbing and collision handling.                          |
-| **True multi-company isolation.** | Every entity is company-scoped, so one deployment can run many companies with separate data and audit trails. |
-
-<br/>
-
-## What's Under the Hood
-
-Paperclip is a full control plane, not a wrapper. Before you build any of this yourself, know that it already exists:
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                       PAPERCLIP SERVER                       │
-│                                                              │
-│  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐  │
-│  │Identity & │  │  Work &   │  │ Heartbeat │  │Governance │  │
-│  │  Access   │  │   Tasks   │  │ Execution │  │& Approvals│  │
-│  └───────────┘  └───────────┘  └───────────┘  └───────────┘  │
-│                                                              │
-│  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐  │
-│  │ Org Chart │  │Workspaces │  │  Plugins  │  │  Budget   │  │
-│  │ & Agents  │  │ & Runtime │  │           │  │ & Costs   │  │
-│  └───────────┘  └───────────┘  └───────────┘  └───────────┘  │
-│                                                              │
-│  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐  │
-│  │ Routines  │  │ Secrets & │  │ Activity  │  │  Company  │  │
-│  │& Schedules│  │  Storage  │  │ & Events  │  │Portability│  │
-│  └───────────┘  └───────────┘  └───────────┘  └───────────┘  │
-└──────────────────────────────────────────────────────────────┘
-         ▲              ▲              ▲              ▲
-   ┌─────┴─────┐  ┌─────┴─────┐  ┌─────┴─────┐  ┌─────┴─────┐
-   │  Claude   │  │   Codex   │  │   CLI     │  │ HTTP/web  │
-   │   Code    │  │           │  │  agents   │  │   bots    │
-   └───────────┘  └───────────┘  └───────────┘  └───────────┘
+```text
+Brabrix Dev
+  ↓
+Backlog / PRD / Specs / Skills
+  ↓
+Brabrix Agent
+  ↓
+Execucao local no projeto
+  ↓
+Logs / Timeline / Diff
 ```
 
-### The Systems
+```mermaid
+flowchart TD
+  A[Brabrix Dev] --> B[Backlog / PRD / Specs / Skills]
+  B --> C[Brabrix Agent]
+  C --> D[Execucao local no projeto]
+  D --> E[Logs / Timeline / Diff]
+```
 
-<table>
-<tr>
-<td width="50%">
+## Arquitetura
 
-**Identity & Access** — Two deployment modes (trusted local or authenticated), board users, agent API keys, short-lived run JWTs, company memberships, invite flows, and OpenClaw onboarding. Every mutating request is traced to an actor.
+- **Brabrix Dev**: camada de orquestracao e contexto (backlog, PRD/spec, skills e organizacao do trabalho).
+- **Brabrix Agent**: runtime local de execucao dos agentes no workspace do projeto.
+- **Providers de IA**: seguem plugaveis via adapters, preservando flexibilidade do projeto base.
 
-</td>
-<td width="50%">
+## Diferencas para o Paperclip Original
 
-**Org Chart & Agents** — Agents have roles, titles, reporting lines, permissions, and budgets. Adapter examples match the diagram: Claude Code, Codex, CLI agents such as Cursor/Gemini/bash, HTTP/webhook bots such as OpenClaw, and external adapter plugins. If it can receive a heartbeat, it's hired.
+Principais diferencas deste fork:
 
-</td>
-</tr>
-<tr>
-<td>
+- integracao com Brabrix Dev para ingestao de tarefas/contexto
+- provider adicional Brabrix SkillHub para skills corporativas/publicas
+- backlog orientado por IA com mapeamento de task para goal/contexto tecnico
+- workflows de desenvolvimento focados em entrega de software
+- foco em integracao com fluxos de IDE (incluindo VS Code no ecossistema Brabrix)
+- interface com suporte a i18n, incluindo `pt-BR`
+- branding e direcionamento de produto orientados ao ecossistema Brabrix
 
-**Work & Task System** — Issues carry company/project/goal/parent links, atomic checkout with execution locks, first-class blocker dependencies, comments, documents, attachments, work products, labels, and inbox state. No double-work, no lost context.
+## Instalacao
 
-</td>
-<td>
-
-**Heartbeat Execution** — DB-backed wakeup queue with coalescing, budget checks, workspace resolution, secret injection, skill loading, and adapter invocation. Runs produce structured logs, cost events, session state, and audit trails. Recovery handles orphaned runs automatically.
-
-</td>
-</tr>
-<tr>
-<td>
-
-**Workspaces & Runtime** — Project workspaces, isolated execution workspaces (git worktrees, operator branches), and runtime services (dev servers, preview URLs). Agents work in the right directory with the right context every time.
-
-</td>
-<td>
-
-**Governance & Approvals** — Board approval workflows, execution policies with review/approval stages, decision tracking, budget hard-stops, agent pause/resume/terminate, and full audit logging. You're the board — nothing ships without your sign-off.
-
-</td>
-</tr>
-<tr>
-<td>
-
-**Budget & Cost Control** — Token and cost tracking by company, agent, project, goal, issue, provider, and model. Scoped budget policies with warning thresholds and hard stops. Overspend pauses agents and cancels queued work automatically.
-
-</td>
-<td>
-
-**Routines & Schedules** — Recurring tasks with cron, webhook, and API triggers. Concurrency and catch-up policies. Each routine execution creates a tracked issue and wakes the assigned agent — no manual kick-offs needed.
-
-</td>
-</tr>
-<tr>
-<td>
-
-**Plugins** — Instance-wide plugin system with out-of-process workers, capability-gated host services, job scheduling, tool exposure, and UI contributions. Extend Paperclip without forking it.
-
-</td>
-<td>
-
-**Secrets & Storage** — Instance and company secrets, encrypted local storage, provider-backed object storage, attachments, and work products. Sensitive values stay out of prompts unless a scoped run explicitly needs them.
-
-</td>
-</tr>
-<tr>
-<td>
-
-**Activity & Events** — Mutating actions, heartbeat state changes, cost events, approvals, comments, and work products are recorded as durable activity so operators can audit what happened and why.
-
-</td>
-<td>
-
-**Company Portability** — Export and import entire organizations — agents, skills, projects, routines, and issues — with secret scrubbing and collision handling. One deployment, many companies, complete data isolation.
-
-</td>
-</tr>
-</table>
-
-<br/>
-
-## What Paperclip is not
-
-|                              |                                                                                                                      |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| **Not a chatbot.**           | Agents have jobs, not chat windows.                                                                                  |
-| **Not an agent framework.**  | We don't tell you how to build agents. We tell you how to run a company made of them.                                |
-| **Not a workflow builder.**  | No drag-and-drop pipelines. Paperclip models companies — with org charts, goals, budgets, and governance.            |
-| **Not a prompt manager.**    | Agents bring their own prompts, models, and runtimes. Paperclip manages the organization they work in.               |
-| **Not a single-agent tool.** | This is for teams. If you have one agent, you probably don't need Paperclip. If you have twenty — you definitely do. |
-| **Not a code review tool.**  | Paperclip orchestrates work, not pull requests. Bring your own review process.                                       |
-
-<br/>
-
-## Quickstart
-
-Open source. Self-hosted. No Paperclip account required.
+### 1. Clonar o projeto
 
 ```bash
-npx paperclipai onboard --yes
+git clone <url-do-seu-fork>
+cd brabrix-agent
 ```
 
-That quickstart path now defaults to trusted local loopback mode for the fastest first run. To start in authenticated/private mode instead, choose a bind preset explicitly:
+### 2. Instalar dependencias
 
 ```bash
-npx paperclipai onboard --yes --bind lan
-# or:
-npx paperclipai onboard --yes --bind tailnet
-```
-
-If you already have Paperclip configured, rerunning `onboard` keeps the existing config in place. Use `paperclipai configure` to edit settings.
-
-Or manually:
-
-```bash
-git clone https://github.com/paperclipai/paperclip.git
-cd paperclip
 pnpm install
+```
+
+### 3. Configurar ambiente
+
+```bash
+cp .env.example .env
+```
+
+### 4. Configurar credenciais Brabrix
+
+Preencha as variaveis de integracao no `.env` (detalhes na secao de configuracao abaixo).
+
+### 5. Rodar o projeto
+
+```bash
 pnpm dev
 ```
 
-This starts the API server at `http://localhost:3100`. An embedded PostgreSQL database is created automatically — no setup required.
+Servidor/API em `http://localhost:3100`.
 
-> **Requirements:** Node.js 20+, pnpm 9.15+
+## Configuracao
 
-<br/>
+Exemplo de configuracao base:
 
-## FAQ
+```env
+# Convencao usada em pipelines/scripts do ecossistema
+BRABRIX_API_KEY=
+BRABRIX_API_URL=https://api.brabrix.com
+WORKSPACE_PATH=
 
-**What does a typical setup look like?**
-Locally, a single Node.js process manages an embedded Postgres and local file storage. For production, point it at your own Postgres and deploy however you like. Configure projects, agents, and goals — the agents take care of the rest.
+# Variaveis consumidas diretamente pelo runtime atual
+BRABRIX_AGENT_TOKEN=
+BRABRIX_PROJECT_ID=
+BRABRIX_AGENT_ID=
+BRABRIX_PROVIDER=
 
-If you're a solo-entreprenuer you can use Tailscale to access Paperclip on the go. Then later you can deploy to e.g. Vercel when you need it.
+# Opcional (defaults internos do runtime)
+BRABRIX_PROJECT_CONTEXT_ENDPOINT=
+BRABRIX_NEXT_TASK_ENDPOINT=
+BRABRIX_SEND_RUN_LOGS_ENDPOINT=
+BRABRIX_COMPLETE_TASK_ENDPOINT=
 
-**Can I run multiple companies?**
-Yes. A single deployment can run an unlimited number of companies with complete data isolation.
+BRABRIX_SKILLHUB_ENABLED=true
+BRABRIX_SKILLHUB_API_URL=https://api.brabrix.com
+BRABRIX_SKILLHUB_TOKEN=
+BRABRIX_SKILLHUB_API_KEY=
+BRABRIX_SKILLHUB_SEARCH_ENDPOINT=/api/public/dev-hub/items
+BRABRIX_SKILLHUB_SKILL_DETAIL_ENDPOINT=/api/public/dev-hub/items/{skillId}
+BRABRIX_SKILLHUB_CATEGORIES_ENDPOINT=/api/public/dev-hub/categories
+BRABRIX_SKILLHUB_FEATURED_ENDPOINT=/api/public/dev-hub/featured
 
-**How is Paperclip different from agents like OpenClaw or Claude Code?**
-Paperclip _uses_ those agents. It orchestrates them into a company — with org charts, budgets, goals, governance, and accountability.
-
-**Why should I use Paperclip instead of just pointing my OpenClaw to Asana or Trello?**
-Agent orchestration has subtleties in how you coordinate who has work checked out, how to maintain sessions, monitoring costs, establishing governance - Paperclip does this for you.
-
-(Bring-your-own-ticket-system is on the Roadmap)
-
-**Do agents run continuously?**
-By default, agents run on scheduled heartbeats and event-based triggers (task assignment, @-mentions). You can also hook in continuous agents like OpenClaw. You bring your agent and Paperclip coordinates.
-
-<br/>
-
-## Development
-
-```bash
-pnpm dev              # Full dev (API + UI, watch mode)
-pnpm dev:once         # Full dev without file watching
-pnpm dev:server       # Server only
-pnpm build            # Build all
-pnpm typecheck        # Type checking
-pnpm test             # Cheap default test run (Vitest only)
-pnpm test:watch       # Vitest watch mode
-pnpm test:e2e         # Playwright browser suite
-pnpm db:generate      # Generate DB migration
-pnpm db:migrate       # Apply migrations
+# Dados locais da instancia
+PAPERCLIP_HOME=
+PAPERCLIP_INSTANCE_ID=default
 ```
 
-`pnpm test` does not run Playwright. Browser suites stay separate and are typically run only when working on those flows or in CI.
+Observacoes tecnicas:
 
-See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
+- O runtime usa `BRABRIX_AGENT_TOKEN` para autenticar na integracao Brabrix.
+  - Se o valor começar com `bbx_`, o client envia `x-api-key` (mesma lógica da extensão VS Code Brabrix).
+  - Caso contrário, envia `Authorization: Bearer ...`.
+- Para endpoints que já carregam `{projectId}` no path (defaults), o sync evita enviar query params extras (`projectId`, `provider`, `agentId`) para manter compatibilidade com a API pública.
+- Para sync de goals (`Import from Brabrix`), token e project ID podem ser configurados por empresa em **Company Settings → Brabrix** (via Secrets), com fallback legado para env.
+- Para sync de goals, os endpoints default ja sao carregados pelo runtime; sobrescreva por env apenas se sua API usar paths customizados.
+- `BRABRIX_API_KEY` pode ser usada como convencao de plataforma/gateway, desde que seja mapeada para o token esperado pelo runtime.
+- Para SkillHub, os defaults publicos usam `api/public/dev-hub/*` e podem ser sobrescritos por env sem alterar código.
+- Para SkillHub, a API key pode ser configurada por empresa em **Company Settings → Brabrix** (via Secrets), com fallback legado para env.
+- `WORKSPACE_PATH` e uma variavel util de orquestracao; o runtime usa configuracoes de workspace do proprio projeto e caminhos de instancia.
 
-<br/>
+## Providers suportados
+
+Suporte via adapters (core e plugins), incluindo:
+
+- OpenAI (ex.: fluxos com `codex_local`/modelos OpenAI)
+- Anthropic Claude (`claude_local`)
+- Gemini (`gemini_local`)
+- Cursor / OpenCode e outros adapters existentes no projeto
+- Adapters `process` e `http` para cenarios customizados
+
+## Skill Providers
+
+Providers de skills disponiveis:
+
+- GitHub
+- `skills.sh`
+- Brabrix SkillHub
+
+## Visao do projeto
+
+O Brabrix Agent existe para fechar o loop entre planejamento e execucao:
+
+- da ideia (PRD/spec) para tarefa executavel
+- da tarefa para entrega tecnica no repositorio local
+- da execucao para observabilidade e governanca de engenharia
+
+Direcao de produto: manter base open source forte, compatibilidade com o upstream e especializacao progressiva para o ecossistema Brabrix Dev.
 
 ## Roadmap
 
-- ✅ Plugin system (e.g. add a knowledge base, custom tracing, queues, etc)
-- ✅ Get OpenClaw / claw-style agent employees
-- ✅ companies.sh - import and export entire organizations
-- ✅ Easy AGENTS.md configurations
-- ✅ Skills Manager
-- ✅ Scheduled Routines
-- ✅ Better Budgeting
-- ✅ Agent Reviews and Approvals
-- ✅ Multiple Human Users
-- ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
-- ⚪ Artifacts & Work Products
-- ⚪ Memory / Knowledge
-- ⚪ Enforced Outcomes
-- ⚪ MAXIMIZER MODE
-- ⚪ Deep Planning
-- ⚪ Work Queues
-- ⚪ Self-Organization
-- ⚪ Automatic Organizational Learning
-- ⚪ CEO Chat
-- ⚪ Cloud deployments
-- ⚪ Desktop App
+Itens direcionais para proximas iteracoes:
 
-This is the short roadmap preview. See the full roadmap in [ROADMAP.md](ROADMAP.md).
+- multi-agent orchestration mais avancada
+- marketplace de skills/plugins do ecossistema
+- agentes especializados por perfil (backend, frontend, qa, etc.)
+- cloud sync e cenarios hibridos local+nuvem
+- enterprise governance (auditoria, controle e compliance ampliados)
+- VS Code deep integration com fluxos de backlog, specs e skills
 
-<br/>
+Para backlog expandido, veja [ROADMAP.md](ROADMAP.md).
 
-## Community & Plugins
+## Contribuindo
 
-Find Plugins and more at [awesome-paperclip](https://github.com/gsxdsm/awesome-paperclip)
+Contribuicoes sao bem-vindas.
 
-## Telemetry
+Fluxo recomendado:
 
-Paperclip collects anonymous usage telemetry to help us understand how the product is used and improve it. No personal information, issue content, prompts, file paths, or secrets are ever collected. Private repository references are hashed with a per-install salt before being sent.
+1. Abra uma issue (bug, melhoria ou proposta de feature).
+2. Crie uma branch focada em uma entrega pequena e revisavel.
+3. Mantenha compatibilidade com o upstream sempre que possivel.
+4. Inclua validacao local minima (`pnpm test` e checks relevantes ao escopo).
+5. Abra PR com contexto tecnico claro e trade-offs.
 
-Telemetry is **enabled by default** and can be disabled with any of the following:
+Guia completo: [CONTRIBUTING.md](CONTRIBUTING.md)
 
-| Method               | How                                                     |
-| -------------------- | ------------------------------------------------------- |
-| Environment variable | `PAPERCLIP_TELEMETRY_DISABLED=1`                        |
-| Standard convention  | `DO_NOT_TRACK=1`                                        |
-| CI environments      | Automatically disabled when `CI=true`                   |
-| Config file          | Set `telemetry.enabled: false` in your Paperclip config |
+Filosofia do projeto:
 
-## Contributing
+- clareza antes de overengineering
+- evolucao incremental com feedback real de uso
+- governanca e observabilidade como partes do workflow, nao como anexos
 
-We welcome contributions. See the [contributing guide](CONTRIBUTING.md) for details.
+## Licenca
 
-<br/>
+Este projeto esta sob licenca MIT.
 
-## Community
-
-- [Discord](https://discord.gg/m4HZY7xNG3) — Join the community
-- [Twitter / X](https://x.com/papercliping) — Follow updates and announcements
-- [GitHub Issues](https://github.com/paperclipai/paperclip/issues) — bugs and feature requests
-- [GitHub Discussions](https://github.com/paperclipai/paperclip/discussions) — ideas and RFC
-
-<br/>
-
-## License
-
-MIT &copy; 2026 Paperclip
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/image?repos=paperclipai/paperclip&type=date&legend=top-left)](https://www.star-history.com/?repos=paperclipai%2Fpaperclip&type=date&legend=top-left)
-
-<br/>
+- Licenca local do fork: [LICENSE](LICENSE)
+- Baseado no projeto Paperclip (MIT): [paperclipai/paperclip](https://github.com/paperclipai/paperclip)
+- Aviso de copyright upstream mantido no arquivo de licenca (`Copyright (c) 2025 Paperclip AI`)
+- Creditos upstream preservados conforme os termos da licenca
 
 ---
 
-<p align="center">
-  <img src="doc/assets/footer.jpg" alt="" width="720" />
-</p>
+**Creditos**
 
-<p align="center">
-  <sub>Open source under MIT. Built for people who want to run companies, not babysit agents.</sub>
-</p>
+- Projeto original: Paperclip AI
+- Fork/evolucao: Brabrix Agent

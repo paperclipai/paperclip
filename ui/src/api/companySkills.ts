@@ -1,10 +1,19 @@
 import type {
+  BrabrixSkillHubCategoriesResponse,
+  BrabrixSkillHubFeaturedResponse,
+  BrabrixSkillHubSearchRequest,
+  BrabrixSkillHubSearchResponse,
+  BrabrixSkillHubSettings,
+  BrabrixSkillHubSettingsUpdateRequest,
+  BrabrixSkillHubSkillSummary,
   CompanySkill,
   CompanySkillCreateRequest,
   CompanySkillDetail,
   CompanySkillFileDetail,
+  CompanySkillImportRequest,
   CompanySkillImportResult,
   CompanySkillListItem,
+  CompanySkillProviderEntry,
   CompanySkillProjectScanRequest,
   CompanySkillProjectScanResult,
   CompanySkillUpdateStatus,
@@ -36,10 +45,47 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills`,
       payload,
     ),
-  importFromSource: (companyId: string, source: string) =>
+  importFromSource: (companyId: string, payload: CompanySkillImportRequest | string) =>
     api.post<CompanySkillImportResult>(
       `/companies/${encodeURIComponent(companyId)}/skills/import`,
-      { source },
+      typeof payload === "string" ? { source: payload } : payload,
+    ),
+  listProviders: (companyId: string) =>
+    api.get<CompanySkillProviderEntry[]>(
+      `/companies/${encodeURIComponent(companyId)}/skills/providers`,
+    ),
+  searchBrabrixSkillHub: (companyId: string, input: BrabrixSkillHubSearchRequest = {}) => {
+    const query = new URLSearchParams();
+    if (input.q?.trim()) query.set("q", input.q.trim());
+    if (input.category?.trim()) query.set("category", input.category.trim());
+    if (input.tags && input.tags.length > 0) query.set("tags", input.tags.join(","));
+    if (typeof input.limit === "number") query.set("limit", String(input.limit));
+    if (typeof input.offset === "number") query.set("offset", String(input.offset));
+    const suffix = query.toString().length > 0 ? `?${query.toString()}` : "";
+    return api.get<BrabrixSkillHubSearchResponse>(
+      `/companies/${encodeURIComponent(companyId)}/skills/providers/brabrix-skillhub/search${suffix}`,
+    );
+  },
+  getBrabrixSkillHubSkill: (companyId: string, skillId: string) =>
+    api.get<BrabrixSkillHubSkillSummary>(
+      `/companies/${encodeURIComponent(companyId)}/skills/providers/brabrix-skillhub/${encodeURIComponent(skillId)}`,
+    ),
+  getBrabrixSkillHubCategories: (companyId: string) =>
+    api.get<BrabrixSkillHubCategoriesResponse>(
+      `/companies/${encodeURIComponent(companyId)}/skills/providers/brabrix-skillhub/categories`,
+    ),
+  getBrabrixSkillHubSettings: (companyId: string) =>
+    api.get<BrabrixSkillHubSettings>(
+      `/companies/${encodeURIComponent(companyId)}/skills/providers/brabrix-skillhub/settings`,
+    ),
+  updateBrabrixSkillHubSettings: (companyId: string, payload: BrabrixSkillHubSettingsUpdateRequest) =>
+    api.patch<BrabrixSkillHubSettings>(
+      `/companies/${encodeURIComponent(companyId)}/skills/providers/brabrix-skillhub/settings`,
+      payload,
+    ),
+  getBrabrixSkillHubFeatured: (companyId: string, limit: number = 12) =>
+    api.get<BrabrixSkillHubFeaturedResponse>(
+      `/companies/${encodeURIComponent(companyId)}/skills/providers/brabrix-skillhub/featured?limit=${encodeURIComponent(String(limit))}`,
     ),
   scanProjects: (companyId: string, payload: CompanySkillProjectScanRequest = {}) =>
     api.post<CompanySkillProjectScanResult>(

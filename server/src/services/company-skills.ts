@@ -8,14 +8,23 @@ import { companies, companySkills } from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import type {
+  BrabrixSkillHubCategoriesResponse,
+  BrabrixSkillHubFeaturedResponse,
+  BrabrixSkillHubSettings,
+  BrabrixSkillHubSettingsUpdateRequest,
+  BrabrixSkillHubSearchRequest,
+  BrabrixSkillHubSearchResponse,
+  BrabrixSkillHubSkillSummary,
   CompanySkill,
   CompanySkillCreateRequest,
   CompanySkillCompatibility,
   CompanySkillDetail,
   CompanySkillFileDetail,
   CompanySkillFileInventoryEntry,
+  CompanySkillImportProvider,
   CompanySkillImportResult,
   CompanySkillListItem,
+  CompanySkillProviderEntry,
   CompanySkillProjectScanConflict,
   CompanySkillProjectScanRequest,
   CompanySkillProjectScanResult,
@@ -29,9 +38,14 @@ import type {
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
+import { getBrabrixSkillHubConfig } from "../integrations/brabrix-skillhub/brabrix-skillhub-client.js";
+import { BrabrixSkillHubProvider } from "../integrations/brabrix-skillhub/brabrix-skillhub-provider.js";
+import type { BrabrixSkillHubSkill } from "../integrations/brabrix-skillhub/brabrix-skillhub-types.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
+import { secretService } from "./secrets.js";
 
 type CompanySkillRow = typeof companySkills.$inferSelect;
 type CompanySkillListDbRow = Pick<
@@ -101,6 +115,12 @@ type ImportedSkill = {
   metadata: Record<string, unknown> | null;
 };
 
+type CompanySkillImportInput = {
+  source?: string | null;
+  provider?: CompanySkillImportProvider | null;
+  skillId?: string | null;
+};
+
 type PackageSkillConflictStrategy = "replace" | "rename" | "skip";
 
 export type ImportPackageSkillResult = {
@@ -128,6 +148,7 @@ type SkillSourceMeta = {
   ref?: string;
   trackingRef?: string;
   repoSkillDir?: string;
+  brabrixSkillId?: string;
   projectId?: string;
   projectName?: string;
   workspaceId?: string;
@@ -215,6 +236,9 @@ const PROJECT_ROOT_SKILL_SUBDIRECTORIES = [
   "assets",
 ] as const;
 
+const BRABRIX_SKILLHUB_SETTINGS_TARGET_ID = "brabrix-skillhub";
+const BRABRIX_SKILLHUB_API_KEY_CONFIG_PATH = "auth.apiKey";
+
 function asString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -275,6 +299,107 @@ export function normalizeGitHubSkillDirectory(
 
 function hashSkillValue(value: string) {
   return createHash("sha256").update(value).digest("hex").slice(0, 10);
+}
+
+function estimateBrabrixSkillHubContextSize(skill: BrabrixSkillHubSkill): number {
+  const head = [skill.name, skill.summary ?? "", skill.description ?? ""].join(" ").length;
+  const blocks = skill.contentBlocks.reduce((acc, block) => acc + (block.title?.length ?? 0) + block.content.length, 0);
+  return head + blocks;
+}
+
+function toBrabrixSkillHubSummary(skill: BrabrixSkillHubSkill): BrabrixSkillHubSkillSummary {
+  return {
+    id: skill.id,
+    slug: skill.slug,
+    name: skill.name,
+    summary: skill.summary ?? null,
+    description: skill.description ?? null,
+    category: skill.category ?? null,
+    tags: [...skill.tags],
+    featured: skill.featured,
+    version: skill.version ?? null,
+    updatedAt: skill.updatedAt ?? null,
+    contextSizeChars: estimateBrabrixSkillHubContextSize(skill),
+  };
+}
+
+function buildBrabrixSkillHubMarkdown(skill: BrabrixSkillHubSkill): string {
+  const sectionChunks: string[] = [];
+  for (const block of skill.contentBlocks) {
+    const title = block.title?.trim();
+    const heading = title ? `## ${title}` : `## ${block.type}`;
+    sectionChunks.push([heading, "", block.content.trim()].join("\n"));
+  }
+
+  const metadataLines = [
+    `name: ${skill.name}`,
+    `slug: ${skill.slug}`,
+    ...(skill.summary ? [`description: ${skill.summary.replace(/\n/g, " ").trim()}`] : []),
+    "metadata:",
+    "  sourceKind: brabrix_skillhub",
+    `  brabrixSkillId: ${skill.id}`,
+    `  featured: ${skill.featured ? "true" : "false"}`,
+    ...(skill.category ? [`  category: ${skill.category}`] : []),
+    ...(skill.version ? [`  version: ${skill.version}`] : []),
+    ...(skill.updatedAt ? [`  updatedAt: ${skill.updatedAt}`] : []),
+    ...(skill.author ? [`  author: ${skill.author}`] : []),
+    ...(skill.tags.length > 0
+      ? [
+        "  tags:",
+        ...skill.tags.map((tag) => `    - ${tag}`),
+      ]
+      : []),
+  ];
+
+  const body = [
+    `# ${skill.name}`,
+    "",
+    ...(skill.summary ? [skill.summary, ""] : []),
+    ...(skill.description ? [skill.description, ""] : []),
+    ...sectionChunks,
+  ];
+  return [
+    "---",
+    ...metadataLines,
+    "---",
+    "",
+    ...body,
+  ].join("\n").trimEnd();
+}
+
+function toImportedSkillFromBrabrixSkillHub(companyId: string, skill: BrabrixSkillHubSkill): ImportedSkill {
+  const slug = normalizeSkillSlug(skill.slug) ?? normalizeSkillSlug(skill.name) ?? "brabrix-skill";
+  const markdown = buildBrabrixSkillHubMarkdown(skill);
+  const metadata: Record<string, unknown> = {
+    sourceKind: "brabrix_skillhub",
+    brabrixSkillId: skill.id,
+    category: skill.category ?? null,
+    tags: [...skill.tags],
+    featured: skill.featured,
+    version: skill.version ?? null,
+    updatedAt: skill.updatedAt ?? null,
+    author: skill.author ?? null,
+  };
+  const inventory: CompanySkillFileInventoryEntry[] = [{ path: "SKILL.md", kind: "skill" }];
+  return {
+    key: deriveCanonicalSkillKey(companyId, {
+      slug,
+      sourceType: "brabrix_skillhub",
+      sourceLocator: skill.id,
+      metadata,
+    }),
+    slug,
+    name: skill.name,
+    description: skill.summary ?? skill.description ?? null,
+    markdown,
+    sourceType: "brabrix_skillhub",
+    sourceLocator: skill.id,
+    sourceRef: skill.version ?? null,
+    trustLevel: deriveTrustLevel(inventory),
+    compatibility: "compatible",
+    fileInventory: inventory,
+    metadata,
+  };
 }
 
 function uniqueSkillSlug(baseSlug: string, usedSlugs: Set<string>) {
@@ -352,6 +477,18 @@ function deriveCanonicalSkillKey(
         return `url/unknown/${hashSkillValue(locator)}/${slug}`;
       }
     }
+  }
+
+  if (input.sourceType === "brabrix_skillhub" || sourceKind === "brabrix_skillhub") {
+    const skillId = normalizeSkillSlug(asString(metadata?.brabrixSkillId));
+    if (skillId) {
+      return `brabrix/skillhub/${skillId}/${slug}`;
+    }
+    const locator = asString(input.sourceLocator);
+    if (locator) {
+      return `brabrix/skillhub/${hashSkillValue(locator)}/${slug}`;
+    }
+    return `brabrix/skillhub/${slug}`;
   }
 
   if (input.sourceType === "local_path") {
@@ -1463,6 +1600,17 @@ function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
     };
   }
 
+  if (skill.sourceType === "brabrix_skillhub") {
+    const label = asString(metadata.brabrixSkillId) ?? skill.sourceLocator ?? "Brabrix SkillHub";
+    return {
+      editable: false,
+      editableReason: "Brabrix SkillHub skills are read-only. Import locally to edit them.",
+      sourceLabel: label,
+      sourceBadge: "brabrix",
+      sourcePath: null,
+    };
+  }
+
   if (skill.sourceType === "url") {
     return {
       editable: false,
@@ -1548,6 +1696,9 @@ function toCompanySkillListItem(skill: CompanySkillListRow, attachedAgentCount: 
 export function companySkillService(db: Db) {
   const agents = agentService(db);
   const projects = projectService(db);
+  const secrets = secretService(db);
+  const baseBrabrixSkillHubConfig = getBrabrixSkillHubConfig();
+  const log = logger.child({ service: "company-skills" });
 
   async function ensureBundledSkills(companyId: string) {
     for (const skillsRoot of resolveBundledSkillsRoot()) {
@@ -1812,7 +1963,7 @@ export function companySkillService(db: Db) {
       }
       const repoPath = normalizePortablePath(path.posix.join(repoSkillDir, normalizedPath));
       content = await fetchText(resolveRawGitHubUrl(hostname, owner, repo, ref, repoPath));
-    } else if (skill.sourceType === "url") {
+    } else if (skill.sourceType === "url" || skill.sourceType === "brabrix_skillhub") {
       if (normalizedPath !== "SKILL.md") {
         throw notFound("This skill source only exposes SKILL.md");
       }
@@ -2375,6 +2526,213 @@ export function companySkillService(db: Db) {
     return out;
   }
 
+  async function readBrabrixSkillHubApiKeySecretId(companyId: string): Promise<string | null> {
+    const bindings = await secrets.listBindings(companyId);
+    const binding = bindings.find((entry) =>
+      entry.targetType === "system"
+      && entry.targetId === BRABRIX_SKILLHUB_SETTINGS_TARGET_ID
+      && entry.configPath === BRABRIX_SKILLHUB_API_KEY_CONFIG_PATH);
+    return binding?.secretId ?? null;
+  }
+
+  async function getBrabrixSkillHubSettings(companyId: string): Promise<BrabrixSkillHubSettings> {
+    const apiKeySecretId = await readBrabrixSkillHubApiKeySecretId(companyId);
+    return {
+      provider: "brabrix_skillhub",
+      apiKeySecretId,
+      credentialSource: apiKeySecretId
+        ? "settings"
+        : baseBrabrixSkillHubConfig.apiKey
+          ? "env"
+          : "none",
+    };
+  }
+
+  async function updateBrabrixSkillHubSettings(
+    companyId: string,
+    patch: BrabrixSkillHubSettingsUpdateRequest,
+  ): Promise<BrabrixSkillHubSettings> {
+    if (patch.apiKeySecretId !== undefined) {
+      const refs = patch.apiKeySecretId
+        ? [{
+          secretId: patch.apiKeySecretId,
+          configPath: BRABRIX_SKILLHUB_API_KEY_CONFIG_PATH,
+          versionSelector: "latest" as const,
+          required: true,
+          label: "Brabrix SkillHub API key",
+        }]
+        : [];
+      await secrets.syncSecretRefsForTarget(
+        companyId,
+        {
+          targetType: "system",
+          targetId: BRABRIX_SKILLHUB_SETTINGS_TARGET_ID,
+        },
+        refs,
+      );
+    }
+    return getBrabrixSkillHubSettings(companyId);
+  }
+
+  async function createBrabrixSkillHubProvider(companyId: string): Promise<BrabrixSkillHubProvider> {
+    const apiKeySecretId = await readBrabrixSkillHubApiKeySecretId(companyId);
+    if (!apiKeySecretId) {
+      return new BrabrixSkillHubProvider({ config: baseBrabrixSkillHubConfig });
+    }
+
+    const apiKey = await secrets.resolveSecretValue(
+      companyId,
+      apiKeySecretId,
+      "latest",
+      {
+        consumerType: "system",
+        consumerId: BRABRIX_SKILLHUB_SETTINGS_TARGET_ID,
+        actorType: "system",
+        actorId: null,
+        configPath: BRABRIX_SKILLHUB_API_KEY_CONFIG_PATH,
+      },
+    );
+
+    return new BrabrixSkillHubProvider({
+      config: {
+        ...baseBrabrixSkillHubConfig,
+        apiKey,
+      },
+    });
+  }
+
+  function listImportProviders(): CompanySkillProviderEntry[] {
+    const brabrixSkillHub = new BrabrixSkillHubProvider({ config: baseBrabrixSkillHubConfig });
+    return [
+      { key: "github", label: "GitHub", enabled: true },
+      { key: "skills_sh", label: "skills.sh", enabled: true },
+      { key: "brabrix_skillhub", label: "Brabrix SkillHub", enabled: brabrixSkillHub.isEnabled() },
+    ];
+  }
+
+  function remapBrabrixSkillHubError(error: unknown, operation: string): never {
+    const status = typeof error === "object" && error !== null && "status" in error
+      ? Number((error as { status?: unknown }).status)
+      : null;
+
+    if (status === 401 || status === 403) {
+      throw unprocessable(
+        `Brabrix SkillHub request was denied (${status}) during ${operation}. Verify SkillHub endpoint configuration and set the Brabrix API key in Company Settings.`,
+      );
+    }
+
+    throw error;
+  }
+
+  async function searchSkills(companyId: string, input: BrabrixSkillHubSearchRequest): Promise<BrabrixSkillHubSearchResponse> {
+    const brabrixSkillHub = await createBrabrixSkillHubProvider(companyId);
+    try {
+      const skills = await brabrixSkillHub.searchSkills({
+        query: input.q ?? null,
+        category: input.category ?? null,
+        tags: input.tags ?? [],
+        limit: input.limit ?? 20,
+        offset: input.offset ?? 0,
+      });
+      return {
+        provider: "brabrix_skillhub",
+        skills: skills.map(toBrabrixSkillHubSummary),
+        total: skills.length,
+      };
+    } catch (error) {
+      remapBrabrixSkillHubError(error, "search");
+    }
+  }
+
+  async function getSkillById(companyId: string, skillId: string): Promise<BrabrixSkillHubSkillSummary | null> {
+    const brabrixSkillHub = await createBrabrixSkillHubProvider(companyId);
+    try {
+      const skill = await brabrixSkillHub.getSkillById(skillId);
+      if (!skill) return null;
+      return toBrabrixSkillHubSummary(skill);
+    } catch (error) {
+      remapBrabrixSkillHubError(error, "get-skill");
+    }
+  }
+
+  async function getSkillCategories(companyId: string): Promise<BrabrixSkillHubCategoriesResponse> {
+    const brabrixSkillHub = await createBrabrixSkillHubProvider(companyId);
+    try {
+      const categories = await brabrixSkillHub.getSkillCategories();
+      return {
+        provider: "brabrix_skillhub",
+        categories: categories.map((category) => ({
+          key: category.key,
+          label: category.label,
+          description: category.description ?? null,
+        })),
+      };
+    } catch (error) {
+      remapBrabrixSkillHubError(error, "list-categories");
+    }
+  }
+
+  async function getFeaturedSkills(companyId: string, limit = 12): Promise<BrabrixSkillHubFeaturedResponse> {
+    const brabrixSkillHub = await createBrabrixSkillHubProvider(companyId);
+    try {
+      const featured = await brabrixSkillHub.getFeaturedSkills(limit);
+      return {
+        provider: "brabrix_skillhub",
+        skills: featured.map(toBrabrixSkillHubSummary),
+      };
+    } catch (error) {
+      remapBrabrixSkillHubError(error, "list-featured");
+    }
+  }
+
+  async function importFromProvider(companyId: string, input: CompanySkillImportInput): Promise<CompanySkillImportResult> {
+    const provider = input.provider ?? "github";
+    if (provider !== "brabrix_skillhub") {
+      const source = input.source?.trim();
+      if (!source) {
+        throw unprocessable("source is required for this provider.");
+      }
+      return importFromSource(companyId, source);
+    }
+
+    const brabrixSkillHub = await createBrabrixSkillHubProvider(companyId);
+    if (!brabrixSkillHub.isEnabled()) {
+      throw unprocessable("Brabrix SkillHub provider is disabled. Set BRABRIX_SKILLHUB_ENABLED=true and BRABRIX_SKILLHUB_API_URL.");
+    }
+
+    const skillId = input.skillId?.trim() || input.source?.trim() || "";
+    if (!skillId) {
+      throw unprocessable("skillId is required when provider=brabrix_skillhub.");
+    }
+
+    let skill: BrabrixSkillHubSkill | null;
+    try {
+      skill = await brabrixSkillHub.importSkill(skillId);
+    } catch (error) {
+      remapBrabrixSkillHubError(error, "import");
+    }
+    if (!skill) {
+      throw notFound(`Brabrix SkillHub skill not found: ${skillId}`);
+    }
+
+    const imported = await upsertImportedSkills(companyId, [toImportedSkillFromBrabrixSkillHub(companyId, skill)]);
+    const contextSize = estimateBrabrixSkillHubContextSize(skill);
+    log.info({
+      provider: "brabrix_skillhub",
+      companyId,
+      skillId: skill.id,
+      slug: skill.slug,
+      category: skill.category ?? null,
+      tags: skill.tags,
+      contextSizeChars: contextSize,
+    }, "skill imported from provider");
+
+    return {
+      imported,
+      warnings: [],
+    };
+  }
+
   async function importFromSource(companyId: string, source: string): Promise<CompanySkillImportResult> {
     await ensureSkillInventoryCurrent(companyId);
     const parsed = parseSkillImportSourceInput(source);
@@ -2412,6 +2770,15 @@ export function companySkillService(db: Db) {
       }
     }
     const imported = await upsertImportedSkills(companyId, filteredSkills);
+    log.info({
+      provider: parsed.originalSkillsShUrl ? "skills_sh" : /^https?:\/\//i.test(parsed.resolvedSource) ? "github_or_url" : "local_path",
+      companyId,
+      source: parsed.resolvedSource,
+      requestedSkillSlug: parsed.requestedSkillSlug,
+      importedCount: imported.length,
+      warningCount: warnings.length,
+      contextSizeChars: imported.reduce((total, item) => total + item.markdown.length, 0),
+    }, "skills imported from source");
     return { imported, warnings };
   }
 
@@ -2469,6 +2836,14 @@ export function companySkillService(db: Db) {
     updateFile,
     createLocalSkill,
     deleteSkill,
+    listImportProviders,
+    getBrabrixSkillHubSettings,
+    updateBrabrixSkillHubSettings,
+    searchSkills,
+    getSkillById,
+    getSkillCategories,
+    getFeaturedSkills,
+    importFromProvider,
     importFromSource,
     scanProjectWorkspaces,
     importPackageFiles,

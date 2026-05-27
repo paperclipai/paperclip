@@ -58,6 +58,7 @@ export {
 } from "./resource-memberships.js";
 export {
   companySkillSourceTypeSchema,
+  companySkillImportProviderSchema,
   companySkillTrustLevelSchema,
   companySkillCompatibilitySchema,
   companySkillSourceBadgeSchema,
@@ -68,6 +69,17 @@ export {
   companySkillDetailSchema,
   companySkillUpdateStatusSchema,
   companySkillImportSchema,
+  companySkillProviderEntrySchema,
+  brabrixSkillHubSkillSummarySchema,
+  brabrixSkillHubCategorySummarySchema,
+  brabrixSkillHubSearchQuerySchema,
+  brabrixSkillHubSearchResponseSchema,
+  brabrixSkillHubFeaturedResponseSchema,
+  brabrixSkillHubCategoriesResponseSchema,
+  brabrixSkillHubSettingsSchema,
+  brabrixSkillHubSettingsUpdateSchema,
+  brabrixAgentSyncSettingsSchema,
+  brabrixAgentSyncSettingsUpdateSchema,
   companySkillProjectScanRequestSchema,
   companySkillProjectScanSkippedSchema,
   companySkillProjectScanConflictSchema,
@@ -79,6 +91,9 @@ export {
   type CompanySkillProjectScan,
   type CompanySkillCreate,
   type CompanySkillFileUpdate,
+  type BrabrixSkillHubSearchQuery,
+  type BrabrixSkillHubSettingsUpdate,
+  type BrabrixAgentSyncSettingsUpdate,
 } from "./company-skill.js";
 export {
   agentSkillStateSchema,

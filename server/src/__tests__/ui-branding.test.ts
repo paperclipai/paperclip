@@ -60,6 +60,8 @@ describe("ui branding", () => {
         PAPERCLIP_WORKTREE_COLOR: "#4f86f7",
       }),
     );
+    expect(meta).toContain('name="paperclip-app-name"');
+    expect(meta).toContain('content="Brabrix Agent"');
     expect(meta).toContain('name="paperclip-worktree-name"');
     expect(meta).toContain('content="paperclip-pr-432"');
     expect(meta).toContain('name="paperclip-worktree-color"');
@@ -77,6 +79,15 @@ describe("ui branding", () => {
 
     const defaultHtml = applyUiBranding(TEMPLATE, {});
     expect(defaultHtml).toContain('href="/favicon.svg"');
+    expect(defaultHtml).toContain('name="paperclip-app-name"');
     expect(defaultHtml).not.toContain('name="paperclip-worktree-name"');
+  });
+
+  it("uses PAPERCLIP_PUBLIC_APP_NAME when provided", () => {
+    const html = applyUiBranding(TEMPLATE, {
+      PAPERCLIP_PUBLIC_APP_NAME: "Acme Runtime",
+    });
+    expect(html).toContain('name="paperclip-app-name"');
+    expect(html).toContain('content="Acme Runtime"');
   });
 });

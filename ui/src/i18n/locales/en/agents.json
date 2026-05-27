@@ -1,0 +1,8 @@
+{
+  "toasts": {
+    "paused": "Agent paused",
+    "resumed": "Agent resumed",
+    "couldNotPause": "Could not pause agent",
+    "couldNotResume": "Could not resume agent"
+  }
+}

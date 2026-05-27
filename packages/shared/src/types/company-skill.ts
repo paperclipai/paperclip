@@ -1,10 +1,18 @@
-export type CompanySkillSourceType = "local_path" | "github" | "url" | "catalog" | "skills_sh";
+export type CompanySkillSourceType =
+  | "local_path"
+  | "github"
+  | "url"
+  | "catalog"
+  | "skills_sh"
+  | "brabrix_skillhub";
+
+export type CompanySkillImportProvider = "github" | "skills_sh" | "brabrix_skillhub";
 
 export type CompanySkillTrustLevel = "markdown_only" | "assets" | "scripts_executables";
 
 export type CompanySkillCompatibility = "compatible" | "unknown" | "invalid";
 
-export type CompanySkillSourceBadge = "paperclip" | "github" | "local" | "url" | "catalog" | "skills_sh";
+export type CompanySkillSourceBadge = "paperclip" | "github" | "local" | "url" | "catalog" | "skills_sh" | "brabrix";
 
 export interface CompanySkillFileInventoryEntry {
   path: string;
@@ -87,12 +95,93 @@ export interface CompanySkillUpdateStatus {
 }
 
 export interface CompanySkillImportRequest {
-  source: string;
+  source?: string;
+  provider?: CompanySkillImportProvider;
+  skillId?: string;
 }
 
 export interface CompanySkillImportResult {
   imported: CompanySkill[];
   warnings: string[];
+}
+
+export interface CompanySkillProviderEntry {
+  key: CompanySkillImportProvider;
+  label: string;
+  enabled: boolean;
+}
+
+export interface BrabrixSkillHubSkillSummary {
+  id: string;
+  slug: string;
+  name: string;
+  summary: string | null;
+  description: string | null;
+  category: string | null;
+  tags: string[];
+  featured: boolean;
+  version: string | null;
+  updatedAt: string | null;
+  contextSizeChars: number;
+}
+
+export interface BrabrixSkillHubCategorySummary {
+  key: string;
+  label: string;
+  description: string | null;
+}
+
+export interface BrabrixSkillHubSearchRequest {
+  q?: string | null;
+  category?: string | null;
+  tags?: string[];
+  limit?: number;
+  offset?: number;
+}
+
+export interface BrabrixSkillHubSearchResponse {
+  provider: "brabrix_skillhub";
+  skills: BrabrixSkillHubSkillSummary[];
+  total: number | null;
+}
+
+export interface BrabrixSkillHubFeaturedResponse {
+  provider: "brabrix_skillhub";
+  skills: BrabrixSkillHubSkillSummary[];
+}
+
+export interface BrabrixSkillHubCategoriesResponse {
+  provider: "brabrix_skillhub";
+  categories: BrabrixSkillHubCategorySummary[];
+}
+
+export interface BrabrixSkillHubSettings {
+  provider: "brabrix_skillhub";
+  apiKeySecretId: string | null;
+  credentialSource: "settings" | "env" | "none";
+}
+
+export interface BrabrixSkillHubSettingsUpdateRequest {
+  apiKeySecretId?: string | null;
+}
+
+export interface BrabrixAgentSyncSettings {
+  provider: "brabrix_agent_sync";
+  agentTokenSecretId: string | null;
+  projectIdSecretId: string | null;
+  tenantIdSecretId: string | null;
+  credentialSource: {
+    agentToken: "settings" | "env" | "none";
+    projectId: "settings" | "env" | "none";
+    tenantId: "settings" | "env" | "none";
+  };
+  enabled: boolean;
+}
+
+export interface BrabrixAgentSyncSettingsUpdateRequest {
+  agentTokenSecretId?: string | null;
+  projectIdSecretId?: string | null;
+  tenantIdSecretId?: string | null;
 }
 
 export interface CompanySkillProjectScanRequest {

@@ -12,6 +12,8 @@ export class ApiError extends Error {
   }
 }
 
+type RequestOptions = Omit<RequestInit, "body" | "method">;
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers ?? undefined);
   const body = init?.body;
@@ -37,14 +39,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
-  post: <T>(path: string, body: unknown) =>
-    request<T>(path, { method: "POST", body: JSON.stringify(body) }),
+  get: <T>(path: string, options?: RequestOptions) =>
+    request<T>(path, options),
+  post: <T>(path: string, body: unknown, options?: RequestOptions) =>
+    request<T>(path, { ...options, method: "POST", body: JSON.stringify(body) }),
   postForm: <T>(path: string, body: FormData) =>
     request<T>(path, { method: "POST", body }),
-  put: <T>(path: string, body: unknown) =>
-    request<T>(path, { method: "PUT", body: JSON.stringify(body) }),
-  patch: <T>(path: string, body: unknown) =>
-    request<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
-  delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+  put: <T>(path: string, body: unknown, options?: RequestOptions) =>
+    request<T>(path, { ...options, method: "PUT", body: JSON.stringify(body) }),
+  patch: <T>(path: string, body: unknown, options?: RequestOptions) =>
+    request<T>(path, { ...options, method: "PATCH", body: JSON.stringify(body) }),
+  delete: <T>(path: string, options?: RequestOptions) =>
+    request<T>(path, { ...options, method: "DELETE" }),
 };

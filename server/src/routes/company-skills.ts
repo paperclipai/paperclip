@@ -1,6 +1,9 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
+  brabrixSkillHubSearchQuerySchema,
+  brabrixSkillHubSettingsUpdateSchema,
+  type CompanySkillImportProvider,
   companySkillCreateSchema,
   companySkillFileUpdateSchema,
   companySkillImportSchema,
@@ -85,6 +88,93 @@ export function companySkillRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const result = await svc.list(companyId);
+    res.json(result);
+  });
+
+  // Keep static provider routes before dynamic :skillId routes to avoid path shadowing.
+  router.get("/companies/:companyId/skills/providers", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.listImportProviders();
+    res.json(result);
+  });
+
+  router.get("/companies/:companyId/skills/providers/brabrix-skillhub/search", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const parsed = brabrixSkillHubSearchQuerySchema.parse({
+      q: typeof req.query.q === "string" ? req.query.q : undefined,
+      category: typeof req.query.category === "string" ? req.query.category : undefined,
+      tags: typeof req.query.tags === "string"
+        ? req.query.tags.split(",").map((tag) => tag.trim()).filter((tag) => tag.length > 0)
+        : undefined,
+      limit: typeof req.query.limit === "string" ? Number.parseInt(req.query.limit, 10) : undefined,
+      offset: typeof req.query.offset === "string" ? Number.parseInt(req.query.offset, 10) : undefined,
+    });
+    const result = await svc.searchSkills(companyId, parsed);
+    res.json(result);
+  });
+
+  router.get("/companies/:companyId/skills/providers/brabrix-skillhub/settings", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.getBrabrixSkillHubSettings(companyId);
+    res.json(result);
+  });
+
+  router.patch(
+    "/companies/:companyId/skills/providers/brabrix-skillhub/settings",
+    validate(brabrixSkillHubSettingsUpdateSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const result = await svc.updateBrabrixSkillHubSettings(companyId, req.body);
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.brabrix_skillhub_settings_updated",
+        entityType: "company",
+        entityId: companyId,
+        details: {
+          provider: result.provider,
+          apiKeySecretId: result.apiKeySecretId,
+          credentialSource: result.credentialSource,
+        },
+      });
+
+      res.json(result);
+    },
+  );
+
+  router.get("/companies/:companyId/skills/providers/brabrix-skillhub/categories", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.getSkillCategories(companyId);
+    res.json(result);
+  });
+
+  router.get("/companies/:companyId/skills/providers/brabrix-skillhub/featured", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const limit = typeof req.query.limit === "string" ? Number.parseInt(req.query.limit, 10) : undefined;
+    const result = await svc.getFeaturedSkills(companyId, Number.isFinite(limit) ? limit : 12);
+    res.json(result);
+  });
+
+  router.get("/companies/:companyId/skills/providers/brabrix-skillhub/:skillId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.getSkillById(companyId, skillId);
+    if (!result) {
+      res.status(404).json({ error: "Skill not found" });
+      return;
+    }
     res.json(result);
   });
 
@@ -193,8 +283,14 @@ export function companySkillRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCanMutateCompanySkills(req, companyId);
-      const source = String(req.body.source ?? "");
-      const result = await svc.importFromSource(companyId, source);
+      const source = typeof req.body.source === "string" ? req.body.source : "";
+      const provider = typeof req.body.provider === "string"
+        ? req.body.provider as CompanySkillImportProvider
+        : undefined;
+      const skillId = typeof req.body.skillId === "string" ? req.body.skillId : undefined;
+      const result = provider
+        ? await svc.importFromProvider(companyId, { provider, source, skillId })
+        : await svc.importFromSource(companyId, source);
 
       const actor = getActorInfo(req);
       await logActivity(db, {
@@ -208,6 +304,8 @@ export function companySkillRoutes(db: Db) {
         entityId: companyId,
         details: {
           source,
+          provider: provider ?? null,
+          skillId: skillId ?? null,
           importedCount: result.imported.length,
           importedSlugs: result.imported.map((skill) => skill.slug),
           warningCount: result.warnings.length,

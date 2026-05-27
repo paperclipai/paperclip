@@ -1,0 +1,72 @@
+{
+  "app": {
+    "noCompanies": {
+      "title": "Crie sua primeira empresa",
+      "description": "Comece criando uma empresa.",
+      "newCompany": "Nova empresa"
+    }
+  },
+  "states": {
+    "loading": "Carregando..."
+  },
+  "actions": {
+    "cancel": "Cancelar",
+    "save": "Salvar",
+    "remove": "Remover",
+    "change": "Alterar",
+    "upload": "Enviar",
+    "create": "Criar"
+  },
+  "language": {
+    "label": "Idioma",
+    "description": "Escolha o idioma da interface para seu workspace.",
+    "active": "Idioma atual: {{language}}",
+    "options": {
+      "en": "English",
+      "pt-BR": "Português (Brasil)"
+    }
+  },
+  "navigation": {
+    "skipToMainContent": "Ir para o conteúdo principal",
+    "openSidebar": "Abrir barra lateral",
+    "closeSidebar": "Fechar barra lateral"
+  },
+  "breadcrumbs": {
+    "dashboard": "Dashboard",
+    "issues": "Tarefas",
+    "goals": "Objetivos",
+    "agents": "Agentes",
+    "projects": "Projetos",
+    "workspaces": "Workspaces",
+    "settings": "Configurações",
+    "instanceSettings": "Configurações da instância",
+    "companySettings": "Configurações da empresa",
+    "profile": "Perfil",
+    "skills": "Skills",
+    "detail": "Detalhe",
+    "costs": "Custos",
+    "activity": "Atividade",
+    "inbox": "Inbox",
+    "routines": "Rotinas",
+    "approvals": "Aprovações",
+    "search": "Buscar",
+    "general": "Geral",
+    "access": "Acesso",
+    "heartbeats": "Heartbeats",
+    "experimental": "Experimental",
+    "plugins": "Plugins",
+    "adapters": "Adaptadores",
+    "members": "Membros",
+    "invites": "Convites",
+    "secrets": "Segredos",
+    "environments": "Ambientes",
+    "cloudUpstream": "Cloud upstream",
+    "orgChart": "Organograma",
+    "companies": "Empresas",
+    "newAgent": "Novo agente",
+    "liveRuns": "Execuções ao vivo",
+    "joinRequests": "Solicitações de entrada",
+    "users": "Usuários",
+    "notFound": "Não encontrado"
+  }
+}

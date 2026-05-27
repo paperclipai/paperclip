@@ -13,6 +13,14 @@ const mockAccessService = vi.hoisted(() => ({
 
 const mockCompanySkillService = vi.hoisted(() => ({
   importFromSource: vi.fn(),
+  importFromProvider: vi.fn(),
+  listImportProviders: vi.fn(),
+  searchSkills: vi.fn(),
+  getSkillById: vi.fn(),
+  getSkillCategories: vi.fn(),
+  getFeaturedSkills: vi.fn(),
+  getBrabrixSkillHubSettings: vi.fn(),
+  updateBrabrixSkillHubSettings: vi.fn(),
   deleteSkill: vi.fn(),
 }));
 
@@ -92,6 +100,39 @@ describe("company skill mutation permissions", () => {
       imported: [],
       warnings: [],
     });
+    mockCompanySkillService.importFromProvider.mockResolvedValue({
+      imported: [],
+      warnings: [],
+    });
+    mockCompanySkillService.listImportProviders.mockResolvedValue([
+      { key: "github", label: "GitHub", enabled: true },
+      { key: "skills_sh", label: "skills.sh", enabled: true },
+      { key: "brabrix_skillhub", label: "Brabrix SkillHub", enabled: false },
+    ]);
+    mockCompanySkillService.searchSkills.mockResolvedValue({
+      provider: "brabrix_skillhub",
+      skills: [],
+      total: 0,
+    });
+    mockCompanySkillService.getSkillById.mockResolvedValue(null);
+    mockCompanySkillService.getSkillCategories.mockResolvedValue({
+      provider: "brabrix_skillhub",
+      categories: [],
+    });
+    mockCompanySkillService.getFeaturedSkills.mockResolvedValue({
+      provider: "brabrix_skillhub",
+      skills: [],
+    });
+    mockCompanySkillService.getBrabrixSkillHubSettings.mockResolvedValue({
+      provider: "brabrix_skillhub",
+      apiKeySecretId: null,
+      credentialSource: "none",
+    });
+    mockCompanySkillService.updateBrabrixSkillHubSettings.mockResolvedValue({
+      provider: "brabrix_skillhub",
+      apiKeySecretId: "11111111-1111-4111-8111-111111111111",
+      credentialSource: "settings",
+    });
     mockCompanySkillService.deleteSkill.mockResolvedValue({
       id: "skill-1",
       slug: "find-skills",
@@ -117,6 +158,63 @@ describe("company skill mutation permissions", () => {
     expect(res.body).toEqual({
       imported: [],
       warnings: [],
+    });
+  });
+
+  it("lists import providers for a company", async () => {
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .get("/api/companies/company-1/skills/providers");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual([
+      { key: "github", label: "GitHub", enabled: true },
+      { key: "skills_sh", label: "skills.sh", enabled: true },
+      { key: "brabrix_skillhub", label: "Brabrix SkillHub", enabled: false },
+    ]);
+    expect(mockCompanySkillService.listImportProviders).toHaveBeenCalledWith();
+  });
+
+  it("returns Brabrix SkillHub settings for the company", async () => {
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .get("/api/companies/company-1/skills/providers/brabrix-skillhub/settings");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({
+      provider: "brabrix_skillhub",
+      apiKeySecretId: null,
+      credentialSource: "none",
+    });
+    expect(mockCompanySkillService.getBrabrixSkillHubSettings).toHaveBeenCalledWith("company-1");
+  });
+
+  it("updates Brabrix SkillHub settings for local board operators", async () => {
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .patch("/api/companies/company-1/skills/providers/brabrix-skillhub/settings")
+      .send({
+        apiKeySecretId: "11111111-1111-4111-8111-111111111111",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanySkillService.updateBrabrixSkillHubSettings).toHaveBeenCalledWith("company-1", {
+      apiKeySecretId: "11111111-1111-4111-8111-111111111111",
     });
   });
 
@@ -295,6 +393,29 @@ describe("company skill mutation permissions", () => {
       "company-1",
       "https://github.com/vercel-labs/agent-browser",
     );
+  });
+
+  it("routes Brabrix SkillHub imports through importFromProvider", async () => {
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({
+        provider: "brabrix_skillhub",
+        skillId: "skill-backend-patterns",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockCompanySkillService.importFromProvider).toHaveBeenCalledWith("company-1", {
+      provider: "brabrix_skillhub",
+      source: "",
+      skillId: "skill-backend-patterns",
+    });
+    expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalledWith("company-1", "");
   });
 
   it("returns a blocking error when attempting to delete a skill still used by agents", async () => {

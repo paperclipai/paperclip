@@ -1,0 +1,53 @@
+{
+  "pageTitle": "Tarefas",
+  "empty": {
+    "selectCompany": "Selecione uma empresa para ver as tarefas."
+  },
+  "sync": {
+    "button": "Sincronizar tarefas do Brabrix",
+    "syncing": "Sincronizando tarefas...",
+    "errors": {
+      "selectCompany": "Selecione uma empresa antes de sincronizar tarefas do Brabrix.",
+      "noProject": "Nenhum projeto Brabrix foi importado ainda. Use Configurações > Brabrix > Importar projeto primeiro.",
+      "unexpected": "Erro inesperado de integração."
+    },
+    "toasts": {
+      "completedTitle": "Sincronização de tarefas Brabrix concluída",
+      "completedBodyWithWarnings": "{{projectCount}} projeto(s) sincronizado(s), {{issuesUpserted}} tarefa(s) atualizada(s), com {{warningsCount}} aviso(s).",
+      "completedBody": "{{projectCount}} projeto(s) sincronizado(s), {{issuesUpserted}} tarefa(s) e {{goalsUpserted}} objetivo(s) atualizados.",
+      "failedTitle": "Falha ao sincronizar tarefas do Brabrix"
+    }
+  },
+  "technicalSpec": {
+    "title": "Spec Técnica",
+    "description": "Gere, revise e salve uma spec técnica estruturada sem substituir a descrição original da issue.",
+    "documentTitle": "Spec Técnica",
+    "lastSaved": "Salvo pela última vez {{timeAgo}}",
+    "loading": "Gerando spec técnica com base no contexto atual da issue...",
+    "loadingSaved": "Carregando spec técnica salva...",
+    "empty": "Ainda não existe uma spec técnica. Gere uma para começar com um plano estruturado de implementação.",
+    "editorAriaLabel": "Editor de spec técnica",
+    "unsavedNotice": "Você possui alterações não salvas. Entre em modo de edição e salve para persistir esta spec na issue.",
+    "actions": {
+      "generate": "Gerar spec técnica",
+      "regenerate": "Regenerar spec",
+      "cancelGeneration": "Cancelar geração",
+      "copy": "Copiar spec",
+      "edit": "Editar spec",
+      "cancelEdit": "Cancelar edição",
+      "save": "Salvar spec"
+    },
+    "errors": {
+      "generate": "Falha ao gerar spec técnica. Tente novamente.",
+      "unexpected": "Erro inesperado."
+    },
+    "toasts": {
+      "generatedTitle": "Spec técnica gerada",
+      "generatedErrorTitle": "Falha ao gerar spec técnica",
+      "generationCanceledTitle": "Geração cancelada",
+      "savedTitle": "Spec técnica salva",
+      "savedErrorTitle": "Falha ao salvar spec técnica",
+      "copiedTitle": "Spec técnica copiada"
+    }
+  }
+}

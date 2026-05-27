@@ -66,6 +66,7 @@ import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
+import { IssueTechnicalSpecSection } from "../components/IssueTechnicalSpecSection";
 import { IssueSiblingNavigation } from "../components/IssueSiblingNavigation";
 import { IssuesList } from "../components/IssuesList";
 import { AgentIcon } from "../components/AgentIconPicker";
@@ -3712,6 +3713,8 @@ export function IssueDetail() {
           </Button>
         </div>
       )}
+
+      <IssueTechnicalSpecSection issue={issue} />
 
       <IssueDocumentsSection
         issue={issue}

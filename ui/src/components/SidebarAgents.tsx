@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, NavLink, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "@/i18n";
 import {
   MoreHorizontal,
   Loader2,
@@ -43,12 +44,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { Agent } from "@paperclipai/shared";
-
-const AGENT_SORT_CHOICES: SidebarSectionRadioChoice[] = [
-  { value: "top", label: "Top" },
-  { value: "alphabetical", label: "Alphabetical" },
-  { value: "recent", label: "Recent" },
-];
 
 function agentTimestamp(agent: Agent, field: "lastHeartbeatAt" | "updatedAt" | "createdAt"): number {
   const raw = agent[field];
@@ -102,18 +97,21 @@ function SidebarAgentItem({
   runCount: number;
   setSidebarOpen: (open: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const routeRef = agentRouteRef(agent);
   const href = activeTab ? `${agentUrl(agent)}/${activeTab}` : agentUrl(agent);
   const editHref = `${agentUrl(agent)}/configuration`;
   const isActive = activeAgentId === routeRef;
   const isPaused = agent.status === "paused";
   const isBudgetPaused = isPaused && agent.pauseReason === "budget";
-  const pauseResumeLabel = isPaused ? "Resume agent" : "Pause agent";
+  const pauseResumeLabel = isPaused
+    ? t("agents.resumeAgent", { ns: "sidebar", defaultValue: "Resume agent" })
+    : t("agents.pauseAgent", { ns: "sidebar", defaultValue: "Pause agent" });
   const pauseResumeDisabled = disabled || agent.status === "pending_approval" || isBudgetPaused;
   const pauseResumeDisabledLabel = disabled
-    ? "Updating..."
+    ? t("agents.updating", { ns: "sidebar", defaultValue: "Updating..." })
     : isBudgetPaused
-      ? "Budget paused"
+      ? t("agents.budgetPaused", { ns: "sidebar", defaultValue: "Budget paused" })
       : pauseResumeLabel;
 
   return (
@@ -136,7 +134,12 @@ function SidebarAgentItem({
         {(agent.pauseReason === "budget" || runCount > 0) && (
           <span className="ml-auto flex items-center gap-1.5 shrink-0">
             {agent.pauseReason === "budget" ? (
-              <BudgetSidebarMarker title="Agent paused by budget" />
+              <BudgetSidebarMarker
+                title={t("agents.budgetPausedMarker", {
+                  ns: "sidebar",
+                  defaultValue: "Agent paused by budget",
+                })}
+              />
             ) : null}
             {runCount > 0 ? (
               <span className="relative flex h-2 w-2">
@@ -146,7 +149,11 @@ function SidebarAgentItem({
             ) : null}
             {runCount > 0 ? (
               <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
-                {runCount} live
+                {t("agents.liveCount", {
+                  ns: "sidebar",
+                  count: runCount,
+                  defaultValue: "{{count}} live",
+                })}
               </span>
             ) : null}
           </span>
@@ -164,7 +171,11 @@ function SidebarAgentItem({
                 ? "opacity-100"
                 : "pointer-events-none opacity-0 group-hover/agent:pointer-events-auto group-hover/agent:opacity-100 group-focus-within/agent:pointer-events-auto group-focus-within/agent:opacity-100",
             )}
-            aria-label={`Open actions for ${agent.name}`}
+            aria-label={t("agents.openActions", {
+              ns: "sidebar",
+              agentName: agent.name,
+              defaultValue: `Open actions for ${agent.name}`,
+            })}
           >
             <MoreHorizontal className="h-3.5 w-3.5" />
           </Button>
@@ -176,9 +187,9 @@ function SidebarAgentItem({
               onClick={() => {
                 if (isMobile) setSidebarOpen(false);
               }}
-            >
+              >
               <Pencil className="size-4" />
-              <span>Edit agent</span>
+              <span>{t("agents.editAgent", { ns: "sidebar", defaultValue: "Edit agent" })}</span>
             </Link>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -188,7 +199,12 @@ function SidebarAgentItem({
               onPauseResume(agent, isPaused ? "resume" : "pause");
             }}
             disabled={pauseResumeDisabled}
-            title={isBudgetPaused ? "Agent was paused by budget limits" : undefined}
+            title={isBudgetPaused
+              ? t("agents.pausedByBudgetHint", {
+                  ns: "sidebar",
+                  defaultValue: "Agent was paused by budget limits",
+                })
+              : undefined}
           >
             {isPaused ? <PlayCircle className="size-4" /> : <PauseCircle className="size-4" />}
             <span>{pauseResumeDisabledLabel}</span>
@@ -202,7 +218,11 @@ function SidebarAgentItem({
             disabled={leaving}
           >
             {leaving ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <LogOut className="size-4" />}
-            <span>{leaving ? "Leaving..." : "Leave agent"}</span>
+            <span>
+              {leaving
+                ? t("agents.leaving", { ns: "sidebar", defaultValue: "Leaving..." })
+                : t("agents.leaveAgent", { ns: "sidebar", defaultValue: "Leave agent" })}
+            </span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -211,6 +231,7 @@ function SidebarAgentItem({
 }
 
 export function SidebarAgents() {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(true);
   const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(() => new Set());
   const queryClient = useQueryClient();
@@ -267,6 +288,17 @@ export function SidebarAgents() {
     if (!sortModeStorageKey) return "top";
     return readAgentSortMode(sortModeStorageKey);
   });
+  const agentSortChoices: SidebarSectionRadioChoice[] = useMemo(
+    () => [
+      { value: "top", label: t("agents.sortTop", { ns: "sidebar", defaultValue: "Top" }) },
+      {
+        value: "alphabetical",
+        label: t("agents.sortAlphabetical", { ns: "sidebar", defaultValue: "Alphabetical" }),
+      },
+      { value: "recent", label: t("agents.sortRecent", { ns: "sidebar", defaultValue: "Recent" }) },
+    ],
+    [t],
+  );
   const { orderedAgents } = useAgentOrder({
     agents: visibleAgents,
     companyId: selectedCompanyId,
@@ -347,14 +379,18 @@ export function SidebarAgents() {
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentRouteRef(agent)) }),
       ]);
       pushToast({
-        title: action === "pause" ? "Agent paused" : "Agent resumed",
+        title: action === "pause"
+          ? t("toasts.paused", { ns: "agents", defaultValue: "Agent paused" })
+          : t("toasts.resumed", { ns: "agents", defaultValue: "Agent resumed" }),
         body: agent.name,
         tone: "success",
       });
     },
     onError: (error, { agent, action }) => {
       pushToast({
-        title: action === "pause" ? "Could not pause agent" : "Could not resume agent",
+        title: action === "pause"
+          ? t("toasts.couldNotPause", { ns: "agents", defaultValue: "Could not pause agent" })
+          : t("toasts.couldNotResume", { ns: "agents", defaultValue: "Could not resume agent" }),
         body: error instanceof Error ? error.message : agent.name,
         tone: "error",
       });
@@ -387,21 +423,26 @@ export function SidebarAgents() {
 
   return (
     <SidebarSection
-      label="Agents"
+      label={t("sections.agents", { ns: "sidebar", defaultValue: "Agents" })}
       collapsible={{ open, onOpenChange: setOpen }}
       headerAction={{
-        ariaLabel: "New agent",
+        ariaLabel: t("agents.newAgent", { ns: "sidebar", defaultValue: "New agent" }),
         icon: Plus,
         onClick: openNewAgent,
       }}
       menu={{
-        ariaLabel: "Agents section actions",
+        ariaLabel: t("agents.menuActions", { ns: "sidebar", defaultValue: "Agents section actions" }),
         actions: [
-          { type: "item", label: "Browse agents", icon: Users, href: "/agents/all" },
+          {
+            type: "item",
+            label: t("agents.browse", { ns: "sidebar", defaultValue: "Browse agents" }),
+            icon: Users,
+            href: "/agents/all",
+          },
           { type: "separator" },
         ],
-        radioLabel: "Agent sort",
-        radioChoices: AGENT_SORT_CHOICES,
+        radioLabel: t("agents.sort", { ns: "sidebar", defaultValue: "Agent sort" }),
+        radioChoices: agentSortChoices,
         radioValue: sortMode,
         onRadioValueChange: persistSortMode,
       }}

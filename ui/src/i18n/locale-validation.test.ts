@@ -1,20 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { t } from ".";
-import en from "./locales/en.json";
-import { localeMessages } from "./locales";
+import enCommon from "./locales/en/common.json";
+import { DEFAULT_LOCALE, DEFAULT_NAMESPACE, localeMessages } from "./locales";
 import { validateLocaleMessages } from "./locale-validation";
 
 describe("locale validation", () => {
   it("resolves English messages with key and default fallbacks", () => {
-    expect(t("app.noCompanies.title")).toBe(en.app.noCompanies.title);
+    expect(t("app.noCompanies.title")).toBe(enCommon.app.noCompanies.title);
     expect(t("app.missing", { defaultValue: "Fallback" })).toBe("Fallback");
     expect(t("app.missing")).toBe("app.missing");
   });
 
   it("accepts registered locale files", () => {
     expect(Object.keys(localeMessages)).toContain("en");
-    for (const [locale, messages] of Object.entries(localeMessages)) {
-      expect(validateLocaleMessages(messages), locale).toEqual([]);
+    const englishNamespaces = localeMessages[DEFAULT_LOCALE]!;
+    for (const [locale, namespaces] of Object.entries(localeMessages)) {
+      for (const namespace of Object.keys(englishNamespaces)) {
+        expect(validateLocaleMessages(namespaces[namespace], englishNamespaces[namespace]), `${locale}/${namespace}`).toEqual([]);
+      }
     }
   });
 
@@ -23,12 +26,12 @@ describe("locale validation", () => {
       validateLocaleMessages({
         app: {
           noCompanies: {
-            title: en.app.noCompanies.title,
-            description: en.app.noCompanies.description,
+            title: enCommon.app.noCompanies.title,
+            description: enCommon.app.noCompanies.description,
             unexpected: "Unexpected",
           },
         },
-      }),
+      }, localeMessages[DEFAULT_LOCALE]?.[DEFAULT_NAMESPACE]),
     ).toEqual(
       expect.arrayContaining([
         "app.noCompanies.newCompany is missing",
@@ -42,11 +45,11 @@ describe("locale validation", () => {
       validateLocaleMessages({
         app: {
           noCompanies: {
-            ...en.app.noCompanies,
+            ...enCommon.app.noCompanies,
             title: ["Create your first company"],
           },
         },
-      }),
+      }, localeMessages[DEFAULT_LOCALE]?.[DEFAULT_NAMESPACE]),
     ).toEqual(expect.arrayContaining(["app.noCompanies.title must be a string"]));
   });
 

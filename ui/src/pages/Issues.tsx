@@ -1,18 +1,22 @@
 import { useEffect, useMemo, useCallback, useRef, useState } from "react";
 import { useLocation, useSearchParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "@/i18n";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
+import { brabrixApi } from "../api/brabrix";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToastActions } from "../context/ToastContext";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
-import { CircleDot } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { CircleDot, Link2, Loader2 } from "lucide-react";
 import type { Issue } from "@paperclipai/shared";
 
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
@@ -56,8 +60,10 @@ export function buildIssuesSearchUrl(currentHref: string, search: string): strin
 }
 
 export function Issues() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToastActions();
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
@@ -96,6 +102,14 @@ export function Issues() {
     enabled: !!selectedCompanyId,
   });
 
+  const importedBrabrixProjectsQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.brabrix.importedProjects(selectedCompanyId)
+      : ["brabrix", "__disabled__", "imported-projects"],
+    queryFn: () => brabrixApi.listImportedProjects(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
@@ -108,16 +122,16 @@ export function Issues() {
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Issues",
+        t("pageTitle", { ns: "issues", defaultValue: "Issues" }),
         `${location.pathname}${location.search}${location.hash}`,
         "issues",
       ),
-    [location.pathname, location.search, location.hash],
+    [location.pathname, location.search, location.hash, t],
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Issues" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("pageTitle", { ns: "issues", defaultValue: "Issues" }) }]);
+  }, [setBreadcrumbs, t]);
 
   const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
 
@@ -174,30 +188,140 @@ export function Issues() {
     },
   });
 
+  const syncBrabrixIssues = useMutation({
+    mutationFn: async () => {
+      if (!selectedCompanyId) {
+        throw new Error(t("sync.errors.selectCompany", {
+          ns: "issues",
+          defaultValue: "Select a company before syncing Brabrix issues.",
+        }));
+      }
+
+      const importedProjects = importedBrabrixProjectsQuery.data?.projects
+        ?? (await brabrixApi.listImportedProjects(selectedCompanyId)).projects;
+      const projectIds = Array.from(new Set(
+        importedProjects
+          .map((entry) => entry.brabrixProjectId)
+          .filter((value) => value.trim().length > 0),
+      ));
+      if (projectIds.length === 0) {
+        throw new Error(t("sync.errors.noProject", {
+          ns: "issues",
+          defaultValue: "No Brabrix project imported yet. Use Settings > Brabrix > Import Project first.",
+        }));
+      }
+
+      const results = [];
+      for (const projectId of projectIds) {
+        const result = await brabrixApi.syncProject(selectedCompanyId, projectId);
+        results.push(result);
+      }
+
+      return {
+        projectCount: projectIds.length,
+        issuesUpserted: results.reduce((total, item) => total + item.counts.issuesUpserted, 0),
+        goalsUpserted: results.reduce((total, item) => total + item.counts.goalsUpserted, 0),
+        warnings: results.flatMap((item) => item.warnings),
+      };
+    },
+    onSuccess: async (result) => {
+      if (!selectedCompanyId) return;
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.goals.list(selectedCompanyId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.brabrix.importedProjects(selectedCompanyId) }),
+      ]);
+      pushToast({
+        title: t("sync.toasts.completedTitle", {
+          ns: "issues",
+          defaultValue: "Brabrix issues sync completed",
+        }),
+        body: result.warnings.length > 0
+          ? t("sync.toasts.completedBodyWithWarnings", {
+              ns: "issues",
+              projectCount: result.projectCount,
+              issuesUpserted: result.issuesUpserted,
+              warningsCount: result.warnings.length,
+              defaultValue: `${result.projectCount} project(s) synced, ${result.issuesUpserted} issue(s) updated, with ${result.warnings.length} warning(s).`,
+            })
+          : t("sync.toasts.completedBody", {
+              ns: "issues",
+              projectCount: result.projectCount,
+              issuesUpserted: result.issuesUpserted,
+              goalsUpserted: result.goalsUpserted,
+              defaultValue: `${result.projectCount} project(s) synced, ${result.issuesUpserted} issue(s) and ${result.goalsUpserted} goal(s) updated.`,
+            }),
+        tone: "success",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        title: t("sync.toasts.failedTitle", {
+          ns: "issues",
+          defaultValue: "Failed to sync issues from Brabrix",
+        }),
+        body: error instanceof Error
+          ? error.message
+          : t("sync.errors.unexpected", {
+              ns: "issues",
+              defaultValue: "Unexpected integration error.",
+            }),
+        tone: "error",
+      });
+    },
+  });
+
   if (!selectedCompanyId) {
-    return <EmptyState icon={CircleDot} message="Select a company to view issues." />;
+    return (
+      <EmptyState
+        icon={CircleDot}
+        message={t("empty.selectCompany", {
+          ns: "issues",
+          defaultValue: "Select a company to view issues.",
+        })}
+      />
+    );
   }
 
   return (
-    <IssuesList
-      issues={issues ?? []}
-      isLoading={isLoading}
-      isLoadingMoreIssues={isFetchingNextPage}
-      error={error as Error | null}
-      agents={agents}
-      projects={projects}
-      liveIssueIds={liveIssueIds}
-      viewStateKey="paperclip:issues-view"
-      issueLinkState={issueLinkState}
-      initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
-      initialWorkspaces={initialWorkspaces.length > 0 ? initialWorkspaces : undefined}
-      initialSearch={syncedSearch}
-      onSearchChange={handleSearchChange}
-      enableRoutineVisibilityFilter
-      hasMoreIssues={hasMoreServerIssues}
-      onLoadMoreIssues={loadMoreServerIssues}
-      onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId || workspaceIdFilter ? { participantAgentId, workspaceId: workspaceIdFilter } : undefined}
-    />
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => syncBrabrixIssues.mutate()}
+          disabled={syncBrabrixIssues.isPending || importedBrabrixProjectsQuery.isLoading}
+        >
+          {syncBrabrixIssues.isPending
+            ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+            : <Link2 className="h-3.5 w-3.5 mr-1.5" />}
+          {syncBrabrixIssues.isPending
+            ? t("sync.syncing", { ns: "issues", defaultValue: "Syncing Issues..." })
+            : t("sync.button", { ns: "issues", defaultValue: "Sync Issues from Brabrix" })}
+        </Button>
+      </div>
+
+      <IssuesList
+        issues={issues ?? []}
+        isLoading={isLoading}
+        isLoadingMoreIssues={isFetchingNextPage}
+        error={error as Error | null}
+        agents={agents}
+        projects={projects}
+        liveIssueIds={liveIssueIds}
+        viewStateKey="paperclip:issues-view"
+        issueLinkState={issueLinkState}
+        initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
+        initialWorkspaces={initialWorkspaces.length > 0 ? initialWorkspaces : undefined}
+        initialSearch={syncedSearch}
+        onSearchChange={handleSearchChange}
+        enableRoutineVisibilityFilter
+        hasMoreIssues={hasMoreServerIssues}
+        onLoadMoreIssues={loadMoreServerIssues}
+        onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+        searchFilters={participantAgentId || workspaceIdFilter ? { participantAgentId, workspaceId: workspaceIdFilter } : undefined}
+      />
+    </div>
   );
 }

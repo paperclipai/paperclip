@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "@/i18n";
 import {
   BookOpen,
   LogOut,
@@ -14,6 +15,7 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
+import { APP_DISPLAY_NAME } from "@/lib/app-branding";
 import { useSidebar } from "../context/SidebarContext";
 import { useTheme } from "../context/ThemeContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -108,6 +110,7 @@ export function SidebarAccountMenu({
   onOpenChange,
   version,
 }: SidebarAccountMenuProps) {
+  const { t } = useTranslation();
   const [internalOpen, setInternalOpen] = useState(false);
   const queryClient = useQueryClient();
   const { isMobile, setSidebarOpen } = useSidebar();
@@ -128,10 +131,17 @@ export function SidebarAccountMenu({
     },
   });
 
-  const displayName = session?.user.name?.trim() || "Board";
+  const displayName = session?.user.name?.trim() || t("accountMenu.displayNameFallback", {
+    ns: "settings",
+    defaultValue: "Board",
+  });
   const secondaryLabel =
-    session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
-  const accountBadge = deploymentMode === "authenticated" ? "Account" : "Local";
+    session?.user.email?.trim() || (deploymentMode === "authenticated"
+      ? t("accountMenu.signedIn", { ns: "settings", defaultValue: "Signed in" })
+      : t("accountMenu.localWorkspace", { ns: "settings", defaultValue: "Local workspace board" }));
+  const accountBadge = deploymentMode === "authenticated"
+    ? t("accountMenu.accountBadge", { ns: "settings", defaultValue: "Account" })
+    : t("accountMenu.localBadge", { ns: "settings", defaultValue: "Local" });
   const initials = deriveInitials(displayName);
   const profileHref = `/u/${deriveUserSlug(session?.user.name, session?.user.email, session?.user.id)}`;
 
@@ -147,7 +157,7 @@ export function SidebarAccountMenu({
           <button
             type="button"
             className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] font-medium text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground"
-            aria-label="Open account menu"
+            aria-label={t("accountMenu.openMenu", { ns: "settings", defaultValue: "Open account menu" })}
           >
             <Avatar size="sm">
               {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
@@ -180,44 +190,71 @@ export function SidebarAccountMenu({
                 </div>
                 <p className="truncate text-sm text-muted-foreground">{secondaryLabel}</p>
                 {version ? (
-                  <p className="mt-1 text-xs text-muted-foreground">Paperclip v{version}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{APP_DISPLAY_NAME} v{version}</p>
                 ) : null}
               </div>
             </div>
 
             <div className="mt-4 space-y-1">
               <MenuAction
-                label="View profile"
-                description="Open your activity, task, and usage ledger."
+                label={t("accountMenu.actions.viewProfile.label", { ns: "settings", defaultValue: "View profile" })}
+                description={t("accountMenu.actions.viewProfile.description", {
+                  ns: "settings",
+                  defaultValue: "Open your activity, task, and usage ledger.",
+                })}
                 icon={UserRound}
                 href={profileHref}
                 onClick={closeNavigationChrome}
               />
               <MenuAction
-                label="Edit profile"
-                description="Update your display name and avatar."
+                label={t("accountMenu.actions.editProfile.label", { ns: "settings", defaultValue: "Edit profile" })}
+                description={t("accountMenu.actions.editProfile.description", {
+                  ns: "settings",
+                  defaultValue: "Update your display name and avatar.",
+                })}
                 icon={UserRoundPen}
                 href={PROFILE_SETTINGS_PATH}
                 onClick={closeNavigationChrome}
               />
               <MenuAction
-                label="Instance settings"
-                description="Jump back to the last settings page you opened."
+                label={t("accountMenu.actions.instanceSettings.label", {
+                  ns: "settings",
+                  defaultValue: "Instance settings",
+                })}
+                description={t("accountMenu.actions.instanceSettings.description", {
+                  ns: "settings",
+                  defaultValue: "Jump back to the last settings page you opened.",
+                })}
                 icon={Settings}
                 href={instanceSettingsTarget}
                 onClick={closeNavigationChrome}
               />
               <MenuAction
-                label="Documentation"
-                description="Open Paperclip docs in a new tab."
+                label={t("accountMenu.actions.docs.label", { ns: "settings", defaultValue: "Documentation" })}
+                description={t("accountMenu.actions.docs.description", {
+                  ns: "settings",
+                  appName: APP_DISPLAY_NAME,
+                  defaultValue: `Open ${APP_DISPLAY_NAME} docs in a new tab.`,
+                })}
                 icon={BookOpen}
                 href={DOCS_URL}
                 external
                 onClick={() => setOpen(false)}
               />
               <MenuAction
-                label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-                description="Toggle the app appearance."
+                label={theme === "dark"
+                  ? t("accountMenu.actions.toggleToLight", {
+                      ns: "settings",
+                      defaultValue: "Switch to light mode",
+                    })
+                  : t("accountMenu.actions.toggleToDark", {
+                      ns: "settings",
+                      defaultValue: "Switch to dark mode",
+                    })}
+                description={t("accountMenu.actions.toggleDescription", {
+                  ns: "settings",
+                  defaultValue: "Toggle the app appearance.",
+                })}
                 icon={theme === "dark" ? Sun : Moon}
                 onClick={() => {
                   toggleTheme();
@@ -239,10 +276,15 @@ export function SidebarAccountMenu({
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-medium text-foreground">
-                      {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+                      {signOutMutation.isPending
+                        ? t("accountMenu.signOut.pending", { ns: "settings", defaultValue: "Signing out..." })
+                        : t("accountMenu.signOut.default", { ns: "settings", defaultValue: "Sign out" })}
                     </span>
                     <span className="block text-xs text-muted-foreground">
-                      End this browser session.
+                      {t("accountMenu.signOut.description", {
+                        ns: "settings",
+                        defaultValue: "End this browser session.",
+                      })}
                     </span>
                   </span>
                 </button>

@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { NavLink, useLocation } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import {
   House,
   CircleDot,
@@ -36,25 +37,46 @@ type MobileNavItem = MobileNavLinkItem | MobileNavActionItem;
 
 export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   const location = useLocation();
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
   const inboxBadge = useInboxBadge(selectedCompanyId);
 
   const items = useMemo<MobileNavItem[]>(
     () => [
-      { type: "link", to: "/dashboard", label: "Home", icon: House },
-      { type: "link", to: "/issues", label: "Issues", icon: CircleDot },
-      { type: "action", label: "Create", icon: SquarePen, onClick: () => openNewIssue() },
-      { type: "link", to: "/agents/all", label: "Agents", icon: Users },
+      {
+        type: "link",
+        to: "/dashboard",
+        label: t("mobile.home", { ns: "sidebar", defaultValue: "Home" }),
+        icon: House,
+      },
+      {
+        type: "link",
+        to: "/issues",
+        label: t("mobile.issues", { ns: "sidebar", defaultValue: "Issues" }),
+        icon: CircleDot,
+      },
+      {
+        type: "action",
+        label: t("mobile.create", { ns: "sidebar", defaultValue: "Create" }),
+        icon: SquarePen,
+        onClick: () => openNewIssue(),
+      },
+      {
+        type: "link",
+        to: "/agents/all",
+        label: t("mobile.agents", { ns: "sidebar", defaultValue: "Agents" }),
+        icon: Users,
+      },
       {
         type: "link",
         to: "/inbox",
-        label: "Inbox",
+        label: t("mobile.inbox", { ns: "sidebar", defaultValue: "Inbox" }),
         icon: Inbox,
         badge: inboxBadge.inbox,
       },
     ],
-    [openNewIssue, inboxBadge.inbox],
+    [openNewIssue, inboxBadge.inbox, t],
   );
 
   return (
@@ -63,7 +85,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
         "fixed bottom-0 left-0 right-0 z-30 border-t border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 transition-transform duration-200 ease-out md:hidden pb-[env(safe-area-inset-bottom)]",
         visible ? "translate-y-0" : "translate-y-full",
       )}
-      aria-label="Mobile navigation"
+      aria-label={t("mobile.aria", { ns: "sidebar", defaultValue: "Mobile navigation" })}
     >
       <div className="grid h-16 grid-cols-5 px-1">
         {items.map((item) => {

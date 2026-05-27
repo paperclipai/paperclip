@@ -1,0 +1,21 @@
+{
+  "onboardingRoute": {
+    "titles": {
+      "addAnotherAgent": "Add another agent to {{companyName}}",
+      "createAnotherCompany": "Create another company",
+      "createFirstCompany": "Create your first company"
+    },
+    "descriptions": {
+      "addAnotherAgent": "Run onboarding again to add an agent and a starter task for this company.",
+      "createAnotherCompany": "Run onboarding again to create another company and seed its first agent.",
+      "createFirstCompany": "Get started by creating a company and your first agent."
+    },
+    "actions": {
+      "addAgent": "Add Agent",
+      "startOnboarding": "Start Onboarding"
+    }
+  },
+  "companyRedirect": {
+    "loading": "Loading..."
+  }
+}
