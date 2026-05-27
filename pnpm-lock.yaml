@@ -6,7 +6,6 @@ settings:
 
 overrides:
   rollup: '>=4.59.0'
-  '@paperclipai/adapter-utils': workspace:@valadrien-os/adapter-utils@*
 
 patchedDependencies:
   embedded-postgres@18.1.0-beta.16:
@@ -2592,6 +2591,9 @@ packages:
 
   '@open-draft/deferred-promise@2.2.0':
     resolution: {integrity: sha512-CecwLWx3rhxVQF6V4bAgPS5t+So2sTbPgAzafKkVizyi7tlwpcFpdFqq+wqF2OwNBmqFuu6tOyouTuxgpMfzmA==}
+
+  '@paperclipai/adapter-utils@2026.525.0':
+    resolution: {integrity: sha512-R1hE67YbrvLAGzX7DbsTlp0tbRHgycaVvyUrQ36zJcCLGyC88fP0aSSp/VAs6R0zzDMTQYtIFYqtzcBp/mVXNA==}
 
   '@paralleldrive/cuid2@2.3.1':
     resolution: {integrity: sha512-XO7cAxhnTZl0Yggq6jOgjiOHhbgcO4NqFqwSmQpjK3b6TEE6Uj/jfSk6wzYyemh3+I0sHirKSetjQwn5cZktFw==}
@@ -9099,6 +9101,8 @@ snapshots:
 
   '@open-draft/deferred-promise@2.2.0': {}
 
+  '@paperclipai/adapter-utils@2026.525.0': {}
+
   '@paralleldrive/cuid2@2.3.1':
     dependencies:
       '@noble/hashes': 1.8.0
@@ -11967,7 +11971,7 @@ snapshots:
 
   hermes-paperclip-adapter@0.2.1:
     dependencies:
-      '@paperclipai/adapter-utils': link:packages/adapter-utils
+      '@paperclipai/adapter-utils': 2026.525.0
       picocolors: 1.1.1
 
   hono@4.12.22: {}

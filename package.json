@@ -66,8 +66,7 @@
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
     },
     "overrides": {
-      "rollup": ">=4.59.0",
-      "@paperclipai/adapter-utils": "workspace:@valadrien-os/adapter-utils@*"
+      "rollup": ">=4.59.0"
     }
   }
 }
