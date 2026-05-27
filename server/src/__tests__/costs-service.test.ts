@@ -10,6 +10,7 @@ import {
   activityLog,
   costEvents,
   financeEvents,
+  goals,
   heartbeatRuns,
   issues,
   projects,
@@ -413,6 +414,7 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(projects);
+    await db.delete(goals);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -494,6 +496,112 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(byAgentRow?.inputTokens).toBe(4_000_000_000);
     expect(byProjectRow?.costCents).toBe(4_000_000_000);
     expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
+  });
+
+  it("rejects cost events that attach issue, project, goal, or run references from another company", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const otherIssueId = randomUUID();
+    const otherProjectId = randomUUID();
+    const otherGoalId = randomUUID();
+    const otherRunId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(agents).values([
+      {
+        id: agentId,
+        companyId,
+        name: "Cost Agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId: otherCompanyId,
+        name: "Other Agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(projects).values({
+      id: otherProjectId,
+      companyId: otherCompanyId,
+      name: "Other Project",
+      status: "active",
+    });
+    await db.insert(goals).values({
+      id: otherGoalId,
+      companyId: otherCompanyId,
+      title: "Other Goal",
+      status: "planned",
+    });
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId: otherCompanyId,
+      projectId: otherProjectId,
+      goalId: otherGoalId,
+      title: "Other Issue",
+      status: "done",
+      priority: "medium",
+      issueNumber: 1,
+      identifier: "OTH-1",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: otherRunId,
+      companyId: otherCompanyId,
+      agentId: otherAgentId,
+      invocationSource: "on_demand",
+      status: "completed",
+      startedAt: new Date("2026-04-10T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-10T00:01:00.000Z"),
+    });
+
+    const baseEvent = {
+      agentId,
+      provider: "openai",
+      biller: "openai",
+      billingType: "metered_api",
+      model: "gpt-5",
+      inputTokens: 10,
+      cachedInputTokens: 0,
+      outputTokens: 5,
+      costCents: 1,
+      occurredAt: new Date("2026-04-10T00:00:00.000Z"),
+    } as const;
+
+    await expect(costs.createEvent(companyId, { ...baseEvent, issueId: otherIssueId }))
+      .rejects.toThrow("Issue does not belong to company");
+    await expect(costs.createEvent(companyId, { ...baseEvent, projectId: otherProjectId }))
+      .rejects.toThrow("Project does not belong to company");
+    await expect(costs.createEvent(companyId, { ...baseEvent, goalId: otherGoalId }))
+      .rejects.toThrow("Goal does not belong to company");
+    await expect(costs.createEvent(companyId, { ...baseEvent, heartbeatRunId: otherRunId }))
+      .rejects.toThrow("Heartbeat run does not belong to company");
+
+    expect(await db.select().from(costEvents)).toHaveLength(0);
   });
 
   it("aggregates issue costs across recursive descendants only", async () => {

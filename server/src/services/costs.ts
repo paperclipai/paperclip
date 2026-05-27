@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { activityLog, agents, companies, costEvents, goals, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 
@@ -48,6 +48,68 @@ async function getMonthlySpendTotal(
   return Number(row?.total ?? 0);
 }
 
+async function assertCostReferenceBelongsToCompany(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    issueId?: string | null;
+    projectId?: string | null;
+    goalId?: string | null;
+    heartbeatRunId?: string | null;
+  },
+) {
+  if (input.issueId) {
+    const issue = await db
+      .select({ companyId: issues.companyId })
+      .from(issues)
+      .where(eq(issues.id, input.issueId))
+      .then((rows) => rows[0] ?? null);
+    if (!issue || issue.companyId !== input.companyId) {
+      throw unprocessable("Issue does not belong to company");
+    }
+  }
+
+  if (input.projectId) {
+    const project = await db
+      .select({ companyId: projects.companyId })
+      .from(projects)
+      .where(eq(projects.id, input.projectId))
+      .then((rows) => rows[0] ?? null);
+    if (!project || project.companyId !== input.companyId) {
+      throw unprocessable("Project does not belong to company");
+    }
+  }
+
+  if (input.goalId) {
+    const goal = await db
+      .select({ companyId: goals.companyId })
+      .from(goals)
+      .where(eq(goals.id, input.goalId))
+      .then((rows) => rows[0] ?? null);
+    if (!goal || goal.companyId !== input.companyId) {
+      throw unprocessable("Goal does not belong to company");
+    }
+  }
+
+  if (input.heartbeatRunId) {
+    const run = await db
+      .select({
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, input.heartbeatRunId))
+      .then((rows) => rows[0] ?? null);
+    if (!run || run.companyId !== input.companyId) {
+      throw unprocessable("Heartbeat run does not belong to company");
+    }
+    if (run.agentId !== input.agentId) {
+      throw unprocessable("Heartbeat run does not belong to agent");
+    }
+  }
+}
+
 export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
   return {
@@ -62,6 +124,15 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (agent.companyId !== companyId) {
         throw unprocessable("Agent does not belong to company");
       }
+
+      await assertCostReferenceBelongsToCompany(db, {
+        companyId,
+        agentId: data.agentId,
+        issueId: data.issueId,
+        projectId: data.projectId,
+        goalId: data.goalId,
+        heartbeatRunId: data.heartbeatRunId,
+      });
 
       const event = await db
         .insert(costEvents)
