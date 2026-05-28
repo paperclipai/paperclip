@@ -212,6 +212,7 @@ export async function prepareCursorSandboxCommand(input: {
   }
 
   const sandboxPathEntries = candidateSandboxPathEntries(remoteSystemHomeDir);
+  // Host PATH fallback is intentional for command discovery; the target runner still enforces its sandbox boundary.
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...input.env });
   const currentPath = runtimeEnv.PATH ?? runtimeEnv.Path ?? "";
   const nextPath = prependPosixPathEntries(currentPath, sandboxPathEntries);

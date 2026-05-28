@@ -1996,7 +1996,7 @@ describe("heartbeat comment wake batching", () => {
         authorAgentId: agentId,
         authorUserId: null,
         createdByRunId: firstRun!.id,
-        body: "Checked quickly, seems okay.",
+        body: "Collected evidence quickly, seems okay.",
       });
 
       gateway.releaseFirstWait();

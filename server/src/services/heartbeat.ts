@@ -1690,7 +1690,7 @@ function shouldRequireIssueCommentForWake(
 const VERIFICATION_TASK_RE = /\b(?:verification|verify|validate)\b/i;
 const RUN_ARTIFACT_COMMAND_RE = /\b(?:command output|ran|executed|output)\b/i;
 const RUN_ARTIFACT_DELTA_RE = /\b(?:verification delta|delta|changed|result|outcome)\b/i;
-const RUN_ARTIFACT_NOOP_RE = /\b(?:no-?op|no change|nothing to change|already (?:up[- ]to[- ]date|correct)|evidence)\b/i;
+const RUN_ARTIFACT_NOOP_RE = /\b(?:no-?op|no change|nothing to change|already (?:up[- ]to[- ]date|correct)|evidence[- ]backed)\b/i;
 
 function requiresRunArtifactComment(issue: { title: string; description: string | null } | null) {
   if (!issue) return false;
