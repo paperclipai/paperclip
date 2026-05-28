@@ -498,28 +498,28 @@ export function registerSecretCommands(program: Command): void {
         }
       }),
   );
-}
 
   addCommonClientOptions(
     secrets
-      .command("rotate")
-      .description("Rotate a secret by providing a new value and calling the API endpoint")
-      .requiredOption("-C, --company-id <id>", "Company ID")
-      .requiredOption("--id <id>", "Secret ID to rotate")
-      .option("--value <value>", "New secret value (optional; will prompt if not provided)")
-      .action(async (opts: { companyId: string; id: string; value?: string }) => {
+      .command("rotate <id>")
+      .description("Rotate a secret's value in-place (keeps same secret ID)")
+      .option("--value <value>", "New secret value (prompted if omitted)")
+      .action(async (id: string, opts: BaseClientOptions & { value?: string }) => {
         try {
-          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const ctx = resolveCommandContext(opts, { requireCompany: false });
           let newValue = opts.value;
           if (!newValue) {
-            newValue = await ctx.prompt({
-              type: "password",
-              message: "Enter new secret value:",
-              validate: (input) => input.trim().length > 0 || "Value cannot be empty",
+            const { createInterface } = await import("readline");
+            const rl = createInterface({ input: process.stdin, output: process.stdout });
+            newValue = await new Promise<string>((resolve) => {
+              rl.question("New secret value: ", (answer) => {
+                rl.close();
+                resolve(answer);
+              });
             });
           }
-          const rotated = await ctx.api.post<CompanySecret>(`/api/secrets/${opts.id}/rotate`, { value: newValue });
-          printOutput(ctx.json ? rotated : renderSecret(rotated), { json: ctx.json });
+          await ctx.api.post(`/api/secrets/${id}/rotate`, { value: newValue });
+          printOutput(pc.green(`Secret ${id} rotated successfully.`), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
@@ -528,29 +528,31 @@ export function registerSecretCommands(program: Command): void {
 
   addCommonClientOptions(
     secrets
-      .command("delete")
-      .description("Delete a secret after confirmation")
-      .requiredOption("-C, --company-id <id>", "Company ID")
-      .requiredOption("--id <id>", "Secret ID to delete")
-      .option("--yes", "Skip confirmation prompt")
-      .action(async (opts: { companyId: string; id: string; yes?: boolean }) => {
+      .command("delete <id>")
+      .description("Delete a secret by ID")
+      .option("--yes", "Skip confirmation prompt", false)
+      .action(async (id: string, opts: BaseClientOptions & { yes?: boolean }) => {
         try {
-          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const ctx = resolveCommandContext(opts, { requireCompany: false });
           if (!opts.yes) {
-            const confirmed = await ctx.prompt({
-              type: "confirm",
-              message: `Are you sure you want to delete secret ${opts.id}? This cannot be undone.`,
-              default: false,
+            const { createInterface } = await import("readline");
+            const rl = createInterface({ input: process.stdin, output: process.stdout });
+            const confirmed = await new Promise<boolean>((resolve) => {
+              rl.question(`Delete secret ${id}? This cannot be undone. [y/N] `, (answer) => {
+                rl.close();
+                resolve(answer.toLowerCase() === "y");
+              });
             });
             if (!confirmed) {
-              console.log("Operation cancelled.");
+              printOutput(pc.yellow("Aborted."), { json: ctx.json });
               return;
             }
           }
-          await ctx.api.delete(`/api/secrets/${opts.id}`);
-          printOutput(`Secret ${opts.id} deleted successfully.`, { json: ctx.json });
+          await ctx.api.delete(`/api/secrets/${id}`);
+          printOutput(pc.green(`Secret ${id} deleted successfully.`), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
       }),
   );
+}
