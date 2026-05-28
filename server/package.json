@@ -35,7 +35,7 @@
     "dev": "tsx src/index.ts",
     "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true tsx ./scripts/dev-watch.ts",
     "prepare:ui-dist": "bash ../scripts/prepare-server-ui-dist.sh",
-    "build": "pnpm run preflight:workspace-links && tsc && node -e \"const fs=require('fs');fs.cpSync('src/onboarding-assets','dist/onboarding-assets',{recursive:true,force:true})\"",
+    "build": "tsc && node -e \"const fs=require('fs');fs.cpSync('src/onboarding-assets','dist/onboarding-assets',{recursive:true,force:true})\"",
     "prepack": "pnpm run prepare:ui-dist",
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
