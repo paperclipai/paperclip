@@ -4658,22 +4658,57 @@ export function issueRoutes(
       const becameDone = existing.status !== "done" && issue.status === "done";
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
+
+        // F4/F8: auto-promote backlog dependents whose blockers just cleared
+        const backlogDependents = dependents.filter((d) => d.status === "backlog");
+        await Promise.all(backlogDependents.map((d) => svc.update(d.id, { status: "todo" })));
+
+        // F7: batch-fetch parent assignees for orphan (no-assignee) dependents
+        const orphanParentIds = [
+          ...new Set(
+            dependents
+              .filter((d) => !d.assigneeAgentId && d.parentId)
+              .map((d) => d.parentId!),
+          ),
+        ];
+        const parentRows =
+          orphanParentIds.length > 0
+            ? await svc.getAssigneesByIds(orphanParentIds)
+            : ([] as Array<{ id: string; assigneeAgentId: string | null }>);
+        const parentAssigneeById = new Map(parentRows.map((p) => [p.id, p.assigneeAgentId]));
+
         for (const dependent of dependents) {
-          addWakeup(dependent.assigneeAgentId, {
+          // Resolve the wake target: assignee → parent's assignee → creator
+          let wakeAgentId = dependent.assigneeAgentId ?? null;
+          let wakeReason: string = "issue_blockers_resolved";
+          if (!wakeAgentId) {
+            if (dependent.parentId) {
+              wakeAgentId = parentAssigneeById.get(dependent.parentId) ?? null;
+            }
+            if (!wakeAgentId && dependent.createdByAgentId) {
+              wakeAgentId = dependent.createdByAgentId;
+            }
+            if (wakeAgentId) wakeReason = "issue_orphan_blocker_resolved";
+          }
+          if (!wakeAgentId) continue;
+
+          addWakeup(wakeAgentId, {
             source: "automation",
             triggerDetail: "system",
-            reason: "issue_blockers_resolved",
+            reason: wakeReason,
             payload: {
               issueId: dependent.id,
               resolvedBlockerIssueId: issue.id,
               blockerIssueIds: dependent.blockerIssueIds,
+              ...(wakeReason === "issue_orphan_blocker_resolved" ? { needsAssignee: true } : {}),
             },
+            idempotencyKey: `blockers_resolved:${issue.id}:${dependent.id}`,
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
             contextSnapshot: {
               issueId: dependent.id,
               taskId: dependent.id,
-              wakeReason: "issue_blockers_resolved",
+              wakeReason: wakeReason,
               source: "issue.blockers_resolved",
               resolvedBlockerIssueId: issue.id,
               blockerIssueIds: dependent.blockerIssueIds,

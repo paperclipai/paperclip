@@ -3866,6 +3866,14 @@ export function issueService(db: Db) {
       return listIssueProductivityReviewMap(dbOrTx, companyId, sourceIssueIds);
     },
 
+    getAssigneesByIds: async (ids: string[]) => {
+      if (ids.length === 0) return [];
+      return db
+        .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId })
+        .from(issues)
+        .where(inArray(issues.id, ids));
+    },
+
     listWakeableBlockedDependents: async (blockerIssueId: string) => {
       const blockerIssue = await db
         .select({ id: issues.id, companyId: issues.companyId })
@@ -3879,6 +3887,9 @@ export function issueService(db: Db) {
           id: issues.id,
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
+          parentId: issues.parentId,
+          createdByAgentId: issues.createdByAgentId,
+          createdByUserId: issues.createdByUserId,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
@@ -3916,7 +3927,7 @@ export function issueService(db: Db) {
       }
 
       return candidates
-        .filter((candidate) => candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status))
+        .filter((candidate) => !["done", "cancelled"].includes(candidate.status))
         .map((candidate) => {
           const blockers = blockersByIssueId.get(candidate.id) ?? [];
           return {
@@ -3928,7 +3939,11 @@ export function issueService(db: Db) {
         .filter((candidate) => candidate.allBlockersDone)
         .map((candidate) => ({
           id: candidate.id,
-          assigneeAgentId: candidate.assigneeAgentId!,
+          assigneeAgentId: candidate.assigneeAgentId,
+          status: candidate.status,
+          parentId: candidate.parentId,
+          createdByAgentId: candidate.createdByAgentId,
+          createdByUserId: candidate.createdByUserId,
           blockerIssueIds: candidate.blockerIssueIds,
         }));
     },
