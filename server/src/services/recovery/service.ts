@@ -22,6 +22,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -467,6 +468,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ]);
 
     return Boolean(run || deferredWake);
+  }
+
+  async function isActiveRoutineStandingThread(companyId: string, issueId: string) {
+    const [row] = await db
+      .select({ id: routines.id })
+      .from(routines)
+      .where(
+        and(
+          eq(routines.companyId, companyId),
+          eq(routines.parentIssueId, issueId),
+          eq(routines.status, "active"),
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string) {
@@ -2377,6 +2393,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (await isActiveRoutineStandingThread(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
       }
