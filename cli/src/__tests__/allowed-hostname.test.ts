@@ -77,4 +77,26 @@ describe("allowed-hostname command", () => {
     const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as PaperclipConfig;
     expect(raw.server.allowedHostnames).toEqual(["dotta-macbook-pro"]);
   });
+
+  it("writes directly to config without requiring a running server", async () => {
+    // Regression: GH#6420 — the command used to make an HTTP call to the
+    // server, failing when the server was offline. It now writes directly to
+    // config.json so it works regardless of server state.
+    const configPath = createTempConfigPath();
+    writeBaseConfig(configPath);
+
+    // No HTTP mocking needed — if the command made an HTTP call it would throw.
+    await addAllowedHostname("my.domain.com", { config: configPath });
+
+    const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as PaperclipConfig;
+    expect(raw.server.allowedHostnames).toContain("my.domain.com");
+  });
+
+  it("shows error without crashing when config is missing", async () => {
+    const configPath = createTempConfigPath(); // file does not exist yet
+
+    // Should return cleanly (no throw) and not create the file
+    await expect(addAllowedHostname("my.domain.com", { config: configPath })).resolves.toBeUndefined();
+    expect(fs.existsSync(configPath)).toBe(false);
+  });
 });
