@@ -781,3 +781,5 @@ export interface IssueAttachment {
   updatedAt: Date;
   contentPath: string;
 }
+  /** Custom fields registered by plugins via ctx.properties.register */
+  properties?: Record<string, any>;
