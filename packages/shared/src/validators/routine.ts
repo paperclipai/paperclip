@@ -49,6 +49,15 @@ export const routineVariableSchema = z.object({
   }
 });
 
+export const routineMetadataSchema = z.object({
+  owner_role: z.string().trim().max(120).optional().nullable(),
+  cadence_rationale: z.string().trim().max(2000).optional().nullable(),
+  resource_class: z.string().trim().max(120).optional().nullable(),
+  dependencies: z.unknown().optional().nullable(),
+}).passthrough();
+
+export type RoutineMetadata = z.infer<typeof routineMetadataSchema>;
+
 export const createRoutineSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
@@ -63,6 +72,7 @@ export const createRoutineSchema = z.object({
   variables: z.array(routineVariableSchema).optional().default([]),
   env: envConfigSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional().nullable(),
+  metadata: routineMetadataSchema.optional().nullable(),
 });
 
 export type CreateRoutine = z.infer<typeof createRoutineSchema>;

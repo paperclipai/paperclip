@@ -1562,6 +1562,7 @@ export function routineService(
             variables,
             env,
             executionLabelIds: input.labelIds ?? [],
+            metadata: input.metadata ?? {},
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
             updatedByAgentId: actor.agentId ?? null,
@@ -1661,6 +1662,7 @@ export function routineService(
           variables: nextVariables,
           env: nextEnv,
           executionLabelIds: patch.labelIds !== undefined ? (patch.labelIds ?? []) : locked.executionLabelIds,
+          metadata: patch.metadata !== undefined ? (patch.metadata ?? {}) : (locked.metadata ?? {}),
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };
@@ -1713,6 +1715,7 @@ export function routineService(
             variables: candidate.variables,
             env: candidate.env,
             executionLabelIds: candidate.executionLabelIds,
+            metadata: candidate.metadata,
             updatedByAgentId: actor.agentId ?? null,
             updatedByUserId: actor.userId ?? null,
             updatedAt: new Date(),
