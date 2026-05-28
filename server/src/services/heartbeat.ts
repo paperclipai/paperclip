@@ -6370,7 +6370,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   ) {
     const existing = await getAgent(agentId);
     const latestFailedRun = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "failed"))).orderBy(desc(heartbeatRuns.finishedAt)).limit(1).then(rows => rows[0] || null);
-    const errorContext = latestFailedRun ? { error: latestFailedRun.error, errorCode: latestFailedRun.errorCode, resultError: latestFailedRun.resultJson ? (JSON.parse(latestFailedRun.resultJson)?.error ?? null) : null } : null;
+    const errorContext = latestFailedRun ? { error: latestFailedRun.error, errorCode: latestFailedRun.errorCode, resultError: (latestFailedRun.resultJson as Record<string, unknown> | null)?.error ?? null } : null;
     if (!existing) return;
 
     if (existing.status === "paused" || existing.status === "terminated") {
@@ -8485,8 +8485,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         // Terminal issues (done/cancelled) must never be auto-promoted by a deferred wake.
         // Reopening requires an explicit PATCH by an authorized actor.
-        let reopenedActivity: LogActivityInput | null = null;
-
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
         const promotedSource =
           (readNonEmptyString(deferred.source) as WakeupOptions["source"]) ?? "automation";
@@ -8556,7 +8554,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return {
           kind: "promoted" as const,
           run: newRun,
-          reopenedActivity,
         };
       }
 
@@ -8710,10 +8707,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const promotedRun = promotionResult?.run ?? null;
     if (!promotedRun) return;
-
-    if (promotionResult?.kind === "promoted" && promotionResult.reopenedActivity) {
-      await logActivity(db, promotionResult.reopenedActivity);
-    }
 
     publishLiveEvent({
       companyId: promotedRun.companyId,
