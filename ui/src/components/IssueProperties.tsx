@@ -2100,6 +2100,7 @@ export function IssueProperties({
             <span className="text-sm">{formatDateTime(issue.completedAt)}</span>
           </PropertyRow>
         )}
+        {issue.billingCode && (<PropertyRow label="Billing Code"><TruncatedCopyable value={issue.billingCode} icon={Tag} /></PropertyRow>)}
         <PropertyRow label="Created">
           <span className="text-sm">{formatDateTime(issue.createdAt)}</span>
         </PropertyRow>

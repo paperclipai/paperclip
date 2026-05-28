@@ -44,7 +44,7 @@ export const SANDBOX_INSTALL_COMMAND =
   'fi; ' +
   'fi';
 
-export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
+export const DEFAULT_OPENCODE_LOCAL_MODEL = "anthropic/claude-sonnet-4-5";
 
 export function isValidOpenCodeModelId(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -55,19 +55,19 @@ export function isValidOpenCodeModelId(value: unknown): value is string {
 
 export const models: Array<{ id: string; label: string }> = [
   { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
-  { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
-  { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
-  { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
-  { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+  { id: "anthropic/claude-opus-4-5", label: "anthropic/claude-opus-4-5" },
+  { id: "anthropic/claude-haiku-4-5", label: "anthropic/claude-haiku-4-5" },
+  { id: "openai/gpt-4o", label: "openai/gpt-4o" },
+  { id: "openai/gpt-4o-mini", label: "openai/gpt-4o-mini" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use OpenCode's known Codex mini model as the budget lane.",
+    description: "Use a budget Anthropic model for cost-sensitive runs.",
     adapterConfig: {
-      model: "openai/gpt-5.1-codex-mini",
+      model: "anthropic/claude-haiku-4-5",
       variant: "low",
     },
     source: "adapter_default",
@@ -106,7 +106,7 @@ Operational fields:
 Notes:
 - OpenCode supports multiple providers and models. Use \
   \`opencode models\` to list available options in provider/model format.
-- Paperclip requires an explicit \`model\` value for \`opencode_local\` agents.
+- The default model is \`anthropic/claude-sonnet-4-5\`. Override with the \`model\` field if needed.
 - Runs are executed with: opencode run --format json ...
 - Sessions are resumed with --session when stored session cwd matches current cwd.
 - The adapter sets OPENCODE_DISABLE_PROJECT_CONFIG=true to prevent OpenCode from \
