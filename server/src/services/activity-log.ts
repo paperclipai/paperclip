@@ -24,6 +24,9 @@ const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>>
   budget_soft_threshold_crossed: "budget.incident.opened",
   budget_hard_threshold_crossed: "budget.incident.opened",
   budget_incident_resolved: "budget.incident.resolved",
+  agent_paused: "agent.status_changed",
+  agent_resumed: "agent.status_changed",
+  agent_terminated: "agent.status_changed",
 };
 
 let _pluginEventBus: PluginEventBus | null = null;
@@ -36,7 +39,7 @@ export function setPluginEventBus(bus: PluginEventBus): void {
   _pluginEventBus = bus;
 }
 
-function eventTypeForActivityAction(action: string): PluginEventType | null {
+export function eventTypeForActivityAction(action: string): PluginEventType | null {
   if (PLUGIN_EVENT_SET.has(action)) return action as PluginEventType;
   return ACTIVITY_ACTION_TO_PLUGIN_EVENT[action.replaceAll(".", "_")] ?? null;
 }
