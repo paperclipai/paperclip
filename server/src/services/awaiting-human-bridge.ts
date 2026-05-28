@@ -1258,6 +1258,11 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
         return summary;
       }
       if (polled.status === "skipped") {
+        await db.update(awaitingHumanBridges).set({
+          lastPolledAt: now,
+          nextPollAt: new Date(now.getTime() + 60_000),
+          updatedAt: now,
+        }).where(eq(awaitingHumanBridges.id, row.id));
         summary.skipped += 1;
         return summary;
       }
