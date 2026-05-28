@@ -1647,6 +1647,7 @@ export function routineService(
         }
 
         const candidate: RoutineRow = {
+        variables: nextVariables,
           ...locked,
           projectId: nextProjectId,
           goalId: patch.goalId === undefined ? locked.goalId : patch.goalId,
