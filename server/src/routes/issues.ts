@@ -4510,61 +4510,71 @@ export function issueRoutes(
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
     });
 
-    await logActivity(db, {
-      companyId: parent.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.child_created",
-      entityType: "issue",
-      entityId: issue.id,
-      details: {
-        parentId: parent.id,
-        identifier: issue.identifier,
-        title: issue.title,
-        ...buildCreateIssueActivityStatusDetails(issue, res),
-        inheritedExecutionWorkspaceFromIssueId: parent.id,
-        ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
-        ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
-      },
-    });
-
-    if (executionPolicy?.monitor) {
-      await logActivity(db, {
-        companyId: parent.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: "issue.monitor_scheduled",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          identifier: issue.identifier,
-          parentId: parent.id,
-          nextCheckAt: executionPolicy.monitor.nextCheckAt,
-          notes: executionPolicy.monitor.notes,
-          scheduledBy: executionPolicy.monitor.scheduledBy,
-          serviceName: executionPolicy.monitor.serviceName ?? null,
-          timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
-          maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
-          recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
-        },
-      });
-    }
-
-    void queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "issue_assigned",
-      mutation: "create",
-      contextSource: "issue.child_create",
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
-    });
-
+    // Return 201 before post-insert side-effects (activity logging, wakeup
+    // queue). If either throws the row is already committed, so a 500 here
+    // would falsely signal failure and trigger duplicate-create retries
+    // (GH#6737). Respond first; log and wake in a trailing promise.
     res.status(201).json(issue);
+
+    void Promise.resolve()
+      .then(async () => {
+        await logActivity(db, {
+          companyId: parent.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.child_created",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            parentId: parent.id,
+            identifier: issue.identifier,
+            title: issue.title,
+            ...buildCreateIssueActivityStatusDetails(issue, res),
+            inheritedExecutionWorkspaceFromIssueId: parent.id,
+            ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
+            ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
+          },
+        });
+
+        if (executionPolicy?.monitor) {
+          await logActivity(db, {
+            companyId: parent.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.monitor_scheduled",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              identifier: issue.identifier,
+              parentId: parent.id,
+              nextCheckAt: executionPolicy.monitor.nextCheckAt,
+              notes: executionPolicy.monitor.notes,
+              scheduledBy: executionPolicy.monitor.scheduledBy,
+              serviceName: executionPolicy.monitor.serviceName ?? null,
+              timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
+              maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
+              recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+            },
+          });
+        }
+
+        void queueIssueAssignmentWakeup({
+          heartbeat,
+          issue,
+          reason: "issue_assigned",
+          mutation: "create",
+          contextSource: "issue.child_create",
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+        });
+      })
+      .catch((err: unknown) => {
+        console.error({ err, issueId: issue.id }, "post-insert side-effect failed after child issue created");
+      });
   });
 
   router.get("/issues/:id/accepted-plan-decompositions", async (req, res) => {
