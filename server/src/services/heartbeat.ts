@@ -5338,6 +5338,7 @@ export function heartbeatService(db: Db) {
         failed: 0,
         skipped: 0,
         noApproval: 0,
+        replies: 0,
         issueIds: [] as string[],
         interactionIds: [] as string[],
       };
@@ -5350,6 +5351,7 @@ export function heartbeatService(db: Db) {
       failed: 0,
       skipped: 0,
       noSignal: 0,
+      replies: 0,
       approvedIssueIds: [] as string[],
       approvedInteractionIds: [] as string[],
     };
@@ -5428,6 +5430,7 @@ export function heartbeatService(db: Db) {
       failed: legacyResult.failed + pendingResult.failed,
       skipped: legacyResult.skipped + pendingResult.skipped,
       noApproval: legacyResult.noSignal + pendingResult.noApproval,
+      replies: legacyResult.replies + pendingResult.replies,
       issueIds: [...legacyResult.approvedIssueIds, ...pendingResult.issueIds],
       interactionIds: [...legacyResult.approvedInteractionIds, ...pendingResult.interactionIds],
     };

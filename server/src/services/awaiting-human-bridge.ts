@@ -1108,69 +1108,69 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
       const summary = emptySummary();
       const now = new Date();
 
-    for (const candidate of input) {
-      const details = parseObject(candidate.handoffDetails);
-      const delivery = parseObject(details.notificationDelivery);
-      const messageId = readNonEmptyString(delivery.externalId);
-      if (
-        delivery.channel !== "clickup-chat"
-        || (delivery.status !== "sent" && delivery.status !== "enqueued")
-        || !messageId
-      ) {
-        summary.skipped += 1;
-        continue;
-      }
-
-      const wakeAgentId = candidate.assigneeAgentId ?? candidate.createdByAgentId ?? null;
-      if (!wakeAgentId) {
-        summary.skipped += 1;
-        continue;
-      }
-
-      let bridgeId: string | null = null;
-      try {
-        const { bridge, reusedExisting } = await this.attachOrReuseExistingDelivery({
-          companyId: candidate.companyId,
-          issueId: candidate.issueId,
-          interactionId: candidate.interactionId,
-          agentId: wakeAgentId,
-          provider: "clickup",
-          externalMessageId: messageId,
-        });
-        bridgeId = bridge.id;
-        if (reusedExisting && bridge.nextPollAt && bridge.nextPollAt > now) {
+      for (const candidate of input) {
+        const details = parseObject(candidate.handoffDetails);
+        const delivery = parseObject(details.notificationDelivery);
+        const messageId = readNonEmptyString(delivery.externalId);
+        if (
+          delivery.channel !== "clickup-chat"
+          || (delivery.status !== "sent" && delivery.status !== "enqueued")
+          || !messageId
+        ) {
           summary.skipped += 1;
           continue;
         }
-        const bridgeResult = await this.pollBridge(bridge.id, now);
-        summary.checked += bridgeResult.checked;
-        summary.approved += bridgeResult.approved;
-        summary.rejected += bridgeResult.rejected;
-        summary.replies += bridgeResult.replies;
-        summary.noSignal += bridgeResult.noSignal;
-        summary.failed += bridgeResult.failed;
-        summary.skipped += bridgeResult.skipped;
-        summary.approvedIssueIds.push(...bridgeResult.approvedIssueIds);
-        summary.approvedInteractionIds.push(...bridgeResult.approvedInteractionIds);
-      } catch (error) {
-        logger.warn({
-          err: error,
-          companyId: candidate.companyId,
-          issueId: candidate.issueId,
-          interactionId: candidate.interactionId,
-          bridgeId,
-        }, "failed to reconcile delivered awaiting human interaction");
-        if (bridgeId) {
-          const detail = error instanceof Error ? error.message : String(error);
-          await db.update(awaitingHumanBridges).set({
-            lastError: detail,
-            nextPollAt: new Date(now.getTime() + AWAITING_HUMAN_POLL_FAILURE_BACKOFF_MS),
-            updatedAt: now,
-          }).where(eq(awaitingHumanBridges.id, bridgeId));
+
+        const wakeAgentId = candidate.assigneeAgentId ?? candidate.createdByAgentId ?? null;
+        if (!wakeAgentId) {
+          summary.skipped += 1;
+          continue;
         }
-        summary.failed += 1;
+
+        let bridgeId: string | null = null;
+        try {
+          const { bridge, reusedExisting } = await this.attachOrReuseExistingDelivery({
+            companyId: candidate.companyId,
+            issueId: candidate.issueId,
+            interactionId: candidate.interactionId,
+            agentId: wakeAgentId,
+            provider: "clickup",
+            externalMessageId: messageId,
+          });
+          bridgeId = bridge.id;
+          if (reusedExisting && bridge.nextPollAt && bridge.nextPollAt > now) {
+            summary.skipped += 1;
+            continue;
+          }
+          const bridgeResult = await this.pollBridge(bridge.id, now);
+          summary.checked += bridgeResult.checked;
+          summary.approved += bridgeResult.approved;
+          summary.rejected += bridgeResult.rejected;
+          summary.replies += bridgeResult.replies;
+          summary.noSignal += bridgeResult.noSignal;
+          summary.failed += bridgeResult.failed;
+          summary.skipped += bridgeResult.skipped;
+          summary.approvedIssueIds.push(...bridgeResult.approvedIssueIds);
+          summary.approvedInteractionIds.push(...bridgeResult.approvedInteractionIds);
+        } catch (error) {
+          logger.warn({
+            err: error,
+            companyId: candidate.companyId,
+            issueId: candidate.issueId,
+            interactionId: candidate.interactionId,
+            bridgeId,
+          }, "failed to reconcile delivered awaiting human interaction");
+          if (bridgeId) {
+            const detail = error instanceof Error ? error.message : String(error);
+            await db.update(awaitingHumanBridges).set({
+              lastError: detail,
+              nextPollAt: new Date(now.getTime() + AWAITING_HUMAN_POLL_FAILURE_BACKOFF_MS),
+              updatedAt: now,
+            }).where(eq(awaitingHumanBridges.id, bridgeId));
+          }
+          summary.failed += 1;
+        }
       }
-    }
 
       return summary;
     },
@@ -1183,6 +1183,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
         failed: 0,
         skipped: 0,
         noApproval: 0,
+        replies: 0,
         issueIds: [] as string[],
         interactionIds: [] as string[],
       };
@@ -1194,6 +1195,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
       result.failed += polled.failed;
       result.skipped += polled.skipped;
       result.noApproval += polled.noSignal;
+      result.replies += polled.replies;
       result.issueIds.push(...polled.approvedIssueIds);
       result.interactionIds.push(...polled.approvedInteractionIds);
 
@@ -1595,17 +1597,20 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
               reason: event.body?.trim() || undefined,
             }, { actorType: "system" });
 
-            await insertWakeup({
-              companyId: row.companyId,
-              agentId: row.agentId,
-              payload: {
-                issueId: row.issueId,
-                interactionId: row.interactionId,
-                interactionStatus: interaction.status,
-                mutation: "interaction",
-              },
-              dbClient: txDb,
-            });
+            const rejectionWakeAgentId = issue.assigneeAgentId ?? row.agentId;
+            if (rejectionWakeAgentId) {
+              await insertWakeup({
+                companyId: row.companyId,
+                agentId: rejectionWakeAgentId,
+                payload: {
+                  issueId: row.issueId,
+                  interactionId: row.interactionId,
+                  interactionStatus: interaction.status,
+                  mutation: "interaction",
+                },
+                dbClient: txDb,
+              });
+            }
 
             return { duplicate: false as const };
           });

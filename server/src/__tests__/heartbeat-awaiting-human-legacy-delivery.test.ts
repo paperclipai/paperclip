@@ -18,6 +18,7 @@ const mockRetryFailedBridgeOpenings = vi.hoisted(() => vi.fn(async () => ({
 const mockReconcileDeliveredInteractions = vi.hoisted(() => vi.fn(async (input: Array<{ issueId: string; interactionId: string }>) => ({
   checked: input.length,
   approved: input.length,
+  replies: 0,
   failed: 0,
   skipped: 0,
   noSignal: 0,
@@ -27,6 +28,7 @@ const mockReconcileDeliveredInteractions = vi.hoisted(() => vi.fn(async (input: 
 const mockReconcilePendingConfirmations = vi.hoisted(() => vi.fn(async () => ({
   checked: 0,
   approved: 0,
+  replies: 0,
   failed: 0,
   skipped: 0,
   noApproval: 0,
@@ -172,6 +174,7 @@ describeEmbeddedPostgres("heartbeat legacy awaiting_human delivery reconciliatio
       failed: 0,
       skipped: 0,
       noApproval: 0,
+      replies: 0,
       issueIds: [issueId],
       interactionIds: [interactionId],
     }));
@@ -247,6 +250,7 @@ describeEmbeddedPostgres("heartbeat legacy awaiting_human delivery reconciliatio
       failed: 0,
       skipped: 0,
       noApproval: 0,
+      replies: 0,
     }));
   });
 
