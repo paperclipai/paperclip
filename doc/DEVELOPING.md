@@ -445,7 +445,7 @@ pnpm dev
 
 ## Optional: Use External Postgres
 
-If you set `DATABASE_URL`, the server will use that instead of embedded PostgreSQL.
+If you set `PAPERCLIP_DATABASE_URL`, the server will use that instead of embedded PostgreSQL.
 
 ## Automatic DB Backups
 
