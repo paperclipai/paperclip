@@ -86,7 +86,8 @@ type GatewayClientRequestOptions = {
   expectFinal?: boolean;
 };
 
-const PROTOCOL_VERSION = 3;
+export const GATEWAY_MIN_PROTOCOL_VERSION = 3;
+export const GATEWAY_MAX_PROTOCOL_VERSION = 4;
 const DEFAULT_SCOPES = ["operator.admin"];
 const DEFAULT_CLIENT_ID = "gateway-client";
 const DEFAULT_CLIENT_MODE = "backend";
@@ -364,9 +365,9 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
 function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
+  claimedApiKeyPath: string,
   structuredWakePrompt: string,
 ): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -466,24 +467,13 @@ function joinWakePayloadSections(structuredWakePrompt: string, structuredWakeJso
   return sections.join("\n");
 }
 
-function buildStandardPaperclipPayload(
+export function buildStandardPaperclipPayload(
   ctx: AdapterExecutionContext,
   wakePayload: WakePayload,
   paperclipEnv: Record<string, string>,
   payloadTemplate: Record<string, unknown>,
 ): Record<string, unknown> {
   const templatePaperclip = parseObject(payloadTemplate.paperclip);
-  const workspace = asRecord(ctx.context.paperclipWorkspace);
-  const workspaces = Array.isArray(ctx.context.paperclipWorkspaces)
-    ? ctx.context.paperclipWorkspaces.filter((entry): entry is Record<string, unknown> => Boolean(asRecord(entry)))
-    : [];
-  const configuredWorkspaceRuntime = parseObject(ctx.config.workspaceRuntime);
-  const runtimeServiceIntents = Array.isArray(ctx.context.paperclipRuntimeServiceIntents)
-    ? ctx.context.paperclipRuntimeServiceIntents.filter(
-        (entry): entry is Record<string, unknown> => Boolean(asRecord(entry)),
-      )
-    : [];
-
   const standardPaperclip: Record<string, unknown> = {
     runId: ctx.runId,
     companyId: ctx.agent.companyId,
@@ -498,28 +488,23 @@ function buildStandardPaperclipPayload(
     approvalStatus: wakePayload.approvalStatus,
     apiUrl: paperclipEnv.PAPERCLIP_API_URL ?? null,
   };
-  const structuredWake = parseObject(ctx.context.paperclipWake);
-  if (Object.keys(structuredWake).length > 0) {
-    standardPaperclip.wake = structuredWake;
-  }
-
-  if (workspace) {
-    standardPaperclip.workspace = workspace;
-  }
-  if (workspaces.length > 0) {
-    standardPaperclip.workspaces = workspaces;
-  }
-  if (runtimeServiceIntents.length > 0 || Object.keys(configuredWorkspaceRuntime).length > 0) {
-    standardPaperclip.workspaceRuntime = {
-      ...configuredWorkspaceRuntime,
-      ...(runtimeServiceIntents.length > 0 ? { services: runtimeServiceIntents } : {}),
-    };
-  }
-
   return {
     ...templatePaperclip,
     ...standardPaperclip,
   };
+}
+
+function appendPaperclipContextJson(baseText: string, paperclipPayload: Record<string, unknown>): string {
+  const contextJson = JSON.stringify(paperclipPayload);
+  if (!contextJson || contextJson === "{}") return baseText;
+  const sections = [
+    baseText.trim(),
+    "Paperclip execution context JSON:",
+    "```json",
+    contextJson,
+    "```",
+  ].filter((entry) => entry.trim().length > 0);
+  return sections.join("\n");
 }
 
 function normalizeUrl(input: string): URL | null {
@@ -556,6 +541,13 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
         reject(err);
       });
   });
+}
+
+export function sanitizeGatewayAgentParams(params: Record<string, unknown>): Record<string, unknown> {
+  const sanitized = { ...params };
+  delete sanitized.text;
+  delete sanitized.paperclip;
+  return sanitized;
 }
 
 function derivePublicKeyRaw(publicKeyPem: string): Buffer {
@@ -871,8 +863,8 @@ async function autoApproveDevicePairing(params: {
 
     await client.connect(
       () => ({
-        minProtocol: PROTOCOL_VERSION,
-        maxProtocol: PROTOCOL_VERSION,
+        minProtocol: GATEWAY_MIN_PROTOCOL_VERSION,
+        maxProtocol: GATEWAY_MAX_PROTOCOL_VERSION,
         client: {
           id: params.clientId,
           version: params.clientVersion,
@@ -1108,14 +1100,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const wakePayload = buildWakePayload(ctx);
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
+  const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
+  const claimedApiKeyPath = resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath);
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
-    structuredWakeJson
-      ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
-      : structuredWakePrompt,
+    claimedApiKeyPath,
+    appendPaperclipContextJson(
+      structuredWakeJson
+        ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
+        : structuredWakePrompt,
+      paperclipPayload,
+    ),
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
@@ -1130,16 +1128,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
   const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
-  const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
 
-  const agentParams: Record<string, unknown> = {
+  const agentParams = sanitizeGatewayAgentParams({
     ...payloadTemplate,
     message,
     sessionKey,
     idempotencyKey: ctx.runId,
-  };
-  delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
+  });
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
@@ -1263,8 +1258,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const hello = await client.connect((nonce) => {
         const signedAtMs = Date.now();
         const connectParams: Record<string, unknown> = {
-          minProtocol: PROTOCOL_VERSION,
-          maxProtocol: PROTOCOL_VERSION,
+          minProtocol: GATEWAY_MIN_PROTOCOL_VERSION,
+          maxProtocol: GATEWAY_MAX_PROTOCOL_VERSION,
           client: {
             id: clientId,
             version: clientVersion,
@@ -1310,7 +1305,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       await ctx.onLog(
         "stdout",
-        `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
+        `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, GATEWAY_MIN_PROTOCOL_VERSION)}\n`,
       );
 
       const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {
