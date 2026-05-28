@@ -69,7 +69,7 @@ async function waitForMicrotaskAssertion(assertion: () => void, attempts = 20) {
   throw lastError;
 }
 
-function createRun(index: number) {
+function createRun(index: number, overrides: Record<string, unknown> = {}) {
   return {
     id: `run-${index}`,
     status: "running",
@@ -82,6 +82,7 @@ function createRun(index: number) {
     agentName: `Agent ${index}`,
     adapterType: "codex_local",
     issueId: null,
+    ...overrides,
   };
 }
 
@@ -122,7 +123,7 @@ describe("ActiveAgentsPanel", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([1, 2, 3, 4, 5].map(createRun));
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([1, 2, 3, 4, 5].map((index) => createRun(index)));
     mockIssuesApi.get.mockRejectedValue(new Error("Issue not found"));
   });
 
@@ -227,6 +228,58 @@ describe("ActiveAgentsPanel", () => {
       expect(issueLink?.textContent).toBe("PAP-3562 - Phase 4B: Implement LLM Wiki distillation UI");
       expect(issueLink?.getAttribute("href")).toBe("/issues/PAP-3562");
     });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("explains queued, running, failed, blocked, and completed run states", async () => {
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      createRun(1, { status: "queued" }),
+      createRun(2, { status: "running" }),
+      createRun(3, {
+        status: "failed",
+        finishedAt: "2026-04-24T12:02:00.000Z",
+        livenessReason: "Process exited with code 1",
+      }),
+      createRun(4, {
+        status: "succeeded",
+        finishedAt: "2026-04-24T12:03:00.000Z",
+        livenessState: "blocked",
+        livenessReason: "Waiting for approval_id",
+      }),
+      createRun(5, {
+        status: "succeeded",
+        finishedAt: "2026-04-24T12:04:00.000Z",
+        livenessState: "advanced",
+      }),
+    ]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ActiveAgentsPanel companyId="company-1" cardLimit={5} minRunCount={5} />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Queued");
+    expect(container.textContent).toContain("has not started yet");
+    expect(container.textContent).toContain("Running");
+    expect(container.textContent).toContain("worker is acting now");
+    expect(container.textContent).toContain("Failed");
+    expect(container.textContent).toContain("Process exited with code 1");
+    expect(container.textContent).toContain("Blocked");
+    expect(container.textContent).toContain("Waiting for approval_id");
+    expect(container.textContent).toContain("Completed");
+    expect(container.textContent).toContain("finished and produced progress evidence");
 
     await act(async () => {
       root.unmount();

@@ -16,8 +16,10 @@ import { cn, relativeTime } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { describeRunRetryState } from "../lib/runRetryState";
+import { describeRunProgress } from "../lib/runProgressExplanation";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { SourceResolvedFoldBadge } from "./SourceResolvedFoldBadge";
+import { useCurrentLocale } from "../i18n/ui-copy";
 
 type IssueRunLedgerProps = {
   issueId: string;
@@ -491,6 +493,7 @@ export function IssueRunLedgerContent({
   watchdogDecisionError,
   onWatchdogDecision,
 }: IssueRunLedgerContentProps) {
+  const locale = useCurrentLocale();
   const ledgerRuns = useMemo(() => mergeRuns(runs, liveRuns, activeRun), [activeRun, liveRuns, runs]);
   const latestRun = ledgerRuns[0] ?? null;
   const latestSilentRun = useMemo(
@@ -696,6 +699,7 @@ export function IssueRunLedgerContent({
             const retryState = describeRunRetryState(run);
             const agentName = compactAgentName(run, agentMap);
             const sourceResolvedFold = readSourceResolvedWatchdogFold(run.resultJson);
+            const progress = describeRunProgress(run, locale);
             return (
               <article
                 key={`run:${run.runId}`}
@@ -794,6 +798,12 @@ export function IssueRunLedgerContent({
                     {stopStatusLabel(run, stopReason)}
                   </div>
                 </div>
+
+                <p className="min-w-0 break-words rounded-md border border-border/60 bg-background/60 px-2 py-1.5 text-xs leading-5 text-muted-foreground">
+                  <span className="font-medium text-foreground">Progress</span>{" "}
+                  <span className="font-medium">{progress.label}</span>
+                  <span> · {progress.description}</span>
+                </p>
 
                 {retryState ? (
                   <div className="rounded-md border border-border/70 bg-accent/20 px-2 py-2 text-xs leading-5 text-muted-foreground">

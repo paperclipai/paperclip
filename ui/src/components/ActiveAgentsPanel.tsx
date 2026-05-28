@@ -6,6 +6,7 @@ import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import type { TranscriptEntry } from "../adapters";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import { describeRunProgress } from "../lib/runProgressExplanation";
 import { cn, relativeTime } from "../lib/utils";
 import {
   deriveActiveRecoveryDisplayState,
@@ -50,16 +51,6 @@ const EMPTY_TRANSCRIPT: TranscriptEntry[] = [];
 
 function isRunActive(run: LiveRunForIssue): boolean {
   return run.status === "queued" || run.status === "running";
-}
-
-function livenessLabel(run: LiveRunForIssue, copy: ReturnType<typeof useLocalizedCopy>): string | null {
-  if (run.status === "queued") return copy("activeAgents.liveness.queued", "Queued for execution", "실행 대기 중");
-  if (run.status === "running") return copy("activeAgents.liveness.running", "Running now", "현재 실행 중");
-  if (run.livenessState === "needs_followup") return copy("activeAgents.liveness.needsFollowup", "Needs follow-up", "후속 확인 필요");
-  if (run.livenessState === "failed") return copy("activeAgents.liveness.failed", "Recovery needed", "복구 필요");
-  if (run.status === "succeeded") return copy("activeAgents.liveness.succeeded", "Completed successfully", "성공 완료");
-  if (run.status === "cancelled") return copy("activeAgents.liveness.cancelled", "Cancelled", "취소됨");
-  return null;
 }
 
 interface ActiveAgentsPanelProps {
@@ -198,7 +189,7 @@ const AgentRunCard = memo(function AgentRunCard({
     : run.finishedAt
       ? copy("activeAgents.run.finished", "Finished {{time}}", "{{time}} 완료", { time: relativeTime(run.finishedAt, locale) })
       : copy("activeAgents.run.started", "Started {{time}}", "{{time}} 시작", { time: relativeTime(run.createdAt, locale) });
-  const progressLabel = livenessLabel(run, copy);
+  const progress = describeRunProgress(run, locale);
 
   return (
     <div className={cn(
@@ -226,9 +217,10 @@ const AgentRunCard = memo(function AgentRunCard({
               <span>{runTimeLabel}</span>
               <StatusBadge status={run.status} />
             </div>
-            {progressLabel ? (
+            {progress ? (
               <div className="mt-1 text-[11px] leading-5 text-muted-foreground">
-                {progressLabel}
+                <span className="font-medium text-foreground">{progress.label}</span>
+                <span> · {progress.description}</span>
               </div>
             ) : null}
           </div>

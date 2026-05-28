@@ -277,6 +277,8 @@ describe("IssueRunLedger", () => {
 
     expect(container.textContent).toContain("Running now by CodexCoder");
     expect(container.textContent).toContain("Checks after finish");
+    expect(container.textContent).toContain("Progress Running");
+    expect(container.textContent).toContain("worker is acting now");
     expect(container.textContent).toContain("Last useful action No action recorded yet");
     expect(container.textContent).toContain("Stop Still running");
     expect(container.textContent).not.toContain("Liveness pending");

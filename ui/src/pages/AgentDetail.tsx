@@ -50,6 +50,7 @@ import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
 import { formatCents, formatDate, formatDurationMs, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
+import { describeRunProgress } from "../lib/runProgressExplanation";
 import { buildDuplicateAgentPayload, duplicateAgentName, type DuplicateInstructionsBundle } from "../lib/duplicate-agent-payload";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -1402,6 +1403,7 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
   const isLive = run.status === "running" || run.status === "queued";
   const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
   const StatusIcon = statusInfo.icon;
+  const progress = describeRunProgress(run, locale);
 
   return (
     <div className="space-y-3">
@@ -1446,6 +1448,11 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
             {sourceLabel(run.invocationSource, copy)}
           </span>
           <span className="ml-auto text-xs text-muted-foreground">{relativeTime(run.createdAt, locale)}</span>
+        </div>
+
+        <div className="rounded-md border border-border/60 bg-background/60 px-2.5 py-2 text-xs leading-5 text-muted-foreground">
+          <span className="font-medium text-foreground">{progress.label}</span>
+          <span> · {progress.description}</span>
         </div>
 
         {summary && (
