@@ -2386,6 +2386,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      // GH#6797: if executionRunId is set but the run is terminal (not active),
+      // the lock is stale. Clear it so the recovery heartbeat can re-claim the issue.
+      if (issue.executionRunId) {
+        const lockRun = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, issue.executionRunId))
+          .then((rows) => rows[0] ?? null);
+        const isActiveLock = lockRun && EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.includes(
+          lockRun.status as typeof EXECUTION_PATH_HEARTBEAT_RUN_STATUSES[number],
+        );
+        if (!isActiveLock) {
+          await db
+            .update(issues)
+            .set({ executionRunId: null, updatedAt: new Date() })
+            .where(and(eq(issues.id, issue.id), eq(issues.executionRunId, issue.executionRunId)));
+        }
+      }
+
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
