@@ -805,6 +805,12 @@ export async function startServer(): Promise<StartedServer> {
             logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
           }
         })
+        .then(async () => {
+          const cleared = await heartbeat.reconcileTransientErrorAgents();
+          if (cleared.cleared > 0) {
+            logger.info({ ...cleared }, "transient-error agents auto-cleared to idle");
+          }
+        })
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });

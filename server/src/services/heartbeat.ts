@@ -6727,6 +6727,97 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return productivityReviews.reconcileProductivityReviews(opts);
   }
 
+  // Error codes that indicate a transient failure — the agent is actually healthy
+  // and should be auto-cleared back to idle after a cooldown if it has no pending work.
+  const TRANSIENT_ERROR_CODES = new Set([
+    "claude_auth_required",
+    "claude_transient_upstream",
+    "codex_transient_upstream",
+    "issue_terminal_status",
+    "issue_assignee_changed",
+    "issue_cancelled",
+  ]);
+
+  async function reconcileTransientErrorAgents(opts?: { now?: Date; cooldownMs?: number }) {
+    const now = opts?.now ?? new Date();
+    // Default cooldown: 6 hours. An agent must have been in error for at least this
+    // long before we auto-clear, so brief transient blips don't immediately clear.
+    const cooldownMs = opts?.cooldownMs ?? 6 * 60 * 60 * 1000;
+    const threshold = new Date(now.getTime() - cooldownMs);
+
+    const errorAgents = await db
+      .select()
+      .from(agents)
+      .where(
+        and(
+          eq(agents.status, "error"),
+          lt(agents.lastHeartbeatAt, threshold),
+        ),
+      );
+
+    let cleared = 0;
+    const clearedAgentIds: string[] = [];
+
+    for (const agent of errorAgents) {
+      // Find the most recent completed run for this agent
+      const lastRun = await db
+        .select({ errorCode: heartbeatRuns.errorCode, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agent.id),
+            inArray(heartbeatRuns.status, ["failed", "timed_out", "cancelled"]),
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.finishedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      // Only clear if the last run's error code is a known transient
+      if (!lastRun || !lastRun.errorCode || !TRANSIENT_ERROR_CODES.has(lastRun.errorCode)) {
+        continue;
+      }
+
+      // Check that the agent has no active or queued issues
+      const activeIssueCount = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.assigneeAgentId, agent.id),
+            inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows.length);
+
+      if (activeIssueCount > 0) {
+        continue;
+      }
+
+      await db
+        .update(agents)
+        .set({ status: "idle", updatedAt: new Date() })
+        .where(eq(agents.id, agent.id));
+
+      publishLiveEvent({
+        companyId: agent.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: agent.id,
+          status: "idle",
+          lastHeartbeatAt: agent.lastHeartbeatAt ? new Date(agent.lastHeartbeatAt).toISOString() : null,
+          outcome: "transient_error_auto_cleared",
+        },
+      });
+
+      cleared += 1;
+      clearedAgentIds.push(agent.id);
+    }
+
+    return { checked: errorAgents.length, cleared, clearedAgentIds };
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -9868,6 +9959,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     scanSilentActiveRuns,
 
     reconcileProductivityReviews,
+
+    reconcileTransientErrorAgents,
 
     buildRunOutputSilence,
 
