@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowUp, Check, Copy, Download, Menu, X, Upload, Clock, Search, Bell, LayoutDashboard, Paperclip } from "lucide-react";
+import { ArrowUp, Check, Copy, Download, Menu, X, Upload, Clock, Search, Bell, LayoutDashboard, Paperclip, Trash2, Plus, CalendarClock } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
@@ -72,6 +72,230 @@ const AGENTS: Agent[] = [
     ],
   },
 ];
+
+// ── Reminders ────────────────────────────────────────────────────────────
+
+const REMINDERS_KEY = "goffer-reminders-v1";
+
+type Reminder = {
+  id: string;
+  title: string;
+  dueAt: string;
+  note?: string;
+  createdAt: string;
+};
+
+function loadReminders(): Reminder[] {
+  try {
+    return JSON.parse(localStorage.getItem(REMINDERS_KEY) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function saveReminders(reminders: Reminder[]) {
+  localStorage.setItem(REMINDERS_KEY, JSON.stringify(reminders));
+}
+
+function createReminder(data: { title: string; dueAt: string; note?: string }): Reminder {
+  if (!data.title.trim()) throw new Error("Title is required");
+  if (!data.dueAt) throw new Error("Date is required");
+  const reminder: Reminder = {
+    id: crypto.randomUUID(),
+    title: data.title.trim(),
+    dueAt: data.dueAt,
+    note: data.note?.trim() || undefined,
+    createdAt: new Date().toISOString(),
+  };
+  const existing = loadReminders();
+  saveReminders([...existing, reminder]);
+  return reminder;
+}
+
+function deleteReminder(id: string) {
+  saveReminders(loadReminders().filter((r) => r.id !== id));
+}
+
+function formatDueDate(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const diffMs = d.getTime() - now.getTime();
+  const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  const timeStr = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const dateStr = d.toLocaleDateString([], { month: "short", day: "numeric" });
+  if (diffDays === 0) return `Today at ${timeStr}`;
+  if (diffDays === 1) return `Tomorrow at ${timeStr}`;
+  if (diffDays < 0) return `Overdue · ${dateStr}`;
+  return `${dateStr} at ${timeStr}`;
+}
+
+function RemindersPage({ onClose }: { onClose: () => void }) {
+  const [reminders, setReminders] = useState<Reminder[]>(() =>
+    loadReminders().sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime()),
+  );
+  const [showForm, setShowForm] = useState(reminders.length === 0);
+  const [title, setTitle] = useState("");
+  const [dueAt, setDueAt] = useState(() => {
+    const d = new Date();
+    d.setHours(d.getHours() + 1, 0, 0, 0);
+    return d.toISOString().slice(0, 16);
+  });
+  const [note, setNote] = useState("");
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "error">("idle");
+  const [errorMsg, setErrorMsg] = useState("");
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const handleCreate = () => {
+    setErrorMsg("");
+    setSaveStatus("saving");
+    try {
+      createReminder({ title, dueAt, note });
+      const updated = loadReminders().sort(
+        (a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime(),
+      );
+      setReminders(updated);
+      setTitle("");
+      setNote("");
+      const next = new Date();
+      next.setHours(next.getHours() + 1, 0, 0, 0);
+      setDueAt(next.toISOString().slice(0, 16));
+      setShowForm(false);
+      setSaveStatus("idle");
+    } catch (err) {
+      console.error("[goffer] reminder creation failed:", err);
+      setSaveStatus("error");
+      setErrorMsg("Failed to create reminder. Please try again.");
+    }
+  };
+
+  const handleDelete = (id: string) => {
+    deleteReminder(id);
+    setReminders((prev) => prev.filter((r) => r.id !== id));
+  };
+
+  const isOverdue = (iso: string) => new Date(iso).getTime() < Date.now();
+
+  return (
+    <>
+      <button
+        type="button"
+        className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm md:hidden"
+        onClick={onClose}
+        aria-label="Close reminders"
+      />
+      <div className="fixed inset-y-0 left-0 z-50 flex w-full flex-col bg-[#FAFAF9] md:hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
+          <div className="flex items-center gap-2">
+            <CalendarClock className="h-5 w-5 text-gray-600" />
+            <span className="text-base font-semibold text-gray-800">Reminders</span>
+          </div>
+          <button
+            onClick={onClose}
+            className="flex items-center justify-center rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+            aria-label="Close reminders"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+          {/* Create form */}
+          {showForm ? (
+            <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
+              <p className="text-sm font-medium text-gray-700">New reminder</p>
+              <input
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="What do you need to do?"
+                className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-800 placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
+              />
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Due</label>
+                <input
+                  type="datetime-local"
+                  value={dueAt}
+                  onChange={(e) => setDueAt(e.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+                />
+              </div>
+              <textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Optional note…"
+                rows={2}
+                className="w-full resize-none rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-800 placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
+              />
+              {saveStatus === "error" && (
+                <p className="text-xs text-red-500">{errorMsg}</p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={handleCreate}
+                  disabled={saveStatus === "saving" || !title.trim()}
+                  className="flex-1 rounded-xl bg-gray-900 py-2 text-sm font-medium text-white transition-opacity hover:opacity-80 disabled:opacity-40"
+                >
+                  {saveStatus === "saving" ? "Saving…" : "Save reminder"}
+                </button>
+                {reminders.length > 0 && (
+                  <button
+                    onClick={() => { setShowForm(false); setErrorMsg(""); setSaveStatus("idle"); }}
+                    className="rounded-xl border border-gray-200 px-4 py-2 text-sm text-gray-500 hover:bg-gray-100 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowForm(true)}
+              className="flex w-full items-center gap-2 rounded-2xl border border-dashed border-gray-300 bg-white px-4 py-3 text-sm text-gray-500 hover:bg-gray-50 transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              Add reminder
+            </button>
+          )}
+
+          {/* Reminders list */}
+          {reminders.length === 0 && !showForm && (
+            <p className="text-center text-sm text-gray-400 py-8">No reminders yet.</p>
+          )}
+          {reminders.map((r) => (
+            <div
+              key={r.id}
+              className={cn(
+                "flex items-start gap-3 rounded-2xl border bg-white p-4 shadow-sm",
+                isOverdue(r.dueAt) ? "border-red-200" : "border-gray-200",
+              )}
+            >
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-800 truncate">{r.title}</p>
+                <p className={cn("text-xs mt-0.5", isOverdue(r.dueAt) ? "text-red-500" : "text-gray-400")}>
+                  {formatDueDate(r.dueAt)}
+                </p>
+                {r.note && <p className="text-xs text-gray-500 mt-1 line-clamp-2">{r.note}</p>}
+              </div>
+              <button
+                onClick={() => handleDelete(r.id)}
+                className="shrink-0 rounded-lg p-1.5 text-gray-300 hover:bg-gray-100 hover:text-red-500 transition-colors"
+                aria-label="Delete reminder"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
 
 // ── Free runs tracking ────────────────────────────────────────────────────
 
@@ -437,13 +661,30 @@ const DRAWER_NAV_ITEMS = [
   { icon: Bell, label: "Reminders", description: "Follow-up and nudge settings" },
 ] as const;
 
-function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
+function MobileDrawer({
+  open,
+  onClose,
+  onOpenReminders,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onOpenReminders: () => void;
+}) {
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
+
+  const handleItemClick = (label: string) => {
+    if (label === "Reminders") {
+      onClose();
+      onOpenReminders();
+      return;
+    }
+    onClose();
+  };
 
   return (
     <>
@@ -486,7 +727,7 @@ function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void })
                 <li key={item.label}>
                   <button
                     type="button"
-                    onClick={onClose}
+                    onClick={() => handleItemClick(item.label)}
                     className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition-colors hover:bg-gray-100 active:bg-gray-200"
                   >
                     <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gray-100">
@@ -515,6 +756,7 @@ export function ChatInterface() {
   const [selectedAgentId, setSelectedAgentId] = useState<string>(AGENTS[0].id);
   const [streaming, setStreaming] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [remindersOpen, setRemindersOpen] = useState(false);
   const [runsLeft, setRunsLeft] = useState<Record<string, number>>(() =>
     Object.fromEntries(AGENTS.map((a) => [a.id, getRemainingRuns(a.id)])),
   );
@@ -632,7 +874,14 @@ export function ChatInterface() {
   return (
     <main className="flex min-h-screen flex-col bg-[#FAFAF9]">
       {/* Mobile drawer */}
-      <MobileDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
+      <MobileDrawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        onOpenReminders={() => setRemindersOpen(true)}
+      />
+
+      {/* Reminders page */}
+      {remindersOpen && <RemindersPage onClose={() => setRemindersOpen(false)} />}
 
       {/* Header: always visible on mobile (for hamburger access), hidden on desktop when no messages */}
       <header
