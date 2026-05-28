@@ -8,9 +8,11 @@ import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type 
 import { queryKeys } from "../../lib/queryKeys";
 import { buildSameOriginWebSocketUrl } from "../../lib/websocket-url";
 
-const LOG_POLL_INTERVAL_MS = 2000;
+const LOG_POLL_INTERVAL_MS = 15_000;
 const LOG_READ_LIMIT_BYTES = 256_000;
 const EMPTY_RUN_LOG_CHUNKS: RunLogChunk[] = [];
+const LOG_RETRY_BASE_DELAY_MS = 10_000;
+const LOG_RETRY_MAX_DELAY_MS = 300_000;
 
 export interface RunTranscriptSource {
   id: string;
@@ -114,6 +116,8 @@ export function useLiveRunTranscripts({
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
   const missingTerminalLogRunIdsRef = useRef(new Set<string>());
+  const retryBackoffMsByRunRef = useRef(new Map<string, number>());
+  const retryAtMsByRunRef = useRef(new Map<string, number>());
   const transcriptCacheRef = useRef(new Map<string, {
     adapterType: string;
     chunks: RunLogChunk[];
@@ -201,6 +205,16 @@ export function useLiveRunTranscripts({
         missingTerminalLogRunIdsRef.current.delete(runId);
       }
     }
+    for (const runId of retryBackoffMsByRunRef.current.keys()) {
+      if (!knownRunIds.has(runId)) {
+        retryBackoffMsByRunRef.current.delete(runId);
+      }
+    }
+    for (const runId of retryAtMsByRunRef.current.keys()) {
+      if (!knownRunIds.has(runId)) {
+        retryAtMsByRunRef.current.delete(runId);
+      }
+    }
     for (const runId of transcriptCacheRef.current.keys()) {
       if (!knownRunIds.has(runId)) {
         transcriptCacheRef.current.delete(runId);
@@ -217,10 +231,14 @@ export function useLiveRunTranscripts({
       if (missingTerminalLogRunIdsRef.current.has(run.id)) {
         return;
       }
+      const retryAt = retryAtMsByRunRef.current.get(run.id);
+      if (typeof retryAt === "number" && Date.now() < retryAt) return;
       const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
       try {
         const result = await heartbeatsApi.log(run.id, offset, logReadLimitBytes);
         if (cancelled) return;
+        retryBackoffMsByRunRef.current.delete(run.id);
+        retryAtMsByRunRef.current.delete(run.id);
 
         appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));
 
@@ -232,9 +250,27 @@ export function useLiveRunTranscripts({
           logOffsetByRunRef.current.set(run.id, offset + result.content.length);
         }
       } catch (error) {
-        if (error instanceof ApiError && error.status === 404 && isTerminalStatus(run.status)) {
+        if (error instanceof ApiError && error.status === 404) {
           missingTerminalLogRunIdsRef.current.add(run.id);
+          retryBackoffMsByRunRef.current.delete(run.id);
+          retryAtMsByRunRef.current.delete(run.id);
+          return;
         }
+
+        if (error instanceof ApiError && error.status === 429) {
+          const retryAfterRaw = error.headers.get("Retry-After") ?? error.headers.get("retry-after");
+          const retryAfter = Number(retryAfterRaw ?? "");
+          const retryAfterMs = Number.isFinite(retryAfter) && retryAfter > 0
+            ? retryAfter * 1000
+            : LOG_RETRY_BASE_DELAY_MS;
+          retryAtMsByRunRef.current.set(run.id, Date.now() + Math.min(LOG_RETRY_MAX_DELAY_MS, retryAfterMs));
+          return;
+        }
+
+        const previousBackoff = retryBackoffMsByRunRef.current.get(run.id) ?? LOG_RETRY_BASE_DELAY_MS;
+        const nextBackoff = Math.min(LOG_RETRY_MAX_DELAY_MS, Math.max(LOG_RETRY_BASE_DELAY_MS, previousBackoff * 2));
+        retryBackoffMsByRunRef.current.set(run.id, nextBackoff);
+        retryAtMsByRunRef.current.set(run.id, Date.now() + previousBackoff);
       } finally {
         if (!cancelled) {
           setHydratedRunIds((prev) => {

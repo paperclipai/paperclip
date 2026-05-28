@@ -268,12 +268,21 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
   });
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
   const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
+  const [liveRunsPollMs, setLiveRunsPollMs] = useState(15_000);
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") return;
+      setLiveRunsPollMs(30_000);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
 
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
-    refetchInterval: 10_000,
+    refetchInterval: () => (document.visibilityState === "visible" ? liveRunsPollMs : false),
   });
 
   const liveCountByAgent = useMemo(() => {

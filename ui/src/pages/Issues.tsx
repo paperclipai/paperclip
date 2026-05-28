@@ -17,6 +17,7 @@ import type { Issue } from "@paperclipai/shared";
 
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
 const ISSUES_PAGE_SIZE = 500;
+const FILTER_DEBOUNCE_MS = 500;
 
 export function getNextIssuesPageOffset(
   loadedPageSize: number,
@@ -74,14 +75,25 @@ export function Issues() {
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
   const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleSearchChange = useCallback((search: string) => {
-    const nextUrl = buildIssuesSearchUrl(window.location.href, search);
-    if (!nextUrl) {
-      setSearchOverride(null);
-      return;
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
     }
-    window.history.replaceState(window.history.state, "", nextUrl);
-    setSearchOverride({ search, locationSearch: window.location.search });
+    searchDebounceRef.current = setTimeout(() => {
+      const nextUrl = buildIssuesSearchUrl(window.location.href, search);
+      if (!nextUrl) {
+        setSearchOverride(null);
+        return;
+      }
+      window.history.replaceState(window.history.state, "", nextUrl);
+      setSearchOverride({ search, locationSearch: window.location.search });
+    }, FILTER_DEBOUNCE_MS);
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
   }, []);
 
   const { data: agents } = useQuery({
@@ -100,7 +112,7 @@ export function Issues() {
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
-    refetchInterval: 5000,
+    refetchInterval: () => (document.visibilityState === "visible" ? 15_000 : false),
   });
 
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
