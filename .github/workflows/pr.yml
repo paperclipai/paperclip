@@ -273,9 +273,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Playwright
-        run: npx playwright install --with-deps chromium
-
       - name: Generate Paperclip config
         run: |
           mkdir -p ~/.paperclip/instances/default
@@ -294,6 +291,7 @@ jobs:
       - name: Run e2e tests
         env:
           PAPERCLIP_E2E_SKIP_LLM: "true"
+          PAPERCLIP_E2E_BROWSER_CHANNEL: "chrome"
         run: pnpm run test:e2e
 
       - name: Upload Playwright report
