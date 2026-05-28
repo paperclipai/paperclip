@@ -540,7 +540,12 @@ export function issueThreadInteractionService(db: Db) {
         current: args.current,
         actor: args.actor,
       })) {
-        const returnStatus = issueContext.status === "blocked" ? "blocked" : "todo";
+        // Preserve terminal statuses; otherwise return to "blocked" or "todo"
+        const returnStatus = ["done", "cancelled"].includes(issueContext.status)
+          ? issueContext.status
+          : issueContext.status === "blocked"
+            ? "blocked"
+            : "todo";
         const returnedIssue = await issueService(db).update(args.issue.id, {
           status: returnStatus,
           assigneeAgentId: args.current.createdByAgentId,
