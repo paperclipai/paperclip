@@ -42,6 +42,10 @@ import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
 import * as services from "../services/index.js";
 import {
+  listIssueInteractionHandoffStatus,
+  mergeInteractionHandoffStatuses,
+} from "../services/awaiting-human-bridge-status.js";
+import {
   accessService,
   agentService,
   clampIssueListLimit,
@@ -2806,6 +2810,22 @@ export function issueRoutes(
     assertCompanyAccess(req, issue.companyId);
     const interactions = await issueThreadInteractionService(db).listForIssue(id);
     res.json(interactions);
+  });
+
+  router.get("/issues/:id/interaction-handoff-status", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const interactions = await issueThreadInteractionService(db).listForIssue(id);
+    const status = mergeInteractionHandoffStatuses(
+      await listIssueInteractionHandoffStatus(db, id),
+      interactions,
+    );
+    res.json(status);
   });
 
   router.post("/issues/:id/interactions", validate(createIssueThreadInteractionSchema), async (req, res) => {
