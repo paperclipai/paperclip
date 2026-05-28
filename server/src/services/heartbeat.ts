@@ -10048,10 +10048,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return run ?? null;
     },
   };
-}
+
   async function finalizeAgentStatus(
-    const latestFailedRun = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "failed"))).orderBy(desc(heartbeatRuns.finishedAt)).limit(1).then(rows => rows[0] || null);
-    const errorContext = latestFailedRun ? { error: latestFailedRun.error, errorCode: latestFailedRun.errorCode, resultError: latestFailedRun.resultJson ? (JSON.parse(latestFailedRun.resultJson)?.error ?? null) : null } : null;
+    agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
   ) {
     const existing = await getAgent(agentId);
@@ -10101,3 +10100,5 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
     }
+  }
+}
