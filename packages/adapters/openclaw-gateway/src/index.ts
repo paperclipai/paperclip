@@ -36,17 +36,15 @@ Request behavior fields:
 - waitTimeoutMs (number, optional): agent.wait timeout override (default timeoutSec * 1000)
 - autoPairOnFirstConnect (boolean, optional): on first "pairing required", attempt device.pair.list/device.pair.approve via shared auth, then retry once (default true)
 - paperclipApiUrl (string, optional): absolute Paperclip base URL advertised in wake text
-- claimedApiKeyPath (string, optional): path to the claimed API key JSON file read by the agent at wake time (default ~/.openclaw/workspace/paperclip-claimed-api-key.json)
+- paperclipApiKeyPath (string, optional): path to the claimed API key JSON file read by the agent at wake time (default ~/.openclaw/workspace/paperclip-claimed-api-key.json)
+- claimedApiKeyPath (string, optional, deprecated): backward-compatible alias for paperclipApiKeyPath; paperclipApiKeyPath wins when both are set
 
 Session routing fields:
 - sessionKeyStrategy (string, optional): issue (default), fixed, or run
 - sessionKey (string, optional): fixed session key when strategy=fixed (default paperclip)
 
 Standard outbound payload additions:
-- paperclip (object): standardized Paperclip context added to every gateway agent request
-- paperclip.workspace (object, optional): resolved execution workspace for this run
-- paperclip.workspaces (array, optional): additional workspace hints Paperclip exposed to the run
-- paperclip.workspaceRuntime (object, optional): reserved workspace runtime metadata when explicitly supplied outside normal heartbeat execution
+- extraSystemPrompt (string): standardized Paperclip context (runId, agentId, taskId/issueId, wakeReason, workspace, workspaces, workspaceRuntime, wake, etc.) is serialized as a fenced JSON block and appended to extraSystemPrompt. The structured context lives here because OpenClaw's AgentParamsSchema is strict (additionalProperties: false) and rejects unknown root fields. A user-supplied payloadTemplate.extraSystemPrompt is preserved and the Paperclip context block is appended to it.
 
 Standard result metadata supported:
 - meta.runtimeServices (array, optional): normalized adapter-managed runtime service reports

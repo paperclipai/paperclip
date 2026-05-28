@@ -86,7 +86,7 @@ type GatewayClientRequestOptions = {
   expectFinal?: boolean;
 };
 
-const PROTOCOL_VERSION = 3;
+const PROTOCOL_VERSION = 4;
 const DEFAULT_SCOPES = ["operator.admin"];
 const DEFAULT_CLIENT_ID = "gateway-client";
 const DEFAULT_CLIENT_MODE = "backend";
@@ -365,8 +365,9 @@ function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
+  apiKeyPathOverride?: string | null,
 ): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+  const claimedApiKeyPath = apiKeyPathOverride ?? "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -520,6 +521,11 @@ function buildStandardPaperclipPayload(
     ...templatePaperclip,
     ...standardPaperclip,
   };
+}
+
+function renderPaperclipContextBlock(paperclipPayload: Record<string, unknown>): string {
+  const json = JSON.stringify(paperclipPayload);
+  return ["Paperclip context (structured run metadata):", "```json", json, "```"].join("\n");
 }
 
 function normalizeUrl(input: string): URL | null {
@@ -1116,6 +1122,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     structuredWakeJson
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
+    nonEmpty(ctx.config.paperclipApiKeyPath) ?? nonEmpty(ctx.config.claimedApiKeyPath),
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
@@ -1132,14 +1139,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
   const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
 
+  // OpenClaw gateway's AgentParamsSchema is strict (additionalProperties: false)
+  // and rejects unknown root fields, so we cannot pass `paperclip` at the root.
+  // Instead we serialize the structured context into `extraSystemPrompt`, which
+  // the gateway accepts and propagates to the receiving agent. See issue #5704.
+  const paperclipContextBlock = renderPaperclipContextBlock(paperclipPayload);
+  const templateExtraSystemPrompt = nonEmpty(payloadTemplate.extraSystemPrompt);
+  const extraSystemPrompt = templateExtraSystemPrompt
+    ? `${templateExtraSystemPrompt}\n\n${paperclipContextBlock}`
+    : paperclipContextBlock;
+
   const agentParams: Record<string, unknown> = {
     ...payloadTemplate,
     message,
     sessionKey,
     idempotencyKey: ctx.runId,
+    extraSystemPrompt,
   };
   delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
+  delete agentParams.paperclip;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
