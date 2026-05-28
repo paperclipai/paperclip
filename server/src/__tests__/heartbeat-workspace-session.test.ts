@@ -16,6 +16,7 @@ import {
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
+  shouldReuseIssueExecutionWorkspace,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
 
@@ -231,6 +232,48 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
         resolvedSha: "abc1234567890",
       },
     });
+  });
+});
+
+describe("shouldReuseIssueExecutionWorkspace", () => {
+  it("reuses when issue preference is reuse_existing", () => {
+    expect(
+      shouldReuseIssueExecutionWorkspace({
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceId: "ws-1",
+        existingExecutionWorkspace: { status: "active" },
+      }),
+    ).toBe(true);
+  });
+
+  it("reuses when issue has bound executionWorkspaceId even without reuse_existing preference", () => {
+    expect(
+      shouldReuseIssueExecutionWorkspace({
+        executionWorkspacePreference: null,
+        executionWorkspaceId: "ws-ate-294",
+        existingExecutionWorkspace: { status: "active" },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not reuse archived execution workspaces", () => {
+    expect(
+      shouldReuseIssueExecutionWorkspace({
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceId: "ws-1",
+        existingExecutionWorkspace: { status: "archived" },
+      }),
+    ).toBe(false);
+  });
+
+  it("does not reuse when no workspace is bound", () => {
+    expect(
+      shouldReuseIssueExecutionWorkspace({
+        executionWorkspacePreference: null,
+        executionWorkspaceId: null,
+        existingExecutionWorkspace: null,
+      }),
+    ).toBe(false);
   });
 });
 
