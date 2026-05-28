@@ -211,6 +211,7 @@ export function pluginManagedRoutineService(
     if (!routine) return null;
     return {
       ...routine,
+      labelIds: routine.executionLabelIds ?? [],
       managedByPlugin: managedByPlugin(binding),
     } as Routine;
   }
