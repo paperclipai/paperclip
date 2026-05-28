@@ -405,6 +405,13 @@ export function IssueProperties({
   const [newLabelName, setNewLabelName] = useState("");
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
   const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
+  const [billingCodeInput, setBillingCodeInput] = useState(issue.billingCode ?? "");
+  useEffect(() => { setBillingCodeInput(issue.billingCode ?? ""); }, [issue.billingCode]);
+  const commitBillingCode = useCallback(() => {
+    const next = billingCodeInput.trim();
+    const current = (issue.billingCode ?? "").trim();
+    if (next !== current) onUpdate({ billingCode: next || null });
+  }, [billingCodeInput, issue.billingCode, onUpdate]);
   const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
   const normalizedBlockedBySearch = blockedBySearch.trim();
@@ -2100,7 +2107,20 @@ export function IssueProperties({
             <span className="text-sm">{formatDateTime(issue.completedAt)}</span>
           </PropertyRow>
         )}
-        {issue.billingCode && (<PropertyRow label="Billing Code"><TruncatedCopyable value={issue.billingCode} icon={Tag} /></PropertyRow>)}
+        <PropertyRow label="Billing Code">
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+            <Tag className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            <input
+              type="text"
+              value={billingCodeInput}
+              onChange={(e) => setBillingCodeInput(e.target.value)}
+              onBlur={commitBillingCode}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } else if (e.key === "Escape") { setBillingCodeInput(issue.billingCode ?? ""); e.currentTarget.blur(); } }}
+              placeholder="e.g. client-slug"
+              className="text-sm font-mono bg-transparent border-0 outline-none w-full min-w-0 placeholder:text-muted-foreground/50 hover:bg-accent/30 focus:bg-accent/50 rounded px-1 -ml-1 transition-colors"
+            />
+          </div>
+        </PropertyRow>
         <PropertyRow label="Created">
           <span className="text-sm">{formatDateTime(issue.createdAt)}</span>
         </PropertyRow>
