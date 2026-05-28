@@ -274,7 +274,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Playwright
-        run: pnpm exec playwright install --with-deps chromium
+        run: |
+          pnpm exec playwright install-deps chromium
+          pnpm exec playwright install chromium
 
       - name: Generate Paperclip config
         run: |
