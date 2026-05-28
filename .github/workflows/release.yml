@@ -71,7 +71,10 @@ jobs:
         run: pnpm build
 
   publish_canary:
-    if: github.event_name == 'push'
+    # Luke's fork uses push-to-master Release as a verification gate by default.
+    # Publishing @paperclipai/* canaries requires npm trusted publishing setup,
+    # so keep it opt-in instead of failing every fork push with ENEEDAUTH.
+    if: github.event_name == 'push' && vars.PAPERCLIP_PUBLISH_CANARY == 'true'
     needs: verify_canary
     runs-on: ubuntu-latest
     timeout-minutes: 45
