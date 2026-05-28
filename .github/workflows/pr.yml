@@ -71,6 +71,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -82,6 +84,9 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      - name: Prepare PR lockfile
+        run: node ./scripts/prepare-pr-lockfile.mjs --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -200,6 +205,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -211,6 +218,9 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      - name: Prepare PR lockfile
+        run: node ./scripts/prepare-pr-lockfile.mjs --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -227,6 +237,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -238,6 +250,9 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      - name: Prepare PR lockfile
+        run: node ./scripts/prepare-pr-lockfile.mjs --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -258,6 +273,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -269,6 +286,9 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      - name: Prepare PR lockfile
+        run: node ./scripts/prepare-pr-lockfile.mjs --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
