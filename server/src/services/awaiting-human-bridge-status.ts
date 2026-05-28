@@ -135,8 +135,25 @@ export function buildInteractionAwaitingHumanHandoffStatus(
   }
 
   if (bridgeStatus === "waiting_for_human") {
+    const pollError = row.lastError?.trim() || null;
     if (isPollDue) {
       const lastChecked = formatAgoDuration(msSinceLastPoll);
+      if (pollError) {
+        return {
+          interactionId: row.interactionId,
+          provider,
+          providerLabel,
+          phase: "checking",
+          label: `${providerLabel} check failed`,
+          detail: lastChecked
+            ? `${pollError} Retrying now. Last checked ${lastChecked}.`
+            : `${pollError} Retrying now.`,
+          isCheckingNow: true,
+          lastCheckedAt,
+          nextCheckAt,
+          closeOutcome,
+        };
+      }
       return {
         interactionId: row.interactionId,
         provider,
@@ -144,8 +161,8 @@ export function buildInteractionAwaitingHumanHandoffStatus(
         phase: "checking",
         label: `Checking ${providerLabel} for your reply`,
         detail: lastChecked
-          ? `Looking for a reply or reaction now. Last checked ${lastChecked}.`
-          : "Looking for a reply or reaction now.",
+          ? `Looking for a text reply now. Last checked ${lastChecked}.`
+          : "Looking for a text reply now.",
         isCheckingNow: true,
         lastCheckedAt,
         nextCheckAt,
@@ -156,6 +173,7 @@ export function buildInteractionAwaitingHumanHandoffStatus(
     const nextCheck = formatInDuration(msUntilNextPoll);
     const lastChecked = formatAgoDuration(msSinceLastPoll);
     const detailParts = [
+      pollError,
       nextCheck ? `Next check ${nextCheck}` : null,
       lastChecked ? `Last checked ${lastChecked}` : null,
     ].filter(Boolean);

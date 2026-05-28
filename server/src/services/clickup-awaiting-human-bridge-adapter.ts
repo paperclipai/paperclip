@@ -10,6 +10,7 @@ import { awaitingHumanBridges, type Db } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
 import { logActivity } from "./activity-log.js";
+import { logger } from "../middleware/logger.js";
 
 async function loadCompanyOverrides(db: Db, companyId: string): Promise<ClickUpAwaitingHumanConfigOverrides> {
   const resolved = await awaitingHumanSettingsService(db).resolveClickUpRuntimeConfig(companyId);
@@ -211,7 +212,21 @@ export function clickupAwaitingHumanBridgeAdapter(db: Db): AwaitingHumanBridgeAd
       }
       const overrides = await loadBridgeOverrides(db, input.bridgeId);
       const bridge = await loadBridgeContext(db, input.bridgeId);
-      const detected = await detectClickUpAwaitingHumanBridgeEvents(messageId, overrides);
+      let detected;
+      try {
+        detected = await detectClickUpAwaitingHumanBridgeEvents(messageId, overrides);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        logger.error({
+          err: error,
+          bridgeId: input.bridgeId,
+          companyId: bridge.companyId,
+          issueId: bridge.issueId,
+          interactionId: bridge.interactionId,
+          messageId,
+        }, "clickup awaiting human reply detect failed");
+        return { status: "failed" as const, detail, events: [] };
+      }
       const events: AwaitingHumanBridgePollEvent[] = detected.events.map((event) => ({
         kind: event.kind,
         externalEventId: event.externalEventId,

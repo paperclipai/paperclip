@@ -1370,13 +1370,13 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
           detail: "ok",
           events: [
             {
-              kind: "approval_signal",
-              externalEventId: "approval-1",
+              kind: "reply",
+              externalEventId: "reply-1",
               externalThreadId: "thread-1",
               externalMessageId: "message-1",
-              body: "approved",
+              body: "Approve",
               receivedAt: new Date("2026-05-22T00:02:00.000Z"),
-              metadata: { resolutionSource: "clickup_reply" },
+              metadata: { clickupReplyId: "reply-1", resolutionSource: "clickup_reply" },
             },
           ],
         })),
@@ -1400,7 +1400,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toBe("Clickup reply received:\n\napproved");
+    expect(comments[0]?.body).toBe("Clickup reply received:\n\nApprove");
 
     const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, seeded.agentId));
     expect(wakes).toHaveLength(1);
@@ -1433,13 +1433,13 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
           detail: "ok",
           events: [
             {
-              kind: "approval_signal",
-              externalEventId: "approval-1",
+              kind: "reply",
+              externalEventId: "reply-1",
               externalThreadId: "thread-1",
               externalMessageId: "message-1",
-              body: "approved",
+              body: "Approve",
               receivedAt: new Date("2026-05-22T00:02:00.000Z"),
-              metadata: { resolutionSource: "clickup_reply" },
+              metadata: { clickupReplyId: "reply-1", resolutionSource: "clickup_reply" },
             },
           ],
         })),
@@ -1474,7 +1474,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     const commentsAfterFirstPoll = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
     expect(commentsAfterFirstPoll).toHaveLength(1);
-    expect(commentsAfterFirstPoll[0]?.body).toBe("Clickup reply received:\n\napproved");
+    expect(commentsAfterFirstPoll[0]?.body).toBe("Clickup reply received:\n\nApprove");
 
     const wakesAfterFirstPoll = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, seeded.agentId));
     expect(wakesAfterFirstPoll).toHaveLength(1);
@@ -1618,7 +1618,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
               externalEventId: "approval-1",
               externalThreadId: "thread-1",
               externalMessageId: "message-1",
-              body: "approved",
+              body: "Approve",
               metadata: { resolutionSource: "clickup_reply" },
             },
           ],
@@ -1958,7 +1958,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
               externalEventId: "approval-1",
               externalThreadId: "thread-1",
               externalMessageId: "message-1",
-              body: "approved",
+              body: "Approve",
               receivedAt: new Date("2026-05-22T00:02:00.000Z"),
             },
           ],
@@ -2615,7 +2615,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
               externalEventId: "approval-1",
               externalThreadId: "thread-1",
               externalMessageId: "message-1",
-              body: "approved",
+              body: "Approve",
             },
           ],
         })),
@@ -2974,7 +2974,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
               externalEventId: "approval-1",
               externalThreadId: "thread-1",
               externalMessageId: "message-1",
-              body: "approved",
+              body: "Approve",
             },
           ],
         })),
@@ -3006,7 +3006,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       externalEventId: "approval-1",
       externalMessageId: "message-1",
       externalThreadId: "thread-1",
-      payload: { body: "approved" },
+      payload: { body: "Approve" },
     });
 
     const result = await service.pollActiveBridges(new Date("2026-05-22T00:03:00.000Z"));
@@ -3346,7 +3346,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
               externalEventId: "approval-1",
               externalThreadId: "thread-1",
               externalMessageId: "message-42",
-              body: "approved",
+              body: "Approve",
               metadata: { resolutionSource: "clickup_reply" },
             },
           ],

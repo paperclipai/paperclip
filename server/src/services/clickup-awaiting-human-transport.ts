@@ -8,40 +8,6 @@ const MAX_DETAIL_BULLETS = 5;
 const MAX_BULLET_LENGTH = 220;
 const DEFAULT_CLICKUP_TIMEOUT_SEC = 30;
 const CLICKUP_ATTACHMENT_FILE_FIELD = "attachment[0]";
-const DEFAULT_CLICKUP_APPROVAL_POSITIVE_REPLY_KEYWORDS = [
-  "approve",
-  "approved",
-  "approving",
-  "yes",
-  "ok",
-  "okay",
-  "ship it",
-  "lgtm",
-  "looks good",
-  "go ahead",
-  "+1",
-] as const;
-const DEFAULT_CLICKUP_REJECTION_REPLY_KEYWORDS = [
-  "reject",
-  "rejected",
-  "decline",
-  "declined",
-  "no",
-  "not approved",
-] as const;
-const NEGATED_APPROVAL_PREFIXES = [
-  "not",
-  "no",
-  "never",
-  "nope",
-  "don t",
-  "dont",
-  "can t",
-  "cant",
-  "won t",
-  "wont",
-] as const;
-
 export interface AwaitingHumanNotificationReviewFile {
   source: "artifact" | "document";
   deliverableId: string;
@@ -97,7 +63,6 @@ type ClickUpChatConfig = {
   workspaceId: string;
   channelId: string;
   reviewListId: string;
-  approvalPositiveReplyKeywords: string[];
 };
 
 export type ClickUpAwaitingHumanConfigOverrides = {
@@ -176,10 +141,6 @@ async function readCompanyClickUpOverrides(
 }
 
 function readClickUpChatConfig(overrides?: ClickUpAwaitingHumanConfigOverrides): ClickUpChatConfig {
-  const positiveReplyKeywords = (process.env.CLICKUP_APPROVAL_POSITIVE_REPLY_KEYWORDS ?? "")
-    .split(",")
-    .map((value) => compactWhitespace(value.trim().toLowerCase()))
-    .filter(Boolean);
   const personalToken = overrides?.personalToken?.trim()
     || process.env.CLICKUP_PERSONAL_TOKEN?.trim()
     || "";
@@ -196,9 +157,6 @@ function readClickUpChatConfig(overrides?: ClickUpAwaitingHumanConfigOverrides):
     workspaceId,
     channelId,
     reviewListId: process.env.CLICKUP_AWAITING_HUMAN_REVIEW_LIST_ID?.trim() ?? "",
-    approvalPositiveReplyKeywords: positiveReplyKeywords.length > 0
-      ? [...new Set(positiveReplyKeywords)]
-      : [...DEFAULT_CLICKUP_APPROVAL_POSITIVE_REPLY_KEYWORDS],
   };
 }
 
@@ -208,57 +166,30 @@ function normalizeReactionName(value: unknown) {
   return raw.toLowerCase().replaceAll(" ", "_");
 }
 
-function normalizeReplyContent(value: string | null | undefined) {
-  if (!value) return "";
-  return compactWhitespace(value.toLowerCase().replace(/[^\p{L}\p{N}\s+]+/gu, " "));
-}
+function extractReplyText(row: Record<string, unknown>, postData: Record<string, unknown> | null) {
+  const direct = readString(row.content)
+    ?? readString(row.message)
+    ?? readString(row.text)
+    ?? readString(row.body);
+  if (direct) return direct;
 
-function hasNegatedApprovalPrefix(content: string, keywordStart: number) {
-  const prefix = content.slice(0, keywordStart).trimEnd();
-  if (!prefix) return false;
-  return NEGATED_APPROVAL_PREFIXES.some((negation) => prefix.endsWith(negation));
-}
+  if (!postData) return null;
 
-function replySignalsApproval(reply: ClickUpChatMessageReply, config: ClickUpChatConfig) {
-  const content = normalizeReplyContent(reply.content);
-  if (!content) return false;
-  return config.approvalPositiveReplyKeywords.some((keyword) => {
-    if (content === keyword) return true;
-    const searchToken = ` ${keyword} `;
-    const includePositions: number[] = [];
-    let searchFrom = 0;
-    while (true) {
-      const index = content.indexOf(searchToken, searchFrom);
-      if (index === -1) break;
-      includePositions.push(index + 1);
-      searchFrom = index + 1;
-    }
-    const matchPositions = [
-      content.startsWith(`${keyword} `) ? 0 : -1,
-      ...includePositions,
-      content.endsWith(` ${keyword}`) ? content.length - keyword.length : -1,
-    ].filter((position) => position >= 0);
-    return matchPositions.some((position) => !hasNegatedApprovalPrefix(content, position));
-  });
-}
+  const nestedContent = postData.content;
+  if (typeof nestedContent === "string") {
+    return readString(nestedContent);
+  }
+  if (nestedContent && typeof nestedContent === "object" && !Array.isArray(nestedContent)) {
+    const nested = nestedContent as Record<string, unknown>;
+    return readString(nested.text)
+      ?? readString(nested.content)
+      ?? readString(nested.markdown)
+      ?? readString(nested.plaintext);
+  }
 
-function replySignalsRejection(reply: ClickUpChatMessageReply) {
-  const content = normalizeReplyContent(reply.content);
-  if (!content) return false;
-  return DEFAULT_CLICKUP_REJECTION_REPLY_KEYWORDS.some((keyword) => {
-    if (content === keyword) return true;
-    const matchPositions: number[] = [];
-    if (content.startsWith(`${keyword} `)) matchPositions.push(0);
-    let searchFrom = 0;
-    while (true) {
-      const index = content.indexOf(` ${keyword} `, searchFrom);
-      if (index === -1) break;
-      matchPositions.push(index + 1);
-      searchFrom = index + 1;
-    }
-    if (content.endsWith(` ${keyword}`)) matchPositions.push(content.length - keyword.length);
-    return matchPositions.some((position) => !hasNegatedApprovalPrefix(content, position));
-  });
+  return readString(postData.message)
+    ?? readString(postData.text)
+    ?? readString(postData.body);
 }
 
 async function fetchText(url: string, init: RequestInit, timeoutSec = DEFAULT_CLICKUP_TIMEOUT_SEC) {
@@ -339,7 +270,7 @@ function extractReplyRows(payload: unknown): ClickUpChatMessageReply[] {
         ?? (postData ? readString(postData.message_id) : null)
         ?? (postData ? readString(postData.messageId) : null),
       reactionsUrl: links ? readString(links.reactions) : null,
-      content: readString(row.content) ?? readString(row.message) ?? readString(row.text),
+      content: extractReplyText(row, postData),
     };
   });
 }
@@ -894,50 +825,23 @@ export async function detectClickUpAwaitingHumanBridgeEvents(
     const replyId = readString(reply.id) ?? readString(reply.messageId);
     const replyBody = readString(reply.content);
     if (!replyId || !replyBody) continue;
-    const metadata = {
-      clickupReplyId: replyId,
-      ...(reply.reactionsUrl ? { clickupReplyReactionsUrl: reply.reactionsUrl } : {}),
-    };
-    if (replySignalsApproval(reply, config)) {
-      events.push({
-        kind: "approval_signal",
-        externalEventId: `reply:${replyId}:approval`,
-        externalMessageId: messageId,
-        body: replyBody,
-        metadata: {
-          resolutionSource: "clickup_reply",
-          ...metadata,
-        },
-      });
-      return { status: "sent", detail: "positive-reply-detected", events };
-    }
-    if (replySignalsRejection(reply)) {
-      events.push({
-        kind: "reject_signal",
-        externalEventId: `reply:${replyId}:rejection`,
-        externalMessageId: messageId,
-        body: replyBody,
-        metadata: {
-          resolutionSource: "clickup_reply",
-          ...metadata,
-        },
-      });
-      return { status: "sent", detail: "negative-reply-detected", events };
-    }
     events.push({
       kind: "reply",
       externalEventId: replyId,
       externalMessageId: messageId,
       body: replyBody,
-      metadata,
+      metadata: {
+        clickupReplyId: replyId,
+        ...(reply.reactionsUrl ? { clickupReplyReactionsUrl: reply.reactionsUrl } : {}),
+      },
     });
   }
 
   if (events.length > 0) {
-    return { status: "sent", detail: "non-approval-reply-detected", events };
+    return { status: "sent", detail: "replies-detected", events };
   }
 
-  return { status: "sent", detail: "no-approval-signal", events: [] };
+  return { status: "sent", detail: "no-replies", events: [] };
 }
 
 export {

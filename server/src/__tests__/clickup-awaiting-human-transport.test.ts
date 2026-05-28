@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   addClickUpChatMessageReaction,
   deleteClickUpChatMessageReaction,
+  detectClickUpAwaitingHumanBridgeEvents,
   getClickUpChatMessageReplies,
 } from "../services/clickup-awaiting-human-transport.js";
 
@@ -176,5 +177,59 @@ describe("getClickUpChatMessageReplies", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("extracts reply text from nested post_data content", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [
+          {
+            id: "reply-row-2",
+            post_data: {
+              id: "reply-message-2",
+              content: { text: "Reject" },
+            },
+          },
+        ],
+      }),
+    }) as typeof fetch;
+
+    const result = await getClickUpChatMessageReplies("message-42");
+
+    expect(result.replies[0]?.content).toBe("Reject");
+  });
+});
+
+describe("detectClickUpAwaitingHumanBridgeEvents", () => {
+  it("returns reply events for every thread reply with text", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [{ id: "reply-1", content: "Reject" }],
+      }),
+    }) as typeof fetch;
+
+    const result = await detectClickUpAwaitingHumanBridgeEvents("message-42");
+
+    expect(result).toEqual({
+      status: "sent",
+      detail: "replies-detected",
+      events: [{
+        kind: "reply",
+        externalEventId: "reply-1",
+        externalMessageId: "message-42",
+        body: "Reject",
+        metadata: { clickupReplyId: "reply-1" },
+      }],
+    });
   });
 });

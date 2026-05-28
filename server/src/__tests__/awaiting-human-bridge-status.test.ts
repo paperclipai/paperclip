@@ -61,6 +61,30 @@ describe("buildInteractionAwaitingHumanHandoffStatus", () => {
     expect(status.detail).toContain("Next check in 30s");
   });
 
+  it("surfaces the last poll error while still waiting for a human", () => {
+    const status = buildInteractionAwaitingHumanHandoffStatus(
+      makeRow({
+        lastError: "Cannot read properties of undefined (reading 'some')",
+        nextPollAt: new Date("2026-05-22T12:00:30.000Z"),
+      }),
+      now,
+    );
+    expect(status.phase).toBe("listening");
+    expect(status.detail).toContain("reading 'some'");
+    expect(status.detail).toContain("Next check in 30s");
+  });
+
+  it("shows poll failures during an active check", () => {
+    const status = buildInteractionAwaitingHumanHandoffStatus(
+      makeRow({ lastError: "missing-credential: CLICKUP_PERSONAL_TOKEN" }),
+      now,
+    );
+    expect(status.phase).toBe("checking");
+    expect(status.label).toBe("ClickUp check failed");
+    expect(status.detail).toContain("missing-credential");
+    expect(status.detail).toContain("Retrying now");
+  });
+
   it("describes sending and terminal states", () => {
     expect(buildInteractionAwaitingHumanHandoffStatus(
       makeRow({ status: "pending_delivery", nextPollAt: null }),
