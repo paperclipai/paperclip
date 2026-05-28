@@ -1,6 +1,12 @@
 import { writeFile } from "node:fs/promises";
 import pc from "picocolors";
-import type { PipelineResult, PipelineStats, ScoredOpportunity } from "../core/types.js";
+import ExcelJS from "exceljs";
+import type {
+  PipelineResult,
+  PipelineStats,
+  ScoredOpportunity,
+  ServiceCategory,
+} from "../core/types.js";
 import { SERVICE_CATEGORY_LABELS } from "../core/constants.js";
 
 /**
@@ -26,6 +32,104 @@ export async function writeQualifiedCsv(
   const rejected = opportunities.filter((o) => o.score < minScore);
   await writeCsv(qualified, qualifiedPath);
   await writeCsv(rejected, rejectedPath);
+}
+
+// ── Shared lawyer-output helpers ────────────────────────────────────
+
+const CORE_PROMOTION_CATEGORIES: ServiceCategory[] = ["managed-it", "cybersecurity"];
+
+/**
+ * Tier with MSP/Cybersecurity promotion: a strong service-alignment (>=35/40)
+ * in a core category is GREEN regardless of value-fit deductions.
+ */
+function tierOf(opp: ScoredOpportunity): "GREEN" | "YELLOW" | "AMBER" {
+  const promotable =
+    CORE_PROMOTION_CATEGORIES.includes(opp.serviceCategory) &&
+    opp.scoreBreakdown.serviceAlignment >= 35;
+  if (promotable || opp.score >= 80) return "GREEN";
+  if (opp.score >= 70) return "YELLOW";
+  return "AMBER";
+}
+
+/** Human relative-day phrase vs `today` (e.g. "Tomorrow", "3 days", "2 days ago"). */
+function relativeDays(target: Date, today: Date): string {
+  const diff = Math.round((target.getTime() - today.getTime()) / 86_400_000);
+  if (diff < 0) return `${Math.abs(diff)} days ago`;
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  return `${diff} days`;
+}
+
+function valueOf(opp: ScoredOpportunity): string {
+  if (opp.extracted?.annualValue)
+    return `$${opp.extracted.annualValue.toLocaleString()}/yr`;
+  if (opp.estimatedValue) return `$${opp.estimatedValue.toLocaleString()}`;
+  return "Not specified";
+}
+
+/** Sort freshest-first by agency release (postedDate); nulls sink to the bottom. */
+function sortByReleasedDesc(opps: ScoredOpportunity[]): ScoredOpportunity[] {
+  return [...opps].sort((a, b) => {
+    const pa = a.postedDate ? new Date(a.postedDate).getTime() : 0;
+    const pb = b.postedDate ? new Date(b.postedDate).getTime() : 0;
+    return pb - pa;
+  });
+}
+
+/**
+ * Lawyer-friendly CSV: plain-English columns including agency release date
+ * and staleness, sorted freshest-first. Drops technical fields.
+ */
+export async function writeLawyerCsv(
+  opportunities: ScoredOpportunity[],
+  filepath: string,
+): Promise<void> {
+  const headers = [
+    "Rank",
+    "Score",
+    "Tier",
+    "Title",
+    "Agency",
+    "State",
+    "Estimated Value",
+    "Released",
+    "Days Since Released",
+    "Due Date",
+    "Days Until Due",
+    "Submission Method",
+    "Why It Matched",
+    "Concerns",
+    "Link",
+  ];
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const sorted = sortByReleasedDesc(opportunities);
+  const rows = sorted.map((opp, i) => {
+    const dueDate = opp.dueDate ? new Date(opp.dueDate) : null;
+    const releasedDate = opp.postedDate ? new Date(opp.postedDate) : null;
+    return [
+      String(i + 1),
+      String(opp.score),
+      tierOf(opp),
+      csvEscape(opp.title),
+      csvEscape(opp.agency),
+      opp.state ?? "",
+      csvEscape(valueOf(opp)),
+      releasedDate ? releasedDate.toLocaleDateString("en-US") : "",
+      releasedDate ? relativeDays(releasedDate, today) : "",
+      dueDate ? dueDate.toLocaleDateString("en-US") : "",
+      dueDate ? relativeDays(dueDate, today) : "",
+      csvEscape(opp.extracted?.submissionPortal ?? ""),
+      csvEscape(opp.reasoning),
+      csvEscape(opp.disqualifiers.join("; ")),
+      opp.sourceUrl ?? "",
+    ];
+  });
+
+  const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+  await writeFile(filepath, csv);
 }
 
 /**
@@ -167,4 +271,151 @@ function csvEscape(value: string): string {
     return `"${value.replace(/"/g, '""')}"`;
   }
   return value;
+}
+
+/**
+ * Lawyer-friendly Excel (.xlsx) workbook with formatting:
+ *   - Frozen header row (bold, gray background)
+ *   - Auto-filter on the header
+ *   - Tier cell colored by value (GREEN/YELLOW/AMBER) with white bold text
+ *   - Link column rendered as a clickable "Open RFP" hyperlink
+ *   - Sized columns + wrap text on long-form fields
+ *
+ * Tier promotion for clear MSP/IT-Services/Cybersecurity bids matches the
+ * rule in writeLawyerCsv.
+ */
+const TIER_COLORS: Record<string, { bg: string; fg: string }> = {
+  GREEN: { bg: "FF00B050", fg: "FFFFFFFF" },
+  YELLOW: { bg: "FFFFC000", fg: "FF1F1F1F" },
+  AMBER: { bg: "FFC65911", fg: "FFFFFFFF" },
+};
+
+/** Populate one worksheet (used for both the main sheet and the Addenda tab). */
+function populateLawyerSheet(
+  ws: ExcelJS.Worksheet,
+  opportunities: ScoredOpportunity[],
+  today: Date,
+): void {
+  ws.columns = [
+    { header: "Rank", key: "rank", width: 6 },
+    { header: "Score", key: "score", width: 8 },
+    { header: "Tier", key: "tier", width: 10 },
+    { header: "Title", key: "title", width: 55 },
+    { header: "Agency", key: "agency", width: 34 },
+    { header: "State", key: "state", width: 8 },
+    { header: "Estimated Value", key: "value", width: 18 },
+    { header: "Released", key: "released", width: 12 },
+    { header: "Days Since Released", key: "age", width: 16 },
+    { header: "Due Date", key: "due", width: 12 },
+    { header: "Days Until Due", key: "days", width: 14 },
+    { header: "Submission Method", key: "method", width: 18 },
+    { header: "Why It Matched", key: "why", width: 55 },
+    { header: "Concerns", key: "concerns", width: 32 },
+    { header: "Link", key: "link", width: 14 },
+  ];
+
+  const headerRow = ws.getRow(1);
+  headerRow.font = { bold: true, color: { argb: "FF1F1F1F" } };
+  headerRow.fill = {
+    type: "pattern",
+    pattern: "solid",
+    fgColor: { argb: "FFE8E8E8" },
+  };
+  headerRow.alignment = { vertical: "middle", horizontal: "left" };
+  headerRow.height = 22;
+
+  const sorted = sortByReleasedDesc(opportunities);
+  for (let i = 0; i < sorted.length; i++) {
+    const opp = sorted[i];
+    const tier = tierOf(opp);
+    const dueDate = opp.dueDate ? new Date(opp.dueDate) : null;
+    const releasedDate = opp.postedDate ? new Date(opp.postedDate) : null;
+
+    const row = ws.addRow({
+      rank: i + 1,
+      score: opp.score,
+      tier,
+      title: opp.title,
+      agency: opp.agency,
+      state: opp.state ?? "",
+      value: valueOf(opp),
+      released: releasedDate ?? "",
+      age: releasedDate ? relativeDays(releasedDate, today) : "",
+      due: dueDate ?? "",
+      days: dueDate ? relativeDays(dueDate, today) : "",
+      method: opp.extracted?.submissionPortal ?? "",
+      why: opp.reasoning,
+      concerns: opp.disqualifiers.join("; "),
+      link: opp.sourceUrl
+        ? { text: "Open RFP", hyperlink: opp.sourceUrl }
+        : "",
+    });
+
+    const tierCell = row.getCell("tier");
+    const colors = TIER_COLORS[tier];
+    tierCell.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: colors.bg },
+    };
+    tierCell.font = { bold: true, color: { argb: colors.fg } };
+    tierCell.alignment = { horizontal: "center", vertical: "middle" };
+
+    if (dueDate) row.getCell("due").numFmt = "m/d/yyyy";
+    if (releasedDate) row.getCell("released").numFmt = "m/d/yyyy";
+
+    if (opp.sourceUrl) {
+      row.getCell("link").font = {
+        color: { argb: "FF0563C1" },
+        underline: true,
+      };
+    }
+
+    row.getCell("rank").alignment = { horizontal: "center" };
+    row.getCell("score").alignment = { horizontal: "center" };
+    row.getCell("state").alignment = { horizontal: "center" };
+    row.getCell("age").alignment = { horizontal: "center" };
+    row.getCell("days").alignment = { horizontal: "center" };
+  }
+
+  for (const colKey of ["title", "agency", "why", "concerns"] as const) {
+    ws.getColumn(colKey).alignment = { wrapText: true, vertical: "top" };
+  }
+
+  const lastCol = String.fromCharCode(64 + ws.columns.length);
+  ws.autoFilter = { from: "A1", to: `${lastCol}${sorted.length + 1}` };
+  ws.views = [{ state: "frozen", ySplit: 1, zoomScale: 100 }];
+}
+
+/**
+ * Lawyer-friendly Excel workbook. Main "Qualified RFPs" sheet plus an optional
+ * "Addenda & Updates" sheet for re-posts / deadline changes so they don't
+ * inflate the new-RFP count. Both sheets: frozen header, auto-filter,
+ * color-coded tier, clickable links, freshness columns, sorted newest-first.
+ */
+export async function writeLawyerXlsx(
+  opportunities: ScoredOpportunity[],
+  filepath: string,
+  addenda: ScoredOpportunity[] = [],
+): Promise<void> {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "govbids daily";
+  wb.created = new Date();
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const main = wb.addWorksheet("Qualified RFPs", {
+    views: [{ state: "frozen", ySplit: 1 }],
+  });
+  populateLawyerSheet(main, opportunities, today);
+
+  if (addenda.length > 0) {
+    const addendaSheet = wb.addWorksheet("Addenda & Updates", {
+      views: [{ state: "frozen", ySplit: 1 }],
+    });
+    populateLawyerSheet(addendaSheet, addenda, today);
+  }
+
+  await wb.xlsx.writeFile(filepath);
 }

@@ -180,7 +180,7 @@ function parseScoreResponse(
       scoreBreakdown: breakdown,
       serviceCategory: category,
       reasoning: parsed.reasoning ?? "",
-      disqualifiers: parsed.disqualifiers ?? [],
+      disqualifiers: stripSoftDisqualifiers(parsed.disqualifiers ?? []),
     };
 
     if (parseExtracted && parsed.extracted) {
@@ -250,4 +250,38 @@ function fallbackScore(
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * Strip "soft" reasons that the team flagged as over-aggressive disqualifiers
+ * (round-3 feedback). Coverage audit on 193 manual team RFPs showed these two
+ * patterns alone caused 83 spurious filter-outs across 8 days — both are
+ * operating conditions the team handles routinely, not hard blockers.
+ *
+ * Also strips deadline-tightness, no-diversity-advantage, and pure-vagueness
+ * notes. True blockers (certifications, sole-source, RFI-not-RFP, etc.) pass
+ * through unchanged.
+ */
+export function stripSoftDisqualifiers(dq: string[]): string[] {
+  const softPatterns: RegExp[] = [
+    // Unknown / unspecified contract value
+    /\bvalue\b.*\b(unknown|not specified|not provided|unspecified|no contract value|no estimated|not stated|unclear)\b/i,
+    /\b(unknown|unspecified|no estimated|no contract value|not specified|undisclosed)\b.*\bvalue\b/i,
+    /\bcontract value\b.*(not|un)/i,
+    /\b(price|budget) (not|un)/i,
+    // Limited / minimal / brief / vague RFP details
+    /\b(limited|minimal|brief|vague|insufficient|sparse|incomplete)\b.*(detail|description|information|requirements|solicitation)/i,
+    /\b(detail|description|information|requirements)\b.*\b(limited|minimal|brief|vague|insufficient|sparse|missing|incomplete)\b/i,
+    // Deadline tightness
+    /\b(tight|short|narrow|very brief|insufficient|limited)\b.*\b(deadline|response window|timeline|turnaround|time)\b/i,
+    /\bdue (date)? (is )?(tomorrow|today|in \d+ days?|soon|imminent)/i,
+    /\bvery soon\b/i,
+    /\bonly \d+ days?\b/i,
+    // No competitive / diversity edge — open competition is the norm
+    /\bno (competitive |diversity )?(advantage|set-aside|preference|edge)/i,
+    /\bopen competition\b/i,
+    /\bdiversity (certifications? )?(would |do |does )?not\b/i,
+  ];
+
+  return dq.filter((d) => !softPatterns.some((rx) => rx.test(d)));
 }

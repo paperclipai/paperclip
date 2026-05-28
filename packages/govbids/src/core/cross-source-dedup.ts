@@ -4,7 +4,7 @@ import type { NormalizedOpportunity } from "./types.js";
  * Normalize a title for fuzzy matching across sources.
  * Strips common prefixes, punctuation, extra whitespace, and lowercases.
  */
-function normalizeTitle(title: string): string {
+export function normalizeTitle(title: string): string {
   return title
     .toLowerCase()
     .replace(/^(rfp|rfq|ifb|solicitation|bid)\s*[-:#]?\s*/i, "")

@@ -39,12 +39,13 @@ export function normalizeRfpMartOpportunity(
   raw: RfpMartRawOpportunity,
 ): NormalizedOpportunity {
   const budget = parseBudget(raw.rfpmart_budget, raw.rfpmart_budget_2);
+  const { title, agency } = parseTitleAndAgency(raw.rfpmart_title, raw.rfpmart_scope_1);
 
   return {
     id: `rfpmart-${raw.rfpmart_rfp_id}`,
-    title: raw.rfpmart_title?.trim() ?? "",
+    title,
     description: raw.rfpmart_scope_1 || raw.rfpmart_scope_2 || "",
-    agency: extractAgency(raw.rfpmart_title, raw.rfpmart_scope_1),
+    agency,
     state: STATE_MAP[raw.rfpmart_state] ?? null,
     naicsCode: CATEGORY_TO_NAICS[raw.rfpmart_category] ?? null,
     pscCode: null,
@@ -78,24 +79,37 @@ function parseBudget(b1: string, b2: string): number | null {
 }
 
 /**
- * Try to extract agency name from title or description.
- * RFPMart doesn't have a dedicated agency field.
+ * RFPMart titles are formatted as `USA (City, State) - Real Title` (or `USA (State) - ...`).
+ * Extract the location into agency and strip the prefix from the title so lawyers
+ * see clean data instead of "RFPMart Source".
+ *
+ * Falls back to scanning the description for "Agency of X" / "City of X" patterns
+ * when the title doesn't match the USA-prefix shape.
  */
-function extractAgency(title: string, description: string): string {
-  // Common patterns: "RFP from [Agency]", title often starts with agency
-  // For now, return empty — the LLM scorer will read the description
-  const text = description || title;
+function parseTitleAndAgency(
+  rawTitle: string | null | undefined,
+  description: string,
+): { title: string; agency: string } {
+  const title = (rawTitle ?? "").trim();
 
-  // Look for common patterns
+  // USA (City, State) - Title  OR  USA (State) - Title
+  const usaPrefix = title.match(/^USA\s*\(([^)]+)\)\s*[-–—]\s*(.+)$/i);
+  if (usaPrefix) {
+    const location = usaPrefix[1].trim();
+    const cleanedTitle = usaPrefix[2].trim();
+    return { title: cleanedTitle, agency: location };
+  }
+
+  // Fallback patterns from description text
+  const text = description || title;
   const patterns = [
     /(?:issued by|from|by)\s+(?:the\s+)?([A-Z][A-Za-z\s]+(?:Department|Agency|Office|County|City|University|District|Authority|Commission))/i,
     /^((?:City|County|State|Department|University|Office)\s+of\s+[A-Za-z\s]+)/i,
   ];
-
   for (const pattern of patterns) {
     const match = text.match(pattern);
-    if (match) return match[1].trim();
+    if (match) return { title, agency: match[1].trim() };
   }
 
-  return "RFPMart Source";
+  return { title, agency: "RFPMart (agency in title)" };
 }

@@ -19,11 +19,13 @@
     "govbids:fetch": "tsx src/cli/index.ts fetch",
     "govbids:score": "tsx src/cli/index.ts score",
     "govbids:push": "tsx src/cli/index.ts push",
-    "govbids:run": "tsx src/cli/index.ts run"
+    "govbids:run": "tsx src/cli/index.ts run",
+    "govbids:daily": "tsx src/cli/index.ts daily"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "commander": "^13.1.0",
+    "exceljs": "^4.4.0",
     "jszip": "^3.10.1",
     "picocolors": "^1.1.1",
     "unpdf": "^1.6.2",

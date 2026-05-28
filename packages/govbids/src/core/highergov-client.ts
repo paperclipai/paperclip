@@ -71,8 +71,8 @@ export class HigherGovClient {
     if (params.maxValue) queryParams.val_est_high = String(params.maxValue);
     if (params.dueDateAfter) queryParams.due_date_after = params.dueDateAfter;
     if (params.dueDateBefore) queryParams.due_date_before = params.dueDateBefore;
-    // captured_date is REQUIRED by the API
-    queryParams.captured_date = params.capturedAfter ?? defaultCapturedDate();
+    // captured_date is REQUIRED by the API and must be YYYY-MM-DD (no time/timezone)
+    queryParams.captured_date = (params.capturedAfter ?? defaultCapturedDate()).slice(0, 10);
     if (params.opportunityType) queryParams.opportunity_type = params.opportunityType;
     if (params.sourceType) queryParams.source_type = params.sourceType;
 
@@ -153,8 +153,14 @@ export class HigherGovClient {
       url.searchParams.set(key, value);
     }
 
+    // Retry schedule covers wake-from-sleep / VPN-reconnect scenarios where DNS
+    // (ENOTFOUND) is intermittently unresolvable for up to ~60s. 2026-05-28
+    // launchd job died at 7:00:00 because the old 3-retry/3s schedule expired
+    // before the laptop's network finished coming up. New schedule: 5 attempts
+    // with 5s/10s/20s/40s backoff = ~75s total recovery window.
+    const backoffsMs = [5_000, 10_000, 20_000, 40_000];
     let lastError: Error | null = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt <= backoffsMs.length; attempt++) {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 30_000);
       try {
@@ -169,12 +175,54 @@ export class HigherGovClient {
       } catch (error) {
         clearTimeout(timeout);
         lastError = error instanceof Error ? error : new Error(String(error));
-        if (attempt < 2) {
-          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        const isTransient = isTransientNetworkError(lastError);
+        if (attempt < backoffsMs.length && isTransient) {
+          const waitMs = backoffsMs[attempt];
+          console.error(
+            `  HigherGov attempt ${attempt + 1} failed (${transientErrorCode(lastError) ?? "transient"}). Retrying in ${waitMs / 1000}s...`,
+          );
+          await new Promise((r) => setTimeout(r, waitMs));
+        } else {
+          // Non-transient errors (HTTP 4xx, malformed JSON, etc.) — fail fast.
+          break;
         }
       }
     }
 
     throw lastError;
   }
+}
+
+/**
+ * Network-level errors worth retrying through (vs application errors that
+ * won't fix themselves with another attempt). Looks at `error.cause.code`
+ * (undici) and falls back to the message text.
+ */
+function isTransientNetworkError(err: Error): boolean {
+  const code = transientErrorCode(err);
+  if (code) return true;
+  const msg = err.message.toLowerCase();
+  // HTTP 5xx and 429 are server-side retry-worthy
+  if (/api error: 5\d\d/.test(msg) || /api error: 429/.test(msg)) return true;
+  if (/timed? ?out|timeout|aborted/.test(msg)) return true;
+  return false;
+}
+
+function transientErrorCode(err: Error): string | null {
+  const cause = (err as { cause?: { code?: string } }).cause;
+  const code = cause?.code;
+  if (!code) return null;
+  const TRANSIENT_CODES = new Set([
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "ETIMEDOUT",
+    "EHOSTUNREACH",
+    "ENETUNREACH",
+    "EPIPE",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_SOCKET",
+  ]);
+  return TRANSIENT_CODES.has(code) ? code : null;
 }

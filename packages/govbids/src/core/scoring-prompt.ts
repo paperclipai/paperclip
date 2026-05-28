@@ -15,6 +15,10 @@ Score each government bid opportunity on a 0–100 scale using this rubric:
 ### Service Alignment (0–40 points)
 How well does this opportunity match ConsultAdd's 7 service areas? A perfect match to a core service (e.g., "managed IT services for state agency") scores 35-40. Adjacent IT work scores 20-34. Tangentially related work scores 10-19. Non-IT work (manufacturing, construction, physical goods) scores 0-9.
 
+SOFTWARE LICENSING IS IN SCOPE: Software licensing, subscriptions, SaaS license purchases, enterprise license agreements, and license + maintenance/support renewals are FULLY in scope — including pure license resale with no implementation component. Score them as the matching platform category (e.g., "Oracle license & support renewal" → erp; "Microsoft 365 / Azure subscription" → cloud; "Salesforce licenses" → erp). Do NOT penalize an opportunity for being "just a license/subscription/COTS purchase" — treat a clean license/subscription buy on a platform ConsultAdd works with as strong service alignment (30-40).
+
+WEBSITE DESIGN IS OUT OF CORE SCOPE: Pure website design, website redesign, CMS setup, or brochure-ware web development with NO larger system, platform, integration, portal, or substantive application-development component scores 0-14 service alignment. However, if the website work is bundled with a larger system/platform/portal/app-dev engagement (e.g., "constituent portal with backend case-management system"), score the larger engagement normally.
+
 ### Bid Readiness (0–20 points)
 Can ConsultAdd ACTUALLY submit and win this bid? This is a HARD GATE — if ConsultAdd cannot legally or practically bid, this score MUST be 0-4 regardless of how good the service alignment is.
 
@@ -35,6 +39,24 @@ Do ConsultAdd's certifications (MBE, USPAACC) provide a competitive edge? Divers
 
 ### Value Fit (0–20 points)
 How well does the contract value match the $${(VALUE_RANGE.min / 1000).toFixed(0)}K–$${(VALUE_RANGE.max / 1000).toFixed(0)}K sweet spot? Dead center scores 18-20. Within range scores 12-17. Slightly outside range scores 6-11. Far outside or unknown scores 0-5.
+
+## What "disqualifiers" means here
+The "disqualifiers" array is reserved for HARD blockers that would make ConsultAdd ineligible or unable to submit a competitive proposal. The legal team will not bid if these are present.
+
+DO put in disqualifiers (hard blockers):
+- Required certifications ConsultAdd does NOT hold (C3PAO, FedRAMP, SDVOSB, 8(a), HUBZone, vendor-specific authorizations like Cisco Premier)
+- Sole-source / single-vendor restriction
+- Out-of-scope RFI / Sources Sought / Award Notice (not biddable)
+- Geographic restriction excluding ConsultAdd (e.g., must be HQ in-state and ConsultAdd isn't)
+- Security clearances ConsultAdd doesn't hold
+
+DO NOT put these in disqualifiers — they are operating conditions the team handles routinely:
+- "Unknown contract value" / "value not specified" / "no estimated value" → NOT a disqualifier. Govt RFPs frequently omit values; the team accepts this and still pursues.
+- "Limited solicitation details" / "minimal RFP details" / "vague requirements" / "brief description" → NOT a disqualifier. The team requests the full RFP document and reads it.
+- "Tight deadline" / "short response window" → NOT a disqualifier. The team triages by urgency.
+- "No diversity advantage" / "open competition" → NOT a disqualifier.
+
+If you want to note these as caveats, put them in the "reasoning" field instead. Keep the disqualifiers array empty unless you have a true hard blocker.
 
 ## Response Format
 Respond with ONLY a JSON object (no markdown, no explanation outside the JSON):
