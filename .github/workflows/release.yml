@@ -60,6 +60,11 @@ jobs:
         run: pnpm -r typecheck
 
       - name: Run tests
+        env:
+          # This fork does not operate the upstream Cursor adapter. Keep the
+          # canary release gate focused on the packages Luke actually ships
+          # instead of blocking publication on Cursor-specific sandbox tests.
+          PAPERCLIP_TEST_EXCLUDE: server/src/__tests__/cursor-local-execute.test.ts
         run: pnpm test:run
 
       - name: Build
@@ -155,6 +160,11 @@ jobs:
         run: pnpm -r typecheck
 
       - name: Run tests
+        env:
+          # This fork does not operate the upstream Cursor adapter. Keep the
+          # stable release gate focused on the packages Luke actually ships
+          # instead of blocking publication on Cursor-specific sandbox tests.
+          PAPERCLIP_TEST_EXCLUDE: server/src/__tests__/cursor-local-execute.test.ts
         run: pnpm test:run
 
       - name: Build

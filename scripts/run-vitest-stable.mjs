@@ -48,6 +48,16 @@ let invocationIndex = 0;
 const serializedModeName = "serialized";
 const generalModeName = "general";
 const allModeName = "all";
+const excludedTestPaths = parseExcludedTestPaths(process.env.PAPERCLIP_TEST_EXCLUDE);
+
+function parseExcludedTestPaths(value) {
+  if (!value) return [];
+  return value
+    .split(/[\s,]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => entry.replace(/^\.\//, "").split(path.sep).join("/"));
+}
 
 function walk(dir) {
   const entries = readdirSync(dir);
@@ -231,7 +241,11 @@ function runVitest(args, label) {
 }
 
 function runGeneralSuites(routeTests) {
-  const excludeRouteArgs = routeTests.flatMap((file) => ["--exclude", file.serverPath]);
+  const excludedServerTests = excludedTestPaths
+    .filter((file) => file.startsWith("server/"))
+    .map((file) => file.slice("server/".length));
+  const excludeRouteArgs = [...routeTests.map((file) => file.serverPath), ...excludedServerTests]
+    .flatMap((file) => ["--exclude", file]);
   for (const project of nonServerProjects) {
     runVitest(["--project", project], `non-server project ${project}`);
   }
@@ -264,6 +278,7 @@ function runSerializedSuites(routeTests, shardIndex, shardCount) {
 
 const routeTests = walk(serverTestsDir)
   .filter((file) => isRouteOrAuthzTest(toRepoPath(file)))
+  .filter((file) => !excludedTestPaths.includes(toRepoPath(file)))
   .map((file) => ({
     repoPath: toRepoPath(file),
     serverPath: toServerPath(file),
@@ -283,6 +298,7 @@ if (options.dryRun) {
         shardIndex: options.shardIndex,
         shardCount: options.shardCount,
         serializedSuiteCount: routeTests.length,
+        excludedTestPaths,
         selectedSerializedSuites: serializedSuites.map((routeTest) => routeTest.repoPath),
       },
       null,
