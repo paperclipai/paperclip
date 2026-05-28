@@ -1303,9 +1303,15 @@ async function resolveSpawnTarget(
     // ComSpec to PowerShell, which breaks cmd-specific flags like /d /s /c.
     const shell = resolveWindowsCmdShell(env);
     const commandLine = [quoteForCmd(executable), ...args.map(quoteForCmd)].join(" ");
+    // Wrap commandLine in extra outer quotes and set windowsVerbatimArguments so
+    // Node.js does not re-escape inner quotes via CreateProcess (which uses \" that
+    // cmd.exe cannot parse). cmd.exe /s /c strips exactly one outer \"...\" pair,
+    // leaving the inner cmd-quoted command intact. Without this, any path containing
+    // spaces causes cmd.exe to mis-parse the command line.
     return {
       command: shell,
-      args: ["/d", "/s", "/c", commandLine],
+      args: ["/d", "/s", "/c", `"${commandLine}"`],
+      windowsVerbatimArguments: true,
     };
   }
 
@@ -2184,6 +2190,7 @@ export async function runChildProcess(
           env: mergedEnv,
           detached: process.platform !== "win32",
           shell: false,
+          windowsVerbatimArguments: target.windowsVerbatimArguments ?? false,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
