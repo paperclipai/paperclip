@@ -72,6 +72,18 @@ export function parseCodexJsonl(stdout: string) {
   };
 }
 
+export function hasCodexTerminalResult(stdout: string): boolean {
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const event = parseJson(line);
+    if (!event) continue;
+    const type = asString(event.type, "");
+    if (type === "turn.completed" || type === "turn.failed") return true;
+  }
+  return false;
+}
+
 export function isCodexUnknownSessionError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)

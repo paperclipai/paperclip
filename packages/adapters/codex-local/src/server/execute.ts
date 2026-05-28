@@ -40,6 +40,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseCodexJsonl,
+  hasCodexTerminalResult,
   extractCodexRetryNotBefore,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -364,6 +365,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     asNumber(config.timeoutSec, 0),
   );
   const graceSec = asNumber(config.graceSec, 20);
+  const terminalResultCleanupGraceMs = Math.max(0, asNumber(config.terminalResultCleanupGraceMs, 5_000));
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const preparedExecutionTargetRuntime = executionTargetIsRemote
     ? await (async () => {
@@ -723,6 +725,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         if (!cleaned.trim()) return;
         await onLog(stream, cleaned);
       },
+      terminalResultCleanup: {
+        graceMs: terminalResultCleanupGraceMs,
+        hasTerminalResult: ({ stdout }) => hasCodexTerminalResult(stdout),
+      },
     });
     const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
     return {
@@ -838,7 +844,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
       );
       const retry = await runAttempt(null);
+      if (!retry.proc.timedOut && !hasCodexTerminalResult(retry.proc.stdout)) {
+        await onLog(
+          "stderr",
+          `[paperclip] Codex process exited without a normal turn handshake (code ${retry.proc.exitCode ?? "null"}${retry.proc.signal ? `, signal ${retry.proc.signal}` : ""}).\n`,
+        );
+      }
       return toResult(retry, true, true);
+    }
+
+    if (!initial.proc.timedOut && !hasCodexTerminalResult(initial.proc.stdout)) {
+      await onLog(
+        "stderr",
+        `[paperclip] Codex process exited without a normal turn handshake (code ${initial.proc.exitCode ?? "null"}${initial.proc.signal ? `, signal ${initial.proc.signal}` : ""}).\n`,
+      );
     }
 
     return toResult(initial, false, false);
