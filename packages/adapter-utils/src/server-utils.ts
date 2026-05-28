@@ -1878,11 +1878,6 @@ export async function ensurePaperclipSkillSymlink(
     return "skipped";
   }
 
-  const linkedPathExists = await fs.stat(resolvedLinkedPath).then(() => true).catch(() => false);
-  if (linkedPathExists) {
-    return "skipped";
-  }
-
   await fs.unlink(target);
   await linkSkill(source, target);
   return "repaired";
