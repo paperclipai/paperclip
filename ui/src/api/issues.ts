@@ -44,6 +44,49 @@ export type GenerateIssueTechnicalSpecResponse = {
   generatedAt: string;
 };
 
+export type AnalyzeIssueQualityRequest = {
+  language?: "en" | "pt-BR";
+};
+
+export type IssueQualityScoreRating = "excellent" | "good" | "regular" | "weak" | "critical";
+export type IssueQualityAmbiguityRiskLevel = "low" | "medium" | "high";
+
+export type IssueQualityScore = {
+  id: string;
+  issueId: string;
+  overallScore: number;
+  rating: IssueQualityScoreRating;
+  clarityScore: number;
+  problemContextScore: number;
+  acceptanceCriteriaScore: number;
+  businessRulesScore: number;
+  technicalContextScore: number;
+  testabilityScore: number;
+  scopeScore: number;
+  ambiguityRiskScore: number;
+  ambiguityRiskLevel: IssueQualityAmbiguityRiskLevel;
+  strengths: string[];
+  problems: string[];
+  suggestions: string[];
+  missingFields: string[];
+  recommendation: string;
+  language: "en" | "pt-BR";
+  generatedBy: "agent";
+  model?: string;
+  promptBlueprint: string;
+  analysisMode: "heuristic_v1";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AnalyzeIssueQualityResponse = {
+  key: "issue-quality-score";
+  language: "en" | "pt-BR";
+  generatedAt: string;
+  analysis: IssueQualityScore;
+  markdown: string;
+};
+
 export const issuesApi = {
   list: (
     companyId: string,
@@ -291,6 +334,16 @@ export const issuesApi = {
   ) =>
     api.post<GenerateIssueTechnicalSpecResponse>(
       `/issues/${id}/technical-spec/generate`,
+      payload,
+      options,
+    ),
+  analyzeQualityScore: (
+    id: string,
+    payload: AnalyzeIssueQualityRequest,
+    options?: { signal?: AbortSignal },
+  ) =>
+    api.post<AnalyzeIssueQualityResponse>(
+      `/issues/${id}/quality-score/analyze`,
       payload,
       options,
     ),

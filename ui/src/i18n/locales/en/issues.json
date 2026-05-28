@@ -49,5 +49,76 @@
       "savedErrorTitle": "Failed to save technical spec",
       "copiedTitle": "Technical spec copied"
     }
+  },
+  "issueQuality": {
+    "title": "Issue Quality",
+    "description": "Analyze issue readiness with a structured quality score before implementation.",
+    "documentTitle": "Issue Quality Analysis",
+    "lastSaved": "Last saved {{timeAgo}}",
+    "loading": "Analyzing issue quality based on current context...",
+    "loadingSaved": "Loading saved issue quality analysis...",
+    "empty": "No issue quality analysis yet. Run analysis to evaluate execution readiness.",
+    "editorAriaLabel": "Issue quality analysis editor",
+    "unsavedNotice": "You have unsaved changes. Switch to edit mode and save to persist this analysis on the issue.",
+    "actions": {
+      "analyze": "Analyze issue quality",
+      "reanalyze": "Reanalyze quality",
+      "cancelGeneration": "Cancel analysis",
+      "copy": "Copy analysis",
+      "edit": "Edit analysis",
+      "cancelEdit": "Cancel edit",
+      "save": "Save analysis",
+      "clear": "Clear analysis"
+    },
+    "summary": {
+      "scoreLabel": "Issue score",
+      "ratingLabel": "Classification",
+      "ambiguityLabel": "Ambiguity risk",
+      "generatedAt": "Generated {{timeAgo}}"
+    },
+    "criteria": {
+      "title": "Criteria",
+      "clarity": "Description clarity",
+      "problemContext": "Problem context",
+      "acceptanceCriteria": "Acceptance criteria",
+      "businessRules": "Business rules",
+      "technicalContext": "Technical context",
+      "testability": "Testability",
+      "scope": "Defined scope",
+      "ambiguityRisk": "Ambiguity risk (inverse)"
+    },
+    "rating": {
+      "excellent": "Excellent",
+      "good": "Good",
+      "regular": "Regular",
+      "weak": "Weak",
+      "critical": "Critical"
+    },
+    "ambiguity": {
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High"
+    },
+    "sections": {
+      "strengths": "Strengths",
+      "problems": "Problems found",
+      "suggestions": "Suggestions",
+      "missingFields": "Missing fields",
+      "recommendation": "Recommendation"
+    },
+    "errors": {
+      "analyze": "Failed to analyze issue quality. Please try again.",
+      "unexpected": "Unexpected error."
+    },
+    "toasts": {
+      "generatedTitle": "Issue quality analysis generated",
+      "generatedErrorTitle": "Failed to analyze issue quality",
+      "generationCanceledTitle": "Analysis canceled",
+      "savedTitle": "Issue quality analysis saved",
+      "savedErrorTitle": "Failed to save issue quality analysis",
+      "copiedTitle": "Issue quality analysis copied",
+      "clearedTitle": "Issue quality analysis cleared",
+      "clearedErrorTitle": "Failed to clear issue quality analysis"
+    }
   }
 }

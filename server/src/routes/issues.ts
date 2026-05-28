@@ -113,6 +113,11 @@ import {
   buildIssueTechnicalSpecMarkdown,
   normalizeTechnicalSpecLanguage,
 } from "../services/issue-technical-spec.js";
+import {
+  buildIssueQualityScore,
+  buildIssueQualityScoreMarkdown,
+  normalizeIssueQualityLanguage,
+} from "../services/issue-quality-score.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
@@ -120,6 +125,9 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
 const generateTechnicalSpecSchema = z.object({
+  language: z.string().optional(),
+});
+const analyzeIssueQualitySchema = z.object({
   language: z.string().optional(),
 });
 
@@ -216,6 +224,26 @@ const ISSUE_WORKSPACE_AUDIT_FIELDS = new Set([
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function extractSimpleList(value: string | null | undefined, limit = 30): string[] {
+  if (typeof value !== "string" || value.trim().length === 0) return [];
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^[-*]\s+/, "").replace(/^\d+[.)]\s+/, "").trim())
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function parseSkillCandidatesFromDocuments(
+  documents: Array<{ key: string; body: string }>,
+  limit = 30,
+): string[] {
+  const skillLikeDocs = documents.filter((document) => /skill/.test(document.key));
+  const candidates = skillLikeDocs.flatMap((document) => extractSimpleList(document.body, limit));
+  return Array.from(new Set(candidates)).slice(0, limit);
 }
 
 function hasIssueWorkspaceAuditChange(previous: Record<string, unknown>) {
@@ -2308,6 +2336,125 @@ export function issueRoutes(
         language,
         markdown,
         generatedAt: new Date().toISOString(),
+      });
+    },
+  );
+
+  router.post(
+    "/issues/:id/quality-score/analyze",
+    validate(analyzeIssueQualitySchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+
+      const [{ project, goal }, documentPayload, documents, currentExecutionWorkspace, subtasks] = await Promise.all([
+        resolveIssueProjectAndGoal(issue),
+        documentsSvc.getIssueDocumentPayload(issue, { includeSystem: true }),
+        documentsSvc.listIssueDocuments(issue.id, { includeSystem: true }),
+        issue.executionWorkspaceId ? executionWorkspacesSvc.getById(issue.executionWorkspaceId) : Promise.resolve(null),
+        svc.list(issue.companyId, { parentId: issue.id, limit: 100 }),
+      ]);
+
+      const requestedLanguage =
+        typeof req.body.language === "string"
+          ? req.body.language
+          : (typeof req.headers["accept-language"] === "string" ? req.headers["accept-language"] : null);
+      const language = normalizeIssueQualityLanguage(requestedLanguage);
+
+      const technicalSpecBody = documents.find((document) => document.key === "technical-spec")?.body ?? null;
+      const projectRulesBody = documents
+        .find((document) => document.key === "project-rules" || document.key === "rules")
+        ?.body ?? null;
+      const projectRules = extractSimpleList(projectRulesBody, 40);
+      const skills = parseSkillCandidatesFromDocuments(
+        documents.map((document) => ({ key: document.key, body: document.body ?? "" })),
+        40,
+      );
+
+      const analysis = buildIssueQualityScore({
+        language,
+        issue: {
+          id: issue.id,
+          identifier: issue.identifier ?? null,
+          title: issue.title,
+          description: issue.description ?? null,
+          status: issue.status,
+          priority: issue.priority,
+          labels: (issue.labels ?? []).map((label) => ({ name: label.name })),
+        },
+        project: project
+          ? {
+              id: project.id,
+              name: project.name,
+              description: project.description ?? null,
+            }
+          : null,
+        goal: goal
+          ? {
+              id: goal.id,
+              title: goal.title,
+              description: goal.description ?? null,
+              status: goal.status,
+            }
+          : null,
+        workspace: currentExecutionWorkspace
+          ? {
+              id: currentExecutionWorkspace.id,
+              name: currentExecutionWorkspace.name,
+              cwd: currentExecutionWorkspace.cwd ?? null,
+            }
+          : null,
+        planContext: documentPayload.planDocument?.body ?? documentPayload.legacyPlanDocument?.body ?? null,
+        projectContext: project?.description ?? null,
+        technicalSpec: technicalSpecBody,
+        projectRules,
+        skills,
+        subtasks: subtasks.map((subtask) => ({
+          id: subtask.id,
+          title: subtask.title,
+          status: subtask.status,
+          priority: subtask.priority,
+        })),
+        documents: documents.map((document) => ({
+          key: document.key,
+          title: document.title,
+          body: document.body ?? "",
+        })),
+      });
+
+      const markdown = buildIssueQualityScoreMarkdown(analysis, {
+        id: issue.id,
+        identifier: issue.identifier ?? null,
+        title: issue.title,
+      });
+
+      logger.info(
+        {
+          issueId: issue.id,
+          companyId: issue.companyId,
+          language,
+          overallScore: analysis.overallScore,
+          rating: analysis.rating,
+          ambiguityRiskLevel: analysis.ambiguityRiskLevel,
+          subtaskCount: subtasks.length,
+          documentCount: documents.length,
+          markdownChars: markdown.length,
+          promptChars: analysis.promptBlueprint.length,
+        },
+        "issue quality score analyzed",
+      );
+
+      res.json({
+        key: "issue-quality-score",
+        language,
+        generatedAt: analysis.createdAt,
+        analysis,
+        markdown,
       });
     },
   );

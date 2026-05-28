@@ -67,6 +67,7 @@ import { IssueChatThread, type IssueChatComposerHandle } from "../components/Iss
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueTechnicalSpecSection } from "../components/IssueTechnicalSpecSection";
+import { IssueQualityScoreSection } from "../components/IssueQualityScoreSection";
 import { IssueSiblingNavigation } from "../components/IssueSiblingNavigation";
 import { IssuesList } from "../components/IssuesList";
 import { AgentIcon } from "../components/AgentIconPicker";
@@ -3715,6 +3716,7 @@ export function IssueDetail() {
       )}
 
       <IssueTechnicalSpecSection issue={issue} />
+      <IssueQualityScoreSection issue={issue} />
 
       <IssueDocumentsSection
         issue={issue}

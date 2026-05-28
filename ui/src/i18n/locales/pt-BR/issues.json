@@ -49,5 +49,76 @@
       "savedErrorTitle": "Falha ao salvar spec técnica",
       "copiedTitle": "Spec técnica copiada"
     }
+  },
+  "issueQuality": {
+    "title": "Qualidade da Issue",
+    "description": "Analise a prontidão da issue com um score estruturado antes da implementação.",
+    "documentTitle": "Análise de Qualidade da Issue",
+    "lastSaved": "Salvo pela última vez {{timeAgo}}",
+    "loading": "Analisando qualidade da issue com base no contexto atual...",
+    "loadingSaved": "Carregando análise de qualidade salva...",
+    "empty": "Ainda não existe análise de qualidade. Execute a análise para avaliar a prontidão da execução.",
+    "editorAriaLabel": "Editor da análise de qualidade da issue",
+    "unsavedNotice": "Você possui alterações não salvas. Entre em modo de edição e salve para persistir esta análise na issue.",
+    "actions": {
+      "analyze": "Analisar qualidade da issue",
+      "reanalyze": "Reanalisar qualidade",
+      "cancelGeneration": "Cancelar análise",
+      "copy": "Copiar análise",
+      "edit": "Editar análise",
+      "cancelEdit": "Cancelar edição",
+      "save": "Salvar análise",
+      "clear": "Limpar análise"
+    },
+    "summary": {
+      "scoreLabel": "Score da issue",
+      "ratingLabel": "Classificação",
+      "ambiguityLabel": "Risco de ambiguidade",
+      "generatedAt": "Gerado {{timeAgo}}"
+    },
+    "criteria": {
+      "title": "Critérios",
+      "clarity": "Clareza da descrição",
+      "problemContext": "Contexto do problema",
+      "acceptanceCriteria": "Critérios de aceite",
+      "businessRules": "Regras de negócio",
+      "technicalContext": "Contexto técnico",
+      "testability": "Testabilidade",
+      "scope": "Escopo definido",
+      "ambiguityRisk": "Risco de ambiguidade (inverso)"
+    },
+    "rating": {
+      "excellent": "Excelente",
+      "good": "Boa",
+      "regular": "Regular",
+      "weak": "Fraca",
+      "critical": "Crítica"
+    },
+    "ambiguity": {
+      "low": "Baixo",
+      "medium": "Médio",
+      "high": "Alto"
+    },
+    "sections": {
+      "strengths": "Pontos fortes",
+      "problems": "Problemas encontrados",
+      "suggestions": "Sugestões",
+      "missingFields": "Campos ausentes",
+      "recommendation": "Recomendação"
+    },
+    "errors": {
+      "analyze": "Falha ao analisar qualidade da issue. Tente novamente.",
+      "unexpected": "Erro inesperado."
+    },
+    "toasts": {
+      "generatedTitle": "Análise de qualidade gerada",
+      "generatedErrorTitle": "Falha ao analisar qualidade da issue",
+      "generationCanceledTitle": "Análise cancelada",
+      "savedTitle": "Análise de qualidade salva",
+      "savedErrorTitle": "Falha ao salvar análise de qualidade",
+      "copiedTitle": "Análise de qualidade copiada",
+      "clearedTitle": "Análise de qualidade removida",
+      "clearedErrorTitle": "Falha ao limpar análise de qualidade"
+    }
   }
 }
