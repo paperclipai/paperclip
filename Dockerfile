@@ -52,7 +52,16 @@ ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
-  && apt-get update \
+  && mkdir -p /opt/otel/preload \
+  && npm install --prefix /opt/otel --omit=dev \
+    @opentelemetry/api@^1.9.1 \
+    @opentelemetry/auto-instrumentations-node@^0.75.0 \
+    @traceloop/node-server-sdk@^0.26.0 \
+  && chown -R node:node /opt/otel
+
+COPY docker/otel/traceloop-init.js /opt/otel/preload/traceloop-init.js
+
+RUN apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /paperclip \
@@ -73,7 +82,8 @@ ENV NODE_ENV=production \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
-  OPENCODE_ALLOW_ALL_MODELS=true
+  OPENCODE_ALLOW_ALL_MODELS=true \
+  NODE_PATH=/opt/otel/node_modules
 
 VOLUME ["/paperclip"]
 EXPOSE 3100
