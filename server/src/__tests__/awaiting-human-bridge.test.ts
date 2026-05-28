@@ -1943,6 +1943,74 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     transactionSpy.mockRestore();
   });
 
+  it("imports a reject signal, moves the issue back to todo, and records the reply", async () => {
+    const seeded = await seedAwaitingHumanInteraction();
+    const service = awaitingHumanBridgeService(db, {
+      resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
+      resolveAdapter: () => ({
+        send: vi.fn(async () => ({
+          externalThreadId: "thread-1",
+          externalMessageId: "message-1",
+          nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
+        })),
+        poll: vi.fn(async () => ({
+          status: "ok",
+          detail: "ok",
+          events: [
+            {
+              kind: "reject_signal",
+              externalEventId: "reject-1",
+              externalThreadId: "thread-1",
+              externalMessageId: "message-1",
+              body: "No, change the plan.",
+            },
+          ],
+        })),
+        close: vi.fn(async () => {}),
+      }),
+    });
+
+    const bridge = await service.openOrReuseForInteraction({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      interactionId: seeded.interactionId,
+      agentId: seeded.agentId,
+      ...approvalNotification(),
+    });
+
+    const result = await service.pollActiveBridges(new Date("2026-05-22T00:03:00.000Z"));
+
+    expect(result.rejected).toBe(1);
+
+    const [interaction] = await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, seeded.interactionId));
+    expect(interaction?.status).toBe("rejected");
+
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(updatedIssue).toMatchObject({
+      id: seeded.issueId,
+      status: "todo",
+      assigneeAgentId: seeded.agentId,
+    });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("No, change the plan.");
+
+    const events = await db.select().from(activityLog).where(eq(activityLog.entityId, seeded.issueId));
+    expect(events.some((event) => event.action === "issue.comment_added")).toBe(true);
+
+    const [updatedBridge] = await db.select().from(awaitingHumanBridges).where(eq(awaitingHumanBridges.id, bridge.id));
+    expect(updatedBridge).toEqual(expect.objectContaining({
+      status: "closed",
+      closeOutcome: "rejected",
+    }));
+
+    const inboundEvents = await db.select().from(awaitingHumanBridgeInboundEvents).where(eq(awaitingHumanBridgeInboundEvents.bridgeId, bridge.id));
+    expect(inboundEvents).toHaveLength(1);
+  });
+
   it("skips re-rejecting a replayed reject signal after the event was already recorded", async () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
@@ -2379,21 +2447,27 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       ...approvalNotification(),
     });
 
-    const originalUpdate = db.update.bind(db);
-    const updateSpy = vi.spyOn(db as any, "update").mockImplementation((table: any) => {
-      if (table === issueThreadInteractions) {
-        return {
-          set: () => ({
-            where: () => ({
-              returning: async () => {
-                throw new Error("interaction update failed");
-              },
-            }),
-          }),
-        } as any;
-      }
-      return originalUpdate(table);
-    });
+    const originalTransaction = db.transaction.bind(db);
+    const transactionSpy = vi.spyOn(db as any, "transaction").mockImplementation((callback: any) =>
+      originalTransaction(async (tx: any) => {
+        const originalTxUpdate = tx.update.bind(tx);
+        tx.update = ((table: any) => {
+          if (table === issueThreadInteractions) {
+            return {
+              set: () => ({
+                where: () => ({
+                  returning: async () => {
+                    throw new Error("interaction update failed");
+                  },
+                }),
+              }),
+            } as any;
+          }
+          return originalTxUpdate(table);
+        }) as any;
+        return callback(tx);
+      }),
+    );
 
     await db.update(awaitingHumanBridges).set({
       createdAt: new Date("2026-05-21T00:00:00.000Z"),
@@ -2432,7 +2506,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const events = await db.select().from(activityLog).where(eq(activityLog.entityId, seeded.issueId));
     expect(events.some((event) => event.action === "issue.awaiting_human.bridge_expire_stuck")).toBe(true);
 
-    updateSpy.mockRestore();
+    transactionSpy.mockRestore();
   });
 
   it("closes the bridge even if adapter cleanup fails once", async () => {
