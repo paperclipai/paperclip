@@ -2073,6 +2073,25 @@ export function IssueProperties({
       <Separator />
 
       <div className="space-y-1">
+        <PropertyRow label="Billing code">
+          <input
+            className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+            placeholder="—"
+            defaultValue={issue.billingCode ?? ""}
+            onBlur={(e) => {
+              const val = e.currentTarget.value.trim() || null;
+              if (val !== (issue.billingCode ?? null)) onUpdate({ billingCode: val });
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
+          />
+        </PropertyRow>
+      </div>
+
+      <Separator />
+
+      <div className="space-y-1">
         {(issue.createdByAgentId || issue.createdByUserId) && (
           <PropertyRow label="Created by">
             {issue.createdByAgentId ? (
