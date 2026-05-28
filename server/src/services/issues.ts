@@ -3341,6 +3341,15 @@ export function issueService(db: Db) {
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
   }
 
+  async function isSameAgentRun(runId: string, agentId: string): Promise<boolean> {
+    const run = await db
+      .select({ agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    return run?.agentId === agentId;
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
@@ -3348,7 +3357,11 @@ export function issueService(db: Db) {
     expectedCheckoutRunId: string;
   }) {
     const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
-    if (!stale) return null;
+    // Self-owned: the stale run belongs to the same agent, so the current heartbeat
+    // supersedes it — allow adoption even if the DB hasn't marked it terminal yet
+    // (this happens when an agent process crashes without cleanly finishing its run).
+    const selfOwned = !stale && await isSameAgentRun(input.expectedCheckoutRunId, input.actorAgentId);
+    if (!stale && !selfOwned) return null;
 
     const now = new Date();
     const adopted = await db
@@ -3414,7 +3427,7 @@ export function issueService(db: Db) {
     return adopted;
   }
 
-  async function clearExecutionRunIfTerminal(issueId: string): Promise<boolean> {
+  async function clearExecutionRunIfTerminal(issueId: string, actorAgentId?: string): Promise<boolean> {
     return db.transaction(async (tx) => {
       await tx.execute(
         sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
@@ -3430,11 +3443,15 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
       );
       const run = await tx
-        .select({ status: heartbeatRuns.status })
+        .select({ status: heartbeatRuns.status, agentId: heartbeatRuns.agentId })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.executionRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      const isTerminal = !run || TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+      // Also clear if the stale execution run belongs to the same agent — a new
+      // heartbeat from the same agent supersedes any prior crashed run.
+      const isSelfOwned = !isTerminal && actorAgentId != null && run?.agentId === actorAgentId;
+      if (!isTerminal && !isSelfOwned) return false;
 
       const updated = await tx
         .update(issues)
@@ -4726,7 +4743,7 @@ export function issueService(db: Db) {
         });
       }
 
-      await clearExecutionRunIfTerminal(id);
+      await clearExecutionRunIfTerminal(id, agentId);
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
@@ -4860,7 +4877,7 @@ export function issueService(db: Db) {
       actorRunId: string | null,
       options?: { allowUnownedAdoption?: boolean },
     ) => {
-      await clearExecutionRunIfTerminal(id);
+      await clearExecutionRunIfTerminal(id, actorAgentId);
       const current = await db
         .select({
           id: issues.id,
@@ -4939,7 +4956,7 @@ export function issueService(db: Db) {
     },
 
     release: async (id: string, actorAgentId?: string, actorRunId?: string | null) => {
-      await clearExecutionRunIfTerminal(id);
+      await clearExecutionRunIfTerminal(id, actorAgentId);
       const existing = await db
         .select()
         .from(issues)
@@ -4958,7 +4975,10 @@ export function issueService(db: Db) {
         !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
       ) {
         const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId);
-        if (!stale) {
+        const selfOwned = !stale && actorAgentId
+          ? await isSameAgentRun(existing.checkoutRunId, actorAgentId)
+          : false;
+        if (!stale && !selfOwned) {
           throw conflict("Only checkout run can release issue", {
             issueId: existing.id,
             assigneeAgentId: existing.assigneeAgentId,
