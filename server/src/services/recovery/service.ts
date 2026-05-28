@@ -18,6 +18,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueApprovals,
+  issueLabels,
   issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
@@ -79,6 +80,9 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+const LEDGER_APPEND_ONLY_LABEL_ID = "50fe2282-f62b-4f47-9d9c-1655370032e5";
+const RECOVERY_EXEMPT_DESCRIPTION_MARKER = "<!-- recovery-exempt: true -->";
+const PMO_DIRECTOR_AGENT_ID = "a6fdaf7e-3307-45c6-b68a-a4dc14a34028";
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -1743,7 +1747,60 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ].join("\n");
   }
 
+  async function issueHasStrandedRecoveryExemption(issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "description">) {
+    if (issue.description?.includes(RECOVERY_EXEMPT_DESCRIPTION_MARKER)) return true;
+    const [labelRow] = await db
+      .select({ issueId: issueLabels.issueId })
+      .from(issueLabels)
+      .where(
+        and(
+          eq(issueLabels.companyId, issue.companyId),
+          eq(issueLabels.issueId, issue.id),
+          eq(issueLabels.labelId, LEDGER_APPEND_ONLY_LABEL_ID),
+        ),
+      )
+      .limit(1);
+    return Boolean(labelRow);
+  }
+
+  async function findPriorNonPmoOwnerAgentId(issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "assigneeAgentId">) {
+    const rows = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, issue.companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issue.id),
+          eq(activityLog.action, "issue.updated"),
+        ),
+      )
+      .orderBy(desc(activityLog.createdAt), desc(activityLog.id))
+      .limit(100);
+
+    for (const row of rows) {
+      const details = parseObject(row.details);
+      const currentAssigneeAgentId = readNonEmptyString(details.assigneeAgentId);
+      const previous = parseObject(details._previous);
+      const previousAssigneeAgentId = readNonEmptyString(previous.assigneeAgentId);
+      if (
+        issue.assigneeAgentId &&
+        currentAssigneeAgentId === issue.assigneeAgentId &&
+        previousAssigneeAgentId &&
+        previousAssigneeAgentId !== issue.assigneeAgentId &&
+        previousAssigneeAgentId !== PMO_DIRECTOR_AGENT_ID
+      ) {
+        return previousAssigneeAgentId;
+      }
+    }
+
+    return issue.assigneeAgentId && issue.assigneeAgentId !== PMO_DIRECTOR_AGENT_ID
+      ? issue.assigneeAgentId
+      : null;
+  }
+
   async function resolveStrandedIssueRecoveryOwnerAgentId(issue: typeof issues.$inferSelect) {
+    const preferredReturnOwnerAgentId = await findPriorNonPmoOwnerAgentId(issue);
     const candidateIds: string[] = [];
     if (issue.assigneeAgentId) {
       const assignee = await getAgent(issue.assigneeAgentId);
@@ -1761,6 +1818,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(and(eq(agents.companyId, issue.companyId), inArray(agents.role, ["cto", "ceo"])))
       .orderBy(sql`case when ${agents.role} = 'cto' then 0 else 1 end`, asc(agents.createdAt));
     candidateIds.push(...roleCandidates.map((agent) => agent.id));
+    if (preferredReturnOwnerAgentId) candidateIds.push(preferredReturnOwnerAgentId);
     if (issue.assigneeAgentId) candidateIds.push(issue.assigneeAgentId);
 
     const seen = new Set<string>();
@@ -1989,6 +2047,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
+    const preferredReturnOwnerAgentId = await findPriorNonPmoOwnerAgentId(input.issue);
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     const now = new Date();
     const action = await recoveryActionsSvc.upsertSourceScoped({
@@ -1997,8 +2056,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       kind: strandedRecoveryActionKind(recoveryCause),
       ownerType: ownerAgentId ? "agent" : "board",
       ownerAgentId,
-      previousOwnerAgentId: input.issue.assigneeAgentId,
-      returnOwnerAgentId: input.issue.assigneeAgentId,
+      previousOwnerAgentId: preferredReturnOwnerAgentId ?? input.issue.assigneeAgentId,
+      returnOwnerAgentId: preferredReturnOwnerAgentId ?? input.issue.assigneeAgentId,
       cause: recoveryCause,
       fingerprint: strandedRecoveryActionFingerprint({
         issue: input.issue,
@@ -2183,6 +2242,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
+    if (await issueHasStrandedRecoveryExemption(input.issue)) {
+      return input.issue;
+    }
+
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       return escalateStrandedRecoveryIssueInPlace({
         issue: input.issue,
@@ -2372,6 +2435,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       const agent = await getAgent(agentId);
       if (!agent || agent.companyId !== issue.companyId || !isAgentInvokable(agent)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (await issueHasStrandedRecoveryExemption(issue)) {
         result.skipped += 1;
         continue;
       }

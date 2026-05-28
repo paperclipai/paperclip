@@ -21,6 +21,8 @@ declare global {
         runId?: string;
         source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant" | "none";
       };
+      /** Set by assertCompanyAccess when a delegate grant is used for cross-company access. */
+      delegateGrant?: { grantId: string; hostCompanyId: string } | null;
     }
   }
 }

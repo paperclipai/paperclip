@@ -15,6 +15,7 @@ import {
   isUuidLike,
   normalizeIssueIdentifier,
   resetAgentSessionSchema,
+  recoverAgentSessionSchema,
   testAdapterEnvironmentSchema,
   type AgentSkillSnapshot,
   type InstanceSchedulerHeartbeatAgent,
@@ -551,7 +552,7 @@ export function agentRoutes(
   }
 
   async function assertCanCreateAgentsForCompany(req: Request, companyId: string) {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const decision = await access.decide({
       actor: req.actor,
       action: "agents:create",
@@ -570,7 +571,7 @@ export function agentRoutes(
 
   async function assertBoardCanManageAgentsForCompany(req: Request, companyId: string) {
     assertBoard(req);
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const decision = await access.decide({
       actor: req.actor,
       action: "agents:create",
@@ -590,7 +591,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return null;
     }
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(req, agent.companyId, db);
     if (req.actor.type === "board") {
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     }
@@ -598,7 +599,7 @@ export function agentRoutes(
   }
 
   async function actorCanReadConfigurationsForCompany(req: Request, companyId: string) {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const decision = await access.decide({
       actor: req.actor,
       action: "agent_config:read",
@@ -675,7 +676,7 @@ export function agentRoutes(
   }
 
   async function assertCanUpdateAgent(req: Request, targetAgent: { id: string; companyId: string }) {
-    assertCompanyAccess(req, targetAgent.companyId);
+    await assertCompanyAccess(req, targetAgent.companyId, db);
     const decision = await access.decide({
       actor: req.actor,
       action: "agent_config:update",
@@ -686,7 +687,7 @@ export function agentRoutes(
   }
 
   async function assertCanReadAgent(req: Request, targetAgent: { companyId: string }) {
-    assertCompanyAccess(req, targetAgent.companyId);
+    await assertCompanyAccess(req, targetAgent.companyId, db);
     if (req.actor.type === "board") {
       await assertCanReadConfigurations(req, targetAgent.companyId);
       return;
@@ -760,7 +761,7 @@ export function agentRoutes(
         ? companyIdQuery.trim()
         : null;
     if (requestedCompanyId) {
-      assertCompanyAccess(req, requestedCompanyId);
+      await assertCompanyAccess(req, requestedCompanyId, db);
       return requestedCompanyId;
     }
     if (req.actor.type === "agent" && req.actor.companyId) {
@@ -1125,7 +1126,7 @@ export function agentRoutes(
   }
 
   async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
-    assertCompanyAccess(req, targetAgent.companyId);
+    await assertCompanyAccess(req, targetAgent.companyId, db);
     if (req.actor.type !== "board") {
       throw forbidden(
         "Only board-authenticated callers can manage instructions path or bundle configuration",
@@ -1347,7 +1348,7 @@ export function agentRoutes(
 
   router.get("/companies/:companyId/adapters/:type/models", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const type = assertKnownAdapterType(req.params.type as string);
     const refresh = typeof req.query.refresh === "string"
       ? ["1", "true", "yes"].includes(req.query.refresh.toLowerCase())
@@ -1371,7 +1372,7 @@ export function agentRoutes(
 
   router.get("/companies/:companyId/adapters/:type/model-profiles", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const type = assertKnownAdapterType(req.params.type as string);
     const profiles = await listAdapterModelProfiles(type);
     res.json(profiles);
@@ -1379,7 +1380,7 @@ export function agentRoutes(
 
   router.get("/companies/:companyId/adapters/:type/detect-model", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const type = assertKnownAdapterType(req.params.type as string);
 
     const detected = await detectAdapterModel(type);
@@ -1598,7 +1599,7 @@ export function agentRoutes(
 
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const unsupportedQueryParams = Object.keys(req.query).sort();
     if (unsupportedQueryParams.length > 0) {
       res.status(400).json({
@@ -1680,7 +1681,7 @@ export function agentRoutes(
 
   router.get("/companies/:companyId/org", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const tree = await svc.orgForCompany(companyId);
     const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
     res.json(leanTree);
@@ -1688,7 +1689,7 @@ export function agentRoutes(
 
   router.get("/companies/:companyId/org.svg", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const style = (ORG_CHART_STYLES.includes(req.query.style as OrgChartStyle) ? req.query.style : "warmth") as OrgChartStyle;
     const tree = await svc.orgForCompany(companyId);
     const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
@@ -1700,7 +1701,7 @@ export function agentRoutes(
 
   router.get("/companies/:companyId/org.png", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const style = (ORG_CHART_STYLES.includes(req.query.style as OrgChartStyle) ? req.query.style : "warmth") as OrgChartStyle;
     const tree = await svc.orgForCompany(companyId);
     const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
@@ -1795,7 +1796,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(req, agent.companyId, db);
     const isSelf = req.actor.type === "agent" && req.actor.agentId === id;
     const canReadSensitiveDetail = isSelf
       ? true
@@ -1891,7 +1892,7 @@ export function agentRoutes(
       return;
     }
     await assertBoardCanManageAgentsForCompany(req, agent.companyId);
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(req, agent.companyId, db);
 
     const state = await heartbeat.getRuntimeState(id);
     res.json(state);
@@ -1906,7 +1907,7 @@ export function agentRoutes(
       return;
     }
     await assertBoardCanManageAgentsForCompany(req, agent.companyId);
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(req, agent.companyId, db);
 
     const sessions = await heartbeat.listTaskSessions(id);
     res.json(
@@ -1926,7 +1927,7 @@ export function agentRoutes(
       return;
     }
     await assertBoardCanManageAgentsForCompany(req, agent.companyId);
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(req, agent.companyId, db);
 
     const taskKey =
       typeof req.body.taskKey === "string" && req.body.taskKey.trim().length > 0
@@ -1945,6 +1946,73 @@ export function agentRoutes(
     });
 
     res.json(state);
+  });
+
+  router.post("/agents/:id/runtime-state/recover-session", validate(recoverAgentSessionSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    await assertCompanyAccess(req, agent.companyId, db);
+
+    const taskKey =
+      typeof req.body.taskKey === "string" && req.body.taskKey.trim().length > 0
+        ? req.body.taskKey.trim()
+        : null;
+    const reason =
+      typeof req.body.reason === "string" && req.body.reason.trim().length > 0
+        ? req.body.reason.trim()
+        : "runtime_session_recovery";
+    const payload = req.body.payload && typeof req.body.payload === "object" && !Array.isArray(req.body.payload)
+      ? req.body.payload as Record<string, unknown>
+      : null;
+    const resetState = await heartbeat.resetRuntimeSession(id, { taskKey });
+    const run = await heartbeat.wakeup(id, {
+      source: "on_demand",
+      triggerDetail: "system",
+      reason,
+      payload,
+      idempotencyKey: req.body.idempotencyKey ?? null,
+      requestedByActorType: "user",
+      requestedByActorId: req.actor.userId ?? null,
+      contextSnapshot: {
+        triggeredBy: req.actor.type,
+        actorId: req.actor.userId,
+        forceFreshSession: true,
+      },
+    });
+
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "agent.runtime_session_recovered",
+      entityType: "agent",
+      entityId: id,
+      details: {
+        taskKey: taskKey ?? null,
+        reason,
+        wakeRunId: run?.id ?? null,
+        forceFreshSession: true,
+      },
+    });
+
+    if (!run) {
+      res.status(202).json({
+        ...(await buildSkippedWakeupResponse(agent, payload)),
+        resetState,
+      });
+      return;
+    }
+
+    res.status(202).json({
+      ...run,
+      resetState,
+    });
   });
 
   router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
@@ -2247,7 +2315,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
 
     if (req.actor.type === "agent") {
       const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
@@ -2923,7 +2991,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(req, agent.companyId, db);
 
     if (req.actor.type === "agent") {
       if (req.actor.agentId !== id) {
@@ -2991,7 +3059,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(req, agent.companyId, db);
 
     if (req.actor.type === "agent") {
       if (req.actor.agentId !== id) {
@@ -3064,7 +3132,7 @@ export function agentRoutes(
       return;
     }
     await assertBoardCanManageAgentsForCompany(req, agent.companyId);
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(req, agent.companyId, db);
     if (agent.adapterType !== "claude_local") {
       res.status(400).json({ error: "Login is only supported for claude_local agents" });
       return;
@@ -3089,7 +3157,7 @@ export function agentRoutes(
 
   router.get("/companies/:companyId/heartbeat-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
@@ -3099,7 +3167,7 @@ export function agentRoutes(
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
 
     // `minCount` is a padding floor for callers that want a minimum number of
     // recent runs to render (e.g. dashboard cards). It must default to 0 so
@@ -3189,7 +3257,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
-    assertCompanyAccess(req, run.companyId);
+    await assertCompanyAccess(req, run.companyId, db);
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
     res.json(
       redactCurrentUserValue(
@@ -3204,7 +3272,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const existing = await heartbeat.getRun(runId);
     if (existing) {
-      assertCompanyAccess(req, existing.companyId);
+      await assertCompanyAccess(req, existing.companyId, db);
     }
     const run = await heartbeat.cancelRun(runId);
 
@@ -3230,7 +3298,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
     const decision = typeof req.body?.decision === "string" ? req.body.decision : "";
     if (!["snooze", "continue", "dismissed_false_positive"].includes(decision)) {
       res.status(400).json({ error: "Unsupported watchdog decision" });
@@ -3266,7 +3334,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
-    assertCompanyAccess(req, run.companyId);
+    await assertCompanyAccess(req, run.companyId, db);
 
     const afterSeq = Number(req.query.afterSeq ?? 0);
     const limit = Number(req.query.limit ?? 200);
@@ -3288,7 +3356,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
-    assertCompanyAccess(req, run.companyId);
+    await assertCompanyAccess(req, run.companyId, db);
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
@@ -3308,7 +3376,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
-    assertCompanyAccess(req, run.companyId);
+    await assertCompanyAccess(req, run.companyId, db);
 
     const context = asRecord(run.contextSnapshot);
     const executionWorkspaceId = asNonEmptyString(context?.executionWorkspaceId);
@@ -3323,7 +3391,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Workspace operation not found" });
       return;
     }
-    assertCompanyAccess(req, operation.companyId);
+    await assertCompanyAccess(req, operation.companyId, db);
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
@@ -3345,7 +3413,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
 
     const liveRuns = await db
       .select({
@@ -3399,7 +3467,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
 
     let run = issue.executionRunId ? await heartbeat.getRunIssueSummary(issue.executionRunId) : null;
     if (
