@@ -4916,11 +4916,11 @@ export function issueService(db: Db) {
         }
       }
 
+      const releaseStatus = existing.status === "in_progress" ? "todo" : existing.status;
       const updated = await db
         .update(issues)
         .set({
-          status: "todo",
-          assigneeAgentId: null,
+          status: releaseStatus,
           checkoutRunId: null,
           executionRunId: null,
           executionAgentNameKey: null,
