@@ -2669,18 +2669,32 @@ export function companySkillService(db: Db) {
         metadata,
         updatedAt: new Date(),
       };
-      const row = existing
-        ? await dbOrTx
-          .update(companySkills)
-          .set(values)
-          .where(eq(companySkills.id, existing.id))
-          .returning()
-          .then((rows) => rows[0] ?? null)
-        : await dbOrTx
-          .insert(companySkills)
-          .values(values)
-          .returning()
-          .then((rows) => rows[0] ?? null);
+      let row: CompanySkillRow | null = null;
+      try {
+        row = existing
+          ? await dbOrTx
+            .update(companySkills)
+            .set(values)
+            .where(eq(companySkills.id, existing.id))
+            .returning()
+            .then((rows) => rows[0] ?? null)
+          : await dbOrTx
+            .insert(companySkills)
+            .values(values)
+            .returning()
+            .then((rows) => rows[0] ?? null);
+      } catch (error) {
+        const constraintName = typeof error === "object" && error !== null && "constraint_name" in error
+          ? (error as { constraint_name?: string }).constraint_name
+          : undefined;
+        const code = typeof error === "object" && error !== null && "code" in error
+          ? (error as { code?: string }).code
+          : undefined;
+        if (code === "23503" && constraintName === "company_skills_company_id_companies_id_fk") {
+          throw notFound("Company not found");
+        }
+        throw error;
+      }
       if (!row) throw notFound("Failed to persist company skill");
       out.push(toCompanySkill(row));
     }
