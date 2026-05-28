@@ -2835,6 +2835,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const second = await seedAwaitingHumanInteraction();
     let pollCalls = 0;
     const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+    const reconciliationStartedAt = Date.now();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
       resolveAdapter: () => ({
@@ -2919,6 +2920,14 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       bridgeId: expect.any(String),
       err: expect.any(Error),
     }), "failed to reconcile delivered awaiting human interaction");
+
+    const firstBridge = await db.select().from(awaitingHumanBridges)
+      .where(eq(awaitingHumanBridges.interactionId, first.interactionId));
+    expect(firstBridge).toHaveLength(1);
+    expect(firstBridge[0]).toEqual(expect.objectContaining({
+      lastError: "clickup poll exploded",
+    }));
+    expect(firstBridge[0]?.nextPollAt?.getTime()).toBeGreaterThan(reconciliationStartedAt + (4 * 60_000));
 
     const secondInteraction = await db.select().from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.id, second.interactionId))

@@ -1160,6 +1160,14 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
           interactionId: candidate.interactionId,
           bridgeId,
         }, "failed to reconcile delivered awaiting human interaction");
+        if (bridgeId) {
+          const detail = error instanceof Error ? error.message : String(error);
+          await db.update(awaitingHumanBridges).set({
+            lastError: detail,
+            nextPollAt: new Date(now.getTime() + AWAITING_HUMAN_POLL_FAILURE_BACKOFF_MS),
+            updatedAt: now,
+          }).where(eq(awaitingHumanBridges.id, bridgeId));
+        }
         summary.failed += 1;
       }
     }
