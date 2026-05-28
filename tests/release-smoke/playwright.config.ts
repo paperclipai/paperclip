@@ -2,6 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 const BASE_URL =
   process.env.PAPERCLIP_RELEASE_SMOKE_BASE_URL ?? "http://127.0.0.1:3232";
+const CHROMIUM_CHANNEL = process.env.CI ? "chrome" : undefined;
 
 export default defineConfig({
   testDir: ".",
@@ -20,7 +21,7 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { browserName: "chromium" },
+      use: { browserName: "chromium", ...(CHROMIUM_CHANNEL ? { channel: CHROMIUM_CHANNEL } : {}) },
     },
   ],
   outputDir: "./test-results",
