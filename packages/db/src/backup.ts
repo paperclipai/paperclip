@@ -40,7 +40,7 @@ function resolveEmbeddedPort(config: PartialConfig | null): number {
 }
 
 function resolveConnectionString(config: PartialConfig | null): string {
-  const envUrl = process.env.DATABASE_URL?.trim();
+  const envUrl = (process.env.PAPERCLIP_DATABASE_URL ?? process.env.DATABASE_URL)?.trim();
   if (envUrl) return envUrl;
 
   if (config?.database?.mode === "postgres" && typeof config.database.connectionString === "string") {
