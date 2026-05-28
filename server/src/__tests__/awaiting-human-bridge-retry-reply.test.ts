@@ -224,7 +224,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService reply retries", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toBe("ClickUp reply received:\n\nquestion 1 is yet it got diaplyed");
+    expect(comments[0]?.body).toBe("Clickup reply received:\n\nquestion 1 is yet it got diaplyed");
 
     const inboundEvents = await db.select().from(awaitingHumanBridgeInboundEvents).where(
       eq(awaitingHumanBridgeInboundEvents.bridgeId, bridge!.id),

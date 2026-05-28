@@ -21,6 +21,7 @@ export type { AwaitingHumanBridgeAdapter, AwaitingHumanBridgePollEvent };
 type AwaitingHumanBridgeDeps = {
   resolveProviderForCompany(companyId: string): Promise<string>;
   resolveAdapter(provider: string): AwaitingHumanBridgeAdapter;
+  hasAdapter(provider: string): boolean;
   requestWakeup?: (input: {
     companyId: string;
     agentId: string;
@@ -84,7 +85,6 @@ function truncateText(value: string, maxLength: number) {
 function formatProviderLabel(provider: string) {
   const normalized = provider.trim();
   if (normalized.length === 0) return "Reply";
-  if (normalized.toLowerCase() === "clickup") return "ClickUp";
   return normalized
     .split(/[_\-\s]+/)
     .filter(Boolean)
@@ -472,7 +472,7 @@ function buildBridgeNotification(input: {
           280,
         ),
         link,
-        cta: "Reply in ClickUp with the needed answers, decisions, or corrections.",
+        cta: "Reply with the needed answers, decisions, or corrections.",
         labels: ["awaiting_human", "ask_user_questions"],
         kind: interaction.kind,
         body: renderAskUserQuestionsBody(interaction),
@@ -492,7 +492,7 @@ function buildBridgeNotification(input: {
         280,
       ),
       link,
-      cta: "Reply in ClickUp to approve or explain the changes needed.",
+      cta: "Reply to approve or explain the changes needed.",
       labels: ["awaiting_human", "request_confirmation"],
       kind: interaction.kind,
       body: renderRequestConfirmationBody(interaction),
@@ -519,7 +519,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
         payload: input.payload,
         reason: input.reason ?? "issue_commented",
         requestedByActorType: input.requestedByActorType ?? "system",
-        requestedByActorId: input.requestedByActorId ?? "clickup_approval_poller",
+        requestedByActorId: input.requestedByActorId ?? "awaiting_human_bridge",
       });
       return;
     }
@@ -532,7 +532,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
       reason: input.reason ?? "issue_commented",
       payload: input.payload,
       requestedByActorType: input.requestedByActorType ?? "system",
-      requestedByActorId: input.requestedByActorId ?? "clickup_approval_poller",
+      requestedByActorId: input.requestedByActorId ?? "awaiting_human_bridge",
     });
   }
 
@@ -1124,8 +1124,10 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
         const details = parseObject(candidate.handoffDetails);
         const delivery = parseObject(details.notificationDelivery);
         const messageId = readNonEmptyString(delivery.externalId);
+        const provider = typeof delivery.channel === "string" ? delivery.channel.split("-")[0] : null;
         if (
-          delivery.channel !== "clickup-chat"
+          !provider
+          || !deps.hasAdapter(provider)
           || (delivery.status !== "sent" && delivery.status !== "enqueued")
           || !messageId
         ) {
@@ -1146,7 +1148,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
             issueId: candidate.issueId,
             interactionId: candidate.interactionId,
             agentId: wakeAgentId,
-            provider: "clickup",
+            provider,
             externalMessageId: messageId,
           });
           bridgeId = bridge.id;
@@ -1380,7 +1382,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
           await logActivity(db, {
             companyId: row.companyId,
             actorType: "system",
-            actorId: "clickup_approval_poller",
+            actorId: "awaiting_human_bridge",
             action: "issue.comment_added",
             entityType: "issue",
             entityId: row.issueId,
@@ -1390,9 +1392,9 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
               identifier: issueRow?.identifier ?? null,
               issueTitle: issueRow?.title ?? null,
               interactionId: row.interactionId,
-              forwardingOrigin: "clickup.awaiting_human.reply_forwarded",
-              clickupMessageId: row.externalMessageId ?? null,
-              clickupReplyId: event.metadata?.clickupReplyId ?? externalEventId,
+              forwardingOrigin: "awaiting_human.bridge_reply",
+              externalMessageId: row.externalMessageId ?? null,
+              externalEventId: externalEventId ?? null,
             },
           });
 
@@ -1402,7 +1404,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
               await logActivity(db, {
                 companyId: row.companyId,
                 actorType: "system",
-                actorId: "clickup_approval_poller",
+                actorId: "awaiting_human_bridge",
                 action: "issue.thread_interaction_answered",
                 entityType: "issue",
                 entityId: row.issueId,
@@ -1414,9 +1416,9 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
                     currentInteractionAfterAnswer.kind === "ask_user_questions"
                       ? (currentInteractionAfterAnswer.result?.answers?.length ?? 0)
                       : 0,
-                  resolutionSource: "clickup_reply",
-                  clickupMessageId: row.externalMessageId ?? null,
-                  clickupReplyId: event.metadata?.clickupReplyId ?? externalEventId,
+                  resolutionSource: "bridge_reply",
+                  externalMessageId: row.externalMessageId ?? null,
+                  externalEventId: externalEventId ?? null,
                 },
               });
 
@@ -1547,15 +1549,15 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
               continuationIssue,
               actor: {
                 actorType: "system",
-                actorId: "clickup_approval_poller",
+                actorId: "awaiting_human_bridge",
                 agentId: null,
                 runId: null,
               },
-              source: "clickup.awaiting_human.approval",
+              source: "awaiting_human.bridge_approval",
               metadata: {
                 resolutionSource: typeof event.metadata?.resolutionSource === "string" ? event.metadata.resolutionSource : null,
-                clickupMessageId: row.externalMessageId ?? null,
-                clickupReaction: typeof event.metadata?.clickupReaction === "string" ? event.metadata.clickupReaction : null,
+                externalMessageId: row.externalMessageId ?? null,
+                externalEventId: externalEventId ?? null,
               },
             });
 

@@ -2104,6 +2104,7 @@ export function heartbeatService(db: Db) {
   const awaitingHumanBridge = awaitingHumanBridgeService(db, {
     resolveProviderForCompany: async (companyId) => awaitingHumanSettings.resolveProvider(companyId),
     resolveAdapter: (provider) => resolveAwaitingHumanBridgeAdapter(provider, db),
+    hasAdapter: (provider) => hasAwaitingHumanBridgeAdapter(provider),
     requestWakeup: async ({ agentId, payload, reason, requestedByActorType, requestedByActorId }) => {
       await enqueueWakeup(agentId, {
         source: "automation",

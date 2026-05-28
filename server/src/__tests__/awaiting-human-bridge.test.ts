@@ -304,6 +304,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     }));
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send,
         poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
@@ -414,6 +415,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       }));
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send,
         poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
@@ -525,6 +527,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     }));
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send,
         poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
@@ -635,6 +638,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -691,6 +695,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     });
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -764,6 +769,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     }));
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -806,7 +812,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toBe("ClickUp reply received:\n\nPlease revise the summary first.");
+    expect(comments[0]?.body).toBe("Clickup reply received:\n\nPlease revise the summary first.");
 
     const events = await db.select().from(awaitingHumanBridgeInboundEvents).where(
       eq(awaitingHumanBridgeInboundEvents.interactionId, seeded.interactionId),
@@ -827,6 +833,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const requestWakeup = vi.fn(async () => {});
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -868,7 +875,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       agentId: seeded.agentId,
       reason: "issue_commented",
       requestedByActorType: "system",
-      requestedByActorId: "clickup_approval_poller",
+      requestedByActorId: "awaiting_human_bridge",
       payload: expect.objectContaining({
         issueId: seeded.issueId,
         interactionId: seeded.interactionId,
@@ -886,6 +893,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const close = vi.fn(async () => {});
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -937,7 +945,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toBe("ClickUp reply received:\n\nquestion 1 is yet it got diaplyed");
+    expect(comments[0]?.body).toBe("Clickup reply received:\n\nquestion 1 is yet it got diaplyed");
 
     const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, seeded.agentId));
     expect(wakes).toHaveLength(1);
@@ -958,7 +966,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     expect(close).toHaveBeenCalledWith(expect.objectContaining({
       bridgeId: bridge!.id,
       outcome: "superseded",
-      reason: "Interaction answered via ClickUp reply.",
+      reason: "Interaction answered via Clickup reply.",
     }));
   });
 
@@ -1022,6 +1030,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAskUserQuestionsBinaryInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -1071,6 +1080,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAskUserQuestionsBinaryInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -1120,6 +1130,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAskUserQuestionsBinaryInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -1169,6 +1180,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -1227,6 +1239,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -1312,6 +1325,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -1392,6 +1406,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const requestWakeup = vi.fn(async () => {});
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -1446,6 +1461,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -1520,6 +1536,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -1593,6 +1610,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -1652,6 +1670,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     });
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       requestWakeup,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
@@ -1723,6 +1742,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -1812,6 +1832,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -1880,6 +1901,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const close = vi.fn(async () => {});
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -1943,6 +1965,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -1990,6 +2013,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const close = vi.fn(async () => {});
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send,
         poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
@@ -2071,6 +2095,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     });
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -2135,6 +2160,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -2179,6 +2205,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     });
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -2217,6 +2244,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const close = vi.fn(async () => {});
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -2297,6 +2325,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     let shouldFailClose = true;
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -2351,6 +2380,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -2401,6 +2431,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const close = vi.fn(async () => {});
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -2444,6 +2475,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const close = vi.fn(async () => {});
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -2492,6 +2524,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     }));
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send,
         poll,
@@ -2544,6 +2577,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seededTwo = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -2607,6 +2641,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: `thread-${Math.random()}`,
@@ -2649,6 +2684,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -2715,6 +2751,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -2782,6 +2819,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     });
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -2840,6 +2878,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -2911,6 +2950,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const reconciliationStartedAt = Date.now();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async ({ interactionId }) => ({
           externalThreadId: `thread-${interactionId}`,
@@ -3012,6 +3052,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -3056,6 +3097,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
