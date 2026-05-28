@@ -83,7 +83,13 @@ function createIssueLinkNode(value: string, href: string, childType: "text" | "i
   };
 }
 
-function linkifyIssueReferencesInText(value: string): MarkdownNode[] | null {
+function isBareIdentifierForOtherCompany(token: string, companyPrefix: string): boolean {
+  if (!BARE_ISSUE_IDENTIFIER_RE.test(token)) return false;
+  const tokenPrefix = token.split("-")[0] ?? "";
+  return tokenPrefix.toUpperCase() !== companyPrefix.toUpperCase();
+}
+
+function linkifyIssueReferencesInText(value: string, companyPrefix?: string): MarkdownNode[] | null {
   const nodes: MarkdownNode[] = [];
   let cursor = 0;
   let matched = false;
@@ -97,6 +103,9 @@ function linkifyIssueReferencesInText(value: string): MarkdownNode[] | null {
     const { core, trailing } = splitTrailingPunctuation(raw);
     const issueRef = parseIssueReferenceFromHref(core);
     if (!issueRef) continue;
+
+    // Skip bare identifiers whose prefix doesn't match the current company.
+    if (companyPrefix && isBareIdentifierForOtherCompany(core, companyPrefix)) continue;
 
     matched = true;
     if (start > cursor) {
@@ -116,7 +125,7 @@ function linkifyIssueReferencesInText(value: string): MarkdownNode[] | null {
   return nodes;
 }
 
-function rewriteMarkdownTree(node: MarkdownNode) {
+function rewriteMarkdownTree(node: MarkdownNode, options?: { companyPrefix?: string }) {
   if (!Array.isArray(node.children) || node.children.length === 0) return;
   if (node.type === "link" || node.type === "linkReference" || node.type === "code" || node.type === "definition" || node.type === "html") {
     return;
@@ -126,28 +135,28 @@ function rewriteMarkdownTree(node: MarkdownNode) {
   for (const child of node.children) {
     if (child.type === "inlineCode" && typeof child.value === "string") {
       const issueRef = parseIssueReferenceFromHref(child.value);
-      if (issueRef) {
+      if (issueRef && (!options?.companyPrefix || !isBareIdentifierForOtherCompany(child.value, options.companyPrefix))) {
         nextChildren.push(createIssueLinkNode(child.value, issueRef.href, "inlineCode"));
         continue;
       }
     }
 
     if (child.type === "text" && typeof child.value === "string") {
-      const linked = linkifyIssueReferencesInText(child.value);
+      const linked = linkifyIssueReferencesInText(child.value, options?.companyPrefix);
       if (linked) {
         nextChildren.push(...linked);
         continue;
       }
     }
 
-    rewriteMarkdownTree(child);
+    rewriteMarkdownTree(child, options);
     nextChildren.push(child);
   }
   node.children = nextChildren;
 }
 
-export function remarkLinkIssueReferences() {
+export function remarkLinkIssueReferences(options?: { companyPrefix?: string }) {
   return (tree: MarkdownNode) => {
-    rewriteMarkdownTree(tree);
+    rewriteMarkdownTree(tree, options);
   };
 }
