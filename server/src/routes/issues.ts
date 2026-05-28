@@ -23,6 +23,7 @@ import {
   createIssueWorkProductSchema,
   createIssueLabelSchema,
   checkoutIssueSchema,
+  createConsultReportArtifactSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   createChildIssueSchema,
@@ -80,6 +81,11 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import {
+  CONSULT_REPORT_ARTIFACT_LIST_DEFAULT_LIMIT,
+  CONSULT_REPORT_ARTIFACT_LIST_MAX_LIMIT,
+  consultReportArtifactService,
+} from "../services/consult-report-artifacts.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -116,6 +122,8 @@ import { parseIssueExecutionWorkspaceSettings } from "../services/execution-work
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const CONSULT_REPORT_ARTIFACT_LIMIT_ERROR =
+  `limit must be a positive integer; values above ${CONSULT_REPORT_ARTIFACT_LIST_MAX_LIMIT} are capped`;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -213,6 +221,34 @@ const ISSUE_WORKSPACE_AUDIT_FIELDS = new Set([
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function parseConsultReportArtifactListWindow(req: Request, res: Response) {
+  const rawLimit = req.query.limit;
+  const rawOffset = req.query.offset;
+
+  if (rawLimit !== undefined && (typeof rawLimit !== "string" || !/^\d+$/.test(rawLimit))) {
+    res.status(400).json({ error: CONSULT_REPORT_ARTIFACT_LIMIT_ERROR });
+    return null;
+  }
+  const parsedLimit = rawLimit === undefined ? null : Number.parseInt(rawLimit, 10);
+  if (parsedLimit !== null && (!Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
+    res.status(400).json({ error: CONSULT_REPORT_ARTIFACT_LIMIT_ERROR });
+    return null;
+  }
+
+  if (rawOffset !== undefined && (typeof rawOffset !== "string" || !/^\d+$/.test(rawOffset))) {
+    res.status(400).json({ error: "offset must be a non-negative integer" });
+    return null;
+  }
+  const parsedOffset = rawOffset === undefined ? null : Number.parseInt(rawOffset, 10);
+
+  return {
+    limit: parsedLimit === null
+      ? CONSULT_REPORT_ARTIFACT_LIST_DEFAULT_LIMIT
+      : Math.min(CONSULT_REPORT_ARTIFACT_LIST_MAX_LIMIT, parsedLimit),
+    offset: parsedOffset ?? 0,
+  };
 }
 
 function hasIssueWorkspaceAuditChange(previous: Record<string, unknown>) {
@@ -873,6 +909,7 @@ export function issueRoutes(
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const documentAnnotationsSvc = documentAnnotationService(db);
+  const consultReportArtifactsSvc = consultReportArtifactService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
   const routinesSvc = routineService(db, {
@@ -1844,6 +1881,23 @@ export function issueRoutes(
     res.json(result);
   });
 
+  router.get("/companies/:companyId/consult-report-artifacts", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const reportNeeded = typeof req.query.reportNeeded === "string"
+      ? req.query.reportNeeded.trim().toLowerCase()
+      : null;
+    if (reportNeeded !== "true") {
+      res.status(400).json({ error: "Company consult-report rollup only supports reportNeeded=true" });
+      return;
+    }
+    const listWindow = parseConsultReportArtifactListWindow(req, res);
+    if (!listWindow) return;
+
+    const artifacts = await consultReportArtifactsSvc.listReportNeeded(companyId, listWindow);
+    res.json(artifacts);
+  });
+
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -2483,6 +2537,70 @@ export function issueRoutes(
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json(workProducts);
   });
+
+  router.get("/issues/:id/consult-report-artifacts", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const listWindow = parseConsultReportArtifactListWindow(req, res);
+    if (!listWindow) return;
+    const artifacts = await consultReportArtifactsSvc.listForIssue(issue.id, issue.companyId, listWindow);
+    res.json(artifacts);
+  });
+
+  router.post(
+    "/issues/:id/consult-report-artifacts",
+    validate(createConsultReportArtifactSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (req.actor.type === "agent") {
+        if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      } else {
+        assertBoard(req);
+      }
+
+      const actor = getActorInfo(req);
+      const artifact = await consultReportArtifactsSvc.create({
+        ...req.body,
+        sourceIssue: {
+          id: issue.id,
+          companyId: issue.companyId,
+          parentId: issue.parentId ?? null,
+        },
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.consult_report_artifact_created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          artifactId: artifact.id,
+          sourceType: artifact.sourceType,
+          accountableIssueId: artifact.accountableIssueId,
+          reportNeeded: artifact.reportNeeded,
+        },
+      });
+
+      res.status(201).json(artifact);
+    },
+  );
 
   router.get("/issues/:id/documents", async (req, res) => {
     const id = req.params.id as string;

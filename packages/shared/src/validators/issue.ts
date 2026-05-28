@@ -550,6 +550,88 @@ export const issueDocumentKeySchema = z
   .max(64)
   .regex(/^[a-z0-9][a-z0-9_-]*$/, "Document key must be lowercase letters, numbers, _ or -");
 
+const consultReportArtifactRequiredTextSchema = multilineTextSchema.pipe(z.string().trim().min(1).max(20000));
+
+export const consultReportArtifactSourceTypeSchema = z.enum(["issue", "comment", "document"]);
+
+export const createConsultReportArtifactSchema = z.object({
+  sourceType: consultReportArtifactSourceTypeSchema.optional().default("issue"),
+  sourceCommentId: z.string().uuid().nullable().optional(),
+  sourceDocumentId: z.string().uuid().nullable().optional(),
+  sourceDocumentKey: issueDocumentKeySchema.nullable().optional(),
+  accountableIssueId: z.string().uuid().nullable().optional(),
+  decision: consultReportArtifactRequiredTextSchema,
+  evidence: consultReportArtifactRequiredTextSchema,
+  risk: consultReportArtifactRequiredTextSchema,
+  nextOwnerText: consultReportArtifactRequiredTextSchema,
+  nextOwnerAgentId: z.string().uuid().nullable().optional(),
+  nextOwnerUserId: z.string().trim().min(1).max(255).nullable().optional(),
+  nextOwnerIssueId: z.string().uuid().nullable().optional(),
+  reportNeeded: z.boolean().optional().default(false),
+  reportReason: multilineTextSchema.pipe(z.string().trim().min(1).max(4000)).nullable().optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.reportNeeded && !value.reportReason) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "reportReason is required when reportNeeded is true",
+      path: ["reportReason"],
+    });
+  }
+
+  if (value.sourceType === "issue") {
+    if (value.sourceCommentId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "sourceCommentId is only valid for comment sources",
+        path: ["sourceCommentId"],
+      });
+    }
+    if (value.sourceDocumentId || value.sourceDocumentKey) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Document source fields are only valid for document sources",
+        path: [value.sourceDocumentId ? "sourceDocumentId" : "sourceDocumentKey"],
+      });
+    }
+    return;
+  }
+
+  if (value.sourceType === "comment") {
+    if (!value.sourceCommentId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "sourceCommentId is required for comment sources",
+        path: ["sourceCommentId"],
+      });
+    }
+    if (value.sourceDocumentId || value.sourceDocumentKey) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Document source fields are only valid for document sources",
+        path: [value.sourceDocumentId ? "sourceDocumentId" : "sourceDocumentKey"],
+      });
+    }
+    return;
+  }
+
+  if (value.sourceCommentId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "sourceCommentId is only valid for comment sources",
+      path: ["sourceCommentId"],
+    });
+  }
+  if (!value.sourceDocumentId && !value.sourceDocumentKey) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "sourceDocumentId or sourceDocumentKey is required for document sources",
+      path: ["sourceDocumentKey"],
+    });
+  }
+});
+
+export type CreateConsultReportArtifact = z.infer<typeof createConsultReportArtifactSchema>;
+
 export const suggestedTaskDraftSchema = z.object({
   clientKey: z.string().trim().min(1).max(120),
   parentClientKey: z.string().trim().min(1).max(120).nullable().optional(),

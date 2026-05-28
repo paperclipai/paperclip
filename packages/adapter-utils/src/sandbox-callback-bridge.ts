@@ -59,6 +59,8 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/issues\/[^/]+\/heartbeat-context$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+\/comments(?:\/[^/]+)?$/ },
   { method: "POST", path: /^\/api\/issues\/[^/]+\/comments$/ },
+  { method: "GET", path: /^\/api\/issues\/[^/]+\/consult-report-artifacts$/ },
+  { method: "POST", path: /^\/api\/issues\/[^/]+\/consult-report-artifacts$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+\/documents(?:\/[^/]+)?$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+\/documents\/[^/]+\/revisions$/ },
   { method: "PUT", path: /^\/api\/issues\/[^/]+\/documents\/[^/]+$/ },
@@ -74,6 +76,7 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
 
   // Subtasks / delegation
   { method: "POST", path: /^\/api\/companies\/[^/]+\/issues$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/consult-report-artifacts$/ },
 
   // Approvals (request, read, comment)
   { method: "GET", path: /^\/api\/approvals\/[^/]+$/ },
