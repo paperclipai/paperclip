@@ -33,6 +33,7 @@ export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
 export { issues } from "./issues.js";
 export { issueRecoveryActions } from "./issue_recovery_actions.js";
+export { consultReportArtifacts } from "./consult_report_artifacts.js";
 export { issueReferenceMentions } from "./issue_reference_mentions.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";

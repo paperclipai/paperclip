@@ -7,6 +7,7 @@ export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } fr
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
 export { documentAnnotationService } from "./document-annotations.js";
+export { consultReportArtifactService } from "./consult-report-artifacts.js";
 export {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   buildContinuationSummaryMarkdown,

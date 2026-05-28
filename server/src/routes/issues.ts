@@ -23,6 +23,7 @@ import {
   createIssueWorkProductSchema,
   createIssueLabelSchema,
   checkoutIssueSchema,
+  createConsultReportArtifactSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   createChildIssueSchema,
@@ -75,6 +76,7 @@ import {
   clampIssueListLimit,
   documentService,
   documentAnnotationService,
+  consultReportArtifactService,
   logActivity,
   projectService,
   routineService,
@@ -873,6 +875,7 @@ export function issueRoutes(
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const documentAnnotationsSvc = documentAnnotationService(db);
+  const consultReportArtifactsSvc = consultReportArtifactService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
   const routinesSvc = routineService(db, {
@@ -1844,6 +1847,21 @@ export function issueRoutes(
     res.json(result);
   });
 
+  router.get("/companies/:companyId/consult-report-artifacts", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const reportNeeded = typeof req.query.reportNeeded === "string"
+      ? req.query.reportNeeded.trim().toLowerCase()
+      : null;
+    if (reportNeeded !== null && reportNeeded !== "true") {
+      res.status(400).json({ error: "Company consult-report rollup only supports reportNeeded=true" });
+      return;
+    }
+
+    const artifacts = await consultReportArtifactsSvc.listReportNeeded(companyId);
+    res.json(artifacts);
+  });
+
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -2483,6 +2501,68 @@ export function issueRoutes(
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json(workProducts);
   });
+
+  router.get("/issues/:id/consult-report-artifacts", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const artifacts = await consultReportArtifactsSvc.listForIssue(issue.id, issue.companyId);
+    res.json(artifacts);
+  });
+
+  router.post(
+    "/issues/:id/consult-report-artifacts",
+    validate(createConsultReportArtifactSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (req.actor.type === "agent") {
+        if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      } else {
+        assertBoard(req);
+      }
+
+      const actor = getActorInfo(req);
+      const artifact = await consultReportArtifactsSvc.create({
+        ...req.body,
+        sourceIssue: {
+          id: issue.id,
+          companyId: issue.companyId,
+          parentId: issue.parentId ?? null,
+        },
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.consult_report_artifact_created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          artifactId: artifact.id,
+          sourceType: artifact.sourceType,
+          accountableIssueId: artifact.accountableIssueId,
+          reportNeeded: artifact.reportNeeded,
+        },
+      });
+
+      res.status(201).json(artifact);
+    },
+  );
 
   router.get("/issues/:id/documents", async (req, res) => {
     const id = req.params.id as string;
