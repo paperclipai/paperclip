@@ -22,6 +22,7 @@ import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
+import { YoonCompanyGitWorkflowPanel } from "../components/YoonCompanyGitWorkflowPanel";
 import { YoonCompanyHermesStatusPanel } from "../components/YoonCompanyHermesStatusPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -230,6 +231,8 @@ export function Dashboard() {
       )}
 
       <YoonCompanyHermesStatusPanel agents={agents} />
+
+      <YoonCompanyGitWorkflowPanel />
 
       <ActiveAgentsPanel companyId={selectedCompanyId!} />
 
