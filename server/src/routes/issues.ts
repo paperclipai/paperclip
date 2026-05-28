@@ -4677,6 +4677,9 @@ export function issueRoutes(
 
         for (const mentionedId of mentionedIds) {
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
+      if (dependent.status === "blocked") {
+        await db.updateTable("issues").set({ status: "todo" }).where("id", "=", dependent.id).execute();
+      }
           addWakeup(mentionedId, {
             source: "automation",
             triggerDetail: "system",

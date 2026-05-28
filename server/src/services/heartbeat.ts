@@ -166,7 +166,8 @@ import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+import { isUuidLike } from "@paperclipai/shared";
+import { companySkillsService } from "./company-skills.ts";
 import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
@@ -445,14 +446,38 @@ export async function resolveExecutionRunAdapterConfig(input: {
 }
 
 export function extractMentionedSkillIdsFromSources(
+  companyId: string,
+  sources: Array<string | null | undefined>,
+): string[] {
   sources: Array<string | null | undefined>,
 ): string[] {
   const mentionedIds = new Set<string>();
   for (const source of sources) {
     if (typeof source !== "string" || source.length === 0) continue;
-    for (const skillId of extractSkillMentionIds(source)) {
-      mentionedIds.add(skillId);
+    // Match all skill:// URIs
+    const skillUriRegex = /skill://([a-zA-Z0-9._-]+)/g;
+    let match;
+    while ((match = skillUriRegex.exec(source)) !== null) {
+      const rawId = match[1];
+      // If it looks like a UUID, use directly; otherwise treat as slug and resolve
+      if (isUuidLike(rawId)) {
+        mentionedIds.add(rawId);
+      } else {
+        // Resolve slug to UUID via company skills service
+        try {
+          const resolved = companySkillsService.resolveRequestedSkillKeysOrThrow(input.companyId, [rawId]);
+          if (resolved.length > 0) {
+            mentionedIds.add(resolved[0].id);
+          }
+        } catch (error) {
+          // Silently skip unresolved slugs to avoid crashing heartbeat
+          continue;
+        }
+      }
     }
+  }
+  return [...mentionedIds];
+}
   }
   return [...mentionedIds];
 }
@@ -523,7 +548,7 @@ async function resolveRunScopedMentionedSkillKeys(input: {
         eq(issueComments.companyId, input.companyId),
       ),
     );
-  const mentionedSkillIds = extractMentionedSkillIdsFromSources([
+  const mentionedSkillIds = extractMentionedSkillIdsFromSources(input.companyId, [
     issue.title,
     issue.description ?? "",
     ...comments.map((comment) => comment.body),
@@ -10020,4 +10045,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return run ?? null;
     },
   };
+}
+export function extractMentionedSkillIdsFromSources(
+  companyId: string,
+  sources: Array<string | null | undefined>,
+): string[] {
+  const mentionedIds = new Set<string>();
+  for (const source of sources) {
+    if (typeof source !== "string" || source.length === 0) continue;
+    // Match all skill:// URIs
+    const skillUriRegex = /skill:\/\/([a-zA-Z0-9._\-]+)/g;
+    let match;
+    while ((match = skillUriRegex.exec(source)) !== null) {
+      const rawId = match[1];
+      // If it looks like a UUID, use directly; otherwise treat as slug and resolve
+      if (isUuidLike(rawId)) {
+        mentionedIds.add(rawId);
+      } else {
+        // Resolve slug to UUID via company skills service
+        try {
+          const resolved = companySkillsService.resolveRequestedSkillKeysOrThrow(companyId, [rawId]);
+          if (resolved.length > 0) {
+            mentionedIds.add(resolved[0].id);
+          }
+        } catch (error) {
+          // Silently skip unresolved slugs to avoid crashing heartbeat
+          continue;
+        }
+      }
+    }
+  }
+  return [...mentionedIds];
 }

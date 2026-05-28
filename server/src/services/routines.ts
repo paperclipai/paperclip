@@ -1669,6 +1669,7 @@ export function routineService(
           return locked;
         }
         await txDb.update(routines).set(candidate).where(eq(routines.id, id));
+        await txDb.update(routines).set(candidate).where(eq(routines.id, id));
 
         const nextSnapshot = await buildRoutineRevisionSnapshot(txDb, candidate);
         if (locked.latestRevisionId) {

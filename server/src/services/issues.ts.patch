@@ -1,0 +1,59 @@
+@@ -1234,6 +1234,25 @@
+ export async function handleWakeIssueBlockersResolved(db: Db, payload: { issueId: string }) {
+   const { issueId } = payload;
+
++  // Fetch issue with status and assigneeAgentId in one query
++  const issueRow = await db
++    .selectFrom('issues')
++    .where('id', '=', issueId)
++    .select(['status', 'assigneeAgentId', 'companyId'])
++    .executeTakeFirst();
++
++  if (!issueRow) return;
++
++  // Only transition if current status is 'blocked'
++  if (issueRow.status !== 'blocked') return;
++
++  // Update issue status to 'todo'
++  await db
++    .updateTable('issues')
++    .set({ status: 'todo' })
++    .where('id', '=', issueId)
++    .execute();
++
++  // Wake the assignee after successful transition
++  if (issueRow.assigneeAgentId) {
++    await db
++      .insertInto('agentWakeupRequests')
++      .values({
++        agentId: issueRow.assigneeAgentId,
++        reason: 'issue_blockers_resolved',
++        metadata: { issueId },
++        createdAt: new Date(),
++      })
++      .execute();
++  }
++
+   // Fetch current issue status
+-  const issueRow = await db
+-    .selectFrom('issues')
+-    .where('id', '=', issueId)
+-    .where('companyId', '=', 'company_id_placeholder') // This should be inferred from context or session
+-    .select(['status'])
+-    .executeTakeFirst();
+-
+-  if (!issueRow) return;
+-
+-  // Only transition if current status is 'blocked'
+-  if (issueRow.status !== 'blocked') return;
+-
+-  // Update issue status to 'todo'
+-  await db
+-    .updateTable('issues')
+-    .set({ status: 'todo' })
+-    .where('id', '=', issueId)
+-    .execute();
+-
+-  // Optionally, log or emit audit event here if needed
++  // Removed redundant code; logic now consolidated above.
+ }
