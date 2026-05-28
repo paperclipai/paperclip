@@ -1888,6 +1888,10 @@ export interface PluginContext {
 
   /** Read and write issues, comments, and documents. Requires issue capabilities. */
   issues: PluginIssuesClient;
+  /** Register custom fields to appear in the issue properties panel. */
+  properties: {
+    register<T>(key: string, resolver: (issue: Issue) => T | Promise<T>): void;
+  };
 
   /** Read and manage agents. Requires `agents.read` for reads; `agents.pause` / `agents.resume` / `agents.invoke` for write ops. */
   agents: PluginAgentsClient;
