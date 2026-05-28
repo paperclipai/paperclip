@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, count, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issueRecoveryActions } from "@paperclipai/db";
 import type {
@@ -286,10 +286,41 @@ export function issueRecoveryActionService(db: Db) {
     return updated ? toReadModel(updated) : null;
   }
 
+  async function countActive(
+    companyId: string,
+    options: { statuses?: IssueRecoveryActionStatus[]; kinds?: string[] } = {},
+  ): Promise<{ total: number; byKind: Record<string, number> }> {
+    const statuses = options.statuses ?? [...ACTIVE_RECOVERY_ACTION_STATUSES];
+    const predicates = [
+      eq(issueRecoveryActions.companyId, companyId),
+      inArray(issueRecoveryActions.status, statuses as IssueRecoveryActionStatus[]),
+    ];
+    if (options.kinds && options.kinds.length > 0) {
+      predicates.push(inArray(issueRecoveryActions.kind, options.kinds as IssueRecoveryActionKind[]));
+    }
+    const rows = await db
+      .select({
+        kind: issueRecoveryActions.kind,
+        total: count(),
+      })
+      .from(issueRecoveryActions)
+      .where(and(...predicates))
+      .groupBy(issueRecoveryActions.kind);
+
+    const byKind: Record<string, number> = {};
+    let total = 0;
+    for (const row of rows) {
+      byKind[row.kind] = Number(row.total);
+      total += Number(row.total);
+    }
+    return { total, byKind };
+  }
+
   return {
     getActiveForIssue,
     listActiveForIssues,
     resolveActiveForIssue,
     upsertSourceScoped,
+    countActive,
   };
 }

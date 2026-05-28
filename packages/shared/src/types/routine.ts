@@ -71,6 +71,8 @@ export interface Routine {
   updatedByUserId: string | null;
   lastTriggeredAt: Date | null;
   lastEnqueuedAt: Date | null;
+  labelIds: string[];
+  executionPolicyTemplate: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
   managedByPlugin?: RoutineManagedByPlugin | null;
@@ -89,6 +91,7 @@ export interface RoutineManagedByPlugin {
 }
 
 export interface RoutineRevisionSnapshotRoutineV1 {
+  labelIds: string[];
   id: string;
   companyId: string;
   projectId: string | null;
