@@ -6385,12 +6385,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ? "idle"
           : "error";
 
+    let lastRunError: typeof agents.$inferInsert["lastRunError"] | undefined = undefined;
+    if (nextStatus === "error") {
+      const latestFailed = await db
+        .select({
+          id: heartbeatRuns.id,
+          error: heartbeatRuns.error,
+          errorCode: heartbeatRuns.errorCode,
+          exitCode: heartbeatRuns.exitCode,
+          signal: heartbeatRuns.signal,
+          updatedAt: heartbeatRuns.updatedAt,
+        })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "failed")))
+        .orderBy(desc(heartbeatRuns.updatedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (latestFailed) {
+        lastRunError = {
+          runId: latestFailed.id,
+          errorCode: latestFailed.errorCode ?? null,
+          message: latestFailed.error ?? null,
+          exitCode: latestFailed.exitCode ?? null,
+          signal: latestFailed.signal ?? null,
+          occurredAt: latestFailed.updatedAt ? new Date(latestFailed.updatedAt).toISOString() : new Date().toISOString(),
+        };
+      } else {
+        lastRunError = null;
+      }
+    }
+
     const updated = await db
       .update(agents)
       .set({
         status: nextStatus,
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
+        ...(lastRunError !== undefined ? { lastRunError } : {}),
       })
       .where(eq(agents.id, agentId))
       .returning()
