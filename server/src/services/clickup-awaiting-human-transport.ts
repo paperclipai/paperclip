@@ -390,6 +390,10 @@ function extractReactionRows(payload: unknown): ClickUpChatMessageReaction[] {
   return flattened;
 }
 
+function includesBizboxOpenLink(kind: string | null | undefined) {
+  return kind === "request_confirmation" || kind === "ask_user_questions";
+}
+
 function renderClickUpMessage(notification: AwaitingHumanNotificationPayload) {
   const title = truncateText(notification.title, MAX_TITLE_LENGTH);
   const bodySection = formatBodySection(notification.body);
@@ -401,6 +405,27 @@ function renderClickUpMessage(notification: AwaitingHumanNotificationPayload) {
   } else if (notification.summary.trim().length > 0) {
     lines.push("");
     lines.push(truncateText(notification.summary, MAX_SUMMARY_LENGTH));
+  }
+
+  if (notification.reviewFile) {
+    lines.push("");
+    lines.push(`Review file: ${notification.reviewFile.filename}`);
+    lines.push(`Bizbox deliverable: ${notification.reviewFile.deliverableUrl}`);
+    if (notification.reviewFile.clickupTaskUrl) {
+      lines.push(`ClickUp review task: ${notification.reviewFile.clickupTaskUrl}`);
+      if (notification.reviewFile.clickupAttachmentId) {
+        lines.push("Review file attached on the ClickUp task.");
+      }
+    }
+  }
+
+  const link = notification.link.trim();
+  if (includesBizboxOpenLink(notification.kind) && link.length > 0) {
+    lines.push("");
+    lines.push(`Open in Bizbox: ${link}`);
+  } else if (notification.cta.trim().length > 0) {
+    lines.push("");
+    lines.push(truncateText(notification.cta, 180));
   }
 
   return trimTotal(lines.join("\n"), CLICKUP_CHAT_MESSAGE_MAX_CHARS);

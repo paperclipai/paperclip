@@ -11,8 +11,8 @@ afterEach(() => {
   delete process.env.CLICKUP_AWAITING_HUMAN_CHANNEL_ID;
 });
 
-describe("clickup awaiting human transport request_confirmation", () => {
-  it("renders body with bizbox open line", async () => {
+describe("clickup awaiting human transport handoff messages", () => {
+  it("renders request_confirmation with body and bizbox open line", async () => {
     process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
     process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
     process.env.CLICKUP_AWAITING_HUMAN_CHANNEL_ID = "channel-1";
@@ -55,9 +55,45 @@ describe("clickup awaiting human transport request_confirmation", () => {
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(body.content).toContain("Proceed with new dev company project setup?");
     expect(body.content).toContain("If accepted: proceed with setup work.");
-    expect(body.content).not.toContain("Open in Bizbox: https://bizbox.example/issues/CIT-3");
+    expect(body.content).toContain("Open in Bizbox: https://bizbox.example/issues/CIT-3");
     expect(body.content).not.toContain("Disclaimer:");
     expect(body.content).not.toContain("It is your responsibility to read and verify this content.");
-    expect(body.content.match(/Need human confirmation before creating new dev company project\./g) ?? []).toHaveLength(1);
+  });
+
+  it("renders ask_user_questions with body and bizbox open line", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+    process.env.CLICKUP_AWAITING_HUMAN_CHANNEL_ID = "channel-1";
+
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: { id: "message-43" } }),
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await sendAwaitingHumanNotification({
+      companyId: "company-1",
+      issueId: "issue-1",
+      handoffKind: "ask_user_questions",
+      notification: {
+        title: "CIT-7 needs answers",
+        summary: "Need answers to 2 question(s).",
+        link: "http://127.0.0.1:3200/issues/CIT-7",
+        cta: "Reply with the needed answers.",
+        labels: ["awaiting_human", "ask_user_questions"],
+        kind: "ask_user_questions",
+        body: [
+          "1. Which environment should we use?",
+          "2. Who owns rollout?",
+        ].join("\n"),
+      },
+    });
+
+    expect(result.status).toBe("sent");
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.content).toContain("Which environment should we use?");
+    expect(body.content).toContain("Open in Bizbox: http://127.0.0.1:3200/issues/CIT-7");
+    expect(body.content).not.toContain("Reply with the needed answers.");
   });
 });
