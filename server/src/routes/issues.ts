@@ -12,6 +12,7 @@ import {
   issueRelations,
   issues as issueRows,
   projectWorkspaces,
+import { pluginHost } from "../services/plugin-host";
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
@@ -2531,6 +2532,22 @@ export function issueRoutes(
   router.get("/issues/:id/documents/:key", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
+    // Merge plugin-registered properties into issue.properties
+    if (typeof pluginHost !== 'undefined' && pluginHost.getPropertyResolvers) {
+      const propertyResolvers = pluginHost.getPropertyResolvers();
+      const pluginProperties: Record<string, any> = {};
+      for (const resolver of propertyResolvers) {
+        try {
+          const result = await resolver(issue);
+          if (result && typeof result === 'object') {
+            Object.assign(pluginProperties, result);
+          }
+        } catch (error) {
+          console.warn(`Error in plugin property resolver for issue ${issue.id}:`, error);
+        }
+      }
+      issue.properties = { ...issue.properties, ...pluginProperties };
+    }
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
