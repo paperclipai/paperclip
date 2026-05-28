@@ -15,6 +15,7 @@ import {
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  addIssueMarkerSchema,
   acceptIssueThreadInteractionSchema,
   cancelIssueThreadInteractionSchema,
   companySearchQuerySchema,
@@ -1320,10 +1321,14 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  const TRIAGE_HARD_BLOCKED = new Set([
+    "title", "description", "body", "documents", "comments", "attachments",
+  ]);
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null; updatedAt?: Date },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1334,6 +1339,83 @@ export function issueRoutes(
     if (issue.assigneeAgentId === null) {
       return true;
     }
+
+    // Triage-authority path: agent with triageAuthority permission can patch other agents' issues
+    // with restricted fields, staleness gate, and audit log.
+    if (issue.assigneeAgentId !== actorAgentId) {
+      const actorAgent = await agentsSvc.getById(actorAgentId);
+      const perms = actorAgent?.permissions;
+      if (perms?.triageAuthority === true) {
+        const allowedFields: string[] = Array.isArray(perms.triageAuthorityFields)
+          ? (perms.triageAuthorityFields as string[])
+          : ["status", "assigneeAgentId", "blockedByIssueIds"];
+        const patchKeys = Object.keys(req.body as Record<string, unknown>).filter(k => k !== "comment");
+
+        const hardViolations = patchKeys.filter(f => TRIAGE_HARD_BLOCKED.has(f));
+        if (hardViolations.length > 0) {
+          res.status(403).json({ error: `triage-authority: field(s) permanently restricted: ${hardViolations.join(", ")}` });
+          return false;
+        }
+
+        const scopeViolations = patchKeys.filter(f => !allowedFields.includes(f));
+        if (scopeViolations.length > 0) {
+          res.status(403).json({
+            error: `triage-authority: field(s) not in current scope: ${scopeViolations.join(", ")}`,
+            details: { currentScope: allowedFields },
+          });
+          return false;
+        }
+
+        if (["done", "cancelled"].includes(issue.status)) {
+          res.status(403).json({ error: "triage-authority: cannot patch a done/cancelled issue" });
+          return false;
+        }
+
+        if ((req.body as Record<string, unknown>).assigneeAgentId === actorAgentId) {
+          res.status(403).json({ error: "triage-authority: cannot self-assign via triage-authority" });
+          return false;
+        }
+
+        const lastActivityRow = await db
+          .select({ createdAt: activityLog.createdAt })
+          .from(activityLog)
+          .where(and(eq(activityLog.entityId, issue.id), eq(activityLog.entityType, "issue")))
+          .orderBy(desc(activityLog.createdAt))
+          .limit(1)
+          .then((rows: { createdAt: Date }[]) => rows[0] ?? null);
+        const lastActivityAt: Date = lastActivityRow?.createdAt ?? issue.updatedAt ?? new Date(0);
+        const stalenessMs = Date.now() - lastActivityAt.getTime();
+        if (stalenessMs < 15 * 60 * 1000) {
+          res.status(422).json({
+            error: `triage-authority: recent activity (${Math.round(stalenessMs / 1000)}s ago)`,
+            details: { lastActivityAt: lastActivityAt.toISOString(), stalenessMs, thresholdMs: 900000 },
+          });
+          return false;
+        }
+
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: "agent",
+          actorId: actorAgentId,
+          action: "issue.triage_authority_patch",
+          entityType: "issue",
+          entityId: issue.id,
+          agentId: actorAgentId,
+          runId: actor.runId ?? null,
+          details: {
+            triageAgentId: actorAgentId,
+            originalAssigneeAgentId: issue.assigneeAgentId,
+            patchedFields: patchKeys,
+            currentTriageScope: allowedFields,
+            lastActivityAt: lastActivityAt.toISOString(),
+            stalenessMs,
+          },
+        });
+        return true;
+      }
+    }
+
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
@@ -4676,6 +4758,52 @@ export function issueRoutes(
       limit,
     });
     res.json(comments);
+  });
+
+  // POST /api/issues/:id/markers — company-scoped write path for observation markers.
+  // Bypasses assignee ownership check so watcher agents can record dedup state on
+  // cross-assignee issues without violating least-privilege controls on the main comment
+  // mutation path. Markers do not fire wake events and cannot mutate issue workflow state.
+  router.post("/issues/:id/markers", validate(addIssueMarkerSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "agent") {
+      res.status(403).json({ error: "Only agent actors can write issue markers" });
+      return;
+    }
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    const comment = await svc.addComment(
+      id,
+      req.body.body ?? `[marker:${req.body.kind}]`,
+      { agentId: actorAgentId, runId: actor.runId },
+      { presentation: null, metadata: null },
+    );
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.marker_added",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        commentId: comment.id,
+        markerKind: req.body.kind,
+        identifier: issue.identifier,
+      },
+    });
+    res.status(201).json({ comment, kind: req.body.kind });
   });
 
   router.get("/issues/:id/interactions", async (req, res) => {

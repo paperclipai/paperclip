@@ -537,6 +537,14 @@ export const addIssueCommentSchema = z.object({
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
+export const ISSUE_MARKER_KINDS = ["discord-notified"] as const;
+export type IssueMarkerKind = (typeof ISSUE_MARKER_KINDS)[number];
+
+export const addIssueMarkerSchema = z.object({
+  kind: z.enum(ISSUE_MARKER_KINDS),
+});
+export type AddIssueMarker = z.infer<typeof addIssueMarkerSchema>;
+
 export const issueThreadInteractionStatusSchema = z.enum(ISSUE_THREAD_INTERACTION_STATUSES);
 export const issueThreadInteractionKindSchema = z.enum(ISSUE_THREAD_INTERACTION_KINDS);
 export const issueThreadInteractionContinuationPolicySchema = z.enum(
@@ -716,6 +724,11 @@ export const requestConfirmationSatisfactionExpressionSchema = z.discriminatedUn
   }),
 ]);
 
+export const requestConfirmationApproverSchema = z.object({
+  userId: z.string().trim().min(1).max(255),
+  label: z.string().trim().min(1).max(120).nullable().optional(),
+});
+
 export const requestConfirmationPayloadSchema = z.object({
   version: z.literal(1),
   prompt: z.string().trim().min(1).max(1000),
@@ -727,6 +740,7 @@ export const requestConfirmationPayloadSchema = z.object({
   declineReasonPlaceholder: z.string().trim().min(1).max(240).nullable().optional(),
   detailsMarkdown: z.string().max(20000).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
+  approver: requestConfirmationApproverSchema.nullable().optional(),
   target: requestConfirmationTargetSchema.nullable().optional(),
   satisfactionExpression: requestConfirmationSatisfactionExpressionSchema.nullable().optional(),
 });

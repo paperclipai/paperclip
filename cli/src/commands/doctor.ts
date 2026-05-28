@@ -1,3 +1,4 @@
+import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import type { PaperclipConfig } from "../config/schema.js";
@@ -14,8 +15,16 @@ import {
   storageCheck,
   type CheckResult,
 } from "../checks/index.js";
+import { resolvePaperclipInstanceId, resolvePaperclipInstanceRoot } from "../config/home.js";
 import { loadPaperclipEnvFile } from "../config/env.js";
 import { printPaperclipCliBanner } from "../utils/banner.js";
+import {
+  acquireRepairLock,
+  backupFile,
+  checkRunLock,
+  isSystemdServiceActive,
+  type ProcessLock,
+} from "../utils/process-lock.js";
 
 const STATUS_ICON = {
   pass: pc.green("✓"),
@@ -27,6 +36,9 @@ export async function doctor(opts: {
   config?: string;
   repair?: boolean;
   yes?: boolean;
+  force?: boolean;
+  /** Internal flag: skip the runtime-active guard when doctor is called from within `run`. */
+  _calledByRun?: boolean;
 }): Promise<{ passed: number; warned: number; failed: number }> {
   printPaperclipCliBanner();
   p.intro(pc.bgCyan(pc.black(" paperclip doctor ")));
@@ -35,93 +47,135 @@ export async function doctor(opts: {
   loadPaperclipEnvFile(configPath);
   const results: CheckResult[] = [];
 
-  // 1. Config check (must pass before others)
-  const cfgResult = configCheck(opts.config);
-  results.push(cfgResult);
-  printResult(cfgResult);
+  // ── Runtime-active guard ──────────────────────────────────────────────────
+  // Refuse --repair while a server process is running to prevent clobbering
+  // in-flight hotfixes. Bypassed when called from `paperclipai run` (which
+  // already holds the runtime lock) or when --force is explicitly passed.
+  if (opts.repair && !opts.force && !opts._calledByRun) {
+    const instanceId = resolvePaperclipInstanceId();
+    const instanceRoot = resolvePaperclipInstanceRoot(instanceId);
+    const runPid = checkRunLock(instanceRoot);
+    const serviceActive = isSystemdServiceActive("paperclip.service");
 
-  if (cfgResult.status === "fail") {
-    return printSummary(results);
+    if (runPid !== null || serviceActive) {
+      const reason =
+        runPid !== null
+          ? `a paperclipai run process (PID ${runPid}) is active`
+          : "paperclip.service is active via systemd";
+      p.log.error(
+        `Cannot run --repair: ${reason}.\n` +
+          `Running --repair while the server is live risks overwriting hotfixes.\n` +
+          `Stop the runtime first, or pass --force to override this guard.`,
+      );
+      return { passed: 0, warned: 0, failed: 1 };
+    }
   }
 
-  let config: PaperclipConfig;
+  // ── Repair concurrency lock ───────────────────────────────────────────────
+  // Reject a second concurrent `doctor --repair` so repairs cannot race.
+  let repairLock: ProcessLock | undefined;
+  if (opts.repair) {
+    const instanceId = resolvePaperclipInstanceId();
+    const instanceRoot = resolvePaperclipInstanceRoot(instanceId);
+    try {
+      repairLock = acquireRepairLock(instanceRoot);
+    } catch (err) {
+      p.log.error(err instanceof Error ? err.message : String(err));
+      return { passed: 0, warned: 0, failed: 1 };
+    }
+  }
+
   try {
-    config = readConfig(opts.config)!;
-  } catch (err) {
-    const readResult: CheckResult = {
-      name: "Config file",
-      status: "fail",
-      message: `Could not read config: ${err instanceof Error ? err.message : String(err)}`,
-      canRepair: false,
-      repairHint: "Run `paperclipai configure --section database` or `paperclipai onboard`",
-    };
-    results.push(readResult);
-    printResult(readResult);
+    // 1. Config check (must pass before others)
+    const cfgResult = configCheck(opts.config);
+    results.push(cfgResult);
+    printResult(cfgResult);
+
+    if (cfgResult.status === "fail") {
+      return printSummary(results);
+    }
+
+    let config: PaperclipConfig;
+    try {
+      config = readConfig(opts.config)!;
+    } catch (err) {
+      const readResult: CheckResult = {
+        name: "Config file",
+        status: "fail",
+        message: `Could not read config: ${err instanceof Error ? err.message : String(err)}`,
+        canRepair: false,
+        repairHint: "Run `paperclipai configure --section database` or `paperclipai onboard`",
+      };
+      results.push(readResult);
+      printResult(readResult);
+      return printSummary(results);
+    }
+
+    // 2. Deployment/auth mode check
+    const deploymentAuthResult = deploymentAuthCheck(config);
+    results.push(deploymentAuthResult);
+    printResult(deploymentAuthResult);
+
+    // 3. Agent JWT check
+    results.push(
+      await runRepairableCheck({
+        run: () => agentJwtSecretCheck(opts.config),
+        configPath,
+        opts,
+      }),
+    );
+
+    // 4. Secrets adapter check
+    results.push(
+      await runRepairableCheck({
+        run: () => secretsCheck(config, configPath),
+        configPath,
+        opts,
+      }),
+    );
+
+    // 5. Storage check
+    results.push(
+      await runRepairableCheck({
+        run: () => storageCheck(config, configPath),
+        configPath,
+        opts,
+      }),
+    );
+
+    // 6. Database check
+    results.push(
+      await runRepairableCheck({
+        run: () => databaseCheck(config, configPath),
+        configPath,
+        opts,
+      }),
+    );
+
+    // 7. LLM check
+    const llmResult = await llmCheck(config);
+    results.push(llmResult);
+    printResult(llmResult);
+
+    // 8. Log directory check
+    results.push(
+      await runRepairableCheck({
+        run: () => logCheck(config, configPath),
+        configPath,
+        opts,
+      }),
+    );
+
+    // 9. Port check
+    const portResult = await portCheck(config);
+    results.push(portResult);
+    printResult(portResult);
+
+    // Summary
     return printSummary(results);
+  } finally {
+    repairLock?.release();
   }
-
-  // 2. Deployment/auth mode check
-  const deploymentAuthResult = deploymentAuthCheck(config);
-  results.push(deploymentAuthResult);
-  printResult(deploymentAuthResult);
-
-  // 3. Agent JWT check
-  results.push(
-    await runRepairableCheck({
-      run: () => agentJwtSecretCheck(opts.config),
-      configPath,
-      opts,
-    }),
-  );
-
-  // 4. Secrets adapter check
-  results.push(
-    await runRepairableCheck({
-      run: () => secretsCheck(config, configPath),
-      configPath,
-      opts,
-    }),
-  );
-
-  // 5. Storage check
-  results.push(
-    await runRepairableCheck({
-      run: () => storageCheck(config, configPath),
-      configPath,
-      opts,
-    }),
-  );
-
-  // 6. Database check
-  results.push(
-    await runRepairableCheck({
-      run: () => databaseCheck(config, configPath),
-      configPath,
-      opts,
-    }),
-  );
-
-  // 7. LLM check
-  const llmResult = await llmCheck(config);
-  results.push(llmResult);
-  printResult(llmResult);
-
-  // 8. Log directory check
-  results.push(
-    await runRepairableCheck({
-      run: () => logCheck(config, configPath),
-      configPath,
-      opts,
-    }),
-  );
-
-  // 9. Port check
-  const portResult = await portCheck(config);
-  results.push(portResult);
-  printResult(portResult);
-
-  // Summary
-  return printSummary(results);
 }
 
 function printResult(result: CheckResult): void {
@@ -138,6 +192,18 @@ async function maybeRepair(
 ): Promise<boolean> {
   if (result.status === "pass" || !result.canRepair || !result.repair) return false;
   if (!opts.repair) return false;
+
+  // Backup any files this repair intends to overwrite so hotfixes are preserved.
+  if (result.repairWillOverwrite) {
+    for (const targetPath of result.repairWillOverwrite) {
+      const backup = backupFile(targetPath);
+      if (backup) {
+        p.log.warn(
+          `Hotfix-safe backup: ${path.basename(targetPath)} → ${backup}`,
+        );
+      }
+    }
+  }
 
   let shouldRepair = opts.yes;
   if (!shouldRepair) {
