@@ -1,4 +1,5 @@
 import type { Db } from "@paperclipai/db";
+import { logger } from "../middleware/logger.js";
 import { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
 
 const CLICKUP_CHAT_MESSAGE_MAX_CHARS = 1_800;
@@ -822,9 +823,13 @@ export async function detectClickUpAwaitingHumanBridgeEvents(
 
   const events: ClickUpAwaitingHumanBridgeEvent[] = [];
   for (const reply of repliesResult.replies) {
-    const replyId = readString(reply.id) ?? readString(reply.messageId);
+    const replyId = readString(reply.id);
     const replyBody = readString(reply.content);
-    if (!replyId || !replyBody) continue;
+    if (!replyId) {
+      logger.warn({ messageId, reply }, "Skipping ClickUp reply without stable reply.id");
+      continue;
+    }
+    if (!replyBody) continue;
     events.push({
       kind: "reply",
       externalEventId: replyId,

@@ -5,6 +5,7 @@ import {
   detectClickUpAwaitingHumanBridgeEvents,
   getClickUpChatMessageReplies,
 } from "../services/clickup-awaiting-human-transport.js";
+import { logger } from "../middleware/logger.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -206,6 +207,43 @@ describe("getClickUpChatMessageReplies", () => {
 });
 
 describe("detectClickUpAwaitingHumanBridgeEvents", () => {
+  it("skips replies without stable reply ids and logs a warning", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [
+          { message_id: "parent-message-1", content: "First reply" },
+          { message_id: "parent-message-1", content: "Second reply" },
+        ],
+      }),
+    }) as typeof fetch;
+
+    const result = await detectClickUpAwaitingHumanBridgeEvents("message-42");
+
+    expect(result).toEqual({
+      status: "sent",
+      detail: "no-replies",
+      events: [],
+    });
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: "message-42",
+        reply: expect.objectContaining({
+          id: null,
+          messageId: "parent-message-1",
+          content: "First reply",
+        }),
+      }),
+      "Skipping ClickUp reply without stable reply.id",
+    );
+  });
+
   it("returns reply events for every thread reply with text", async () => {
     process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
     process.env.CLICKUP_WORKSPACE_ID = "workspace-1";

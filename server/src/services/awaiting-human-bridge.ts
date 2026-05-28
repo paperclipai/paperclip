@@ -2044,6 +2044,20 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
                     mutation: "interaction",
                   },
                 });
+              } else if (
+                !confirmationReplyProcessing.resolvedInteraction
+                && shouldWakeOnReplyIssueStatus(issue.status)
+              ) {
+                await insertWakeup({
+                  companyId: row.companyId,
+                  agentId: row.agentId,
+                  payload: {
+                    issueId: row.issueId,
+                    interactionId: row.interactionId,
+                    commentId: confirmationReplyProcessing.commentId,
+                    mutation: "comment",
+                  },
+                });
               }
 
               if (confirmationReplyProcessing.resolvedInteraction?.status === "accepted") {
