@@ -241,6 +241,9 @@ export interface IssueFilters {
   offset?: number;
   sortField?: "updated";
   sortDir?: "asc" | "desc";
+  priority?: string;
+  hasActiveRecovery?: boolean;
+  activeRecoveryActionKind?: string | string[];
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -2597,6 +2600,25 @@ async function blockedInboxIssueConditions(
     if (labeledIssueIds.length === 0) return { conditions: [sql<boolean>`false`], contextUserId };
     conditions.push(inArray(issues.id, labeledIssueIds.map((row: { issueId: string }) => row.issueId)));
   }
+  if (filters?.hasActiveRecovery || filters?.activeRecoveryActionKind) {
+    const kinds = filters.activeRecoveryActionKind
+      ? (Array.isArray(filters.activeRecoveryActionKind)
+          ? filters.activeRecoveryActionKind
+          : filters.activeRecoveryActionKind.split(',').map((k: string) => k.trim()).filter(Boolean))
+      : null;
+    const activeIssueIds = await dbOrTx
+      .select({ sourceIssueId: issueRecoveryActions.sourceIssueId })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          ...(kinds && kinds.length > 0 ? [inArray(issueRecoveryActions.kind, kinds)] : []),
+        ),
+      );
+    if (activeIssueIds.length === 0) return { conditions: [sql<boolean>`false`], contextUserId };
+    conditions.push(inArray(issues.id, activeIssueIds.map((r: { sourceIssueId: string }) => r.sourceIssueId)));
+  }
   if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
     conditions.push(ne(issues.originKind, "routine_execution"));
   }
@@ -3544,6 +3566,29 @@ export function issueService(db: Db) {
         if (labeledIssueIds.length === 0) return [];
         conditions.push(inArray(issues.id, labeledIssueIds.map((row) => row.issueId)));
       }
+      if (filters?.priority) {
+        const priorities = filters.priority.split(',').map(p => p.trim()).filter(Boolean);
+        if (priorities.length > 0) conditions.push(inArray(issues.priority, priorities));
+      }
+      if (filters?.hasActiveRecovery || filters?.activeRecoveryActionKind) {
+        const kinds = filters.activeRecoveryActionKind
+          ? (Array.isArray(filters.activeRecoveryActionKind)
+              ? filters.activeRecoveryActionKind
+              : filters.activeRecoveryActionKind.split(',').map(k => k.trim()).filter(Boolean))
+          : null;
+        const activeIssueIds = await db
+          .select({ sourceIssueId: issueRecoveryActions.sourceIssueId })
+          .from(issueRecoveryActions)
+          .where(
+            and(
+              eq(issueRecoveryActions.companyId, companyId),
+              inArray(issueRecoveryActions.status, ["active", "escalated"]),
+              ...(kinds && kinds.length > 0 ? [inArray(issueRecoveryActions.kind, kinds)] : []),
+            ),
+          );
+        if (activeIssueIds.length === 0) return [];
+        conditions.push(inArray(issues.id, activeIssueIds.map(r => r.sourceIssueId)));
+      }
       if (hasSearch) {
         conditions.push(
           or(
@@ -3929,6 +3974,7 @@ export function issueService(db: Db) {
         .map((candidate) => ({
           id: candidate.id,
           assigneeAgentId: candidate.assigneeAgentId!,
+          status: candidate.status,
           blockerIssueIds: candidate.blockerIssueIds,
         }));
     },
@@ -4808,7 +4854,12 @@ export function issueService(db: Db) {
       });
     },
 
-    assertCheckoutOwner: async (id: string, actorAgentId: string, actorRunId: string | null) => {
+    assertCheckoutOwner: async (
+      id: string,
+      actorAgentId: string,
+      actorRunId: string | null,
+      options?: { allowUnownedAdoption?: boolean },
+    ) => {
       await clearExecutionRunIfTerminal(id);
       const current = await db
         .select({
@@ -4837,7 +4888,8 @@ export function issueService(db: Db) {
         current.status === "in_progress" &&
         current.assigneeAgentId === actorAgentId &&
         current.checkoutRunId == null &&
-        (current.executionRunId == null || current.executionRunId === actorRunId)
+        (current.executionRunId == null || current.executionRunId === actorRunId) &&
+        options?.allowUnownedAdoption !== false
       ) {
         const adopted = await adoptUnownedCheckoutRun({
           issueId: id,

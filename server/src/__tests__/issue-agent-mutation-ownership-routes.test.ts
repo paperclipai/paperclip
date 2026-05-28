@@ -517,7 +517,7 @@ describe("agent issue mutation checkout ownership", () => {
       .send({ format: "markdown", body: "# updated" })
       .expect(200);
 
-    expect(mockIssueService.assertCheckoutOwner).toHaveBeenCalledWith(issueId, ownerAgentId, ownerRunId);
+    expect(mockIssueService.assertCheckoutOwner).toHaveBeenCalledWith(issueId, ownerAgentId, ownerRunId, { allowUnownedAdoption: true });
     expect(mockIssueService.update).toHaveBeenCalled();
     expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -529,6 +529,17 @@ describe("agent issue mutation checkout ownership", () => {
       }),
     );
   });
+
+  it.each(["done", "cancelled"] as const)(
+    "passes allowUnownedAdoption: false when patching to terminal status %s",
+    async (terminalStatus) => {
+      const app = await createApp(ownerActor());
+
+      await request(app).patch(`/api/issues/${issueId}`).send({ status: terminalStatus }).expect(200);
+
+      expect(mockIssueService.assertCheckoutOwner).toHaveBeenCalledWith(issueId, ownerAgentId, ownerRunId, { allowUnownedAdoption: false });
+    },
+  );
 
   it.each([
     [
@@ -566,7 +577,7 @@ describe("agent issue mutation checkout ownership", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toContain("Cheap status-only recovery runs cannot update issue documents");
-    expect(mockIssueService.assertCheckoutOwner).toHaveBeenCalledWith(issueId, ownerAgentId, ownerRunId);
+    expect(mockIssueService.assertCheckoutOwner).toHaveBeenCalledWith(issueId, ownerAgentId, ownerRunId, { allowUnownedAdoption: true });
     expect(mockWorkProductService.createForIssue).not.toHaveBeenCalled();
     expect(mockWorkProductService.update).not.toHaveBeenCalled();
     expect(mockWorkProductService.remove).not.toHaveBeenCalled();

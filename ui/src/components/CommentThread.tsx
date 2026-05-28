@@ -358,7 +358,9 @@ function CommentCard({
       } ${isPending ? "opacity-80" : ""}`}
     >
       <div className="flex items-center justify-between mb-1">
-        {comment.authorAgentId ? (
+        {comment.authorType === "system" ? (
+          <Identity name="System" size="sm" className="text-muted-foreground" />
+        ) : comment.authorAgentId ? (
           <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">
             <Identity
               name={agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8)}

@@ -1374,8 +1374,7 @@ function resolveLedgerBiller(result: AdapterExecutionResult): string {
   return readNonEmptyString(result.biller) ?? readNonEmptyString(result.provider) ?? "unknown";
 }
 
-function normalizeBilledCostCents(costUsd: number | null | undefined, billingType: BillingType): number {
-  if (billingType === "subscription_included") return 0;
+function normalizeBilledCostCents(costUsd: number | null | undefined, _billingType: BillingType): number {
   if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
   return Math.max(0, Math.round(costUsd * 100));
 }
@@ -2905,6 +2904,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await db.insert(issueComments).values({
         companyId: input.claimed.companyId,
         issueId: input.claimed.id,
+        authorType: "system",
         body: monitorRecoveryComment({
           issue: input.claimed,
           clearReason: input.clearReason,
@@ -6369,6 +6369,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
   ) {
     const existing = await getAgent(agentId);
+    const latestFailedRun = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "failed"))).orderBy(desc(heartbeatRuns.finishedAt)).limit(1).then(rows => rows[0] || null);
+    const errorContext = latestFailedRun ? { error: latestFailedRun.error, errorCode: latestFailedRun.errorCode, resultError: latestFailedRun.resultJson ? (JSON.parse(latestFailedRun.resultJson)?.error ?? null) : null } : null;
     if (!existing) return;
 
     if (existing.status === "paused" || existing.status === "terminated") {
@@ -6391,6 +6393,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         status: nextStatus,
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
+        ...(nextStatus === "error" && latestFailedRun
+          ? {
+              lastRunError: {
+                error: latestFailedRun.error ?? "run_failed",
+                errorCode: latestFailedRun.errorCode ?? "",
+                exitCode: latestFailedRun.exitCode ?? null,
+                signal: latestFailedRun.signal ?? null,
+              },
+            }
+          : nextStatus === "idle"
+          ? { lastRunError: null }
+          : {}),
       })
       .where(eq(agents.id, agentId))
       .returning()
@@ -8243,13 +8257,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
 
         if (taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)) {
+          // RC2 (GH#6731): rotate session after consecutive adapter_failed runs so the
+          // agent does not keep retrying on a dead session. If the previous task session
+          // also ended with an error, force a fresh session for the next run.
+          const consecutiveFailure = taskSession?.lastError != null;
           await upsertTaskSession({
             companyId: agent.companyId,
             agentId: agent.id,
             adapterType: agent.adapterType,
             taskKey,
-            sessionParamsJson: previousSessionParams,
-            sessionDisplayId: previousSessionDisplayId,
+            sessionParamsJson: consecutiveFailure ? null : previousSessionParams,
+            sessionDisplayId: consecutiveFailure ? null : previousSessionDisplayId,
             lastRunId: failedRun.id,
             lastError: message,
           });
@@ -8465,58 +8483,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             interaction: true,
           };
         }
-        const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
-        const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
-        // Only human/comment-reopen interactions should revive completed issues;
-        // system follow-ups such as retry or cleanup wakes must not reopen closed work.
-        const shouldReopenDeferredCommentWake =
-          deferredCommentIds.length > 0 &&
-          (issue.status === "done" || issue.status === "cancelled") &&
-          (
-            deferred.requestedByActorType === "user" ||
-            deferredWakeReason === "issue_reopened_via_comment"
-          );
+        // Terminal issues (done/cancelled) must never be auto-promoted by a deferred wake.
+        // Reopening requires an explicit PATCH by an authorized actor.
         let reopenedActivity: LogActivityInput | null = null;
-
-        if (shouldReopenDeferredCommentWake) {
-          const reopenedFromStatus = issue.status;
-          const reopenedIssue = await issuesSvc.update(
-            issue.id,
-            {
-              status: "todo",
-              executionState: null,
-            },
-            tx,
-          );
-          if (reopenedIssue) {
-            issue = {
-              ...issue,
-              identifier: reopenedIssue.identifier,
-              status: reopenedIssue.status,
-              executionRunId: reopenedIssue.executionRunId,
-            };
-            if (!readNonEmptyString(promotedContextSeed.reopenedFrom)) {
-              promotedContextSeed.reopenedFrom = reopenedFromStatus;
-            }
-            reopenedActivity = {
-              companyId: issue.companyId,
-              actorType: "system",
-              actorId: "heartbeat",
-              agentId: deferred.agentId,
-              runId: run.id,
-              action: "issue.updated",
-              entityType: "issue",
-              entityId: issue.id,
-              details: {
-                status: "todo",
-                reopened: true,
-                reopenedFrom: reopenedFromStatus,
-                source: "deferred_comment_wake",
-                identifier: issue.identifier,
-              },
-            };
-          }
-        }
 
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
         const promotedSource =

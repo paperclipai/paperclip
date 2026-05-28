@@ -431,6 +431,7 @@ type PaperclipWakePayload = {
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
   interactionKind: string | null;
   interactionStatus: string | null;
+  interactionRejectionReason: string | null;
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
   commentIds: string[];
@@ -642,6 +643,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     livenessContinuation,
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
+    interactionRejectionReason: asString(payload.interactionRejectionReason, "").trim() || null,
     childIssueSummaries,
     childIssueSummaryTruncated: asBoolean(payload.childIssueSummaryTruncated, false),
     commentIds,
@@ -865,6 +867,19 @@ export function renderPaperclipWakePrompt(
       "The harness already checked out this issue for the current run.",
       "Do not call `/api/issues/{id}/checkout` again unless you intentionally switch to a different task.",
       "",
+    );
+  }
+
+  if (
+    normalized.interactionKind === "request_confirmation"
+    && normalized.interactionStatus === "rejected"
+  ) {
+    lines.push("", "Request confirmation declined:");
+    if (normalized.interactionRejectionReason) {
+      lines.push(`- decline reason: ${normalized.interactionRejectionReason}`);
+    }
+    lines.push(
+      "- action required: address the reviewer's feedback, revise your approach, and update the issue accordingly",
     );
   }
 
@@ -1818,11 +1833,6 @@ export async function ensurePaperclipSkillSymlink(
     return "skipped";
   }
 
-  const linkedPathExists = await fs.stat(resolvedLinkedPath).then(() => true).catch(() => false);
-  if (linkedPathExists) {
-    return "skipped";
-  }
-
   await fs.unlink(target);
   await linkSkill(source, target);
   return "repaired";
@@ -2063,10 +2073,12 @@ export async function ensureCommandResolvable(
     if (resolvedSsh) return;
     throw new Error('Command not found in PATH: "ssh"');
   }
-  const resolved = await resolveCommandPath(command, cwd, env);
+  // Extract only the executable (first token) — the rest are arguments.
+  const executable = command.trimStart().split(/\s+/)[0] ?? command;
+  const resolved = await resolveCommandPath(executable, cwd, env);
   if (resolved) return;
-  if (command.includes("/") || command.includes("\\")) {
-    const absolute = path.isAbsolute(command) ? command : path.resolve(cwd, command);
+  if (executable.includes("/") || executable.includes("\\")) {
+    const absolute = path.isAbsolute(executable) ? executable : path.resolve(cwd, executable);
     throw new Error(`Command is not executable: "${command}" (resolved: "${absolute}")`);
   }
   throw new Error(`Command not found in PATH: "${command}"`);
