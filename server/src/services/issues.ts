@@ -241,6 +241,9 @@ export interface IssueFilters {
   offset?: number;
   sortField?: "updated";
   sortDir?: "asc" | "desc";
+  priority?: string;
+  hasActiveRecovery?: boolean;
+  activeRecoveryActionKind?: string | string[];
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -2597,6 +2600,25 @@ async function blockedInboxIssueConditions(
     if (labeledIssueIds.length === 0) return { conditions: [sql<boolean>`false`], contextUserId };
     conditions.push(inArray(issues.id, labeledIssueIds.map((row: { issueId: string }) => row.issueId)));
   }
+  if (filters?.hasActiveRecovery || filters?.activeRecoveryActionKind) {
+    const kinds = filters.activeRecoveryActionKind
+      ? (Array.isArray(filters.activeRecoveryActionKind)
+          ? filters.activeRecoveryActionKind
+          : filters.activeRecoveryActionKind.split(',').map((k: string) => k.trim()).filter(Boolean))
+      : null;
+    const activeIssueIds = await dbOrTx
+      .select({ sourceIssueId: issueRecoveryActions.sourceIssueId })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          ...(kinds && kinds.length > 0 ? [inArray(issueRecoveryActions.kind, kinds)] : []),
+        ),
+      );
+    if (activeIssueIds.length === 0) return { conditions: [sql<boolean>`false`], contextUserId };
+    conditions.push(inArray(issues.id, activeIssueIds.map((r: { sourceIssueId: string }) => r.sourceIssueId)));
+  }
   if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
     conditions.push(ne(issues.originKind, "routine_execution"));
   }
@@ -3435,6 +3457,18 @@ export function issueService(db: Db) {
     });
   }
 
+
+  function isOpenRoutineExecutionConflict(err: unknown): boolean {
+    return (
+      !!err &&
+      typeof err === "object" &&
+      "code" in err &&
+      (err as { code?: string }).code === "23505" &&
+      "constraint" in err &&
+      (err as { constraint?: string }).constraint === "issues_open_routine_execution_uq"
+    );
+  }
+
   return {
     clearExecutionRunIfTerminal,
 
@@ -3543,6 +3577,29 @@ export function issueService(db: Db) {
           .where(and(eq(issueLabels.companyId, companyId), eq(issueLabels.labelId, filters.labelId)));
         if (labeledIssueIds.length === 0) return [];
         conditions.push(inArray(issues.id, labeledIssueIds.map((row) => row.issueId)));
+      }
+      if (filters?.priority) {
+        const priorities = filters.priority.split(',').map(p => p.trim()).filter(Boolean);
+        if (priorities.length > 0) conditions.push(inArray(issues.priority, priorities));
+      }
+      if (filters?.hasActiveRecovery || filters?.activeRecoveryActionKind) {
+        const kinds = filters.activeRecoveryActionKind
+          ? (Array.isArray(filters.activeRecoveryActionKind)
+              ? filters.activeRecoveryActionKind
+              : filters.activeRecoveryActionKind.split(',').map(k => k.trim()).filter(Boolean))
+          : null;
+        const activeIssueIds = await db
+          .select({ sourceIssueId: issueRecoveryActions.sourceIssueId })
+          .from(issueRecoveryActions)
+          .where(
+            and(
+              eq(issueRecoveryActions.companyId, companyId),
+              inArray(issueRecoveryActions.status, ["active", "escalated"]),
+              ...(kinds && kinds.length > 0 ? [inArray(issueRecoveryActions.kind, kinds)] : []),
+            ),
+          );
+        if (activeIssueIds.length === 0) return [];
+        conditions.push(inArray(issues.id, activeIssueIds.map(r => r.sourceIssueId)));
       }
       if (hasSearch) {
         conditions.push(
@@ -3929,6 +3986,7 @@ export function issueService(db: Db) {
         .map((candidate) => ({
           id: candidate.id,
           assigneeAgentId: candidate.assigneeAgentId!,
+          status: candidate.status,
           blockerIssueIds: candidate.blockerIssueIds,
         }));
     },
@@ -4717,7 +4775,15 @@ export function issueService(db: Db) {
           ),
         )
         .returning()
-        .then((rows) => rows[0] ?? null);
+        .then((rows) => rows[0] ?? null)
+        .catch((err) => {
+          if (isOpenRoutineExecutionConflict(err)) {
+            throw conflict("Concurrent routine_execution issue already has an active execution run", {
+              constraint: "issues_open_routine_execution_uq",
+            });
+          }
+          throw err;
+        });
 
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
@@ -4762,7 +4828,15 @@ export function issueService(db: Db) {
             ),
           )
           .returning()
-          .then((rows) => rows[0] ?? null);
+          .then((rows) => rows[0] ?? null)
+          .catch((err) => {
+            if (isOpenRoutineExecutionConflict(err)) {
+              throw conflict("Concurrent routine_execution issue already has an active execution run", {
+                constraint: "issues_open_routine_execution_uq",
+              });
+            }
+            throw err;
+          });
         if (adopted) return adopted;
       }
 

@@ -86,7 +86,7 @@ type GatewayClientRequestOptions = {
   expectFinal?: boolean;
 };
 
-const PROTOCOL_VERSION = 3;
+const PROTOCOL_VERSION = 4;
 const DEFAULT_SCOPES = ["operator.admin"];
 const DEFAULT_CLIENT_ID = "gateway-client";
 const DEFAULT_CLIENT_MODE = "backend";
@@ -1109,7 +1109,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const wakePayload = buildWakePayload(ctx);
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
-  const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
+  const structuredWakeJson = JSON.stringify(ctx.context.paperclipWake);
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
@@ -1139,7 +1139,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     idempotencyKey: ctx.runId,
   };
   delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
+  // Remove the internal `paperclip` config key — it must not appear at the
+  // root of the outbound gateway payload (OpenClaw rejects unknown properties).
+  delete agentParams.paperclip;
+  void paperclipPayload;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
