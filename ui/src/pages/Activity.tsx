@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { ActivityEvent, Agent } from "@paperclipai/shared";
-import { activityApi } from "../api/activity";
+import { Link } from "@/lib/router";
+import { activityApi, type WorkLogSearchResult } from "../api/activity";
 import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
@@ -12,6 +13,7 @@ import { EmptyState } from "../components/EmptyState";
 import { ActivityRow } from "../components/ActivityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { useCurrentLocale, useLocalizedCopy } from "../i18n/ui-copy";
+import { timeAgo } from "../lib/timeAgo";
 import {
   Select,
   SelectContent,
@@ -19,7 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { History } from "lucide-react";
+import { History, Search } from "lucide-react";
 
 const ACTIVITY_PAGE_LIMIT = 200;
 
@@ -61,12 +63,36 @@ function entityTypeLabel(type: string, copy: ReturnType<typeof useLocalizedCopy>
   return labels[type] ?? type.charAt(0).toUpperCase() + type.slice(1);
 }
 
+function workLogKindLabel(kind: WorkLogSearchResult["kind"], copy: ReturnType<typeof useLocalizedCopy>) {
+  const labels: Record<WorkLogSearchResult["kind"], string> = {
+    activity: copy("activity.workLog.kind.activity", "Activity", "활동"),
+    comment: copy("activity.workLog.kind.comment", "Comment", "댓글"),
+    run: copy("activity.workLog.kind.run", "Run", "실행"),
+    approval: copy("activity.workLog.kind.approval", "Approval", "승인"),
+  };
+  return labels[kind];
+}
+
+function workLogHref(result: WorkLogSearchResult) {
+  if (result.kind === "run" && result.runId && result.agentId) {
+    return `/agents/${result.agentId}/runs/${result.runId}`;
+  }
+  if (result.issueIdentifier || result.issueId) {
+    return `/issues/${result.issueIdentifier ?? result.issueId}`;
+  }
+  if (result.kind === "approval") return `/approvals/${result.sourceId}`;
+  if (result.entityType === "agent" && result.entityId) return `/agents/${result.entityId}`;
+  if (result.entityType === "project" && result.entityId) return `/projects/${result.entityId}`;
+  return "/activity";
+}
+
 export function Activity() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const copy = useLocalizedCopy();
   const locale = useCurrentLocale();
   const [filter, setFilter] = useState("all");
+  const [searchText, setSearchText] = useState("");
 
   useEffect(() => {
     setBreadcrumbs([{ label: copy("activity.breadcrumb", "Activity", "활동") }]);
@@ -82,6 +108,17 @@ export function Activity() {
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  const searchQuery = searchText.trim();
+  const {
+    data: workLogResults,
+    isFetching: workLogLoading,
+    error: workLogError,
+  } = useQuery({
+    queryKey: [...queryKeys.activity(selectedCompanyId!), "work-log-search", searchQuery],
+    queryFn: () => activityApi.searchWorkLog(selectedCompanyId!, searchQuery, { limit: 80 }),
+    enabled: !!selectedCompanyId && searchQuery.length >= 2,
   });
 
   const { data: companyMembers } = useQuery({
@@ -139,6 +176,85 @@ export function Activity() {
 
   return (
     <div className="space-y-4">
+      <section className="border border-border bg-muted/20 p-4" aria-label="통합 작업 로그 검색">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <Search className="h-4 w-4 text-muted-foreground" />
+              {copy("activity.workLog.title", "Unified work log search", "통합 작업 로그 검색")}
+            </div>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
+              {copy(
+                "activity.workLog.description",
+                "Read-only search across activity, issue comments, agent runs, and approval decisions.",
+                "활동, 작업 댓글, 직원 실행, 승인 결정을 한곳에서 읽기 전용으로 검색합니다.",
+              )}
+            </p>
+          </div>
+          <div className="text-xs leading-5 text-muted-foreground">
+            {copy("activity.workLog.readOnly", "No status, git, DB, or execution state is changed from this panel.", "이 패널에서는 상태, git, DB, 실행 상태를 변경하지 않습니다.")}
+          </div>
+        </div>
+
+        <div className="mt-3">
+          <input
+            value={searchText}
+            onChange={(event) => setSearchText(event.target.value)}
+            placeholder={copy("activity.workLog.placeholder", "Search issue id, run id, agent, decision, or comment text", "작업 ID, 실행 ID, 직원, 결정, 댓글 내용을 검색")}
+            className="h-10 w-full border border-border bg-background px-3 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-foreground"
+          />
+        </div>
+
+        <div className="mt-3">
+          {searchQuery.length < 2 ? (
+            <p className="text-xs leading-5 text-muted-foreground">
+              {copy("activity.workLog.minLength", "Enter at least 2 characters to search.", "2글자 이상 입력하면 검색합니다.")}
+            </p>
+          ) : workLogLoading ? (
+            <p className="text-xs leading-5 text-muted-foreground">
+              {copy("activity.workLog.loading", "Searching work log...", "작업 로그 검색 중...")}
+            </p>
+          ) : workLogError ? (
+            <p className="text-xs leading-5 text-destructive">{(workLogError as Error).message}</p>
+          ) : (workLogResults?.length ?? 0) === 0 ? (
+            <p className="text-xs leading-5 text-muted-foreground">
+              {copy("activity.workLog.empty", "No matching work log rows.", "일치하는 작업 로그가 없습니다.")}
+            </p>
+          ) : (
+            <div className="grid gap-2 md:grid-cols-2">
+              {workLogResults?.map((result) => (
+                <Link
+                  key={result.id}
+                  to={workLogHref(result)}
+                  className="block min-w-0 border border-border bg-background px-3 py-2 text-inherit no-underline hover:bg-accent/50"
+                >
+                  <div className="flex min-w-0 items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="shrink-0 border border-border bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                        {workLogKindLabel(result.kind, copy)}
+                      </span>
+                      <span className="truncate text-sm font-medium">{result.title}</span>
+                    </div>
+                    <span className="shrink-0 text-[11px] text-muted-foreground">
+                      {timeAgo(result.createdAt, locale)}
+                    </span>
+                  </div>
+                  <div className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                    {result.snippet || copy("activity.workLog.noSnippet", "No snippet", "요약 없음")}
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+                    {result.issueIdentifier ? <span className="border border-border px-1.5 py-0.5">{result.issueIdentifier}</span> : null}
+                    {result.runId ? <span className="border border-border px-1.5 py-0.5">run {result.runId.slice(0, 8)}</span> : null}
+                    {result.agentName ? <span className="border border-border px-1.5 py-0.5">{result.agentName}</span> : null}
+                    {result.status ? <span className="border border-border px-1.5 py-0.5">{result.status}</span> : null}
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
       <div className="flex items-center justify-end">
         <Select value={filter} onValueChange={setFilter}>
           <SelectTrigger className="w-[140px] h-8 text-xs">

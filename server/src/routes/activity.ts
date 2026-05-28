@@ -47,6 +47,18 @@ export function activityRoutes(db: Db) {
     res.json(result);
   });
 
+  router.get("/companies/:companyId/activity/search", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const result = await svc.searchWorkLog({
+      companyId,
+      query: String(req.query.q ?? req.query.query ?? ""),
+      limit: normalizeActivityLimit(Number(req.query.limit)),
+    });
+    res.json(result);
+  });
+
   router.post("/companies/:companyId/activity", validate(createActivitySchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;

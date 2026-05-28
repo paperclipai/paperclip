@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  approvals,
   companies,
   createDb,
   documentRevisions,
@@ -58,6 +59,7 @@ describeEmbeddedPostgres("activity service", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(approvals);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
@@ -115,6 +117,122 @@ describeEmbeddedPostgres("activity service", () => {
     const result = await activityService(db).list({ companyId, limit: 2 });
 
     expect(result.map((event) => event.action)).toEqual(["test.newest", "test.middle"]);
+  });
+
+  it("searches activity, comments, runs, and approvals as a read-only work log", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const approvalId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Codex Lead",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Improve YoonCompany console",
+      status: "in_progress",
+      priority: "high",
+      issueNumber: 7,
+      identifier: "YOO-7",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      livenessState: "completed",
+      livenessReason: "YoonCompany search evidence completed",
+      contextSnapshot: { issueId },
+      createdAt: new Date("2026-04-24T12:02:00.000Z"),
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId,
+      action: "issue.yooncompany_search_logged",
+      entityType: "issue",
+      entityId: issueId,
+      details: { identifier: "YOO-7", token: "sk-secret-value" },
+      createdAt: new Date("2026-04-24T12:03:00.000Z"),
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      createdByRunId: runId,
+      body: "YoonCompany decision search comment with api_key: sk-secret-value",
+      createdAt: new Date("2026-04-24T12:04:00.000Z"),
+    });
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "request_board_approval",
+      status: "approved",
+      requestedByAgentId: agentId,
+      payload: { reason: "YoonCompany decision search approval" },
+      decisionNote: "YoonCompany approval accepted",
+      createdAt: new Date("2026-04-24T12:05:00.000Z"),
+    });
+
+    const results = await activityService(db).searchWorkLog({
+      companyId,
+      query: "YoonCompany",
+      limit: 10,
+    });
+
+    expect(results.map((result) => result.kind)).toEqual(["approval", "comment", "activity", "run"]);
+    expect(results.some((result) => result.issueIdentifier === "YOO-7")).toBe(true);
+    expect(results.some((result) => result.runId === runId)).toBe(true);
+    expect(results.some((result) => result.agentName === "Codex Lead")).toBe(true);
+    expect(results.map((result) => result.snippet).join("\n")).not.toContain("sk-secret-value");
+  });
+
+  it("does not treat wildcard-only searches as work log matches", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "board",
+      actorId: "board",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: randomUUID(),
+      details: { note: "should not be returned by wildcard-only input" },
+      createdAt: new Date("2026-04-24T12:03:00.000Z"),
+    });
+
+    const results = await activityService(db).searchWorkLog({
+      companyId,
+      query: "%%__",
+      limit: 10,
+    });
+
+    expect(results).toEqual([]);
   });
 
   it("returns compact usage and result summaries for issue runs", async () => {

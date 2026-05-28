@@ -54,6 +54,25 @@ export interface IssueForRun {
   priority: string;
 }
 
+export interface WorkLogSearchResult {
+  id: string;
+  kind: "activity" | "comment" | "run" | "approval";
+  sourceId: string;
+  title: string;
+  snippet: string;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  issueTitle: string | null;
+  runId: string | null;
+  agentId: string | null;
+  agentName: string | null;
+  status: string | null;
+  action: string | null;
+  entityType: string | null;
+  entityId: string | null;
+  createdAt: string;
+}
+
 export const activityApi = {
   list: (companyId: string, filters?: { entityType?: string; entityId?: string; agentId?: string; limit?: number }) => {
     const params = new URLSearchParams();
@@ -63,6 +82,12 @@ export const activityApi = {
     if (filters?.limit) params.set("limit", String(filters.limit));
     const qs = params.toString();
     return api.get<ActivityEvent[]>(`/companies/${companyId}/activity${qs ? `?${qs}` : ""}`);
+  },
+  searchWorkLog: (companyId: string, query: string, filters?: { limit?: number }) => {
+    const params = new URLSearchParams();
+    params.set("q", query);
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    return api.get<WorkLogSearchResult[]>(`/companies/${companyId}/activity/search?${params.toString()}`);
   },
   forIssue: (issueId: string) => api.get<ActivityEvent[]>(`/issues/${issueId}/activity`),
   runsForIssue: (issueId: string) => api.get<RunForIssue[]>(`/issues/${issueId}/runs`),

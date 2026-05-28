@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockActivityService = vi.hoisted(() => ({
   list: vi.fn(),
+  searchWorkLog: vi.fn(),
   forIssue: vi.fn(),
   runsForIssue: vi.fn(),
   issuesForRun: vi.fn(),
@@ -125,6 +126,46 @@ describe.sequential("activity routes", () => {
       entityType: "issue",
       entityId: undefined,
       limit: 500,
+    });
+  });
+
+  it("searches the read-only work log with company access and capped limits", async () => {
+    mockActivityService.searchWorkLog.mockResolvedValue([
+      {
+        id: "run:run-1",
+        kind: "run",
+        sourceId: "run-1",
+        title: "Codex · run succeeded",
+        snippet: "Implemented the change",
+        issueId: "issue-1",
+        issueIdentifier: "YOO-1",
+        issueTitle: "Improve console",
+        runId: "run-1",
+        agentId: "agent-1",
+        agentName: "Codex",
+        status: "completed",
+        action: "run",
+        entityType: "run",
+        entityId: "run-1",
+        createdAt: new Date("2026-04-24T12:00:00.000Z"),
+      },
+    ]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/activity/search?q=codex&limit=5000"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.searchWorkLog).toHaveBeenCalledWith({
+      companyId: "company-1",
+      query: "codex",
+      limit: 500,
+    });
+    expect(res.body[0]).toMatchObject({
+      id: "run:run-1",
+      kind: "run",
+      issueIdentifier: "YOO-1",
     });
   });
 

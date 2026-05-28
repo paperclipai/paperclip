@@ -1,8 +1,9 @@
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
+  approvals,
   documentRevisions,
   environmentLeases,
   environments,
@@ -16,6 +17,7 @@ import {
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
+import { redactSensitiveText } from "../redaction.js";
 import { classifyRunLiveness } from "./run-liveness.js";
 
 export interface ActivityFilters {
@@ -26,8 +28,34 @@ export interface ActivityFilters {
   limit?: number;
 }
 
+export interface WorkLogSearchFilters {
+  companyId: string;
+  query: string;
+  limit?: number;
+}
+
+export interface WorkLogSearchResult {
+  id: string;
+  kind: "activity" | "comment" | "run" | "approval";
+  sourceId: string;
+  title: string;
+  snippet: string;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  issueTitle: string | null;
+  runId: string | null;
+  agentId: string | null;
+  agentName: string | null;
+  status: string | null;
+  action: string | null;
+  entityType: string | null;
+  entityId: string | null;
+  createdAt: Date;
+}
+
 const DEFAULT_ACTIVITY_LIMIT = 100;
 const MAX_ACTIVITY_LIMIT = 500;
+const DEFAULT_WORK_LOG_SEARCH_LIMIT = 50;
 
 export function normalizeActivityLimit(limit: number | undefined) {
   if (!Number.isFinite(limit)) return DEFAULT_ACTIVITY_LIMIT;
@@ -138,6 +166,24 @@ export function activityService(db: Db) {
   function asRecord(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     return value as Record<string, unknown>;
+  }
+
+  function normalizeSearchQuery(query: string) {
+    return query.trim().replace(/\s+/g, " ").slice(0, 120);
+  }
+
+  function searchPattern(query: string) {
+    return `%${query.replace(/[%_]/g, "")}%`;
+  }
+
+  function searchableText(query: string) {
+    return query.replace(/[%_]/g, "").trim();
+  }
+
+  function shortSnippet(value: string | null | undefined) {
+    const redacted = redactSensitiveText((value ?? "").replace(/\s+/g, " ").trim());
+    if (redacted.length <= 220) return redacted;
+    return `${redacted.slice(0, 217)}...`;
   }
 
   function readNumber(value: unknown) {
@@ -361,6 +407,240 @@ export function activityService(db: Db) {
         .orderBy(desc(activityLog.createdAt))
         .limit(limit)
         .then((rows) => rows.map((r) => r.activityLog));
+    },
+
+    searchWorkLog: async (filters: WorkLogSearchFilters): Promise<WorkLogSearchResult[]> => {
+      const query = normalizeSearchQuery(filters.query);
+      if (query.length < 2) return [];
+
+      const searchableQuery = searchableText(query);
+      if (searchableQuery.length < 2) return [];
+
+      const limit = normalizeActivityLimit(filters.limit ?? DEFAULT_WORK_LOG_SEARCH_LIMIT);
+      const pattern = searchPattern(searchableQuery);
+      const contextIssueId = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+      const issueIdAsUuid = sql`${issues.id}::text`;
+
+      const [activityRows, commentRows, runRows, approvalRows] = await Promise.all([
+        db
+          .select({
+            id: activityLog.id,
+            sourceId: activityLog.id,
+            action: activityLog.action,
+            entityType: activityLog.entityType,
+            entityId: activityLog.entityId,
+            runId: activityLog.runId,
+            agentId: activityLog.agentId,
+            agentName: agents.name,
+            issueId: issues.id,
+            issueIdentifier: issues.identifier,
+            issueTitle: issues.title,
+            details: activityLog.details,
+            createdAt: activityLog.createdAt,
+          })
+          .from(activityLog)
+          .leftJoin(agents, eq(activityLog.agentId, agents.id))
+          .leftJoin(
+            issues,
+            and(
+              eq(activityLog.entityType, sql`'issue'`),
+              eq(activityLog.entityId, issueIdAsUuid),
+            ),
+          )
+          .where(
+            and(
+              eq(activityLog.companyId, filters.companyId),
+              or(
+                ilike(activityLog.action, pattern),
+                ilike(activityLog.entityType, pattern),
+                ilike(activityLog.entityId, pattern),
+                sql`${activityLog.details}::text ilike ${pattern}`,
+              ),
+              or(
+                sql`${activityLog.entityType} != 'issue'`,
+                isNull(issues.hiddenAt),
+              ),
+            ),
+          )
+          .orderBy(desc(activityLog.createdAt))
+          .limit(limit),
+        db
+          .select({
+            id: issueComments.id,
+            sourceId: issueComments.id,
+            body: issueComments.body,
+            issueId: issues.id,
+            issueIdentifier: issues.identifier,
+            issueTitle: issues.title,
+            runId: issueComments.createdByRunId,
+            agentId: issueComments.authorAgentId,
+            agentName: agents.name,
+            createdAt: issueComments.createdAt,
+          })
+          .from(issueComments)
+          .innerJoin(issues, eq(issueComments.issueId, issues.id))
+          .leftJoin(agents, eq(issueComments.authorAgentId, agents.id))
+          .where(
+            and(
+              eq(issueComments.companyId, filters.companyId),
+              isNull(issues.hiddenAt),
+              or(
+                ilike(issueComments.body, pattern),
+                ilike(issues.identifier, pattern),
+                ilike(issues.title, pattern),
+              ),
+            ),
+          )
+          .orderBy(desc(issueComments.createdAt))
+          .limit(limit),
+        db
+          .select({
+            id: heartbeatRuns.id,
+            sourceId: heartbeatRuns.id,
+            status: heartbeatRuns.status,
+            livenessState: heartbeatRuns.livenessState,
+            livenessReason: heartbeatRuns.livenessReason,
+            nextAction: heartbeatRuns.nextAction,
+            error: heartbeatRuns.error,
+            stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
+            stderrExcerpt: heartbeatRuns.stderrExcerpt,
+            issueId: issues.id,
+            issueIdentifier: issues.identifier,
+            issueTitle: issues.title,
+            agentId: heartbeatRuns.agentId,
+            agentName: agents.name,
+            createdAt: heartbeatRuns.createdAt,
+          })
+          .from(heartbeatRuns)
+          .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+          .leftJoin(issues, sql`${issues.id}::text = ${contextIssueId}`)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, filters.companyId),
+              or(isNull(issues.id), isNull(issues.hiddenAt)),
+              or(
+                sql`${heartbeatRuns.id}::text ilike ${pattern}`,
+                ilike(heartbeatRuns.status, pattern),
+                ilike(agents.name, pattern),
+                ilike(heartbeatRuns.livenessReason, pattern),
+                ilike(heartbeatRuns.nextAction, pattern),
+                ilike(heartbeatRuns.error, pattern),
+                ilike(heartbeatRuns.stdoutExcerpt, pattern),
+                ilike(heartbeatRuns.stderrExcerpt, pattern),
+              ),
+            ),
+          )
+          .orderBy(desc(heartbeatRuns.createdAt))
+          .limit(limit),
+        db
+          .select({
+            id: approvals.id,
+            sourceId: approvals.id,
+            type: approvals.type,
+            status: approvals.status,
+            decisionNote: approvals.decisionNote,
+            requestedByAgentId: approvals.requestedByAgentId,
+            agentName: agents.name,
+            createdAt: approvals.createdAt,
+          })
+          .from(approvals)
+          .leftJoin(agents, eq(approvals.requestedByAgentId, agents.id))
+          .where(
+            and(
+              eq(approvals.companyId, filters.companyId),
+              or(
+                sql`${approvals.id}::text ilike ${pattern}`,
+                ilike(approvals.type, pattern),
+                ilike(approvals.status, pattern),
+                ilike(approvals.decisionNote, pattern),
+                sql`${approvals.payload}::text ilike ${pattern}`,
+              ),
+            ),
+          )
+          .orderBy(desc(approvals.createdAt))
+          .limit(limit),
+      ]);
+
+      const results: WorkLogSearchResult[] = [
+        ...activityRows.map((row) => ({
+          id: `activity:${row.id}`,
+          kind: "activity" as const,
+          sourceId: row.sourceId,
+          title: row.issueIdentifier
+            ? `${row.issueIdentifier} · ${row.action}`
+            : `${row.entityType} · ${row.action}`,
+          snippet: shortSnippet(`${row.action} ${JSON.stringify(row.details ?? {})}`),
+          issueId: row.issueId ?? null,
+          issueIdentifier: row.issueIdentifier ?? null,
+          issueTitle: row.issueTitle ?? null,
+          runId: row.runId ?? null,
+          agentId: row.agentId ?? null,
+          agentName: row.agentName ?? null,
+          status: null,
+          action: row.action,
+          entityType: row.entityType,
+          entityId: row.entityId,
+          createdAt: row.createdAt,
+        })),
+        ...commentRows.map((row) => ({
+          id: `comment:${row.id}`,
+          kind: "comment" as const,
+          sourceId: row.sourceId,
+          title: `${row.issueIdentifier ?? row.issueId} · comment`,
+          snippet: shortSnippet(row.body),
+          issueId: row.issueId,
+          issueIdentifier: row.issueIdentifier,
+          issueTitle: row.issueTitle,
+          runId: row.runId ?? null,
+          agentId: row.agentId ?? null,
+          agentName: row.agentName ?? null,
+          status: null,
+          action: "comment",
+          entityType: "comment",
+          entityId: row.sourceId,
+          createdAt: row.createdAt,
+        })),
+        ...runRows.map((row) => ({
+          id: `run:${row.id}`,
+          kind: "run" as const,
+          sourceId: row.sourceId,
+          title: `${row.agentName ?? row.agentId} · run ${row.status}`,
+          snippet: shortSnippet(row.livenessReason ?? row.nextAction ?? row.error ?? row.stdoutExcerpt ?? row.stderrExcerpt ?? row.livenessState ?? row.status),
+          issueId: row.issueId ?? null,
+          issueIdentifier: row.issueIdentifier ?? null,
+          issueTitle: row.issueTitle ?? null,
+          runId: row.sourceId,
+          agentId: row.agentId,
+          agentName: row.agentName ?? null,
+          status: row.livenessState ?? row.status,
+          action: "run",
+          entityType: "run",
+          entityId: row.sourceId,
+          createdAt: row.createdAt,
+        })),
+        ...approvalRows.map((row) => ({
+          id: `approval:${row.id}`,
+          kind: "approval" as const,
+          sourceId: row.sourceId,
+          title: `${row.type} · ${row.status}`,
+          snippet: shortSnippet(row.decisionNote ?? `${row.type} ${row.status}`),
+          issueId: null,
+          issueIdentifier: null,
+          issueTitle: null,
+          runId: null,
+          agentId: row.requestedByAgentId ?? null,
+          agentName: row.agentName ?? null,
+          status: row.status,
+          action: row.type,
+          entityType: "approval",
+          entityId: row.sourceId,
+          createdAt: row.createdAt,
+        })),
+      ];
+
+      return results
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+        .slice(0, limit);
     },
 
     forIssue: (issueId: string) =>
