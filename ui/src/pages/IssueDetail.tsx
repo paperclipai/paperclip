@@ -2538,7 +2538,7 @@ export function IssueDetail() {
                     resolvedIssueDetailState ?? location.state,
                     location.search,
                   )}
-                className="hover:text-foreground transition-colors truncate max-w-[200px]"
+                className="hover:text-foreground transition-colors truncate max-w-50"
                 title={ancestor.title}
               >
                 {ancestor.title}
@@ -2546,7 +2546,7 @@ export function IssueDetail() {
             </span>
           ))}
           <ChevronRight className="h-3 w-3 shrink-0" />
-          <span className="text-foreground/60 truncate max-w-[200px]">{issue.title}</span>
+          <span className="text-foreground/60 truncate max-w-50">{issue.title}</span>
         </nav>
       )}
 

@@ -24,6 +24,7 @@ import {
 } from "../services/awaiting-human-bridge.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { logger } from "../middleware/logger.js";
+import type { AwaitingHumanBridgePollEvent } from "../services/awaiting-human-bridge-registry.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -356,7 +357,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
         hasAdapter: () => true,
         resolveAdapter: () => ({
           send,
-          poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
+          poll: vi.fn(async () => ({ status: "ok" as const, detail: "ok", events: [] as AwaitingHumanBridgePollEvent[] })),
           close: vi.fn(async () => {}),
         }),
       });
@@ -400,7 +401,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       hasAdapter: () => true,
       resolveAdapter: () => ({
         send,
-        poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
+        poll: vi.fn(async () => ({ status: "ok" as const, detail: "ok", events: [] as AwaitingHumanBridgePollEvent[] })),
         close: vi.fn(async () => {}),
       }),
     });
@@ -461,7 +462,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       },
       resolveAdapter: () => ({
         send,
-        poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
+        poll: vi.fn(async () => ({ status: "ok" as const, detail: "ok", events: [] as AwaitingHumanBridgePollEvent[] })),
         close: vi.fn(async () => {}),
       }),
     });
@@ -506,13 +507,14 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
         externalMessageId: "message-1",
         nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
       }));
+    const close = vi.fn(async () => {});
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
       hasAdapter: () => true,
       resolveAdapter: () => ({
         send,
-        poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
-        close: vi.fn(async () => {}),
+        poll: vi.fn(async () => ({ status: "ok" as const, detail: "ok", events: [] as AwaitingHumanBridgePollEvent[] })),
+        close,
       }),
     });
 
@@ -560,6 +562,11 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       interactionIds: [seeded.interactionId],
     });
     expect(send).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({
+      bridgeId: failedBridge?.id,
+      outcome: "failed",
+      reason: "clickup send failed",
+    }));
 
     const rows = await db.select().from(awaitingHumanBridges)
       .where(eq(awaitingHumanBridges.interactionId, seeded.interactionId))
@@ -623,7 +630,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       hasAdapter: () => true,
       resolveAdapter: () => ({
         send,
-        poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
+        poll: vi.fn(async () => ({ status: "ok" as const, detail: "ok", events: [] as AwaitingHumanBridgePollEvent[] })),
         close: vi.fn(async () => {}),
       }),
     });
@@ -2176,7 +2183,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
           externalMessageId: "message-1",
           nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
         })),
-        poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
+        poll: vi.fn(async () => ({ status: "ok" as const, detail: "ok", events: [] as AwaitingHumanBridgePollEvent[] })),
         close,
       }),
     });
@@ -2240,7 +2247,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
           externalMessageId: "message-1",
           nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
         })),
-        poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
+        poll: vi.fn(async () => ({ status: "ok" as const, detail: "ok", events: [] as AwaitingHumanBridgePollEvent[] })),
         close: vi.fn(async () => {}),
       }),
     });
@@ -2284,7 +2291,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       hasAdapter: () => true,
       resolveAdapter: () => ({
         send,
-        poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
+        poll: vi.fn(async () => ({ status: "ok" as const, detail: "ok", events: [] as AwaitingHumanBridgePollEvent[] })),
         close,
       }),
     });
@@ -2370,7 +2377,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
           externalMessageId: "message-1",
           nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
         })),
-        poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
+        poll: vi.fn(async () => ({ status: "ok" as const, detail: "ok", events: [] as AwaitingHumanBridgePollEvent[] })),
         close,
       }),
     });
@@ -2480,7 +2487,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
           externalMessageId: "message-1",
           nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
         })),
-        poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
+        poll: vi.fn(async () => ({ status: "ok" as const, detail: "ok", events: [] as AwaitingHumanBridgePollEvent[] })),
         close: vi.fn(async () => {}),
       }),
       requestWakeup,
@@ -2519,7 +2526,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
           externalMessageId: "message-1",
           nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
         })),
-        poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
+        poll: vi.fn(async () => ({ status: "ok" as const, detail: "ok", events: [] as AwaitingHumanBridgePollEvent[] })),
         close,
       }),
     });
@@ -2756,7 +2763,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
           externalMessageId: "message-1",
           nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
         })),
-        poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
+        poll: vi.fn(async () => ({ status: "ok" as const, detail: "ok", events: [] as AwaitingHumanBridgePollEvent[] })),
         close,
       }),
     });
@@ -2858,7 +2865,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
           externalMessageId: "message-1",
           nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
         })),
-        poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
+        poll: vi.fn(async () => ({ status: "ok" as const, detail: "ok", events: [] as AwaitingHumanBridgePollEvent[] })),
         close: vi.fn(async () => {}),
       }),
     });
@@ -2922,7 +2929,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
           externalMessageId: `message-${Math.random()}`,
           nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
         })),
-        poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
+        poll: vi.fn(async () => ({ status: "ok" as const, detail: "ok", events: [] as AwaitingHumanBridgePollEvent[] })),
         close: vi.fn(async () => {}),
       }),
     });
@@ -3032,7 +3039,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
           externalMessageId: "message-1",
           nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
         })),
-        poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
+        poll: vi.fn(async () => ({ status: "ok" as const, detail: "ok", events: [] as AwaitingHumanBridgePollEvent[] })),
         close: vi.fn(async () => {}),
       }),
     });

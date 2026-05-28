@@ -331,7 +331,7 @@ export function clickupAwaitingHumanBridgeAdapter(db: Db): AwaitingHumanBridgeAd
         reaction: "brain_is_thinking",
         overrides,
       });
-      if (input.outcome === "approved" || input.outcome === "superseded") {
+      if (input.outcome === "approved" || input.outcome === "superseded" || input.outcome === "rejected") {
         await applyBridgeReaction({
           db,
           bridgeId: input.bridgeId,
@@ -343,7 +343,7 @@ export function clickupAwaitingHumanBridgeAdapter(db: Db): AwaitingHumanBridgeAd
           target: "main",
           overrides,
         });
-      } else if (input.outcome === "rejected") {
+      } else if (input.outcome === "failed") {
         await applyBridgeReaction({
           db,
           bridgeId: input.bridgeId,
@@ -351,7 +351,7 @@ export function clickupAwaitingHumanBridgeAdapter(db: Db): AwaitingHumanBridgeAd
           issueId: bridge.issueId,
           interactionId: bridge.interactionId,
           messageId,
-          reaction: "thumbsdown",
+          reaction: "x",
           target: "main",
           overrides,
         });

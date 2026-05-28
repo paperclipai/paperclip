@@ -808,6 +808,23 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
       return null;
     }
 
+    try {
+      await deps.resolveAdapter(input.bridge.provider).close({
+        bridgeId: input.bridge.id,
+        externalThreadId: input.bridge.externalThreadId ?? null,
+        externalMessageId: input.bridge.externalMessageId ?? null,
+        outcome: "failed",
+        reason: input.bridge.lastError ?? null,
+      });
+    } catch (error) {
+      logger.warn({
+        err: error,
+        bridgeId: input.bridge.id,
+        companyId: input.companyId,
+        issueId: input.issueId,
+      }, "failed to close retried awaiting_human failed bridge adapter");
+    }
+
     return deliverBridgeRow({
       row: created,
       companyId: input.companyId,
