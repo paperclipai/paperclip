@@ -431,6 +431,7 @@ type PaperclipWakePayload = {
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
   interactionKind: string | null;
   interactionStatus: string | null;
+  interactionRejectionReason: string | null;
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
   commentIds: string[];
@@ -642,6 +643,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     livenessContinuation,
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
+    interactionRejectionReason: asString(payload.interactionRejectionReason, "").trim() || null,
     childIssueSummaries,
     childIssueSummaryTruncated: asBoolean(payload.childIssueSummaryTruncated, false),
     commentIds,
@@ -865,6 +867,19 @@ export function renderPaperclipWakePrompt(
       "The harness already checked out this issue for the current run.",
       "Do not call `/api/issues/{id}/checkout` again unless you intentionally switch to a different task.",
       "",
+    );
+  }
+
+  if (
+    normalized.interactionKind === "request_confirmation"
+    && normalized.interactionStatus === "rejected"
+  ) {
+    lines.push("", "Request confirmation declined:");
+    if (normalized.interactionRejectionReason) {
+      lines.push(`- decline reason: ${normalized.interactionRejectionReason}`);
+    }
+    lines.push(
+      "- action required: address the reviewer's feedback, revise your approach, and update the issue accordingly",
     );
   }
 
@@ -1390,7 +1405,7 @@ export async function listPaperclipSkillEntries(
   try {
     const entries = await fs.readdir(root, { withFileTypes: true });
     const dirs = entries.filter((entry) => entry.isDirectory());
-    return Promise.all(dirs.map(async (entry) => {
+    const results = await Promise.allSettled(dirs.map(async (entry) => {
       const skillDir = path.join(root, entry.name);
       const required = await readSkillRequired(skillDir);
       return {
@@ -1403,6 +1418,9 @@ export async function listPaperclipSkillEntries(
           : null,
       };
     }));
+    return results
+      .filter((result): result is PromiseFulfilledResult<PaperclipSkillEntry> => result.status === "fulfilled")
+      .map((result) => result.value);
   } catch {
     return [];
   }

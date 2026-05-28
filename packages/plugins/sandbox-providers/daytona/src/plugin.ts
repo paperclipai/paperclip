@@ -399,14 +399,12 @@ const plugin = definePlugin({
     const config = parseDriverConfig(params.config);
     const errors: string[] = [];
 
-    if (typeof params.config.image === "string" && params.config.image.trim().length === 0) {
-      errors.push("Daytona image cannot be empty.");
-    }
-    if (typeof params.config.snapshot === "string" && params.config.snapshot.trim().length === 0) {
-      errors.push("Daytona snapshot cannot be empty.");
-    }
-    if (config.image && config.snapshot) {
+    const imageSet = typeof params.config.image === "string" && params.config.image.trim().length > 0;
+    const snapshotSet = typeof params.config.snapshot === "string" && params.config.snapshot.trim().length > 0;
+    if (imageSet && snapshotSet) {
       errors.push("Daytona sandbox environments must set either image or snapshot, not both.");
+    } else if (!imageSet && !snapshotSet) {
+      errors.push("Daytona sandbox environments must set either image or snapshot.");
     }
     if (config.apiUrl && !isValidUrl(config.apiUrl)) {
       errors.push("apiUrl must be a valid URL.");
