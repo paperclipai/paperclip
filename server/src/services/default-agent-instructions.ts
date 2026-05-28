@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
+import { isFoundingAgentRole } from "@valadrien-os/shared";
 
 const DEFAULT_AGENT_BUNDLE_FILES = {
   default: ["AGENTS.md"],
   ceo: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
+  onboarding: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
 } as const;
 
 type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_BUNDLE_FILES;
@@ -23,5 +25,13 @@ export async function loadDefaultAgentInstructionsBundle(role: DefaultAgentBundl
 }
 
 export function resolveDefaultAgentInstructionsBundleRole(role: string): DefaultAgentBundleRole {
-  return role === "ceo" ? "ceo" : "default";
+  // Founding agents (CEO, Chief of Staff, CTO) all currently use the CEO
+  // bundle because they share the same platform capabilities (manage company
+  // settings, create other agents, assign tasks, approve work). A follow-up
+  // (see doc/plans/2026-05-28-founding-role-instruction-bundles.md) will give
+  // Chief of Staff and CTO their own bundles tailored to their executive
+  // function.
+  if (isFoundingAgentRole(role)) return "ceo";
+  if (role === "onboarding") return "onboarding";
+  return "default";
 }

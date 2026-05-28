@@ -44,6 +44,7 @@ export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number] | (string & 
 
 export const AGENT_ROLES = [
   "ceo",
+  "chief_of_staff",
   "cto",
   "cmo",
   "cfo",
@@ -55,11 +56,13 @@ export const AGENT_ROLES = [
   "devops",
   "researcher",
   "general",
+  "onboarding",
 ] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
 export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   ceo: "CEO",
+  chief_of_staff: "Chief of Staff",
   cto: "CTO",
   cmo: "CMO",
   cfo: "CFO",
@@ -71,7 +74,25 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   devops: "DevOps",
   researcher: "Researcher",
   general: "General",
+  onboarding: "Onboarding Specialist",
 };
+
+/**
+ * Roles that count as a "founding" agent of a company. Founding agents have
+ * the same platform-level capabilities (manage company settings, create other
+ * agents, assign tasks, approve work, generate invites). Use
+ * {@link isFoundingAgentRole} for all gate checks instead of literal
+ * `role === "ceo"` comparisons.
+ */
+export const FOUNDING_AGENT_ROLES = ["ceo", "chief_of_staff", "cto"] as const;
+export type FoundingAgentRole = (typeof FOUNDING_AGENT_ROLES)[number];
+
+const FOUNDING_AGENT_ROLE_SET = new Set<string>(FOUNDING_AGENT_ROLES);
+
+export function isFoundingAgentRole(role: string | null | undefined): boolean {
+  if (typeof role !== "string") return false;
+  return FOUNDING_AGENT_ROLE_SET.has(role);
+}
 
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";

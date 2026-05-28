@@ -10,6 +10,7 @@ import {
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
+  isFoundingAgentRole,
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@valadrien-os/shared";
@@ -72,8 +73,8 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     if (!actorAgent || actorAgent.companyId !== companyId) {
       throw forbidden("Agent key cannot access another company");
     }
-    if (actorAgent.role !== "ceo") {
-      throw forbidden("Only CEO agents can update company branding");
+    if (!isFoundingAgentRole(actorAgent.role)) {
+      throw forbidden("Only founding agents (CEO, Chief of Staff, CTO) can update company branding");
     }
   }
 
@@ -86,8 +87,8 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     if (!actorAgent || actorAgent.companyId !== companyId) {
       throw forbidden("Agent key cannot access another company");
     }
-    if (actorAgent.role !== "ceo") {
-      throw forbidden(`Only CEO agents can manage company ${capability}`);
+    if (!isFoundingAgentRole(actorAgent.role)) {
+      throw forbidden(`Only founding agents (CEO, Chief of Staff, CTO) can manage company ${capability}`);
     }
   }
 
@@ -339,11 +340,11 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     let body: Record<string, unknown>;
 
     if (req.actor.type === "agent") {
-      // Only CEO agents may update company branding fields
+      // Only founding agents (CEO, Chief of Staff, CTO) may update company branding fields
       const agentSvc = agentService(db);
       const actorAgent = req.actor.agentId ? await agentSvc.getById(req.actor.agentId) : null;
-      if (!actorAgent || actorAgent.role !== "ceo") {
-        throw forbidden("Only CEO agents or board users may update company settings");
+      if (!actorAgent || !isFoundingAgentRole(actorAgent.role)) {
+        throw forbidden("Only founding agents (CEO, Chief of Staff, CTO) or board users may update company settings");
       }
       if (actorAgent.companyId !== companyId) {
         throw forbidden("Agent key cannot access another company");

@@ -1,10 +1,12 @@
+import { isFoundingAgentRole } from "@valadrien-os/shared";
+
 export type NormalizedAgentPermissions = Record<string, unknown> & {
   canCreateAgents: boolean;
 };
 
 export function defaultPermissionsForRole(role: string): NormalizedAgentPermissions {
   return {
-    canCreateAgents: role === "ceo",
+    canCreateAgents: isFoundingAgentRole(role),
   };
 }
 

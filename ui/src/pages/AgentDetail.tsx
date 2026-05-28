@@ -86,6 +86,7 @@ import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import {
+  isFoundingAgentRole,
   isUuidLike,
   type Agent,
   type AgentInstructionsBundle,
@@ -1706,10 +1707,10 @@ function ConfigurationTab({
   const canCreateAgents = Boolean(agent.permissions?.canCreateAgents);
   const canAssignTasks = Boolean(agent.access?.canAssignTasks);
   const taskAssignSource = agent.access?.taskAssignSource ?? "none";
-  const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
+  const taskAssignLocked = isFoundingAgentRole(agent.role) || canCreateAgents;
   const taskAssignHint =
     taskAssignSource === "ceo_role"
-      ? "Enabled automatically for CEO agents."
+      ? "Enabled automatically for founding agents (CEO, Chief of Staff, CTO)."
       : taskAssignSource === "agent_creator"
         ? "Enabled automatically while this agent can create new agents."
         : taskAssignSource === "explicit_grant"

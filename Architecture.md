@@ -457,7 +457,138 @@ They are tracked here so they don't get lost between PRs.
 
 ---
 
-## 13. Further reading
+## 13. Tenancy, roles, and the ValAdrien.DEV bootstrap
+
+ValAdrien OS is a **single-instance, multi-company platform**: one running
+server hosts many companies, scoped at the application layer by `companyId`.
+There is no per-tenant database; isolation is enforced in the API layer and in
+every query.
+
+### 13.1 Two orthogonal role planes
+
+Roles live in two independent tables and stack additively:
+
+1. **Instance roles** (`instance_role` on `users`). Platform-wide. Today the
+   meaningful value is `instance_admin` — full access to *every* company,
+   plus instance-level settings (auth, secrets backends, model providers,
+   global plugin allow-list). All other users default to `member`.
+2. **Company memberships** (`company_memberships`). Per-company. Roles are
+   `owner`, `admin`, `member` (plus deployment-mode-specific overrides). A
+   single user can have memberships in many companies with different roles
+   in each.
+
+These planes are independent on purpose: an instance admin who is *not* a
+member of company X still gets API access to company X (they administrate
+the platform), but their **personal work surface** — what shows up in their
+sidebar, who they post issues as — is driven by company memberships.
+
+### 13.2 The ValAdrien.DEV recipe
+
+ValAdrien.DEV is *both* the platform operator (the body that runs the instance,
+turns features on/off, manages provider credentials) and a real company
+shipping work for clients. Concretely:
+
+| Persona                          | Instance role     | Company memberships                              |
+| -------------------------------- | ----------------- | ------------------------------------------------ |
+| Adrien (you)                     | `instance_admin`  | `owner` of `ValAdrien.DEV`, `owner` of each of your two side companies, `admin` of each client company you bootstrap |
+| Client human (after handoff)     | `member`          | `owner` of their own company                     |
+| Sub-contractor on a client       | `member`          | `member` of that single client company           |
+
+The pattern: you keep `instance_admin` permanently. For every new company
+(yours or a client's), you create it like any other company, which auto-grants
+you the `owner` membership for that company. When you hand a company off to a
+client, you invite them as `owner` and (optionally) downgrade yourself to
+`admin` or leave the company — the instance admin role is unaffected.
+
+### 13.3 Bootstrap: how the first instance_admin is created
+
+This is the part the upstream Paperclip docs leave implicit. The contract on
+this fork:
+
+- **First user wins.** On a fresh database, the very first user who completes
+  signup is automatically promoted to `instance_admin`. There is no separate
+  super-admin signup screen — the privilege is granted on first-write to the
+  `users` table.
+- **Subsequent users default to `member`.** They get whatever company
+  memberships they are explicitly invited into, and no instance-level access.
+- **Promoting later users** is an `instance_admin`-only action via the
+  Instance Settings → Users panel. Demoting yourself is allowed only if at
+  least one other `instance_admin` exists (no orphan-instance lockout).
+- **Local trusted mode** (single-user dev install, the default for `valos
+  start`) treats the OS user as instance admin automatically. No
+  password / OAuth required.
+- **Hosted / shared modes** require an actual sign-in flow before the first
+  user is created, so the "first user wins" rule still applies but routes
+  through whatever auth provider the operator configured.
+
+### 13.4 Adding your existing companies
+
+For a brand-new instance that is ValAdrien.DEV-operated:
+
+1. Sign in once → you are now `instance_admin`.
+2. Run the Onboarding Wizard for **ValAdrien.DEV** itself. Pick the
+   `Onboarding Specialist` agent role and (optionally) paste the
+   ValAdrien.DEV GitHub URL. You are now `owner` of ValAdrien.DEV.
+3. Open the wizard again for each of your two existing companies. If they
+   already have a repo, paste the URL — the Onboarding Specialist will
+   introspect it, propose a mission, stack summary, and an initial agent
+   roster, and only persist what you confirm.
+4. For each client engagement, run the wizard once. Stay `owner` while you
+   are setting them up. When they take over, invite their lead, promote them
+   to `owner`, and (optionally) drop your own membership down.
+
+You never run a separate "create instance admin" step. The privilege is a
+property of being the first signed-in user; the wizard is just a normal
+company-creation flow that you happen to run multiple times.
+
+### 13.5 Cross-company visibility for ValAdrien.DEV
+
+Because instance admins bypass `company_memberships` checks at the API layer,
+you can:
+
+- See the full company list across the whole instance.
+- Read issues, runs, and audit log of any company without being a member.
+- Modify shared infrastructure (auth, secrets, plugins, model providers).
+
+You **cannot** do the following without an actual membership in that company:
+
+- Be assigned to issues (agent-side and human-side assignment both consult
+  `company_memberships`).
+- Show up as an author on artifacts (commits, comments, work products).
+- Be the routing target for approvals — approvals always pin to a member of
+  the company they belong to.
+
+This split keeps the audit trail honest: ops actions are clearly authored as
+"instance admin Adrien", and client-facing work is authored as a normal
+member of that client's company.
+
+### 13.6 The Onboarding Specialist agent
+
+A first-class agent role (`onboarding`) ships with its own instruction bundle
+in `server/src/onboarding-assets/onboarding/` (`AGENTS.md`, `SOUL.md`,
+`HEARTBEAT.md`, `TOOLS.md`) and a Skill at
+`.agents/skills/onboarding-specialist/SKILL.md`. The Skill is the
+*playbook*: discover (clone or read repo / read free-text description) →
+propose (draft `PROFILE.md`, `AGENTS_ROSTER.md`, mission) → confirm
+(present to the human as a single bundle) → execute (write durable artifacts,
+hire the proposed roster, file follow-up issues). The bundle is the
+*persona*: how the agent talks, what guarantees it makes (idempotency,
+confirmation-before-write, audit trail), and which APIs it is allowed to
+call.
+
+The wizard surfaces this in two places:
+
+1. **Step 2 role picker.** Choose `Onboarding Specialist` instead of `CEO`
+   to hire an `onboarding`-role agent with the bundle wired up
+   automatically.
+2. **Step 3 existing-repo field** (shown only when the onboarding role is
+   selected). Paste a GitHub URL or local path; the value is appended to the
+   first task description so the agent has the introspection target it
+   needs.
+
+---
+
+## 14. Further reading
 
 - [doc/SPEC.md](doc/SPEC.md) — field-level specification (Company, Agent, Issue, etc.)
 - [doc/PRODUCT.md](doc/PRODUCT.md) — product definition (upstream-style)
@@ -466,5 +597,7 @@ They are tracked here so they don't get lost between PRs.
 - [doc/plugins/PLUGIN_SPEC.md](doc/plugins/PLUGIN_SPEC.md) — plugin contract
 - [doc/execution-semantics.md](doc/execution-semantics.md) — atomic checkout, execution locks, recovery
 - [doc/memory-landscape.md](doc/memory-landscape.md) — agent memory model
+- [.agents/skills/onboarding-specialist/SKILL.md](.agents/skills/onboarding-specialist/SKILL.md) — Onboarding Specialist playbook
+- [server/src/onboarding-assets/onboarding/](server/src/onboarding-assets/onboarding/) — Onboarding Specialist instruction bundle
 - [ROADMAP.md](ROADMAP.md) — shipped + planned features
 - [PRD.md](PRD.md) — product requirements for the fork

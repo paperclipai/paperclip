@@ -46,6 +46,7 @@ import {
   PERMISSION_KEYS
 } from "@valadrien-os/shared";
 import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey } from "@valadrien-os/shared";
+import { isFoundingAgentRole } from "@valadrien-os/shared";
 import {
   forbidden,
   conflict,
@@ -2020,14 +2021,19 @@ type JoinRequestManagerCandidate = {
 export function resolveJoinRequestAgentManagerId(
   candidates: JoinRequestManagerCandidate[]
 ): string | null {
-  const ceoCandidates = candidates.filter(
+  const foundingCandidates = candidates.filter((candidate) =>
+    isFoundingAgentRole(candidate.role)
+  );
+  if (foundingCandidates.length === 0) return null;
+  // Prefer a CEO when one exists; otherwise fall back to any founding agent
+  // (Chief of Staff, CTO). Within the chosen pool, prefer the root (no
+  // reportsTo) over a nested one, then the first by input order.
+  const ceoCandidates = foundingCandidates.filter(
     (candidate) => candidate.role === "ceo"
   );
-  if (ceoCandidates.length === 0) return null;
-  const rootCeo = ceoCandidates.find(
-    (candidate) => candidate.reportsTo === null
-  );
-  return (rootCeo ?? ceoCandidates[0] ?? null)?.id ?? null;
+  const pool = ceoCandidates.length > 0 ? ceoCandidates : foundingCandidates;
+  const rootMember = pool.find((candidate) => candidate.reportsTo === null);
+  return (rootMember ?? pool[0] ?? null)?.id ?? null;
 }
 
 function isInviteTokenHashCollisionError(error: unknown) {
@@ -2652,8 +2658,8 @@ export function accessRoutes(
       if (!actorAgent || actorAgent.companyId !== companyId) {
         throw forbidden("Agent key cannot access another company");
       }
-      if (actorAgent.role !== "ceo") {
-        throw forbidden("Only CEO agents can generate OpenClaw invite prompts");
+      if (!isFoundingAgentRole(actorAgent.role)) {
+        throw forbidden("Only founding agents (CEO, Chief of Staff, CTO) can generate OpenClaw invite prompts");
       }
       return;
     }

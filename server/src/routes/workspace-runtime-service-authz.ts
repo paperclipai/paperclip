@@ -2,6 +2,7 @@ import { and, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import type { Db } from "@valadrien-os/db";
 import { agents, issues } from "@valadrien-os/db";
 import type { Request } from "express";
+import { isFoundingAgentRole } from "@valadrien-os/shared";
 import { forbidden } from "../errors.js";
 import { assertCompanyAccess } from "./authz.js";
 
@@ -74,7 +75,7 @@ async function assertAgentCanManageRuntimeServicesForWorkspace(
     throw forbidden("Agent key cannot access another company");
   }
 
-  if (actorAgent.role === "ceo") {
+  if (isFoundingAgentRole(actorAgent.role)) {
     return;
   }
 

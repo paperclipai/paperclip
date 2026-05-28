@@ -12,6 +12,7 @@ import {
   createAgentHireSchema,
   createAgentSchema,
   deriveAgentUrlKey,
+  isFoundingAgentRole,
   isUuidLike,
   normalizeIssueIdentifier,
   resetAgentSessionSchema,
@@ -474,7 +475,10 @@ export function agentRoutes(
       : [];
     const hasExplicitTaskAssignGrant = grants.some((grant) => grant.permissionKey === "tasks:assign");
 
-    if (agent.role === "ceo") {
+    if (isFoundingAgentRole(agent.role)) {
+      // taskAssignSource literal remains "ceo_role" for backward compatibility
+      // with persisted/serialized state. Semantically it now covers all
+      // founding roles (CEO, Chief of Staff, CTO).
       return {
         canAssignTasks: true,
         taskAssignSource: "ceo_role" as const,
@@ -2250,8 +2254,8 @@ export function agentRoutes(
         res.status(403).json({ error: "Forbidden" });
         return;
       }
-      if (actorAgent.role !== "ceo") {
-        res.status(403).json({ error: "Only CEO can manage permissions" });
+      if (!isFoundingAgentRole(actorAgent.role)) {
+        res.status(403).json({ error: "Only founding agents (CEO, Chief of Staff, CTO) can manage permissions" });
         return;
       }
     } else {
@@ -2265,7 +2269,7 @@ export function agentRoutes(
     }
 
     const effectiveCanAssignTasks =
-      agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
+      isFoundingAgentRole(agent.role) || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
     await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
     await access.setPrincipalPermission(
       agent.companyId,

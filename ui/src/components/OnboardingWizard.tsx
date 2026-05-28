@@ -110,6 +110,7 @@ export function OnboardingWizard() {
 
   // Step 2
   const [agentName, setAgentName] = useState("CEO");
+  const [agentRole, setAgentRole] = useState<"ceo" | "chief_of_staff" | "cto">("ceo");
   const [adapterType, setAdapterType] = useState<AdapterType>("claude_local");
   const [model, setModel] = useState("");
   const [command, setCommand] = useState("");
@@ -131,6 +132,7 @@ export function OnboardingWizard() {
   const [taskDescription, setTaskDescription] = useState(
     DEFAULT_TASK_DESCRIPTION
   );
+  const [existingRepo, setExistingRepo] = useState("");
 
   // Auto-grow textarea for task description
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -291,6 +293,7 @@ export function OnboardingWizard() {
     setCompanyName("");
     setCompanyGoal("");
     setAgentName("CEO");
+    setAgentRole("ceo");
     setAdapterType("claude_local");
     setModel("");
     setCommand("");
@@ -303,6 +306,7 @@ export function OnboardingWizard() {
     setUnsetAnthropicLoading(false);
     setTaskTitle("Hire your first engineer and create a hiring plan");
     setTaskDescription(DEFAULT_TASK_DESCRIPTION);
+    setExistingRepo("");
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
     setCreatedCompanyGoalId(null);
@@ -395,23 +399,19 @@ export function OnboardingWizard() {
       setSelectedCompanyId(company.id);
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
 
-      if (companyGoal.trim()) {
-        const parsedGoal = parseOnboardingGoalInput(companyGoal);
-        const goal = await goalsApi.create(company.id, {
-          title: parsedGoal.title,
-          ...(parsedGoal.description
-            ? { description: parsedGoal.description }
-            : {}),
-          level: "company",
-          status: "active"
-        });
-        setCreatedCompanyGoalId(goal.id);
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.goals.list(company.id)
-        });
-      } else {
-        setCreatedCompanyGoalId(null);
-      }
+      const parsedGoal = parseOnboardingGoalInput(companyGoal);
+      const goal = await goalsApi.create(company.id, {
+        title: parsedGoal.title,
+        ...(parsedGoal.description
+          ? { description: parsedGoal.description }
+          : {}),
+        level: "company",
+        status: "active"
+      });
+      setCreatedCompanyGoalId(goal.id);
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.goals.list(company.id)
+      });
 
       setStep(2);
     } catch (err) {
@@ -442,7 +442,7 @@ export function OnboardingWizard() {
 
       const hire = await agentsApi.hire(createdCompanyId, {
         name: agentName.trim(),
-        role: "ceo",
+        role: agentRole,
         adapterType,
         adapterConfig: buildAdapterConfig(),
         runtimeConfig: buildNewAgentRuntimeConfig()
@@ -551,11 +551,18 @@ export function OnboardingWizard() {
 
       let issueRef = createdIssueRef;
       if (!issueRef) {
+        // We name the repo and the skill, then stop. The `onboarding-specialist`
+        // skill is auto-bundled as a platform system skill on every company, so
+        // the agent already sees its full playbook (discover → propose → confirm
+        // → execute) in its skill manifest. No need to inline it here.
+        const repoBlock = existingRepo.trim()
+          ? `\n\n**Existing repo:** ${existingRepo.trim()}\n\nLoad the \`onboarding-specialist\` skill on your first heartbeat and follow it.`
+          : "";
         const issue = await issuesApi.create(
           createdCompanyId,
           buildOnboardingIssuePayload({
             title: taskTitle,
-            description: taskDescription,
+            description: `${taskDescription}${repoBlock}`,
             assigneeAgentId: createdAgentId,
             projectId,
             goalId
@@ -586,9 +593,9 @@ export function OnboardingWizard() {
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      if (step === 1 && companyName.trim()) handleStep1Next();
+      if (step === 1 && companyName.trim() && companyGoal.trim()) handleStep1Next();
       else if (step === 2 && agentName.trim()) handleStep2Next();
-      else if (step === 3 && taskTitle.trim()) handleStep3Next();
+      else if (step === 3 && taskTitle.trim() && taskDescription.trim()) handleStep3Next();
       else if (step === 4) handleLaunch();
     }
   }
@@ -697,7 +704,7 @@ export function OnboardingWizard() {
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      Mission / goal (optional)
+                      Mission / goal
                     </label>
                     <textarea
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
@@ -705,6 +712,24 @@ export function OnboardingWizard() {
                       value={companyGoal}
                       onChange={(e) => setCompanyGoal(e.target.value)}
                     />
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-1 block">
+                      Existing repo{" "}
+                      <span className="text-muted-foreground/60">(optional)</span>
+                    </label>
+                    <input
+                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                      placeholder="https://github.com/acme/widgets or /Users/you/Code/widgets"
+                      value={existingRepo}
+                      onChange={(e) => setExistingRepo(e.target.value)}
+                    />
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      If this company already has code, paste a GitHub URL or
+                      local path. Your first agent will run the Onboarding
+                      Specialist skill to derive the stack, mission, and starter
+                      roster before doing any other work.
+                    </p>
                   </div>
                 </div>
               )}
@@ -723,12 +748,79 @@ export function OnboardingWizard() {
                     </div>
                   </div>
                   <div>
+                    <label className="text-xs text-muted-foreground mb-2 block">
+                      Leadership role
+                    </label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(
+                        [
+                          {
+                            role: "ceo",
+                            label: "CEO",
+                            blurb: "Strategy, prioritization, delegation."
+                          },
+                          {
+                            role: "chief_of_staff",
+                            label: "Chief of Staff",
+                            blurb: "Cross-functional coordination, no IC work."
+                          },
+                          {
+                            role: "cto",
+                            label: "CTO",
+                            blurb: "Technical leadership for engineering teams."
+                          }
+                        ] as const
+                      ).map(({ role, label, blurb }) => (
+                        <button
+                          key={role}
+                          type="button"
+                          className={cn(
+                            "flex flex-col items-start gap-1 rounded-md border p-3 text-left text-xs transition-colors",
+                            agentRole === role
+                              ? "border-foreground bg-accent"
+                              : "border-border hover:bg-accent/50"
+                          )}
+                          onClick={() => {
+                            setAgentRole(role);
+                            const canonicalNames = new Set([
+                              "",
+                              "CEO",
+                              "Chief of Staff",
+                              "CTO"
+                            ]);
+                            if (canonicalNames.has(agentName.trim())) {
+                              setAgentName(label);
+                            }
+                          }}
+                        >
+                          <span className="font-medium">{label}</span>
+                          <span className="text-[10px] text-muted-foreground">
+                            {blurb}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    {existingRepo.trim() && (
+                      <p className="mt-2 text-[11px] text-muted-foreground">
+                        Repo provided on Step 1 — this agent will run the
+                        Onboarding Specialist skill to introspect it before
+                        starting work.
+                      </p>
+                    )}
+                  </div>
+                  <div>
                     <label className="text-xs text-muted-foreground mb-1 block">
                       Agent name
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="CEO"
+                      placeholder={
+                        agentRole === "ceo"
+                          ? "CEO"
+                          : agentRole === "chief_of_staff"
+                            ? "Chief of Staff"
+                            : "CTO"
+                      }
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
                       autoFocus
@@ -1110,8 +1202,15 @@ export function OnboardingWizard() {
                     />
                   </div>
                   <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
-                      Description (optional)
+                    <label
+                      className={cn(
+                        "text-xs mb-1 block transition-colors",
+                        taskDescription.trim()
+                          ? "text-foreground"
+                          : "text-muted-foreground"
+                      )}
+                    >
+                      Description
                     </label>
                     <textarea
                       ref={textareaRef}
@@ -1201,7 +1300,9 @@ export function OnboardingWizard() {
                   {step === 1 && (
                     <Button
                       size="sm"
-                      disabled={!companyName.trim() || loading}
+                      disabled={
+                        !companyName.trim() || !companyGoal.trim() || loading
+                      }
                       onClick={handleStep1Next}
                     >
                       {loading ? (
@@ -1231,7 +1332,9 @@ export function OnboardingWizard() {
                   {step === 3 && (
                     <Button
                       size="sm"
-                      disabled={!taskTitle.trim() || loading}
+                      disabled={
+                        !taskTitle.trim() || !taskDescription.trim() || loading
+                      }
                       onClick={handleStep3Next}
                     >
                       {loading ? (
