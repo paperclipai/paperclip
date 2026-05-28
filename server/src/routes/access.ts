@@ -2594,6 +2594,26 @@ export function accessRoutes(
     },
   );
 
+  router.get("/cli-auth/keys", async (req, res) => {
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      throw unauthorized("Board authentication required");
+    }
+    const keys = await boardAuth.listBoardApiKeys(req.actor.userId);
+    res.json({
+      keys: keys.map((key) => ({
+        id: key.id,
+        name: key.name,
+        createdAt: key.createdAt.toISOString(),
+        expiresAt: key.expiresAt ? key.expiresAt.toISOString() : null,
+        lastUsedAt: key.lastUsedAt ? key.lastUsedAt.toISOString() : null,
+        expired: key.expiresAt ? key.expiresAt.getTime() <= Date.now() : false,
+        daysUntilExpiry: key.expiresAt
+          ? Math.max(0, Math.ceil((key.expiresAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000)))
+          : null,
+      })),
+    });
+  });
+
   router.get("/cli-auth/me", async (req, res) => {
     if (req.actor.type !== "board" || !req.actor.userId) {
       throw unauthorized("Board authentication required");
