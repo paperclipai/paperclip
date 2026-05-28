@@ -6136,7 +6136,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_not_in_progress"
           | "issue_execution_lock_changed"
           | "issue_review_participant_changed"
-          | "issue_continuation_waiting_on_review";
+          | "issue_continuation_waiting_on_review"
+          | "issue_stable_in_review"
+          | "issue_stable_blocked";
         details: Record<string, unknown>;
       };
 
@@ -6273,7 +6275,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             },
           };
         }
+      } else if (!wakeCommentId && !isInteractionWake) {
+        // in_review with no executionState participant and no human/interaction wake:
+        // the issue is waiting for board or human action (request_confirmation, board_approval).
+        // Cancel immediately instead of spending 3 checkout-backoff attempts on a 409.
+        return {
+          stale: true,
+          errorCode: "issue_stable_in_review",
+          reason:
+            "Cancelled because issue is in_review with no active execution stage and no interaction or comment wake; waiting for human or board action",
+          details: { issueId },
+        };
       }
+    }
+
+    // blocked issues without first-class unresolved blockers (orphaned-blocked) should not
+    // consume execution slots on non-human wakes. Dependency-blocked issues with unresolved
+    // blockers are already cancelled in claimQueuedRun before reaching this function.
+    if (issue.status === "blocked" && !wakeCommentId && !isInteractionWake) {
+      return {
+        stale: true,
+        errorCode: "issue_stable_blocked",
+        reason:
+          "Cancelled because issue is blocked and wake has no interaction or comment context; no execution slot consumed until blocker state changes",
+        details: { issueId },
+      };
     }
 
     return { stale: false };
