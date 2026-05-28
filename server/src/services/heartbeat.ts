@@ -6392,6 +6392,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         status: nextStatus,
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
+        ...(nextStatus === "error" && latestFailedRun
+          ? {
+              lastRunError: {
+                error: latestFailedRun.error ?? "run_failed",
+                errorCode: latestFailedRun.errorCode ?? "",
+                exitCode: latestFailedRun.exitCode ?? null,
+                signal: latestFailedRun.signal ?? null,
+              },
+            }
+          : nextStatus === "idle"
+          ? { lastRunError: null }
+          : {}),
       })
       .where(eq(agents.id, agentId))
       .returning()

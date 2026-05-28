@@ -4665,6 +4665,13 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
+          if (dependent.status === "blocked") {
+            await svc.update(dependent.id, {
+              status: "todo",
+              actorAgentId: actor.agentId,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            });
+          }
           addWakeup(dependent.assigneeAgentId, {
             source: "automation",
             triggerDetail: "system",
