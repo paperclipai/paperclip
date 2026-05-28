@@ -72,8 +72,8 @@ type IssueWakeTarget = {
 
 type ResolutionMetadata = {
   resolutionSource?: string | null;
-  clickupMessageId?: string | null;
-  clickupReaction?: string | null;
+  externalMessageId?: string | null;
+  externalEventId?: string | null;
 };
 
 export async function finalizeAcceptedInteractionResolution(input: {
@@ -98,8 +98,8 @@ export async function finalizeAcceptedInteractionResolution(input: {
   const continuationWakeIssue = input.continuationIssue ?? input.issue;
   const resolutionDetails = {
     ...(input.metadata?.resolutionSource ? { resolutionSource: input.metadata.resolutionSource } : {}),
-    ...(input.metadata?.clickupMessageId ? { clickupMessageId: input.metadata.clickupMessageId } : {}),
-    ...(input.metadata?.clickupReaction ? { clickupReaction: input.metadata.clickupReaction } : {}),
+    ...(input.metadata?.externalMessageId ? { externalMessageId: input.metadata.externalMessageId } : {}),
+    ...(input.metadata?.externalEventId ? { externalEventId: input.metadata.externalEventId } : {}),
   };
 
   await input.logActivity(input.db, {

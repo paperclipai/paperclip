@@ -24,7 +24,7 @@ import {
   agentTaskSessions,
   agentWakeupRequests,
   activityLog,
-  awaitingHumanNotificationOutbox,
+  awaitingHumanBridges,
   clickupBridges,
   companySkills as companySkillsTable,
   documentRevisions,
@@ -79,7 +79,6 @@ import {
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import { maybeLogAwaitingHumanHandoff } from "./awaiting-human-handoff.js";
 import {
-  detectClickUpAwaitingHumanApproval,
   processAwaitingHumanNotificationOutbox,
 } from "./awaiting-human-notifications.js";
 import {
@@ -98,6 +97,13 @@ import { agentThreadService } from "./agent-threads.js";
 import { clickupBridgeService } from "./clickup-bridge.js";
 import { documentService } from "./documents.js";
 import { workProductService } from "./work-products.js";
+import { awaitingHumanBridgeService } from "./awaiting-human-bridge.js";
+import { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
+import {
+  hasAnyAwaitingHumanBridgeAdapter,
+  hasAwaitingHumanBridgeAdapter,
+  resolveAwaitingHumanBridgeAdapter,
+} from "./awaiting-human-bridge-registry.js";
 import { recordComment, recordRunStatus } from "../otel.js";
 import {
   getIssueContinuationSummaryDocument,
@@ -136,11 +142,7 @@ import {
 import { extractSkillMentionIds } from "@paperclipai/shared";
 import { getStorageService } from "../storage/index.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
-import {
-  finalizeAcceptedInteractionResolution,
-  isClosedIssueStatus,
-  queueResolvedInteractionContinuationWakeup,
-} from "./issue-interaction-resolution-effects.js";
+import { finalizeAcceptedInteractionResolution, isClosedIssueStatus } from "./issue-interaction-resolution-effects.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -798,6 +800,7 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  bypassWakeOnDemand?: boolean;
 }
 
 type UsageTotals = {
@@ -2097,6 +2100,23 @@ export function heartbeatService(db: Db) {
   const workProductsSvc = workProductService(db);
   const agentThreadsSvc = agentThreadService(db);
   const clickupBridge = clickupBridgeService(db);
+  const awaitingHumanSettings = awaitingHumanSettingsService(db);
+  const awaitingHumanBridge = awaitingHumanBridgeService(db, {
+    resolveProviderForCompany: async (companyId) => awaitingHumanSettings.resolveProvider(companyId),
+    resolveAdapter: (provider) => resolveAwaitingHumanBridgeAdapter(provider, db),
+    hasAdapter: (provider) => hasAwaitingHumanBridgeAdapter(provider),
+    requestWakeup: async ({ agentId, payload, reason, requestedByActorType, requestedByActorId }) => {
+      await enqueueWakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason,
+        payload,
+        requestedByActorType,
+        requestedByActorId,
+        bypassWakeOnDemand: true,
+      });
+    },
+  });
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentsSvc = environmentService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
@@ -5310,451 +5330,111 @@ export function heartbeatService(db: Db) {
   }
 
   async function reconcileAwaitingHumanApprovals() {
-    const candidates = await db
-      .select({
-        issueId: issues.id,
-        companyId: issues.companyId,
-        identifier: issues.identifier,
-        title: issues.title,
-        status: issues.status,
-        assigneeAgentId: issues.assigneeAgentId,
-        assigneeUserId: issues.assigneeUserId,
-        interactionId: issueThreadInteractions.id,
-        createdByAgentId: issueThreadInteractions.createdByAgentId,
-      })
-      .from(issues)
-      .innerJoin(
-        issueThreadInteractions,
-        and(
-          eq(issueThreadInteractions.issueId, issues.id),
-          eq(issueThreadInteractions.companyId, issues.companyId),
-        ),
-      )
-      .where(
-        and(
-          eq(issues.status, "awaiting_human"),
-          eq(issueThreadInteractions.kind, "request_confirmation"),
-          eq(issueThreadInteractions.status, "pending"),
-        ),
-      );
-
-    const result = {
+    await awaitingHumanBridge.expireWaitingBridges();
+    if (!hasAnyAwaitingHumanBridgeAdapter()) {
+      return {
+        checked: 0,
+        approved: 0,
+        rejected: 0,
+        failed: 0,
+        skipped: 0,
+        noApproval: 0,
+        replies: 0,
+        issueIds: [] as string[],
+        interactionIds: [] as string[],
+      };
+    }
+    await awaitingHumanBridge.retryFailedBridgeOpenings();
+    const emptyLegacyResult = {
       checked: 0,
       approved: 0,
       rejected: 0,
       failed: 0,
       skipped: 0,
-      noApproval: 0,
-      issueIds: [] as string[],
-      interactionIds: [] as string[],
+      noSignal: 0,
+      replies: 0,
+      approvedIssueIds: [] as string[],
+      approvedInteractionIds: [] as string[],
     };
-    const interactionsSvc = issueThreadInteractionService(db);
-
-    async function hasForwardedClickUpReply(input: {
-      companyId: string;
-      issueId: string;
-      interactionId: string;
-      clickupMessageId: string;
-      clickupReplyId: string;
-    }) {
-      const row = await db
-        .select({ id: activityLog.id })
-        .from(activityLog)
-        .where(
-          and(
-            eq(activityLog.companyId, input.companyId),
-            eq(activityLog.action, "issue.comment_added"),
-            eq(activityLog.entityType, "issue"),
-            eq(activityLog.entityId, input.issueId),
-            sql`${activityLog.details} ->> 'interactionId' = ${input.interactionId}`,
-            sql`${activityLog.details} ->> 'clickupMessageId' = ${input.clickupMessageId}`,
-            sql`${activityLog.details} ->> 'clickupReplyId' = ${input.clickupReplyId}`,
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      return Boolean(row);
-    }
-
-    function buildForwardedClickUpReplyComment(replyBody: string) {
-      return `ClickUp reply received:\n\n${replyBody}`;
-    }
-
-    async function forwardClickUpRepliesIntoIssueComments(input: {
-      candidate: typeof candidates[number];
-      messageId: string;
-      replies: { id: string | null; content: string | null }[];
-      wakeAssignee?: boolean;
-    }) {
-      const wakeAssignee = input.wakeAssignee ?? true;
-      let forwardedAny = false;
-      for (const reply of input.replies) {
-        const replyId = readNonEmptyString(reply.id);
-        const replyBody = readNonEmptyString(reply.content);
-        const wakeAgentId = input.candidate.assigneeAgentId ?? input.candidate.createdByAgentId ?? null;
-        if (!replyId || !replyBody) continue;
-        if (await hasForwardedClickUpReply({
-          companyId: input.candidate.companyId,
-          issueId: input.candidate.issueId,
-          interactionId: input.candidate.interactionId,
-          clickupMessageId: input.messageId,
-          clickupReplyId: replyId,
-        })) {
-          continue;
-        }
-
-        try {
-          const comment = await db.transaction(async (tx) => {
-            const [createdComment] = await tx
-              .insert(issueComments)
-              .values({
-                companyId: input.candidate.companyId,
-                issueId: input.candidate.issueId,
-                authorAgentId: null,
-                authorUserId: null,
-                createdByRunId: null,
-                body: buildForwardedClickUpReplyComment(replyBody),
-              })
-              .returning();
-
-            await tx
-              .update(issues)
-              .set({ updatedAt: new Date() })
-              .where(eq(issues.id, input.candidate.issueId));
-
-            await logActivity(tx as unknown as Db, {
-              companyId: input.candidate.companyId,
-              actorType: "system",
-              actorId: "clickup_approval_poller",
-              action: "issue.comment_added",
-              entityType: "issue",
-              entityId: input.candidate.issueId,
-              details: {
-                commentId: createdComment.id,
-                bodySnippet: createdComment.body.slice(0, 120),
-                identifier: input.candidate.identifier,
-                issueTitle: input.candidate.title,
-                interactionId: input.candidate.interactionId,
-                forwardingOrigin: "clickup.awaiting_human.reply_forwarded",
-                clickupMessageId: input.messageId,
-                clickupReplyId: replyId,
-              },
-            });
-
-            return createdComment;
-          });
-
-          forwardedAny = true;
-
-          const currentIssueStatus = await getCurrentIssueStatus(input.candidate.companyId, input.candidate.issueId);
-          if (
-            wakeAssignee
-            && wakeAgentId
-            && currentIssueStatus !== "backlog"
-            && !isClosedIssueStatus(currentIssueStatus)
-          ) {
-            await enqueueWakeup(wakeAgentId, {
-              source: "automation",
-              triggerDetail: "system",
-              reason: "issue_commented",
-              payload: {
-                issueId: input.candidate.issueId,
-                commentId: comment.id,
-                mutation: "comment",
-              },
-              requestedByActorType: "system",
-              requestedByActorId: "clickup_approval_poller",
-              contextSnapshot: {
-                issueId: input.candidate.issueId,
-                taskId: input.candidate.issueId,
-                commentId: comment.id,
-                wakeCommentId: comment.id,
-                source: "clickup.awaiting_human.reply_forwarded",
-                wakeReason: "issue_commented",
-                interactionId: input.candidate.interactionId,
-                clickupMessageId: input.messageId,
-                clickupReplyId: replyId,
-              },
-            });
-          }
-        } catch (error) {
-          result.failed += 1;
-          logger.warn({
-            err: error,
-            issueId: input.candidate.issueId,
-            interactionId: input.candidate.interactionId,
-            clickupMessageId: input.messageId,
-            clickupReplyId: replyId,
-          }, "failed to forward awaiting_human ClickUp reply into issue comment");
-        }
-      }
-
-      return forwardedAny;
-    }
-
-    async function getCurrentIssueStatus(companyId: string, issueId: string) {
-      const row = await db
-        .select({ status: issues.status })
-        .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            eq(issues.id, issueId),
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      return row?.status ?? null;
-    }
-
-    async function resolveAwaitingHumanMessageId(input: {
-      companyId: string;
-      issueId: string;
-      handoffDetails: Record<string, unknown>;
-    }) {
-      const delivery = parseObject(input.handoffDetails.notificationDelivery);
-      const activityMessageId = readNonEmptyString(delivery.externalId);
-      if (activityMessageId) return activityMessageId;
-
-      const dedupeKey = readNonEmptyString(input.handoffDetails.dedupeKey);
-      if (!dedupeKey) return null;
-
-      const row = await db
-        .select({ clickupMessageId: awaitingHumanNotificationOutbox.clickupMessageId })
-        .from(awaitingHumanNotificationOutbox)
-        .where(
-          and(
-            eq(awaitingHumanNotificationOutbox.companyId, input.companyId),
-            eq(awaitingHumanNotificationOutbox.issueId, input.issueId),
-            eq(awaitingHumanNotificationOutbox.dedupeKey, dedupeKey),
-            eq(awaitingHumanNotificationOutbox.status, "sent"),
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-
-      return readNonEmptyString(row?.clickupMessageId);
-    }
-
-    const candidateIssueIds = [...new Set(candidates.map((candidate) => candidate.issueId))];
-    const candidateCompanyIds = [...new Set(candidates.map((candidate) => candidate.companyId))];
-    const candidateInteractionKeys = new Set(
-      candidates.map((candidate) => `${candidate.companyId}:${candidate.issueId}:${candidate.interactionId}`),
-    );
-    const handoffRows = candidateIssueIds.length > 0
-      ? await db
+    let legacyResult = emptyLegacyResult;
+    if (hasAwaitingHumanBridgeAdapter("clickup")) {
+      const legacyDeliveredInteractions = await db
         .select({
           companyId: activityLog.companyId,
           issueId: activityLog.entityId,
-          details: activityLog.details,
+          interactionId: sql<string | null>`${activityLog.details} ->> 'interactionId'`.as("interactionId"),
+          assigneeAgentId: sql<string | null>`${activityLog.details} ->> 'assigneeAgentId'`.as("assigneeAgentId"),
+          createdByAgentId: activityLog.agentId,
+          handoffDetails: activityLog.details,
         })
         .from(activityLog)
-        .where(
-          and(
-            eq(activityLog.action, "issue.awaiting_human.entered"),
-            eq(activityLog.entityType, "issue"),
-            inArray(activityLog.companyId, candidateCompanyIds),
-            inArray(activityLog.entityId, candidateIssueIds),
-          ),
-        )
+        .innerJoin(issues, and(
+          eq(activityLog.companyId, issues.companyId),
+          sql`${activityLog.entityId} = cast(${issues.id} as text)`,
+        ))
+        .innerJoin(issueThreadInteractions, and(
+          eq(activityLog.companyId, issueThreadInteractions.companyId),
+          sql`${activityLog.details} ->> 'interactionId' = cast(${issueThreadInteractions.id} as text)`,
+        ))
+        .where(and(
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.action, "issue.awaiting_human.entered"),
+          eq(issues.status, "awaiting_human"),
+          eq(issueThreadInteractions.status, "pending"),
+          eq(issueThreadInteractions.kind, "request_confirmation"),
+          sql`not exists (
+            select 1
+            from ${awaitingHumanBridges}
+            where ${awaitingHumanBridges.interactionId} = cast(${activityLog.details} ->> 'interactionId' as uuid)
+              and ${awaitingHumanBridges.status} in ('pending_delivery', 'waiting_for_human')
+          )`,
+        ))
         .orderBy(desc(activityLog.createdAt))
-      : [];
-    const latestHandoffsByCandidateKey = new Map<string, { details: typeof activityLog.$inferSelect.details }>();
-    for (const handoff of handoffRows) {
-      const details = parseObject(handoff.details);
-      const interactionId = readNonEmptyString(details.interactionId);
-      if (!interactionId) continue;
-      const candidateKey = `${handoff.companyId}:${handoff.issueId}:${interactionId}`;
-      if (!candidateInteractionKeys.has(candidateKey) || latestHandoffsByCandidateKey.has(candidateKey)) continue;
-      latestHandoffsByCandidateKey.set(candidateKey, { details: handoff.details });
-    }
+        .limit(200);
 
-    for (const candidate of candidates) {
-      const handoff = latestHandoffsByCandidateKey.get(
-        `${candidate.companyId}:${candidate.issueId}:${candidate.interactionId}`,
-      ) ?? null;
-
-      const details = parseObject(handoff?.details);
-      const delivery = parseObject(details.notificationDelivery);
-      if (
-        delivery.channel !== "clickup-chat"
-        || (delivery.status !== "sent" && delivery.status !== "enqueued")
-      ) {
-        result.skipped += 1;
-        continue;
-      }
-
-      const messageId = await resolveAwaitingHumanMessageId({
-        companyId: candidate.companyId,
-        issueId: candidate.issueId,
-        handoffDetails: details,
-      });
-      if (!messageId) {
-        result.skipped += 1;
-        continue;
-      }
-
-      result.checked += 1;
-      const approval = await detectClickUpAwaitingHumanApproval(messageId);
-      if (approval.status === "failed") {
-        result.failed += 1;
-        logger.warn({
-          issueId: candidate.issueId,
-          interactionId: candidate.interactionId,
-          clickupMessageId: messageId,
-          detail: approval.detail,
-        }, "failed to poll ClickUp awaiting_human approval state");
-        continue;
-      }
-      if (approval.status === "rejected") {
-        try {
-          const interaction = await interactionsSvc.rejectInteraction({
-            id: candidate.issueId,
-            companyId: candidate.companyId,
-          }, candidate.interactionId, {
-            reason: approval.rejectionReason ?? "Rejected from ClickUp awaiting_human flow.",
-          }, {
-            actorType: "system",
-            userId: null,
-            agentId: null,
-          });
-
-          await logActivity(db, {
-            companyId: candidate.companyId,
-            actorType: "system",
-            actorId: "clickup_approval_poller",
-            action: interaction.status === "expired"
-              ? "issue.thread_interaction_expired"
-              : "issue.thread_interaction_rejected",
-            entityType: "issue",
-            entityId: candidate.issueId,
-            details: {
-              interactionId: interaction.id,
-              interactionKind: interaction.kind,
-              interactionStatus: interaction.status,
-              rejectionReason:
-                interaction.kind === "suggest_tasks"
-                  ? (interaction.result?.rejectionReason ?? null)
-                  : interaction.kind === "request_confirmation"
-                    ? (interaction.result?.reason ?? null)
-                    : null,
-              resolutionSource: approval.resolutionSource,
-              clickupMessageId: messageId,
-              clickupReaction: approval.clickupReaction ?? null,
-            },
-          });
-
-          const currentIssueStatus = await getCurrentIssueStatus(candidate.companyId, candidate.issueId);
-          queueResolvedInteractionContinuationWakeup({
-            heartbeat: { wakeup: enqueueWakeup },
-            issue: {
-              id: candidate.issueId,
-              assigneeAgentId: candidate.assigneeAgentId,
-              status: currentIssueStatus ?? candidate.status,
-            },
-            interaction,
-            actor: {
-              actorType: "system",
-              actorId: "clickup_approval_poller",
-            },
-            source: "clickup.awaiting_human.rejection",
-          });
-
-          const forwardedAny = await forwardClickUpRepliesIntoIssueComments({
-            candidate,
-            messageId,
-            replies: approval.replies ?? [],
-            wakeAssignee: false,
-          });
-          if (!forwardedAny && (approval.replies?.length ?? 0) > 0) {
-            result.skipped += 1;
-          }
-
-          result.rejected += 1;
-          result.issueIds.push(candidate.issueId);
-          result.interactionIds.push(candidate.interactionId);
-        } catch (error) {
-          result.failed += 1;
-          logger.warn({
-            err: error,
-            issueId: candidate.issueId,
-            interactionId: candidate.interactionId,
-            clickupMessageId: messageId,
-            detail: approval.detail,
-          }, "failed to reject ClickUp awaiting_human interaction");
-        }
-        continue;
-      }
-      if (approval.status === "skipped" || approval.status === "no_approval") {
-        if (approval.status === "skipped") result.skipped += 1;
-        if (approval.status === "no_approval") result.noApproval += 1;
-        continue;
-      }
-
-      try {
-        const { interaction, createdIssues, continuationIssue } = await interactionsSvc.acceptInteraction({
-          id: candidate.issueId,
+      const seenInteractionIds = new Set<string>();
+      const deliveredCandidates: Array<{
+        companyId: string;
+        issueId: string;
+        interactionId: string;
+        assigneeAgentId: string | null;
+        createdByAgentId: string | null;
+        handoffDetails: unknown;
+      }> = [];
+      for (const candidate of legacyDeliveredInteractions) {
+        const interactionId = readNonEmptyString(candidate.interactionId);
+        if (!interactionId || seenInteractionIds.has(interactionId)) continue;
+        const details = parseObject(candidate.handoffDetails);
+        const delivery = parseObject(details.notificationDelivery);
+        if (delivery.status !== "sent" && delivery.status !== "enqueued") continue;
+        seenInteractionIds.add(interactionId);
+        deliveredCandidates.push({
           companyId: candidate.companyId,
-          goalId: null,
-          projectId: null,
-        }, candidate.interactionId, {}, {
-          actorType: "system",
-          userId: null,
-          agentId: null,
-        });
-
-        await finalizeAcceptedInteractionResolution({
-          db,
-          heartbeat: { wakeup: enqueueWakeup },
-          logActivity,
-          issue: {
-            id: candidate.issueId,
-            companyId: candidate.companyId,
-            identifier: candidate.identifier,
-            status: candidate.status,
-            assigneeAgentId: candidate.assigneeAgentId,
-            assigneeUserId: candidate.assigneeUserId,
-          },
-          interaction,
-          createdIssues,
-          continuationIssue,
-          actor: {
-            actorType: "system",
-            actorId: "clickup_approval_poller",
-            agentId: null,
-            runId: null,
-          },
-          source: "clickup.awaiting_human.approval",
-          metadata: {
-            resolutionSource: approval.resolutionSource,
-            clickupMessageId: messageId,
-            clickupReaction: approval.clickupReaction ?? null,
-          },
-        });
-
-        if (interaction.status === "accepted") {
-          result.approved += 1;
-          result.issueIds.push(candidate.issueId);
-          result.interactionIds.push(candidate.interactionId);
-        } else {
-          result.skipped += 1;
-        }
-      } catch (error) {
-        if (error instanceof HttpError && error.status === 409) {
-          result.skipped += 1;
-          continue;
-        }
-        result.failed += 1;
-        logger.warn({
-          err: error,
           issueId: candidate.issueId,
-          interactionId: candidate.interactionId,
-          clickupMessageId: messageId,
-        }, "failed to accept awaiting_human approval from ClickUp");
+          interactionId,
+          assigneeAgentId: candidate.assigneeAgentId,
+          createdByAgentId: candidate.createdByAgentId,
+          handoffDetails: candidate.handoffDetails,
+        });
       }
+
+      legacyResult = deliveredCandidates.length > 0
+        ? await awaitingHumanBridge.reconcileDeliveredInteractions(deliveredCandidates)
+        : emptyLegacyResult;
     }
 
-    return result;
+    const pendingResult = await awaitingHumanBridge.reconcilePendingConfirmations();
+    return {
+      checked: legacyResult.checked + pendingResult.checked,
+      approved: legacyResult.approved + pendingResult.approved,
+      rejected: legacyResult.rejected + pendingResult.rejected,
+      failed: legacyResult.failed + pendingResult.failed,
+      skipped: legacyResult.skipped + pendingResult.skipped,
+      noApproval: legacyResult.noSignal + pendingResult.noApproval,
+      replies: legacyResult.replies + pendingResult.replies,
+      issueIds: [...legacyResult.approvedIssueIds, ...pendingResult.issueIds],
+      interactionIds: [...legacyResult.approvedInteractionIds, ...pendingResult.interactionIds],
+    };
   }
 
   async function updateRuntimeState(
@@ -7672,7 +7352,7 @@ export function heartbeatService(db: Db) {
       await writeSkippedRequest("heartbeat.disabled");
       return null;
     }
-    if (source !== "timer" && !policy.wakeOnDemand) {
+    if (source !== "timer" && !policy.wakeOnDemand && !opts.bypassWakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
     }

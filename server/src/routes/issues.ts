@@ -40,6 +40,7 @@ import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
+import * as services from "../services/index.js";
 import {
   accessService,
   agentService,
@@ -111,6 +112,14 @@ type ExecutionStageWakeContext = {
   returnAssignee: ParsedExecutionState["returnAssignee"];
   lastDecisionOutcome: ParsedExecutionState["lastDecisionOutcome"];
   allowedActions: string[];
+};
+type AwaitingHumanBridgeCloser = {
+  closeOpenBridgesForIssue(input: {
+    companyId: string;
+    issueId: string;
+    outcome?: "approved" | "rejected" | "expired" | "superseded" | "cancelled" | null;
+    reason?: string | null;
+  }): Promise<{ closedCount: number }>;
 };
 
 function executionPrincipalsEqual(
@@ -353,6 +362,51 @@ export function issueRoutes(
   const documentsSvc = documentService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const routinesSvc = routineService(db);
+  let awaitingHumanBridgeRuntimeInitFailed = false;
+  let awaitingHumanBridgeRuntimeInitError: unknown = null;
+  const noOpAwaitingHumanBridge: AwaitingHumanBridgeCloser = {
+    closeOpenBridgesForIssue: async (input) => {
+      if (awaitingHumanBridgeRuntimeInitFailed) {
+        try {
+          await logActivity(db, {
+            companyId: input.companyId,
+            actorType: "system",
+            actorId: "awaiting_human_bridge",
+            action: "issue.awaiting_human.bridge_close_unavailable",
+            entityType: "issue",
+            entityId: input.issueId,
+            details: {
+              outcome: input.outcome ?? null,
+              reason: input.reason ?? null,
+              detail: awaitingHumanBridgeRuntimeInitError instanceof Error
+                ? awaitingHumanBridgeRuntimeInitError.message
+                : String(awaitingHumanBridgeRuntimeInitError ?? "awaitingHumanBridgeRuntime init failed"),
+            },
+          });
+        } catch (err) {
+          logger.warn(
+            { err, companyId: input.companyId, issueId: input.issueId },
+            "failed to record awaitingHumanBridge runtime init failure in activity log",
+          );
+        }
+      }
+      return { closedCount: 0 };
+    },
+  };
+  let awaitingHumanBridge: AwaitingHumanBridgeCloser = noOpAwaitingHumanBridge;
+  try {
+    if ("awaitingHumanBridgeRuntime" in services) {
+      const awaitingHumanBridgeRuntime = services.awaitingHumanBridgeRuntime;
+      awaitingHumanBridge = awaitingHumanBridgeRuntime(db);
+    }
+  } catch (err) {
+    awaitingHumanBridgeRuntimeInitFailed = true;
+    awaitingHumanBridgeRuntimeInitError = err;
+    logger.warn(
+      { err },
+      "awaitingHumanBridge runtime init failed; bridge close on UI interactions will be no-op",
+    );
+  }
   const feedbackExportService = opts?.feedbackExportService;
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -2821,6 +2875,12 @@ export function issueRoutes(
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
+      await awaitingHumanBridge.closeOpenBridgesForIssue({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        outcome: "superseded",
+        reason: "Issue thread interaction resolved via UI.",
+      });
       await finalizeAcceptedInteractionResolution({
         db,
         heartbeat,
@@ -2861,6 +2921,12 @@ export function issueRoutes(
         actorType: actor.actorType,
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+      await awaitingHumanBridge.closeOpenBridgesForIssue({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        outcome: "superseded",
+        reason: "Issue thread interaction resolved via UI.",
       });
 
       await logActivity(db, {
@@ -2918,6 +2984,12 @@ export function issueRoutes(
         actorType: actor.actorType,
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+      await awaitingHumanBridge.closeOpenBridgesForIssue({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        outcome: "superseded",
+        reason: "Issue thread interaction answered via UI.",
       });
 
       await logActivity(db, {

@@ -533,6 +533,13 @@
       "when": 1779408000000,
       "tag": "0075_company_awaiting_human_bridge_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1779500000000,
+      "tag": "0076_awaiting_human_bridges",
+      "breakpoints": true
     }
   ]
 }
