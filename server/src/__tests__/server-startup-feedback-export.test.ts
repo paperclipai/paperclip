@@ -232,7 +232,7 @@ describe("startServer feedback export wiring", () => {
     }));
 
     await expect(startServer()).rejects.toThrow(
-      "authenticated public deployments require DATABASE_URL or config.database.connectionString",
+      "authenticated public deployments require PAPERCLIP_DATABASE_URL (or DATABASE_URL) or config.database.connectionString",
     );
     expect(createDbMock).not.toHaveBeenCalled();
   });
@@ -246,7 +246,7 @@ describe("startServer feedback export wiring", () => {
     }));
 
     await expect(startServer()).rejects.toThrow(
-      "authenticated public deployments require DATABASE_URL to be a postgres/postgresql connection string",
+      "authenticated public deployments require PAPERCLIP_DATABASE_URL to be a postgres/postgresql connection string",
     );
     expect(createDbMock).not.toHaveBeenCalled();
   });
