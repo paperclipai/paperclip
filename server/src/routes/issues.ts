@@ -2249,6 +2249,7 @@ export function issueRoutes(
       relations,
       recoveryActionsByRelationIssue,
     );
+    const blockedByIssueIds = relationsWithRecoveryActions.blockedBy.map((relation) => relation.id);
     const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
       issue,
       trigger: "read_projection",
@@ -2264,6 +2265,7 @@ export function issueRoutes(
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json({
       ...issue,
+      blockedByIssueIds,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
       ...(blockerAttention ? { blockerAttention } : {}),
@@ -4996,7 +4998,30 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (req.actor.type === "agent") {
-      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const actorAgentId = req.actor.agentId;
+      if (actorAgentId && issue.assigneeAgentId !== null && issue.assigneeAgentId !== actorAgentId) {
+        const actorAgent = await agentsSvc.getById(actorAgentId);
+        if (actorAgent?.isRouter && actorAgent.permissions?.canCreateInteractions) {
+          // Router agent with explicit canCreateInteractions permission may create
+          // interactions on issues it doesn't own without the routing-fields body check.
+          const actor = getActorInfo(req);
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.router_agent_interaction_create",
+            entityType: "issue",
+            entityId: issue.id,
+            details: { routerAgentId: actorAgentId, assigneeAgentId: issue.assigneeAgentId },
+          });
+        } else {
+          if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+        }
+      } else {
+        if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      }
     } else {
       assertBoard(req);
     }
@@ -5046,6 +5071,19 @@ export function issueRoutes(
       }
       assertCompanyAccess(req, issue.companyId);
       assertBoard(req);
+
+      // In local_trusted mode every unauthenticated request is attributed to local-board
+      // (source: local_implicit). assertBoard() passes, but we cannot verify explicit human
+      // intent. Require board authentication (board claim + board API key) for confirmations.
+      if (req.actor.source === "local_implicit") {
+        const candidate = await issueThreadInteractionService(db).getById(interactionId);
+        if (candidate && candidate.issueId === issue.id && candidate.kind === "request_confirmation") {
+          res.status(403).json({
+            error: "request_confirmation interactions require an authenticated board user. Please claim the board and authenticate with a board API key before confirming.",
+          });
+          return;
+        }
+      }
 
       const actor = getActorInfo(req);
       const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
@@ -5149,6 +5187,17 @@ export function issueRoutes(
       }
       assertCompanyAccess(req, issue.companyId);
       assertBoard(req);
+
+      // Same guard as accept: local_implicit cannot prove human intent for request_confirmation.
+      if (req.actor.source === "local_implicit") {
+        const candidate = await issueThreadInteractionService(db).getById(interactionId);
+        if (candidate && candidate.issueId === issue.id && candidate.kind === "request_confirmation") {
+          res.status(403).json({
+            error: "request_confirmation interactions require an authenticated board user. Please claim the board and authenticate with a board API key before declining.",
+          });
+          return;
+        }
+      }
 
       const actor = getActorInfo(req);
       const interaction = await issueThreadInteractionService(db).rejectInteraction(issue, interactionId, req.body, {

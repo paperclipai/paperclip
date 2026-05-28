@@ -12,6 +12,7 @@ const mockIssueService = vi.hoisted(() => ({
 const mockInteractionService = vi.hoisted(() => ({
   listForIssue: vi.fn(),
   create: vi.fn(),
+  getById: vi.fn(async () => null),
   acceptInteraction: vi.fn(),
   acceptSuggestedTasks: vi.fn(),
   rejectInteraction: vi.fn(),

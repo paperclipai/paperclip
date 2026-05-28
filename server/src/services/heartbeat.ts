@@ -172,6 +172,7 @@ import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { autoResolveSatisfactionExpressionInteractions } from "./issue-thread-interactions.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -206,6 +207,7 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const AGENT_ONLY_STALE_COMMENT_WAKE_SUPPRESSION_THRESHOLD = 3;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -6039,6 +6041,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
         return null;
       }
+
+      // Pre-dispatch: auto-resolve any pending request_confirmation interactions whose
+      // satisfactionExpression is already satisfied. This runs before the agent is woken
+      // so no heartbeat budget is consumed for the evaluation itself.
+      const autoResolved = await autoResolveSatisfactionExpressionInteractions(db, {
+        id: issueId,
+        companyId: run.companyId,
+      });
+      if (autoResolved.length > 0) {
+        logger.info(
+          { runId: run.id, issueId, count: autoResolved.length },
+          "claimQueuedRun: auto-resolved stop-condition confirmations",
+        );
+      }
     }
 
     const claimedAt = new Date();
@@ -8950,6 +8966,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             id: issues.id,
             companyId: issues.companyId,
             status: issues.status,
+            updatedAt: issues.updatedAt,
             assigneeAgentId: issues.assigneeAgentId,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
@@ -8973,6 +8990,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             finishedAt: new Date(),
           });
           return { kind: "skipped" as const };
+        }
+
+        const shouldSuppressAgentOnlyStaleCommentWake =
+          reason === "issue_commented" &&
+          source === "automation" &&
+          opts.requestedByActorType === "agent";
+        if (shouldSuppressAgentOnlyStaleCommentWake) {
+          const recentComments = await tx
+            .select({
+              authorType: issueComments.authorType,
+              createdAt: issueComments.createdAt,
+            })
+            .from(issueComments)
+            .where(eq(issueComments.issueId, issue.id))
+            .orderBy(desc(issueComments.createdAt))
+            .limit(AGENT_ONLY_STALE_COMMENT_WAKE_SUPPRESSION_THRESHOLD);
+
+          const hasAgentOnlyBurst =
+            recentComments.length >= AGENT_ONLY_STALE_COMMENT_WAKE_SUPPRESSION_THRESHOLD &&
+            recentComments.every((comment) => comment.authorType === "agent");
+          const latestAgentCommentAt = recentComments[0]?.createdAt ?? null;
+          const issueUnchangedSinceLatestAgentComment =
+            Boolean(latestAgentCommentAt) &&
+            issue.updatedAt.getTime() <= latestAgentCommentAt.getTime();
+
+          if (hasAgentOnlyBurst && issueUnchangedSinceLatestAgentComment) {
+            await tx.insert(agentWakeupRequests).values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "issue_agent_only_comment_suppressed",
+              payload: {
+                ...(payload ?? {}),
+                issueId: issue.id,
+                suppression: {
+                  consecutiveAgentCommentCount: recentComments.length,
+                  issueUpdatedAt: issue.updatedAt.toISOString(),
+                  latestAgentCommentAt: latestAgentCommentAt?.toISOString() ?? null,
+                },
+              },
+              status: "skipped",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              finishedAt: new Date(),
+            });
+            return { kind: "skipped" as const };
+          }
         }
 
         const cancelStaleScheduledRetry = async (scheduledRun: typeof heartbeatRuns.$inferSelect) => {
