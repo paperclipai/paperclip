@@ -58,10 +58,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Install Playwright browser
-        run: |
-          pnpm exec playwright install-deps chromium
-          pnpm exec playwright install chromium
+      - name: Verify system Chrome
+        run: google-chrome --version
 
       - name: Launch Docker smoke harness
         run: |

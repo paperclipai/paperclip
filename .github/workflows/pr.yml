@@ -273,10 +273,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Playwright
-        run: |
-          pnpm exec playwright install-deps chromium
-          pnpm exec playwright install chromium
+      - name: Verify system Chrome
+        run: google-chrome --version
 
       - name: Generate Paperclip config
         run: |

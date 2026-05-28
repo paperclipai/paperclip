@@ -29,9 +29,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - run: |
-          pnpm exec playwright install-deps chromium
-          pnpm exec playwright install chromium
+      - run: google-chrome --version
 
       - name: Run e2e tests
         run: pnpm run test:e2e
