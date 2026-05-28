@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
@@ -27,19 +27,28 @@ function isRunActive(status: string): boolean {
 export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
   const queryClient = useQueryClient();
   const [cancellingRunIds, setCancellingRunIds] = useState(new Set<string>());
+  const [pollMs, setPollMs] = useState(15_000);
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") return;
+      setPollMs(30_000);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
 
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
     enabled: !!issueId,
-    refetchInterval: 3000,
+    refetchInterval: () => (document.visibilityState === "visible" ? pollMs : false),
   });
 
   const { data: activeRun } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueId),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
     enabled: !!issueId,
-    refetchInterval: 3000,
+    refetchInterval: () => (document.visibilityState === "visible" ? pollMs : false),
   });
 
   const runs = useMemo(() => {
@@ -69,7 +78,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
     );
   }, [activeRun, issueId, liveRuns]);
 
-  const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({ runs, companyId });
+  const { transcriptByRun, hasOutputForRun, isLogUnavailable } = useLiveRunTranscripts({ runs, companyId });
 
   const handleCancelRun = async (runId: string) => {
     setCancellingRunIds((prev) => new Set(prev).add(runId));
@@ -144,12 +153,16 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
               </div>
 
               <div className="max-h-[320px] overflow-y-auto pr-1">
-                <RunChatSurface
-                  run={run}
-                  transcript={transcript}
-                  hasOutput={hasOutputForRun(run.id)}
-                  companyId={companyId}
-                />
+                {isLogUnavailable(run.id) ? (
+                  <p className="text-xs text-muted-foreground">Not available</p>
+                ) : (
+                  <RunChatSurface
+                    run={run}
+                    transcript={transcript}
+                    hasOutput={hasOutputForRun(run.id)}
+                    companyId={companyId}
+                  />
+                )}
               </div>
             </section>
           );

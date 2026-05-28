@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TranscriptEntry } from "../../adapters";
 import { MarkdownBody } from "../MarkdownBody";
 import { cn, formatTokens } from "../../lib/utils";
@@ -16,6 +16,8 @@ import {
 export type TranscriptMode = "nice" | "raw";
 export type TranscriptDensity = "comfortable" | "compact";
 
+const LOAD_MORE_STEP = 50;
+
 const RAW_VIRTUALIZATION_THRESHOLD = 300;
 const RAW_OVERSCAN_ROWS = 40;
 const RAW_ESTIMATED_ROW_HEIGHT = 36;
@@ -26,6 +28,8 @@ interface RunTranscriptViewProps {
   mode?: TranscriptMode;
   density?: TranscriptDensity;
   limit?: number;
+  /** Initial number of blocks to display. A "Show more" button appears when there are additional blocks. */
+  initialDisplayLimit?: number;
   streaming?: boolean;
   collapseStdout?: boolean;
   emptyMessage?: string;
@@ -1468,6 +1472,7 @@ export function RunTranscriptView({
   mode = "nice",
   density = "comfortable",
   limit,
+  initialDisplayLimit,
   streaming = false,
   collapseStdout = false,
   emptyMessage = "No transcript yet.",
@@ -1478,8 +1483,29 @@ export function RunTranscriptView({
     () => (mode === "raw" ? [] : normalizeTranscript(entries, streaming)),
     [entries, mode, streaming],
   );
-  const visibleBlocks = limit ? blocks.slice(-limit) : blocks;
-  const visibleEntries = limit ? entries.slice(-limit) : entries;
+  const limitedBlocks = limit ? blocks.slice(-limit) : blocks;
+  const limitedEntries = limit ? entries.slice(-limit) : entries;
+
+  const [displayCount, setDisplayCount] = useState(() =>
+    initialDisplayLimit !== undefined ? initialDisplayLimit : undefined,
+  );
+  useEffect(() => {
+    if (initialDisplayLimit !== undefined) {
+      setDisplayCount(initialDisplayLimit);
+    }
+  // Reset to initial limit only when the initialDisplayLimit prop itself changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialDisplayLimit]);
+
+  const showMoreBlocks = useCallback(() => {
+    setDisplayCount((prev) =>
+      prev !== undefined ? prev + LOAD_MORE_STEP : undefined,
+    );
+  }, []);
+
+  const visibleBlocks = displayCount !== undefined ? limitedBlocks.slice(0, displayCount) : limitedBlocks;
+  const visibleEntries = displayCount !== undefined ? limitedEntries.slice(0, displayCount) : limitedEntries;
+  const hiddenCount = limitedBlocks.length - visibleBlocks.length;
 
   if (entries.length === 0) {
     return (
@@ -1492,6 +1518,17 @@ export function RunTranscriptView({
   if (mode === "raw") {
     return (
       <div className={className}>
+        {hiddenCount > 0 && (
+          <div className="mb-3">
+            <button
+              type="button"
+              onClick={showMoreBlocks}
+              className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            >
+              Show {Math.min(LOAD_MORE_STEP, hiddenCount)} more ({hiddenCount} hidden)
+            </button>
+          </div>
+        )}
         <RawTranscriptView entries={visibleEntries} density={density} />
       </div>
     );
@@ -1499,6 +1536,17 @@ export function RunTranscriptView({
 
   return (
     <div className={cn("space-y-3", className)}>
+      {hiddenCount > 0 && (
+        <div>
+          <button
+            type="button"
+            onClick={showMoreBlocks}
+            className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          >
+            Show {Math.min(LOAD_MORE_STEP, hiddenCount)} more ({hiddenCount} hidden)
+          </button>
+        </div>
+      )}
       {visibleBlocks.map((block, index) => (
         <div
           key={`${block.type}-${block.ts}-${index}`}
