@@ -337,7 +337,8 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listProductivityReviews(seeded.companyId)).toHaveLength(4);
   });
 
-  it("creates a long-active review without enabling a continuation hold", async () => {
+  it("does not create a review when only longActive is true (long_active_duration removed)", async () => {
+    // LAM-295: long_active_duration trigger removed per board directive 2026-05-09.
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue({
       status: "in_progress",
@@ -346,18 +347,10 @@ describeEmbeddedPostgres("productivity review service", () => {
     const service = productivityReviewService(db);
 
     const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
-    const hold = await service.isProductivityReviewContinuationHoldActive({
-      companyId: seeded.companyId,
-      issueId: seeded.issueId,
-      agentId: seeded.coderId,
-      now,
-    });
 
-    expect(result.created).toBe(1);
-    const [review] = await listProductivityReviews(seeded.companyId);
-    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
-    expect(review?.priority).toBe("medium");
-    expect(hold.held).toBe(false);
+    expect(result.created).toBe(0);
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews).toHaveLength(0);
   });
 
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {
