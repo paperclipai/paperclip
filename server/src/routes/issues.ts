@@ -622,11 +622,20 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  // FUL-3307: When true (e.g. PATCH reassigns to a new agent alongside the comment),
+  // done/cancelled issues may still be implicitly reopened. Without this, a plain
+  // user comment on a done issue does NOT reopen it — explicit reopen: true is required.
+  hasStructuralChange?: boolean;
 }) {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
   if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  // FUL-3307: Terminal done/cancelled issues must remain stable under plain user comments.
+  // They are only implicitly reopened when the same request also carries a structural change
+  // (e.g. reassigning to a different agent), which signals clear intent to resume the work.
+  // Pure commenting requires the caller to pass reopen: true explicitly.
+  if (isClosedIssueStatus(input.issueStatus) && !input.hasStructuralChange) return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -2249,6 +2258,7 @@ export function issueRoutes(
       relations,
       recoveryActionsByRelationIssue,
     );
+    const blockedByIssueIds = relationsWithRecoveryActions.blockedBy.map((relation) => relation.id);
     const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
       issue,
       trigger: "read_projection",
@@ -2264,6 +2274,7 @@ export function issueRoutes(
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json({
       ...issue,
+      blockedByIssueIds,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
       ...(blockerAttention ? { blockerAttention } : {}),
@@ -3798,6 +3809,11 @@ export function issueRoutes(
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
+    // FUL-3307: reassigning to a *different* agent alongside a comment is a structural change
+    // that signals clear intent to resume, so the implicit reopen is still allowed in that case.
+    const isAssigneeChangingToNewAgent =
+      typeof normalizedAssigneeAgentId === "string" &&
+      normalizedAssigneeAgentId !== existing.assigneeAgentId;
     const recoveryRelevantSourceMutationRequested =
       req.body.status !== undefined ||
       normalizedAssigneeAgentId !== undefined ||
@@ -3840,6 +3856,7 @@ export function issueRoutes(
           assigneeAgentId: requestedAssigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
+          hasStructuralChange: isAssigneeChangingToNewAgent,
         })) ||
       shouldResumeInProgressScheduledRetry;
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
@@ -4596,7 +4613,11 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        // Also suppress wake if the PATCH itself set the issue to a terminal state (e.g.,
+        // in_progress → done). isClosed is based on the pre-update status, so it would be
+        // false in that transition, incorrectly allowing the comment wake to fire.
+        const isNowClosed = isClosedIssueStatus(issue.status);
+        const skipAssigneeCommentWake = selfComment || isClosed || isNowClosed;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
@@ -4996,7 +5017,30 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (req.actor.type === "agent") {
-      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const actorAgentId = req.actor.agentId;
+      if (actorAgentId && issue.assigneeAgentId !== null && issue.assigneeAgentId !== actorAgentId) {
+        const actorAgent = await agentsSvc.getById(actorAgentId);
+        if (actorAgent?.isRouter && actorAgent.permissions?.canCreateInteractions) {
+          // Router agent with explicit canCreateInteractions permission may create
+          // interactions on issues it doesn't own without the routing-fields body check.
+          const actor = getActorInfo(req);
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.router_agent_interaction_create",
+            entityType: "issue",
+            entityId: issue.id,
+            details: { routerAgentId: actorAgentId, assigneeAgentId: issue.assigneeAgentId },
+          });
+        } else {
+          if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+        }
+      } else {
+        if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      }
     } else {
       assertBoard(req);
     }
@@ -5046,6 +5090,19 @@ export function issueRoutes(
       }
       assertCompanyAccess(req, issue.companyId);
       assertBoard(req);
+
+      // In local_trusted mode every unauthenticated request is attributed to local-board
+      // (source: local_implicit). assertBoard() passes, but we cannot verify explicit human
+      // intent. Require board authentication (board claim + board API key) for confirmations.
+      if (req.actor.source === "local_implicit") {
+        const candidate = await issueThreadInteractionService(db).getById(interactionId);
+        if (candidate && candidate.issueId === issue.id && candidate.kind === "request_confirmation") {
+          res.status(403).json({
+            error: "request_confirmation interactions require an authenticated board user. Please claim the board and authenticate with a board API key before confirming.",
+          });
+          return;
+        }
+      }
 
       const actor = getActorInfo(req);
       const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
@@ -5149,6 +5206,17 @@ export function issueRoutes(
       }
       assertCompanyAccess(req, issue.companyId);
       assertBoard(req);
+
+      // Same guard as accept: local_implicit cannot prove human intent for request_confirmation.
+      if (req.actor.source === "local_implicit") {
+        const candidate = await issueThreadInteractionService(db).getById(interactionId);
+        if (candidate && candidate.issueId === issue.id && candidate.kind === "request_confirmation") {
+          res.status(403).json({
+            error: "request_confirmation interactions require an authenticated board user. Please claim the board and authenticate with a board API key before declining.",
+          });
+          return;
+        }
+      }
 
       const actor = getActorInfo(req);
       const interaction = await issueThreadInteractionService(db).rejectInteraction(issue, interactionId, req.body, {
@@ -5503,11 +5571,14 @@ export function issueRoutes(
       scheduledRetryForHumanComment.agentId === issue.assigneeAgentId;
     const effectiveMoveToTodoRequested =
       explicitMoveToTodoRequested ||
+      // FUL-3307: plain comments never carry a structural change (no assignee/status update),
+      // so done/cancelled issues are not implicitly reopened. Use reopen: true explicitly.
       shouldImplicitlyMoveCommentedIssueToTodo({
         issueStatus: issue.status,
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
         actorId: actor.actorId,
+        hasStructuralChange: false,
       }) ||
       shouldResumeInProgressScheduledRetry;
     const hasUnresolvedFirstClassBlockers =
