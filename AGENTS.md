@@ -176,6 +176,20 @@ A change is done when all are true:
 4. Docs updated when behavior or commands change
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
 
+## 12. Protected Infra Files — DO NOT DELETE OR MODIFY
+
+The following files in the repo root are **CTO adapter infrastructure**, not application code or scratchpad files. They must **never** be deleted, renamed, moved to `.gitignore`, or included in cleanup/scratchpad commits:
+
+| File | Role |
+|---|---|
+| `pf_wrapper.py` | opencode_local adapter entrypoint — called directly by the Paperclip runner |
+| `pf_wrapper.sh` | Shell shim: `exec /usr/bin/python3 pf_wrapper.py "$@"` |
+| `mini_runner.py` | mini-swe-agent task runner, invoked by pf_wrapper.py |
+| `mini_textbased.yaml` | Agent config with `system_template` / `instance_template` required by AgentConfig |
+| `AGENTS.md` | This file — agent instructions for the repo |
+
+These are listed in `PROTECTED_PATHS` inside `pf_wrapper.py`. Deleting any of them breaks the adapter and blocks all subsequent CTO runs. If you see them as untracked or staged for deletion, **do not commit the deletion** — restore them with `git checkout <last-good-commit> -- <file>`.
+
 ## 11. Fork-Specific: HenkDz/paperclip
 
 This is a fork of `paperclipai/paperclip` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/paperclip/tree/feat/externalize-hermes-adapter)).
