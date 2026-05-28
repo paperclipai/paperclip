@@ -400,6 +400,7 @@ function routineUsesWorkspaceBranch(routine: typeof routines.$inferSelect) {
 
 function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSnapshotV1["routine"] {
   return {
+    labelIds: routine.executionLabelIds ?? [],
     id: routine.id,
     companyId: routine.companyId,
     projectId: routine.projectId,
@@ -2112,7 +2113,7 @@ export function routineService(
           { db: tx },
         );
         return {
-          routine: appended.routine,
+          routine: { ...appended.routine, labelIds: appended.routine.executionLabelIds ?? [] },
           revision: appended.revision,
           restoredFromRevisionId: targetRevision.id,
           restoredFromRevisionNumber: targetRevision.revisionNumber,
