@@ -9078,6 +9078,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           activeExecutionRun = null;
         }
 
+        if (
+          activeExecutionRun &&
+          (issue.assigneeAgentId == null || activeExecutionRun.agentId !== issue.assigneeAgentId)
+        ) {
+          activeExecutionRun = null;
+        }
+
         if (!activeExecutionRun && issue.executionRunId) {
           await tx
             .update(issues)
@@ -9090,13 +9097,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .where(eq(issues.id, issue.id));
         }
 
-        if (!activeExecutionRun) {
+        if (!activeExecutionRun && issue.assigneeAgentId) {
           const legacyRun = await tx
             .select()
             .from(heartbeatRuns)
             .where(
               and(
                 eq(heartbeatRuns.companyId, issue.companyId),
+                eq(heartbeatRuns.agentId, issue.assigneeAgentId),
                 inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
                 sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
               ),
@@ -9631,6 +9639,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
+  async function cancelOrphanedIssueRuns(
+    issueId: string,
+    previousAssigneeAgentId: string,
+    companyId: string,
+  ): Promise<number> {
+    const orphaned = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, previousAssigneeAgentId),
+          inArray(heartbeatRuns.status, ["queued", "running"]),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      );
+    let cancelled = 0;
+    for (const run of orphaned) {
+      await cancelRunInternal(run.id, "Cancelled: issue reassigned to another agent").catch(() => undefined);
+      cancelled += 1;
+    }
+    return cancelled;
+  }
+
   async function cancelActiveForAgentInternal(agentId: string, reason = "Cancelled due to agent pause") {
     const agent = await getAgent(agentId);
     const runs = await db
@@ -10014,6 +10046,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     cancelRun: (runId: string) => cancelRunInternal(runId),
+
+    cancelOrphanedIssueRuns,
 
     cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
 
