@@ -810,7 +810,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
                 externalEventId: "reply-1",
                 externalThreadId: "thread-1",
                 externalMessageId: "message-1",
-                body: "Please revise the summary first.",
+                body: "Change please revise the summary first.",
                 metadata: { clickupReplyId: "reply-1" },
               },
             ],
@@ -855,7 +855,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
           externalEventId: "reply-1",
           externalThreadId: "thread-1",
           externalMessageId: "message-1",
-          body: "Please revise the summary first.",
+          body: "Change please revise the summary first.",
           metadata: { clickupReplyId: "reply-1" },
         },
       ],
@@ -905,7 +905,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toBe("Clickup reply received:\n\nPlease revise the summary first.");
+    expect(comments[0]?.body).toBe("Clickup reply received:\n\nChange please revise the summary first.");
 
     const events = await db.select().from(awaitingHumanBridgeInboundEvents).where(
       eq(awaitingHumanBridgeInboundEvents.interactionId, seeded.interactionId),
@@ -973,8 +973,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       payload: expect.objectContaining({
         issueId: seeded.issueId,
         interactionId: seeded.interactionId,
-        interactionStatus: "rejected",
-        mutation: "interaction",
+        mutation: "comment",
       }),
     }));
 
@@ -1742,7 +1741,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
               externalEventId: "reject-1",
               externalThreadId: "thread-1",
               externalMessageId: "message-1",
-              body: "Please revise the plan.",
+              body: "Change please revise the plan.",
               metadata: { clickupReplyId: "reject-1" },
               receivedAt: new Date("2026-05-22T00:02:00.000Z"),
             },
@@ -3084,7 +3083,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
               externalEventId: "reply-1",
               externalThreadId: "thread-1",
               externalMessageId: "message-42",
-              body: "Please fix the title first.",
+              body: "Change please fix the title first.",
               metadata: { clickupReplyId: "reply-1" },
             },
           ],
@@ -3121,6 +3120,10 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       approvedIssueIds: [],
       approvedInteractionIds: [],
     });
+
+    const [interaction] = await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, seeded.interactionId));
+    expect(interaction?.status).toBe("rejected");
 
     const rows = await db.select().from(awaitingHumanBridges)
       .where(eq(awaitingHumanBridges.interactionId, seeded.interactionId));
@@ -3161,7 +3164,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
                 externalEventId: "reply-2",
                 externalThreadId: "thread-2",
                 externalMessageId: "message-2",
-                body: "Second candidate still worked.",
+                body: "Reject",
               },
             ],
           };
@@ -3215,7 +3218,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     const secondComments = await db.select().from(issueComments).where(eq(issueComments.issueId, second.issueId));
     expect(secondComments).toHaveLength(1);
-    expect(secondComments[0]?.body).toContain("Second candidate still worked.");
+    expect(secondComments[0]?.body).toContain("Reject");
     expect(warnSpy).toHaveBeenCalledWith(expect.objectContaining({
       companyId: first.companyId,
       issueId: first.issueId,

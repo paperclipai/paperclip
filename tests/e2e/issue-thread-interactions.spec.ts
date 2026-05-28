@@ -81,26 +81,27 @@ test.describe("issue thread interactions", () => {
 
   test("decline flow completes without freezing", async ({ page }) => {
     await page.goto(`/${ctx.companyPrefix}/issues/${ctx.issueIdentifier}`);
-    await expect(page.getByText("Approve the plan?")).toBeVisible({ timeout: 15_000 });
+    const confirmationCard = page.locator("div").filter({ hasText: "Approve the plan?" }).first();
+    await expect(confirmationCard).toBeVisible({ timeout: 15_000 });
 
-    const declineButtons = page.getByRole("button", { name: "Decline" });
-    await expect(declineButtons.first()).toBeVisible();
-    await declineButtons.first().click({ force: true });
+    await confirmationCard.getByRole("button", { name: "Decline", exact: true }).first().click();
 
-    const textarea = page.locator("textarea");
-    await expect(textarea).toBeVisible({ timeout: 10_000 });
-    await textarea.fill("Needs a smaller phase split.");
+    const declineReason = confirmationCard.getByPlaceholder("Explain what needs to change.");
+    await expect(declineReason).toBeVisible({ timeout: 10_000 });
+    await declineReason.fill("Needs a smaller phase split.");
 
-    const rejectResponse = page.waitForResponse((response) =>
-      response.request().method() === "POST"
-      && response.url().includes(`/api/issues/${ctx.issueId}/interactions/${ctx.interactionId}/reject`)
-      && response.status() === 200,
-    );
+    await confirmationCard.getByRole("button", { name: "Decline", exact: true }).nth(1).click();
 
-    await declineButtons.last().click({ force: true });
-    await rejectResponse;
+    const jumpToLatest = page.getByRole("button", { name: "Jump to latest" });
+    if (await jumpToLatest.isVisible().catch(() => false)) {
+      await jumpToLatest.click();
+    }
 
-    await expect(textarea).toHaveCount(0);
+    const declinedState = page.getByText("Declined", { exact: true });
+    await declinedState.scrollIntoViewIfNeeded();
+    await expect(declinedState).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("Needs a smaller phase split.")).toBeVisible({ timeout: 15_000 });
+    await expect(declineReason).toHaveCount(0);
     await expect(page.getByText("Request declined")).toBeVisible({ timeout: 15_000 });
   });
 });
