@@ -20,6 +20,10 @@ describe("redaction", () => {
           value: "sk-plain",
         },
         PAPERCLIP_API_URL: "http://localhost:3100",
+        MODEL_NAME: {
+          type: "plain",
+          value: "gpt-4",
+        },
       },
     };
 
@@ -41,6 +45,10 @@ describe("redaction", () => {
         value: REDACTED_EVENT_VALUE,
       },
       PAPERCLIP_API_URL: "http://localhost:3100",
+      MODEL_NAME: {
+        type: "plain",
+        value: REDACTED_EVENT_VALUE,
+      },
     });
   });
 
