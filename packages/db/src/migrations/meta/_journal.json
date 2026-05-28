@@ -659,6 +659,13 @@
       "when": 1748530800000,
       "tag": "0093_agent_last_run_error",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1748491200000,
+      "tag": "0094_cost_events_shadow_cost",
+      "breakpoints": true
     }
   ]
 }
