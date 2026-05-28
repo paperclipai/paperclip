@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { JsonSchemaForm } from "./JsonSchemaForm";
+import { JsonSchemaForm, getDefaultValues } from "./JsonSchemaForm";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -348,6 +348,31 @@ describe("JsonSchemaForm secret-ref rendering", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("omits optional scalar fields from getDefaultValues so empty inputs aren't submitted as 0/''", () => {
+    const defaults = getDefaultValues({
+      type: "object",
+      properties: {
+        apiKey: { type: "string", format: "secret-ref" },
+        sshPort: { type: "number", default: 22 },
+        cpu: { type: "number" },
+        memory: { type: "string" },
+        reuseLease: { type: "boolean", default: false },
+        tags: { type: "array", items: { type: "string" } },
+      },
+    });
+
+    // Fields with explicit defaults round-trip.
+    expect(defaults.sshPort).toBe(22);
+    expect(defaults.reuseLease).toBe(false);
+    expect(defaults.tags).toEqual([]);
+
+    // Optional scalars without explicit defaults stay out of the payload so
+    // the server doesn't see e.g. `cpu: 0` and reject the submission.
+    expect("apiKey" in defaults).toBe(false);
+    expect("cpu" in defaults).toBe(false);
+    expect("memory" in defaults).toBe(false);
   });
 
   it("keeps the password fallback for short raw values", async () => {

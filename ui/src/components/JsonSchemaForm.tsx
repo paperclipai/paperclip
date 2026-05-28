@@ -134,7 +134,14 @@ export function labelFromKey(key: string, schema: JsonSchemaNode): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Produce a sensible default value for a schema node. */
+/**
+ * Produce a sensible default value for a schema node.
+ *
+ * Optional scalar fields (string, number, integer, secret-ref) without an
+ * explicit `default` return `undefined` so they stay out of the submitted
+ * payload — otherwise an empty field would round-trip as `""` or `0` and
+ * trip server-side "X must be greater than 0 when provided" style validators.
+ */
 export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
   if (schema.default !== undefined) return schema.default;
 
@@ -142,10 +149,9 @@ export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
   switch (type) {
     case "string":
     case "secret-ref":
-      return "";
     case "number":
     case "integer":
-      return schema.minimum ?? 0;
+      return undefined;
     case "boolean":
       return false;
     case "enum":
@@ -156,12 +162,13 @@ export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
       if (!schema.properties) return {};
       const obj: Record<string, unknown> = {};
       for (const [key, propSchema] of Object.entries(schema.properties)) {
-        obj[key] = getDefaultForSchema(propSchema);
+        const def = getDefaultForSchema(propSchema);
+        if (def !== undefined) obj[key] = def;
       }
       return obj;
     }
     default:
-      return "";
+      return undefined;
   }
 }
 
