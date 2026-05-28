@@ -201,6 +201,9 @@ export const ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES = [
 export type IssueThreadInteractionContinuationPolicy =
   (typeof ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES)[number];
 
+export const AGENT_DECLARABLE_ORIGIN_KINDS = ["health_check", "rollcall_probe"] as const;
+export type AgentDeclarableOriginKind = (typeof AGENT_DECLARABLE_ORIGIN_KINDS)[number];
+
 export const ISSUE_ORIGIN_KINDS = [
   "manual",
   "routine_execution",
@@ -208,10 +211,19 @@ export const ISSUE_ORIGIN_KINDS = [
   "harness_liveness_escalation",
   "issue_productivity_review",
   "stranded_issue_recovery",
+  ...AGENT_DECLARABLE_ORIGIN_KINDS,
 ] as const;
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;
-export type IssueOriginKind = BuiltInIssueOriginKind | PluginIssueOriginKind;
+export type SkillIssueOriginKind = `skill:${string}`;
+export type IntentIssueOriginKind = `intent:${string}`;
+
+export type IssueOriginKind =
+  | BuiltInIssueOriginKind
+  | PluginIssueOriginKind
+  | SkillIssueOriginKind
+  | IntentIssueOriginKind;
+
 export const ISSUE_SURFACE_VISIBILITIES = ["default", "plugin_operation"] as const;
 export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number];
 

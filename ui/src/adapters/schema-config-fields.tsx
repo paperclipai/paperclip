@@ -147,8 +147,15 @@ function ComboboxField({
             if (!open) setOpen(true);
           }}
           onBlur={() => {
-            // Delay close to allow click on option to register
-            setTimeout(() => setOpen(false), 150);
+            // Delay close to allow click on option to register first.
+            // Always commit a non-empty typed value on blur so paste + click-away
+            // works without pressing Enter, even when the list has partial matches.
+            setTimeout(() => {
+              setOpen(false);
+              if (filter) {
+                select(filter);
+              }
+            }, 150);
           }}
           onKeyDown={handleKeyDown}
         />

@@ -44,7 +44,7 @@ import {
 } from "./agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { defaultCreateValues } from "./agent-config-defaults";
-import { getUIAdapter } from "../adapters";
+import { getUIAdapter, findUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
@@ -359,8 +359,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }),
     enabled: Boolean(selectedCompanyId),
   });
-  const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
-  const [refreshingModels, setRefreshingModels] = useState(false);
   const rawModels = fetchedModels ?? externalModels ?? [];
   const adapterCommandField =
     adapterType === "hermes_local" ? "hermesCommand" : "command";
@@ -393,6 +391,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   });
   const detectedModel = detectedModelData?.model ?? null;
   const detectedModelCandidates = detectedModelData?.candidates ?? [];
+  const detectedLightModel = detectedModelData?.lightModel ?? null;
 
   const { data: companyAgents = [] } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.agents.list(selectedCompanyId) : ["agents", "none", "list"],
@@ -518,22 +517,25 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     };
   }, [props.onTestFeedbackChange, testEnvironment.data, testEnvironment.error]);
 
-  // Current model for display
+  // Current (draft) model for display
   const currentModelId = isCreate
     ? val!.model
     : eff("adapterConfig", "model", String(config.model ?? ""));
 
-  async function handleRefreshModels() {
-    if (!selectedCompanyId) return;
-    setRefreshingModels(true);
-    setRefreshModelsError(null);
-    try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true });
-      queryClient.setQueryData(modelQueryKey, refreshed);
-    } catch (error) {
-      setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
-    } finally {
-      setRefreshingModels(false);
+  // Saved primary model — what is actually running
+  const savedModelId = isCreate ? "" : String(config.model ?? "");
+
+  function handleModelOpenChange(nextOpen: boolean) {
+    setModelOpen(nextOpen);
+    if (nextOpen && selectedCompanyId) {
+      void queryClient.invalidateQueries({ queryKey: modelQueryKey });
+    }
+  }
+
+  function handleCheapModelOpenChange(nextOpen: boolean) {
+    setCheapModelOpen(nextOpen);
+    if (nextOpen && selectedCompanyId) {
+      void queryClient.invalidateQueries({ queryKey: modelQueryKey });
     }
   }
 
@@ -592,6 +594,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       model: typeof cheapAdapterConfig.model === "string" ? cheapAdapterConfig.model : "",
     };
   }, [runtimeConfig]);
+  const savedCheapModelId = isCreate ? "" : cheapProfileFromAgent.model;
   const cheapOverlay = !isCreate ? overlay.modelProfiles?.cheap : undefined;
   const currentCheapEnabled = isCreate
     ? val!.cheapModelEnabled ?? false
@@ -986,14 +989,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               <ModelDropdown
                 models={models}
                 value={currentModelId}
+                savedModelId={savedModelId}
                 onChange={(v) =>
                   isCreate
                     ? set!({ model: v })
                     : mark("adapterConfig", "model", v || undefined)
                 }
                 open={modelOpen}
-                onOpenChange={setModelOpen}
+                onOpenChange={handleModelOpenChange}
                 allowDefault={adapterType !== "opencode_local"}
+                defaultLabel={adapterType !== "opencode_local" ? (models[0]?.label ?? undefined) : undefined}
+                defaultModelId={adapterType !== "opencode_local" ? (models[0]?.id ?? undefined) : undefined}
                 required={adapterType === "opencode_local"}
                 groupByProvider={adapterType === "opencode_local"}
                 creatable
@@ -1005,21 +1011,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       const result = await refetchDetectedModel();
                       return result.data?.model ?? null;
                     }}
-                onRefreshModels={
-                  adapterType === "codex_local" || adapterType === "acpx_local"
-                    ? handleRefreshModels
-                    : undefined
-                }
-                refreshingModels={refreshingModels}
                 detectModelLabel="Detect model"
                 emptyDetectHint="No model detected. Select or enter one manually."
               />
-              {(refreshModelsError || fetchedModelsError) && (
+              {fetchedModelsError && (
                 <p className="text-xs text-destructive">
-                  {refreshModelsError
-                    ?? (fetchedModelsError instanceof Error
-                      ? fetchedModelsError.message
-                      : "Failed to load adapter models.")}
+                  {fetchedModelsError instanceof Error
+                    ? fetchedModelsError.message
+                    : "Failed to load adapter models."}
                 </p>
               )}
               {adapterType === "opencode_local"
@@ -1034,13 +1033,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 <CheapModelSection
                   enabled={currentCheapEnabled}
                   model={currentCheapModel}
+                  savedModel={savedCheapModelId}
+                  detectedModel={detectedLightModel}
                   models={models}
                   adapterType={adapterType}
                   adapterDefaultModel={adapterCheapDefaultModel}
                   onEnabledChange={setCheapEnabled}
                   onModelChange={setCheapModel}
                   open={cheapModelOpen}
-                  onOpenChange={setCheapModelOpen}
+                  onOpenChange={handleCheapModelOpenChange}
                 />
               )}
 
@@ -1346,10 +1347,7 @@ function AdapterTypeDropdown({
   const [open, setOpen] = useState(false);
   const selectedDisplay = getAdapterDisplay(value);
   const adapterList = useMemo(
-    () =>
-      listAdapterOptions((type) => adapterLabels[type] ?? getAdapterLabel(type)).filter(
-        (item) => !disabledTypes.has(item.value),
-      ),
+    () => listAdapterOptions().filter((item) => !disabledTypes.has(item.value)),
     [disabledTypes],
   );
 
@@ -1359,7 +1357,7 @@ function AdapterTypeDropdown({
         <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
           <span className="inline-flex min-w-0 items-center gap-1.5">
             {value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
-            <span className="truncate">{adapterLabels[value] ?? getAdapterLabel(value)}</span>
+            <span className="truncate">{adapterLabels[value] ?? findUIAdapter(value)?.label ?? getAdapterLabel(value)}</span>
             {selectedDisplay.experimental && <ExperimentalBadge />}
           </span>
           <ChevronDown className="h-3 w-3 text-muted-foreground" />
@@ -1407,9 +1405,69 @@ function ExperimentalBadge() {
   );
 }
 
+function parseModelLabel(label: string): { name: string; tags: string[] } {
+  const match = label.match(/^(.*?)\s*\[([^\]]+)\]$/);
+  if (match) {
+    return { name: match[1].trim(), tags: match[2].split(",").map((t) => t.trim()).filter(Boolean) };
+  }
+  return { name: label, tags: [] };
+}
+
+const CONTEXTUAL_TAGS = new Set(["default", "environment", "current", "custom", "config"]);
+const CONTEXTUAL_TAG_CLASS = "bg-muted/60 text-muted-foreground border-border";
+
+const CAPABILITY_TAG_COLORS: Record<string, string> = {
+  free: "bg-green-500/15 text-green-400 border-green-500/20",
+  thinking: "bg-purple-500/15 text-purple-400 border-purple-500/20",
+  vision: "bg-blue-500/15 text-blue-400 border-blue-500/20",
+  structured: "bg-orange-500/15 text-orange-400 border-orange-500/20",
+  "parallel-tools": "bg-cyan-500/15 text-cyan-400 border-cyan-500/20",
+};
+function ModelTag({ tag }: { tag: string }) {
+  const cls = CONTEXTUAL_TAGS.has(tag)
+    ? CONTEXTUAL_TAG_CLASS
+    : (CAPABILITY_TAG_COLORS[tag] ?? "bg-muted/60 text-muted-foreground border-border");
+  return (
+    <span className={`shrink-0 text-[9px] font-medium px-1.5 py-0.5 rounded-full border ${cls}`}>
+      {tag}
+    </span>
+  );
+}
+function ModelIdLabel({ id, label }: { id: string; label?: string }) {
+  const { name } = parseModelLabel(label ?? id);
+  const displayName = name !== id ? name : null;
+  return (
+    <span className="flex items-center min-w-0 overflow-hidden flex-1">
+      <span className="font-mono text-xs text-muted-foreground shrink-0">{displayName ? `${id}:` : id}</span>
+      {displayName && <span className="text-sm text-foreground ml-1 shrink-0 truncate">{displayName}</span>}
+    </span>
+  );
+}
+function ModelTags({ label, extra }: { label?: string; extra?: string[] }) {
+  const { tags } = parseModelLabel(label ?? "");
+  // Capability tags from the label first, contextual extra tags always rightmost
+  const capabilityTags = tags.filter((t) => !CONTEXTUAL_TAGS.has(t));
+  const contextualTags = (extra ?? []).filter((t) => CONTEXTUAL_TAGS.has(t));
+  const all = [...capabilityTags, ...contextualTags];
+  if (all.length === 0) return null;
+  return (
+    <span className="flex items-center gap-1 shrink-0 ml-auto">
+      {all.map((t) => <ModelTag key={t} tag={t} />)}
+    </span>
+  );
+}
+
+function modelMatchesSearch(id: string, label: string | undefined, search: string): boolean {
+  if (!search) return true;
+  const q = search.toLowerCase();
+  const { name, tags } = parseModelLabel(label ?? id);
+  return id.toLowerCase().includes(q) || name.toLowerCase().includes(q) || tags.some((t) => t.includes(q));
+}
+
 function ModelDropdown({
   models,
   value,
+  savedModelId,
   onChange,
   open,
   onOpenChange,
@@ -1420,14 +1478,14 @@ function ModelDropdown({
   detectedModel,
   detectedModelCandidates,
   onDetectModel,
-  onRefreshModels,
-  refreshingModels,
   detectModelLabel,
   emptyDetectHint,
   defaultLabel,
+  defaultModelId,
 }: {
   models: AdapterModel[];
   value: string;
+  savedModelId?: string;
   onChange: (id: string) => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -1438,30 +1496,32 @@ function ModelDropdown({
   detectedModel?: string | null;
   detectedModelCandidates?: string[];
   onDetectModel?: () => Promise<string | null>;
-  onRefreshModels?: () => Promise<void>;
-  refreshingModels?: boolean;
   detectModelLabel?: string;
   emptyDetectHint?: string;
   defaultLabel?: string;
+  defaultModelId?: string;
 }) {
   const [modelSearch, setModelSearch] = useState("");
   const [detectingModel, setDetectingModel] = useState(false);
   const selected = models.find((m) => m.id === value);
+  const selectedParsed = selected ? parseModelLabel(selected.label) : null;
   const manualModel = modelSearch.trim();
   const canCreateManualModel = Boolean(
     creatable &&
       manualModel &&
       !models.some((m) => m.id.toLowerCase() === manualModel.toLowerCase()),
   );
-  // Model IDs already shown as detected/candidate badges — exclude from regular list
+  // Model IDs shown in special sections — exclude from the regular scrollable list
   const promotedModelIds = useMemo(() => {
     const set = new Set<string>();
+    if (savedModelId) set.add(savedModelId);
     if (detectedModel) set.add(detectedModel);
     for (const c of detectedModelCandidates ?? []) {
       if (c) set.add(c);
     }
+    if (defaultModelId) set.add(defaultModelId);
     return set;
-  }, [detectedModel, detectedModelCandidates]);
+  }, [savedModelId, detectedModel, detectedModelCandidates, defaultModelId]);
 
   const filteredModels = useMemo(() => {
     return models.filter((m) => {
@@ -1478,12 +1538,7 @@ function ModelDropdown({
   }, [models, modelSearch, promotedModelIds]);
   const groupedModels = useMemo(() => {
     if (!groupByProvider) {
-      return [
-        {
-          provider: "models",
-          entries: [...filteredModels].sort((a, b) => a.id.localeCompare(b.id)),
-        },
-      ];
+      return [{ provider: "models", entries: filteredModels }];
     }
     const map = new Map<string, AdapterModel[]>();
     for (const model of filteredModels) {
@@ -1499,6 +1554,24 @@ function ModelDropdown({
         entries: [...entries].sort((a, b) => a.id.localeCompare(b.id)),
       }));
   }, [filteredModels, groupByProvider]);
+
+  const searchTrimmed = modelSearch.trim();
+  const showDefault = allowDefault && (
+    defaultModelId
+      ? modelMatchesSearch(defaultModelId, models.find((m) => m.id === defaultModelId)?.label, searchTrimmed)
+      : modelMatchesSearch("", defaultLabel ?? "Default", searchTrimmed)
+  );
+  // "current" marks the saved/running model, independent of the draft selection
+  const showCurrent = Boolean(
+    savedModelId &&
+      modelMatchesSearch(savedModelId, models.find((m) => m.id === savedModelId)?.label, searchTrimmed),
+  );
+  const showDetected = Boolean(
+    detectedModel &&
+      detectedModel !== savedModelId &&
+      detectedModel !== value &&
+      modelMatchesSearch(detectedModel, models.find((m) => m.id === detectedModel)?.label, searchTrimmed),
+  );
 
   async function handleDetectModel() {
     if (!onDetectModel) return;
@@ -1526,13 +1599,39 @@ function ModelDropdown({
       >
         <PopoverTrigger asChild>
           <button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-            <span className={cn(!value && "text-muted-foreground")}>
-              {selected
-                ? selected.label
-                : value
-                  || (allowDefault ? (defaultLabel ?? "Default") : required ? "Select model (required)" : "Select model")}
-            </span>
-            <ChevronDown className="h-3 w-3 text-muted-foreground" />
+            {!value ? (
+              allowDefault && detectedModel ? (
+                <span className="flex items-center gap-1 min-w-0 overflow-hidden flex-1">
+                  <ModelIdLabel id={detectedModel} label={models.find((m) => m.id === detectedModel)?.label} />
+                  <ModelTags label={models.find((m) => m.id === detectedModel)?.label} extra={["environment"]} />
+                </span>
+              ) : allowDefault && defaultModelId ? (
+                <span className="flex items-center gap-1 min-w-0 overflow-hidden flex-1">
+                  <ModelIdLabel id={defaultModelId} label={models.find((m) => m.id === defaultModelId)?.label} />
+                  <ModelTags label={models.find((m) => m.id === defaultModelId)?.label} extra={["default"]} />
+                </span>
+              ) : (
+                <span className="text-muted-foreground truncate">
+                  {allowDefault ? (defaultLabel ?? "Default") : required ? "Select model (required)" : "Select model"}
+                </span>
+              )
+            ) : value === defaultModelId ? (
+              <span className="flex items-center gap-1 min-w-0 overflow-hidden flex-1">
+                <ModelIdLabel id={value} label={selected?.label} />
+                <ModelTags label={selected?.label} extra={["default"]} />
+              </span>
+            ) : selected ? (
+              <span className="flex items-center gap-1 min-w-0 overflow-hidden flex-1">
+                <ModelIdLabel id={selected.id} label={selected.label} />
+                <ModelTags label={selected.label} />
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 min-w-0 overflow-hidden flex-1">
+                <span className="font-mono text-xs text-muted-foreground shrink-0 truncate">{value}</span>
+                <ModelTags extra={["custom"]} />
+              </span>
+            )}
+            <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
           </button>
         </PopoverTrigger>
         <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
@@ -1573,114 +1672,80 @@ function ModelDropdown({
               {detectingModel ? "Detecting..." : detectedModel ? (detectModelLabel?.replace(/^Detect\b/, "Re-detect") ?? "Re-detect from config") : (detectModelLabel ?? "Detect from config")}
             </button>
           )}
-          {onRefreshModels && !modelSearch.trim() && (
-            <button
-              type="button"
-              className="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
-              onClick={() => {
-                void onRefreshModels();
-              }}
-              disabled={refreshingModels}
-            >
-              <svg aria-hidden="true" focusable="false" className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 12a9 9 0 0 1 15.28-6.36L21 8" />
-                <path d="M21 3v5h-5" />
-                <path d="M21 12a9 9 0 0 1-15.28 6.36L3 16" />
-                <path d="M8 16H3v5" />
-              </svg>
-              {refreshingModels ? "Refreshing..." : "Refresh models"}
-            </button>
-          )}
-          {value && (!models.some((m) => m.id === value) || promotedModelIds.has(value)) && (
-            <button
-              type="button"
-              className={cn(
-                "flex items-center w-full px-2 py-1.5 text-sm rounded bg-accent/50",
-              )}
-              onClick={() => {
-                onOpenChange(false);
-              }}
-            >
-              <span className="block w-full text-left truncate font-mono text-xs" title={value}>
-                {models.find((m) => m.id === value)?.label ?? value}
-              </span>
-              <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20">
-                current
-              </span>
-            </button>
-          )}
-          {detectedModel && detectedModel !== value && (
-            <button
-              type="button"
-              className={cn(
-                "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-              )}
-              onClick={() => {
-                onChange(detectedModel);
-                onOpenChange(false);
-              }}
-            >
-              <span className="block w-full text-left truncate font-mono text-xs" title={detectedModel}>
-                {models.find((m) => m.id === detectedModel)?.label ?? detectedModel}
-              </span>
-              <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/20">
-                detected
-              </span>
-            </button>
-          )}
-          {detectedModelCandidates
-            ?.filter((candidate) => candidate && candidate !== detectedModel && candidate !== value)
-            .map((candidate) => {
-              const entry = models.find((m) => m.id === candidate);
-              return (
-                <button
-                  key={`detected-${candidate}`}
-                  type="button"
-                  className={cn(
-                    "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                  )}
-                  onClick={() => {
-                    onChange(candidate);
-                    onOpenChange(false);
-                  }}
-                >
-                  <span className="block w-full text-left truncate font-mono text-xs" title={candidate}>
-                    {entry?.label ?? candidate}
-                  </span>
-                  <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-400 border border-sky-500/20">
-                    config
-                  </span>
-                </button>
-              );
-            })}
           <div className="max-h-[240px] overflow-y-auto">
-            {allowDefault && (
+            {showCurrent && savedModelId && (
               <button
                 type="button"
                 className={cn(
-                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                  !value && "bg-accent",
+                  "flex items-center w-full px-2 py-1.5 rounded",
+                  savedModelId === value ? "bg-accent" : "hover:bg-accent/50",
                 )}
                 onClick={() => {
-                  onChange("");
+                  if (savedModelId !== value) onChange(savedModelId);
                   onOpenChange(false);
                 }}
               >
-                Default
+                <ModelIdLabel id={savedModelId} label={models.find((m) => m.id === savedModelId)?.label} />
+                <ModelTags label={models.find((m) => m.id === savedModelId)?.label} extra={["current"]} />
+              </button>
+            )}
+            {showDetected && detectedModel && (
+              <button
+                type="button"
+                className={cn(
+                  "flex items-center w-full px-2 py-1.5 rounded hover:bg-accent/50",
+                  !value && "bg-accent",
+                )}
+                onClick={() => { onChange(""); onOpenChange(false); }}
+              >
+                <ModelIdLabel id={detectedModel} label={models.find((m) => m.id === detectedModel)?.label} />
+                <ModelTags label={models.find((m) => m.id === detectedModel)?.label} extra={["environment"]} />
+              </button>
+            )}
+            {detectedModelCandidates
+              ?.filter((candidate) => candidate && candidate !== detectedModel && candidate !== value)
+              .filter((candidate) => modelMatchesSearch(candidate, models.find((m) => m.id === candidate)?.label, searchTrimmed))
+              .map((candidate) => (
+                <button
+                  key={`detected-${candidate}`}
+                  type="button"
+                  className="flex items-center w-full px-2 py-1.5 rounded hover:bg-accent/50"
+                  onClick={() => { onChange(candidate); onOpenChange(false); }}
+                >
+                  <ModelIdLabel id={candidate} label={models.find((m) => m.id === candidate)?.label} />
+                  <ModelTags label={models.find((m) => m.id === candidate)?.label} extra={["config"]} />
+                </button>
+              ))}
+            {showDefault && (
+              <button
+                type="button"
+                className={cn(
+                  "flex items-center w-full px-2 py-1.5 rounded hover:bg-accent/50",
+                  ((!value && !detectedModel) || value === defaultModelId) && "bg-accent",
+                )}
+                onClick={() => { onChange(defaultModelId || ""); onOpenChange(false); }}
+              >
+                {defaultModelId ? (
+                  <>
+                    <ModelIdLabel id={defaultModelId} label={models.find((m) => m.id === defaultModelId)?.label} />
+                    <ModelTags label={models.find((m) => m.id === defaultModelId)?.label} extra={["default"]} />
+                  </>
+                ) : (
+                  <>
+                    <span className="text-sm flex-1 text-left truncate">{defaultLabel ?? "Default"}</span>
+                    <ModelTags extra={["default"]} />
+                  </>
+                )}
               </button>
             )}
             {canCreateManualModel && (
               <button
                 type="button"
-                className="flex items-center justify-between gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50"
-                onClick={() => {
-                  onChange(manualModel);
-                  onOpenChange(false);
-                  setModelSearch("");
-                }}
+                className="flex items-center w-full px-2 py-1.5 rounded hover:bg-accent/50"
+                onClick={() => { onChange(manualModel); onOpenChange(false); setModelSearch(""); }}
               >
-                <span>Use manual model</span>
-                <span className="text-xs font-mono text-muted-foreground">{manualModel}</span>
+                <span className="font-mono text-xs flex-1 text-left truncate">{manualModel}</span>
+                <ModelTags extra={["custom"]} />
               </button>
             )}
             {groupedModels.map((group) => (
@@ -1695,22 +1760,19 @@ function ModelDropdown({
                     type="button"
                     key={m.id}
                     className={cn(
-                      "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                      "flex items-center w-full px-2 py-1.5 rounded hover:bg-accent/50",
                       m.id === value && "bg-accent",
                     )}
-                    onClick={() => {
-                      onChange(m.id);
-                      onOpenChange(false);
-                    }}
+                    onClick={() => { onChange(m.id); onOpenChange(false); }}
                   >
-                    <span className="block w-full text-left truncate" title={m.id}>
-                      {groupByProvider ? extractModelName(m.id) : m.label}
-                    </span>
+                    {groupByProvider
+                      ? <span className="block w-full text-left truncate text-sm" title={m.id}>{extractModelName(m.id)}</span>
+                      : <><ModelIdLabel id={m.id} label={m.label} /><ModelTags label={m.label} /></>}
                   </button>
                 ))}
               </div>
             ))}
-            {filteredModels.length === 0 && !canCreateManualModel && promotedModelIds.size === 0 && (
+            {filteredModels.length === 0 && !canCreateManualModel && !showDefault && !showDetected && !showCurrent && (
               <div className="px-2 py-2 space-y-2">
                 <p className="text-xs text-muted-foreground">
                   {onDetectModel
@@ -1729,6 +1791,8 @@ function ModelDropdown({
 function CheapModelSection({
   enabled,
   model,
+  savedModel,
+  detectedModel,
   models,
   adapterType,
   adapterDefaultModel,
@@ -1739,6 +1803,8 @@ function CheapModelSection({
 }: {
   enabled: boolean;
   model: string;
+  savedModel?: string;
+  detectedModel?: string | null;
   models: AdapterModel[];
   adapterType: string;
   adapterDefaultModel: string;
@@ -1747,9 +1813,10 @@ function CheapModelSection({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const placeholderHint = adapterDefaultModel
-    ? `Adapter default · ${adapterDefaultModel}`
-    : "No adapter default — choose a cheaper model";
+  const defaultModelLabel = adapterDefaultModel
+    ? (models.find((m) => m.id === adapterDefaultModel)?.label ?? adapterDefaultModel)
+    : null;
+  const placeholderHint = defaultModelLabel ?? "No adapter default — choose a cheaper model";
   return (
     <div className="rounded-md border border-border/70 bg-muted/20 p-3 space-y-3">
       <div className="flex items-center justify-between gap-3">
@@ -1765,6 +1832,7 @@ function CheapModelSection({
         <ModelDropdown
           models={models}
           value={model}
+          savedModelId={savedModel || undefined}
           onChange={onModelChange}
           open={open}
           onOpenChange={onOpenChange}
@@ -1772,16 +1840,12 @@ function CheapModelSection({
           required={false}
           groupByProvider={adapterType === "opencode_local"}
           creatable
-          detectedModel={null}
+          detectedModel={detectedModel ?? null}
           detectedModelCandidates={[]}
           emptyDetectHint={placeholderHint}
           defaultLabel={placeholderHint}
+          defaultModelId={adapterDefaultModel || undefined}
         />
-      ) : null}
-      {enabled && !model && adapterDefaultModel ? (
-        <p className="text-[11px] text-muted-foreground">
-          No explicit cheap model selected — runtime falls back to <code>{adapterDefaultModel}</code>.
-        </p>
       ) : null}
       {enabled && !model && !adapterDefaultModel ? (
         <p className="text-[11px] text-amber-500">

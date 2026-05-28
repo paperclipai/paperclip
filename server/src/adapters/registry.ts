@@ -411,6 +411,7 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openCodeAgentConfigurationDoc,
 };
 
+
 const piLocalAdapter: ServerAdapterModule = {
   type: "pi_local",
   execute: piExecute,
@@ -705,7 +706,7 @@ export function listEnabledServerAdapters(): ServerAdapterModule[] {
 
 export async function detectAdapterModel(
   type: string,
-): Promise<{ model: string; provider: string; source: string; candidates?: string[] } | null> {
+): Promise<{ model: string; provider: string; source: string; candidates?: string[]; lightModel?: string } | null> {
   const adapter = findActiveServerAdapter(type);
   if (!adapter?.detectModel) return null;
   const detected = await adapter.detectModel();
@@ -715,6 +716,7 @@ export async function detectAdapterModel(
     provider: detected.provider,
     source: detected.source,
     ...(detected.candidates?.length ? { candidates: detected.candidates } : {}),
+    ...(detected.lightModel ? { lightModel: detected.lightModel } : {}),
   };
 }
 

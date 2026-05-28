@@ -25,6 +25,7 @@ import {
   ISSUE_THREAD_INTERACTION_KINDS,
   ISSUE_THREAD_INTERACTION_STATUSES,
   MODEL_PROFILE_KEYS,
+  AGENT_DECLARABLE_ORIGIN_KINDS,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
 
@@ -377,7 +378,7 @@ const createIssueBaseSchema = z.object({
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
-  status: z.enum(ISSUE_STATUSES),
+  status: z.enum(ISSUE_STATUSES).optional().default("todo"),
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
@@ -390,6 +391,20 @@ const createIssueBaseSchema = z.object({
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
+  originKind: z
+    .string()
+    .refine(
+      (val) => {
+        if (AGENT_DECLARABLE_ORIGIN_KINDS.includes(val as any)) return true;
+        if (val.startsWith("skill:")) return true;
+        if (val.startsWith("intent:")) return true;
+        if (val.startsWith("plugin:")) return true;
+        return false;
+      },
+      { message: "Invalid declarable originKind. Must be one of AGENT_DECLARABLE_ORIGIN_KINDS or start with 'skill:', 'intent:', or 'plugin:'." }
+    )
+    .optional()
+    .nullable(),
 });
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({

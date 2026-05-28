@@ -1135,7 +1135,7 @@ export function buildHostServices(
         return inspectStoredLocalFolder(companyId, params.folderKey);
       },
 
-      async deleteFile(params) {
+      async deleteFile(params: any) {
         const companyId = ensureCompanyId(params.companyId);
         const status = await inspectStoredLocalFolder(companyId, params.folderKey);
         assertWritableConfiguredLocalFolder(status);
@@ -1500,17 +1500,17 @@ export function buildHostServices(
     },
 
     skills: {
-      async managedGet(params) {
+      async managedGet(params: any) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         return managedSkills.get(params.skillKey, companyId);
       },
-      async managedReconcile(params) {
+      async managedReconcile(params: any) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         return managedSkills.reconcile(params.skillKey, companyId);
       },
-      async managedReset(params) {
+      async managedReset(params: any) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         return managedSkills.reset(params.skillKey, companyId);

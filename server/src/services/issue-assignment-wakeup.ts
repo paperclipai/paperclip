@@ -28,7 +28,9 @@ export function queueIssueAssignmentWakeup(input: {
   requestedByActorId?: string | null;
   rethrowOnError?: boolean;
 }) {
-  if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
+  if (!input.issue.assigneeAgentId) return;
+  // Agents delegating work intend immediate execution; only suppress backlog wakeup for user/system actors.
+  if (input.issue.status === "backlog" && input.requestedByActorType !== "agent") return;
 
   return input.heartbeat
     .wakeup(input.issue.assigneeAgentId, {

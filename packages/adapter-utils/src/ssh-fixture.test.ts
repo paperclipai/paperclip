@@ -246,6 +246,7 @@ describe("ssh env-lab fixture", () => {
     await git(localRepo, ["checkout", "-b", "main"]);
     await git(localRepo, ["config", "user.name", "Paperclip Test"]);
     await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await git(localRepo, ["config", "commit.gpgsign", "false"]);
     await writeFile(path.join(localRepo, "tracked.txt"), "base\n", "utf8");
     await writeFile(path.join(localRepo, "._tracked.txt"), "should stay local only\n", "utf8");
     await git(localRepo, ["add", "tracked.txt"]);

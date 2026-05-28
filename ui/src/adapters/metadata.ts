@@ -61,14 +61,16 @@ export function listAdapterOptions(
   labelFor?: (type: string) => string,
   adapters: UIAdapterModule[] = listUIAdapters(),
 ): AdapterOptionMetadata[] {
-  const getLabel = labelFor ?? getAdapterLabel;
-  return adapters.map((adapter) => ({
-    value: adapter.type,
-    label: getLabel(adapter.type),
-    comingSoon: !!getAdapterDisplay(adapter.type).comingSoon,
-    hidden: isAdapterTypeHidden(adapter.type),
-    experimental: !!getAdapterDisplay(adapter.type).experimental,
-  }));
+  return adapters.map((adapter) => {
+    const label = labelFor ? labelFor(adapter.type) : (adapter.label ?? getAdapterLabel(adapter.type));
+    return {
+      value: adapter.type,
+      label,
+      comingSoon: !!getAdapterDisplay(adapter.type).comingSoon,
+      hidden: isAdapterTypeHidden(adapter.type),
+      experimental: !!getAdapterDisplay(adapter.type).experimental,
+    };
+  });
 }
 
 /**

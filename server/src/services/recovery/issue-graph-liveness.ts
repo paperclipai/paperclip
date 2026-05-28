@@ -7,6 +7,7 @@ export type IssueLivenessState =
   | "blocked_by_assigned_backlog_issue"
   | "blocked_by_uninvokable_assignee"
   | "blocked_by_cancelled_issue"
+  | "blocked_by_nothing"
   | "invalid_review_participant"
   | "in_review_without_action_path";
 
@@ -582,10 +583,30 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   }
 
   for (const issue of input.issues) {
-    if (issue.status === "blocked") {
-      if (unresolvedBlockers.has(issue.id)) continue;
+    if (issue.status === "blocked" && !unresolvedBlockers.has(issue.id)) {
       const chainFinding = firstBlockedChainFinding(issue, issue, [issue], new Set());
-      if (chainFinding) findings.push(chainFinding);
+      if (chainFinding) {
+        findings.push(chainFinding);
+      } else {
+        const hasBlockerRelations = (blockersByBlockedIssueId.get(issue.id)?.length ?? 0) > 0;
+        if (!hasBlockerRelations && !hasExplicitWaitingPath(issue)) {
+          const ownerCandidates = ownerCandidatesForRecoveryIssue(issue, input.agents, agentsById, {
+            includeStalledAssignee: true,
+          });
+          findings.push(
+            finding({
+              issue,
+              state: "blocked_by_nothing",
+              reason: `${issueLabel(issue)} is blocked but has no unresolved blockers.`,
+              dependencyPath: [issue],
+              recoveryIssue: issue,
+              recommendedOwnerCandidateAgentIds: ownerCandidates.map((c) => c.agentId),
+              recommendedOwnerCandidates: ownerCandidates,
+              recommendedAction: `Inspect ${issueLabel(issue)} and either remove the 'blocked' status or add the required blockers.`,
+            }),
+          );
+        }
+      }
     }
 
     if (issue.status === "in_review" && !unresolvedBlockers.has(issue.id)) {

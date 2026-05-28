@@ -2057,12 +2057,19 @@ export async function runChildProcess(
         });
 
         const stdin = child.stdin;
-        if (opts.stdin != null && stdin) {
-          void spawnPersistPromise.finally(() => {
-            if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
-            stdin.end();
+        if (stdin) {
+          stdin.on("error", (err: NodeJS.ErrnoException) => {
+            if (err.code !== "EPIPE" && err.code !== "EOF") {
+              onLogError(err, runId, "child stdin error");
+            }
           });
+          if (opts.stdin != null) {
+            void spawnPersistPromise.finally(() => {
+              if (child.killed || stdin.destroyed) return;
+              stdin.write(opts.stdin as string);
+              stdin.end();
+            });
+          }
         }
 
         child.on("error", (err: Error) => {

@@ -1,9 +1,10 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, like, not, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  AGENT_DECLARABLE_ORIGIN_KINDS,
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
@@ -49,6 +50,7 @@ import {
   RECOVERY_ORIGIN_KINDS,
   buildIssueGraphLivenessLeafKey,
   isStrandedIssueRecoveryOriginKind,
+  isAgentDeclarableOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "./origins.js";
 import {
@@ -1858,6 +1860,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
+    if (isAgentDeclarableOriginKind(input.issue.originKind)) return null;
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
@@ -2183,6 +2186,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
+    if (isAgentDeclarableOriginKind(input.issue.originKind)) {
+      await issuesSvc.update(input.issue.id, { status: "cancelled" });
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          identifier: input.issue.identifier,
+          status: "cancelled",
+          previousStatus: input.previousStatus,
+          source: "recovery.silent_cancel_declarable_origin",
+          latestRunId: input.latestRun?.id ?? null,
+          latestRunStatus: input.latestRun?.status ?? null,
+        },
+      });
+      return null;
+    }
+
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       return escalateStrandedRecoveryIssueInPlace({
         issue: input.issue,
@@ -2387,6 +2413,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+
+      if (isAgentDeclarableOriginKind(issue.originKind)) {
+        if (latestRun && UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(latestRun.status as any)) {
+          await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: issue.status as any,
+            latestRun,
+            comment: "Paperclip detected failure in a transient orchestrator issue. Silently cancelling.",
+          });
+          result.skipped += 1;
+          result.issueIds.push(issue.id);
+          continue;
+        }
+      }
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
           issue,
@@ -2618,7 +2658,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(
         and(
           isNull(issues.hiddenAt),
-          notInArray(issues.originKind, [RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation]),
+          notInArray(issues.originKind, [
+            RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+            ...AGENT_DECLARABLE_ORIGIN_KINDS,
+          ]),
+          not(like(issues.originKind, "skill:%")),
+          not(like(issues.originKind, "intent:%")),
+          not(like(issues.originKind, "plugin:%")),
         ),
       ));
 
@@ -2675,7 +2721,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .where(
           and(
             isNull(issues.hiddenAt),
-            notInArray(issues.originKind, [RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation]),
+            notInArray(issues.originKind, [
+              RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+              ...AGENT_DECLARABLE_ORIGIN_KINDS,
+            ]),
+            not(like(issues.originKind, "skill:%")),
+            not(like(issues.originKind, "intent:%")),
+            not(like(issues.originKind, "plugin:%")),
             inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
           ),
         ),
