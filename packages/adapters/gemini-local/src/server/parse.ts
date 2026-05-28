@@ -73,6 +73,11 @@ function accumulateUsage(
     source.output_tokens,
     asNumber(source.outputTokens, asNumber(source.candidatesTokenCount, 0)),
   );
+  // Gemini 2.5+ thinking tokens billed as output tokens
+  target.outputTokens += asNumber(
+    source.thinking_tokens,
+    asNumber(source.thinkingTokenCount, asNumber(source.thoughtsTokenCount, 0)),
+  );
 }
 
 export function parseGeminiJsonl(stdout: string) {
