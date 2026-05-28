@@ -76,12 +76,16 @@ import {
   clampIssueListLimit,
   documentService,
   documentAnnotationService,
-  consultReportArtifactService,
   logActivity,
   projectService,
   routineService,
   workProductService,
 } from "../services/index.js";
+import {
+  CONSULT_REPORT_ARTIFACT_LIST_DEFAULT_LIMIT,
+  CONSULT_REPORT_ARTIFACT_LIST_MAX_LIMIT,
+  consultReportArtifactService,
+} from "../services/consult-report-artifacts.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -118,6 +122,8 @@ import { parseIssueExecutionWorkspaceSettings } from "../services/execution-work
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const CONSULT_REPORT_ARTIFACT_LIMIT_ERROR =
+  `limit must be a positive integer; values above ${CONSULT_REPORT_ARTIFACT_LIST_MAX_LIMIT} are capped`;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -215,6 +221,34 @@ const ISSUE_WORKSPACE_AUDIT_FIELDS = new Set([
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function parseConsultReportArtifactListWindow(req: Request, res: Response) {
+  const rawLimit = req.query.limit;
+  const rawOffset = req.query.offset;
+
+  if (rawLimit !== undefined && (typeof rawLimit !== "string" || !/^\d+$/.test(rawLimit))) {
+    res.status(400).json({ error: CONSULT_REPORT_ARTIFACT_LIMIT_ERROR });
+    return null;
+  }
+  const parsedLimit = rawLimit === undefined ? null : Number.parseInt(rawLimit, 10);
+  if (parsedLimit !== null && (!Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
+    res.status(400).json({ error: CONSULT_REPORT_ARTIFACT_LIMIT_ERROR });
+    return null;
+  }
+
+  if (rawOffset !== undefined && (typeof rawOffset !== "string" || !/^\d+$/.test(rawOffset))) {
+    res.status(400).json({ error: "offset must be a non-negative integer" });
+    return null;
+  }
+  const parsedOffset = rawOffset === undefined ? null : Number.parseInt(rawOffset, 10);
+
+  return {
+    limit: parsedLimit === null
+      ? CONSULT_REPORT_ARTIFACT_LIST_DEFAULT_LIMIT
+      : Math.min(CONSULT_REPORT_ARTIFACT_LIST_MAX_LIMIT, parsedLimit),
+    offset: parsedOffset ?? 0,
+  };
 }
 
 function hasIssueWorkspaceAuditChange(previous: Record<string, unknown>) {
@@ -1853,12 +1887,14 @@ export function issueRoutes(
     const reportNeeded = typeof req.query.reportNeeded === "string"
       ? req.query.reportNeeded.trim().toLowerCase()
       : null;
-    if (reportNeeded !== null && reportNeeded !== "true") {
+    if (reportNeeded !== "true") {
       res.status(400).json({ error: "Company consult-report rollup only supports reportNeeded=true" });
       return;
     }
+    const listWindow = parseConsultReportArtifactListWindow(req, res);
+    if (!listWindow) return;
 
-    const artifacts = await consultReportArtifactsSvc.listReportNeeded(companyId);
+    const artifacts = await consultReportArtifactsSvc.listReportNeeded(companyId, listWindow);
     res.json(artifacts);
   });
 
@@ -2510,7 +2546,9 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const artifacts = await consultReportArtifactsSvc.listForIssue(issue.id, issue.companyId);
+    const listWindow = parseConsultReportArtifactListWindow(req, res);
+    if (!listWindow) return;
+    const artifacts = await consultReportArtifactsSvc.listForIssue(issue.id, issue.companyId, listWindow);
     res.json(artifacts);
   });
 

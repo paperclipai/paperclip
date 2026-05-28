@@ -21,6 +21,14 @@ type CreateArtifactInput = CreateConsultReportArtifact & {
   createdByUserId?: string | null;
 };
 
+export const CONSULT_REPORT_ARTIFACT_LIST_DEFAULT_LIMIT = 50;
+export const CONSULT_REPORT_ARTIFACT_LIST_MAX_LIMIT = 100;
+
+type ArtifactListOptions = {
+  limit?: number;
+  offset?: number;
+};
+
 const sourceIssues = alias(issues, "consult_report_source_issue");
 const accountableIssues = alias(issues, "consult_report_accountable_issue");
 const nextOwnerIssues = alias(issues, "consult_report_next_owner_issue");
@@ -177,6 +185,17 @@ function mapArtifactRow(row: ArtifactSelectRow) {
 }
 
 type ArtifactReadModel = ReturnType<typeof mapArtifactRow>;
+
+function normalizeArtifactListOptions(options: ArtifactListOptions = {}) {
+  const limit = Number.isFinite(options.limit)
+    ? Math.min(CONSULT_REPORT_ARTIFACT_LIST_MAX_LIMIT, Math.max(1, Math.floor(options.limit as number)))
+    : CONSULT_REPORT_ARTIFACT_LIST_DEFAULT_LIMIT;
+  const offset = Number.isFinite(options.offset)
+    ? Math.max(0, Math.floor(options.offset as number))
+    : 0;
+
+  return { limit, offset };
+}
 
 async function assertIssueInCompany(
   db: Db,
@@ -351,7 +370,12 @@ export function consultReportArtifactService(db: Db) {
       return artifact;
     },
 
-    listForIssue: async (issueId: string, companyId: string): Promise<ArtifactReadModel[]> => {
+    listForIssue: async (
+      issueId: string,
+      companyId: string,
+      options?: ArtifactListOptions,
+    ): Promise<ArtifactReadModel[]> => {
+      const { limit, offset } = normalizeArtifactListOptions(options);
       const rows = await db
         .select(artifactSelect)
         .from(consultReportArtifacts)
@@ -366,12 +390,18 @@ export function consultReportArtifactService(db: Db) {
             eq(consultReportArtifacts.accountableIssueId, issueId),
           ),
         ))
-        .orderBy(desc(consultReportArtifacts.createdAt));
+        .orderBy(desc(consultReportArtifacts.createdAt), desc(consultReportArtifacts.id))
+        .limit(limit)
+        .offset(offset);
 
       return rows.map((row) => mapArtifactRow(row));
     },
 
-    listReportNeeded: async (companyId: string): Promise<ArtifactReadModel[]> => {
+    listReportNeeded: async (
+      companyId: string,
+      options?: ArtifactListOptions,
+    ): Promise<ArtifactReadModel[]> => {
+      const { limit, offset } = normalizeArtifactListOptions(options);
       const rows = await db
         .select(artifactSelect)
         .from(consultReportArtifacts)
@@ -383,7 +413,9 @@ export function consultReportArtifactService(db: Db) {
           eq(consultReportArtifacts.companyId, companyId),
           eq(consultReportArtifacts.reportNeeded, true),
         ))
-        .orderBy(desc(consultReportArtifacts.createdAt));
+        .orderBy(desc(consultReportArtifacts.createdAt), desc(consultReportArtifacts.id))
+        .limit(limit)
+        .offset(offset);
 
       return rows.map((row) => mapArtifactRow(row));
     },

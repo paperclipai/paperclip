@@ -18,6 +18,10 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import {
+  CONSULT_REPORT_ARTIFACT_LIST_DEFAULT_LIMIT,
+  CONSULT_REPORT_ARTIFACT_LIST_MAX_LIMIT,
+} from "../services/consult-report-artifacts.js";
 
 vi.hoisted(() => {
   process.env.PAPERCLIP_HOME = "/tmp/paperclip-test-home";
@@ -138,6 +142,31 @@ const artifactBody = {
   nextOwnerText: "Release Engineer",
 };
 
+function artifactRow(
+  companyId: string,
+  issueId: string,
+  index: number,
+  input: { reportNeeded?: boolean; createdAt?: Date } = {},
+) {
+  const reportNeeded = input.reportNeeded ?? false;
+  const createdAt = input.createdAt ?? new Date(Date.UTC(2026, 0, 1, 0, 0, index));
+
+  return {
+    companyId,
+    sourceIssueId: issueId,
+    accountableIssueId: issueId,
+    sourceType: "issue",
+    decision: `Decision ${index}`,
+    evidence: artifactBody.evidence,
+    risk: artifactBody.risk,
+    nextOwnerText: artifactBody.nextOwnerText,
+    reportNeeded,
+    reportReason: reportNeeded ? `Reason ${index}` : null,
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
 describeEmbeddedPostgres("consult report artifact routes", () => {
   let db!: Db;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -193,6 +222,35 @@ describeEmbeddedPostgres("consult report artifact routes", () => {
     const rollup = await request(app).get(`/api/companies/${company.id}/consult-report-artifacts?reportNeeded=true`);
     expect(rollup.status, JSON.stringify(rollup.body)).toBe(200);
     expect(rollup.body).toEqual([]);
+
+    const missingReportNeeded = await request(app).get(`/api/companies/${company.id}/consult-report-artifacts`);
+    expect(missingReportNeeded.status, JSON.stringify(missingReportNeeded.body)).toBe(400);
+  }, 15_000);
+
+  it("defaults and paginates issue-scoped artifact lists", async () => {
+    const company = await seedCompany(db, "issue-page");
+    const issue = await seedIssue(db, company.id, { title: "Paged artifact issue" });
+    const app = await createApp(db);
+    await db.insert(consultReportArtifacts).values(
+      Array.from({ length: CONSULT_REPORT_ARTIFACT_LIST_DEFAULT_LIMIT + 5 }, (_value, index) =>
+        artifactRow(company.id, issue.id, index)),
+    );
+
+    const defaultPage = await request(app).get(`/api/issues/${issue.id}/consult-report-artifacts`);
+    expect(defaultPage.status, JSON.stringify(defaultPage.body)).toBe(200);
+    expect(defaultPage.body).toHaveLength(CONSULT_REPORT_ARTIFACT_LIST_DEFAULT_LIMIT);
+    expect(defaultPage.body[0].decision).toBe(`Decision ${CONSULT_REPORT_ARTIFACT_LIST_DEFAULT_LIMIT + 4}`);
+    expect(defaultPage.body[defaultPage.body.length - 1].decision).toBe("Decision 5");
+
+    const secondWindow = await request(app).get(`/api/issues/${issue.id}/consult-report-artifacts?limit=2&offset=3`);
+    expect(secondWindow.status, JSON.stringify(secondWindow.body)).toBe(200);
+    expect(secondWindow.body.map((artifact: { decision: string }) => artifact.decision)).toEqual([
+      `Decision ${CONSULT_REPORT_ARTIFACT_LIST_DEFAULT_LIMIT + 1}`,
+      `Decision ${CONSULT_REPORT_ARTIFACT_LIST_DEFAULT_LIMIT}`,
+    ]);
+
+    const invalidLimit = await request(app).get(`/api/issues/${issue.id}/consult-report-artifacts?limit=0`);
+    expect(invalidLimit.status, JSON.stringify(invalidLimit.body)).toBe(400);
   }, 15_000);
 
   it("rolls up true comment-source artifacts with source and accountable issue links", async () => {
@@ -250,6 +308,29 @@ describeEmbeddedPostgres("consult report artifact routes", () => {
       source: { commentId: comment.id, issue: { id: issue.id } },
       accountableIssue: { id: accountableIssue.id },
     });
+  }, 15_000);
+
+  it("caps and filters company report-needed artifact lists", async () => {
+    const company = await seedCompany(db, "company-page");
+    const issue = await seedIssue(db, company.id, { title: "Report-needed rollup issue" });
+    const app = await createApp(db);
+    await db.insert(consultReportArtifacts).values([
+      ...Array.from({ length: CONSULT_REPORT_ARTIFACT_LIST_MAX_LIMIT + 5 }, (_value, index) =>
+        artifactRow(company.id, issue.id, index, { reportNeeded: true })),
+      artifactRow(company.id, issue.id, 200, { reportNeeded: false }),
+    ]);
+
+    const capped = await request(app)
+      .get(`/api/companies/${company.id}/consult-report-artifacts?reportNeeded=true&limit=5000`);
+    expect(capped.status, JSON.stringify(capped.body)).toBe(200);
+    expect(capped.body).toHaveLength(CONSULT_REPORT_ARTIFACT_LIST_MAX_LIMIT);
+    expect(capped.body.every((artifact: { reportNeeded: boolean }) => artifact.reportNeeded)).toBe(true);
+    expect(capped.body[0].decision).toBe(`Decision ${CONSULT_REPORT_ARTIFACT_LIST_MAX_LIMIT + 4}`);
+
+    const finalWindow = await request(app)
+      .get(`/api/companies/${company.id}/consult-report-artifacts?reportNeeded=true&limit=10&offset=${CONSULT_REPORT_ARTIFACT_LIST_MAX_LIMIT}`);
+    expect(finalWindow.status, JSON.stringify(finalWindow.body)).toBe(200);
+    expect(finalWindow.body).toHaveLength(5);
   }, 15_000);
 
   it("creates document-source artifacts by issue document key", async () => {
