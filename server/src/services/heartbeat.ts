@@ -1846,16 +1846,20 @@ function isMirrorOnlyNoNewEvidenceComment(body: string | null | undefined) {
     && /\b(evidence|input|context|signal|scope|decision)\b/.test(normalized);
   const hasCompletedReviewThreadSignal =
     /\b(done issue|completed review|review thread|resolved thread|in_review)\b/.test(normalized);
+  const hasNegatedNewEvidenceSignal = /\bno new evidence\b/.test(normalized);
   const hasExplicitNewEvidenceSignal =
-    /\b(new evidence|net[- ]?new|new signal|new context|new decision|new scope|additional evidence)\b/.test(normalized);
+    /\b(new evidence|net[- ]?new|new signal|new context|new decision|new scope|additional evidence)\b/.test(normalized)
+    && !hasNegatedNewEvidenceSignal;
   return hasMirrorSignal && (hasNoNewSignal || hasCompletedReviewThreadSignal) && !hasExplicitNewEvidenceSignal;
 }
 
 function hasExplicitDeferredReopenSignal(body: string | null | undefined) {
   const normalized = (body ?? "").trim().toLowerCase();
   if (!normalized) return false;
+  const hasNegatedNewEvidenceSignal = /\bno new evidence\b/.test(normalized);
   const hasExplicitNewEvidenceSignal =
-    /\b(new evidence|net[- ]?new|new signal|new context|new decision|new scope|additional evidence)\b/.test(normalized);
+    /\b(new evidence|net[- ]?new|new signal|new context|new decision|new scope|additional evidence)\b/.test(normalized)
+    && !hasNegatedNewEvidenceSignal;
   const hasReviewerDecisionSignal =
     /\b(reviewer decision|review decision|reopen|resume|required follow[- ]?up|must fix|must address)\b/.test(normalized);
   return hasExplicitNewEvidenceSignal || hasReviewerDecisionSignal;
