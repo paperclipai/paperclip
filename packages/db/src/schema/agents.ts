@@ -41,7 +41,7 @@ export const agents = pgTable(
       errorCode: string;
       exitCode: number | null;
       signal: string | null;
-    }>().null(), // Optional field to store error context from heartbeatRuns
+    } | null>(),
   },
   (table) => ({
     companyStatusIdx: index("agents_company_status_idx").on(table.companyId, table.status),
