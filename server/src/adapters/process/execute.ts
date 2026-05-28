@@ -13,7 +13,7 @@ import {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, config, onLog, onMeta } = ctx;
-  const command = asString(config.command, "");
+  let command = asString(config.command, "");
   if (!command) throw new Error("Process adapter missing command");
 
   const args = asStringArray(config.args);
@@ -24,6 +24,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (typeof v === "string") env[k] = v;
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+
+  // On Windows, wrap command and args in double quotes to handle spaces in paths
+  if (process.platform === "win32") {
+    command = `"${command}"`;
+    for (let i = 0; i < args.length; i++) {
+      args[i] = `"${args[i]}"`;
+    }
+  }
+
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
