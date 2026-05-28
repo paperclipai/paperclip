@@ -7,15 +7,19 @@ import {
   activityLog,
   companies,
   issueComments,
-  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
-import type { AskUserQuestionsInteraction, IssueThreadInteraction } from "@paperclipai/shared";
+import type {
+  AskUserQuestionsInteraction,
+  IssueThreadInteraction,
+  RequestConfirmationInteraction,
+} from "@paperclipai/shared";
 import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
 import { finalizeAcceptedInteractionResolution, isClosedIssueStatus } from "./issue-interaction-resolution-effects.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
+  classifyRequestConfirmationReply,
   renderAskUserQuestionsBody,
   renderRequestConfirmationBody,
 } from "./awaiting-human-handoff.js";
@@ -1325,6 +1329,113 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
                 nextPollAt: null,
                 updatedAt: new Date(),
               }).where(eq(awaitingHumanBridges.id, row.id));
+            } else if (
+              currentInteraction
+              && currentInteraction.kind === "request_confirmation"
+              && currentInteraction.status === "pending"
+            ) {
+              const confirmation = currentInteraction as RequestConfirmationInteraction;
+              const decision = classifyRequestConfirmationReply(confirmation.payload, replyBody) ?? "reject";
+              const [issueForResolution] = await tx
+                .select({
+                  id: issues.id,
+                  companyId: issues.companyId,
+                  projectId: issues.projectId,
+                  goalId: issues.goalId,
+                  status: issues.status,
+                  assigneeAgentId: issues.assigneeAgentId,
+                  assigneeUserId: issues.assigneeUserId,
+                  identifier: issues.identifier,
+                  title: issues.title,
+                })
+                .from(issues)
+                .where(eq(issues.id, row.issueId))
+                .limit(1);
+
+              if (decision === "approve" && issueForResolution) {
+                const accepted = await txInteractionsSvc.acceptInteraction(
+                  {
+                    id: issueForResolution.id,
+                    companyId: issueForResolution.companyId,
+                    projectId: issueForResolution.projectId,
+                    goalId: issueForResolution.goalId,
+                  },
+                  row.interactionId,
+                  {},
+                  { actorType: "system" },
+                );
+                resolvedInteraction = accepted.interaction;
+                await finalizeAcceptedInteractionResolution({
+                  db: txDb,
+                  heartbeat: {
+                    wakeup: async (agentId, wake) => {
+                      await insertWakeup({
+                        companyId: row.companyId,
+                        agentId,
+                        payload: parseObject(wake.payload),
+                        reason: wake.reason ?? undefined,
+                        requestedByActorType: wake.requestedByActorType ?? undefined,
+                        requestedByActorId: wake.requestedByActorId ?? undefined,
+                        dbClient: txDb,
+                      });
+                    },
+                  },
+                  logActivity,
+                  issue: issueForResolution,
+                  interaction: accepted.interaction,
+                  createdIssues: accepted.createdIssues,
+                  continuationIssue: accepted.continuationIssue,
+                  actor: {
+                    actorType: "system",
+                    actorId: "awaiting_human_bridge",
+                    agentId: null,
+                    runId: null,
+                  },
+                  source: "awaiting_human.bridge_reply",
+                  metadata: {
+                    resolutionSource: "confirmation_label_reply",
+                    externalMessageId: row.externalMessageId ?? null,
+                    externalEventId: externalEventId ?? null,
+                  },
+                });
+                await txDb.update(awaitingHumanBridges).set({
+                  status: "closed",
+                  closeOutcome: "approved",
+                  closeReason: replyBody,
+                  closedAt: new Date(),
+                  nextPollAt: null,
+                  updatedAt: new Date(),
+                }).where(eq(awaitingHumanBridges.id, row.id));
+              } else {
+                resolvedInteraction = await txInteractionsSvc.rejectInteraction({
+                  id: row.issueId,
+                  companyId: row.companyId,
+                }, row.interactionId, {
+                  reason: replyBody,
+                }, { actorType: "system" });
+                await txDb.update(awaitingHumanBridges).set({
+                  status: "closed",
+                  closeOutcome: "rejected",
+                  closeReason: replyBody,
+                  closedAt: new Date(),
+                  nextPollAt: null,
+                  updatedAt: new Date(),
+                }).where(eq(awaitingHumanBridges.id, row.id));
+                const rejectionWakeAgentId = issueForResolution?.assigneeAgentId ?? row.agentId;
+                if (rejectionWakeAgentId) {
+                  await insertWakeup({
+                    companyId: row.companyId,
+                    agentId: rejectionWakeAgentId,
+                    payload: {
+                      issueId: row.issueId,
+                      interactionId: row.interactionId,
+                      interactionStatus: resolvedInteraction.status,
+                      mutation: "interaction",
+                    },
+                    dbClient: txDb,
+                  });
+                }
+              }
             }
 
             return {
@@ -1366,76 +1477,116 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
             },
           });
 
-          if (answeredInteraction) {
-            const currentInteractionAfterAnswer = answeredInteraction;
-            if (currentInteractionAfterAnswer) {
-              await logActivity(db, {
+          if (
+            answeredInteraction?.kind === "ask_user_questions"
+            && answeredInteraction.status === "answered"
+          ) {
+            await logActivity(db, {
+              companyId: row.companyId,
+              actorType: "system",
+              actorId: "awaiting_human_bridge",
+              action: "issue.thread_interaction_answered",
+              entityType: "issue",
+              entityId: row.issueId,
+              details: {
+                interactionId: answeredInteraction.id,
+                interactionKind: answeredInteraction.kind,
+                interactionStatus: answeredInteraction.status,
+                answeredQuestionCount: answeredInteraction.result?.answers?.length ?? 0,
+                resolutionSource: "bridge_reply",
+                externalMessageId: row.externalMessageId ?? null,
+                externalEventId: externalEventId ?? null,
+              },
+            });
+
+            const [issueAfterAnswer] = await db.select({
+              assigneeAgentId: issues.assigneeAgentId,
+              status: issues.status,
+            }).from(issues).where(eq(issues.id, row.issueId)).limit(1);
+
+            if (
+              issueAfterAnswer?.assigneeAgentId
+              && issueAfterAnswer.status !== "backlog"
+              && !isClosedIssueStatus(issueAfterAnswer.status)
+              && shouldWakeAssigneeForInteractionResolution(answeredInteraction)
+            ) {
+              await insertWakeup({
                 companyId: row.companyId,
-                actorType: "system",
-                actorId: "awaiting_human_bridge",
-                action: "issue.thread_interaction_answered",
-                entityType: "issue",
-                entityId: row.issueId,
-                details: {
-                  interactionId: currentInteractionAfterAnswer.id,
-                  interactionKind: currentInteractionAfterAnswer.kind,
-                  interactionStatus: currentInteractionAfterAnswer.status,
-                  answeredQuestionCount:
-                    currentInteractionAfterAnswer.kind === "ask_user_questions"
-                      ? (currentInteractionAfterAnswer.result?.answers?.length ?? 0)
-                      : 0,
-                  resolutionSource: "bridge_reply",
-                  externalMessageId: row.externalMessageId ?? null,
-                  externalEventId: externalEventId ?? null,
+                agentId: issueAfterAnswer.assigneeAgentId,
+                payload: {
+                  issueId: row.issueId,
+                  interactionId: answeredInteraction.id,
+                  interactionKind: answeredInteraction.kind,
+                  interactionStatus: answeredInteraction.status,
+                  sourceCommentId: answeredInteraction.sourceCommentId ?? null,
+                  sourceRunId: answeredInteraction.sourceRunId ?? null,
+                  mutation: "interaction",
                 },
               });
-
-              const [issueAfterAnswer] = await db.select({
-                assigneeAgentId: issues.assigneeAgentId,
-                status: issues.status,
-              }).from(issues).where(eq(issues.id, row.issueId)).limit(1);
-
-              if (
-                issueAfterAnswer?.assigneeAgentId
-                && issueAfterAnswer.status !== "backlog"
-                && !isClosedIssueStatus(issueAfterAnswer.status)
-                && shouldWakeAssigneeForInteractionResolution(currentInteractionAfterAnswer)
-              ) {
-                await insertWakeup({
-                  companyId: row.companyId,
-                  agentId: issueAfterAnswer.assigneeAgentId,
-                  payload: {
-                    issueId: row.issueId,
-                    interactionId: currentInteractionAfterAnswer.id,
-                    interactionKind: currentInteractionAfterAnswer.kind,
-                    interactionStatus: currentInteractionAfterAnswer.status,
-                    sourceCommentId: currentInteractionAfterAnswer.sourceCommentId ?? null,
-                    sourceRunId: currentInteractionAfterAnswer.sourceRunId ?? null,
-                    mutation: "interaction",
-                  },
-                });
-              }
-
-              try {
-                await adapter.close({
-                  bridgeId: row.id,
-                  externalThreadId: row.externalThreadId ?? null,
-                  externalMessageId: row.externalMessageId ?? null,
-                  outcome: "superseded",
-                  reason: `Interaction answered via ${formatProviderLabel(row.provider)} reply.`,
-                });
-              } catch (error) {
-                logger.warn({
-                  err: error,
-                  bridgeId: row.id,
-                  companyId: row.companyId,
-                  issueId: row.issueId,
-                }, "failed to close awaiting_human bridge adapter after closing row");
-              }
-
-              summary.replies += 1;
-              return summary;
             }
+
+            try {
+              await adapter.close({
+                bridgeId: row.id,
+                externalThreadId: row.externalThreadId ?? null,
+                externalMessageId: row.externalMessageId ?? null,
+                outcome: "superseded",
+                reason: `Interaction answered via ${formatProviderLabel(row.provider)} reply.`,
+              });
+            } catch (error) {
+              logger.warn({
+                err: error,
+                bridgeId: row.id,
+                companyId: row.companyId,
+                issueId: row.issueId,
+              }, "failed to close awaiting_human bridge adapter after closing row");
+            }
+
+            summary.replies += 1;
+            return summary;
+          }
+
+          const approvedConfirmation = answeredInteraction?.kind === "request_confirmation"
+            && answeredInteraction.status === "accepted";
+          if (approvedConfirmation) {
+            await this.closeBridge({
+              bridgeId: row.id,
+              outcome: "approved",
+              reason: replyBody,
+            });
+            summary.approved += 1;
+            summary.approvedIssueIds.push(row.issueId);
+            summary.approvedInteractionIds.push(row.interactionId);
+            return summary;
+          }
+
+          const rejectedConfirmation = answeredInteraction?.kind === "request_confirmation"
+            && answeredInteraction.status === "rejected";
+          if (rejectedConfirmation) {
+            await logActivity(db, {
+              companyId: row.companyId,
+              actorType: "system",
+              actorId: "awaiting_human_bridge",
+              action: "issue.thread_interaction_rejected",
+              entityType: "issue",
+              entityId: row.issueId,
+              details: {
+                interactionId: answeredInteraction.id,
+                interactionKind: answeredInteraction.kind,
+                interactionStatus: answeredInteraction.status,
+                rejectionReason: answeredInteraction.result?.reason ?? replyBody,
+                resolutionSource: "bridge_reply",
+                externalMessageId: row.externalMessageId ?? null,
+                externalEventId: externalEventId ?? null,
+              },
+            });
+            await this.closeBridge({
+              bridgeId: row.id,
+              outcome: "rejected",
+              reason: replyBody,
+            });
+            summary.rejected += 1;
+            return summary;
           }
 
           if (shouldWakeOnReplyIssueStatus(issueRow?.status)) {

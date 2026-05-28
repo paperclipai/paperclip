@@ -4,6 +4,7 @@ import { and, eq, gte } from "drizzle-orm";
 import type {
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
+  RequestConfirmationPayload,
 } from "@paperclipai/shared";
 import {
   enqueueAwaitingHumanNotification,
@@ -104,6 +105,30 @@ export function renderAskUserQuestionsBody(
   const body = lines.join("\n").trim();
   if (!link.trim()) return body || null;
   return body ? `${body}\n\nOpen in Bizbox: ${link.trim()}` : `Open in Bizbox: ${link.trim()}`;
+}
+
+function normalizeConfirmationReplyText(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+export function classifyRequestConfirmationReply(
+  payload: Pick<RequestConfirmationPayload, "acceptLabel" | "rejectLabel">,
+  replyBody: string,
+): "approve" | "reject" | null {
+  const normalizedReply = normalizeConfirmationReplyText(replyBody);
+  if (!normalizedReply) return null;
+
+  const rejectLabel = payload.rejectLabel?.trim();
+  if (rejectLabel && normalizeConfirmationReplyText(rejectLabel) === normalizedReply) {
+    return "reject";
+  }
+
+  const acceptLabel = payload.acceptLabel?.trim();
+  if (acceptLabel && normalizeConfirmationReplyText(acceptLabel) === normalizedReply) {
+    return "approve";
+  }
+
+  return null;
 }
 
 export function renderRequestConfirmationBody(
