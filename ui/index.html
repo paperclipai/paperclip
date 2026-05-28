@@ -20,6 +20,16 @@
     <!-- PAPERCLIP_FAVICON_END -->
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
+    <!-- Critical above-fold CSS inlined to prevent FOUC when the main stylesheet
+         is loaded asynchronously (PTK-519 commit 3). Covers: background colour,
+         root height, and basic font stack so the loading state is never
+         unstyled. Full styles arrive via async preload immediately after. -->
+    <style>
+      html,body,#root{height:100%}
+      body{margin:0;background:#18181b;color:#fafafa;font-family:ui-sans-serif,system-ui,sans-serif;overflow:hidden}
+      html.dark body{background:#18181b;color:#fafafa}
+      html:not(.dark) body{background:#ffffff;color:#0a0a0a}
+    </style>
     <script>
       (() => {
         const key = "paperclip.theme";
