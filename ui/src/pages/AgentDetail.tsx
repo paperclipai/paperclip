@@ -481,7 +481,12 @@ function WorkspaceOperationLogViewer({
     queryKey: ["workspace-operation-log", operation.id],
     queryFn: () => heartbeatsApi.workspaceOperationLog(operation.id),
     enabled: open && Boolean(operation.logRef),
-    refetchInterval: open && operation.status === "running" ? 2000 : false,
+    refetchInterval:
+      open &&
+      operation.status === "running" &&
+      document.visibilityState === "visible"
+        ? 5_000
+        : false,
   });
 
   const chunks = useMemo(
@@ -1194,6 +1199,10 @@ function SummaryRow({ label, children }: { label: string; children: React.ReactN
   );
 }
 
+function isCompactedField(run: HeartbeatRun, field: "resultJson" | "stdoutExcerpt" | "stderrExcerpt" | "contextSnapshot"): boolean {
+  return run.status === "succeeded" && run[field] === null;
+}
+
 function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: string }) {
   if (runs.length === 0) return null;
 
@@ -1208,6 +1217,8 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
   const StatusIcon = statusInfo.icon;
   const summaryRaw = run.resultJson
     ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
+    : isCompactedField(run, "resultJson")
+      ? "Compacted - full output no longer retained."
     : run.error ?? "";
 
   // Extract a clean 2-3 line excerpt: first non-empty, non-header, non-list-mark lines
@@ -2982,6 +2993,8 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
   const metrics = runMetrics(run);
   const summary = run.resultJson
     ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
+    : isCompactedField(run, "resultJson")
+      ? "-"
     : run.error ?? "";
   const sourceResolvedFold = readSourceResolvedWatchdogFold(run.resultJson);
 
@@ -3260,6 +3273,10 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   const sessionId = run.sessionIdAfter || run.sessionIdBefore;
   const hasNonZeroExit = run.exitCode !== null && run.exitCode !== 0;
   const retryState = describeRunRetryState(run);
+  const isResultCompacted = isCompactedField(run, "resultJson");
+  const isStdoutCompacted = isCompactedField(run, "stdoutExcerpt");
+  const isStderrCompacted = isCompactedField(run, "stderrExcerpt");
+  const isContextCompacted = isCompactedField(run, "contextSnapshot");
 
   return (
     <div className="space-y-4 min-w-0">
@@ -3560,6 +3577,31 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
         </div>
       )}
 
+      {(isStdoutCompacted || isStderrCompacted) && (
+        <div className="space-y-1 rounded-md border border-border/70 bg-accent/15 p-3">
+          <span className="text-xs font-medium text-muted-foreground">Output compacted after 72h retention window.</span>
+        </div>
+      )}
+
+      {isResultCompacted && (
+        <div className="space-y-1 rounded-md border border-border/70 bg-accent/15 p-3">
+          <span className="text-xs font-medium text-muted-foreground">Compacted - full output no longer retained.</span>
+        </div>
+      )}
+
+      <div className="space-y-1">
+        <span className="text-xs font-medium text-muted-foreground">Context snapshot</span>
+        {run.contextSnapshot ? (
+          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
+            {JSON.stringify(redactPathValue(run.contextSnapshot, censorUsernameInLogs), null, 2)}
+          </pre>
+        ) : (
+          <div className="text-xs text-muted-foreground">
+            {isContextCompacted ? "Not available (compacted)" : "Not available"}
+          </div>
+        )}
+      </div>
+
       {(() => {
         const fold = readSourceResolvedWatchdogFold(run.resultJson);
         if (!fold) return null;
@@ -3600,7 +3642,8 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   const { data: workspaceOperations = [] } = useQuery({
     queryKey: queryKeys.runWorkspaceOperations(run.id),
     queryFn: () => heartbeatsApi.workspaceOperations(run.id),
-    refetchInterval: isLive ? 2000 : false,
+    refetchInterval:
+      isLive && document.visibilityState === "visible" ? 5_000 : false,
   });
 
   function isRunLogUnavailable(err: unknown): boolean {
@@ -4060,6 +4103,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           entries={transcript}
           mode={transcriptMode}
           streaming={isLive}
+          initialDisplayLimit={50}
           emptyMessage={run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
         />
         {hasMoreLog && (

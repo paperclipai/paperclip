@@ -460,5 +460,8 @@ export function useLiveRunTranscripts({
     hasOutputForRun(runId: string) {
       return (chunksByRun.get(runId)?.length ?? 0) > 0 || runById.get(runId)?.hasStoredOutput === true;
     },
+    isLogUnavailable(runId: string) {
+      return missingTerminalLogRunIdsRef.current.has(runId);
+    },
   };
 }

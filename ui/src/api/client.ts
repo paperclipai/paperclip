@@ -1,8 +1,31 @@
 const BASE = "/api";
 const MAX_CONCURRENT_REQUESTS = 3;
+const DEDUP_WINDOW_MS = 5_000;
 
 let inflightRequests = 0;
 const requestQueue: Array<() => void> = [];
+
+// Promise dedup cache for GET requests to company-scoped endpoints.
+// Prevents multiple tabs/components from firing identical in-flight requests.
+const dedupCache = new Map<string, { promise: Promise<unknown>; expiresAt: number }>();
+
+function dedupCacheGet(path: string): Promise<unknown> | undefined {
+  const entry = dedupCache.get(path);
+  if (!entry) return undefined;
+  if (Date.now() > entry.expiresAt) {
+    dedupCache.delete(path);
+    return undefined;
+  }
+  return entry.promise;
+}
+
+function dedupCacheSet(path: string, promise: Promise<unknown>): void {
+  dedupCache.set(path, { promise, expiresAt: Date.now() + DEDUP_WINDOW_MS });
+}
+
+function isDeduplicatedPath(path: string): boolean {
+  return path.includes("/companies/");
+}
 
 export class ApiError extends Error {
   status: number;
@@ -19,6 +42,12 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const isGet = !init?.method || init.method.toUpperCase() === "GET";
+  if (isGet && isDeduplicatedPath(path)) {
+    const cached = dedupCacheGet(path);
+    if (cached) return cached as Promise<T>;
+  }
+
   await new Promise<void>((resolve) => {
     const start = () => {
       inflightRequests += 1;
@@ -36,28 +65,35 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!(body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  try {
-    const res = await fetch(`${BASE}${path}`, {
-      headers,
-      credentials: "include",
-      ...init,
-    });
-    if (!res.ok) {
-      const errorBody = await res.json().catch(() => null);
-      throw new ApiError(
-        (errorBody as { error?: string } | null)?.error ?? `Request failed: ${res.status}`,
-        res.status,
-        errorBody,
-        res.headers,
-      );
+  const promise = (async (): Promise<T> => {
+    try {
+      const res = await fetch(`${BASE}${path}`, {
+        headers,
+        credentials: "include",
+        ...init,
+      });
+      if (!res.ok) {
+        const errorBody = await res.json().catch(() => null);
+        throw new ApiError(
+          (errorBody as { error?: string } | null)?.error ?? `Request failed: ${res.status}`,
+          res.status,
+          errorBody,
+          res.headers,
+        );
+      }
+      if (res.status === 204) return undefined as T;
+      return res.json() as Promise<T>;
+    } finally {
+      inflightRequests = Math.max(0, inflightRequests - 1);
+      const next = requestQueue.shift();
+      if (next) next();
     }
-    if (res.status === 204) return undefined as T;
-    return res.json();
-  } finally {
-    inflightRequests = Math.max(0, inflightRequests - 1);
-    const next = requestQueue.shift();
-    if (next) next();
+  })();
+
+  if (isGet && isDeduplicatedPath(path)) {
+    dedupCacheSet(path, promise as Promise<unknown>);
   }
+  return promise;
 }
 
 export const api = {
