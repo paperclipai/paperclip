@@ -174,3 +174,75 @@ test("selects the latest deployment-bearing comment before housekeeping comments
   assert.equal(selected.commentId, "latest");
   assert.equal(selected.section, "**DEPLOYMENTS**\n\n**PRODUCTION**\n- Current deployment note.");
 });
+
+test("ignores later deployment-looking comments outside the canonical report run", () => {
+  const selected = latestDeploymentSectionFromComments([
+    {
+      id: "report-1",
+      authorAgentId: "ceo",
+      createdByRunId: "routine-report-run",
+      body: [
+        "*CEO Standup — May 28, 2026*",
+        "",
+        "📦 *Deployments*",
+        "*Production*",
+        "- Canonical production note.",
+      ].join("\n"),
+    },
+    {
+      id: "report-2",
+      authorAgentId: "ceo",
+      createdByRunId: "routine-report-run",
+      body: [
+        "*CEO Standup — May 28, 2026*",
+        "",
+        "📦 *Deployments*",
+        "*Production*",
+        "- Canonical corrected note.",
+      ].join("\n"),
+    },
+    {
+      id: "thread-contamination",
+      authorAgentId: "ceo",
+      createdByRunId: "later-thread-run",
+      body: [
+        "*CEO Standup — May 28, 2026*",
+        "",
+        "📦 *Deployments*",
+        "*Production*",
+        "- Non-canonical later thread content.",
+      ].join("\n"),
+    },
+  ], {
+    authorAgentId: "ceo",
+    requireCreatedByRunId: true,
+    requireStandupHeading: true,
+  });
+
+  assert.equal(selected.commentId, "report-2");
+  assert.equal(selected.createdByRunId, "routine-report-run");
+  assert.match(selected.section, /Canonical corrected note/);
+  assert.doesNotMatch(selected.section, /Non-canonical/);
+});
+
+test("rejects deployment-looking comments without run provenance in strict mode", () => {
+  const selected = latestDeploymentSectionFromComments([
+    {
+      id: "manual-thread-comment",
+      authorAgentId: "ceo",
+      body: [
+        "*CEO Standup — May 28, 2026*",
+        "",
+        "📦 *Deployments*",
+        "*Production*",
+        "- Manual thread content.",
+      ].join("\n"),
+    },
+  ], {
+    authorAgentId: "ceo",
+    requireCreatedByRunId: true,
+    requireStandupHeading: true,
+  });
+
+  assert.equal(selected, null);
+});

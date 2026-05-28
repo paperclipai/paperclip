@@ -228,18 +228,35 @@ export function extractDeploymentSection(commentBody) {
   return (next >= 0 ? rest.slice(0, next) : rest).trim();
 }
 
-export function latestDeploymentSectionFromComments(comments) {
-  for (let index = comments.length - 1; index >= 0; index -= 1) {
+export function latestDeploymentSectionFromComments(comments, options = {}) {
+  const candidates = [];
+  for (let index = 0; index < comments.length; index += 1) {
     const comment = comments[index];
+    const body = comment?.body ?? "";
+    if (options.authorAgentId && comment?.authorAgentId !== options.authorAgentId) continue;
+    const createdByRunId = typeof comment?.createdByRunId === "string" && comment.createdByRunId.length > 0
+      ? comment.createdByRunId
+      : null;
+    if (options.requireCreatedByRunId && !createdByRunId) continue;
+    if (options.requireStandupHeading && !/\bCEO\s+Standup\b/i.test(body)) continue;
     const section = extractDeploymentSection(comment?.body);
     if (section) {
-      return {
+      candidates.push({
         commentId: comment?.id ?? null,
+        authorAgentId: comment?.authorAgentId ?? null,
+        createdByRunId,
         section,
-      };
+      });
     }
   }
-  return null;
+
+  const canonicalRunId = options.pinToFirstRun === false
+    ? null
+    : candidates.find((candidate) => candidate.createdByRunId)?.createdByRunId ?? null;
+  const trustedCandidates = canonicalRunId
+    ? candidates.filter((candidate) => candidate.createdByRunId === canonicalRunId)
+    : candidates;
+  return trustedCandidates.at(-1) ?? null;
 }
 
 export function renderStandupIssueDescription(snapshot, deploymentInput) {
@@ -319,14 +336,19 @@ async function loadCanonicalDeploymentInput(client, companyId) {
     throw new Error("Canonical Daily Engineering Standup routine has no completed latest run to source deployment context from.");
   }
   const comments = await apiFetchJson(client, `/api/issues/${linkedIssue.id}/comments?order=asc`);
-  const deploymentComment = latestDeploymentSectionFromComments(comments);
+  const deploymentComment = latestDeploymentSectionFromComments(comments, {
+    authorAgentId: linkedIssue.assigneeAgentId,
+    requireCreatedByRunId: true,
+    requireStandupHeading: true,
+  });
   if (!deploymentComment) {
-    throw new Error(`Canonical standup ${linkedIssue.identifier} has no DEPLOYMENTS section.`);
+    throw new Error(`Canonical standup ${linkedIssue.identifier} has no trusted routine-produced DEPLOYMENTS section.`);
   }
   return {
     sourceIssueId: linkedIssue.id,
     sourceIssueIdentifier: linkedIssue.identifier,
     sourceCommentId: deploymentComment.commentId,
+    sourceRunId: deploymentComment.createdByRunId,
     section: deploymentComment.section,
   };
 }
