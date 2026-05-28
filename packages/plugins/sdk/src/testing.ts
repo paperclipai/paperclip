@@ -1192,6 +1192,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             lastEnqueuedAt: null,
             createdAt: now,
             updatedAt: now,
+            labelIds: [],
             managedByPlugin: {
               id: `managed-routine-${routines.size + 1}`,
               pluginId: manifest.id,
