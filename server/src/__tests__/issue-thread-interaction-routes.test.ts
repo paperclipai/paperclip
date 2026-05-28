@@ -61,6 +61,7 @@ function registerModuleMocks() {
     clampIssueListLimit: (value: number) => value,
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     ISSUE_LIST_MAX_LIMIT: 1000,
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({

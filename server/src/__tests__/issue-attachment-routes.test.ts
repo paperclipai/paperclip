@@ -43,6 +43,7 @@ function registerRouteMocks() {
       getById: vi.fn(),
     }),
     companyService: () => mockCompanyService,
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
