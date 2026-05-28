@@ -7,6 +7,9 @@ import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notI
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  GLOBAL_MAX_CONCURRENT_RUNS,
+  PREMIUM_MAX_CONCURRENT_RUNS,
+  AGENT_HARD_CAP_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
   isEnvironmentDriverSupportedForAdapter,
@@ -237,6 +240,14 @@ const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "running"] as const;
+// Checkout 409 exponential backoff: prevents thundering-herd re-checkout stampedes.
+// Each conflict schedules a delayed retry run; circuit breaker fires after max attempts.
+export const CHECKOUT_CONFLICT_409_BACKOFF_REASON = "checkout_409_backoff";
+export const CHECKOUT_CONFLICT_409_BACKOFF_WAKE_REASON = "checkout_409_backoff_retry";
+export const CHECKOUT_CONFLICT_409_BACKOFF_BASE_MS = 2_000;
+const CHECKOUT_CONFLICT_409_BACKOFF_MAX_MS = 60_000;
+const CHECKOUT_CONFLICT_409_BACKOFF_JITTER_RATIO = 0.25;
+export const CHECKOUT_CONFLICT_409_MAX_BACKOFF_ATTEMPTS = 3;
 type CodexTransientFallbackMode =
   | "same_session"
   | "safer_invocation"
@@ -5880,6 +5891,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function countGlobalRunningRuns(companyId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
+    return Number(count ?? 0);
+  }
+
+  async function countRunningPremiumRuns(companyId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "running"),
+          eq(agents.adapterType, "claude_local"),
+          sql`(${heartbeatRuns.contextSnapshot} ->> 'modelProfile') IS DISTINCT FROM 'cheap'`,
+        ),
+      );
+    return Number(count ?? 0);
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -6816,9 +6851,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
         return [];
       }
+
+      // Global cap: at most GLOBAL_MAX_CONCURRENT_RUNS running across the entire instance
+      const globalRunningCount = await countGlobalRunningRuns(agent.companyId);
+      if (globalRunningCount >= GLOBAL_MAX_CONCURRENT_RUNS) return [];
+
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      // Per-agent hard cap: enforce AGENT_HARD_CAP_CONCURRENT_RUNS regardless of agent config
+      const effectivePerAgentCap = Math.min(policy.maxConcurrentRuns, AGENT_HARD_CAP_CONCURRENT_RUNS);
+      const availableSlots = Math.max(0, effectivePerAgentCap - runningCount);
       if (availableSlots <= 0) return [];
 
       const queuedRuns = await db
@@ -6827,6 +6869,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
         .orderBy(asc(heartbeatRuns.createdAt));
       if (queuedRuns.length === 0) return [];
+
+      // Premium cap: snapshot the running premium count once before claiming
+      const premiumRunningCount = await countRunningPremiumRuns(agent.companyId);
+      const premiumSlotAvailable = premiumRunningCount < PREMIUM_MAX_CONCURRENT_RUNS;
+      const agentIsPremium = agent.adapterType === "claude_local";
 
       const dependencyReadiness = await listQueuedRunDependencyReadiness(agent.companyId, queuedRuns);
       const queuedIssueIds = [...new Set(
@@ -6868,6 +6915,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
+        // Premium cap: claude_local runs with modelProfile != 'cheap' require a premium slot
+        if (agentIsPremium) {
+          const runModelProfile = readNonEmptyString(parseObject(queuedRun.contextSnapshot).modelProfile);
+          const runIsPremium = runModelProfile !== "cheap";
+          if (runIsPremium && !premiumSlotAvailable) continue;
+        }
         const claimed = await claimQueuedRun(queuedRun);
         if (claimed) claimedRuns.push(claimed);
       }
@@ -6940,7 +6993,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
       } catch (error) {
         if (!isCheckoutConflictError(error)) throw error;
-        context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
+
+        // Checkout conflict: apply exponential backoff before the next attempt and
+        // suppress further execution in this run (deliverables: FUL-4342 §1, §2, §5).
+        const priorAttempts = run.scheduledRetryAttempt ?? 0;
+        const rawBackoffMs = Math.min(
+          CHECKOUT_CONFLICT_409_BACKOFF_BASE_MS * Math.pow(2, priorAttempts),
+          CHECKOUT_CONFLICT_409_BACKOFF_MAX_MS,
+        );
+        const jitter = rawBackoffMs * CHECKOUT_CONFLICT_409_BACKOFF_JITTER_RATIO * (2 * Math.random() - 1);
+        const delayMs = Math.max(CHECKOUT_CONFLICT_409_BACKOFF_BASE_MS, Math.round(rawBackoffMs + jitter));
+
+        const retryResult = await scheduleBoundedRetryForRun(run, agent, {
+          retryReason: CHECKOUT_CONFLICT_409_BACKOFF_REASON,
+          wakeReason: CHECKOUT_CONFLICT_409_BACKOFF_WAKE_REASON,
+          maxAttempts: CHECKOUT_CONFLICT_409_MAX_BACKOFF_ATTEMPTS,
+          delayMs,
+        });
+
+        const circuitBreakerFired =
+          retryResult.outcome === "retry_exhausted" || retryResult.outcome === "not_scheduled";
+        const runError = circuitBreakerFired
+          ? `Checkout 409 circuit breaker: ${priorAttempts + 1} consecutive conflicts on issue ${issueId ?? "unknown"}; no further retry`
+          : `Checkout conflict on issue ${issueId ?? "unknown"}; retry in ~${delayMs}ms (attempt ${priorAttempts + 1}/${CHECKOUT_CONFLICT_409_MAX_BACKOFF_ATTEMPTS})`;
+        const errorCode = circuitBreakerFired ? "checkout_409_circuit_breaker" : "checkout_409_conflict";
+
+        await setRunStatus(runId, "failed", {
+          error: runError,
+          errorCode,
+          finishedAt: new Date(),
+        });
+        await setWakeupStatus(run.wakeupRequestId, "failed", {
+          finishedAt: new Date(),
+          error: runError,
+        });
+        // Don't execute the agent — the retry (if scheduled) will re-attempt the checkout.
+        return;
       }
       issueContext = await getIssueExecutionContext(agent.companyId, issueId);
     }
@@ -10020,6 +10108,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .orderBy(desc(heartbeatRuns.startedAt))
         .limit(1);
       return run ?? null;
+    },
+
+    getExecutionSummary: async (companyId: string) => {
+      const [globalRow] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
+      const globalRunning = Number(globalRow?.count ?? 0);
+
+      const [premiumRow] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.status, "running"),
+            eq(agents.adapterType, "claude_local"),
+            sql`(${heartbeatRuns.contextSnapshot} ->> 'modelProfile') IS DISTINCT FROM 'cheap'`,
+          ),
+        );
+      const premiumRunning = Number(premiumRow?.count ?? 0);
+
+      const [queuedRow] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")));
+      const queued = Number(queuedRow?.count ?? 0);
+
+      return {
+        global: { running: globalRunning, cap: GLOBAL_MAX_CONCURRENT_RUNS },
+        premium: { running: premiumRunning, cap: PREMIUM_MAX_CONCURRENT_RUNS },
+        perAgent: { cap: AGENT_HARD_CAP_CONCURRENT_RUNS },
+        queued,
+      };
     },
   };
 }
