@@ -37,6 +37,7 @@ interface SpawnTarget {
   args: string[];
   cwd?: string;
   cleanup?: () => Promise<void>;
+  windowsVerbatimArguments?: boolean;
 }
 
 type RemoteExecutionSpec = SshRemoteExecutionSpec;
@@ -955,6 +956,7 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_API_URL ??
     `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
+  vars.PAPERCLIP_NOW_UTC = new Date().toISOString();
   return vars;
 }
 
