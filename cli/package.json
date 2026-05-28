@@ -55,7 +55,10 @@
     "dotenv": "^17.0.1",
     "commander": "^13.1.0",
     "embedded-postgres": "^18.1.0-beta.16",
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "postgres": "^3.4.5",
+    "ws": "^8.19.0",
+    "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/node": "^22.12.0",
