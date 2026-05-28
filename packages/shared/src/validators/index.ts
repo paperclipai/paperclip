@@ -25,6 +25,14 @@ export {
   type UpdateCompanyBranding,
 } from "./company.js";
 export {
+  awaitingHumanProviderSchema,
+  clickupAwaitingHumanProviderConfigSchema,
+  companyAwaitingHumanSettingsSchema,
+  patchCompanyAwaitingHumanSettingsSchema,
+  type CompanyAwaitingHumanSettings,
+  type PatchCompanyAwaitingHumanSettings,
+} from "./awaiting-human-settings.js";
+export {
   environmentDriverSchema,
   environmentStatusSchema,
   environmentLeaseStatusSchema,

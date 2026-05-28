@@ -15,6 +15,7 @@ import {
 import { badRequest, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { companyBuilderRoutes } from "./builder.js";
+import { companyAwaitingHumanSettingsRoutes } from "./company-awaiting-human-settings.js";
 import {
   accessService,
   agentService,
@@ -37,6 +38,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const feedback = feedbackService(db);
 
   router.use("/:companyId/builder", companyBuilderRoutes(db));
+  router.use("/:companyId/awaiting-human-settings", companyAwaitingHumanSettingsRoutes(db));
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";

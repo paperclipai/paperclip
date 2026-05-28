@@ -105,6 +105,7 @@ describe("CompanySettingsSidebar", () => {
     expect(container.textContent).toContain("Bizbox");
     expect(container.textContent).toContain("Company Settings");
     expect(container.textContent).toContain("General");
+    expect(container.textContent).toContain("Awaiting Human");
     expect(container.textContent).toContain("AI Builder");
     expect(container.textContent).toContain("Access");
     expect(container.textContent).toContain("Invites");
@@ -112,6 +113,13 @@ describe("CompanySettingsSidebar", () => {
       expect.objectContaining({
         to: "/company/settings",
         label: "General",
+        end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/awaiting-human",
+        label: "Awaiting Human",
         end: true,
       }),
     );

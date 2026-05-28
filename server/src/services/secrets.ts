@@ -45,7 +45,9 @@ function canonicalizeSecretRefBinding(binding: EnvBinding): CanonicalSecretRefBi
   return canonical.type === "secret_ref" ? canonical : null;
 }
 
-export function secretService(db: Db) {
+type DbOrTx = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+export function secretService(db: DbOrTx) {
   type NormalizeEnvOptions = {
     strictMode?: boolean;
     fieldPath?: string;

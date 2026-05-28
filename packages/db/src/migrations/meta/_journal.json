@@ -526,6 +526,13 @@
       "when": 1778841600000,
       "tag": "0074_awaiting_human_notification_outbox",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1779408000000,
+      "tag": "0075_company_awaiting_human_bridge_settings",
+      "breakpoints": true
     }
   ]
 }
