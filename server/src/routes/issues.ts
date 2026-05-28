@@ -657,6 +657,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
     continuationPolicy: string;
     sourceCommentId?: string | null;
     sourceRunId?: string | null;
+    rejectionReason?: string | null;
   };
   actor: { actorType: "user" | "agent"; actorId: string };
   source: string;
@@ -687,6 +688,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       interactionStatus: input.interaction.status,
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
+      interactionRejectionReason: input.interaction.rejectionReason ?? null,
       mutation: "interaction",
     },
     requestedByActorType: input.actor.actorType,
@@ -699,6 +701,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       interactionStatus: input.interaction.status,
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
+      interactionRejectionReason: input.interaction.rejectionReason ?? null,
       wakeReason: "issue_commented",
       source: input.source,
       ...(forceFreshSession ? { forceFreshSession: true } : {}),
@@ -2021,6 +2024,23 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
     });
     res.json({ count });
+  });
+
+  router.get("/companies/:companyId/recovery-actions/count", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const rawStatus = req.query.status as string | undefined;
+    const rawKind = req.query.kind as string | undefined;
+    const allStatuses = ["active", "escalated"] as const;
+    type RecoveryStatus = "active" | "escalated";
+    const statuses: RecoveryStatus[] = rawStatus
+      ? (rawStatus.split(",").map((s) => s.trim()).filter((s) => allStatuses.includes(s as RecoveryStatus)) as RecoveryStatus[])
+      : [...allStatuses];
+    const kinds = rawKind
+      ? rawKind.split(",").map((k) => k.trim()).filter(Boolean)
+      : undefined;
+    const result = await recoveryActionsSvc.countActive(companyId, { statuses, kinds });
+    res.json({ status: rawStatus ?? "active,escalated", total: result.total, byKind: result.byKind });
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
@@ -5204,10 +5224,17 @@ export function issueRoutes(
         },
       });
 
+      const rejectionReason =
+        interaction.kind === "request_confirmation"
+          ? (interaction.result?.reason ?? null)
+          : interaction.kind === "suggest_tasks"
+            ? (interaction.result?.rejectionReason ?? null)
+            : null;
+
       queueResolvedInteractionContinuationWakeup({
         heartbeat,
         issue,
-        interaction,
+        interaction: { ...interaction, rejectionReason },
         actor,
         source: "issue.interaction.reject",
       });
