@@ -5,6 +5,7 @@ import {
   agents,
   companies,
   createDb,
+  heartbeatRunEvents,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueRelations,
@@ -94,7 +95,17 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedRunningRun(opts: { now: Date; ageMs: number; withOutput?: boolean; logChunk?: string }) {
+  async function seedRunningRun(
+    opts: {
+      now: Date;
+      ageMs: number;
+      withOutput?: boolean;
+      logChunk?: string;
+      adapterType?: string;
+      processPid?: number | null;
+      processGroupId?: number | null;
+    },
+  ) {
     const companyId = randomUUID();
     const managerId = randomUUID();
     const coderId = randomUUID();
@@ -129,7 +140,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         role: "engineer",
         status: "running",
         reportsTo: managerId,
-        adapterType: "codex_local",
+        adapterType: opts.adapterType ?? "codex_local",
         adapterConfig: {},
         runtimeConfig: {},
         permissions: {},
@@ -159,6 +170,8 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       lastOutputAt,
       lastOutputSeq: opts.withOutput ? 3 : 0,
       lastOutputStream: opts.withOutput ? "stdout" : null,
+      processPid: opts.processPid ?? null,
+      processGroupId: opts.processGroupId ?? null,
       contextSnapshot: { issueId },
       stdoutExcerpt: "OPENAI_API_KEY=sk-test-secret-value should not leak",
       logBytes: 0,
@@ -180,7 +193,13 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         })
         .where(eq(heartbeatRuns.id, runId));
     }
-    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    await db
+      .update(issues)
+      .set({
+        executionRunId: runId,
+        executionLockedAt: startedAt,
+      })
+      .where(eq(issues.id, issueId));
     return { companyId, managerId, coderId, issueId, runId, issuePrefix };
   }
 
@@ -189,6 +208,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     const { companyId, managerId, runId } = await seedRunningRun({
       now,
       ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      processPid: process.pid,
     });
     const heartbeat = heartbeatService(db);
 
@@ -214,6 +234,74 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(evaluations[0]?.description).toContain("Decision Checklist");
     expect(evaluations[0]?.description).not.toContain("sk-test-secret-value");
+  });
+
+  it("auto-terminates dead tracked pid before creating a stale-run evaluation issue", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      processPid: 999_999,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ created: 0, existing: 0, escalated: 0, autoTerminated: 1 });
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+
+    const [run] = await db
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect(run).toMatchObject({
+      status: "failed",
+      errorCode: "process_lost",
+    });
+
+    const [source] = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(source).toEqual({
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+
+    const [event] = await db
+      .select({
+        eventType: heartbeatRunEvents.eventType,
+        message: heartbeatRunEvents.message,
+      })
+      .from(heartbeatRunEvents)
+      .where(and(eq(heartbeatRunEvents.companyId, companyId), eq(heartbeatRunEvents.runId, runId)));
+    expect(event?.eventType).toBe("lifecycle");
+    expect(event?.message).toContain("pid");
+  });
+
+  it("keeps non-tracked adapters on the existing review-issue path even when pid is dead", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      adapterType: "api_rest",
+      processPid: 999_999,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(result).toMatchObject({ created: 1, autoTerminated: 0 });
   });
 
   it("redacts sensitive values from actual run-log evidence", async () => {

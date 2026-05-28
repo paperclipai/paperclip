@@ -65,6 +65,15 @@ export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
+const WATCHDOG_LOCAL_PROCESS_ADAPTERS = new Set([
+  "claude_local",
+  "codex_local",
+  "cursor",
+  "gemini_local",
+  "hermes_local",
+  "opencode_local",
+  "pi_local",
+]);
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -233,6 +242,36 @@ function formatIssueLinksForComment(relations: Array<{ identifier?: string | nul
       return `[${identifier}](/${prefix}/issues/${identifier})`;
     })
     .join(", ");
+}
+
+function isTrackedWatchdogLocalProcessAdapter(adapterType: string) {
+  return WATCHDOG_LOCAL_PROCESS_ADAPTERS.has(adapterType);
+}
+
+function isProcessAlive(pid: number | null | undefined) {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "EPERM") return true;
+    if (code === "ESRCH") return false;
+    return false;
+  }
+}
+
+function isProcessGroupAlive(processGroupId: number | null | undefined) {
+  if (typeof processGroupId !== "number" || !Number.isInteger(processGroupId) || processGroupId <= 0) return false;
+  try {
+    process.kill(-processGroupId, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "EPERM") return true;
+    if (code === "ESRCH") return false;
+    return false;
+  }
 }
 
 function unwrapDatabaseConflictError(error: unknown) {
@@ -1023,6 +1062,85 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return true;
   }
 
+  function shouldAutoTerminateDeadPidSilentRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    runningAgent: typeof agents.$inferSelect;
+  }) {
+    if (!isTrackedWatchdogLocalProcessAdapter(input.runningAgent.adapterType)) return false;
+    if (runningProcesses.has(input.run.id)) return false;
+    if (!input.run.processPid || isProcessAlive(input.run.processPid)) return false;
+    if (input.run.processGroupId && isProcessGroupAlive(input.run.processGroupId)) return false;
+    return true;
+  }
+
+  async function autoTerminateDeadPidSilentRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    runningAgent: typeof agents.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect | null;
+    now: Date;
+  }) {
+    const message =
+      `Watchdog auto-recovery terminated this run because pid ${input.run.processPid} is no longer alive.`;
+    const [updated] = await db
+      .update(heartbeatRuns)
+      .set({
+        status: "failed",
+        error: message,
+        errorCode: "process_lost",
+        finishedAt: input.now,
+        updatedAt: input.now,
+      })
+      .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.status, "running")))
+      .returning();
+    if (!updated) return false;
+
+    const [seqRow] = await db
+      .select({ maxSeq: sql<number>`coalesce(max(${heartbeatRunEvents.seq}), 0)` })
+      .from(heartbeatRunEvents)
+      .where(and(eq(heartbeatRunEvents.companyId, input.run.companyId), eq(heartbeatRunEvents.runId, input.run.id)));
+    const nextSeq = Number(seqRow?.maxSeq ?? 0) + 1;
+    await db.insert(heartbeatRunEvents).values({
+      companyId: input.run.companyId,
+      runId: input.run.id,
+      agentId: input.run.agentId,
+      seq: nextSeq,
+      eventType: "lifecycle",
+      stream: "system",
+      level: "error",
+      message,
+      payload: {
+        source: "recovery.scan_silent_active_runs",
+        autoTerminated: true,
+        processPid: input.run.processPid,
+        processGroupId: input.run.processGroupId,
+      },
+      createdAt: input.now,
+    });
+
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.runningAgent.id,
+      runId: input.run.id,
+      action: "heartbeat.output_stale_auto_terminated",
+      entityType: "heartbeat_run",
+      entityId: input.run.id,
+      details: {
+        source: "recovery.scan_silent_active_runs",
+        reason: "dead_pid",
+        processPid: input.run.processPid,
+        processGroupId: input.run.processGroupId,
+      },
+    });
+
+    if (input.sourceIssue) {
+      await issuesSvc.clearExecutionRunIfTerminal(input.sourceIssue.id);
+    }
+
+    return true;
+  }
+
   async function createOrUpdateStaleRunEvaluation(input: {
     run: typeof heartbeatRuns.$inferSelect;
     now: Date;
@@ -1039,6 +1157,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       now: input.now,
     });
     const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
+    if (shouldAutoTerminateDeadPidSilentRun({ run: input.run, runningAgent })) {
+      const terminated = await autoTerminateDeadPidSilentRun({
+        run: input.run,
+        runningAgent,
+        sourceIssue,
+        now: input.now,
+      });
+      if (terminated) return { kind: "auto_terminated" as const };
+    }
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
     if (existing) {
       if (level === "critical" && existing.priority !== "high") {
@@ -1174,6 +1301,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       created: 0,
       existing: 0,
       escalated: 0,
+      autoTerminated: 0,
       snoozed: 0,
       skipped: 0,
       evaluationIssueIds: [] as string[],
@@ -1188,6 +1316,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (outcome.kind === "created") result.created += 1;
       else if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;
+      else if (outcome.kind === "auto_terminated") result.autoTerminated += 1;
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
         result.evaluationIssueIds.push(outcome.evaluationIssueId);
