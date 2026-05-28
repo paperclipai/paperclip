@@ -71,6 +71,7 @@ export interface Routine {
   updatedByUserId: string | null;
   lastTriggeredAt: Date | null;
   lastEnqueuedAt: Date | null;
+  labelIds: string[];
   createdAt: Date;
   updatedAt: Date;
   managedByPlugin?: RoutineManagedByPlugin | null;

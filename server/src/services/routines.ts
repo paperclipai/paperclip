@@ -1253,6 +1253,7 @@ export function routineService(
             originRunId: createdRun.id,
             originFingerprint: dispatchFingerprint,
             billingCode: issueBillingCode,
+            labelIds: input.routine.executionLabelIds?.length ? input.routine.executionLabelIds : undefined,
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
@@ -1378,7 +1379,11 @@ export function routineService(
   }
 
   return {
-    get: getRoutineById,
+    get: async (id: string) => {
+      const row = await getRoutineById(id);
+      if (!row) return null;
+      return { ...row, labelIds: row.executionLabelIds ?? [] };
+    },
     getTrigger: getTriggerById,
 
     list: async (
@@ -1402,6 +1407,7 @@ export function routineService(
       ]);
       return rows.map((row) => ({
         ...row,
+        labelIds: row.executionLabelIds ?? [],
         managedByPlugin: managedByRoutine.get(row.id) ?? null,
         triggers: (triggersByRoutine.get(row.id) ?? []).map((trigger) => ({
           id: trigger.id,
@@ -1508,6 +1514,7 @@ export function routineService(
 
       return {
         ...row,
+        labelIds: row.executionLabelIds ?? [],
         managedByPlugin: managedByRoutine.get(row.id) ?? null,
         project,
         assignee,
@@ -1553,6 +1560,7 @@ export function routineService(
             catchUpPolicy: input.catchUpPolicy,
             variables,
             env,
+            executionLabelIds: input.labelIds ?? [],
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
             updatedByAgentId: actor.agentId ?? null,
@@ -1572,7 +1580,7 @@ export function routineService(
         }
         return routine;
       });
-      return createdRoutine;
+      return { ...createdRoutine, labelIds: createdRoutine.executionLabelIds ?? [] };
     },
 
     update: async (id: string, patch: UpdateRoutine, actor: Actor): Promise<Routine | null> => {
@@ -1651,6 +1659,7 @@ export function routineService(
           catchUpPolicy: patch.catchUpPolicy ?? locked.catchUpPolicy,
           variables: nextVariables,
           env: nextEnv,
+          executionLabelIds: patch.labelIds !== undefined ? (patch.labelIds ?? []) : locked.executionLabelIds,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };
@@ -1700,6 +1709,7 @@ export function routineService(
             catchUpPolicy: candidate.catchUpPolicy,
             variables: candidate.variables,
             env: candidate.env,
+            executionLabelIds: candidate.executionLabelIds,
             updatedByAgentId: actor.agentId ?? null,
             updatedByUserId: actor.userId ?? null,
             updatedAt: new Date(),
@@ -1720,7 +1730,8 @@ export function routineService(
         }
         return routine;
       });
-      return updatedRoutine;
+      if (!updatedRoutine) return null;
+      return { ...updatedRoutine, labelIds: updatedRoutine.executionLabelIds ?? [] };
     },
 
     createTrigger: async (
