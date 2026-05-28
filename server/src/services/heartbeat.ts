@@ -6874,6 +6874,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
     const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
+    const shadowCostCents = normalizeBilledCostCents(result.costUsd, "metered_api");
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
@@ -6910,6 +6911,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         cachedInputTokens,
         outputTokens,
         costCents: additionalCostCents,
+        shadowCostCents,
         occurredAt: new Date(),
       });
     }
