@@ -60,6 +60,7 @@ import {
   X,
   Eye,
   ShieldCheck,
+  Receipt,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
@@ -429,6 +430,9 @@ export function NewIssueDialog() {
   const [assigneeChrome, setAssigneeChrome] = useState(false);
   const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
   const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
+  const [billingCode, setBillingCode] = useState("");
+  const [billingCodeOpen, setBillingCodeOpen] = useState(false);
+  const [billingCodeInput, setBillingCodeInput] = useState("");
   const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
@@ -905,6 +909,9 @@ export function NewIssueDialog() {
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
     setWorkMode("standard");
+    setBillingCode("");
+    setBillingCodeOpen(false);
+    setBillingCodeInput("");
     setExpanded(false);
     setDialogCompanyId(null);
     setStagedFiles([]);
@@ -996,6 +1003,7 @@ export function NewIssueDialog() {
         : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
       ...(executionPolicy ? { executionPolicy } : {}),
+      ...(billingCode.trim() ? { billingCode: billingCode.trim() } : {}),
     });
   }
 
@@ -1910,6 +1918,59 @@ export function NewIssueDialog() {
             <Tag className="h-3 w-3" />
             Labels
           </button> */}
+
+          {/* Billing code chip */}
+          <Popover open={billingCodeOpen} onOpenChange={(open) => { setBillingCodeOpen(open); if (open) setBillingCodeInput(billingCode); }}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                data-testid="new-issue-billing-code-chip"
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent/50",
+                  billingCode ? "border-border text-foreground" : "border-border text-muted-foreground",
+                )}
+                disabled={createIssue.isPending}
+              >
+                <Receipt className="h-3 w-3" />
+                {billingCode || "Billing code"}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-56 p-2" align="start">
+              <div className="flex flex-col gap-2">
+                <span className="text-xs text-muted-foreground">Billing code (optional)</span>
+                <input
+                  type="text"
+                  className="rounded border border-border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+                  placeholder="e.g. PROJ-123"
+                  value={billingCodeInput}
+                  onChange={(e) => setBillingCodeInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { setBillingCode(billingCodeInput.trim()); setBillingCodeOpen(false); }
+                    if (e.key === "Escape") { setBillingCodeOpen(false); }
+                  }}
+                  autoFocus
+                />
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    className="flex-1 rounded bg-primary px-2 py-1 text-xs text-primary-foreground hover:bg-primary/90"
+                    onClick={() => { setBillingCode(billingCodeInput.trim()); setBillingCodeOpen(false); }}
+                  >
+                    Set
+                  </button>
+                  {billingCode && (
+                    <button
+                      type="button"
+                      className="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent/50"
+                      onClick={() => { setBillingCode(""); setBillingCodeInput(""); setBillingCodeOpen(false); }}
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
 
           <input
             ref={stageFileInputRef}

@@ -407,6 +407,8 @@ export function IssueProperties({
   const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
   const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
+  const [billingCodeEditing, setBillingCodeEditing] = useState(false);
+  const [billingCodeInput, setBillingCodeInput] = useState(issue.billingCode ?? "");
   const normalizedBlockedBySearch = blockedBySearch.trim();
 
   const { data: session } = useQuery({
@@ -1770,6 +1772,42 @@ export function IssueProperties({
             onChange={(priority) => onUpdate({ priority })}
             showLabel
           />
+        </PropertyRow>
+
+        <PropertyRow label="Billing code">
+          {billingCodeEditing ? (
+            <input
+              type="text"
+              className="rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+              value={billingCodeInput}
+              onChange={(e) => setBillingCodeInput(e.target.value)}
+              onBlur={() => {
+                setBillingCodeEditing(false);
+                const trimmed = billingCodeInput.trim();
+                if (trimmed !== (issue.billingCode ?? "")) {
+                  onUpdate({ billingCode: trimmed || null });
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                if (e.key === "Escape") { setBillingCodeInput(issue.billingCode ?? ""); setBillingCodeEditing(false); }
+              }}
+              autoFocus
+            />
+          ) : (
+            <button
+              type="button"
+              data-testid="billing-code-value"
+              className="rounded px-1 py-0.5 text-xs text-left hover:bg-accent/50 transition-colors"
+              onClick={() => { setBillingCodeInput(issue.billingCode ?? ""); setBillingCodeEditing(true); }}
+            >
+              {issue.billingCode ? (
+                <span className="font-mono">{issue.billingCode}</span>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              )}
+            </button>
+          )}
         </PropertyRow>
 
         <PropertyPicker
