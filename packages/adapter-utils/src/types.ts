@@ -496,7 +496,6 @@ export interface CreateConfigValues {
   workspaceBranchTemplate?: string;
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
-  settingSources?: string;
   defaultEnvironmentId?: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;

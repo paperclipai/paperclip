@@ -95,6 +95,5 @@ export function buildClaudeLocalConfig(v: CreateConfigValues): Record<string, un
   }
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
-  if (v.settingSources) ac.settingSources = v.settingSources;
   return ac;
 }
