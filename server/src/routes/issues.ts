@@ -3519,6 +3519,20 @@ export function issueRoutes(
     }
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
+    const { originFingerprint, parentId } = req.body;
+    if (originFingerprint && originFingerprint !== "default" && parentId) {
+      const existing = await svc.findByOriginFingerprint(companyId, parentId, originFingerprint);
+      if (existing) {
+        const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(existing.id);
+        res.status(200).json({
+          ...existing,
+          relatedWork: referenceSummary,
+          referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+        });
+        return;
+      }
+    }
+
     const actor = getActorInfo(req);
     const executionPolicy = applyActorMonitorScheduledBy(
       normalizeIssueExecutionPolicy(req.body.executionPolicy),
