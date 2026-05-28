@@ -52,4 +52,9 @@ Operational fields:
 
 Notes:
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
+
+AWS Bedrock mode:
+- Set CLAUDE_CODE_USE_BEDROCK=1 (or ANTHROPIC_BEDROCK_BASE_URL=<url>) to route the Claude CLI to AWS Bedrock instead of the Anthropic API.
+- The model list and the cheap-profile default automatically switch to region-correct Bedrock inference-profile IDs (e.g. eu.anthropic.claude-haiku-4-5-20251001-v1:0 in eu-central-1).
+- Region resolution order: ANTHROPIC_BEDROCK_REGION > AWS_REGION > AWS_DEFAULT_REGION (defaults to "us" when none match a known prefix).
 `;
