@@ -502,7 +502,7 @@ describe("openclaw gateway adapter execute", () => {
       );
       expect(String(payload?.message ?? "")).toContain("First comment");
       expect(String(payload?.message ?? "")).toContain("\"commentIds\":[\"comment-1\",\"comment-2\"]");
-      expect(payload?.paperclip).toMatchObject({
+      expect(payload?.metadata?.paperclip).toMatchObject({
         wake: {
           latestCommentId: "comment-2",
           commentIds: ["comment-1", "comment-2"],
