@@ -3576,6 +3576,7 @@ export function issueRoutes(
       details: {
         title: issue.title,
         identifier: issue.identifier,
+        assigneeAgentId: issue.assigneeAgentId ?? null,
         ...buildCreateIssueActivityStatusDetails(issue, res),
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
         ...summarizeIssueReferenceActivityDetails({
@@ -3683,6 +3684,7 @@ export function issueRoutes(
             parentId: parent.id,
             identifier: issue.identifier,
             title: issue.title,
+            assigneeAgentId: issue.assigneeAgentId ?? null,
             ...buildCreateIssueActivityStatusDetails(issue, res),
             inheritedExecutionWorkspaceFromIssueId: parent.id,
             ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
