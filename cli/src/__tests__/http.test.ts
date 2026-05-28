@@ -15,7 +15,7 @@ describe("PaperclipApiClient", () => {
     const client = new PaperclipApiClient({
       apiBase: "http://localhost:3100",
       apiKey: "token-123",
-      runId: "run-abc",
+      runId: "0190f8e2-7b6c-7c1f-9e7f-3d3f4a2b1c8a",
     });
 
     await client.post("/api/test", { hello: "world" });
@@ -26,7 +26,7 @@ describe("PaperclipApiClient", () => {
 
     const headers = call[1].headers as Record<string, string>;
     expect(headers.authorization).toBe("Bearer token-123");
-    expect(headers["x-paperclip-run-id"]).toBe("run-abc");
+    expect(headers["x-paperclip-run-id"]).toBe("0190f8e2-7b6c-7c1f-9e7f-3d3f4a2b1c8a");
     expect(headers["content-type"]).toBe("application/json");
   });
 

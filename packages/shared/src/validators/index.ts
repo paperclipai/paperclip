@@ -404,3 +404,14 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export {
+  isRunId,
+  isRunIdParseError,
+  parseOptionalRunId,
+  parseRunId,
+  unsafeRunId,
+  type RunId,
+  type RunIdParseError,
+  type RunIdSource,
+} from "./run-id.js";
