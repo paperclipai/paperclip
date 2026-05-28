@@ -928,6 +928,92 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("keeps a detached local run active when the recorded pid is still alive", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      includeIssue: false,
+      runErrorCode: "process_detached",
+      runError: `Lost in-memory process handle, but child pid ${child.pid} is still alive`,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 });
+    expect(result).toEqual({ reaped: 0, runIds: [] });
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBe("process_detached");
+    expect(run?.error).toContain(String(child.pid));
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("claimed");
+  });
+
+  it("reconciles detached dead-pid runs even when the run was updated recently", async () => {
+    const { agentId, runId, wakeupRequestId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: 999_999_999,
+      processGroupId: 999_999_999,
+      processLossRetryCount: 1,
+      includeIssue: false,
+      runErrorCode: "process_detached",
+      runError: "Lost in-memory process handle, but child pid 999999999 is still alive",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({
+      staleThresholdMs: 365 * 24 * 60 * 60 * 1000,
+    });
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const [run, wakeup, agent, events] = await Promise.all([
+      heartbeat.getRun(runId),
+      db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          eventType: heartbeatRunEvents.eventType,
+          message: heartbeatRunEvents.message,
+        })
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, runId)),
+    ]);
+
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+    expect(run?.finishedAt).toBeTruthy();
+    expect(run?.resultJson).toMatchObject({
+      stopReason: "process_lost",
+      timeoutConfigured: false,
+      timeoutFired: false,
+    });
+    expect(wakeup?.status).toBe("failed");
+    expect(agent?.status).toBe("error");
+    expect(
+      events.some(
+        (event) =>
+          event.eventType === "lifecycle" &&
+          event.message?.includes("Process lost"),
+      ),
+    ).toBe(true);
+  });
+
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: 999_999_999,
