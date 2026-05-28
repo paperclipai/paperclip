@@ -565,8 +565,10 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
     outcome?: "approved" | "rejected" | "expired" | "superseded" | "cancelled" | null;
     reason?: string | null;
     notifyAdapter?: boolean;
+    dbClient?: Db;
   }) {
-    const [updated] = await db.update(awaitingHumanBridges).set({
+    const client = input.dbClient ?? db;
+    const [updated] = await client.update(awaitingHumanBridges).set({
       status: "closed",
       closeOutcome: input.outcome ?? null,
       closeReason: input.reason ?? null,
@@ -785,27 +787,37 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
     handoffKind: "request_confirmation" | "ask_user_questions";
     notification: AwaitingHumanNotificationPayload;
   }) {
-    const [created] = await db.insert(awaitingHumanBridges).values({
-      companyId: input.companyId,
-      issueId: input.issueId,
-      interactionId: input.interactionId,
-      agentId: input.agentId,
-      provider: input.bridge.provider,
-      status: "pending_delivery",
-    }).onConflictDoNothing({
-      target: awaitingHumanBridges.interactionId,
-      where: inArray(awaitingHumanBridges.status, ["pending_delivery", "waiting_for_human"]),
-    }).returning();
+    const created = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const [inserted] = await txDb.insert(awaitingHumanBridges).values({
+        companyId: input.companyId,
+        issueId: input.issueId,
+        interactionId: input.interactionId,
+        agentId: input.agentId,
+        provider: input.bridge.provider,
+        status: "pending_delivery",
+      }).onConflictDoNothing({
+        target: awaitingHumanBridges.interactionId,
+        where: inArray(awaitingHumanBridges.status, ["pending_delivery", "waiting_for_human"]),
+      }).returning();
+
+      if (!inserted) {
+        return null;
+      }
+
+      await closeBridgeRow({
+        row: input.bridge,
+        outcome: "superseded",
+        notifyAdapter: false,
+        dbClient: txDb,
+      });
+
+      return inserted;
+    });
 
     if (!created) {
       return null;
     }
-
-    await closeBridgeRow({
-      row: input.bridge,
-      outcome: "superseded",
-      notifyAdapter: false,
-    });
 
     return deliverBridgeRow({
       row: created,
@@ -1556,7 +1568,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
               reason: event.body?.trim() || null,
               notifyAdapter: false,
             });
-            continue;
+            return summary;
           }
           await this.closeBridge({
             bridgeId: row.id,
@@ -1621,7 +1633,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
               reason: event.body?.trim() || null,
               notifyAdapter: false,
             });
-            continue;
+            return summary;
           }
           await this.closeBridge({
             bridgeId: row.id,
