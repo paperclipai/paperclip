@@ -1301,9 +1301,16 @@ async function resolveSpawnTarget(
     // ComSpec to PowerShell, which breaks cmd-specific flags like /d /s /c.
     const shell = resolveWindowsCmdShell(env);
     const commandLine = [quoteForCmd(executable), ...args.map(quoteForCmd)].join(" ");
+    // cmd.exe /s strips the outermost quote pair from the /c argument. When the
+    // executable path contains spaces it is already wrapped in quotes by
+    // quoteForCmd; those inner quotes would be stripped, leaving the path
+    // broken at the first space. Wrapping the entire commandLine in an extra
+    // pair of quotes ensures the inner executable quotes survive cmd.exe's
+    // quote-stripping pass (GH#6805).
+    const wrappedCommandLine = commandLine.startsWith('"') ? `"${commandLine}"` : commandLine;
     return {
       command: shell,
-      args: ["/d", "/s", "/c", commandLine],
+      args: ["/d", "/s", "/c", wrappedCommandLine],
     };
   }
 
