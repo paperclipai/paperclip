@@ -1255,6 +1255,7 @@ export function routineService(
             originFingerprint: dispatchFingerprint,
             billingCode: issueBillingCode,
             labelIds: input.routine.executionLabelIds?.length ? input.routine.executionLabelIds : undefined,
+            executionPolicy: input.routine.executionPolicyTemplate ?? null,
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
@@ -1562,6 +1563,7 @@ export function routineService(
             variables,
             env,
             executionLabelIds: input.labelIds ?? [],
+            executionPolicyTemplate: input.executionPolicyTemplate ?? null,
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
             updatedByAgentId: actor.agentId ?? null,
@@ -1661,6 +1663,7 @@ export function routineService(
           variables: nextVariables,
           env: nextEnv,
           executionLabelIds: patch.labelIds !== undefined ? (patch.labelIds ?? []) : locked.executionLabelIds,
+          executionPolicyTemplate: patch.executionPolicyTemplate !== undefined ? (patch.executionPolicyTemplate ?? null) : locked.executionPolicyTemplate,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };

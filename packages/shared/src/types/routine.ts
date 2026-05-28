@@ -72,6 +72,7 @@ export interface Routine {
   lastTriggeredAt: Date | null;
   lastEnqueuedAt: Date | null;
   labelIds: string[];
+  executionPolicyTemplate: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
   managedByPlugin?: RoutineManagedByPlugin | null;
