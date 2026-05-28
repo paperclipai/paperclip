@@ -19,6 +19,8 @@ export interface AgentPermissions extends Record<string, unknown> {
   canCreateAgents: boolean;
   trustPreset?: TrustPreset;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  triageAuthority?: boolean;
+  triageAuthorityFields?: string[];
 }
 
 export interface AgentModelProfileConfig {
