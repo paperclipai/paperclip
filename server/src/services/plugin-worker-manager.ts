@@ -434,7 +434,16 @@ export function createPluginWorkerHandle(
       throw new Error(`Worker process for plugin "${pluginId}" is not writable`);
     }
     const serialized = serializeMessage(message as any);
-    childProcess.stdin.write(serialized);
+    try {
+      childProcess.stdin.write(serialized);
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EPIPE") {
+        log.warn({ pluginId }, "worker stdin write failed (EPIPE) — child exited");
+      } else {
+        throw err;
+      }
+    }
   }
 
   function errorCodeForWorkerHostError(err: unknown): number {
@@ -751,6 +760,16 @@ export function createPluginWorkerHandle(
       stderrReadline.on("line", (line: string) => {
         stderrExcerpt = appendStderrExcerpt(stderrExcerpt, line);
         log.warn({ stream: "stderr" }, `[plugin stderr] ${line}`);
+      });
+    }
+
+    // Suppress EPIPE errors on stdin — the child may exit before we finish
+    // writing, and an unhandled 'error' event would crash the server process.
+    if (child.stdin) {
+      child.stdin.on("error", (err: NodeJS.ErrnoException) => {
+        if (err.code !== "EPIPE") {
+          log.warn({ err: err.message }, "worker stdin error");
+        }
       });
     }
 
