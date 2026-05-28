@@ -2904,6 +2904,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await db.insert(issueComments).values({
         companyId: input.claimed.companyId,
         issueId: input.claimed.id,
+        authorType: "system",
         body: monitorRecoveryComment({
           issue: input.claimed,
           clearReason: input.clearReason,

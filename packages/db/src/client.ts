@@ -259,20 +259,42 @@ async function applyPendingMigrationsManually(
       );
       if (existingEntry) continue;
 
-      await runInTransaction(sql, async () => {
-        for (const statement of splitMigrationStatements(migrationContent)) {
-          await sql.unsafe(statement);
-        }
+      try {
+        await runInTransaction(sql, async () => {
+          for (const statement of splitMigrationStatements(migrationContent)) {
+            await sql.unsafe(statement);
+          }
 
-        await recordMigrationHistoryEntry(
-          sql,
-          qualifiedTable,
-          columnNames,
-          migrationFile,
-          hash,
-          folderMillisByFileName.get(migrationFile) ?? Date.now(),
-        );
-      });
+          await recordMigrationHistoryEntry(
+            sql,
+            qualifiedTable,
+            columnNames,
+            migrationFile,
+            hash,
+            folderMillisByFileName.get(migrationFile) ?? Date.now(),
+          );
+        });
+      } catch (err) {
+        // PostgreSQL "relation already exists" (42P07) means the DDL committed
+        // but the journal entry was rolled back (e.g. a prior crash). Record the
+        // journal entry now so the migration is not re-attempted on the next start.
+        const pgCode = (err as { code?: string })?.code;
+        if (pgCode === "42P07" || pgCode === "42710") {
+          const alreadyRecorded = await migrationHistoryEntryExists(sql, qualifiedTable, columnNames, migrationFile, hash);
+          if (!alreadyRecorded) {
+            await recordMigrationHistoryEntry(
+              sql,
+              qualifiedTable,
+              columnNames,
+              migrationFile,
+              hash,
+              folderMillisByFileName.get(migrationFile) ?? Date.now(),
+            );
+          }
+        } else {
+          throw err;
+        }
+      }
     }
   } finally {
     await sql.end();
