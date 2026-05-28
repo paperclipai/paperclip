@@ -262,11 +262,7 @@ export function clickupAwaitingHumanBridgeAdapter(db: Db): AwaitingHumanBridgeAd
       if (!messageId) {
         return { status: "skipped", detail: "missing-external-message-id", events: [] };
       }
-      const overrides = input.overrides ?? {
-        personalToken: process.env.CLICKUP_PERSONAL_TOKEN?.trim() || undefined,
-        workspaceId: process.env.CLICKUP_WORKSPACE_ID?.trim() || undefined,
-        channelId: process.env.CLICKUP_AWAITING_HUMAN_CHANNEL_ID?.trim() || process.env.CLICKUP_ENGINEERING_CHANNEL_ID?.trim() || undefined,
-      };
+      const overrides = await loadCompanyOverrides(db, input.companyId);
       const detected = await detectClickUpAwaitingHumanBridgeEvents(messageId, overrides);
       if (detected.status === "failed" || detected.status === "skipped") {
         return { status: detected.status, detail: detected.detail, events: detected.events.map((event) => ({

@@ -40,11 +40,6 @@ export type AwaitingHumanBridgeAdapter = {
     issueId: string;
     interactionId: string;
     externalMessageId?: string | null;
-    overrides?: {
-      personalToken?: string | null;
-      workspaceId?: string | null;
-      channelId?: string | null;
-    };
   }): Promise<{
     status: "ok" | "skipped" | "failed";
     detail: string;
