@@ -21,6 +21,7 @@ import type { RoutineEnvConfig, RoutineRevisionSnapshotV1, RoutineVariable } fro
 
 export const routines = pgTable(
   "routines",
+    executionLabelIds: jsonb("execution_label_ids").$type<string[]>().notNull().default([]),
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
