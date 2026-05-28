@@ -342,6 +342,7 @@ export function decideSuccessfulRunHandoff(input: {
   hasExplicitBlockerPath: boolean;
   hasOpenRecoveryIssue: boolean;
   hasPauseHold: boolean;
+  hasActiveRoutineParent: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
 }): SuccessfulRunHandoffDecision {
@@ -377,6 +378,9 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (input.hasExplicitBlockerPath) return { kind: "skip", reason: "explicit blocker path owns the next action" };
   if (input.hasOpenRecoveryIssue) return { kind: "skip", reason: "open recovery issue owns the ambiguity" };
+  if (input.hasActiveRoutineParent) {
+    return { kind: "skip", reason: "suppressed by active routine parentage" };
+  }
   if (input.hasPauseHold) return { kind: "skip", reason: "issue is under an active pause hold" };
   if (input.budgetBlocked) return { kind: "skip", reason: "budget hard stop blocks corrective wake" };
   if (input.idempotentWakeExists) {
