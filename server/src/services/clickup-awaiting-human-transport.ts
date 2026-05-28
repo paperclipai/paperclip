@@ -8,7 +8,6 @@ const MAX_DETAIL_BULLETS = 5;
 const MAX_BULLET_LENGTH = 220;
 const DEFAULT_CLICKUP_TIMEOUT_SEC = 30;
 const CLICKUP_ATTACHMENT_FILE_FIELD = "attachment[0]";
-const DEFAULT_CLICKUP_APPROVAL_POSITIVE_REACTIONS = ["thumbsup", "white_check_mark", "heavy_check_mark"] as const;
 const DEFAULT_CLICKUP_APPROVAL_POSITIVE_REPLY_KEYWORDS = [
   "approve",
   "approved",
@@ -98,7 +97,6 @@ type ClickUpChatConfig = {
   workspaceId: string;
   channelId: string;
   reviewListId: string;
-  approvalPositiveReactions: string[];
   approvalPositiveReplyKeywords: string[];
 };
 
@@ -178,10 +176,6 @@ async function readCompanyClickUpOverrides(
 }
 
 function readClickUpChatConfig(overrides?: ClickUpAwaitingHumanConfigOverrides): ClickUpChatConfig {
-  const positiveReactions = (process.env.CLICKUP_APPROVAL_POSITIVE_REACTIONS ?? "")
-    .split(",")
-    .map((value) => value.trim().toLowerCase())
-    .filter(Boolean);
   const positiveReplyKeywords = (process.env.CLICKUP_APPROVAL_POSITIVE_REPLY_KEYWORDS ?? "")
     .split(",")
     .map((value) => compactWhitespace(value.trim().toLowerCase()))
@@ -202,9 +196,6 @@ function readClickUpChatConfig(overrides?: ClickUpAwaitingHumanConfigOverrides):
     workspaceId,
     channelId,
     reviewListId: process.env.CLICKUP_AWAITING_HUMAN_REVIEW_LIST_ID?.trim() ?? "",
-    approvalPositiveReactions: positiveReactions.length > 0
-      ? [...new Set(positiveReactions)]
-      : [...DEFAULT_CLICKUP_APPROVAL_POSITIVE_REACTIONS],
     approvalPositiveReplyKeywords: positiveReplyKeywords.length > 0
       ? [...new Set(positiveReplyKeywords)]
       : [...DEFAULT_CLICKUP_APPROVAL_POSITIVE_REPLY_KEYWORDS],
@@ -940,35 +931,6 @@ export async function detectClickUpAwaitingHumanBridgeEvents(
       body: replyBody,
       metadata,
     });
-  }
-
-  const reactionsResult = await getClickUpChatMessageReactions(messageId, overrides);
-  if (reactionsResult.status === "failed" || reactionsResult.status === "skipped") {
-    if (events.length > 0) {
-      return { status: "sent", detail: "reply-only", events };
-    }
-    return { status: reactionsResult.status, detail: reactionsResult.detail, events: [] };
-  }
-
-  const positiveSet = new Set(config.approvalPositiveReactions);
-  const matchingReaction = reactionsResult.reactions.find((reaction) =>
-    reaction.count > 0 && positiveSet.has(reaction.name)
-  );
-  if (matchingReaction) {
-    return {
-      status: "sent",
-      detail: "positive-reaction-detected",
-      events: [{
-        kind: "approval_signal",
-        externalEventId: `reaction:${matchingReaction.name}`,
-        externalMessageId: messageId,
-        body: null,
-        metadata: {
-          resolutionSource: "clickup_reaction",
-          clickupReaction: matchingReaction.name,
-        },
-      }],
-    };
   }
 
   if (events.length > 0) {

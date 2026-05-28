@@ -104,21 +104,8 @@ function buildReplyReceivedBody(provider: string, replyBody: string) {
   return `${formatProviderLabel(provider)} reply received:\n\n${replyBody}`;
 }
 
-function buildApprovalSignalCommentBody(
-  provider: string,
-  replyBody: string | null,
-  metadata: Record<string, unknown>,
-) {
-  if (replyBody) {
-    return buildReplyReceivedBody(provider, replyBody);
-  }
-  const reaction = typeof metadata.clickupReaction === "string" && metadata.clickupReaction.trim().length > 0
-    ? metadata.clickupReaction.trim()
-    : null;
-  if (reaction) {
-    return `${formatProviderLabel(provider)} approval reaction received: ${reaction}`;
-  }
-  return `${formatProviderLabel(provider)} approval signal received`;
+function buildApprovalSignalCommentBody(provider: string, replyBody: string) {
+  return buildReplyReceivedBody(provider, replyBody);
 }
 
 function normalizeForMatch(value: string) {
@@ -1651,6 +1638,10 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
             && currentInteraction.kind === "ask_user_questions"
             && currentInteraction.status === "pending"
           ) {
+            if (!approvalReplyBody) {
+              summary.skipped += 1;
+              continue;
+            }
             const eventMetadata = event.metadata ?? {};
             const questionsApproval = await db.transaction(async (tx) => {
               const [recorded] = await tx.insert(awaitingHumanBridgeInboundEvents).values({
@@ -1674,11 +1665,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
                 };
               }
 
-              const commentBody = buildApprovalSignalCommentBody(
-                row.provider,
-                approvalReplyBody,
-                eventMetadata,
-              );
+              const commentBody = buildApprovalSignalCommentBody(row.provider, approvalReplyBody);
               const [comment] = await tx.insert(issueComments).values({
                 companyId: row.companyId,
                 issueId: row.issueId,

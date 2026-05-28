@@ -25,7 +25,6 @@ afterEach(() => {
   delete process.env.CLICKUP_AWAITING_HUMAN_CHANNEL_ID;
   delete process.env.CLICKUP_ENGINEERING_CHANNEL_ID;
   delete process.env.CLICKUP_AWAITING_HUMAN_REVIEW_LIST_ID;
-  delete process.env.CLICKUP_APPROVAL_POSITIVE_REACTIONS;
   delete process.env.CLICKUP_APPROVAL_POSITIVE_REPLY_KEYWORDS;
 });
 
@@ -413,19 +412,14 @@ describe.skip("sendAwaitingHumanNotification", () => {
     process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
     process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
 
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          data: [
-            { id: "reply-1", content: "Please revise the title." },
-            { id: "reply-2", content: "Also add the rollback note." },
-          ],
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ data: [] }),
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        data: [
+          { id: "reply-1", content: "Please revise the title." },
+          { id: "reply-2", content: "Also add the rollback note." },
+        ],
+      }),
     });
     globalThis.fetch = fetchMock as typeof fetch;
 
@@ -453,61 +447,14 @@ describe.skip("sendAwaitingHumanNotification", () => {
     });
   });
 
-  it("emits an approval signal for configured positive reactions", async () => {
-    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
-    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
-    process.env.CLICKUP_APPROVAL_POSITIVE_REACTIONS = "white_check_mark";
 
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          data: [{ id: "reply-1", content: "Please clarify the final step." }],
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          data: [{ reaction: "white_check_mark", count: 1 }],
-        }),
-    });
-    globalThis.fetch = fetchMock as typeof fetch;
-
-    const result = await detectClickUpAwaitingHumanBridgeEvents("message-42");
-
-    expect(result).toEqual({
-      status: "sent",
-      detail: "positive-reaction-detected",
-      events: [{
-        kind: "approval_signal",
-        externalEventId: "reaction:white_check_mark",
-        externalMessageId: "message-42",
-        body: null,
-        metadata: {
-          resolutionSource: "clickup_reaction",
-          clickupReaction: "white_check_mark",
-        },
-      }],
-    });
-  });
-
-  it("returns no events for neutral or noisy reactions", async () => {
+  it("returns no events when there are no replies", async () => {
     process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
     process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
 
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ data: [] }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          data: [
-            { reaction: "eyes", count: 2 },
-            { reaction: "thumbsdown", count: 1 },
-          ],
-        }),
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ data: [] }),
     });
     globalThis.fetch = fetchMock as typeof fetch;
 
@@ -518,6 +465,7 @@ describe.skip("sendAwaitingHumanNotification", () => {
       detail: "no-approval-signal",
       events: [],
     });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
