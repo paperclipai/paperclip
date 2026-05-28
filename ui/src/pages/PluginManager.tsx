@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { PluginRecord } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, Settings, Trash } from "lucide-react";
+import { AlertTriangle, ArrowUpCircle, FlaskConical, Plus, Power, Puzzle, Settings, Trash } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
@@ -165,6 +165,17 @@ export function PluginManager() {
     },
     onError: (err: Error) => {
       pushToast({ title: "Failed to disable plugin", body: err.message, tone: "error" });
+    },
+  });
+
+  const upgradeMutation = useMutation({
+    mutationFn: (pluginId: string) => pluginsApi.upgrade(pluginId),
+    onSuccess: () => {
+      invalidatePluginQueries();
+      pushToast({ title: "Plugin upgrade initiated", tone: "success" });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to upgrade plugin", body: err.message, tone: "error" });
     },
   });
 
@@ -447,6 +458,16 @@ export function PluginManager() {
                           disabled={enableMutation.isPending || disableMutation.isPending}
                         >
                           <Power className={cn("h-4 w-4", plugin.status === "ready" ? "text-green-600" : "")} />
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="icon-sm"
+                          className="h-8 w-8"
+                          title="Upgrade to latest version"
+                          onClick={() => upgradeMutation.mutate(plugin.id)}
+                          disabled={upgradeMutation.isPending}
+                        >
+                          <ArrowUpCircle className="h-4 w-4" />
                         </Button>
                         <Button
                           variant="outline"

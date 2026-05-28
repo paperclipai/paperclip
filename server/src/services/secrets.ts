@@ -296,6 +296,14 @@ export function secretService(db: Db) {
   type NormalizeEnvOptions = {
     strictMode?: boolean;
     fieldPath?: string;
+    /**
+     * When set, strict-secret-mode is enforced ONLY for keys in this set.
+     * Used by PATCH paths so that legacy plain sensitive bindings that were
+     * already persisted (and not touched by this PATCH) do not retroactively
+     * fail strict-mode validation. Undefined/absent = enforce on all keys
+     * (existing behaviour, used by POST/replace paths).
+     */
+    strictModeKeys?: ReadonlySet<string>;
   };
 
   async function getById(id: string, source: Pick<Db | DbTransaction, "select"> = db) {
@@ -661,7 +669,12 @@ export function secretService(db: Db) {
 
       const binding = canonicalizeBinding(parsed.data as EnvBinding);
       if (binding.type === "plain") {
-        if (opts?.strictMode && isSensitiveEnvKey(key) && binding.value.trim().length > 0) {
+        const strictApplies =
+          opts?.strictMode &&
+          (opts.strictModeKeys === undefined || opts.strictModeKeys.has(key)) &&
+          isSensitiveEnvKey(key) &&
+          binding.value.trim().length > 0;
+        if (strictApplies) {
           throw unprocessable(
             `Strict secret mode requires secret references for sensitive key: ${key}`,
           );
@@ -686,7 +699,7 @@ export function secretService(db: Db) {
   async function normalizeAdapterConfigForPersistenceInternal(
     companyId: string,
     adapterConfig: Record<string, unknown>,
-    opts?: { strictMode?: boolean },
+    opts?: NormalizeEnvOptions,
   ) {
     const normalized = { ...adapterConfig };
     if (!Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
@@ -2209,7 +2222,7 @@ export function secretService(db: Db) {
     normalizeAdapterConfigForPersistence: async (
       companyId: string,
       adapterConfig: Record<string, unknown>,
-      opts?: { strictMode?: boolean },
+      opts?: NormalizeEnvOptions,
     ) => normalizeAdapterConfigForPersistenceInternal(companyId, adapterConfig, opts),
 
     normalizeEnvBindingsForPersistence: async (

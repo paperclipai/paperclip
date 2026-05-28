@@ -657,6 +657,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
     continuationPolicy: string;
     sourceCommentId?: string | null;
     sourceRunId?: string | null;
+    rejectionReason?: string | null;
   };
   actor: { actorType: "user" | "agent"; actorId: string };
   source: string;
@@ -687,6 +688,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       interactionStatus: input.interaction.status,
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
+      interactionRejectionReason: input.interaction.rejectionReason ?? null,
       mutation: "interaction",
     },
     requestedByActorType: input.actor.actorType,
@@ -699,6 +701,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       interactionStatus: input.interaction.status,
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
+      interactionRejectionReason: input.interaction.rejectionReason ?? null,
       wakeReason: "issue_commented",
       source: input.source,
       ...(forceFreshSession ? { forceFreshSession: true } : {}),
@@ -1933,6 +1936,9 @@ export function issueRoutes(
       parentId: req.query.parentId as string | undefined,
       descendantOf: req.query.descendantOf as string | undefined,
       labelId: req.query.labelId as string | undefined,
+      priority: req.query.priority as string | undefined,
+      hasActiveRecovery: req.query.hasActiveRecovery === "true" || req.query.hasActiveRecovery === "1",
+      activeRecoveryActionKind: req.query.activeRecoveryActionKind as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
       originId: req.query.originId as string | undefined,
@@ -2001,6 +2007,9 @@ export function issueRoutes(
       parentId: req.query.parentId as string | undefined,
       descendantOf: req.query.descendantOf as string | undefined,
       labelId: req.query.labelId as string | undefined,
+      priority: req.query.priority as string | undefined,
+      hasActiveRecovery: req.query.hasActiveRecovery === "true" || req.query.hasActiveRecovery === "1",
+      activeRecoveryActionKind: req.query.activeRecoveryActionKind as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
       originId: req.query.originId as string | undefined,
@@ -2015,6 +2024,23 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
     });
     res.json({ count });
+  });
+
+  router.get("/companies/:companyId/recovery-actions/count", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const rawStatus = req.query.status as string | undefined;
+    const rawKind = req.query.kind as string | undefined;
+    const allStatuses = ["active", "escalated"] as const;
+    type RecoveryStatus = "active" | "escalated";
+    const statuses: RecoveryStatus[] = rawStatus
+      ? (rawStatus.split(",").map((s) => s.trim()).filter((s) => allStatuses.includes(s as RecoveryStatus)) as RecoveryStatus[])
+      : [...allStatuses];
+    const kinds = rawKind
+      ? rawKind.split(",").map((k) => k.trim()).filter(Boolean)
+      : undefined;
+    const result = await recoveryActionsSvc.countActive(companyId, { statuses, kinds });
+    res.json({ status: rawStatus ?? "active,escalated", total: result.total, byKind: result.byKind });
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
@@ -3635,61 +3661,72 @@ export function issueRoutes(
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
     });
 
-    await logActivity(db, {
-      companyId: parent.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.child_created",
-      entityType: "issue",
-      entityId: issue.id,
-      details: {
-        parentId: parent.id,
-        identifier: issue.identifier,
-        title: issue.title,
-        ...buildCreateIssueActivityStatusDetails(issue, res),
-        inheritedExecutionWorkspaceFromIssueId: parent.id,
-        ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
-        ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
-      },
-    });
-
-    if (executionPolicy?.monitor) {
-      await logActivity(db, {
-        companyId: parent.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: "issue.monitor_scheduled",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          identifier: issue.identifier,
-          parentId: parent.id,
-          nextCheckAt: executionPolicy.monitor.nextCheckAt,
-          notes: executionPolicy.monitor.notes,
-          scheduledBy: executionPolicy.monitor.scheduledBy,
-          serviceName: executionPolicy.monitor.serviceName ?? null,
-          timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
-          maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
-          recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
-        },
-      });
-    }
-
-    void queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "issue_assigned",
-      mutation: "create",
-      contextSource: "issue.child_create",
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
-    });
-
+    // Send 201 immediately after the row is committed so a post-insert
+    // failure (e.g. activity log FK violation on runId) never causes the
+    // client to receive 500 on a row that was actually persisted, which
+    // would trigger duplicate-create retry storms (GH#6737).
     res.status(201).json(issue);
+
+    void (async () => {
+      try {
+        await issueReferencesSvc.syncIssue(issue.id);
+        await logActivity(db, {
+          companyId: parent.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.child_created",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            parentId: parent.id,
+            identifier: issue.identifier,
+            title: issue.title,
+            ...buildCreateIssueActivityStatusDetails(issue, res),
+            inheritedExecutionWorkspaceFromIssueId: parent.id,
+            ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
+            ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
+          },
+        });
+
+        if (executionPolicy?.monitor) {
+          await logActivity(db, {
+            companyId: parent.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.monitor_scheduled",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              identifier: issue.identifier,
+              parentId: parent.id,
+              nextCheckAt: executionPolicy.monitor.nextCheckAt,
+              notes: executionPolicy.monitor.notes,
+              scheduledBy: executionPolicy.monitor.scheduledBy,
+              serviceName: executionPolicy.monitor.serviceName ?? null,
+              timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
+              maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
+              recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+            },
+          });
+        }
+
+        void queueIssueAssignmentWakeup({
+          heartbeat,
+          issue,
+          reason: "issue_assigned",
+          mutation: "create",
+          contextSource: "issue.child_create",
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+        });
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id }, "post-create side-effects failed for child issue");
+      }
+    })();
   });
 
   router.post("/issues/:id/monitor/check-now", async (req, res) => {
@@ -4659,6 +4696,13 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
+          if (dependent.status === "blocked") {
+            await svc.update(dependent.id, {
+              status: "todo",
+              actorAgentId: actor.agentId,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            });
+          }
           addWakeup(dependent.assigneeAgentId, {
             source: "automation",
             triggerDetail: "system",
@@ -5180,10 +5224,17 @@ export function issueRoutes(
         },
       });
 
+      const rejectionReason =
+        interaction.kind === "request_confirmation"
+          ? (interaction.result?.reason ?? null)
+          : interaction.kind === "suggest_tasks"
+            ? (interaction.result?.rejectionReason ?? null)
+            : null;
+
       queueResolvedInteractionContinuationWakeup({
         heartbeat,
         issue,
-        interaction,
+        interaction: { ...interaction, rejectionReason },
         actor,
         source: "issue.interaction.reject",
       });

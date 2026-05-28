@@ -18,6 +18,21 @@ cli/tmp/
 
 # Scratch/seed scripts (but not scripts/ dir)
 check-*.mjs
+
+# CTO scratchpad/temp files
+CTO_AGENTS.md
+JOURNAL.md
+_model_config.yaml
+mini_runner.py
+mini_textbased.yaml
+pf_wrapper.py
+reproduce_issue.js
+reproduce_issue.mjs
+services/issue_lock.py
+temp_fixed.ts
+*.bak
+deep-merge-patch.js
+cli/src/commands/client/index.ts
 !scripts/check-*.mjs
 new-agent*.json
 newcompany.json
