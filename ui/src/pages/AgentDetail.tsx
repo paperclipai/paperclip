@@ -2901,6 +2901,7 @@ export function AgentSkillsTab({
     : hasUnsavedChanges
       ? copy("agentSkills.savingSoon", "Saving soon...", "곧 저장...")
       : null;
+  const canManageSkills = skillSnapshot?.mode !== "unsupported";
 
   return (
     <div className="max-w-4xl space-y-5">
@@ -2933,6 +2934,36 @@ export function AgentSkillsTab({
         </div>
       ) : null}
 
+      <section className="border border-border bg-muted/20 px-4 py-3">
+        <div className="text-sm font-medium">
+          {copy("agentSkills.flow.title", "Skill operation flow", "스킬 운영 흐름")}
+        </div>
+        <div className="mt-2 grid gap-2 text-xs leading-5 text-muted-foreground sm:grid-cols-3">
+          <div>
+            <span className="font-medium text-foreground">{copy("agentSkills.flow.library", "Library", "라이브러리")}</span>
+            <p>{copy("agentSkills.flow.libraryBody", "Company skills are the source list for attachable skills.", "회사 스킬이 연결 가능한 스킬의 기준 목록입니다.")}</p>
+          </div>
+          <div>
+            <span className="font-medium text-foreground">{copy("agentSkills.flow.attach", "Attach", "연결")}</span>
+            <p>
+              {canManageSkills
+                ? copy("agentSkills.flow.attachBody", "Use checkboxes to attach or detach skills for this agent.", "체크박스로 이 직원에 스킬을 연결하거나 해제합니다.")
+                : copy("agentSkills.flow.attachReadOnlyBody", "This adapter is read-only here, so attachment changes must happen outside Paperclip.", "이 어댑터는 여기서 읽기 전용이므로 연결 변경은 Paperclip 밖에서 해야 합니다.")}
+            </p>
+          </div>
+          <div>
+            <span className="font-medium text-foreground">{copy("agentSkills.flow.run", "Run", "실행")}</span>
+            <p>
+              {copy(
+                "agentSkills.flow.runBody",
+                "Selected skills are used by this agent according to the application mode below.",
+                "선택된 스킬은 아래 적용 방식에 따라 이 직원 실행에 사용됩니다.",
+              )}
+            </p>
+          </div>
+        </div>
+      </section>
+
       {isLoading ? (
         <PageSkeleton variant="list" />
       ) : (
@@ -2941,6 +2972,16 @@ export function AgentSkillsTab({
             const renderSkillRow = (skill: SkillRow) => {
               const adapterEntry = skill.adapterEntry ?? adapterEntryByKey.get(skill.key);
               const required = Boolean(adapterEntry?.required);
+              const attached = required || skillDraft.includes(skill.key);
+              const operationStateLabel = skill.readOnly
+                ? copy("agentSkills.row.readOnly", "Adapter-detected, read-only", "어댑터 감지, 읽기 전용")
+                : required
+                  ? copy("agentSkills.row.required", "Required for this agent", "이 직원 필수")
+                  : attached
+                    ? copy("agentSkills.row.attached", "Attached to this agent", "이 직원에 연결됨")
+                    : canManageSkills
+                      ? copy("agentSkills.row.available", "Available to attach", "연결 가능")
+                      : copy("agentSkills.row.manageExternally", "Manage externally", "외부에서 관리");
               const rowClassName = cn(
                 "flex items-start gap-3 border-b border-border px-3 py-3 text-sm last:border-b-0",
                 skill.readOnly ? "bg-muted/20" : "hover:bg-accent/20",
@@ -2976,6 +3017,10 @@ export function AgentSkillsTab({
                   {skill.detail && (
                     <p className="mt-1 text-xs text-muted-foreground">{skill.detail}</p>
                   )}
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">{copy("agentSkills.row.state", "State", "상태")}: </span>
+                    {operationStateLabel}
+                  </p>
                 </div>
               );
 
@@ -2988,7 +3033,7 @@ export function AgentSkillsTab({
                 );
               }
 
-              const checked = required || skillDraft.includes(skill.key);
+              const checked = attached;
               const disabled = required || skillSnapshot?.mode === "unsupported";
               const checkbox = (
                 <input
