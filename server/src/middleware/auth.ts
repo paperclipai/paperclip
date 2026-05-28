@@ -13,6 +13,38 @@ function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function normalizeRunId(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed || !UUID_RE.test(trimmed)) return undefined;
+  return trimmed;
+}
+
+async function resolveRunAttribution(
+  db: Db,
+  rawRunId: string | null | undefined,
+  constraints: { agentId?: string; companyId?: string } = {},
+): Promise<{ id: string; agentId: string; companyId: string } | null> {
+  const runId = normalizeRunId(rawRunId);
+  if (!runId) return null;
+
+  const run = await db
+    .select({
+      agentId: heartbeatRuns.agentId,
+      companyId: heartbeatRuns.companyId,
+    })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runId))
+    .then((rows) => rows[0] ?? null);
+  if (!run) return null;
+
+  if (constraints.agentId && run.agentId !== constraints.agentId) return null;
+  if (constraints.companyId && run.companyId !== constraints.companyId) return null;
+
+  return { id: runId, agentId: run.agentId, companyId: run.companyId };
+}
+
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
@@ -69,9 +101,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         const cloudTenantActor = await resolveCloudTenantActor(db, req);
         if (cloudTenantActor) {
+          const runAttribution = await resolveRunAttribution(db, runIdHeader);
           req.actor = {
             ...cloudTenantActor,
-            runId: runIdHeader ?? undefined,
+            runId: runAttribution?.id,
           };
           next();
           return;
@@ -109,6 +142,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
                 ),
               ),
           ]);
+          const runAttribution = await resolveRunAttribution(db, runIdHeader);
           req.actor = {
             type: "board",
             userId,
@@ -117,7 +151,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             companyIds: memberships.map((row) => row.companyId),
             memberships,
             isInstanceAdmin: Boolean(roleRow),
-            runId: runIdHeader ?? undefined,
+            runId: runAttribution?.id,
             source: "session",
           };
           next();
@@ -134,14 +168,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       // authenticated mode a valid run-ID alone must not grant agent-level
       // access — that would bypass authentication entirely.
       if (runIdHeader && opts.deploymentMode === "local_trusted") {
-        const run = await db
-          .select({
-            agentId: heartbeatRuns.agentId,
-            companyId: heartbeatRuns.companyId,
-          })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, runIdHeader))
-          .then((rows) => rows[0] ?? null);
+        const run = await resolveRunAttribution(db, runIdHeader);
 
         if (run) {
           const agentRecord = await db
@@ -161,15 +188,13 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
               agentId: run.agentId,
               companyId: run.companyId,
               keyId: undefined,
-              runId: runIdHeader,
+              runId: run.id,
               source: "run_id",
             };
             next();
             return;
           }
         }
-
-        req.actor.runId = runIdHeader;
       }
       next();
       return;
@@ -185,6 +210,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (boardKey) {
       const access = await boardAuth.resolveBoardAccess(boardKey.userId);
       if (access.user) {
+        const runAttribution = await resolveRunAttribution(db, runIdHeader);
         await boardAuth.touchBoardApiKey(boardKey.id);
         req.actor = {
           type: "board",
@@ -195,7 +221,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           memberships: access.memberships,
           isInstanceAdmin: access.isInstanceAdmin,
           keyId: boardKey.id,
-          runId: runIdHeader || undefined,
+          runId: runAttribution?.id,
           source: "board_key",
         };
         next();
@@ -233,12 +259,17 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
+      const jwtRunId = normalizeRunId(runIdHeader) ?? normalizeRunId(claims.run_id);
+      const runAttribution = await resolveRunAttribution(db, jwtRunId, {
+        agentId: claims.sub,
+        companyId: claims.company_id,
+      });
       req.actor = {
         type: "agent",
         agentId: claims.sub,
         companyId: claims.company_id,
         keyId: undefined,
-        runId: runIdHeader || claims.run_id || undefined,
+        runId: runAttribution?.id,
         source: "agent_jwt",
       };
       next();
@@ -261,12 +292,16 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    const runAttribution = await resolveRunAttribution(db, runIdHeader, {
+      agentId: key.agentId,
+      companyId: key.companyId,
+    });
     req.actor = {
       type: "agent",
       agentId: key.agentId,
       companyId: key.companyId,
       keyId: key.id,
-      runId: runIdHeader || undefined,
+      runId: runAttribution?.id,
       source: "agent_key",
     };
 

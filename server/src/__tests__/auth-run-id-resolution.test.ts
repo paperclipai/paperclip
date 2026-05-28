@@ -1,22 +1,24 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import type { Db } from "@paperclipai/db";
 import { actorMiddleware } from "../middleware/auth.js";
 
+const mockBoardAuth = vi.hoisted(() => ({
+  findBoardApiKeyByToken: vi.fn(),
+  resolveBoardAccess: vi.fn(),
+  touchBoardApiKey: vi.fn(),
+}));
+
 // Mock board-auth service to avoid real DB calls in the board-key path
 vi.mock("../services/board-auth.js", () => ({
-  boardAuthService: () => ({
-    findBoardApiKeyByToken: vi.fn().mockResolvedValue(null),
-    resolveBoardAccess: vi.fn().mockResolvedValue({ user: null, companyIds: [], isInstanceAdmin: false }),
-    touchBoardApiKey: vi.fn(),
-  }),
+  boardAuthService: () => mockBoardAuth,
 }));
 
 const AGENT_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const COMPANY_ID = "cccccccc-cccc-cccc-cccc-cccccccccccc";
 const OTHER_COMPANY_ID = "dddddddd-dddd-dddd-dddd-dddddddddddd";
-const RUN_ID = "rrrrrrrr-rrrr-rrrr-rrrr-rrrrrrrrrrrr";
+const RUN_ID = "11111111-1111-4111-8111-111111111111";
 
 /**
  * Build a mock Db that returns specific rows for heartbeat_runs and agents
@@ -62,6 +64,18 @@ function createApp(db: Db, deploymentMode: "local_trusted" | "authenticated" = "
 }
 
 describe("auth middleware: run-ID agent resolution in local_trusted mode", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockBoardAuth.findBoardApiKeyByToken.mockResolvedValue(null);
+    mockBoardAuth.resolveBoardAccess.mockResolvedValue({
+      user: null,
+      companyIds: [],
+      memberships: [],
+      isInstanceAdmin: false,
+    });
+    mockBoardAuth.touchBoardApiKey.mockResolvedValue(undefined);
+  });
+
   it("resolves agent identity from x-paperclip-run-id when no bearer token is present", async () => {
     const db = createMockDb({
       run: { agentId: AGENT_ID, companyId: COMPANY_ID },
@@ -93,7 +107,7 @@ describe("auth middleware: run-ID agent resolution in local_trusted mode", () =>
     expect(res.body.actorType).toBe("board");
     expect(res.body.agentId).toBeNull();
     expect(res.body.userId).toBe("local-board");
-    expect(res.body.runId).toBe(RUN_ID);
+    expect(res.body.runId).toBeNull();
   });
 
   it("falls back to board when agent is terminated", async () => {
@@ -109,7 +123,7 @@ describe("auth middleware: run-ID agent resolution in local_trusted mode", () =>
 
     expect(res.body.actorType).toBe("board");
     expect(res.body.userId).toBe("local-board");
-    expect(res.body.runId).toBe(RUN_ID);
+    expect(res.body.runId).toBeNull();
   });
 
   it("stays board when no run-id header is present", async () => {
@@ -137,7 +151,7 @@ describe("auth middleware: run-ID agent resolution in local_trusted mode", () =>
 
     expect(res.body.actorType).toBe("board");
     expect(res.body.userId).toBe("local-board");
-    expect(res.body.runId).toBe(RUN_ID);
+    expect(res.body.runId).toBeNull();
   });
 
   it("does not resolve run-ID to agent identity in authenticated mode", async () => {
@@ -156,5 +170,55 @@ describe("auth middleware: run-ID agent resolution in local_trusted mode", () =>
     expect(res.body.actorType).toBe("none");
     expect(res.body.agentId).toBeNull();
     expect(res.body.source).toBe("none");
+  });
+
+  it("drops unknown run-ID headers for authenticated board API keys", async () => {
+    mockBoardAuth.findBoardApiKeyByToken.mockResolvedValue({ id: "board-key-1", userId: "user-1" });
+    mockBoardAuth.resolveBoardAccess.mockResolvedValue({
+      user: { id: "user-1", name: "Board User", email: "board@example.com" },
+      companyIds: [COMPANY_ID],
+      memberships: [{ companyId: COMPANY_ID, membershipRole: "admin", status: "active" }],
+      isInstanceAdmin: true,
+    });
+    const db = createMockDb({
+      run: null,
+      agent: null,
+    });
+
+    const app = createApp(db, "authenticated");
+    const res = await request(app)
+      .get("/test")
+      .set("authorization", "Bearer board-token")
+      .set("x-paperclip-run-id", RUN_ID);
+
+    expect(res.body.actorType).toBe("board");
+    expect(res.body.userId).toBe("user-1");
+    expect(res.body.runId).toBeNull();
+    expect(res.body.source).toBe("board_key");
+  });
+
+  it("preserves known run-ID headers for authenticated board API keys", async () => {
+    mockBoardAuth.findBoardApiKeyByToken.mockResolvedValue({ id: "board-key-1", userId: "user-1" });
+    mockBoardAuth.resolveBoardAccess.mockResolvedValue({
+      user: { id: "user-1", name: "Board User", email: "board@example.com" },
+      companyIds: [COMPANY_ID],
+      memberships: [{ companyId: COMPANY_ID, membershipRole: "admin", status: "active" }],
+      isInstanceAdmin: true,
+    });
+    const db = createMockDb({
+      run: { agentId: AGENT_ID, companyId: COMPANY_ID },
+      agent: null,
+    });
+
+    const app = createApp(db, "authenticated");
+    const res = await request(app)
+      .get("/test")
+      .set("authorization", "Bearer board-token")
+      .set("x-paperclip-run-id", RUN_ID);
+
+    expect(res.body.actorType).toBe("board");
+    expect(res.body.userId).toBe("user-1");
+    expect(res.body.runId).toBe(RUN_ID);
+    expect(res.body.source).toBe("board_key");
   });
 });
