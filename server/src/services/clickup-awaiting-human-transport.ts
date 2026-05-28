@@ -390,10 +390,6 @@ function extractReactionRows(payload: unknown): ClickUpChatMessageReaction[] {
   return flattened;
 }
 
-function includesBizboxOpenLink(kind: string | null | undefined) {
-  return kind === "request_confirmation" || kind === "ask_user_questions";
-}
-
 function renderClickUpMessage(notification: AwaitingHumanNotificationPayload) {
   const title = truncateText(notification.title, MAX_TITLE_LENGTH);
   const bodySection = formatBodySection(notification.body);
@@ -419,11 +415,7 @@ function renderClickUpMessage(notification: AwaitingHumanNotificationPayload) {
     }
   }
 
-  const link = notification.link.trim();
-  if (includesBizboxOpenLink(notification.kind) && link.length > 0) {
-    lines.push("");
-    lines.push(`Open in Bizbox: ${link}`);
-  } else if (notification.cta.trim().length > 0) {
+  if (!bodySection && notification.cta.trim().length > 0) {
     lines.push("");
     lines.push(truncateText(notification.cta, 180));
   }

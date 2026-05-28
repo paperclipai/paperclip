@@ -96,7 +96,7 @@ describe("maybeLogAwaitingHumanHandoff", () => {
           link: "https://bizbox.example/issues/BIZ-35",
           summary: "Approve the exact GitHub reply before posting.",
           cta: "",
-          body: expect.stringContaining("Disclaimer:"),
+          body: expect.stringMatching(/Disclaimer:[\s\S]*Open in Bizbox: https:\/\/bizbox\.example\/issues\/BIZ-35/),
         }),
       }),
     );
@@ -134,7 +134,7 @@ describe("maybeLogAwaitingHumanHandoff", () => {
           title: "BIZ-35 needs answers",
           summary: "Need answers to 2 question(s).",
           link: "/issues/BIZ-35",
-          body: expect.stringContaining("Question 1: Which scope?"),
+          body: expect.stringMatching(/Question 1: Which scope\?[\s\S]*Open in Bizbox: \/issues\/BIZ-35/),
         }),
       }),
     );

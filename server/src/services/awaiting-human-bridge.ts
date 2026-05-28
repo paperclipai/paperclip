@@ -434,7 +434,7 @@ function buildBridgeNotification(input: {
         cta: "Reply with the needed answers, decisions, or corrections.",
         labels: ["awaiting_human", "ask_user_questions"],
         kind: interaction.kind,
-        body: renderAskUserQuestionsBody(interaction),
+        body: renderAskUserQuestionsBody(interaction, link),
       } satisfies AwaitingHumanNotificationPayload,
     };
   }
@@ -454,7 +454,7 @@ function buildBridgeNotification(input: {
       cta: "",
       labels: ["awaiting_human", "request_confirmation"],
       kind: interaction.kind,
-      body: renderRequestConfirmationBody(interaction),
+      body: renderRequestConfirmationBody(interaction, link),
     } satisfies AwaitingHumanNotificationPayload,
   };
 }

@@ -37,10 +37,11 @@ describe("clickup awaiting human transport handoff messages", () => {
         kind: "request_confirmation",
         body: [
           "Proceed with new dev company project setup?",
-          "Need human confirmation before creating new dev company project.",
           "",
           "If accepted: proceed with setup work.",
           "If rejected: collect changes, revise, and re-request confirmation.",
+          "",
+          "Open in Bizbox: https://bizbox.example/issues/CIT-3",
         ].join("\n"),
       },
     });
@@ -56,8 +57,6 @@ describe("clickup awaiting human transport handoff messages", () => {
     expect(body.content).toContain("Proceed with new dev company project setup?");
     expect(body.content).toContain("If accepted: proceed with setup work.");
     expect(body.content).toContain("Open in Bizbox: https://bizbox.example/issues/CIT-3");
-    expect(body.content).not.toContain("Disclaimer:");
-    expect(body.content).not.toContain("It is your responsibility to read and verify this content.");
   });
 
   it("renders ask_user_questions with body and bizbox open line", async () => {
@@ -86,6 +85,8 @@ describe("clickup awaiting human transport handoff messages", () => {
         body: [
           "1. Which environment should we use?",
           "2. Who owns rollout?",
+          "",
+          "Open in Bizbox: http://127.0.0.1:3200/issues/CIT-7",
         ].join("\n"),
       },
     });

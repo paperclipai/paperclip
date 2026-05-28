@@ -74,7 +74,10 @@ function summarizeQuestions(interaction: AwaitingHumanInteraction | null | undef
   return `Need answers to ${interaction.payload.questions.length} question(s).`;
 }
 
-export function renderAskUserQuestionsBody(interaction: AwaitingHumanInteraction | null | undefined) {
+export function renderAskUserQuestionsBody(
+  interaction: AwaitingHumanInteraction | null | undefined,
+  link = "",
+) {
   if (!interaction || interaction.kind !== "ask_user_questions") return null;
   const lines: string[] = [];
   if (interaction.payload.title?.trim()) {
@@ -98,10 +101,15 @@ export function renderAskUserQuestionsBody(interaction: AwaitingHumanInteraction
       lines.push("");
     }
   });
-  return lines.join("\n").trim() || null;
+  const body = lines.join("\n").trim();
+  if (!link.trim()) return body || null;
+  return body ? `${body}\n\nOpen in Bizbox: ${link.trim()}` : `Open in Bizbox: ${link.trim()}`;
 }
 
-export function renderRequestConfirmationBody(interaction: AwaitingHumanInteraction | null | undefined) {
+export function renderRequestConfirmationBody(
+  interaction: AwaitingHumanInteraction | null | undefined,
+  link = "",
+) {
   if (!interaction || interaction.kind !== "request_confirmation") return null;
   const lines: string[] = [];
   if (interaction.payload.prompt?.trim()) {
@@ -128,7 +136,9 @@ export function renderRequestConfirmationBody(interaction: AwaitingHumanInteract
   if (lines.length > 0) lines.push("");
   lines.push("Disclaimer:");
   lines.push("It is your responsibility to read and verify this content. Not doing so may result in unattended negative consequence leading to financial loss or brand harm");
-  return lines.join("\n").trim() || null;
+  const body = lines.join("\n").trim();
+  if (!link.trim()) return body || null;
+  return body ? `${body}\n\nOpen in Bizbox: ${link.trim()}` : `Open in Bizbox: ${link.trim()}`;
 }
 
 function summarizeBlockers(blockers: AwaitingHumanBlocker[] | null | undefined) {
@@ -239,9 +249,9 @@ function buildNotification(
     interactionId: input.interaction?.id ?? null,
     audience: audienceUserId,
     body: isQuestionHandoff
-      ? renderAskUserQuestionsBody(input.interaction)
+      ? renderAskUserQuestionsBody(input.interaction, link)
       : input.handoffKind === "request_confirmation"
-        ? renderRequestConfirmationBody(input.interaction)
+        ? renderRequestConfirmationBody(input.interaction, link)
         : null,
   };
 }
