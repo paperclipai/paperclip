@@ -431,6 +431,7 @@ export function NewIssueDialog() {
   const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
   const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
   const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
+  const [billingCode, setBillingCode] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
@@ -659,6 +660,7 @@ export function NewIssueDialog() {
       executionWorkspaceMode,
       selectedExecutionWorkspaceId,
       workMode,
+      billingCode: billingCode || undefined,
     });
   }, [
     newIssueOpen,
@@ -676,6 +678,7 @@ export function NewIssueDialog() {
     executionWorkspaceMode,
     selectedExecutionWorkspaceId,
     workMode,
+    billingCode,
   ]);
 
   const handleTitleChange = useCallback((nextTitle: string) => {
@@ -821,6 +824,7 @@ export function NewIssueDialog() {
           ? (newIssueDefaults.executionWorkspaceId ?? "")
           : (draft.selectedExecutionWorkspaceId ?? ""),
       );
+      setBillingCode(draft.billingCode ?? "");
       executionWorkspaceDefaultProjectId.current = hasExplicitProjectWorkspaceId || hasExplicitExecutionWorkspaceId || draft.projectWorkspaceId || restoredProject
         ? restoredProjectId || null
         : null;
@@ -906,6 +910,7 @@ export function NewIssueDialog() {
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
     setWorkMode("standard");
+    setBillingCode("");
     setExpanded(false);
     setDialogCompanyId(null);
     setStagedFiles([]);
@@ -997,6 +1002,7 @@ export function NewIssueDialog() {
         : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
       ...(executionPolicy ? { executionPolicy } : {}),
+      ...(billingCode.trim() ? { billingCode: billingCode.trim() } : {}),
     });
   }
 
@@ -1971,6 +1977,20 @@ export function NewIssueDialog() {
             </PopoverContent>
           </Popover>
 
+          {/* Billing code chip (shown when set) */}
+          {billingCode.trim() ? (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent/50 transition-colors"
+              onClick={() => setMoreOpen(true)}
+              title="Billing code"
+              data-testid="new-issue-billing-code-chip"
+            >
+              <Tag className="h-3 w-3" />
+              <span className="max-w-[80px] truncate">{billingCode.trim()}</span>
+            </button>
+          ) : null}
+
           {/* More */}
           <Popover open={moreOpen} onOpenChange={setMoreOpen}>
             <PopoverTrigger asChild>
@@ -2015,6 +2035,21 @@ export function NewIssueDialog() {
                 <Calendar className="h-3 w-3" />
                 Due date
               </button>
+              <div className="my-1 border-t border-border" />
+              <div className="px-2 py-1">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Tag className="h-3 w-3 text-muted-foreground" />
+                  <span className="text-[10px] font-medium uppercase text-muted-foreground">Billing Code</span>
+                </div>
+                <input
+                  type="text"
+                  placeholder="e.g. client-slug"
+                  value={billingCode}
+                  onChange={(e) => setBillingCode(e.target.value)}
+                  className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none focus:border-ring placeholder:text-muted-foreground/50"
+                  data-testid="new-issue-billing-code-input"
+                />
+              </div>
             </PopoverContent>
           </Popover>
         </div>
