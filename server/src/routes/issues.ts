@@ -5167,6 +5167,32 @@ export function issueRoutes(
       return;
     }
 
+    if (
+      assigneeWillChange &&
+      existing.assigneeAgentId &&
+      existing.assigneeAgentId !== issue.assigneeAgentId
+    ) {
+      const cancelledCount = await heartbeat
+        .cancelOrphanedIssueRuns(issue.id, existing.assigneeAgentId, issue.companyId)
+        .catch((err) => {
+          logger.warn({ err, issueId: issue!.id }, "failed to cancel orphaned runs on reassignment");
+          return 0;
+        });
+      if (cancelledCount > 0) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "heartbeat.cancelled",
+          entityType: "issue",
+          entityId: issue.id,
+          details: { reason: "reassignment_orphaned_runs", previousAssigneeAgentId: existing.assigneeAgentId, cancelledCount },
+        });
+      }
+    }
+
     let cancelledStatusRunId: string | null = null;
     if (runToCancelForCancelledStatus) {
       try {
