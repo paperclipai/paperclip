@@ -417,11 +417,20 @@ function renderClickUpMessage(notification: AwaitingHumanNotificationPayload) {
     }
   }
 
-  lines.push("");
-  if (notification.cta.trim().length > 0) {
-    lines.push(truncateText(notification.cta, 180));
+  if (notification.kind === "request_confirmation") {
+    if (lines.length > 0) lines.push("");
+    if (bodySection && !bodySection.includes("Disclaimer:")) {
+      lines.push("Disclaimer:");
+      lines.push("It is your responsibility to read and verify this content. Not doing so may result in unattended negative consequence leading to financial loss or brand harm");
+      lines.push("");
+    }
+    lines.push(`Open in Bizbox: ${notification.link.trim()}`);
+  } else {
+    lines.push("");
+    if (notification.cta.trim().length > 0) {
+      lines.push(truncateText(notification.cta, 180));
+    }
   }
-  lines.push(`Open in Bizbox: ${notification.link.trim()}`);
 
   return trimTotal(lines.join("\n"), CLICKUP_CHAT_MESSAGE_MAX_CHARS);
 }
@@ -441,10 +450,8 @@ function renderClickUpTransportTestMessage(notification: ClickUpTransportTestNot
     lines.push(bodySection);
   }
 
-  lines.push("");
-  lines.push("No action needed. This is a transport test from Bizbox.");
-
   if (notification.cta?.trim()) {
+    lines.push("");
     lines.push(truncateText(notification.cta, 180));
   }
 
@@ -908,6 +915,10 @@ export async function detectClickUpAwaitingHumanBridgeEvents(
     const replyId = readString(reply.id) ?? readString(reply.messageId);
     const replyBody = readString(reply.content);
     if (!replyId || !replyBody) continue;
+    const metadata = {
+      clickupReplyId: replyId,
+      ...(reply.reactionsUrl ? { clickupReplyReactionsUrl: reply.reactionsUrl } : {}),
+    };
     if (replySignalsApproval(reply, config)) {
       events.push({
         kind: "approval_signal",
@@ -916,8 +927,7 @@ export async function detectClickUpAwaitingHumanBridgeEvents(
         body: replyBody,
         metadata: {
           resolutionSource: "clickup_reply",
-          clickupReplyId: replyId,
-          ...(reply.reactionsUrl ? { clickupReplyReactionsUrl: reply.reactionsUrl } : {}),
+          ...metadata,
         },
       });
       return { status: "sent", detail: "positive-reply-detected", events };
@@ -930,24 +940,18 @@ export async function detectClickUpAwaitingHumanBridgeEvents(
         body: replyBody,
         metadata: {
           resolutionSource: "clickup_reply",
-          clickupReplyId: replyId,
-          ...(reply.reactionsUrl ? { clickupReplyReactionsUrl: reply.reactionsUrl } : {}),
+          ...metadata,
         },
       });
       return { status: "sent", detail: "negative-reply-detected", events };
     }
-    if (normalizeReplyContent(replyBody).length > 0) {
-      events.push({
-        kind: "reply",
-        externalEventId: replyId,
-        externalMessageId: messageId,
-        body: replyBody,
-        metadata: {
-          clickupReplyId: replyId,
-          ...(reply.reactionsUrl ? { clickupReplyReactionsUrl: reply.reactionsUrl } : {}),
-        },
-      });
-    }
+    events.push({
+      kind: "reply",
+      externalEventId: replyId,
+      externalMessageId: messageId,
+      body: replyBody,
+      metadata,
+    });
   }
 
   const reactionsResult = await getClickUpChatMessageReactions(messageId, overrides);

@@ -38,7 +38,7 @@ type AwaitingHumanBlocker = {
   assigneeUserId?: string | null;
 };
 
-type AwaitingHumanInteraction =
+export type AwaitingHumanInteraction =
   | Pick<RequestConfirmationInteraction, "id" | "kind" | "title" | "summary" | "payload">
   | Pick<AskUserQuestionsInteraction, "id" | "kind" | "title" | "summary" | "payload">;
 
@@ -72,6 +72,63 @@ function firstNonEmpty(...values: Array<string | null | undefined>) {
 function summarizeQuestions(interaction: AwaitingHumanInteraction | null | undefined) {
   if (!interaction || interaction.kind !== "ask_user_questions") return null;
   return `Need answers to ${interaction.payload.questions.length} question(s).`;
+}
+
+export function renderAskUserQuestionsBody(interaction: AwaitingHumanInteraction | null | undefined) {
+  if (!interaction || interaction.kind !== "ask_user_questions") return null;
+  const lines: string[] = [];
+  if (interaction.payload.title?.trim()) {
+    lines.push(interaction.payload.title.trim());
+    lines.push("");
+  }
+  interaction.payload.questions.forEach((question, index) => {
+    lines.push(`Question ${index + 1}: ${question.prompt}`);
+    if (question.helpText?.trim()) {
+      lines.push(`Help: ${question.helpText.trim()}`);
+    }
+    lines.push(`Required: ${question.required ? "Yes" : "No"}`);
+    lines.push(`Pick: ${question.selectionMode === "single" ? "One" : "One or more"}`);
+    if (question.options.length > 0) {
+      lines.push("Options:");
+      for (const option of question.options) {
+        lines.push(`- ${option.label}${option.description?.trim() ? ` — ${option.description.trim()}` : ""}`);
+      }
+    }
+    if (index < interaction.payload.questions.length - 1) {
+      lines.push("");
+    }
+  });
+  return lines.join("\n").trim() || null;
+}
+
+export function renderRequestConfirmationBody(interaction: AwaitingHumanInteraction | null | undefined) {
+  if (!interaction || interaction.kind !== "request_confirmation") return null;
+  const lines: string[] = [];
+  if (interaction.payload.prompt?.trim()) {
+    lines.push(interaction.payload.prompt.trim());
+  }
+  if (interaction.payload.detailsMarkdown?.trim()) {
+    if (lines.length > 0) lines.push("");
+    lines.push(interaction.payload.detailsMarkdown.trim());
+  }
+  if (interaction.payload.acceptLabel?.trim() || interaction.payload.rejectLabel?.trim()) {
+    if (lines.length > 0) lines.push("");
+    lines.push(`Approve action: ${interaction.payload.acceptLabel?.trim() || "Approve"}`);
+    lines.push(`Reject action: ${interaction.payload.rejectLabel?.trim() || "Reject"}`);
+  }
+  if (interaction.payload.target?.label?.trim() || interaction.payload.target?.href?.trim()) {
+    if (lines.length > 0) lines.push("");
+    if (interaction.payload.target.label?.trim()) {
+      lines.push(`Target: ${interaction.payload.target.label.trim()}`);
+    }
+    if (interaction.payload.target.href?.trim()) {
+      lines.push(`Target link: ${interaction.payload.target.href.trim()}`);
+    }
+  }
+  if (lines.length > 0) lines.push("");
+  lines.push("Disclaimer:");
+  lines.push("It is your responsibility to read and verify this content. Not doing so may result in unattended negative consequence leading to financial loss or brand harm");
+  return lines.join("\n").trim() || null;
 }
 
 function summarizeBlockers(blockers: AwaitingHumanBlocker[] | null | undefined) {
@@ -162,15 +219,30 @@ function buildNotification(
   audienceUserId: string | null,
 ): AwaitingHumanNotificationPayload {
   const label = input.updatedIssue.identifier ?? truncateText(input.updatedIssue.title, 48);
+  const isQuestionHandoff = input.handoffKind === "ask_user_questions";
   return {
-    title: truncateText(`${label} is waiting on human input`, 120),
+    title: truncateText(
+      isQuestionHandoff
+        ? `${label} needs answers`
+        : input.handoffKind === "request_confirmation"
+          ? `${label} needs confirmation`
+          : `${label} is waiting on human input`,
+      120,
+    ),
     summary: truncateText(needsHumanInput, 280),
     link,
-    cta: `Open ${label} in Bizbox and respond there.`,
+    cta: isQuestionHandoff
+      ? "Reply with answers to the questions below."
+      : "",
     labels: ["awaiting_human", input.handoffKind],
     kind: input.handoffKind,
+    interactionId: input.interaction?.id ?? null,
     audience: audienceUserId,
-    body: null,
+    body: isQuestionHandoff
+      ? renderAskUserQuestionsBody(input.interaction)
+      : input.handoffKind === "request_confirmation"
+        ? renderRequestConfirmationBody(input.interaction)
+        : null,
   };
 }
 

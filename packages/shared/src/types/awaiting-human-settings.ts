@@ -23,3 +23,10 @@ export interface UpdateCompanyAwaitingHumanSettingsRequest {
   providerConfig?: AwaitingHumanProviderConfig | null;
   clickupPersonalToken?: string | null;
 }
+
+export interface ClickUpAwaitingHumanConnectionTestResult {
+  channel: "clickup-chat";
+  status: "sent" | "skipped" | "failed";
+  detail: string;
+  externalId?: string | null;
+}

@@ -2,21 +2,25 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
+  agents,
+  awaitingHumanBridges,
   awaitingHumanNotificationOutbox,
   companies,
+  companyAwaitingHumanSettings,
   createDb,
   issues,
+  issueThreadInteractions,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { processAwaitingHumanNotificationOutbox } from "../services/awaiting-human-notifications.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { registerAwaitingHumanBridgeAdapter } from "../services/awaiting-human-bridge-registry.js";
 
-const originalFetch = globalThis.fetch;
-
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = describe.skip;
+await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = describe;
 
 describeEmbeddedPostgres("awaitingHumanNotificationOutbox", () => {
   let db!: ReturnType<typeof createDb>;
@@ -29,12 +33,12 @@ describeEmbeddedPostgres("awaitingHumanNotificationOutbox", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
-    globalThis.fetch = originalFetch;
-    delete process.env.CLICKUP_PERSONAL_TOKEN;
-    delete process.env.CLICKUP_WORKSPACE_ID;
-    delete process.env.CLICKUP_AWAITING_HUMAN_CHANNEL_ID;
     await db.delete(awaitingHumanNotificationOutbox);
+    await db.delete(awaitingHumanBridges);
+    await db.delete(companyAwaitingHumanSettings);
+    await db.delete(issueThreadInteractions);
     await db.delete(issues);
+    await db.delete(agents);
     await db.delete(companies);
   });
 
@@ -42,9 +46,10 @@ describeEmbeddedPostgres("awaitingHumanNotificationOutbox", () => {
     await tempDb?.cleanup();
   });
 
-  it("delivers an outbox row with legacy env config when no company awaiting-human settings row exists", async () => {
+  it("delivers outbox row through configured adapter", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
+    const agentId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -52,13 +57,46 @@ describeEmbeddedPostgres("awaitingHumanNotificationOutbox", () => {
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
     await db.insert(issues).values({
       id: issueId,
       companyId,
       title: "Awaiting human",
-      status: "todo",
+      status: "awaiting_human",
       priority: "medium",
+      assigneeAgentId: agentId,
     });
+
+    const interactionsSvc = issueThreadInteractionService(db);
+    const interaction = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "request_confirmation",
+        payload: {
+          version: 1,
+          prompt: "Approve this plan?",
+        },
+      },
+      { actorType: "agent", agentId },
+    );
+
+    await db.insert(companyAwaitingHumanSettings).values({
+      companyId,
+      enabled: true,
+      provider: "clickup",
+      providerConfigJson: null,
+    });
+
     await db.insert(awaitingHumanNotificationOutbox).values({
       companyId,
       issueId,
@@ -72,18 +110,20 @@ describeEmbeddedPostgres("awaitingHumanNotificationOutbox", () => {
         link: "https://bizbox.example/issues/BIZ-35",
         cta: "Reply in Bizbox.",
         labels: ["awaiting_human", "request_confirmation"],
+        interactionId: interaction.id,
       },
     });
 
-    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
-    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
-    process.env.CLICKUP_AWAITING_HUMAN_CHANNEL_ID = "channel-1";
-
-    const fetchMock = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ data: { id: "message-42" } }),
-    });
-    globalThis.fetch = fetchMock as typeof fetch;
+    const send = vi.fn(async () => ({
+      externalThreadId: "message-42",
+      externalMessageId: "message-42",
+      nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
+    }));
+    registerAwaitingHumanBridgeAdapter("clickup", () => ({
+      send,
+      poll: vi.fn(async () => ({ status: "ok" as const, detail: "ok", events: [] })),
+      close: vi.fn(async () => {}),
+    }));
 
     const result = await processAwaitingHumanNotificationOutbox(db, { limit: 10 });
 
@@ -92,21 +132,32 @@ describeEmbeddedPostgres("awaitingHumanNotificationOutbox", () => {
       sent: 1,
       failed: 0,
     });
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/channels/channel-1/messages",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          Authorization: "token-123",
-        }),
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      companyId,
+      issueId,
+      interactionId: interaction.id,
+      handoffKind: "request_confirmation",
+      notification: expect.objectContaining({
+        title: "Awaiting human",
+        summary: "Please review.",
       }),
-    );
+    }));
 
     const [row] = await db.select().from(awaitingHumanNotificationOutbox).where(eq(awaitingHumanNotificationOutbox.issueId, issueId));
     expect(row).toEqual(expect.objectContaining({
       status: "sent",
       clickupMessageId: "message-42",
       lastError: null,
+    }));
+    const [bridge] = await db.select().from(awaitingHumanBridges).where(eq(awaitingHumanBridges.interactionId, interaction.id));
+    expect(bridge).toEqual(expect.objectContaining({
+      companyId,
+      issueId,
+      interactionId: interaction.id,
+      provider: "clickup",
+      status: "waiting_for_human",
+      externalMessageId: "message-42",
     }));
   });
 });

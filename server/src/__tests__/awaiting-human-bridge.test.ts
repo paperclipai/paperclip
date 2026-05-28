@@ -289,6 +289,99 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     };
   }
 
+  it("builds company-prefixed issue links for ClickUp bridge notifications", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+    const prevPublicUrl = process.env.BIZBOX_PUBLIC_URL;
+
+    process.env.BIZBOX_PUBLIC_URL = "http://localhost:3200";
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: "CIT",
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(goals).values({
+        id: goalId,
+        companyId,
+        title: "Bridge goal",
+        level: "task",
+        status: "active",
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Engineer",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        goalId,
+        identifier: "CIT-2",
+        title: "Awaiting approval",
+        status: "awaiting_human",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      });
+      const interaction = await interactionsSvc.create({
+        id: issueId,
+        companyId,
+      }, {
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee_on_accept",
+        payload: {
+          version: 1,
+          prompt: "Approve this plan?",
+        },
+      }, {
+        agentId,
+      });
+
+      const send = vi.fn(async () => ({
+        externalThreadId: "thread-1",
+        externalMessageId: "message-1",
+        nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
+      }));
+      const service = awaitingHumanBridgeService(db, {
+        resolveProviderForCompany: async () => "clickup",
+        hasAdapter: () => true,
+        resolveAdapter: () => ({
+          send,
+          poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
+          close: vi.fn(async () => {}),
+        }),
+      });
+
+      await service.openForPendingInteraction({
+        companyId,
+        issueId,
+        interactionId: interaction.id,
+      });
+
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+        notification: expect.objectContaining({
+          link: "http://localhost:3200/CIT/issues/CIT-2",
+        }),
+      }));
+    } finally {
+      if (prevPublicUrl === undefined) {
+        delete process.env.BIZBOX_PUBLIC_URL;
+      } else {
+        process.env.BIZBOX_PUBLIC_URL = prevPublicUrl;
+      }
+    }
+  });
+
   it("does not wake a plain reply when the issue status is missing", () => {
     expect(shouldWakeOnReplyIssueStatus(undefined)).toBe(false);
     expect(shouldWakeOnReplyIssueStatus("backlog")).toBe(false);
@@ -1220,6 +1313,10 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       .where(eq(issueThreadInteractions.id, seeded.interactionId));
     expect(interaction?.status).toBe("accepted");
 
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toBe("Clickup reply received:\n\napproved");
+
     const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, seeded.agentId));
     expect(wakes).toHaveLength(1);
     expect(wakes[0]?.payload).toMatchObject({
@@ -1290,6 +1387,10 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       .where(eq(issueThreadInteractions.id, seeded.interactionId));
     expect(interactionAfterFirstPoll?.status).toBe("accepted");
 
+    const commentsAfterFirstPoll = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(commentsAfterFirstPoll).toHaveLength(1);
+    expect(commentsAfterFirstPoll[0]?.body).toBe("Clickup reply received:\n\napproved");
+
     const wakesAfterFirstPoll = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, seeded.agentId));
     expect(wakesAfterFirstPoll).toHaveLength(1);
 
@@ -1311,6 +1412,9 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const inboundAfterSecondPoll = await db.select().from(awaitingHumanBridgeInboundEvents)
       .where(eq(awaitingHumanBridgeInboundEvents.bridgeId, bridge.id));
     expect(inboundAfterSecondPoll).toHaveLength(1);
+
+    const commentsAfterSecondPoll = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(commentsAfterSecondPoll).toHaveLength(1);
 
     const [updatedBridge] = await db.select().from(awaitingHumanBridges).where(eq(awaitingHumanBridges.id, bridge.id));
     expect(updatedBridge).toEqual(expect.objectContaining({
@@ -1376,6 +1480,10 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       .where(eq(issueThreadInteractions.id, seeded.interactionId));
     expect(interactionAfterFirstPoll?.status).toBe("rejected");
 
+    const commentsAfterFirstPoll = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(commentsAfterFirstPoll).toHaveLength(1);
+    expect(commentsAfterFirstPoll[0]?.body).toBe("Clickup reply received:\n\nNo, change the plan.");
+
     const inboundAfterFirstPoll = await db.select().from(awaitingHumanBridgeInboundEvents)
       .where(eq(awaitingHumanBridgeInboundEvents.bridgeId, bridge.id));
     expect(inboundAfterFirstPoll).toHaveLength(1);
@@ -1391,6 +1499,9 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const inboundAfterSecondPoll = await db.select().from(awaitingHumanBridgeInboundEvents)
       .where(eq(awaitingHumanBridgeInboundEvents.bridgeId, bridge.id));
     expect(inboundAfterSecondPoll).toHaveLength(1);
+
+    const commentsAfterSecondPoll = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(commentsAfterSecondPoll).toHaveLength(1);
 
     const [updatedBridge] = await db.select().from(awaitingHumanBridges).where(eq(awaitingHumanBridges.id, bridge.id));
     expect(updatedBridge).toEqual(expect.objectContaining({
@@ -1499,6 +1610,10 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const [interaction] = await db.select().from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.id, seeded.interactionId));
     expect(interaction?.status).toBe("rejected");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toBe("Clickup reply received:\n\nNo, change the plan.");
 
     const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, seeded.agentId));
     expect(wakes).toHaveLength(1);

@@ -163,6 +163,14 @@ async function removeBridgeReaction(input: {
   }
 }
 
+async function acknowledgeClickUpReply(input: {
+  messageId: string;
+  overrides: ClickUpAwaitingHumanConfigOverrides;
+}) {
+  const result = await addClickUpChatMessageReaction(input.messageId, "white_check_mark", input.overrides);
+  return result;
+}
+
 export function clickupAwaitingHumanBridgeAdapter(db: Db): AwaitingHumanBridgeAdapter {
   return {
     async send(input) {
@@ -219,11 +227,15 @@ export function clickupAwaitingHumanBridgeAdapter(db: Db): AwaitingHumanBridgeAd
             : "failed";
 
       if (events.length > 0) {
+        const replyMessageIds = new Set<string>();
         for (const event of events) {
           const replyMessageId = typeof event.metadata?.clickupReplyId === "string" && event.metadata.clickupReplyId.trim().length > 0
             ? event.metadata.clickupReplyId.trim()
             : null;
           if (!replyMessageId) continue;
+          replyMessageIds.add(replyMessageId);
+        }
+        for (const replyMessageId of replyMessageIds) {
           await applyBridgeReaction({
             db,
             bridgeId: input.bridgeId,
@@ -245,6 +257,54 @@ export function clickupAwaitingHumanBridgeAdapter(db: Db): AwaitingHumanBridgeAd
       };
     },
 
+    async pollOutboxReplies(input) {
+      const messageId = input.externalMessageId?.trim();
+      if (!messageId) {
+        return { status: "skipped", detail: "missing-external-message-id", events: [] };
+      }
+      const overrides = input.overrides ?? {
+        personalToken: process.env.CLICKUP_PERSONAL_TOKEN?.trim() || undefined,
+        workspaceId: process.env.CLICKUP_WORKSPACE_ID?.trim() || undefined,
+        channelId: process.env.CLICKUP_AWAITING_HUMAN_CHANNEL_ID?.trim() || process.env.CLICKUP_ENGINEERING_CHANNEL_ID?.trim() || undefined,
+      };
+      const detected = await detectClickUpAwaitingHumanBridgeEvents(messageId, overrides);
+      if (detected.status === "failed" || detected.status === "skipped") {
+        return { status: detected.status, detail: detected.detail, events: detected.events.map((event) => ({
+          kind: event.kind,
+          externalEventId: event.externalEventId,
+          externalMessageId: event.externalMessageId,
+          body: event.body ?? null,
+          metadata: event.metadata ?? {},
+        })) };
+      }
+
+      const events: AwaitingHumanBridgePollEvent[] = detected.events.map((event) => ({
+        kind: event.kind,
+        externalEventId: event.externalEventId,
+        externalMessageId: event.externalMessageId,
+        body: event.body ?? null,
+        metadata: event.metadata ?? {},
+      }));
+
+      const replyMessageIds = new Set<string>();
+      for (const event of events) {
+        const replyMessageId = typeof event.metadata?.clickupReplyId === "string" && event.metadata.clickupReplyId.trim().length > 0
+          ? event.metadata.clickupReplyId.trim()
+          : null;
+        if (!replyMessageId) continue;
+        replyMessageIds.add(replyMessageId);
+      }
+      for (const replyMessageId of replyMessageIds) {
+        await acknowledgeClickUpReply({ messageId: replyMessageId, overrides });
+      }
+
+      return {
+        status: "ok" as const,
+        detail: detected.detail,
+        events,
+      };
+    },
+
     async close(input) {
       const messageId = input.externalMessageId?.trim();
       if (!messageId) return;
@@ -260,7 +320,7 @@ export function clickupAwaitingHumanBridgeAdapter(db: Db): AwaitingHumanBridgeAd
         reaction: "brain_is_thinking",
         overrides,
       });
-      if (input.outcome === "approved") {
+      if (input.outcome === "approved" || input.outcome === "superseded") {
         await applyBridgeReaction({
           db,
           bridgeId: input.bridgeId,

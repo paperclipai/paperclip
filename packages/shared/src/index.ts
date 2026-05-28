@@ -224,6 +224,7 @@ export type {
   Company,
   AwaitingHumanProvider,
   ClickUpAwaitingHumanProviderConfig,
+  ClickUpAwaitingHumanConnectionTestResult,
   AwaitingHumanProviderConfig,
   CompanyAwaitingHumanSettings,
   UpdateCompanyAwaitingHumanSettingsRequest,

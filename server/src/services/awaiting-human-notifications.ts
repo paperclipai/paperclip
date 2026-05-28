@@ -1,10 +1,15 @@
-import { and, eq, inArray, lt, lte, or, sql } from "drizzle-orm";
+import { and, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { awaitingHumanNotificationOutbox } from "@paperclipai/db";
+import { resolveAwaitingHumanReviewFile } from "./awaiting-human-review-files.js";
+import { issueService } from "./issues.js";
+import { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
 import {
-  normalizeReviewFile,
-  resolveAwaitingHumanReviewFile,
-} from "./awaiting-human-review-files.js";
+  hasAwaitingHumanBridgeAdapter,
+  resolveAwaitingHumanBridgeAdapter,
+} from "./awaiting-human-bridge-registry.js";
+import { awaitingHumanBridgeService } from "./awaiting-human-bridge.js";
+import { logger } from "../middleware/logger.js";
 
 const MAX_OUTBOX_ATTEMPTS = 8;
 const STALE_OUTBOX_PROCESSING_MS = 5 * 60 * 1000;
@@ -31,6 +36,7 @@ export interface AwaitingHumanNotificationPayload {
   labels: string[];
   kind?: string | null;
   audience?: string | null;
+  interactionId?: string | null;
   body?: string | null;
   reviewFile?: AwaitingHumanNotificationReviewFile | null;
 }
@@ -144,10 +150,117 @@ export async function enqueueAwaitingHumanNotification(
 }
 
 export async function processAwaitingHumanNotificationOutbox(
-  _db: Db,
-  _opts: { limit?: number; storage?: unknown } = {},
+  db: Db,
+  opts: { limit?: number; storage?: unknown } = {},
 ) {
-  // Delivery is now handled by the awaiting-human bridge lifecycle.
-  // This function remains as a compatibility shim for heartbeat callers.
-  return { processed: 0, sent: 0, failed: 0 };
+  const now = new Date();
+  const limit = opts.limit ?? 20;
+  const issueSvc = issueService(db);
+  const bridgeSettings = awaitingHumanSettingsService(db);
+  const bridgeSvc = awaitingHumanBridgeService(db, {
+    resolveProviderForCompany: async (companyId) => bridgeSettings.resolveProvider(companyId),
+    resolveAdapter: (provider) => resolveAwaitingHumanBridgeAdapter(provider, db),
+    hasAdapter: (provider) => hasAwaitingHumanBridgeAdapter(provider),
+  });
+
+  await db.update(awaitingHumanNotificationOutbox).set({
+    status: "pending",
+    updatedAt: now,
+  }).where(and(
+    eq(awaitingHumanNotificationOutbox.status, "processing"),
+    lt(awaitingHumanNotificationOutbox.updatedAt, new Date(now.getTime() - STALE_OUTBOX_PROCESSING_MS)),
+  ));
+
+  const rows = await db
+    .select()
+    .from(awaitingHumanNotificationOutbox)
+    .where(and(
+      or(
+        eq(awaitingHumanNotificationOutbox.status, "pending"),
+        eq(awaitingHumanNotificationOutbox.status, "retrying"),
+        eq(awaitingHumanNotificationOutbox.status, "failed"),
+      ),
+      lt(awaitingHumanNotificationOutbox.attempts, MAX_OUTBOX_ATTEMPTS),
+      or(
+        isNull(awaitingHumanNotificationOutbox.nextAttemptAt),
+        lte(awaitingHumanNotificationOutbox.nextAttemptAt, now),
+      ),
+    ))
+    .limit(limit);
+
+  let processed = 0;
+  let sent = 0;
+  let failed = 0;
+
+  for (const row of rows) {
+    const [claimed] = await db
+      .update(awaitingHumanNotificationOutbox)
+      .set({
+        status: "processing",
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(awaitingHumanNotificationOutbox.id, row.id),
+        or(
+          eq(awaitingHumanNotificationOutbox.status, "pending"),
+          eq(awaitingHumanNotificationOutbox.status, "retrying"),
+          eq(awaitingHumanNotificationOutbox.status, "failed"),
+        ),
+      ))
+      .returning({ id: awaitingHumanNotificationOutbox.id });
+
+    if (!claimed) continue;
+    processed += 1;
+
+    try {
+      const notification = row.notification as unknown as AwaitingHumanNotificationPayload;
+      const interactionId = typeof notification.interactionId === "string" && notification.interactionId.trim().length > 0
+        ? notification.interactionId.trim()
+        : null;
+      if (!interactionId) {
+        throw new Error("missing-interaction-id");
+      }
+
+      const issue = await issueSvc.getById(row.issueId);
+      const agentId = issue?.assigneeAgentId ?? issue?.createdByAgentId ?? null;
+      if (!issue || !agentId) {
+        throw new Error("missing-bridge-agent");
+      }
+
+      if (row.handoffKind !== "request_confirmation" && row.handoffKind !== "ask_user_questions") {
+        throw new Error(`unsupported-handoff-kind:${row.handoffKind}`);
+      }
+
+      const bridge = await bridgeSvc.openOrReuseForInteraction({
+        companyId: row.companyId,
+        issueId: row.issueId,
+        interactionId,
+        agentId,
+        handoffKind: row.handoffKind,
+        notification,
+      });
+
+      sent += 1;
+      await db.update(awaitingHumanNotificationOutbox).set({
+        status: "sent",
+        attempts: row.attempts + 1,
+        nextAttemptAt: null,
+        clickupMessageId: bridge.externalMessageId ?? null,
+        lastError: null,
+        updatedAt: new Date(),
+      }).where(eq(awaitingHumanNotificationOutbox.id, row.id));
+    } catch (error) {
+      failed += 1;
+      const detail = error instanceof Error ? error.message : String(error);
+      await db.update(awaitingHumanNotificationOutbox).set({
+        status: "failed",
+        attempts: row.attempts + 1,
+        nextAttemptAt: nextRetryAt(row.attempts + 1, now.getTime()),
+        lastError: detail,
+        updatedAt: new Date(),
+      }).where(eq(awaitingHumanNotificationOutbox.id, row.id));
+    }
+  }
+
+  return { processed, sent, failed };
 }

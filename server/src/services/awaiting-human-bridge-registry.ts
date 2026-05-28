@@ -35,6 +35,21 @@ export type AwaitingHumanBridgeAdapter = {
     detail: string;
     events: AwaitingHumanBridgePollEvent[];
   }>;
+  pollOutboxReplies?(input: {
+    companyId: string;
+    issueId: string;
+    interactionId: string;
+    externalMessageId?: string | null;
+    overrides?: {
+      personalToken?: string | null;
+      workspaceId?: string | null;
+      channelId?: string | null;
+    };
+  }): Promise<{
+    status: "ok" | "skipped" | "failed";
+    detail: string;
+    events: AwaitingHumanBridgePollEvent[];
+  }>;
   close(input: {
     bridgeId: string;
     externalThreadId?: string | null;

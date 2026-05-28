@@ -2,6 +2,7 @@ export type { Company } from "./company.js";
 export type {
   AwaitingHumanProvider,
   ClickUpAwaitingHumanProviderConfig,
+  ClickUpAwaitingHumanConnectionTestResult,
   AwaitingHumanProviderConfig,
   CompanyAwaitingHumanSettings,
   UpdateCompanyAwaitingHumanSettingsRequest,

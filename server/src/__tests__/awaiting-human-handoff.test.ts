@@ -92,8 +92,11 @@ describe("maybeLogAwaitingHumanHandoff", () => {
         dedupeKey: "interaction:interaction-1",
         handoffKind: "request_confirmation",
         notification: expect.objectContaining({
+          title: "BIZ-35 needs confirmation",
           link: "https://bizbox.example/issues/BIZ-35",
           summary: "Approve the exact GitHub reply before posting.",
+          cta: "",
+          body: expect.stringContaining("Disclaimer:"),
         }),
       }),
     );
@@ -128,8 +131,10 @@ describe("maybeLogAwaitingHumanHandoff", () => {
       expect.objectContaining({
         handoffKind: "ask_user_questions",
         notification: expect.objectContaining({
+          title: "BIZ-35 needs answers",
           summary: "Need answers to 2 question(s).",
           link: "/issues/BIZ-35",
+          body: expect.stringContaining("Question 1: Which scope?"),
         }),
       }),
     );
