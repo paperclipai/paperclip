@@ -31,6 +31,8 @@ reproduce_issue.mjs
 services/issue_lock.py
 temp_fixed.ts
 *.bak
+deep-merge-patch.js
+cli/src/commands/client/index.ts
 !scripts/check-*.mjs
 new-agent*.json
 newcompany.json
