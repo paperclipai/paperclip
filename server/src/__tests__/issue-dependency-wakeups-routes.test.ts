@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, test } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockIssueService = vi.hoisted(() => ({
@@ -42,6 +42,9 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => ({
     wakeup: mockWakeup,
     reportRunActivity: vi.fn(async () => undefined),
+    getRun: vi.fn(async () => null),
+    getActiveRunForAgent: vi.fn(async () => null),
+    cancelRun: vi.fn(async () => null),
   }),
   getIssueContinuationSummaryDocument: vi.fn(async () => null),
   instanceSettingsService: () => ({
@@ -165,6 +168,7 @@ describe("issue dependency wakeups in issue routes", () => {
       {
         id: "issue-2",
         assigneeAgentId: "agent-2",
+        status: "in_progress",
         blockerIssueIds: ["issue-1", "issue-3"],
       },
     ]);
@@ -272,6 +276,108 @@ describe("issue dependency wakeups in issue routes", () => {
           }),
         }),
       );
+    });
+  });
+
+  // Dispatch matrix: route must emit issue_blockers_resolved for every non-terminal dependent status
+  describe("issue_blockers_resolved dispatch matrix (EDE-34)", () => {
+    function makeIssueStub(id: string, status: string) {
+      return {
+        id,
+        companyId: "company-1",
+        identifier: `PAP-${id.slice(0, 3).toUpperCase()}`,
+        title: `Issue ${id}`,
+        description: null,
+        status,
+        priority: "medium" as const,
+        parentId: null,
+        assigneeAgentId: "agent-2",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      };
+    }
+
+    test.each(["todo", "in_progress", "in_review", "blocked", "backlog"] as const)(
+      "positive — emits wake for %s dependent when blocker transitions to done",
+      async (dependentStatus) => {
+        mockIssueService.getById.mockResolvedValue(makeIssueStub("issue-B", "in_progress"));
+        mockIssueService.update.mockResolvedValue(makeIssueStub("issue-B", "done"));
+        // The mock now returns the dependent with the parametrised status so
+        // each iteration actually exercises a distinct service shape and lets
+        // us assert the route forwards the status into the wake payload.
+        mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+          {
+            id: "issue-D",
+            assigneeAgentId: "agent-2",
+            status: dependentStatus,
+            blockerIssueIds: ["issue-B"],
+          },
+        ]);
+
+        const res = await request(await createApp()).patch("/api/issues/issue-B").send({ status: "done" });
+        expect(res.status).toBe(200);
+
+        await vi.waitFor(() => {
+          expect(mockWakeup).toHaveBeenCalledWith(
+            "agent-2",
+            expect.objectContaining({
+              reason: "issue_blockers_resolved",
+              payload: expect.objectContaining({
+                issueId: "issue-D",
+                resolvedBlockerIssueId: "issue-B",
+                dependentStatus,
+              }),
+            }),
+          );
+        }, { timeout: 10_000 });
+
+        // The dispatcher only updates the blocker (issue-B), never the dependent
+        expect(mockIssueService.update).not.toHaveBeenCalledWith(
+          "issue-D",
+          expect.anything(),
+          expect.anything(),
+        );
+      },
+    );
+
+    test.each(["done", "cancelled"] as const)(
+      "negative — no wake for %s dependent (terminal status, not returned by service)",
+      async (dependentStatus) => {
+        mockIssueService.getById.mockResolvedValue(makeIssueStub("issue-B", "in_progress"));
+        mockIssueService.update.mockResolvedValue(makeIssueStub("issue-B", "done"));
+        // Terminal dependents are filtered by the service — simulate correctly
+        mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
+
+        const res = await request(await createApp()).patch("/api/issues/issue-B").send({ status: "done" });
+        expect(res.status).toBe(200);
+
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(mockWakeup).not.toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ reason: "issue_blockers_resolved" }),
+        );
+      },
+    );
+
+    it("negative — no issue_blockers_resolved wake when blocker transitions to cancelled (not done)", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssueStub("issue-B", "in_progress"));
+      mockIssueService.update.mockResolvedValue(makeIssueStub("issue-B", "cancelled"));
+      // listWakeableBlockedDependents is only called on becameDone; for cancelled it's never called
+      mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
+
+      const res = await request(await createApp()).patch("/api/issues/issue-B").send({ status: "cancelled" });
+      expect(res.status).toBe(200);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(mockWakeup).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ reason: "issue_blockers_resolved" }),
+      );
+      expect(mockIssueService.listWakeableBlockedDependents).not.toHaveBeenCalled();
     });
   });
 });

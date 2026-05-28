@@ -3916,7 +3916,7 @@ export function issueService(db: Db) {
       }
 
       return candidates
-        .filter((candidate) => candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status))
+        .filter((candidate) => candidate.assigneeAgentId && !["done", "cancelled"].includes(candidate.status))
         .map((candidate) => {
           const blockers = blockersByIssueId.get(candidate.id) ?? [];
           return {
@@ -3929,6 +3929,7 @@ export function issueService(db: Db) {
         .map((candidate) => ({
           id: candidate.id,
           assigneeAgentId: candidate.assigneeAgentId!,
+          status: candidate.status,
           blockerIssueIds: candidate.blockerIssueIds,
         }));
     },
@@ -3944,6 +3945,14 @@ export function issueService(db: Db) {
         .from(issues)
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
+      // Note: `backlog` is intentionally excluded here while it IS included in
+      // listWakeableBlockedDependents. The parent-after-child-completion path
+      // is an *auto-start* signal — pulling a parent out of backlog because its
+      // children finished crosses a policy line we don't want to cross silently:
+      // backlog parents are expected to remain un-started until an agent or
+      // board explicitly picks them up. The blocked-dependents path is the
+      // opposite — those issues already have an active assignee waiting on the
+      // blocker, so resuming them is the desired automation.
       if (!parent || !parent.assigneeAgentId || ["backlog", "done", "cancelled"].includes(parent.status)) {
         return null;
       }
