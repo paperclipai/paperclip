@@ -36,6 +36,7 @@ interface SpawnTarget {
   command: string;
   args: string[];
   cwd?: string;
+  shell?: boolean;
   cleanup?: () => Promise<void>;
 }
 
@@ -1209,22 +1210,11 @@ export async function resolveCommandForLogs(
   return (await resolveCommandPath(command, cwd, env)) ?? command;
 }
 
-function quoteForCmd(arg: string) {
-  if (!arg.length) return '""';
-  const escaped = arg.replace(/"/g, '""');
-  return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
-}
-
 export function sanitizeSshRemoteEnv(
   env: Record<string, string>,
   inheritedEnv: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
   return sanitizeRemoteExecutionEnv(env, inheritedEnv);
-}
-
-function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
-  const fallbackRoot = env.SystemRoot || process.env.SystemRoot || "C:\\Windows";
-  return path.join(fallbackRoot, "System32", "cmd.exe");
 }
 
 async function resolveSpawnTarget(
@@ -1267,14 +1257,10 @@ async function resolveSpawnTarget(
   }
 
   if (/\.(cmd|bat)$/i.test(executable)) {
-    // Always use cmd.exe for .cmd/.bat wrappers. Some environments override
-    // ComSpec to PowerShell, which breaks cmd-specific flags like /d /s /c.
-    const shell = resolveWindowsCmdShell(env);
-    const commandLine = [quoteForCmd(executable), ...args.map(quoteForCmd)].join(" ");
-    return {
-      command: shell,
-      args: ["/d", "/s", "/c", commandLine],
-    };
+    // Use shell: true so Node builds the cmd.exe /c invocation itself with
+    // correct quoting. Doing it manually hits cmd.exe's quirk where /s strips
+    // the outer double-quote pair, corrupting paths that contain spaces.
+    return { command: executable, args, shell: true };
   }
 
   return { command: executable, args };
@@ -1952,11 +1938,12 @@ export async function runChildProcess(
       remoteEnv: opts.remoteExecution ? opts.env : null,
     })
       .then((target) => {
+        const useShell = target.shell === true;
         const child = spawn(target.command, target.args, {
           cwd: target.cwd ?? opts.cwd,
           env: mergedEnv,
-          detached: process.platform !== "win32",
-          shell: false,
+          detached: !useShell && process.platform !== "win32",
+          shell: useShell,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
