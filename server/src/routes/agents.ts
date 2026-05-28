@@ -2646,9 +2646,7 @@ export function agentRoutes(
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
       });
-              if (patchData.adapterConfig !== undefined) {
-          patchData.adapterConfig = { ...existing.adapterConfig, ...patchData.adapterConfig };
-        }
+      patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
     }
     if (requestedRuntimeConfig) {
       const baseAdapterConfig = asRecord(patchData.adapterConfig) ?? asRecord(existing.adapterConfig) ?? {};
