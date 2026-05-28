@@ -623,10 +623,10 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   actorType: "agent" | "user";
   actorId: string;
 }) {
-  // Only human comments on blocked issues should implicitly resume work.
-  // done/cancelled issues must be reopened explicitly via PATCH — not via comments.
+  // Only human comments should implicitly reopen finished work.
+  // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
-  if (input.issueStatus !== "blocked") return false;
+  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -657,7 +657,6 @@ function queueResolvedInteractionContinuationWakeup(input: {
     continuationPolicy: string;
     sourceCommentId?: string | null;
     sourceRunId?: string | null;
-    rejectionReason?: string | null;
   };
   actor: { actorType: "user" | "agent"; actorId: string };
   source: string;
@@ -688,7 +687,6 @@ function queueResolvedInteractionContinuationWakeup(input: {
       interactionStatus: input.interaction.status,
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
-      interactionRejectionReason: input.interaction.rejectionReason ?? null,
       mutation: "interaction",
     },
     requestedByActorType: input.actor.actorType,
@@ -701,7 +699,6 @@ function queueResolvedInteractionContinuationWakeup(input: {
       interactionStatus: input.interaction.status,
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
-      interactionRejectionReason: input.interaction.rejectionReason ?? null,
       wakeReason: "issue_commented",
       source: input.source,
       ...(forceFreshSession ? { forceFreshSession: true } : {}),
@@ -1428,11 +1425,7 @@ export function issueRoutes(
     }
     const runId = requireAgentRunId(req, res);
     if (!runId) return false;
-    const targetStatus = typeof req.body?.status === "string" ? req.body.status : undefined;
-    const targetIsTerminal = targetStatus === "done" || targetStatus === "cancelled";
-    const ownership = await svc.assertCheckoutOwner(issue.id, actorAgentId, runId, {
-      allowUnownedAdoption: !targetIsTerminal,
-    });
+    const ownership = await svc.assertCheckoutOwner(issue.id, actorAgentId, runId);
     if (ownership.adoptedFromRunId) {
       const actor = getActorInfo(req);
       await logActivity(db, {
@@ -1557,9 +1550,9 @@ export function issueRoutes(
     res: Response,
     issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
   ) {
-    if (issue.status === "done" || issue.status === "cancelled") {
+    if (issue.status === "cancelled") {
       res.status(409).json({
-        error: "Terminal issues (done/cancelled) must be restored through the dedicated restore flow, not via comment follow-up",
+        error: "Cancelled issues must be restored through the dedicated restore flow",
         details: {
           issueId: issue.id,
           status: issue.status,
@@ -1940,9 +1933,6 @@ export function issueRoutes(
       parentId: req.query.parentId as string | undefined,
       descendantOf: req.query.descendantOf as string | undefined,
       labelId: req.query.labelId as string | undefined,
-      priority: req.query.priority as string | undefined,
-      hasActiveRecovery: req.query.hasActiveRecovery === "true" || req.query.hasActiveRecovery === "1",
-      activeRecoveryActionKind: req.query.activeRecoveryActionKind as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
       originId: req.query.originId as string | undefined,
@@ -2011,9 +2001,6 @@ export function issueRoutes(
       parentId: req.query.parentId as string | undefined,
       descendantOf: req.query.descendantOf as string | undefined,
       labelId: req.query.labelId as string | undefined,
-      priority: req.query.priority as string | undefined,
-      hasActiveRecovery: req.query.hasActiveRecovery === "true" || req.query.hasActiveRecovery === "1",
-      activeRecoveryActionKind: req.query.activeRecoveryActionKind as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
       originId: req.query.originId as string | undefined,
@@ -2028,23 +2015,6 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
     });
     res.json({ count });
-  });
-
-  router.get("/companies/:companyId/recovery-actions/count", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const rawStatus = req.query.status as string | undefined;
-    const rawKind = req.query.kind as string | undefined;
-    const allStatuses = ["active", "escalated"] as const;
-    type RecoveryStatus = "active" | "escalated";
-    const statuses: RecoveryStatus[] = rawStatus
-      ? (rawStatus.split(",").map((s) => s.trim()).filter((s) => allStatuses.includes(s as RecoveryStatus)) as RecoveryStatus[])
-      : [...allStatuses];
-    const kinds = rawKind
-      ? rawKind.split(",").map((k) => k.trim()).filter(Boolean)
-      : undefined;
-    const result = await recoveryActionsSvc.countActive(companyId, { statuses, kinds });
-    res.json({ status: rawStatus ?? "active,escalated", total: result.total, byKind: result.byKind });
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
@@ -3665,15 +3635,14 @@ export function issueRoutes(
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
     });
 
-    // Send 201 immediately after the row is committed so a post-insert
-    // failure (e.g. activity log FK violation on runId) never causes the
-    // client to receive 500 on a row that was actually persisted, which
-    // would trigger duplicate-create retry storms (GH#6737).
+    // Return 201 before post-insert side-effects (activity logging, wakeup
+    // queue). If either throws the row is already committed, so a 500 here
+    // would falsely signal failure and trigger duplicate-create retries
+    // (GH#6737). Respond first; log and wake in a trailing promise.
     res.status(201).json(issue);
 
-    void (async () => {
-      try {
-        await issueReferencesSvc.syncIssue(issue.id);
+    void Promise.resolve()
+      .then(async () => {
         await logActivity(db, {
           companyId: parent.companyId,
           actorType: actor.actorType,
@@ -3727,10 +3696,10 @@ export function issueRoutes(
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
         });
-      } catch (err) {
-        logger.warn({ err, issueId: issue.id }, "post-create side-effects failed for child issue");
-      }
-    })();
+      })
+      .catch((err: unknown) => {
+        console.error({ err, issueId: issue.id }, "post-insert side-effect failed after child issue created");
+      });
   });
 
   router.post("/issues/:id/monitor/check-now", async (req, res) => {
@@ -4677,9 +4646,6 @@ export function issueRoutes(
 
         for (const mentionedId of mentionedIds) {
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
-      if (dependent.status === "blocked") {
-        await db.updateTable("issues").set({ status: "todo" }).where("id", "=", dependent.id).execute();
-      }
           addWakeup(mentionedId, {
             source: "automation",
             triggerDetail: "system",
@@ -4703,13 +4669,6 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
-          if (dependent.status === "blocked") {
-            await svc.update(dependent.id, {
-              status: "todo",
-              actorAgentId: actor.agentId,
-              actorUserId: actor.actorType === "user" ? actor.actorId : null,
-            });
-          }
           addWakeup(dependent.assigneeAgentId, {
             source: "automation",
             triggerDetail: "system",
@@ -5231,17 +5190,10 @@ export function issueRoutes(
         },
       });
 
-      const rejectionReason =
-        interaction.kind === "request_confirmation"
-          ? (interaction.result?.reason ?? null)
-          : interaction.kind === "suggest_tasks"
-            ? (interaction.result?.rejectionReason ?? null)
-            : null;
-
       queueResolvedInteractionContinuationWakeup({
         heartbeat,
         issue,
-        interaction: { ...interaction, rejectionReason },
+        interaction,
         actor,
         source: "issue.interaction.reject",
       });
