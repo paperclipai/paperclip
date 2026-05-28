@@ -68,6 +68,7 @@ const SSH_SIGKILL_GRACE_MS = 250;
 const MAX_VM_RECORD_DEPTH = 4;
 const EXE_DEV_SSH_ONBOARDING_MARKER = "Please complete registration by running: ssh exe.dev";
 const EXE_DEV_SSH_EMAIL_PROMPT = "Please enter your email address:";
+const EXE_DEV_SSH_INVALID_KEY_FORMAT = /Load key [^\n]*invalid format/i;
 
 // exe.dev's `--setup-script` runs at VM init as the unprivileged `exedev` user, which
 // has passwordless sudo. The Paperclip sandbox callback bridge is a Node script, so
@@ -495,6 +496,13 @@ function formatSshFailure(
     return [
       `Failed to ${action} exe.dev VM ${vmName}: the Paperclip host SSH key is not registered with exe.dev.`,
       "Complete exe.dev's one-time SSH onboarding on this host by running `ssh exe.dev` and following the email verification prompt, then retry.",
+    ].join(" ");
+  }
+
+  if (EXE_DEV_SSH_INVALID_KEY_FORMAT.test(combinedOutput)) {
+    return [
+      `Failed to ${action} exe.dev VM ${vmName}: the configured SSH private key isn't an OpenSSH-format private key.`,
+      "Confirm the secret starts with `-----BEGIN … PRIVATE KEY-----` and isn't the `.pub` file or a PuTTY `.ppk` export.",
     ].join(" ");
   }
 

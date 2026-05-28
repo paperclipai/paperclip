@@ -346,6 +346,38 @@ describe("exe.dev sandbox provider plugin", () => {
     expect(String(fetchMock.mock.calls[1]?.[1]?.body ?? "")).toBe("rm --json 'paperclip-env-run'");
   });
 
+  it("surfaces invalid SSH key-format guidance during lease acquisition", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        vm_name: "paperclip-env-run",
+        ssh_dest: "paperclip-env-run.exe.xyz",
+        https_url: "https://paperclip-env-run.exe.xyz",
+        status: "running",
+      }), { status: 200 }),
+    );
+    fetchMock.mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    queueSpawnResult({
+      code: 255,
+      stderr: 'Load key "/tmp/paperclip-exe-dev-ssh-abc/id_ed25519": invalid format\n',
+    });
+
+    await expect(plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "exe-dev",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      config: {
+        apiKey: "api-key",
+        sshPrivateKey: "not-actually-a-key",
+        timeoutMs: 300000,
+      },
+    })).rejects.toThrow(
+      "the configured SSH private key isn't an OpenSSH-format private key",
+    );
+
+    expect(String(fetchMock.mock.calls[1]?.[1]?.body ?? "")).toBe("rm --json 'paperclip-env-run'");
+  });
+
   it("redacts sensitive lifecycle flags in API errors", async () => {
     fetchMock.mockResolvedValueOnce(new Response("upstream boom", { status: 500 }));
 
