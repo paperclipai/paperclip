@@ -1,8 +1,8 @@
 import { createDb } from "./client.js";
 import { companies, agents, goals, projects, issues } from "./schema/index.js";
 
-const url = process.env.DATABASE_URL;
-if (!url) throw new Error("DATABASE_URL is required");
+const url = process.env.PAPERCLIP_DATABASE_URL ?? process.env.DATABASE_URL;
+if (!url) throw new Error("PAPERCLIP_DATABASE_URL (or DATABASE_URL) is required");
 
 const db = createDb(url);
 
