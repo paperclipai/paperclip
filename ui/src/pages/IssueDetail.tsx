@@ -22,6 +22,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { assigneeValueFromSelection, suggestedCommentAssigneeValue } from "../lib/assignees";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, buildMarkdownMentionOptions } from "../lib/company-members";
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
+import { shouldPollInteractionHandoffStatus } from "../lib/interaction-handoff-status";
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
@@ -612,6 +613,22 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onRejectInteraction,
   onSubmitInteractionAnswers,
 }: IssueDetailChatTabProps) {
+  const hasExternalHandoffInteraction = useMemo(
+    () => interactions.some((interaction) => (
+      (interaction.kind === "ask_user_questions" || interaction.kind === "request_confirmation")
+      && (interaction.status === "pending" || issueStatus === "awaiting_human")
+    )),
+    [interactions, issueStatus],
+  );
+  const { data: interactionHandoffStatus } = useQuery({
+    queryKey: queryKeys.issues.interactionHandoffStatus(issueId),
+    queryFn: () => issuesApi.listInteractionHandoffStatus(issueId),
+    enabled: hasExternalHandoffInteraction,
+    refetchInterval: (query) => (
+      shouldPollInteractionHandoffStatus(interactions, query.state.data) ? 5000 : false
+    ),
+    placeholderData: keepPreviousDataForSameQueryTail(issueId),
+  });
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -742,6 +759,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         composerRef={composerRef}
         comments={commentsWithRunMeta}
         interactions={interactions}
+        interactionHandoffStatusByInteractionId={interactionHandoffStatus?.byInteractionId ?? {}}
         feedbackVotes={feedbackVotes}
         feedbackDataSharingPreference={feedbackDataSharingPreference}
         feedbackTermsUrl={feedbackTermsUrl}
@@ -1272,11 +1290,13 @@ export function IssueDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactionHandoffStatus(issueId!) });
   }, [issueId, queryClient]);
   const invalidateIssueThreadLazily = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!), refetchType: "inactive" });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!), refetchType: "inactive" });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId!), refetchType: "inactive" });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactionHandoffStatus(issueId!), refetchType: "inactive" });
   }, [issueId, queryClient]);
 
   const invalidateIssueRunState = useCallback(() => {

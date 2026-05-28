@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, InteractionAwaitingHumanHandoffStatus } from "@paperclipai/shared";
 import { AlertTriangle, CheckCircle2, ChevronRight, CircleDashed, GitBranch, ListChecks, Loader2, MessageSquareQuote, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { formatAssigneeUserLabel } from "../lib/assignees";
@@ -18,7 +18,12 @@ import {
   type SuggestedTaskDraft,
   type SuggestedTaskTreeNode,
 } from "../lib/issue-thread-interactions";
+import {
+  resolveDisplayHandoffStatus,
+  shouldShowInteractionHandoffStatus,
+} from "../lib/interaction-handoff-status";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
+import { InteractionHandoffStatus } from "./InteractionHandoffStatus";
 import { MarkdownBody } from "./MarkdownBody";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
@@ -43,6 +48,7 @@ interface IssueThreadInteractionCardProps {
     interaction: AskUserQuestionsInteraction,
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void> | void;
+  handoffStatus?: InteractionAwaitingHumanHandoffStatus | null;
 }
 
 function resolveActorLabel(args: {
@@ -1162,6 +1168,7 @@ export function IssueThreadInteractionCard({
   onAcceptInteraction,
   onRejectInteraction,
   onSubmitInteractionAnswers,
+  handoffStatus,
 }: IssueThreadInteractionCardProps) {
   const StatusIcon = statusIcon(interaction.status);
   const styles = statusClasses(interaction.status);
@@ -1182,6 +1189,7 @@ export function IssueThreadInteractionCard({
           userLabelMap,
         })
       : null;
+  const displayHandoffStatus = resolveDisplayHandoffStatus(interaction, handoffStatus);
 
   return (
     <div className={cn("rounded-sm border p-5 shadow-none", styles.shell)}>
@@ -1218,6 +1226,10 @@ export function IssueThreadInteractionCard({
               {interaction.summary}
             </p>
           ) : null}
+          {displayHandoffStatus
+            && shouldShowInteractionHandoffStatus(interaction, displayHandoffStatus)
+            ? <InteractionHandoffStatus status={displayHandoffStatus} />
+            : null}
         </div>
 
         <Tooltip>
