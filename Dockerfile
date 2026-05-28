@@ -25,6 +25,7 @@ COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
 COPY packages/adapters/gemini-local/package.json packages/adapters/gemini-local/
+COPY packages/adapters/google-adk/package.json packages/adapters/google-adk/
 COPY packages/adapters/clickup-agent-ref/package.json packages/adapters/clickup-agent-ref/
 COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-gateway/
 COPY packages/adapters/otto-agent/package.json packages/adapters/otto-agent/

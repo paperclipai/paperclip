@@ -6,6 +6,7 @@ export const BUILTIN_ADAPTER_TYPES = new Set([
   "codex_local",
   "cursor",
   "gemini_local",
+  "google_adk",
   "openclaw_gateway",
   "otto_agent",
   "clickup_agent_ref",

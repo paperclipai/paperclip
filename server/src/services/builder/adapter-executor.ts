@@ -79,6 +79,7 @@ export const BUILDER_SUPPORTED_ADAPTER_TYPES = [
   "opencode_local",
   "cursor",
   "gemini_local",
+  "google_adk",
   "pi_local",
   "openclaw_gateway",
   "otto_agent",

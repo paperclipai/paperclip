@@ -9,6 +9,7 @@
     { "path": "./packages/adapters/claude-local" },
     { "path": "./packages/adapters/codex-local" },
     { "path": "./packages/adapters/cursor-local" },
+    { "path": "./packages/adapters/google-adk" },
     { "path": "./packages/adapters/droid-local" },
     { "path": "./packages/adapters/clickup-agent-ref" },
     { "path": "./packages/adapters/openclaw-gateway" },

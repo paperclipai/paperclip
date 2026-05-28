@@ -36,6 +36,14 @@ import {
 } from "@paperclipai/adapter-gemini-local/server";
 import { agentConfigurationDoc as geminiAgentConfigurationDoc, models as geminiModels } from "@paperclipai/adapter-gemini-local";
 import {
+  execute as googleAdkExecute,
+  testEnvironment as googleAdkTestEnvironment,
+} from "@paperclipai/adapter-google-adk/server";
+import {
+  agentConfigurationDoc as googleAdkAgentConfigurationDoc,
+  models as googleAdkModels,
+} from "@paperclipai/adapter-google-adk";
+import {
   execute as openCodeExecute,
   listOpenCodeSkills,
   syncOpenCodeSkills,
@@ -238,6 +246,18 @@ const geminiLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: geminiAgentConfigurationDoc,
 };
 
+const googleAdkAdapter: ServerAdapterModule = {
+  type: "google_adk",
+  execute: googleAdkExecute,
+  testEnvironment: googleAdkTestEnvironment,
+  models: googleAdkModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: googleAdkAgentConfigurationDoc,
+};
+
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
   execute: openclawGatewayExecute,
@@ -394,6 +414,7 @@ function registerBuiltInAdapters() {
     piLocalAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
+    googleAdkAdapter,
     openclawGatewayAdapter,
     ottoAgentAdapter,
     clickUpAgentRefAdapter,

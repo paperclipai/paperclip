@@ -69,6 +69,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Gemini agent",
     icon: Gem,
   },
+  google_adk: {
+    label: "Google ADK",
+    description: "Run an ADK agent through the local ADK CLI",
+    icon: Gem,
+  },
   opencode_local: {
     label: "OpenCode",
     description: "Local multi-provider agent",
