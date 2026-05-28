@@ -104,6 +104,23 @@ function buildReplyReceivedBody(provider: string, replyBody: string) {
   return `${formatProviderLabel(provider)} reply received:\n\n${replyBody}`;
 }
 
+function buildApprovalSignalCommentBody(
+  provider: string,
+  replyBody: string | null,
+  metadata: Record<string, unknown>,
+) {
+  if (replyBody) {
+    return buildReplyReceivedBody(provider, replyBody);
+  }
+  const reaction = typeof metadata.clickupReaction === "string" && metadata.clickupReaction.trim().length > 0
+    ? metadata.clickupReaction.trim()
+    : null;
+  if (reaction) {
+    return `${formatProviderLabel(provider)} approval reaction received: ${reaction}`;
+  }
+  return `${formatProviderLabel(provider)} approval signal received`;
+}
+
 function normalizeForMatch(value: string) {
   return value
     .toLowerCase()
@@ -1628,6 +1645,106 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
 
         if (event.kind === "approval_signal") {
           const approvalReplyBody = event.body?.trim() || null;
+          const currentInteraction = await interactionsSvc.getById(row.interactionId);
+          if (
+            currentInteraction
+            && currentInteraction.kind === "ask_user_questions"
+            && currentInteraction.status === "pending"
+          ) {
+            const eventMetadata = event.metadata ?? {};
+            const questionsApproval = await db.transaction(async (tx) => {
+              const [recorded] = await tx.insert(awaitingHumanBridgeInboundEvents).values({
+                bridgeId: row.id,
+                interactionId: row.interactionId,
+                eventKind: event.kind,
+                externalEventId,
+                externalMessageId: event.externalMessageId?.trim() || null,
+                externalThreadId: event.externalThreadId?.trim() || null,
+                payload: { ...(event.raw ?? {}), ...eventMetadata },
+              }).onConflictDoNothing({
+                target: [awaitingHumanBridgeInboundEvents.interactionId, awaitingHumanBridgeInboundEvents.externalEventId],
+                where: sql`${awaitingHumanBridgeInboundEvents.externalEventId} IS NOT NULL`,
+              }).returning({ id: awaitingHumanBridgeInboundEvents.id });
+
+              if (!recorded) {
+                return {
+                  duplicate: true as const,
+                  commentId: null as string | null,
+                  commentBody: null as string | null,
+                };
+              }
+
+              const commentBody = buildApprovalSignalCommentBody(
+                row.provider,
+                approvalReplyBody,
+                eventMetadata,
+              );
+              const [comment] = await tx.insert(issueComments).values({
+                companyId: row.companyId,
+                issueId: row.issueId,
+                authorAgentId: null,
+                authorUserId: null,
+                createdByRunId: null,
+                body: commentBody,
+              }).returning();
+              await tx
+                .update(issues)
+                .set({ updatedAt: new Date() })
+                .where(eq(issues.id, row.issueId));
+
+              return {
+                duplicate: false as const,
+                commentId: comment?.id ?? null,
+                commentBody,
+              };
+            });
+
+            if (questionsApproval.duplicate) {
+              summary.skipped += 1;
+              continue;
+            }
+
+            await logActivity(db, {
+              companyId: row.companyId,
+              actorType: "system",
+              actorId: "awaiting_human_bridge",
+              action: "issue.comment_added",
+              entityType: "issue",
+              entityId: row.issueId,
+              details: {
+                commentId: questionsApproval.commentId,
+                bodySnippet: questionsApproval.commentBody.slice(0, 120),
+                identifier: issue.identifier,
+                issueTitle: issue.title,
+                interactionId: row.interactionId,
+                forwardingOrigin: "awaiting_human.bridge_approval_signal",
+                externalMessageId: row.externalMessageId ?? null,
+                externalEventId,
+              },
+            });
+
+            if (shouldWakeOnReplyIssueStatus(issue.status)) {
+              await insertWakeup({
+                companyId: row.companyId,
+                agentId: row.agentId,
+                payload: {
+                  issueId: row.issueId,
+                  interactionId: row.interactionId,
+                  commentId: questionsApproval.commentId,
+                  mutation: "comment",
+                },
+              });
+            }
+
+            await db.update(awaitingHumanBridges).set({
+              lastPolledAt: now,
+              nextPollAt: new Date(now.getTime() + 60_000),
+              updatedAt: now,
+            }).where(eq(awaitingHumanBridges.id, row.id));
+            summary.replies += 1;
+            continue;
+          }
+
           const approvalProcessing = await db.transaction(async (tx) => {
             const txDb = tx as unknown as Db;
             const txInteractionsSvc = issueThreadInteractionService(txDb);
