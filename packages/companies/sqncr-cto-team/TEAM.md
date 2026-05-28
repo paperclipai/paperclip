@@ -9,6 +9,6 @@ tags:
   - technical-leadership
 ---
 
-The sqncr CTO team. The CTO receives work from the CEO (OpenClaw), architects the solution, delegates implementation to specialist sub-agents (frontend-dev, backend-dev, designer), and delivers reviewed, production-ready systems.
+The sqncr CTO team. The CTO receives work from the CEO (OpenClaw), architects the solution, delegates implementation to The Implementer (full-stack vertical slices), and delivers reviewed, production-ready systems.
 
 Import this team into the sqncr company attached under the OpenClaw CEO agent.

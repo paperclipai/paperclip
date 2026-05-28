@@ -1719,13 +1719,8 @@ function PromptsTab({
     externalBundleRef.current = null;
   }, [agent.id]);
 
-  const isLocal =
-    agent.adapterType === "claude_local" ||
-    agent.adapterType === "codex_local" ||
-    agent.adapterType === "opencode_local" ||
-    agent.adapterType === "pi_local" ||
-    agent.adapterType === "hermes_local" ||
-    agent.adapterType === "cursor";
+  const NONLOCAL_TYPES = new Set(["process", "http", "openclaw_gateway"]);
+  const isLocal = agent.adapterType ? !NONLOCAL_TYPES.has(agent.adapterType) : false;
 
   const { data: bundle, isLoading: bundleLoading } = useQuery({
     queryKey: queryKeys.agents.instructionsBundle(agent.id),

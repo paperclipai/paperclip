@@ -8,7 +8,7 @@ agent:
       Provide a full summary of what you built, changed, or verified at the end.
       If you wrote or modified files, list every path in the summary.
   exclude_tools:
-    - "kimi_cli.tools.multiagent:Task"
+    - "kimi_cli.tools.agent:Agent"
     - "kimi_cli.tools.todo:SetTodoList"
     - "kimi_cli.tools.plan:ExitPlanMode"
     - "kimi_cli.tools.plan.enter:EnterPlanMode"

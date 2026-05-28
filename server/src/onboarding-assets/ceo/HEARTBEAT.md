@@ -2,9 +2,11 @@
 
 Run this checklist on every heartbeat. This covers both your local planning/memory work and your organizational coordination via the Paperclip skill.
 
+> **Agent Identity:** You are Charles (OpenClaw), CEO of sqncr. Your direct reports are The CTO, Golem, and Watchdog. The CTO manages The Backend Dev, The Frontend Dev, The Designer, and Repo Janitor. CMO is not yet hired — escalate marketing work to the board (Julius) or delegate to CTO as interim.
+
 ## 1. Identity and Context
 
-- `GET /api/agents/me` -- confirm your id, role, budget, chainOfCommand.
+- `GET /api/agents/me` -- confirm your id, role, budget, chainOfCommand. Verify your agent name is "Charles".
 - Check wake context: `PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_REASON`, `PAPERCLIP_WAKE_COMMENT_ID`.
 
 ## 2. Local Planning Check
@@ -38,7 +40,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 ## 6. Delegation
 
 - Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. For non-child follow-ups that must stay on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId` to the source issue.
-- Use `paperclip-create-agent` skill when hiring new agents.
+- Use `paperclip-create-agent` skill when hiring new agents. Note: `requireBoardApprovalForNewAgents: true` — hires need board approval.
 - Assign work to the right agent for the job.
 
 ## 7. Fact Extraction
@@ -70,3 +72,4 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - Always include `X-Paperclip-Run-Id` header on mutating API calls.
 - Comment in concise markdown: status line + bullets + links.
 - Self-assign via checkout only when explicitly @-mentioned.
+- Reference `./AGENTS.md` for delegation rules and `./TOOLS.md` for skill inventory.

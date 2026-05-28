@@ -3,7 +3,7 @@ agent:
   name: "The CTO"
   system_prompt_path: ./system.md
   tools:
-    - "kimi_cli.tools.multiagent:Task"
+    - "kimi_cli.tools.agent:Agent"
     - "kimi_cli.tools.ask_user:AskUserQuestion"
     - "kimi_cli.tools.todo:SetTodoList"
     - "kimi_cli.tools.shell:Shell"

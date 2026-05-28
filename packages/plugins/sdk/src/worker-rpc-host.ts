@@ -34,6 +34,7 @@
  * @see PLUGIN_SPEC.md §14 — SDK Surface
  */
 
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -209,8 +210,8 @@ export function runWorker(
   }
   const entry = process.argv[1];
   if (typeof entry !== "string") return;
-  const thisFile = path.resolve(fileURLToPath(moduleUrl));
-  const entryPath = path.resolve(entry);
+  const thisFile = realpathSync(path.resolve(fileURLToPath(moduleUrl)));
+  const entryPath = realpathSync(path.resolve(entry));
   if (thisFile === entryPath) {
     startWorkerRpcHost({ plugin });
   }

@@ -50,7 +50,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, Columns3, User, Search } from "lucide-react";
+import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, Columns3, User, Search, Trash2, X } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import type { Issue, Project } from "@paperclipai/shared";
@@ -137,6 +137,8 @@ interface IssuesListProps {
   enableRoutineVisibilityFilter?: boolean;
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+  onBulkDelete?: (ids: string[]) => void;
+  bulkDeletePending?: boolean;
 }
 
 function IssueSearchInput({
@@ -217,6 +219,8 @@ export function IssuesList({
   enableRoutineVisibilityFilter = false,
   onSearchChange,
   onUpdateIssue,
+  onBulkDelete,
+  bulkDeletePending,
 }: IssuesListProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
@@ -245,6 +249,8 @@ export function IssuesList({
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(loadInboxIssueColumns);
+  const [bulkMode, setBulkMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const deferredIssueSearch = useDeferredValue(issueSearch);
   const normalizedIssueSearch = deferredIssueSearch.trim().toLowerCase();
 
@@ -527,12 +533,69 @@ export function IssuesList({
 
   return (
     <div className="space-y-4">
+      {/* Bulk actions bar */}
+      {bulkMode && selectedIds.size > 0 && (
+        <div className="flex items-center justify-between gap-3 border border-border bg-accent/30 px-3 py-2">
+          <div className="flex items-center gap-2 text-sm">
+            <span className="font-medium">{selectedIds.size} selected</span>
+            <button
+              className="text-xs text-muted-foreground hover:text-foreground underline"
+              onClick={() => setSelectedIds(new Set(filtered.map((i) => i.id)))}
+            >
+              Select all
+            </button>
+            <button
+              className="text-xs text-muted-foreground hover:text-foreground underline"
+              onClick={() => setSelectedIds(new Set())}
+            >
+              Clear
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setBulkMode(false);
+                setSelectedIds(new Set());
+              }}
+            >
+              <X className="h-3.5 w-3.5 mr-1" />
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={bulkDeletePending}
+              onClick={() => {
+                if (!window.confirm(`Delete ${selectedIds.size} issue${selectedIds.size === 1 ? "" : "s"} permanently? This cannot be undone.`)) return;
+                onBulkDelete?.(Array.from(selectedIds));
+              }}
+            >
+              <Trash2 className="h-3.5 w-3.5 mr-1" />
+              Delete
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Toolbar */}
       <div className="flex items-center justify-between gap-2 sm:gap-3">
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
           <Button size="sm" variant="outline" onClick={() => openNewIssue(newIssueDefaults())}>
             <Plus className="h-4 w-4 sm:mr-1" />
             <span className="hidden sm:inline">New Issue</span>
+          </Button>
+          <Button
+            size="sm"
+            variant={bulkMode ? "secondary" : "outline"}
+            onClick={() => {
+              setBulkMode((prev) => !prev);
+              setSelectedIds(new Set());
+            }}
+          >
+            <span className="hidden sm:inline">{bulkMode ? "Done" : "Select"}</span>
+            <span className="sm:hidden">{bulkMode ? "Done" : "Sel"}</span>
           </Button>
           <IssueSearchInput
             value={issueSearch}
@@ -739,6 +802,19 @@ export function IssuesList({
                       <IssueRow
                         issue={issue}
                         issueLinkState={issueLinkState}
+                        selectable={bulkMode}
+                        selected={selectedIds.has(issue.id)}
+                        onToggleSelect={() => {
+                          setSelectedIds((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(issue.id)) {
+                              next.delete(issue.id);
+                            } else {
+                              next.add(issue.id);
+                            }
+                            return next;
+                          });
+                        }}
                         titleSuffix={hasChildren && !isExpanded ? (
                           <span className="ml-1.5 text-xs text-muted-foreground">
                             ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})

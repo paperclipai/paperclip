@@ -912,6 +912,28 @@ export function IssueDetail() {
     updateIssue.mutate(data);
   }, [updateIssue.mutate]);
 
+  const removeIssue = useMutation({
+    mutationFn: () => issuesApi.remove(issueId!),
+    onSuccess: () => {
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+      }
+      pushToast({ title: "Issue deleted", tone: "success" });
+      navigate("/issues/all");
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Delete failed",
+        body: err instanceof Error ? err.message : "Unable to delete issue",
+        tone: "error",
+      });
+    },
+  });
+
   const approvalDecision = useMutation({
     mutationFn: async ({ approvalId, action }: { approvalId: string; action: "approve" | "reject" }) => {
       if (action === "approve") {
@@ -1789,6 +1811,17 @@ export function IssueDetail() {
               >
                 <EyeOff className="h-3 w-3" />
                 Hide this Issue
+              </button>
+              <button
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                onClick={() => {
+                  setMoreOpen(false);
+                  if (!window.confirm(`Delete "${issue?.title ?? "this issue"}" permanently? This cannot be undone.`)) return;
+                  removeIssue.mutate();
+                }}
+              >
+                <Trash2 className="h-3 w-3" />
+                Delete Issue
               </button>
             </PopoverContent>
             </Popover>

@@ -9,6 +9,7 @@ import {
 } from "../lib/issueDetailBreadcrumb";
 import { cn } from "../lib/utils";
 import { StatusIcon } from "./StatusIcon";
+import { Checkbox } from "@/components/ui/checkbox";
 
 type UnreadState = "hidden" | "visible" | "fading";
 
@@ -16,6 +17,8 @@ interface IssueRowProps {
   issue: Issue;
   issueLinkState?: unknown;
   selected?: boolean;
+  selectable?: boolean;
+  onToggleSelect?: () => void;
   mobileLeading?: ReactNode;
   desktopMetaLeading?: ReactNode;
   desktopLeadingSpacer?: boolean;
@@ -34,6 +37,8 @@ export function IssueRow({
   issue,
   issueLinkState,
   selected = false,
+  selectable = false,
+  onToggleSelect,
   mobileLeading,
   desktopMetaLeading,
   desktopLeadingSpacer = false,
@@ -67,9 +72,20 @@ export function IssueRow({
         className,
       )}
     >
-      <span className="shrink-0 pt-px sm:hidden">
-        {mobileLeading ?? <StatusIcon status={issue.status} className={selectedStatusClass} />}
-      </span>
+      {selectable ? (
+        <span className="shrink-0 pt-px sm:hidden" onClick={(e) => e.preventDefault()}>
+          <Checkbox
+            checked={selected}
+            onCheckedChange={() => onToggleSelect?.()}
+            className="mt-0.5"
+            aria-label={`Select ${issue.title}`}
+          />
+        </span>
+      ) : (
+        <span className="shrink-0 pt-px sm:hidden">
+          {mobileLeading ?? <StatusIcon status={issue.status} className={selectedStatusClass} />}
+        </span>
+      )}
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
         <span className="line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none">
           {issue.title}{titleSuffix}
@@ -78,11 +94,22 @@ export function IssueRow({
           {desktopLeadingSpacer ? (
             <span className="hidden w-3.5 shrink-0 sm:block" />
           ) : null}
+          {selectable ? (
+            <span className="hidden shrink-0 sm:inline-flex" onClick={(e) => e.preventDefault()}>
+              <Checkbox
+                checked={selected}
+                onCheckedChange={() => onToggleSelect?.()}
+                aria-label={`Select ${issue.title}`}
+              />
+            </span>
+          ) : null}
           {desktopMetaLeading ?? (
             <>
-              <span className="hidden shrink-0 sm:inline-flex">
-                <StatusIcon status={issue.status} className={selectedStatusClass} />
-              </span>
+              {!selectable && (
+                <span className="hidden shrink-0 sm:inline-flex">
+                  <StatusIcon status={issue.status} className={selectedStatusClass} />
+                </span>
+              )}
               <span className="shrink-0 font-mono text-xs text-muted-foreground">
                 {identifier}
               </span>

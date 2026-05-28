@@ -1,0 +1,49 @@
+{
+  "name": "@paperclipai/adapter-kimi-local",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Paperclip adapter for Kimi Code CLI (local)",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server/index.ts",
+    "./ui-parser": "./src/ui/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./server": {
+        "types": "./dist/server/index.d.ts",
+        "import": "./dist/server/index.js"
+      },
+      "./ui-parser": {
+        "types": "./dist/ui/index.d.ts",
+        "import": "./dist/ui/index.js"
+      }
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "paperclip": {
+    "adapterUiParser": "1.0.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/adapter-utils": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "typescript": "^5.7.3"
+  }
+}

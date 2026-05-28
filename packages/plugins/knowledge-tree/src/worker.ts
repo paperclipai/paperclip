@@ -17,8 +17,8 @@ const NEO4J_PASSWORD = process.env.NEO4J_PASSWORD;
 
 const MY_APP_ROOT = "/Users/JuliusHalm 1/workspace/my-app";
 const RAW_DIR = path.join(MY_APP_ROOT, "raw");
-const INGEST_SCRIPT = path.join(MY_APP_ROOT, "scripts", "ingest.js");
 const DISTILL_SCRIPT = path.join(MY_APP_ROOT, "scripts", "distill.js");
+const SYNTHESIZE_SCRIPT = path.join(MY_APP_ROOT, "scripts", "synthesize.js");
 
 if (!NEO4J_URI || !NEO4J_USERNAME || !NEO4J_PASSWORD) {
   throw new Error("Knowledge Tree plugin: NEO4J_URI, NEO4J_USERNAME, and/or NEO4J_PASSWORD are missing in /Users/JuliusHalm 1/workspace/my-app/.env");
@@ -43,35 +43,23 @@ async function runCypher<T = unknown>(cypher: string, params?: Record<string, un
 
 /**
  * Detect whether a Cypher query is read-only.
- *
- * This strips block comments, line comments, and string literals
- * before looking for write keywords. It also blocks procedures
- * known to perform writes (apoc.*.set*, apoc.merge*, etc.).
  */
 function isReadOnlyQuery(cypher: string): boolean {
   let stripped = cypher;
 
-  // Remove block comments /* ... */
   stripped = stripped.replace(/\/\*[\s\S]*?\*\//g, " ");
-  // Remove line comments // ...
   stripped = stripped.replace(/\/\/.*$/gm, " ");
-
-  // Remove backtick-quoted identifiers `...`
   stripped = stripped.replace(/`[^`]*`/g, " ");
-  // Remove single-quoted strings '...'
   stripped = stripped.replace(/'[^']*'/g, " ");
-  // Remove double-quoted strings "..."
   stripped = stripped.replace(/"[^"]*"/g, " ");
 
   const normalized = stripped.toLowerCase();
 
-  // Block write clauses
   const writeClauses = ["create", "merge", "delete", "set ", "remove", "drop", "call {"];
   if (writeClauses.some((kw) => normalized.includes(kw))) {
     return false;
   }
 
-  // Block known write procedures
   const writeProcedures = [
     "apoc.create.set",
     "apoc.merge",
@@ -86,11 +74,8 @@ function isReadOnlyQuery(cypher: string): boolean {
 }
 
 function sanitizeFilename(name: string): string {
-  // Remove anything that's not alphanumeric, dot, dash, or underscore
   let sanitized = name.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/_{2,}/g, "_");
-  // Prevent path traversal fragments
   sanitized = sanitized.replace(/\.{2,}/g, "_");
-  // Don't allow leading dots or dashes
   sanitized = sanitized.replace(/^[._-]+/, "");
   return sanitized || "document.md";
 }
@@ -111,31 +96,33 @@ const plugin = definePlugin({
 
     // ── Data ────────────────────────────────────────────────────────────────
     ctx.data.register("health", async () => {
-      const conceptCount = Number(
-        ((await runCypher("MATCH (c:Concept) RETURN count(c) as n", {}, true))[0] as { n: Integer })?.n || 0
+      const entityCount = Number(
+        ((await runCypher("MATCH (e:Entity:Curated) RETURN count(e) as n", {}, true))[0] as { n: Integer })?.n || 0
       );
-      const docCount = Number(
-        ((await runCypher("MATCH (d:RawDocument) RETURN count(d) as n", {}, true))[0] as { n: Integer })?.n || 0
+      const insightCount = Number(
+        ((await runCypher("MATCH (i:Insight:Curated) RETURN count(i) as n", {}, true))[0] as { n: Integer })?.n || 0
       );
-      const edgeCount = Number(
-        ((await runCypher("MATCH (:RawDocument)-[s:SEEDS]->(:Concept) RETURN count(s) as n", {}, true))[0] as { n: Integer })?.n || 0
+      const questionCount = Number(
+        ((await runCypher("MATCH (q:Question:Curated) RETURN count(q) as n", {}, true))[0] as { n: Integer })?.n || 0
       );
-      const pendingCount = Number(
-        (
-          (await runCypher(
-            "MATCH (d:RawDocument) WHERE NOT (d)-[:SEEDS]->() RETURN count(d) as n",
-            {},
-            true
-          ))[0] as { n: Integer }
-        )?.n || 0
+      const documentCount = Number(
+        ((await runCypher("MATCH (d:Document:Curated) RETURN count(d) as n", {}, true))[0] as { n: Integer })?.n || 0
+      );
+      const pendingSynth = Number(
+        ((await runCypher(
+          "MATCH (i:Insight:Curated) WHERE i.synthesized = false OR i.synthesized IS NULL RETURN count(i) as n",
+          {},
+          true
+        ))[0] as { n: Integer })?.n || 0
       );
 
       return {
         status: "ok",
-        conceptCount,
-        docCount,
-        edgeCount,
-        pendingCount,
+        entityCount,
+        insightCount,
+        questionCount,
+        documentCount,
+        pendingSynth,
       };
     });
 
@@ -144,7 +131,7 @@ const plugin = definePlugin({
       "query_graph",
       {
         displayName: "Query Knowledge Graph",
-        description: "Run a read-only Cypher query against Neo4j AuraDB and return nodes/edges as JSON. Only queries against Concept/RawDocument/SEEDS/REFERENCES are permitted.",
+        description: "Run a read-only Cypher query against Neo4j AuraDB and return nodes/edges as JSON. Queries should target :Curated nodes (Entity, Insight, Question, Document) to avoid Golem's cognitive nodes.",
         parametersSchema: {
           type: "object",
           properties: {
@@ -180,7 +167,7 @@ const plugin = definePlugin({
       "ingest_document",
       {
         displayName: "Ingest Raw Document",
-        description: "Write markdown content to the raw/ folder and trigger the ingest pipeline once.",
+        description: "Write markdown content to the raw/ folder. The distillation pipeline (distill.js) reads files from this folder and extracts Claims into Neo4j.",
         parametersSchema: {
           type: "object",
           properties: {
@@ -215,38 +202,9 @@ const plugin = definePlugin({
           return { error: `Failed to write file: ${err instanceof Error ? err.message : String(err)}` };
         }
 
-        // Run ingest.js --once
-        let exitCode: number | null;
-        try {
-          exitCode = await new Promise<number | null>((resolve, reject) => {
-            const child = spawn(process.execPath, [INGEST_SCRIPT, "--once"], {
-              cwd: MY_APP_ROOT,
-              stdio: ["ignore", "pipe", "pipe"],
-            });
-            let stdout = "";
-            let stderr = "";
-            child.stdout.on("data", (chunk) => {
-              stdout += String(chunk);
-            });
-            child.stderr.on("data", (chunk) => {
-              stderr += String(chunk);
-            });
-            child.on("error", reject);
-            child.on("close", (code) => {
-              if (code !== 0) {
-                reject(new Error(`ingest.js exited ${code}: ${stderr || stdout}`));
-              } else {
-                resolve(code);
-              }
-            });
-          });
-        } catch (err) {
-          return { error: err instanceof Error ? err.message : String(err) };
-        }
-
         return {
-          content: `Document ingested: ${filename}`,
-          data: { filename, path: filePath, ingestExitCode: exitCode },
+          content: `Document written to raw/: ${filename}. Run run_distill to extract claims.`,
+          data: { filename, path: filePath },
         };
       }
     );
@@ -255,18 +213,18 @@ const plugin = definePlugin({
       "get_pending_synthesis",
       {
         displayName: "Get Pending Synthesis",
-        description: "Count how many RawDocuments have no SEEDS edges (orphan documents).",
+        description: "Count how many Insights have not yet been synthesized into Entity articles.",
         parametersSchema: { type: "object", properties: {} },
       },
       async (): Promise<ToolResult> => {
         const records = await runCypher(
-          "MATCH (d:RawDocument) WHERE NOT (d)-[:SEEDS]->() RETURN count(d) as pending",
+          "MATCH (i:Insight:Curated) WHERE i.synthesized = false OR i.synthesized IS NULL RETURN count(i) as pending",
           {},
           true
         );
         const pending = Number((records[0] as { pending: Integer })?.pending || 0);
         return {
-          content: `There are ${pending} document(s) pending synthesis.`,
+          content: `There are ${pending} insight(s) pending synthesis.`,
           data: { pending },
         };
       }
@@ -276,28 +234,29 @@ const plugin = definePlugin({
       "graph_health",
       {
         displayName: "Graph Health",
-        description: "Return concept count, document count, SEEDS edge count, and orphan ratio.",
+        description: "Return Entity count, Insight count, Question count, Document count, and pending synthesis count.",
         parametersSchema: { type: "object", properties: {} },
       },
       async (): Promise<ToolResult> => {
-        const conceptResult = await runCypher("MATCH (c:Concept) RETURN count(c) as n", {}, true);
-        const docResult = await runCypher("MATCH (d:RawDocument) RETURN count(d) as n", {}, true);
-        const edgeResult = await runCypher("MATCH (:RawDocument)-[s:SEEDS]->(:Concept) RETURN count(s) as n", {}, true);
-        const orphanResult = await runCypher(
-          "MATCH (d:RawDocument) WHERE NOT (d)-[:SEEDS]->() RETURN count(d) as n",
+        const entityResult = await runCypher("MATCH (e:Entity:Curated) RETURN count(e) as n", {}, true);
+        const insightResult = await runCypher("MATCH (i:Insight:Curated) RETURN count(i) as n", {}, true);
+        const questionResult = await runCypher("MATCH (q:Question:Curated) RETURN count(q) as n", {}, true);
+        const documentResult = await runCypher("MATCH (d:Document:Curated) RETURN count(d) as n", {}, true);
+        const pendingResult = await runCypher(
+          "MATCH (i:Insight:Curated) WHERE i.synthesized = false OR i.synthesized IS NULL RETURN count(i) as n",
           {},
           true
         );
 
-        const conceptCount = Number((conceptResult[0] as { n: Integer })?.n || 0);
-        const docCount = Number((docResult[0] as { n: Integer })?.n || 0);
-        const edgeCount = Number((edgeResult[0] as { n: Integer })?.n || 0);
-        const orphanCount = Number((orphanResult[0] as { n: Integer })?.n || 0);
-        const orphanRatio = docCount > 0 ? orphanCount / docCount : 0;
+        const entityCount = Number((entityResult[0] as { n: Integer })?.n || 0);
+        const insightCount = Number((insightResult[0] as { n: Integer })?.n || 0);
+        const questionCount = Number((questionResult[0] as { n: Integer })?.n || 0);
+        const documentCount = Number((documentResult[0] as { n: Integer })?.n || 0);
+        const pendingCount = Number((pendingResult[0] as { n: Integer })?.n || 0);
 
         return {
-          content: `Graph: ${conceptCount} concepts, ${docCount} documents, ${edgeCount} SEEDS edges. Orphan ratio: ${(orphanRatio * 100).toFixed(1)}%`,
-          data: { conceptCount, docCount, edgeCount, orphanCount, orphanRatio },
+          content: `Graph: ${entityCount} entities, ${insightCount} insights, ${questionCount} questions, ${documentCount} documents. Pending synthesis: ${pendingCount} insights.`,
+          data: { entityCount, insightCount, questionCount, documentCount, pendingCount },
         };
       }
     );
@@ -381,18 +340,16 @@ const plugin = definePlugin({
       {
         displayName: "Run Distillation Pipeline",
         description:
-          "Process all undistilled RawDocuments through the claim extractor (distill.js). " +
-          "Extracts atomic Claims with typed edges (SUPPORTS/CONTRADICTS/UPDATES/EXTENDS) " +
-          "and creates KnowledgeGap nodes for unknowns. " +
-          "Run this after ingesting new documents to advance them through the pipeline.",
+          "Process pending Documents in the graph through the brain distiller. " +
+          "Finds Documents with ingestion_status != 'distilled' and runs brain-distill.js on each. " +
+          "Extracts atomic Insights with typed edges and creates Question nodes for unknowns.",
         parametersSchema: {
           type: "object",
           properties: {
             dryRun: {
               type: "boolean",
               description:
-                "If true, shows what would be created without writing to Neo4j. " +
-                "Use this to preview the distillation before committing. Defaults to false.",
+                "If true, shows what would be created without writing to Neo4j. Defaults to false.",
             },
           },
         },
@@ -401,7 +358,97 @@ const plugin = definePlugin({
         const params = rawParams as Record<string, unknown>;
         const dryRun = params.dryRun === true;
 
-        const args = [DISTILL_SCRIPT, ...(dryRun ? ["--dry-run"] : [])];
+        // Find pending documents
+        const pendingDocs = await runCypher<{ d: { properties: { document_id: string; title: string } } }>(
+          "MATCH (d:Document:Curated) WHERE d.ingestion_status IS NULL OR d.ingestion_status <> 'distilled' RETURN d LIMIT 20",
+          {},
+          true
+        );
+
+        if (pendingDocs.length === 0) {
+          return { content: "No pending documents to distill." };
+        }
+
+        const results: Array<{ docId: string; title: string; status: string; output?: string; error?: string }> = [];
+
+        for (const record of pendingDocs) {
+          const doc = (record as any).d.properties;
+          const docId = doc.document_id;
+          const title = doc.title;
+
+          const args = [
+            path.join(MY_APP_ROOT, "scripts", "brain-distill.js"),
+            "--company", "core-brain",
+            "--document-id", docId,
+            ...(dryRun ? ["--dry-run"] : []),
+          ];
+
+          let stdout = "";
+          let stderr = "";
+
+          try {
+            await new Promise<void>((resolve, reject) => {
+              const child = spawn(process.execPath, args, {
+                cwd: MY_APP_ROOT,
+                stdio: ["ignore", "pipe", "pipe"],
+              });
+              child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+              child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+              child.on("error", reject);
+              child.on("close", (code) => {
+                if (code !== 0) {
+                  reject(new Error(`brain-distill.js exited ${code}:\n${stderr || stdout}`));
+                } else {
+                  resolve();
+                }
+              });
+            });
+            results.push({ docId, title, status: "distilled", output: stdout.slice(0, 500) });
+          } catch (err) {
+            results.push({ docId, title, status: "failed", error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+
+        const succeeded = results.filter((r) => r.status === "distilled").length;
+        const failed = results.filter((r) => r.status === "failed").length;
+
+        return {
+          content: `${dryRun ? "[DRY RUN] " : ""}Distilled ${succeeded}/${results.length} documents. Failed: ${failed}.`,
+          data: { results, dryRun },
+        };
+      }
+    );
+
+    ctx.tools.register(
+      "run_synthesize",
+      {
+        displayName: "Run Synthesis Pipeline",
+        description:
+          "Process all unsynthesized Insights through the entity updater. " +
+          "Groups Insights by Entity, updates descriptions, recalculates epistemic_weight, " +
+          "and marks Insights as synthesized. Run this after distillation.",
+        parametersSchema: {
+          type: "object",
+          properties: {
+            dryRun: {
+              type: "boolean",
+              description:
+                "If true, previews which entities would be updated without writing. Defaults to false.",
+            },
+          },
+        },
+      },
+      async (rawParams): Promise<ToolResult> => {
+        const params = rawParams as Record<string, unknown>;
+        const dryRun = params.dryRun === true;
+
+        // Use brain-connect.js to connect newly distilled insights to entities
+        const args = [
+          path.join(MY_APP_ROOT, "scripts", "brain-connect.js"),
+          "--company", "core-brain",
+          "--light",
+          ...(dryRun ? ["--dry-run"] : []),
+        ];
 
         let stdout = "";
         let stderr = "";
@@ -417,7 +464,7 @@ const plugin = definePlugin({
             child.on("error", reject);
             child.on("close", (code) => {
               if (code !== 0) {
-                reject(new Error(`distill.js exited ${code}:\n${stderr || stdout}`));
+                reject(new Error(`brain-connect.js exited ${code}:\n${stderr || stdout}`));
               } else {
                 resolve();
               }
@@ -427,7 +474,7 @@ const plugin = definePlugin({
           return { error: err instanceof Error ? err.message : String(err) };
         }
 
-        const label = dryRun ? "Dry-run complete (no writes)." : "Distillation complete.";
+        const label = dryRun ? "Synthesis dry-run complete." : "Synthesis complete.";
         return {
           content: `${label}\n${stdout.slice(0, 3000)}${stdout.length > 3000 ? "\n…(truncated)" : ""}`,
           data: {

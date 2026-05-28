@@ -9,7 +9,7 @@ import type {
   FinanceEvent,
   QuotaWindow,
 } from "@paperclipai/shared";
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, BarChart3, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
 import { budgetsApi } from "../api/budgets";
 import { costsApi } from "../api/costs";
 import { BillerSpendCard } from "../components/BillerSpendCard";
@@ -519,6 +519,18 @@ export function Costs() {
       0,
     );
 
+  const subscriptionTokenTotal =
+    (spendData?.byAgent ?? []).reduce(
+      (sum, row) => sum + row.subscriptionInputTokens + row.subscriptionCachedInputTokens + row.subscriptionOutputTokens,
+      0,
+    );
+
+  const subscriptionRunTotal =
+    (spendData?.byAgent ?? []).reduce(
+      (sum, row) => sum + row.subscriptionRunCount,
+      0,
+    );
+
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
   const activeBudgetIncidents = budgetData?.activeIncidents ?? [];
@@ -579,12 +591,18 @@ export function Costs() {
             </div>
           ) : null}
 
-          <div className="grid gap-3 lg:grid-cols-4">
+          <div className="grid gap-3 lg:grid-cols-4 xl:grid-cols-5">
             <MetricTile
               label="Inference spend"
               value={formatCents(spendData?.summary.spendCents ?? 0)}
               subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
               icon={DollarSign}
+            />
+            <MetricTile
+              label="Subscription tokens"
+              value={formatTokens(subscriptionTokenTotal)}
+              subtitle={`${subscriptionRunTotal} subscription runs`}
+              icon={BarChart3}
             />
             <MetricTile
               label="Budget"
@@ -756,6 +774,12 @@ export function Costs() {
                                     {row.subscriptionRunCount > 0
                                       ? `${row.subscriptionRunCount} subscription`
                                       : "0 subscription"}
+                                    {row.subscriptionRunCount > 0 ? (
+                                      <>
+                                        {" · "}
+                                        in {formatTokens(row.subscriptionInputTokens + row.subscriptionCachedInputTokens)} · out {formatTokens(row.subscriptionOutputTokens)}
+                                      </>
+                                    ) : null}
                                   </div>
                                 ) : null}
                               </div>

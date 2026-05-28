@@ -1,18 +1,13 @@
-schema: agentcompanies/v1
-kind: team
-entry: TEAM.md
-version: 1.0.0
-authors:
-  - name: Julius Halm (quratus)
-    contact: julius@sqncr.ai
-license: MIT
+schema: "paperclip/v1"
 
 agents:
   repo-janitor:
+    role: "engineer"
+    capabilities: "Stale branch cleanup, dependency updates, changelog generation, README maintenance, automated repo hygiene fixes"
     adapter:
       type: kimi_local
       config:
         agentPreset: custom
         customAgentFile: /Users/JuliusHalm 1/workspace/paperclip/packages/companies/sqncr-repo-janitor/agents/repo-janitor/kimi/agent.yaml
-        cwd: /Users/JuliusHalm 1/workspace/my-app
+        cwd: /Users/JuliusHalm 1/workspace/brain-analysis-engine
         timeoutSec: 300

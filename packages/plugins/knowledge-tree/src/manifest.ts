@@ -37,7 +37,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       name: "ingest_document",
       displayName: "Ingest Raw Document",
-      description: "Write markdown content to the raw/ folder and trigger the ingest pipeline once.",
+      description: "Write markdown content to the raw/ folder. Run run_distill afterwards to extract insights into the graph.",
       parametersSchema: {
         type: "object",
         properties: {
@@ -50,7 +50,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       name: "get_pending_synthesis",
       displayName: "Get Pending Synthesis",
-      description: "Count how many RawDocuments have no SEEDS edges (orphan documents).",
+      description: "Count how many Insights have not yet been synthesized into Entity articles.",
       parametersSchema: {
         type: "object",
         properties: {},
@@ -59,7 +59,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       name: "graph_health",
       displayName: "Graph Health",
-      description: "Return concept count, document count, SEEDS edge count, and orphan ratio.",
+      description: "Return Entity count, Insight count, Question count, Document count, and pending synthesis count.",
       parametersSchema: {
         type: "object",
         properties: {},
@@ -106,10 +106,9 @@ const manifest: PaperclipPluginManifestV1 = {
       name: "run_distill",
       displayName: "Run Distillation Pipeline",
       description:
-        "Process all undistilled RawDocuments through the claim extractor (distill.js). " +
-        "Extracts atomic Claims with typed edges (SUPPORTS/CONTRADICTS/UPDATES/EXTENDS) " +
-        "and creates KnowledgeGap nodes for unknowns. " +
-        "Run this after ingesting new documents to advance them through the pipeline.",
+        "Process pending Documents through the brain distiller (brain-distill.js). " +
+        "Extracts atomic Insights with typed edges and creates Question nodes for unknowns. " +
+        "Run this after ingesting new documents.",
       parametersSchema: {
         type: "object",
         properties: {
@@ -118,6 +117,24 @@ const manifest: PaperclipPluginManifestV1 = {
             description:
               "If true, shows what would be created without writing to Neo4j. " +
               "Use this to preview the distillation before committing. Defaults to false.",
+          },
+        },
+      },
+    },
+    {
+      name: "run_synthesize",
+      displayName: "Run Synthesis Pipeline",
+      description:
+        "Process unsynthesized Insights through the entity updater (brain-connect.js). " +
+        "Groups Insights by Entity, updates descriptions, recalculates epistemic_weight, " +
+        "and marks Insights as synthesized. Run this after distillation.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          dryRun: {
+            type: "boolean",
+            description:
+              "If true, previews which concepts would be updated without writing. Defaults to false.",
           },
         },
       },

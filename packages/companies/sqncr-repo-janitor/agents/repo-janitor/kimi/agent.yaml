@@ -7,5 +7,7 @@ agent:
     - "kimi_cli.tools.file:ReadFile"
     - "kimi_cli.tools.file:Glob"
     - "kimi_cli.tools.file:Grep"
+    - "kimi_cli.tools.file:WriteFile"
+    - "kimi_cli.tools.file:StrReplaceFile"
     - "kimi_cli.tools.plan:ExitPlanMode"
     - "kimi_cli.tools.plan.enter:EnterPlanMode"
