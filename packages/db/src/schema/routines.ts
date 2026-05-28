@@ -43,6 +43,7 @@ export const routines = pgTable(
     updatedByAgentId: uuid("updated_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     updatedByUserId: text("updated_by_user_id"),
     executionLabelIds: jsonb("execution_label_ids").$type<string[]>().notNull().default([]),
+    executionPolicyTemplate: jsonb("execution_policy_template").$type<Record<string, unknown>>(),
     lastTriggeredAt: timestamp("last_triggered_at", { withTimezone: true }),
     lastEnqueuedAt: timestamp("last_enqueued_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -63,6 +63,7 @@ export const createRoutineSchema = z.object({
   variables: z.array(routineVariableSchema).optional().default([]),
   env: envConfigSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional().nullable(),
+  executionPolicyTemplate: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
 export type CreateRoutine = z.infer<typeof createRoutineSchema>;
