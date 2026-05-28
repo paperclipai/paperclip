@@ -239,6 +239,7 @@ vi.mock("../components/AgentIconPicker", () => ({
 
 function createRoutine(overrides: Partial<RoutineListItem>): RoutineListItem {
   return {
+    labelIds: [],
     id: "routine-1",
     companyId: "company-1",
     projectId: "project-1",
