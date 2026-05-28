@@ -6364,6 +6364,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
+  async function finalizeAgentStatus(
+    agentId: string,
+    outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+  ) {
+    const existing = await getAgent(agentId);
+    if (!existing) return;
+
+    if (existing.status === "paused" || existing.status === "terminated") {
+      return;
+    }
 
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
 
@@ -10048,57 +10058,4 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return run ?? null;
     },
   };
-
-  async function finalizeAgentStatus(
-    agentId: string,
-    outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
-  ) {
-    const existing = await getAgent(agentId);
-    if (!existing) return;
-
-    if (existing.status === "paused" || existing.status === "terminated") {
-      return;
-    }
-
-    const isFirstHeartbeat = !existing.lastHeartbeatAt;
-
-    const runningCount = await countRunningRunsForAgent(agentId);
-    const nextStatus =
-      runningCount > 0
-        ? "running"
-        : outcome === "succeeded" || outcome === "cancelled"
-          ? "idle"
-          : "error";
-
-    const updated = await db
-      .update(agents)
-      .set({
-        status: nextStatus,
-        lastHeartbeatAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(agents.id, agentId))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-
-    if (isFirstHeartbeat && updated) {
-      const tc = getTelemetryClient();
-      if (tc) trackAgentFirstHeartbeat(tc, { agentRole: updated.role, agentId: updated.id });
-    }
-
-    if (updated) {
-      publishLiveEvent({
-        companyId: updated.companyId,
-        type: "agent.status",
-        payload: {
-          agentId: updated.id,
-          status: updated.status,
-          lastHeartbeatAt: updated.lastHeartbeatAt
-            ? new Date(updated.lastHeartbeatAt).toISOString()
-            : null,
-          outcome,
-        },
-      });
-    }
-  }
 }
