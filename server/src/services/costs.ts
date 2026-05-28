@@ -357,14 +357,24 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           outputTokens: sumAsNumber(costEvents.outputTokens),
           apiRunCount:
             sql<number>`count(distinct case when ${costEvents.billingType} = ${METERED_BILLING_TYPE} then ${costEvents.heartbeatRunId} end)::int`,
+          apiCostCents:
+            sql<number>`coalesce(sum(case when ${costEvents.billingType} = ${METERED_BILLING_TYPE} then ${costEvents.costCents} else 0 end), 0)::double precision`,
           subscriptionRunCount:
             sql<number>`count(distinct case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.heartbeatRunId} end)::int`,
+          subscriptionCostCents:
+            sql<number>`coalesce(sum(case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.costCents} else 0 end), 0)::double precision`,
           subscriptionCachedInputTokens:
             sql<number>`coalesce(sum(case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.cachedInputTokens} else 0 end), 0)::double precision`,
           subscriptionInputTokens:
             sql<number>`coalesce(sum(case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.inputTokens} else 0 end), 0)::double precision`,
           subscriptionOutputTokens:
             sql<number>`coalesce(sum(case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.outputTokens} else 0 end), 0)::double precision`,
+          unknownRunCount:
+            sql<number>`count(distinct case when ${costEvents.billingType} = 'unknown' then ${costEvents.heartbeatRunId} end)::int`,
+          unknownCostCents:
+            sql<number>`coalesce(sum(case when ${costEvents.billingType} = 'unknown' then ${costEvents.costCents} else 0 end), 0)::double precision`,
+          noCostRunCount:
+            sql<number>`count(distinct case when ${costEvents.costCents} = 0 then ${costEvents.heartbeatRunId} end)::int`,
         })
         .from(costEvents)
         .leftJoin(agents, eq(costEvents.agentId, agents.id))

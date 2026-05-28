@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ComponentType } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   BudgetPolicySummary,
+  CostByAgent,
   CostByAgentModel,
   CostByBiller,
   CostByProviderModel,
@@ -67,6 +68,35 @@ function BillerTabLabel({ biller, rows }: { biller: string; rows: CostByBiller[]
       <span className="text-xs text-muted-foreground">{formatCents(totalCost)}</span>
     </span>
   );
+}
+
+function optionalNumber(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function agentBillingSignals(row: CostByAgent) {
+  return {
+    apiRunCount: row.apiRunCount,
+    apiCostCents: optionalNumber(row.apiCostCents),
+    subscriptionRunCount: row.subscriptionRunCount,
+    subscriptionCostCents: optionalNumber(row.subscriptionCostCents),
+    subscriptionTokens: row.subscriptionCachedInputTokens + row.subscriptionInputTokens + row.subscriptionOutputTokens,
+    unknownRunCount: optionalNumber(row.unknownRunCount),
+    unknownCostCents: optionalNumber(row.unknownCostCents),
+    noCostRunCount: optionalNumber(row.noCostRunCount),
+  };
+}
+
+function billingTypeDisplayNameKo(billingType: CostByAgentModel["billingType"]) {
+  const labels: Record<CostByAgentModel["billingType"], string> = {
+    metered_api: "직접 API 과금",
+    subscription_included: "구독 포함",
+    subscription_overage: "구독 초과 과금",
+    credits: "크레딧",
+    fixed: "고정비",
+    unknown: "미분류",
+  };
+  return labels[billingType] ?? billingTypeDisplayName(billingType);
 }
 
 function MetricTile({
@@ -450,14 +480,34 @@ export function Costs() {
   const billers = useMemo(() => Array.from(byBiller.keys()), [byBiller]);
   const billingModeSummary = useMemo(() => {
     let apiRunCount = 0;
+    let apiCostCents = 0;
     let subscriptionRunCount = 0;
+    let subscriptionCostCents = 0;
     let subscriptionTokens = 0;
+    let unknownRunCount = 0;
+    let unknownCostCents = 0;
+    let noCostRunCount = 0;
     for (const row of spendData?.byAgent ?? []) {
-      apiRunCount += row.apiRunCount;
-      subscriptionRunCount += row.subscriptionRunCount;
-      subscriptionTokens += row.subscriptionCachedInputTokens + row.subscriptionInputTokens + row.subscriptionOutputTokens;
+      const signals = agentBillingSignals(row);
+      apiRunCount += signals.apiRunCount;
+      apiCostCents += signals.apiCostCents;
+      subscriptionRunCount += signals.subscriptionRunCount;
+      subscriptionCostCents += signals.subscriptionCostCents;
+      subscriptionTokens += signals.subscriptionTokens;
+      unknownRunCount += signals.unknownRunCount;
+      unknownCostCents += signals.unknownCostCents;
+      noCostRunCount += signals.noCostRunCount;
     }
-    return { apiRunCount, subscriptionRunCount, subscriptionTokens };
+    return {
+      apiRunCount,
+      apiCostCents,
+      subscriptionRunCount,
+      subscriptionCostCents,
+      subscriptionTokens,
+      unknownRunCount,
+      unknownCostCents,
+      noCostRunCount,
+    };
   }, [spendData?.byAgent]);
 
   const effectiveProvider =
@@ -671,7 +721,7 @@ export function Costs() {
             />
           </div>
 
-          <div className="grid gap-3 border border-border p-4 md:grid-cols-[1fr_auto] md:items-center">
+          <div className="grid gap-3 border border-border p-4 xl:grid-cols-[1fr_auto] xl:items-center">
             <div className="min-w-0">
               <div className="text-sm font-medium">{copy("costs.billingMode.title", "Billing mode split", "구독/API 과금 구분")}</div>
               <div className="mt-1 text-sm text-muted-foreground">
@@ -681,15 +731,42 @@ export function Costs() {
                   "구독형 포함 실행은 API 과금 지출과 분리해 표시하므로 GPT Max형 사용량을 직접 API 비용으로 오해하지 않습니다.",
                 )}
               </div>
+              <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                {copy(
+                  "costs.billingMode.precision",
+                  "Unknown and zero-cost signals are operational classifications, not invoice-authoritative billing totals.",
+                  "미분류/0원 신호는 운영 분류이며 청구서 기준 확정 비용이 아닙니다.",
+                )}
+              </div>
             </div>
-            <div className="flex flex-wrap gap-2 text-xs">
+            <div className="grid gap-2 text-xs sm:grid-cols-2 xl:min-w-[560px]">
               <span className="border border-border px-3 py-2">
-                {copy("costs.billingMode.subscription", "Subscription {{count}} runs", "구독형 {{count}}회", { count: billingModeSummary.subscriptionRunCount })}
-                {" · "}
-                {formatTokens(billingModeSummary.subscriptionTokens)}
+                <span className="font-medium">
+                  {copy("costs.billingMode.api", "API {{count}} runs", "API {{count}}회", { count: billingModeSummary.apiRunCount })}
+                </span>
+                <span className="ml-1 text-muted-foreground">{formatCents(billingModeSummary.apiCostCents)}</span>
               </span>
               <span className="border border-border px-3 py-2">
-                {copy("costs.billingMode.api", "API {{count}} runs", "API {{count}}회", { count: billingModeSummary.apiRunCount })}
+                <span className="font-medium">
+                  {copy("costs.billingMode.subscription", "Subscription {{count}} runs", "구독형 {{count}}회", { count: billingModeSummary.subscriptionRunCount })}
+                </span>
+                <span className="ml-1 text-muted-foreground">
+                  {formatTokens(billingModeSummary.subscriptionTokens)} · {formatCents(billingModeSummary.subscriptionCostCents)}
+                </span>
+              </span>
+              <span className="border border-border px-3 py-2">
+                <span className="font-medium">
+                  {copy("costs.billingMode.unknown", "Unknown {{count}} runs", "미분류 {{count}}회", { count: billingModeSummary.unknownRunCount })}
+                </span>
+                <span className="ml-1 text-muted-foreground">{formatCents(billingModeSummary.unknownCostCents)}</span>
+              </span>
+              <span className="border border-border px-3 py-2">
+                <span className="font-medium">
+                  {copy("costs.billingMode.noCost", "Zero-cost {{count}} signals", "0원 신호 {{count}}회", { count: billingModeSummary.noCostRunCount })}
+                </span>
+                <span className="ml-1 text-muted-foreground">
+                  {copy("costs.billingMode.noCost.note", "review before treating as free", "무료 확정 전 원장 확인")}
+                </span>
               </span>
             </div>
           </div>
@@ -810,12 +887,24 @@ export function Costs() {
                   </CardHeader>
                   <CardContent className="space-y-2 px-5 pb-5 pt-2">
                     {(spendData?.byAgent.length ?? 0) === 0 ? (
-                      <p className="text-sm text-muted-foreground">{copy("costs.empty.costEvents", "No cost events yet.", "아직 비용 이벤트가 없습니다.")}</p>
+                      <p className="text-sm leading-6 text-muted-foreground">
+                        {copy(
+                          "costs.empty.costEvents",
+                          "No cost events yet. Subscription, direct API, unknown, and zero-cost run signals will appear here once agents emit usage.",
+                          "아직 비용 이벤트가 없습니다. 직원 실행 사용량이 기록되면 구독형, 직접 API, 미분류, 0원 신호가 여기서 분리됩니다.",
+                        )}
+                      </p>
                     ) : (
                       spendData?.byAgent.map((row) => {
                         const modelRows = agentModelRows.get(row.agentId) ?? [];
                         const isExpanded = expandedAgents.has(row.agentId);
                         const hasBreakdown = modelRows.length > 0;
+                        const billingSignals = agentBillingSignals(row);
+                        const hasBillingSignal =
+                          billingSignals.apiRunCount > 0
+                          || billingSignals.subscriptionRunCount > 0
+                          || billingSignals.unknownRunCount > 0
+                          || billingSignals.noCostRunCount > 0;
                         return (
                           <div key={row.agentId} className="border border-border px-4 py-3">
                             <div
@@ -841,17 +930,36 @@ export function Costs() {
                                     output: formatTokens(row.outputTokens),
                                   })}
                                 </div>
-                                {(row.apiRunCount > 0 || row.subscriptionRunCount > 0) ? (
-                                  <div className="text-xs text-muted-foreground">
-                                    {row.apiRunCount > 0
-                                      ? copy("costs.runCount.api", "{{count}} api", "API {{count}}회", { count: row.apiRunCount })
-                                      : copy("costs.runCount.api", "{{count}} api", "API {{count}}회", { count: 0 })}
-                                    {" · "}
-                                    {row.subscriptionRunCount > 0
-                                      ? copy("costs.runCount.subscription", "{{count}} subscription", "구독 {{count}}회", { count: row.subscriptionRunCount })
-                                      : copy("costs.runCount.subscription", "{{count}} subscription", "구독 {{count}}회", { count: 0 })}
+                                {hasBillingSignal ? (
+                                  <div className="mt-1 flex max-w-[360px] flex-wrap justify-end gap-1 text-xs text-muted-foreground">
+                                    <span className="border border-border px-1.5 py-0.5">
+                                      {copy("costs.runCount.api", "{{count}} api", "API {{count}}회", { count: billingSignals.apiRunCount })}
+                                      {" · "}
+                                      {formatCents(billingSignals.apiCostCents)}
+                                    </span>
+                                    <span className="border border-border px-1.5 py-0.5">
+                                      {copy("costs.runCount.subscription", "{{count}} subscription", "구독 {{count}}회", { count: billingSignals.subscriptionRunCount })}
+                                      {" · "}
+                                      {formatTokens(billingSignals.subscriptionTokens)}
+                                    </span>
+                                    {(billingSignals.unknownRunCount > 0 || billingSignals.unknownCostCents > 0) ? (
+                                      <span className="border border-amber-400/40 px-1.5 py-0.5 text-amber-700 dark:text-amber-300">
+                                        {copy("costs.runCount.unknown", "{{count}} unknown", "미분류 {{count}}회", { count: billingSignals.unknownRunCount })}
+                                        {" · "}
+                                        {formatCents(billingSignals.unknownCostCents)}
+                                      </span>
+                                    ) : null}
+                                    {billingSignals.noCostRunCount > 0 ? (
+                                      <span className="border border-border px-1.5 py-0.5">
+                                        {copy("costs.runCount.noCost", "{{count}} zero-cost", "0원 {{count}}회", { count: billingSignals.noCostRunCount })}
+                                      </span>
+                                    ) : null}
                                   </div>
-                                ) : null}
+                                ) : (
+                                  <div className="mt-1 text-xs text-muted-foreground">
+                                    {copy("costs.runCount.untracked", "Billing mode not recorded", "과금 모드 미기록")}
+                                  </div>
+                                )}
                               </div>
                             </div>
 
@@ -871,7 +979,10 @@ export function Costs() {
                                           <span className="font-mono">{modelRow.model}</span>
                                         </div>
                                         <div className="truncate text-muted-foreground">
-                                          {providerDisplayName(modelRow.biller)} · {billingTypeDisplayName(modelRow.billingType)}
+                                          {copy("costs.modelRow.biller", "Biller", "청구자")}: {providerDisplayName(modelRow.biller)}
+                                          {" · "}
+                                          {copy("costs.modelRow.mode", "Mode", "모드")}: {billingTypeDisplayNameKo(modelRow.billingType)}
+                                          {modelRow.costCents === 0 ? ` · ${copy("costs.modelRow.zeroCost", "zero-cost signal", "0원 신호")}` : ""}
                                         </div>
                                       </div>
                                       <div className="text-right tabular-nums">

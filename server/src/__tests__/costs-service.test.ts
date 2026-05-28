@@ -498,6 +498,121 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
   });
 
+  it("separates by-agent API, subscription, unknown, and no-cost billing signals", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const apiRunId = randomUUID();
+    const subscriptionRunId = randomUUID();
+    const unknownRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Billing Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: apiRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "completed",
+        startedAt: new Date("2026-04-10T00:00:00.000Z"),
+        finishedAt: new Date("2026-04-10T00:01:00.000Z"),
+      },
+      {
+        id: subscriptionRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "completed",
+        startedAt: new Date("2026-04-10T00:02:00.000Z"),
+        finishedAt: new Date("2026-04-10T00:03:00.000Z"),
+      },
+      {
+        id: unknownRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "completed",
+        startedAt: new Date("2026-04-10T00:04:00.000Z"),
+        finishedAt: new Date("2026-04-10T00:05:00.000Z"),
+      },
+    ]);
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        heartbeatRunId: apiRunId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 100,
+        cachedInputTokens: 0,
+        outputTokens: 40,
+        costCents: 125,
+        occurredAt: new Date("2026-04-10T00:00:30.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        heartbeatRunId: subscriptionRunId,
+        provider: "openai",
+        biller: "chatgpt",
+        billingType: "subscription_included",
+        model: "gpt-5.5",
+        inputTokens: 200,
+        cachedInputTokens: 50,
+        outputTokens: 80,
+        costCents: 0,
+        occurredAt: new Date("2026-04-10T00:02:30.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        heartbeatRunId: unknownRunId,
+        provider: "openrouter",
+        biller: "unknown",
+        billingType: "unknown",
+        model: "unknown",
+        inputTokens: 10,
+        cachedInputTokens: 0,
+        outputTokens: 5,
+        costCents: 0,
+        occurredAt: new Date("2026-04-10T00:04:30.000Z"),
+      },
+    ]);
+
+    const [row] = await costs.byAgent(companyId, {
+      from: new Date("2026-04-10T00:00:00.000Z"),
+      to: new Date("2026-04-10T23:59:59.999Z"),
+    });
+
+    expect(row?.apiRunCount).toBe(1);
+    expect(row?.apiCostCents).toBe(125);
+    expect(row?.subscriptionRunCount).toBe(1);
+    expect(row?.subscriptionCostCents).toBe(0);
+    expect(row?.subscriptionCachedInputTokens).toBe(50);
+    expect(row?.subscriptionInputTokens).toBe(200);
+    expect(row?.subscriptionOutputTokens).toBe(80);
+    expect(row?.unknownRunCount).toBe(1);
+    expect(row?.unknownCostCents).toBe(0);
+    expect(row?.noCostRunCount).toBe(2);
+  });
+
   it("rejects cost events that attach issue, project, goal, or run references from another company", async () => {
     const companyId = randomUUID();
     const otherCompanyId = randomUUID();

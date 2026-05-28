@@ -52,10 +52,15 @@ export interface CostByAgent {
   cachedInputTokens: number;
   outputTokens: number;
   apiRunCount: number;
+  apiCostCents?: number;
   subscriptionRunCount: number;
+  subscriptionCostCents?: number;
   subscriptionCachedInputTokens: number;
   subscriptionInputTokens: number;
   subscriptionOutputTokens: number;
+  unknownRunCount?: number;
+  unknownCostCents?: number;
+  noCostRunCount?: number;
 }
 
 export interface CostByProviderModel {
