@@ -3457,6 +3457,18 @@ export function issueService(db: Db) {
     });
   }
 
+
+  function isOpenRoutineExecutionConflict(err: unknown): boolean {
+    return (
+      !!err &&
+      typeof err === "object" &&
+      "code" in err &&
+      (err as { code?: string }).code === "23505" &&
+      "constraint" in err &&
+      (err as { constraint?: string }).constraint === "issues_open_routine_execution_uq"
+    );
+  }
+
   return {
     clearExecutionRunIfTerminal,
 
@@ -4763,7 +4775,15 @@ export function issueService(db: Db) {
           ),
         )
         .returning()
-        .then((rows) => rows[0] ?? null);
+        .then((rows) => rows[0] ?? null)
+        .catch((err) => {
+          if (isOpenRoutineExecutionConflict(err)) {
+            throw conflict("Concurrent routine_execution issue already has an active execution run", {
+              constraint: "issues_open_routine_execution_uq",
+            });
+          }
+          throw err;
+        });
 
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
@@ -4808,7 +4828,15 @@ export function issueService(db: Db) {
             ),
           )
           .returning()
-          .then((rows) => rows[0] ?? null);
+          .then((rows) => rows[0] ?? null)
+          .catch((err) => {
+            if (isOpenRoutineExecutionConflict(err)) {
+              throw conflict("Concurrent routine_execution issue already has an active execution run", {
+                constraint: "issues_open_routine_execution_uq",
+              });
+            }
+            throw err;
+          });
         if (adopted) return adopted;
       }
 
