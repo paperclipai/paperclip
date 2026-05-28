@@ -144,6 +144,7 @@ function makeSnapshot(env: RoutineEnvConfig | null): RoutineRevisionSnapshotV1 {
   return {
     version: 1,
     routine: {
+      labelIds: [],
       id: "routine-storybook",
       companyId: COMPANY_ID,
       projectId: null,
@@ -165,6 +166,7 @@ function makeSnapshot(env: RoutineEnvConfig | null): RoutineRevisionSnapshotV1 {
 
 function makeRoutine(latestRevisionId: string, latestRevisionNumber: number): Routine {
   return {
+    labelIds: [],
     id: "routine-storybook",
     companyId: COMPANY_ID,
     projectId: null,
