@@ -17,7 +17,7 @@ import { issues } from "./issues.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
-import type { RoutineEnvConfig, RoutineRevisionSnapshotV1, RoutineVariable } from "@paperclipai/shared";
+import type { RoutineEnvConfig, RoutineMetadata, RoutineRevisionSnapshotV1, RoutineVariable } from "@paperclipai/shared";
 
 export const routines = pgTable(
   "routines",
@@ -43,6 +43,7 @@ export const routines = pgTable(
     updatedByAgentId: uuid("updated_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     updatedByUserId: text("updated_by_user_id"),
     executionLabelIds: jsonb("execution_label_ids").$type<string[]>().notNull().default([]),
+    metadata: jsonb("metadata").$type<RoutineMetadata>().notNull().default({}),
     lastTriggeredAt: timestamp("last_triggered_at", { withTimezone: true }),
     lastEnqueuedAt: timestamp("last_enqueued_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
