@@ -4055,7 +4055,14 @@ export function issueService(db: Db) {
 
     findMentionedAgents: async (companyId: string, body: string) => {
       const explicitAgentMentionIds = extractAgentMentionIds(body);
-      if (!body.includes("@") && explicitAgentMentionIds.length === 0) return [];
+      // Skip the DB query when there is no plausible mention candidate. A
+      // bare `body.includes("@")` is too broad — bodies containing only an
+      // email address (e.g. `user@example.com`) would trigger a wasted
+      // SELECT on every comment-create. `/\B@/` is the same anchor the
+      // scan-loop below uses, so this short-circuit is exact: if no
+      // position matches `\B@`, the loop would have produced an empty set
+      // anyway.
+      if (explicitAgentMentionIds.length === 0 && !/\B@/.test(body)) return [];
 
       // Decode HTML entities up-front so UI-encoded bodies match agent names verbatim.
       const normalizedBody = normalizeAgentMentionToken(body);
@@ -4082,7 +4089,11 @@ export function issueService(db: Db) {
           const candidate = window.slice(0, agent.name.length);
           if (candidate.toLowerCase() === agent.name.toLowerCase()) {
             const nextChar = window[agent.name.length];
-            if (nextChar === undefined || /[\s,.!?;:()[\]]/.test(nextChar)) {
+            // Trailing boundary set includes hyphen-minus (`-`) and em-dash
+            // (U+2014) so inline-hyphenated phrasing like `@COO-please` and
+            // em-dash-suffixed mentions resolve correctly rather than
+            // silently failing.
+            if (nextChar === undefined || /[\s,.!?;:()[\]\-—]/.test(nextChar)) {
               resolved.add(agent.id);
               break;
             }

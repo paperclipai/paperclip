@@ -3096,4 +3096,35 @@ describeEmbeddedPostgres("issueService.findMentionedAgents", () => {
     );
     expect(new Set(result)).toEqual(new Set([cooId, designId, banksAgentId]));
   });
+
+  it("resolves a mention followed by a hyphen (e.g. @COO-please)", async () => {
+    // Trailing-boundary set must include `-` so inline-hyphenated phrasing
+    // like `@COO-please` resolves to the COO agent rather than silently
+    // failing.
+    await seed();
+    const result = await svc.findMentionedAgents(companyId, "@COO-please review");
+    expect(new Set(result)).toEqual(new Set([cooId]));
+  });
+
+  it("resolves a mention followed by an em-dash (e.g. @COO—please)", async () => {
+    // Em-dash (U+2014) is a common punctuation form in human-typed comments;
+    // the trailing-boundary set must include it.
+    await seed();
+    const result = await svc.findMentionedAgents(companyId, "@COO—please review");
+    expect(new Set(result)).toEqual(new Set([cooId]));
+  });
+
+  it("short-circuits without a DB query when body contains only an email-shape @", async () => {
+    // The early-return guard uses `/\B@/` (the same anchor as the scan loop)
+    // so bodies whose only `@` sits inside an email address skip the agent
+    // SELECT entirely. We can't directly assert "no SELECT was issued"
+    // without a spy, but the empty result combined with the guard's
+    // structure is the contract.
+    await seed();
+    const result = await svc.findMentionedAgents(
+      companyId,
+      "Please ping support@example.com if you need help",
+    );
+    expect(result).toEqual([]);
+  });
 });
