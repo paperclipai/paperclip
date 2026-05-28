@@ -349,6 +349,19 @@ export function boardAuthService(db: Db) {
     return key;
   }
 
+  async function listBoardApiKeys(userId: string) {
+    return db
+      .select({
+        id: boardApiKeys.id,
+        name: boardApiKeys.name,
+        createdAt: boardApiKeys.createdAt,
+        expiresAt: boardApiKeys.expiresAt,
+        lastUsedAt: boardApiKeys.lastUsedAt,
+      })
+      .from(boardApiKeys)
+      .where(and(eq(boardApiKeys.userId, userId), isNull(boardApiKeys.revokedAt)));
+  }
+
   return {
     resolveBoardAccess,
     findBoardApiKeyByToken,
@@ -360,6 +373,7 @@ export function boardAuthService(db: Db) {
     approveCliAuthChallenge,
     cancelCliAuthChallenge,
     assertCurrentBoardKey,
+    listBoardApiKeys,
     resolveBoardActivityCompanyIds,
   };
 }
