@@ -132,6 +132,13 @@ const CODEX_6002_SEQUENCE = [
   "- Risk-report: 변경 파일, 실행 명령, 결과, 남은 위험, 다음 행동을 보고하라.",
 ];
 
+const CODEX_SKILL_ATTACHMENT_LINES = [
+  "스킬/에이전트 연결:",
+  "- 담당: codex_local Codex Lead Engineer.",
+  "- 필수 스킬: 6002. 작업 본문에 사용 여부와 검증 근거를 남겨라.",
+  "- Hermes는 조사/로그/메모리 제안 전용이며 repo 쓰기, merge, deploy는 Codex 승인 범위로 넘겨라.",
+];
+
 const HERMES_COMMAND_LINES = [
   "Hermes 실행 기준:",
   `- 명령: ${YOONCOMPANY_HERMES_COMMAND}`,
@@ -160,6 +167,8 @@ function codexDescription(kind: "ask" | "guide" | "analyze", context: string, us
     "",
     "대상: Codex Lead Engineer.",
     "모드: 6002.",
+    "",
+    ...CODEX_SKILL_ATTACHMENT_LINES,
     "",
     context,
     "",
@@ -596,6 +605,7 @@ export function YoonCompanyAssistantPanel() {
           <div className="mt-4 grid gap-2 border-t border-border pt-4">
             <StatusLine icon={Bot} label="오케스트레이터" value={hermesAgent ? `${hermesAgent.name} · Hermes 중심 전환 대상` : "Hermes 직원 미확인"} />
             <StatusLine icon={Bot} label="개발 워커" value={codexAgent ? `${codexAgent.name} · 6002 구현 담당` : "Codex 직원 미확인"} />
+            <StatusLine icon={SearchCheck} label="스킬 기준" value="Codex 작업은 6002 검증 순서로 접수" />
             <StatusLine icon={Radio} label="외부 지시" value="Telegram은 미연결, Hermes gateway 설정 후 연결 가능" />
             <StatusLine icon={DollarSign} label="비용" value="구독형 포함 실행과 API 과금은 비용 화면에서 구분" />
             <StatusLine icon={GitBranch} label="프로젝트" value="로컬 변경 후 GitHub 브랜치/PR 단위로 정리" />

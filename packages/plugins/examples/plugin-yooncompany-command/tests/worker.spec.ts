@@ -73,6 +73,9 @@ describe("YoonCompany command worker", () => {
       assigneeAgentId: "codex-1",
       priority: "high",
     });
+    expect(issue?.description).toContain("스킬/에이전트 연결:");
+    expect(issue?.description).toContain("필수 스킬: 6002. 작업 본문에 사용 여부와 검증 근거를 남긴다.");
+    expect(issue?.description).toContain("Hermes는 조사/로그/메모리 제안 전용이며 repo 쓰기, merge, deploy는 Codex 승인 범위로 넘긴다.");
     expect(issue?.description).toContain("6002 실행 순서: observe -> plan -> implement -> verify -> risk-report.");
     expect(issue?.description).toContain("Observe: 문서, git status, 실제 코드, 로그, 화면 상태를 먼저 확인한다.");
     expect(issue?.description).toContain("Verify: typecheck/test/browser/log/API 중 실제 근거를 남긴다.");

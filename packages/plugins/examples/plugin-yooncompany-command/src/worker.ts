@@ -37,6 +37,13 @@ const CODEX_6002_SEQUENCE = [
   "- Risk-report: 변경 파일, 실행 명령, 결과, 남은 위험, 다음 행동을 보고한다.",
 ];
 
+const CODEX_SKILL_ATTACHMENT_LINES = [
+  "스킬/에이전트 연결:",
+  "- 담당: codex_local Codex Lead Engineer.",
+  "- 필수 스킬: 6002. 작업 본문에 사용 여부와 검증 근거를 남긴다.",
+  "- Hermes는 조사/로그/메모리 제안 전용이며 repo 쓰기, merge, deploy는 Codex 승인 범위로 넘긴다.",
+];
+
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -92,6 +99,8 @@ function getIssueTemplate(kind: GuidedIssueKind): {
         "",
         "대상: Codex Lead Engineer.",
         "모드: 6002.",
+        ...CODEX_SKILL_ATTACHMENT_LINES,
+        "",
         ...CODEX_6002_SEQUENCE,
         "",
         "질문/작업:",
@@ -138,6 +147,8 @@ function getIssueTemplate(kind: GuidedIssueKind): {
       "",
       "대상: Codex Lead Engineer.",
       "모드: 6002.",
+      ...CODEX_SKILL_ATTACHMENT_LINES,
+      "",
       ...CODEX_6002_SEQUENCE,
       "",
       "채울 내용:",

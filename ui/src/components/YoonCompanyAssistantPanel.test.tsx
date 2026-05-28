@@ -266,6 +266,9 @@ describe("YoonCompanyAssistantPanel", () => {
     }));
     const defaults = mockOpenNewIssue.mock.calls[0]?.[0] as { description?: string };
     expect(defaults.description).toContain("현재 화면의 상태, 위험, 다음 개선 후보를 6002 기준으로 분석하라.");
+    expect(defaults.description).toContain("스킬/에이전트 연결:");
+    expect(defaults.description).toContain("필수 스킬: 6002. 작업 본문에 사용 여부와 검증 근거를 남겨라.");
+    expect(defaults.description).toContain("Hermes는 조사/로그/메모리 제안 전용이며 repo 쓰기, merge, deploy는 Codex 승인 범위로 넘겨라.");
     expect(defaults.description).toContain("6002 실행 순서: observe -> plan -> implement -> verify -> risk-report.");
     expect(defaults.description).toContain("Observe: 실제 문서, git status, 코드, 로그, 화면 상태를 먼저 확인하라.");
     expect(defaults.description).toContain("Verify: typecheck/test/browser/log/API 중 실제 근거를 남겨라.");
@@ -383,6 +386,8 @@ describe("YoonCompanyAssistantPanel", () => {
     expect(container.textContent).toContain("--yolo 명시 없음, agent 생성권한 없음, task 배정권한 없음");
     expect(container.textContent).toContain("12 · 실행 인자 기준");
     expect(container.textContent).toContain("아직 제한된 Hermes 오케스트레이션 상태입니다");
+    expect(container.textContent).toContain("스킬 기준");
+    expect(container.textContent).toContain("Codex 작업은 6002 검증 순서로 접수");
   });
 
   it("opens a phase 1 Hermes approval issue draft without assigning execution", async () => {
