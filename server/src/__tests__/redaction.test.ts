@@ -44,6 +44,20 @@ describe("redaction", () => {
     });
   });
 
+  it("does not redact semver strings that look like JWTs", () => {
+    const result = sanitizeRecord({
+      version: "v0.0.0",
+      semver: "1.2.3",
+      semverPre: "v2.0.0-alpha.1",
+      session: "aaa.bbb.ccc",
+    });
+
+    expect(result.version).toBe("v0.0.0");
+    expect(result.semver).toBe("1.2.3");
+    expect(result.semverPre).toBe("v2.0.0-alpha.1");
+    expect(result.session).toBe(REDACTED_EVENT_VALUE);
+  });
+
   it("redacts jwt-looking values even when key name is not sensitive", () => {
     const input = {
       session: "aaa.bbb.ccc",

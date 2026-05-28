@@ -8,6 +8,7 @@ const COMMAND_PAYLOAD_KEY_RE =
   /(^command$|^cmd$|command[-_]?line|resolved[-_]?command|PAPERCLIP_RESOLVED_COMMAND)/i;
 const COMMAND_ARGS_PAYLOAD_KEY_RE = /^(commandArgs|command_?args|argv)$/i;
 const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
+const SEMVER_VALUE_RE = /^v?\d+\.\d+\.\d+(?:[-+][^\s]*)?$/;
 const CLI_SECRET_FLAG_RE = new RegExp(String.raw`^-{1,2}${SECRET_FIELD_NAME_PATTERN}$`, "i");
 const JSON_SECRET_FIELD_TEXT_RE = new RegExp(
   String.raw`((?:"|')?${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` + "`" + String.raw`\r\n]+((?:"|'))`,
@@ -108,7 +109,7 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
       redacted[key] = REDACTED_EVENT_VALUE;
       continue;
     }
-    if (typeof value === "string" && JWT_VALUE_RE.test(value)) {
+    if (typeof value === "string" && !SEMVER_VALUE_RE.test(value) && JWT_VALUE_RE.test(value)) {
       redacted[key] = REDACTED_EVENT_VALUE;
       continue;
     }
