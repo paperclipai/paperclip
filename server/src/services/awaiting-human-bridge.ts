@@ -12,7 +12,6 @@ import {
 import type {
   AskUserQuestionsInteraction,
   IssueThreadInteraction,
-  RequestConfirmationInteraction,
 } from "@paperclipai/shared";
 import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
@@ -455,7 +454,7 @@ function buildBridgeNotification(input: {
         280,
       ),
       link,
-      cta: "",
+      cta: "Reply with Approve, Reject, or Change followed by feedback.",
       labels: ["awaiting_human", "request_confirmation"],
       kind: interaction.kind,
       body: renderRequestConfirmationBody(interaction, link),
@@ -1334,8 +1333,16 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
               && currentInteraction.kind === "request_confirmation"
               && currentInteraction.status === "pending"
             ) {
-              const confirmation = currentInteraction as RequestConfirmationInteraction;
-              const decision = classifyRequestConfirmationReply(confirmation.payload, replyBody) ?? "reject";
+              const decision = classifyRequestConfirmationReply(replyBody);
+              if (!decision) {
+                return {
+                  duplicate: false as const,
+                  emptyBody: false as const,
+                  commentId: comment?.id ?? null,
+                  resolvedInteraction: null as IssueThreadInteraction | null,
+                  body,
+                };
+              }
               const [issueForResolution] = await tx
                 .select({
                   id: issues.id,
@@ -1393,7 +1400,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
                   },
                   source: "awaiting_human.bridge_reply",
                   metadata: {
-                    resolutionSource: "confirmation_label_reply",
+                    resolutionSource: "confirmation_keyword_reply",
                     externalMessageId: row.externalMessageId ?? null,
                     externalEventId: externalEventId ?? null,
                   },

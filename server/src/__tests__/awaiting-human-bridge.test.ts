@@ -650,16 +650,8 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     expect(sendArg?.notification.body).toContain("Basic analytics");
   });
 
-  it("rejects a confirmation when the board replies with the reject label", async () => {
+  it("rejects a confirmation when the board replies with Reject", async () => {
     const seeded = await seedAwaitingHumanInteraction();
-    await db.update(issueThreadInteractions).set({
-      payload: {
-        version: 1,
-        prompt: "Start the growth project?",
-        acceptLabel: "Start project",
-        rejectLabel: "Not yet",
-      },
-    }).where(eq(issueThreadInteractions.id, seeded.interactionId));
     const [issueBefore] = await db.select({ updatedAt: issues.updatedAt }).from(issues).where(eq(issues.id, seeded.issueId));
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "slack",
@@ -680,7 +672,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
               externalMessageId: "message-1",
               authorExternalId: "user-1",
               authorDisplayName: "Board",
-              body: "Not yet",
+              body: "Reject",
               receivedAt: new Date("2026-05-22T00:02:00.000Z"),
               metadata: { clickupReplyId: "reply-1" },
             },
@@ -702,7 +694,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toBe("Slack reply received:\n\nNot yet");
+    expect(comments[0]?.body).toBe("Slack reply received:\n\nReject");
 
     const [interaction] = await db.select().from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.id, seeded.interactionId));

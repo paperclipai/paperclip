@@ -95,8 +95,8 @@ describe("maybeLogAwaitingHumanHandoff", () => {
           title: "BIZ-35 needs confirmation",
           link: "https://bizbox.example/issues/BIZ-35",
           summary: "Approve the exact GitHub reply before posting.",
-          cta: "",
-          body: expect.stringMatching(/Disclaimer:[\s\S]*Open in Bizbox: https:\/\/bizbox\.example\/issues\/BIZ-35/),
+          cta: "Reply with Approve, Reject, or Change followed by feedback.",
+          body: expect.stringMatching(/Reply with:[\s\S]*`Change` followed by feedback[\s\S]*Disclaimer:[\s\S]*Open in Bizbox: https:\/\/bizbox\.example\/issues\/BIZ-35/),
         }),
       }),
     );

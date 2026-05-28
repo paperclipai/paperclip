@@ -4,7 +4,6 @@ import { and, eq, gte } from "drizzle-orm";
 import type {
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
-  RequestConfirmationPayload,
 } from "@paperclipai/shared";
 import {
   enqueueAwaitingHumanNotification,
@@ -107,25 +106,27 @@ export function renderAskUserQuestionsBody(
   return body ? `${body}\n\nOpen in Bizbox: ${link.trim()}` : `Open in Bizbox: ${link.trim()}`;
 }
 
+export const REQUEST_CONFIRMATION_REPLY_INSTRUCTIONS = [
+  "Reply with:",
+  "  `Approve`",
+  "  `Reject`",
+  "  `Change` followed by feedback",
+].join("\n");
+
 function normalizeConfirmationReplyText(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
 export function classifyRequestConfirmationReply(
-  payload: Pick<RequestConfirmationPayload, "acceptLabel" | "rejectLabel">,
   replyBody: string,
 ): "approve" | "reject" | null {
   const normalizedReply = normalizeConfirmationReplyText(replyBody);
   if (!normalizedReply) return null;
 
-  const rejectLabel = payload.rejectLabel?.trim();
-  if (rejectLabel && normalizeConfirmationReplyText(rejectLabel) === normalizedReply) {
+  if (normalizedReply === "approve") return "approve";
+  if (normalizedReply === "reject") return "reject";
+  if (normalizedReply === "change" || normalizedReply.startsWith("change ")) {
     return "reject";
-  }
-
-  const acceptLabel = payload.acceptLabel?.trim();
-  if (acceptLabel && normalizeConfirmationReplyText(acceptLabel) === normalizedReply) {
-    return "approve";
   }
 
   return null;
@@ -144,11 +145,8 @@ export function renderRequestConfirmationBody(
     if (lines.length > 0) lines.push("");
     lines.push(interaction.payload.detailsMarkdown.trim());
   }
-  if (interaction.payload.acceptLabel?.trim() || interaction.payload.rejectLabel?.trim()) {
-    if (lines.length > 0) lines.push("");
-    lines.push(`Approve action: ${interaction.payload.acceptLabel?.trim() || "Approve"}`);
-    lines.push(`Reject action: ${interaction.payload.rejectLabel?.trim() || "Reject"}`);
-  }
+  if (lines.length > 0) lines.push("");
+  lines.push(REQUEST_CONFIRMATION_REPLY_INSTRUCTIONS);
   if (interaction.payload.target?.label?.trim() || interaction.payload.target?.href?.trim()) {
     if (lines.length > 0) lines.push("");
     if (interaction.payload.target.label?.trim()) {
@@ -268,7 +266,7 @@ function buildNotification(
     link,
     cta: isQuestionHandoff
       ? "Reply with answers to the questions below."
-      : "",
+      : "Reply with Approve, Reject, or Change followed by feedback.",
     labels: ["awaiting_human", input.handoffKind],
     kind: input.handoffKind,
     interactionId: input.interaction?.id ?? null,
