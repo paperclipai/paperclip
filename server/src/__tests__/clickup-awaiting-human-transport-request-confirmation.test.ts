@@ -55,8 +55,9 @@ describe("clickup awaiting human transport request_confirmation", () => {
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(body.content).toContain("Proceed with new dev company project setup?");
     expect(body.content).toContain("If accepted: proceed with setup work.");
-    expect(body.content).toContain("Open in Bizbox: https://bizbox.example/issues/CIT-3");
-    expect(body.content).toContain("Disclaimer:");
-    expect(body.content).toContain("It is your responsibility to read and verify this content.");
+    expect(body.content).not.toContain("Open in Bizbox: https://bizbox.example/issues/CIT-3");
+    expect(body.content).not.toContain("Disclaimer:");
+    expect(body.content).not.toContain("It is your responsibility to read and verify this content.");
+    expect(body.content.match(/Need human confirmation before creating new dev company project\./g) ?? []).toHaveLength(1);
   });
 });

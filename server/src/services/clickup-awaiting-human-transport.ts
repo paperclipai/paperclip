@@ -392,44 +392,15 @@ function extractReactionRows(payload: unknown): ClickUpChatMessageReaction[] {
 
 function renderClickUpMessage(notification: AwaitingHumanNotificationPayload) {
   const title = truncateText(notification.title, MAX_TITLE_LENGTH);
-  const summary = truncateText(notification.summary, MAX_SUMMARY_LENGTH);
   const bodySection = formatBodySection(notification.body);
-  const lines = [
-    `**${title}**`,
-    "",
-    summary,
-  ];
+  const lines = [`**${title}**`];
 
   if (bodySection) {
     lines.push("");
     lines.push(bodySection);
-  }
-
-  if (notification.reviewFile) {
+  } else if (notification.summary.trim().length > 0) {
     lines.push("");
-    lines.push(`Review file: ${notification.reviewFile.filename}`);
-    lines.push(`Bizbox deliverable: ${notification.reviewFile.deliverableUrl}`);
-    if (notification.reviewFile.clickupTaskUrl) {
-      lines.push(`ClickUp review task: ${notification.reviewFile.clickupTaskUrl}`);
-      if (notification.reviewFile.clickupAttachmentId) {
-        lines.push("Review file attached on the ClickUp task.");
-      }
-    }
-  }
-
-  if (notification.kind === "request_confirmation") {
-    if (lines.length > 0) lines.push("");
-    if (bodySection && !bodySection.includes("Disclaimer:")) {
-      lines.push("Disclaimer:");
-      lines.push("It is your responsibility to read and verify this content. Not doing so may result in unattended negative consequence leading to financial loss or brand harm");
-      lines.push("");
-    }
-    lines.push(`Open in Bizbox: ${notification.link.trim()}`);
-  } else {
-    lines.push("");
-    if (notification.cta.trim().length > 0) {
-      lines.push(truncateText(notification.cta, 180));
-    }
+    lines.push(truncateText(notification.summary, MAX_SUMMARY_LENGTH));
   }
 
   return trimTotal(lines.join("\n"), CLICKUP_CHAT_MESSAGE_MAX_CHARS);
