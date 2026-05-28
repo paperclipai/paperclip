@@ -14,6 +14,8 @@ const mockAccessService = vi.hoisted(() => ({
 const mockCompanySkillService = vi.hoisted(() => ({
   importFromSource: vi.fn(),
   deleteSkill: vi.fn(),
+  list: vi.fn(),
+  searchSkills: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -320,5 +322,43 @@ describe("company skill mutation permissions", () => {
     });
     expect(mockCompanySkillService.deleteSkill).toHaveBeenCalledWith("company-1", "skill-1");
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("calls searchSkills when ?q is provided on GET /skills", async () => {
+    const fakeResults = [{ id: "skill-1", key: "my-skill", slug: "my-skill", name: "My Skill" }];
+    mockCompanySkillService.searchSkills.mockResolvedValue(fakeResults);
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .get("/api/companies/company-1/skills?q=my");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual(fakeResults);
+    expect(mockCompanySkillService.searchSkills).toHaveBeenCalledWith("company-1", "my");
+    expect(mockCompanySkillService.list).not.toHaveBeenCalled();
+  });
+
+  it("calls list when no ?q is provided on GET /skills", async () => {
+    const fakeResults = [{ id: "skill-1", key: "my-skill", slug: "my-skill", name: "My Skill" }];
+    mockCompanySkillService.list.mockResolvedValue(fakeResults);
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .get("/api/companies/company-1/skills");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual(fakeResults);
+    expect(mockCompanySkillService.list).toHaveBeenCalledWith("company-1");
+    expect(mockCompanySkillService.searchSkills).not.toHaveBeenCalled();
   });
 });
