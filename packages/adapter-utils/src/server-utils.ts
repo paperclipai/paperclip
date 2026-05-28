@@ -2125,10 +2125,12 @@ export async function ensureCommandResolvable(
     if (resolvedSsh) return;
     throw new Error('Command not found in PATH: "ssh"');
   }
-  const resolved = await resolveCommandPath(command, cwd, env);
+  // Extract only the executable (first token) — the rest are arguments.
+  const executable = command.trimStart().split(/\s+/)[0] ?? command;
+  const resolved = await resolveCommandPath(executable, cwd, env);
   if (resolved) return;
-  if (command.includes("/") || command.includes("\\")) {
-    const absolute = path.isAbsolute(command) ? command : path.resolve(cwd, command);
+  if (executable.includes("/") || executable.includes("\\")) {
+    const absolute = path.isAbsolute(executable) ? executable : path.resolve(cwd, executable);
     throw new Error(`Command is not executable: "${command}" (resolved: "${absolute}")`);
   }
   throw new Error(`Command not found in PATH: "${command}"`);
