@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.exe-dev-sandbox-provider";
-const PLUGIN_VERSION = "0.1.0";
+const PLUGIN_VERSION = "0.1.1";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -36,7 +36,7 @@ const manifest: PaperclipPluginManifestV1 = {
           sshPrivateKey: {
             type: "string",
             format: "secret-ref",
-            maxLength: 4096,
+            maxLength: 8192,
             description:
               "Paste the SSH private key you registered with exe.dev, or pick a saved secret. Leave blank to fall back to an on-host key (see Advanced → SSH access).",
           },
