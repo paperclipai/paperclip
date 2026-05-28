@@ -920,11 +920,17 @@ export function agentRoutes(
     adapterType: string | null | undefined;
     adapterConfig: Record<string, unknown>;
     constraintAdapterConfig?: Record<string, unknown>;
+    /**
+     * When set, strict-secret-mode is enforced only for keys in this set.
+     * Used by PATCH paths so legacy plain sensitive bindings not touched by
+     * the current PATCH do not retroactively fail strict-mode validation.
+     */
+    submittedEnvKeys?: ReadonlySet<string>;
   }): Promise<Record<string, unknown>> {
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       input.companyId,
       input.adapterConfig,
-      { strictMode: strictSecretsMode },
+      { strictMode: strictSecretsMode, strictModeKeys: input.submittedEnvKeys },
     );
     await assertAdapterConfigConstraints(
       input.adapterType,
@@ -2615,9 +2621,26 @@ export function agentRoutes(
       ) {
         await assertCanManageInstructionsPath(req, existing);
       }
+      let submittedEnvKeys: Set<string> | undefined;
       let rawEffectiveAdapterConfig = requestedAdapterConfig ?? existingAdapterConfig;
       if (requestedAdapterConfig && !changingAdapterType && !replaceAdapterConfig) {
         rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...requestedAdapterConfig };
+
+        // Deep-merge env: preserve unsubmitted keys, allow null to delete a key
+        if (hasOwn(requestedAdapterConfig, "env")) {
+          const existingEnv = asRecord(existingAdapterConfig.env) ?? {};
+          const submittedEnv = asRecord(requestedAdapterConfig.env) ?? {};
+          submittedEnvKeys = new Set(Object.keys(submittedEnv));
+          const mergedEnv: Record<string, unknown> = { ...existingEnv };
+          for (const [key, value] of Object.entries(submittedEnv)) {
+            if (value === null) {
+              delete mergedEnv[key];
+            } else {
+              mergedEnv[key] = value;
+            }
+          }
+          rawEffectiveAdapterConfig = { ...rawEffectiveAdapterConfig, env: mergedEnv };
+        }
       }
       if (changingAdapterType) {
         // Preserve adapter-agnostic keys (env, cwd, etc.) from the existing config
@@ -2645,6 +2668,7 @@ export function agentRoutes(
         companyId: existing.companyId,
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
+        submittedEnvKeys,
       });
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
     }

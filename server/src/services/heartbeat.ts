@@ -8257,13 +8257,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
 
         if (taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)) {
+          // RC2 (GH#6731): rotate session after consecutive adapter_failed runs so the
+          // agent does not keep retrying on a dead session. If the previous task session
+          // also ended with an error, force a fresh session for the next run.
+          const consecutiveFailure = taskSession?.lastError != null;
           await upsertTaskSession({
             companyId: agent.companyId,
             agentId: agent.id,
             adapterType: agent.adapterType,
             taskKey,
-            sessionParamsJson: previousSessionParams,
-            sessionDisplayId: previousSessionDisplayId,
+            sessionParamsJson: consecutiveFailure ? null : previousSessionParams,
+            sessionDisplayId: consecutiveFailure ? null : previousSessionDisplayId,
             lastRunId: failedRun.id,
             lastError: message,
           });
