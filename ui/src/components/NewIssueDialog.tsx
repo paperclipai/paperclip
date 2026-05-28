@@ -74,6 +74,7 @@ const MOBILE_DIALOG_HEIGHT = "calc(100dvh - max(1rem, env(safe-area-inset-top)) 
 
 
 interface IssueDraft {
+  billingCode?: string;
   title: string;
   description: string;
   status: string;
