@@ -1135,4 +1135,459 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       },
     });
   });
+
+  it("expires older pending request confirmations targeting the same document key when a newer one is created", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Target supersede",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Plan",
+      format: "markdown",
+      latestBody: "v1",
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId,
+      documentId,
+      key: "plan",
+    });
+
+    const first = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "First?",
+        target: {
+          type: "issue_document",
+          issueId,
+          documentId,
+          key: "plan",
+          revisionId,
+          revisionNumber: 1,
+        },
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const second = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Second?",
+        target: {
+          type: "issue_document",
+          issueId,
+          documentId,
+          key: "plan",
+          revisionId,
+          revisionNumber: 1,
+        },
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    const firstAfter = listed.find((i) => i.id === first.id);
+    const secondAfter = listed.find((i) => i.id === second.id);
+
+    expect(firstAfter?.status).toBe("expired");
+    expect(firstAfter?.result).toMatchObject({
+      version: 1,
+      outcome: "superseded",
+    });
+    expect(secondAfter?.status).toBe("pending");
+  });
+
+  it("expires older pending request confirmations with the same custom target key when a newer one is created", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Custom target supersede",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const first = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "First?",
+        target: {
+          type: "custom",
+          key: "deploy-prod",
+        },
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const second = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Second?",
+        target: {
+          type: "custom",
+          key: "deploy-prod",
+        },
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    const firstAfter = listed.find((i) => i.id === first.id);
+    const secondAfter = listed.find((i) => i.id === second.id);
+
+    expect(firstAfter?.status).toBe("expired");
+    expect(firstAfter?.result).toMatchObject({ outcome: "superseded" });
+    expect(secondAfter?.status).toBe("pending");
+  });
+
+  it("expires older pending request confirmations with the same idempotency key prefix when a newer one is created", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Idempotency prefix supersede",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const first = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      idempotencyKey: "confirmation:plan:1",
+      payload: {
+        version: 1,
+        prompt: "First?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const second = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      idempotencyKey: "confirmation:plan:2",
+      payload: {
+        version: 1,
+        prompt: "Second?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const third = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      idempotencyKey: "confirmation:design:1",
+      payload: {
+        version: 1,
+        prompt: "Third?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    const firstAfter = listed.find((i) => i.id === first.id);
+    const secondAfter = listed.find((i) => i.id === second.id);
+    const thirdAfter = listed.find((i) => i.id === third.id);
+
+    expect(firstAfter?.status).toBe("expired");
+    expect(firstAfter?.result).toMatchObject({ outcome: "superseded" });
+    expect(secondAfter?.status).toBe("pending");
+    expect(thirdAfter?.status).toBe("pending");
+  });
+
+  it("does not expire request confirmations with different targets or idempotency prefixes", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "No supersede",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const first = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "First?",
+        target: { type: "custom", key: "a" },
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const second = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Second?",
+        target: { type: "custom", key: "b" },
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    const firstAfter = listed.find((i) => i.id === first.id);
+    const secondAfter = listed.find((i) => i.id === second.id);
+
+    expect(firstAfter?.status).toBe("pending");
+    expect(secondAfter?.status).toBe("pending");
+  });
+
+  it("expires all pending request confirmations when an issue is closed", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Closure expiration",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const first = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "First?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const second = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Second?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const expired = await interactionsSvc.expirePendingRequestConfirmationsOnIssueClosure(
+      { id: issueId, companyId },
+      { userId: "local-board" },
+    );
+
+    expect(expired).toHaveLength(2);
+    expect(expired.map((i) => i.id)).toEqual(expect.arrayContaining([first.id, second.id]));
+    for (const interaction of expired) {
+      expect(interaction.status).toBe("expired");
+      expect(interaction.result).toMatchObject({
+        version: 1,
+        outcome: "issue_closed",
+      });
+    }
+  });
+
+  it("defaults supersedeOnUserComment to true for agent-created request confirmations", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Default supersede",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TestAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const agentCreated = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Agent?",
+      },
+    }, {
+      agentId,
+    });
+
+    const userCreated = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "User?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    expect((agentCreated as any).payload.supersedeOnUserComment).toBe(true);
+    expect((userCreated as any).payload.supersedeOnUserComment).toBeUndefined();
+  });
 });

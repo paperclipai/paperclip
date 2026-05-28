@@ -4091,6 +4091,22 @@ export function issueRoutes(
       return;
     }
 
+    if (updateFields.status === "done" || updateFields.status === "cancelled") {
+      const expiredInteractions = await issueThreadInteractionService(db).expirePendingRequestConfirmationsOnIssueClosure(
+        issue,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
+      await logExpiredRequestConfirmations({
+        issue,
+        interactions: expiredInteractions,
+        actor,
+        source: "issue.status_closed",
+      });
+    }
+
     let cancelledStatusRunId: string | null = null;
     if (runToCancelForCancelledStatus) {
       try {

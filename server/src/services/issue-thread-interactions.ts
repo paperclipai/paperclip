@@ -144,6 +144,13 @@ function isTerminalIssueStatus(status: string) {
   return status === "done" || status === "cancelled";
 }
 
+function idempotencyKeyPrefix(key: string | null | undefined): string | null {
+  if (!key) return null;
+  const lastColon = key.lastIndexOf(":");
+  if (lastColon <= 0) return key;
+  return key.slice(0, lastColon);
+}
+
 function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
   issue: IssueResolutionContext;
   current: IssueThreadInteractionRow;
@@ -695,6 +702,13 @@ export function issueThreadInteractionService(db: Db) {
         });
       }
 
+      const payload = data.kind === "request_confirmation"
+        ? {
+            ...data.payload,
+            supersedeOnUserComment: data.payload.supersedeOnUserComment ?? (actor.agentId ? true : undefined),
+          }
+        : data.payload;
+
       let created: IssueThreadInteractionRow;
       try {
         [created] = await db
@@ -712,7 +726,7 @@ export function issueThreadInteractionService(db: Db) {
             summary: data.summary ?? null,
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
-            payload: data.payload,
+            payload,
           })
           .returning();
       } catch (error) {
@@ -734,7 +748,15 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       await touchIssue(db, issue.id);
-      return hydrateInteraction(created);
+      const createdInteraction = hydrateInteraction(created);
+      if (createdInteraction.kind === "request_confirmation") {
+        await issueThreadInteractionService(db).expireSupersededRequestConfirmationsOnCreate(
+          issue,
+          createdInteraction,
+          actor,
+        );
+      }
+      return createdInteraction;
     },
 
     acceptInteraction: async (
@@ -1180,6 +1202,138 @@ export function issueThreadInteractionService(db: Db) {
               version: 1,
               outcome: "stale_target",
               staleTarget: target,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, row.id),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (updated) expired.push(hydrateInteraction(updated));
+      }
+
+      if (expired.length > 0) {
+        await touchIssue(db, issue.id);
+      }
+      return expired;
+    },
+
+    expireSupersededRequestConfirmationsOnCreate: async (
+      issue: { id: string; companyId: string },
+      createdInteraction: IssueThreadInteraction,
+      actor: InteractionActor,
+    ) => {
+      if (createdInteraction.kind !== "request_confirmation" || createdInteraction.status !== "pending") {
+        return [];
+      }
+
+      const rows = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.kind, "request_confirmation"),
+          eq(issueThreadInteractions.status, "pending"),
+        ));
+
+      const createdPayload = (createdInteraction as RequestConfirmationInteraction).payload;
+      const createdTarget = createdPayload.target ?? null;
+      const createdPrefix = idempotencyKeyPrefix(createdInteraction.idempotencyKey);
+
+      const superseded = rows.filter((row) => {
+        if (row.id === createdInteraction.id) return false;
+        const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+        const target = interaction.payload.target ?? null;
+
+        if (createdTarget && target) {
+          if (createdTarget.type === "issue_document" && target.type === "issue_document") {
+            const createdIssueId = createdTarget.issueId ?? issue.id;
+            const targetIssueId = target.issueId ?? issue.id;
+            if (createdIssueId === targetIssueId && createdTarget.key === target.key) {
+              if (createdTarget.documentId && target.documentId && createdTarget.documentId !== target.documentId) {
+                return false;
+              }
+              return true;
+            }
+          }
+          if (createdTarget.type === "custom" && target.type === "custom") {
+            if (createdTarget.key === target.key) return true;
+          }
+        }
+
+        const prefix = idempotencyKeyPrefix(interaction.idempotencyKey);
+        if (createdPrefix && prefix && prefix === createdPrefix) return true;
+
+        return false;
+      });
+
+      if (superseded.length === 0) return [];
+
+      const now = new Date();
+      const expired: IssueThreadInteraction[] = [];
+      for (const row of superseded) {
+        const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+        const [updated] = await db
+          .update(issueThreadInteractions)
+          .set({
+            status: "expired",
+            result: {
+              version: 1,
+              outcome: "superseded",
+              staleTarget: interaction.payload.target ?? null,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, row.id),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (updated) expired.push(hydrateInteraction(updated));
+      }
+
+      if (expired.length > 0) {
+        await touchIssue(db, issue.id);
+      }
+      return expired;
+    },
+
+    expirePendingRequestConfirmationsOnIssueClosure: async (
+      issue: { id: string; companyId: string },
+      actor: InteractionActor,
+    ) => {
+      const rows = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.kind, "request_confirmation"),
+          eq(issueThreadInteractions.status, "pending"),
+        ));
+
+      if (rows.length === 0) return [];
+
+      const now = new Date();
+      const expired: IssueThreadInteraction[] = [];
+      for (const row of rows) {
+        const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+        const [updated] = await db
+          .update(issueThreadInteractions)
+          .set({
+            status: "expired",
+            result: {
+              version: 1,
+              outcome: "issue_closed",
+              staleTarget: interaction.payload.target ?? null,
             },
             resolvedByAgentId: actor.agentId ?? null,
             resolvedByUserId: actor.userId ?? null,
