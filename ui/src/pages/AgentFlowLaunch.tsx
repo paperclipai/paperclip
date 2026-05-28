@@ -3,9 +3,9 @@ import { Bot, CheckCircle2, CircleAlert, Code2, ExternalLink, FileText, PlayCirc
 import { Button } from "@/components/ui/button";
 
 const AGENTFLOW_LAUNCH_CONFIG = {
-  youtubeUrl: "https://youtube.com/shorts/lzCmoaCzar0?si=doR21imub_enSbSo",
+  youtubeUrl: "https://www.youtube.com/watch?v=e6sJRC56qHU",
   brabrixDevUrl: "https://dev.brabrix.com",
-  spotifyUrl: "https://open.spotify.com/episode/774E9IKPOe82xZFsZN3fGM?si=9805f86100ae4818",
+  spotifyUrl: "https://open.spotify.com/episode/7fBKPrL5ocoU01gCHkPVlh?si=Ewgl_4PWQzep5hB1vnDfFQ",
   githubRepoUrl: "https://github.com/brabrix/brabrix-agent",
 } as const;
 
