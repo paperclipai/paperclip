@@ -726,10 +726,14 @@ export async function startServer(): Promise<StartedServer> {
       .reapOrphanedRuns()
       .then(() => heartbeat.promoteDueScheduledRetries())
       .then(async (promotion) => {
+        const orphanDispatch = await heartbeat.dispatchOrphanWakeups();
         await heartbeat.resumeQueuedRuns();
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
         if (
           promotion.promoted > 0 ||
+          orphanDispatch.claimed > 0 ||
+          orphanDispatch.skipped > 0 ||
+          orphanDispatch.errors > 0 ||
           reconciled.assignmentDispatched > 0 ||
           reconciled.dispatchRequeued > 0 ||
           reconciled.continuationRequeued > 0 ||
@@ -737,7 +741,12 @@ export async function startServer(): Promise<StartedServer> {
           reconciled.escalated > 0
         ) {
           logger.warn(
-            { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+            {
+              promotedScheduledRetries: promotion.promoted,
+              promotedScheduledRetryRunIds: promotion.runIds,
+              orphanWakeups: orphanDispatch,
+              ...reconciled,
+            },
             "startup heartbeat recovery changed assigned issue state",
           );
         }
@@ -792,10 +801,14 @@ export async function startServer(): Promise<StartedServer> {
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
         .then(() => heartbeat.promoteDueScheduledRetries())
         .then(async (promotion) => {
+          const orphanDispatch = await heartbeat.dispatchOrphanWakeups();
           await heartbeat.resumeQueuedRuns();
           const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
           if (
             promotion.promoted > 0 ||
+            orphanDispatch.claimed > 0 ||
+            orphanDispatch.skipped > 0 ||
+            orphanDispatch.errors > 0 ||
             reconciled.assignmentDispatched > 0 ||
             reconciled.dispatchRequeued > 0 ||
             reconciled.continuationRequeued > 0 ||
@@ -803,7 +816,12 @@ export async function startServer(): Promise<StartedServer> {
             reconciled.escalated > 0
           ) {
             logger.warn(
-              { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+              {
+                promotedScheduledRetries: promotion.promoted,
+                promotedScheduledRetryRunIds: promotion.runIds,
+                orphanWakeups: orphanDispatch,
+                ...reconciled,
+              },
               "periodic heartbeat recovery changed assigned issue state",
             );
           }

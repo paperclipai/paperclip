@@ -6805,6 +6805,160 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  /**
+   * Dispatch orphan wakeup requests — wakeups with status='queued' and no
+   * corresponding heartbeat run. These are created by DB triggers (PEDW)
+   * and by callers that INSERT directly into agent_wakeup_requests without
+   * going through enqueueWakeup(). Without this dispatcher they are
+   * permanently stranded.
+   */
+  async function dispatchOrphanWakeups() {
+    const result = {
+      claimed: 0,
+      skipped: 0,
+      skippedReasons: {} as Record<string, number>,
+      errors: 0,
+    };
+
+    const orphans = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.status, "queued"),
+          sql`${agentWakeupRequests.runId} is null`,
+        ),
+      )
+      .orderBy(asc(agentWakeupRequests.requestedAt))
+      .limit(50);
+
+    if (orphans.length === 0) return result;
+
+    for (const orphan of orphans) {
+      try {
+        const agent = await getAgent(orphan.agentId);
+        if (!agent) {
+          await setWakeupStatus(orphan.id, "skipped", {
+            finishedAt: new Date(),
+            error: "Agent not found",
+          });
+          result.skipped += 1;
+          incReason("agent_not_found");
+          continue;
+        }
+
+        if (
+          agent.status === "paused" ||
+          agent.status === "terminated" ||
+          agent.status === "pending_approval"
+        ) {
+          result.skipped += 1;
+          incReason(`agent_${agent.status}`);
+          continue;
+        }
+
+        const policy = parseHeartbeatPolicy(agent);
+        if (orphan.source !== "timer" && !policy.wakeOnDemand) {
+          await setWakeupStatus(orphan.id, "skipped", {
+            finishedAt: new Date(),
+            error: "heartbeat.wakeOnDemand.disabled",
+          });
+          result.skipped += 1;
+          incReason("wakeOnDemand_disabled");
+          continue;
+        }
+
+        const payload = parseObject(orphan.payload);
+        const issueId = readNonEmptyString(payload.issueId);
+
+        if (issueId) {
+          const budgetBlock = await budgets.getInvocationBlock(
+            agent.companyId,
+            orphan.agentId,
+            { issueId, projectId: readNonEmptyString(payload.projectId) },
+          );
+          if (budgetBlock) {
+            await setWakeupStatus(orphan.id, "skipped", {
+              finishedAt: new Date(),
+              error: "budget.blocked",
+            });
+            result.skipped += 1;
+            incReason("budget_blocked");
+            continue;
+          }
+        }
+
+        const claimedAt = new Date();
+        const enrichedContextSnapshot: Record<string, unknown> = {
+          issueId,
+          taskId: issueId,
+          wakeReason: orphan.reason ?? "orphan_wakeup_dispatch",
+          source: orphan.source ?? "orphan_dispatch",
+        };
+
+        if (readNonEmptyString(payload.retryOfRunId)) {
+          enrichedContextSnapshot.retryOfRunId = payload.retryOfRunId;
+        }
+
+        const newRun = await db
+          .insert(heartbeatRuns)
+          .values({
+            companyId: agent.companyId,
+            agentId: orphan.agentId,
+            invocationSource: orphan.source ?? "automation",
+            triggerDetail: orphan.triggerDetail ?? "system",
+            status: "queued",
+            wakeupRequestId: orphan.id,
+            contextSnapshot: enrichedContextSnapshot,
+            sessionIdBefore:
+              (await resolveSessionBeforeForWakeup(
+                agent,
+                readNonEmptyString(enrichedContextSnapshot.taskKey) ?? null,
+              )) ?? null,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+
+        await db
+          .update(agentWakeupRequests)
+          .set({
+            status: "claimed",
+            claimedAt,
+            runId: newRun.id,
+            updatedAt: new Date(),
+          })
+          .where(eq(agentWakeupRequests.id, orphan.id));
+
+        await startNextQueuedRunForAgent(agent.id);
+        result.claimed += 1;
+      } catch (err) {
+        result.errors += 1;
+        logger.error(
+          { err, wakeupId: orphan.id, agentId: orphan.agentId },
+          "orphan wakeup dispatch failed",
+        );
+      }
+      // Prevent starvation: yield after each wakeup so other agents can claim
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    if (result.claimed > 0 || result.skipped > 0 || result.errors > 0) {
+      logger.info(
+        {
+          ...result,
+          skippedReasons: JSON.stringify(result.skippedReasons),
+        },
+        "orphan wakeup dispatch tick",
+      );
+    }
+
+    return result;
+
+    function incReason(reason: string) {
+      result.skippedReasons[reason] = (result.skippedReasons[reason] ?? 0) + 1;
+    }
+  }
+
   async function reconcileStrandedAssignedIssues() {
     return recovery.reconcileStrandedAssignedIssues();
   }
@@ -9972,6 +10126,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     retryScheduledRetryNow,
 
     resumeQueuedRuns,
+
+    dispatchOrphanWakeups,
 
     scheduleBoundedRetry: async (
       runId: string,
