@@ -91,6 +91,13 @@ export interface Agent {
   pausedAt: Date | null;
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;
+  lastRunError?: {
+    runId: string;
+    error: string | null;
+    errorCode: string | null;
+    exitCode: number | null;
+    signal: string | null;
+  } | null;
   metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;

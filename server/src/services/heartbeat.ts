@@ -6367,6 +6367,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    options?: {
+      runId?: string;
+      error?: string | null;
+      errorCode?: string | null;
+      exitCode?: number | null;
+      signal?: string | null;
+    },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -6385,12 +6392,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ? "idle"
           : "error";
 
+    const isErrorOutcome = nextStatus === "error";
+    const lastRunError =
+      isErrorOutcome && options?.runId
+        ? {
+            runId: options.runId,
+            error: options.error ?? null,
+            errorCode: options.errorCode ?? null,
+            exitCode: options.exitCode ?? null,
+            signal: options.signal ?? null,
+          }
+        : undefined;
+
     const updated = await db
       .update(agents)
       .set({
         status: nextStatus,
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
+        ...(lastRunError !== undefined ? { lastRunError } : {}),
+        ...(nextStatus === "idle" || nextStatus === "running" ? { lastRunError: null } : {}),
       })
       .where(eq(agents.id, agentId))
       .returning()
@@ -6750,7 +6771,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
-      await finalizeAgentStatus(run.agentId, "failed");
+      await finalizeAgentStatus(run.agentId, "failed", {
+        runId: run.id,
+        error: run.error,
+        errorCode: run.errorCode,
+        exitCode: run.exitCode,
+        signal: run.signal,
+      });
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
@@ -8178,7 +8205,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, finalizedRun && outcome !== "succeeded" && outcome !== "cancelled" ? {
+        runId: finalizedRun.id,
+        error: finalizedRun.error,
+        errorCode: finalizedRun.errorCode,
+        exitCode: finalizedRun.exitCode,
+        signal: finalizedRun.signal,
+      } : undefined);
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -8256,7 +8289,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed");
+      await finalizeAgentStatus(agent.id, "failed", failedRun ? {
+        runId: failedRun.id,
+        error: failedRun.error,
+        errorCode: failedRun.errorCode,
+        exitCode: failedRun.exitCode,
+        signal: failedRun.signal,
+      } : undefined);
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
@@ -8299,7 +8338,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
-          await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+          const outerFailedRun = await getRun(run.id).catch(() => null);
+          await finalizeAgentStatus(run.agentId, "failed", outerFailedRun ? {
+            runId: outerFailedRun.id,
+            error: outerFailedRun.error,
+            errorCode: outerFailedRun.errorCode,
+            exitCode: outerFailedRun.exitCode,
+            signal: outerFailedRun.signal,
+          } : undefined).catch(() => undefined);
         } finally {
           const latestRun = await getRun(run.id).catch(() => null);
           await releaseEnvironmentLeasesForRun({

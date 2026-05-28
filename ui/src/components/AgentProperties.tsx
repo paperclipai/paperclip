@@ -71,6 +71,24 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
             <span className="text-xs text-red-600 dark:text-red-400 break-words min-w-0">{runtimeState.lastError}</span>
           </PropertyRow>
         )}
+        {agent.status === "error" && agent.lastRunError && (
+          <PropertyRow label="Error">
+            <div className="min-w-0 space-y-0.5">
+              {agent.lastRunError.error && (
+                <span className="text-xs text-red-600 dark:text-red-400 break-words block">{agent.lastRunError.error}</span>
+              )}
+              {agent.lastRunError.errorCode && (
+                <span className="text-xs text-muted-foreground font-mono">code: {agent.lastRunError.errorCode}</span>
+              )}
+              {agent.lastRunError.exitCode != null && (
+                <span className="text-xs text-muted-foreground font-mono ml-2">exit: {agent.lastRunError.exitCode}</span>
+              )}
+              {agent.lastRunError.runId && (
+                <span className="text-xs text-muted-foreground font-mono block">run: {agent.lastRunError.runId.slice(0, 8)}</span>
+              )}
+            </div>
+          </PropertyRow>
+        )}
         {agent.lastHeartbeatAt && (
           <PropertyRow label="Last Heartbeat">
             <span className="text-sm">{formatDate(agent.lastHeartbeatAt)}</span>
