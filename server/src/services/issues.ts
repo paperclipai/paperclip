@@ -3095,11 +3095,12 @@ export function issueService(db: Db) {
         delete issueData.executionWorkspaceSettings;
       }
 
-      if (issueData.status) {
-        const needsReviewGateCheck = issueData.status === "done" && existing.status !== "in_review";
-        const hasReviewGate = needsReviewGateCheck ? await hasIssueReviewGate(db, id) : false;
-        assertTransition(existing.status, issueData.status, { issueId: id, hasReviewGate });
-      }
+      // NOTE: the actual transition + review-gate validation runs INSIDE
+      // `runUpdate(tx)` below so that the review-gate document check and the
+      // status update are atomic. Running it here (outside the transaction)
+      // leaves a narrow race window where a concurrently-added gated
+      // document could land between the check and the update, allowing the
+      // gate-bypassing transition to slip through.
 
       const patch: Partial<typeof issues.$inferInsert> = {
         ...issueData,
@@ -3182,6 +3183,18 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        // Transition + review-gate validation runs inside the transaction so
+        // a concurrently-added gated document cannot land between the check
+        // and the status update. Throws roll back the transaction implicitly.
+        if (issueData.status) {
+          const needsReviewGateCheck =
+            issueData.status === "done" && existing.status !== "in_review";
+          const hasReviewGate = needsReviewGateCheck
+            ? await hasIssueReviewGate(tx, id)
+            : false;
+          assertTransition(existing.status, issueData.status, { issueId: id, hasReviewGate });
+        }
+
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
@@ -3346,12 +3359,16 @@ export function issueService(db: Db) {
       };
 
       const result = await (dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx));
-      if (
-        result &&
-        issueData.status &&
-        existing.status === "done" &&
-        issueData.status !== "done"
-      ) {
+      // Audit terminal-state reversals: both `done → !done` (work being
+      // re-opened) and `cancelled → todo` (work being un-cancelled per the
+      // allowed-transition matrix). Both reversals leave the issue's
+      // terminal-state footprint behind and warrant a trail entry so
+      // downstream consumers (reporting, productivity-review) can reason
+      // about the lifecycle correctly.
+      const isDoneRevert =
+        existing.status === "done" && issueData.status && issueData.status !== "done";
+      const isUncancel = existing.status === "cancelled" && issueData.status === "todo";
+      if (result && (isDoneRevert || isUncancel)) {
         await logActivity(db, {
           companyId: existing.companyId,
           actorType: "system",
@@ -3362,7 +3379,7 @@ export function issueService(db: Db) {
           details: {
             from: existing.status,
             to: issueData.status,
-            reason: "done state revert",
+            reason: isDoneRevert ? "done state revert" : "cancelled state un-cancelled",
           },
         });
       }

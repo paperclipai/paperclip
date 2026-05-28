@@ -142,10 +142,17 @@ describeEmbeddedPostgres("issueService.update status transition guard", () => {
     });
   });
 
-  it("allows todo -> in_review (early review pickup)", async () => {
+  it("rejects todo -> in_review (matrix requires transit via in_progress)", async () => {
+    // The ALLOWED_TRANSITIONS matrix in services/issues.ts intentionally
+    // does NOT include `in_review` in the `todo` source set: review pickup
+    // happens via `in_progress` (work-then-review) rather than as a direct
+    // skip from `todo`. If a workflow needs early-review-pickup, the matrix
+    // is the right place to relax it; for now the strict pipeline keeps
+    // execution lifecycle observable.
     const { issueId } = await setup({ initialStatus: "todo" });
-    const row = await svc.update(issueId, { status: "in_review" });
-    expect(row?.status).toBe("in_review");
+    await expect(svc.update(issueId, { status: "in_review" })).rejects.toMatchObject({
+      status: 409,
+    });
   });
 
   it("rejects in_progress -> done when a review gate is present", async () => {
@@ -240,6 +247,34 @@ describeEmbeddedPostgres("issueService.update status transition guard", () => {
     expect(logs[0]!.details).toMatchObject({
       from: "done",
       to: "in_review",
+    });
+  });
+
+  it("emits an activityLog reverse_transition event on cancelled -> todo (un-cancel)", async () => {
+    // Parallel to the done-revert audit: un-cancelling work leaves the
+    // terminal-state footprint behind and downstream consumers (reporting,
+    // productivity-review) need to see the trail entry to reason about the
+    // lifecycle correctly.
+    const { companyId, issueId } = await setup({ initialStatus: "cancelled" });
+    await svc.update(issueId, { status: "todo" });
+    const logs = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          eq(activityLog.action, "issue.status.reverse_transition"),
+        ),
+      );
+    expect(logs.length).toBe(1);
+    expect(logs[0]!.actorType).toBe("system");
+    expect(logs[0]!.actorId).toBe("issues.update");
+    expect(logs[0]!.details).toMatchObject({
+      from: "cancelled",
+      to: "todo",
+      reason: "cancelled state un-cancelled",
     });
   });
 });
