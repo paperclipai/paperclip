@@ -36,6 +36,12 @@ export const agents = pgTable(
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    lastRunError: jsonb("last_run_error").$type<{
+      error: string;
+      errorCode: string;
+      exitCode: number | null;
+      signal: string | null;
+    }>().null(), // Optional field to store error context from heartbeatRuns
   },
   (table) => ({
     companyStatusIdx: index("agents_company_status_idx").on(table.companyId, table.status),

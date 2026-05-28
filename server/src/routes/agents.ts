@@ -73,7 +73,7 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
-import { redactEventPayload } from "../redaction.js";
+import { redactEventPayload, REDACTED_EVENT_VALUE } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -920,11 +920,17 @@ export function agentRoutes(
     adapterType: string | null | undefined;
     adapterConfig: Record<string, unknown>;
     constraintAdapterConfig?: Record<string, unknown>;
+    /**
+     * When set, strict-secret-mode is enforced only for keys in this set.
+     * Used by PATCH paths so legacy plain sensitive bindings not touched by
+     * the current PATCH do not retroactively fail strict-mode validation.
+     */
+    submittedEnvKeys?: ReadonlySet<string>;
   }): Promise<Record<string, unknown>> {
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       input.companyId,
       input.adapterConfig,
-      { strictMode: strictSecretsMode },
+      { strictMode: strictSecretsMode, strictModeKeys: input.submittedEnvKeys },
     );
     await assertAdapterConfigConstraints(
       input.adapterType,
@@ -1269,6 +1275,21 @@ export function agentRoutes(
     };
   }
 
+  function redactPlainEnvBindings(config: Record<string, unknown> | null): Record<string, unknown> | null {
+    if (!config) return config;
+    const env = config.env;
+    if (!env || typeof env !== "object" || Array.isArray(env)) return config;
+    const redactedEnv: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
+      if (value !== null && typeof value === "object" && !Array.isArray(value) && (value as Record<string, unknown>).type === "plain") {
+        redactedEnv[key] = { type: "plain", value: REDACTED_EVENT_VALUE };
+      } else {
+        redactedEnv[key] = value;
+      }
+    }
+    return { ...config, env: redactedEnv };
+  }
+
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
@@ -1280,7 +1301,7 @@ export function agentRoutes(
       status: agent.status,
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
-      adapterConfig: redactEventPayload(agent.adapterConfig),
+      adapterConfig: redactPlainEnvBindings(redactEventPayload(agent.adapterConfig)),
       runtimeConfig: redactEventPayload(agent.runtimeConfig),
       permissions: agent.permissions,
       updatedAt: agent.updatedAt,
@@ -2600,9 +2621,26 @@ export function agentRoutes(
       ) {
         await assertCanManageInstructionsPath(req, existing);
       }
+      let submittedEnvKeys: Set<string> | undefined;
       let rawEffectiveAdapterConfig = requestedAdapterConfig ?? existingAdapterConfig;
       if (requestedAdapterConfig && !changingAdapterType && !replaceAdapterConfig) {
         rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...requestedAdapterConfig };
+
+        // Deep-merge env: preserve unsubmitted keys, allow null to delete a key
+        if (hasOwn(requestedAdapterConfig, "env")) {
+          const existingEnv = asRecord(existingAdapterConfig.env) ?? {};
+          const submittedEnv = asRecord(requestedAdapterConfig.env) ?? {};
+          submittedEnvKeys = new Set(Object.keys(submittedEnv));
+          const mergedEnv: Record<string, unknown> = { ...existingEnv };
+          for (const [key, value] of Object.entries(submittedEnv)) {
+            if (value === null) {
+              delete mergedEnv[key];
+            } else {
+              mergedEnv[key] = value;
+            }
+          }
+          rawEffectiveAdapterConfig = { ...rawEffectiveAdapterConfig, env: mergedEnv };
+        }
       }
       if (changingAdapterType) {
         // Preserve adapter-agnostic keys (env, cwd, etc.) from the existing config
@@ -2630,6 +2668,7 @@ export function agentRoutes(
         companyId: existing.companyId,
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
+        submittedEnvKeys,
       });
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
     }

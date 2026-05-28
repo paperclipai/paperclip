@@ -393,6 +393,7 @@ type PaperclipWakePayload = {
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
   interactionKind: string | null;
   interactionStatus: string | null;
+  interactionRejectionReason: string | null;
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
   commentIds: string[];
@@ -604,6 +605,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     livenessContinuation,
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
+    interactionRejectionReason: asString(payload.interactionRejectionReason, "").trim() || null,
     childIssueSummaries,
     childIssueSummaryTruncated: asBoolean(payload.childIssueSummaryTruncated, false),
     commentIds,
@@ -827,6 +829,19 @@ export function renderPaperclipWakePrompt(
       "The harness already checked out this issue for the current run.",
       "Do not call `/api/issues/{id}/checkout` again unless you intentionally switch to a different task.",
       "",
+    );
+  }
+
+  if (
+    normalized.interactionKind === "request_confirmation"
+    && normalized.interactionStatus === "rejected"
+  ) {
+    lines.push("", "Request confirmation declined:");
+    if (normalized.interactionRejectionReason) {
+      lines.push(`- decline reason: ${normalized.interactionRejectionReason}`);
+    }
+    lines.push(
+      "- action required: address the reviewer's feedback, revise your approach, and update the issue accordingly",
     );
   }
 
