@@ -1,0 +1,142 @@
+{
+  "manifest": {
+    "id": "out-36769-d4-expert-source-corpus",
+    "issue": "OUT-36769",
+    "source": "tier-A spec and recognized-expert corpus for OUT-36594 D4 surviving failures",
+    "last_verified_at": "2026-05-28T06:26:49Z",
+    "contract": "source_authority/source_tier/last_verified_at/vertical_tag required on every source",
+    "target_rows": [2, 4, 5, 13, 23]
+  },
+  "sources": [
+    {
+      "id": "bennington-marine-pontoon-lineup-2026",
+      "source_authority": "Bennington Marine",
+      "source_tier": "A",
+      "source_url": "https://www.benningtonmarine.com/en-us/boats/",
+      "license_or_use_basis": "public_web_summary",
+      "last_verified_at": "2026-05-28T06:26:49Z",
+      "vertical_tag": "pontoon",
+      "topic_tags": ["bennington", "pontoon", "tritoon", "spec", "pricing", "model comparison"],
+      "claim_summary": "Bennington's manufacturer boat lineup is the primary source for current Bennington pontoon families, layouts, performance-package positioning, and build/spec context before dealership pricing is applied.",
+      "covers_rows": [2, 5, 13, 23]
+    },
+    {
+      "id": "bennington-marine-build-and-price-2026",
+      "source_authority": "Bennington Marine",
+      "source_tier": "A",
+      "source_url": "https://www.benningtonmarine.com/en-us/build-and-price/",
+      "license_or_use_basis": "public_web_summary",
+      "last_verified_at": "2026-05-28T06:26:49Z",
+      "vertical_tag": "pontoon",
+      "topic_tags": ["bennington", "build and price", "pricing", "msrp", "options", "spec"],
+      "claim_summary": "Bennington's manufacturer build-and-price flow is the tier-A source for current model MSRP context and option-dependent price variance; dealer freight, setup, promotions, and trade terms still require dealership confirmation.",
+      "covers_rows": [23]
+    },
+    {
+      "id": "discover-boating-pontoon-buying-guide",
+      "source_authority": "Discover Boating",
+      "source_tier": "A",
+      "source_url": "https://www.discoverboating.com/resources/buying-a-pontoon-boat",
+      "license_or_use_basis": "public_web_summary",
+      "last_verified_at": "2026-05-28T06:26:49Z",
+      "vertical_tag": "pontoon",
+      "topic_tags": ["pontoon", "tritoon", "lake use", "family boat", "buying guide", "comparison"],
+      "claim_summary": "Discover Boating's pontoon buying guidance supports comparing pontoon layout, passenger comfort, deck space, horsepower, and three-tube/tritoon configurations for larger lakes and more demanding water.",
+      "covers_rows": [2, 5, 13]
+    },
+    {
+      "id": "discover-boating-fishing-boat-buying-guide",
+      "source_authority": "Discover Boating",
+      "source_tier": "A",
+      "source_url": "https://www.discoverboating.com/resources/fishing-boats-guide",
+      "license_or_use_basis": "public_web_summary",
+      "last_verified_at": "2026-05-28T06:26:49Z",
+      "vertical_tag": "fishing-boat",
+      "topic_tags": ["fishing boat", "aluminum fishing boat", "livewell", "trolling motor", "comparison", "lake use"],
+      "claim_summary": "Discover Boating's fishing-boat guidance supports buyer comparisons around angling-first layouts, storage, livewells, electronics, trolling-motor readiness, cockpit protection, and trailerability.",
+      "covers_rows": [5, 13]
+    },
+    {
+      "id": "lund-boats-rough-water-bad-weather",
+      "source_authority": "Lund Boats",
+      "source_tier": "A",
+      "source_url": "https://www.lundboats.com/boat-and-fish-blog/built-for-bites-in-bad-weather.html",
+      "license_or_use_basis": "public_web_summary",
+      "last_verified_at": "2026-05-28T06:26:49Z",
+      "vertical_tag": "fishing-boat",
+      "topic_tags": ["lund", "rough water", "bad weather", "fishing boat", "hull", "Lake Sakakawea"],
+      "claim_summary": "Lund's manufacturer rough-water content is the primary source for why its fishing boats are positioned around bad-weather fishability, hull control, cockpit protection, and angler-focused rough-water confidence.",
+      "covers_rows": [13]
+    },
+    {
+      "id": "ice-castle-fish-houses-manufacturer-features",
+      "source_authority": "Ice Castle Fish Houses",
+      "source_tier": "A",
+      "source_url": "https://icecastlefh.com/",
+      "license_or_use_basis": "public_web_summary",
+      "last_verified_at": "2026-05-28T06:26:49Z",
+      "vertical_tag": "ice-house",
+      "topic_tags": ["ice house", "fish house", "winter fishing", "heater", "insulation", "holes", "sleeper"],
+      "claim_summary": "Ice Castle's manufacturer materials support feature checks for winter fish houses including insulated shells, heat, fish holes, floor plans, bunks/sleeping capacity, storage, lighting, and towable wheelhouse layouts.",
+      "covers_rows": [4]
+    },
+    {
+      "id": "ice-country-fish-houses-manufacturer-features",
+      "source_authority": "Ice Country Fish Houses",
+      "source_tier": "A",
+      "source_url": "https://icecountryfishhouses.com/",
+      "license_or_use_basis": "public_web_summary",
+      "last_verified_at": "2026-05-28T06:26:49Z",
+      "vertical_tag": "ice-house",
+      "topic_tags": ["ice house", "fish house", "winter fishing", "frame", "spray foam", "furnace", "sleeper"],
+      "claim_summary": "Ice Country's manufacturer materials provide a second tier-A fish-house source for construction and comfort features such as insulated build, furnace/heat, frame durability, hole layout, sleeping configuration, and winter-use amenities.",
+      "covers_rows": [4]
+    }
+  ],
+  "target_row_coverage": [
+    {
+      "row": 2,
+      "question_cluster": "Pontoon comparison for Lake Sakakawea",
+      "vertical_tag": "pontoon",
+      "required_min_tier_a_sources": 1,
+      "source_ids": ["bennington-marine-pontoon-lineup-2026", "discover-boating-pontoon-buying-guide"]
+    },
+    {
+      "row": 4,
+      "question_cluster": "Ice house features for winter fishing",
+      "vertical_tag": "ice-house",
+      "required_min_tier_a_sources": 1,
+      "source_ids": ["ice-castle-fish-houses-manufacturer-features", "ice-country-fish-houses-manufacturer-features"]
+    },
+    {
+      "row": 5,
+      "question_cluster": "Pontoon vs fishing boat comparison",
+      "vertical_tag": "multi-vertical comparison",
+      "required_min_tier_a_sources": 1,
+      "source_ids": [
+        "discover-boating-pontoon-buying-guide",
+        "discover-boating-fishing-boat-buying-guide",
+        "bennington-marine-pontoon-lineup-2026"
+      ]
+    },
+    {
+      "row": 13,
+      "question_cluster": "Lund vs Bennington rough-water comparison",
+      "vertical_tag": "multi-vertical comparison",
+      "required_min_tier_a_sources": 1,
+      "source_ids": [
+        "lund-boats-rough-water-bad-weather",
+        "discover-boating-fishing-boat-buying-guide",
+        "discover-boating-pontoon-buying-guide",
+        "bennington-marine-pontoon-lineup-2026"
+      ]
+    },
+    {
+      "row": 23,
+      "question_cluster": "Bennington pricing/spec",
+      "vertical_tag": "pontoon",
+      "required_min_tier_a_sources": 1,
+      "source_ids": ["bennington-marine-build-and-price-2026", "bennington-marine-pontoon-lineup-2026"]
+    }
+  ]
+}
