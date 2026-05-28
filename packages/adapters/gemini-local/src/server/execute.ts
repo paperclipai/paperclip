@@ -641,7 +641,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       biller: "google",
       model,
       billingType,
-      costUsd: attempt.parsed.costUsd != null ? attempt.parsed.costUsd : (attempt.parsed.usage.inputTokens * 0.00025 + attempt.parsed.usage.outputTokens * 0.0005) / 1000,
+      costUsd: attempt.parsed.costUsd != null
+        ? attempt.parsed.costUsd
+        : (attempt.parsed.usage.inputTokens > 0 || attempt.parsed.usage.outputTokens > 0)
+          ? (attempt.parsed.usage.inputTokens * 0.00025 + attempt.parsed.usage.outputTokens * 0.0005) / 1000
+          : null,
       resultJson,
       summary: attempt.parsed.summary,
       question: attempt.parsed.question,
@@ -662,7 +666,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Gemini resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
       );
       const retry = await runAttempt(null);
-      return toResult(retry, true, true);
+      const result = toResult(retry, true, true); result.clearSession = true; return result;
     }
 
     return toResult(initial);
