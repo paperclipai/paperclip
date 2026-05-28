@@ -4,7 +4,30 @@ import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
-import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
+import { shouldSilenceHttpSuccessLog, shouldDownlevel404ToDebug } from "./http-log-policy.js";
+
+// Short-window deduplication for repeated identical 404 warn lines.
+// Key: "METHOD:routePath:statusCode". Suppresses re-emission within the TTL window.
+const WARN_DEDUPE_TTL_MS = 30_000;
+const warnDedupeMap = new Map<string, number>();
+
+function dedupeWarnKey(req: { method?: string; route?: { path?: string }; url?: string }, statusCode: number): string {
+  const route = (req.route as { path?: string } | undefined)?.path ?? req.url?.split("?")[0] ?? "unknown";
+  return `${req.method ?? ""}:${route}:${statusCode}`;
+}
+
+function shouldSuppressRepeatedWarn(req: { method?: string; route?: { path?: string }; url?: string }, statusCode: number): boolean {
+  const key = dedupeWarnKey(req, statusCode);
+  const now = Date.now();
+  const last = warnDedupeMap.get(key);
+  if (last !== undefined && now - last < WARN_DEDUPE_TTL_MS) return true;
+  warnDedupeMap.set(key, now);
+  // Evict oldest entry when map grows large to prevent unbounded memory use.
+  if (warnDedupeMap.size > 500) {
+    warnDedupeMap.delete(warnDedupeMap.keys().next().value as string);
+  }
+  return false;
+}
 
 function resolveServerLogDir(): string {
   const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
@@ -52,7 +75,11 @@ export const httpLogger = pinoHttp({
       return "silent";
     }
     if (err || res.statusCode >= 500) return "error";
-    if (res.statusCode >= 400) return "warn";
+    if (res.statusCode >= 400) {
+      if (shouldDownlevel404ToDebug(_req.method, _req.url, res.statusCode)) return "debug";
+      if (shouldSuppressRepeatedWarn(_req, res.statusCode)) return "silent";
+      return "warn";
+    }
     return "info";
   },
   customSuccessMessage(req, res) {

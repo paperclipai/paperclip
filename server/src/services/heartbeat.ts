@@ -1788,6 +1788,12 @@ function isCheckoutConflictError(error: unknown): boolean {
   return error instanceof HttpError && error.status === 409 && error.message === "Issue checkout conflict";
 }
 
+// Detect 422 refusals from checkout when the issue status is blocked.
+// These are a known gate condition, not an adapter failure.
+function isCheckoutBlockedError(error: unknown): boolean {
+  return error instanceof HttpError && error.status === 422 && error.message.startsWith("Issue is blocked");
+}
+
 function deriveCommentId(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
@@ -6030,6 +6036,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return null;
       }
 
+      // Phantom-blocked: issue has status=blocked but no formal blockedByIssueIds (unresolvedBlockerCount=0).
+      // shouldAutoCheckoutIssueForWake allows blocked issues when isDependencyReady=true, so without this guard
+      // executeRun would attempt checkout and receive 422 "Issue is blocked". Detect here so adapter.execute()
+      // is never invoked — the run is cancelled before the queued→running transition.
+      if (unresolvedBlockerCount === 0 && !allowsIssueInteractionWake(context)) {
+        const issueStatusRow = await db
+          .select({ status: issues.status })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null);
+        if (issueStatusRow?.status === "blocked") {
+          await cancelQueuedRunForBlockedDependencies(run, issueId, []);
+          await finalizeAgentStatus(run.agentId, "cancelled");
+          logger.info({ runId: run.id, issueId }, "claimQueuedRun: cancelled phantom-blocked queued run");
+          return null;
+        }
+      }
+
       const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
       if (staleness.stale) {
         await cancelQueuedRunForStaleIssue(run, issueId, staleness);
@@ -7006,6 +7030,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked"], run.id);
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
       } catch (error) {
+        if (isCheckoutBlockedError(error)) {
+          // Issue is in blocked state — cancel this run as a dependency gate so the agent
+          // stays idle instead of entering error state for a non-adapter condition.
+          await cancelQueuedRunForBlockedDependencies(run, issueId, []);
+          await finalizeAgentStatus(agent.id, "cancelled");
+          return;
+        }
         if (!isCheckoutConflictError(error)) throw error;
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
       }

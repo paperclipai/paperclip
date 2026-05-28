@@ -100,8 +100,11 @@ import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
 
+// Default and server-enforced cap for log-streaming endpoints (heartbeat-runs, workspace-operations).
+// The UI polls with limitBytes=256 000; the server clamps any client-supplied value to RUN_LOG_MAX_LIMIT_BYTES
+// so a malicious or misconfigured client cannot cause unbounded log reads.
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
-const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024; // hard server-side ceiling: 1 MB per response
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -3292,7 +3295,11 @@ export function agentRoutes(
       limitBytes,
     });
 
-    res.set("Cache-Control", "no-cache, no-store");
+    // Use no-cache (allows revalidation) rather than no-store: the offset-based
+    // streaming protocol already prevents stale reads because each poll begins at
+    // the byte position returned by the prior response.  no-store would also strip
+    // the browser back/forward cache, which is unnecessarily aggressive here.
+    res.set("Cache-Control", "no-cache");
     res.json(result);
   });
 

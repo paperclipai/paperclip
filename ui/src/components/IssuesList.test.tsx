@@ -1157,7 +1157,20 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Some board columns are showing up to 200 issues. Refine filters or search to reveal the rest.");
+      expect(container.textContent).toContain("Board view is capped at 200 issues per status column. Some older Done, Cancelled, or Backlog issues may be hidden. Use search, filters, or List view to find the rest.");
+    });
+
+    const switchButton = Array.from(container.querySelectorAll("button")).find(
+      (btn) => btn.textContent?.trim() === "Switch to List view",
+    );
+    expect(switchButton).toBeDefined();
+
+    act(() => {
+      switchButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).not.toContain("Switch to List view");
     });
 
     act(() => {

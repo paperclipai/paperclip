@@ -116,6 +116,12 @@ import { parseIssueExecutionWorkspaceSettings } from "../services/execution-work
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+// Guardrail 2: auto-pause an agent that posts this many consecutive comments
+// with no human or other-agent reply on the same issue.
+const CONSECUTIVE_AGENT_COMMENT_CAP = 3;
+// System CTO agent ID — receives the auto-pause notification comment.
+const SYSTEM_CTO_AGENT_ID = "1320f476-10cb-4c28-b2f6-3d313cd1a787";
+
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -626,7 +632,7 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  if (!isClosedIssueStatus(input.issueStatus)) return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -4596,7 +4602,7 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        const skipAssigneeCommentWake = selfComment || isClosed || issue.status === "blocked";
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
@@ -4659,26 +4665,57 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
-          addWakeup(dependent.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_blockers_resolved",
-            payload: {
-              issueId: dependent.id,
-              resolvedBlockerIssueId: issue.id,
-              blockerIssueIds: dependent.blockerIssueIds,
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: dependent.id,
-              taskId: dependent.id,
-              wakeReason: "issue_blockers_resolved",
-              source: "issue.blockers_resolved",
-              resolvedBlockerIssueId: issue.id,
-              blockerIssueIds: dependent.blockerIssueIds,
-            },
-          });
+          if (dependent.status === "blocked") {
+            try {
+              const execState = parseIssueExecutionState(dependent.executionState);
+              const targetStatus = execState?.status === "pending" ? "in_review" : "todo";
+              await svc.update(dependent.id, { status: targetStatus });
+              await logActivity(db, {
+                companyId: dependent.companyId,
+                actorType: "system",
+                actorId: "system",
+                agentId: null,
+                runId: null,
+                action: "issue.auto_unblocked",
+                entityType: "issue",
+                entityId: dependent.id,
+                details: {
+                  identifier: dependent.identifier,
+                  status: targetStatus,
+                  resolvedBlockerIssueId: issue.id,
+                  resolvedBlockerIdentifier: issue.identifier,
+                  source: "blocker_completion",
+                },
+              });
+            } catch (err) {
+              logger.warn(
+                { err, dependentIssueId: dependent.id, blockerIssueId: issue.id },
+                "failed to auto-unblock dependent issue",
+              );
+            }
+          }
+          if (dependent.assigneeAgentId) {
+            addWakeup(dependent.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_blockers_resolved",
+              payload: {
+                issueId: dependent.id,
+                resolvedBlockerIssueId: issue.id,
+                blockerIssueIds: dependent.blockerIssueIds,
+              },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: dependent.id,
+                taskId: dependent.id,
+                wakeReason: "issue_blockers_resolved",
+                source: "issue.blockers_resolved",
+                resolvedBlockerIssueId: issue.id,
+                blockerIssueIds: dependent.blockerIssueIds,
+              },
+            });
+          }
         }
       }
 
@@ -4809,7 +4846,25 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
-    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+    let updated;
+    try {
+      updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+    } catch (err) {
+      if (
+        err instanceof HttpError &&
+        err.status === 422 &&
+        typeof err.message === "string" &&
+        err.message.includes("Issue is blocked")
+      ) {
+        res.status(422).json({
+          error: err.message,
+          errorCode: "checkout_blocked",
+          details: err.details ?? null,
+        });
+        return;
+      }
+      throw err;
+    }
     const actor = getActorInfo(req);
 
     await logActivity(db, {
@@ -5677,13 +5732,58 @@ export function issueRoutes(
       blockedToTodoRecovery: reopened && reopenFromStatus === "blocked" && currentIssue.status === "todo",
     });
 
+    // Guardrail 2: consecutive agent comment cap.
+    // If the assignee agent has posted N+ consecutive comments (no human/other-agent in between),
+    // auto-pause: set the issue to blocked (which also clears checkout fields) and post a
+    // system notification tagging the CTO so a human can review before the agent resumes.
+    let autoPausedByConsecutiveCap = false;
+    if (!reopened && !isClosed && actor.actorType === "agent" && actor.actorId && actor.actorId === currentIssue.assigneeAgentId) {
+      const recentComments = await svc.listComments(id, { order: "desc", limit: CONSECUTIVE_AGENT_COMMENT_CAP + 2 });
+      let consecutiveCount = 0;
+      for (const c of recentComments) {
+        if (c.authorAgentId === actor.actorId) consecutiveCount++;
+        else break;
+      }
+      if (consecutiveCount >= CONSECUTIVE_AGENT_COMMENT_CAP) {
+        try {
+          const dependencyReadiness = await svc.getDependencyReadiness(currentIssue.id);
+          const hasUnresolvedBlockers = dependencyReadiness.unresolvedBlockerCount > 0;
+          const pausedStatus = hasUnresolvedBlockers ? "blocked" : "in_review";
+          await svc.update(id, {
+            status: pausedStatus,
+            checkoutRunId: null,
+            executionRunId: null,
+          });
+          const notice = hasUnresolvedBlockers
+            ? `**[System: Auto-pause — Guardrail 2]** Agent posted ${consecutiveCount} consecutive comments with no human or other-agent reply. Issue automatically set to \`blocked\` and checkout cleared.\n\n[@CTO](agent://${SYSTEM_CTO_AGENT_ID}) — please review the thread and manually unblock (set status to \`todo\` or reassign) when appropriate.`
+            : `**[System: Auto-pause — Guardrail 2]** Agent posted ${consecutiveCount} consecutive comments with no human or other-agent reply. Issue moved to \`in_review\` and checkout cleared to preserve the existing assignee while waiting on external evidence/time.\n\nOperator action: keep assignee unchanged; move to \`todo\` when fresh evidence arrives or reassign if ownership changes.`;
+          await svc.addComment(id, notice, {}, { authorType: "system" });
+          autoPausedByConsecutiveCap = true;
+          logger.warn(
+            {
+              issueId: id,
+              agentId: actor.actorId,
+              consecutiveCount,
+              hasUnresolvedBlockers,
+              unresolvedBlockerCount: dependencyReadiness.unresolvedBlockerCount,
+              pausedStatus,
+            },
+            "guardrail2: auto-paused agent on consecutive comment cap",
+          );
+        } catch (err) {
+          logger.error({ err, issueId: id, agentId: actor.actorId }, "guardrail2: failed to auto-pause agent");
+        }
+      }
+    }
+
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
+      const isBlockedWithoutReopen = currentIssue.status === "blocked" && !reopened;
+      const skipWake = autoPausedByConsecutiveCap || selfComment || isClosed || isBlockedWithoutReopen;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
@@ -5887,6 +5987,42 @@ export function issueRoutes(
     assertCompanyAccess(req, issue.companyId);
     const attachments = await svc.listAttachments(issueId);
     res.json(attachments.map(withContentPath));
+  });
+
+  router.post("/companies/:companyId/issues/:issueId/attachments/from-asset", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const issueId = req.params.issueId as string;
+    assertCompanyAccess(req, companyId);
+    const issue = await svc.getById(issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (issue.companyId !== companyId) {
+      res.status(422).json({ error: "Issue does not belong to company" });
+      return;
+    }
+    const { assetId, issueCommentId } = (req.body ?? {}) as { assetId?: unknown; issueCommentId?: unknown };
+    if (!assetId || typeof assetId !== "string") {
+      res.status(400).json({ error: "Missing required field: assetId" });
+      return;
+    }
+    try {
+      const attachment = await svc.linkAssetAsAttachment({
+        companyId,
+        issueId,
+        assetId,
+        issueCommentId: typeof issueCommentId === "string" ? issueCommentId : null,
+      });
+      res.status(201).json(withContentPath(attachment));
+    } catch (err: unknown) {
+      const status = (err as { status?: number })?.status;
+      if (status === 404) {
+        res.status(404).json({ error: (err as Error).message });
+        return;
+      }
+      throw err;
+    }
   });
 
   router.post("/companies/:companyId/issues/:issueId/attachments", async (req, res) => {

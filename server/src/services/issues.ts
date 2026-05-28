@@ -3877,8 +3877,11 @@ export function issueService(db: Db) {
       const candidates = await db
         .select({
           id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
+          executionState: issues.executionState,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
@@ -3916,7 +3919,7 @@ export function issueService(db: Db) {
       }
 
       return candidates
-        .filter((candidate) => candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status))
+        .filter((candidate) => !["backlog", "done", "cancelled"].includes(candidate.status))
         .map((candidate) => {
           const blockers = blockersByIssueId.get(candidate.id) ?? [];
           return {
@@ -3928,7 +3931,11 @@ export function issueService(db: Db) {
         .filter((candidate) => candidate.allBlockersDone)
         .map((candidate) => ({
           id: candidate.id,
-          assigneeAgentId: candidate.assigneeAgentId!,
+          companyId: candidate.companyId,
+          identifier: candidate.identifier,
+          assigneeAgentId: candidate.assigneeAgentId ?? null,
+          status: candidate.status,
+          executionState: candidate.executionState,
           blockerIssueIds: candidate.blockerIssueIds,
         }));
     },
@@ -4712,6 +4719,7 @@ export function issueService(db: Db) {
           and(
             eq(issues.id, id),
             inArray(issues.status, expectedStatuses),
+            ne(issues.status, "blocked"),
             or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
             executionLockCondition,
           ),
@@ -4737,6 +4745,14 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!current) throw notFound("Issue not found");
+
+      if (current.status === "blocked") {
+        throw unprocessable("Issue is blocked — resolve blockedByIssueIds or explicitly unblock before checking out", {
+          errorCode: "checkout_blocked",
+          issueId: current.id,
+          status: current.status,
+        });
+      }
 
       if (
         current.assigneeAgentId === agentId &&
@@ -5256,6 +5272,98 @@ export function issueService(db: Db) {
           updatedAt: attachment.updatedAt,
         };
       });
+    },
+
+    linkAssetAsAttachment: async (input: {
+      companyId: string;
+      issueId: string;
+      assetId: string;
+      issueCommentId?: string | null;
+    }) => {
+      const issue = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
+      if (issue.companyId !== input.companyId) throw notFound("Issue not found");
+
+      const asset = await db
+        .select({
+          id: assets.id,
+          companyId: assets.companyId,
+          provider: assets.provider,
+          objectKey: assets.objectKey,
+          contentType: assets.contentType,
+          byteSize: assets.byteSize,
+          sha256: assets.sha256,
+          originalFilename: assets.originalFilename,
+          createdByAgentId: assets.createdByAgentId,
+          createdByUserId: assets.createdByUserId,
+        })
+        .from(assets)
+        .where(eq(assets.id, input.assetId))
+        .then((rows) => rows[0] ?? null);
+      if (!asset) throw notFound("Asset not found");
+      if (asset.companyId !== input.companyId) throw notFound("Asset not found");
+
+      const existing = await db
+        .select({ id: issueAttachments.id })
+        .from(issueAttachments)
+        .where(and(eq(issueAttachments.issueId, issue.id), eq(issueAttachments.assetId, input.assetId)))
+        .then((rows) => rows[0] ?? null);
+      if (existing) {
+        return db
+          .select({
+            id: issueAttachments.id,
+            companyId: issueAttachments.companyId,
+            issueId: issueAttachments.issueId,
+            issueCommentId: issueAttachments.issueCommentId,
+            assetId: issueAttachments.assetId,
+            provider: assets.provider,
+            objectKey: assets.objectKey,
+            contentType: assets.contentType,
+            byteSize: assets.byteSize,
+            sha256: assets.sha256,
+            originalFilename: assets.originalFilename,
+            createdByAgentId: assets.createdByAgentId,
+            createdByUserId: assets.createdByUserId,
+            createdAt: issueAttachments.createdAt,
+            updatedAt: issueAttachments.updatedAt,
+          })
+          .from(issueAttachments)
+          .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
+          .where(eq(issueAttachments.id, existing.id))
+          .then((rows) => rows[0]);
+      }
+
+      const [attachment] = await db
+        .insert(issueAttachments)
+        .values({
+          companyId: issue.companyId,
+          issueId: issue.id,
+          assetId: input.assetId,
+          issueCommentId: input.issueCommentId ?? null,
+        })
+        .returning();
+
+      return {
+        id: attachment.id,
+        companyId: attachment.companyId,
+        issueId: attachment.issueId,
+        issueCommentId: attachment.issueCommentId,
+        assetId: attachment.assetId,
+        provider: asset.provider,
+        objectKey: asset.objectKey,
+        contentType: asset.contentType,
+        byteSize: asset.byteSize,
+        sha256: asset.sha256,
+        originalFilename: asset.originalFilename,
+        createdByAgentId: asset.createdByAgentId,
+        createdByUserId: asset.createdByUserId,
+        createdAt: attachment.createdAt,
+        updatedAt: attachment.updatedAt,
+      };
     },
 
     listAttachments: async (issueId: string) =>

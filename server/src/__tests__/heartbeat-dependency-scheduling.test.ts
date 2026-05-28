@@ -98,17 +98,12 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   }, 20_000);
 
   afterEach(async () => {
-    mockAdapterExecute.mockReset();
-    mockAdapterExecute.mockImplementation(async () => ({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      errorMessage: null,
-      summary: "Dependency-aware heartbeat test run.",
-      provider: "test",
-      model: "test-model",
-    }));
     runningProcesses.clear();
+    // Brief settle before polling: after a test's waitForCondition returns, the background
+    // executeRun is still running post-success steps (e.g. handleSuccessfulRunHandoff creating a
+    // corrective handoff run). Without a pause, the poll loop can declare idle before the handoff
+    // run appears in the DB, causing its adapter call to bleed into the next test.
+    await new Promise((resolve) => setTimeout(resolve, 200));
     let idlePolls = 0;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const runs = await db
@@ -124,6 +119,19 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
+    // Reset mock AFTER all background runs settle so corrective handoff/continuation runs that
+    // fire from a test's finally-block pipeline don't bleed their adapter call count into the
+    // next test's zero-call assertions.
+    mockAdapterExecute.mockReset();
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Dependency-aware heartbeat test run.",
+      provider: "test",
+      model: "test-model",
+    }));
     await db.delete(environmentLeases);
     await db.delete(activityLog);
     await db.delete(companySkills);
@@ -740,6 +748,128 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(readyRun?.status).toBe("succeeded");
     expect(mockAdapterExecute.mock.calls.length).toBeGreaterThanOrEqual(1);
   });
+
+  it("phantom-blocked issue checkout is classified as dependency gate, not adapter failure (FUL-2374)", async () => {
+    // Phantom-blocked: status=blocked but no formal blockedByIssueIds (unresolvedBlockerCount=0).
+    // claimQueuedRun detects the blocked status early (before the queued->running transition)
+    // and cancels with errorCode=issue_dependencies_blocked. adapter.execute() must never be
+    // invoked — the zero-call assertion below is the key acceptance condition.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const phantomIssueId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "BlockedAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    // Issue is blocked by status only — no formal blockedByIssueIds.
+    await db.insert(issues).values({
+      id: phantomIssueId,
+      companyId,
+      title: "Phantom-blocked issue",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: phantomIssueId },
+      status: "queued",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId,
+      contextSnapshot: {
+        issueId: phantomIssueId,
+        wakeReason: "issue_assigned",
+      },
+    });
+    await db
+      .update(agentWakeupRequests)
+      .set({ runId })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled" || run?.status === "failed";
+    });
+
+    const [run, wakeup, agent] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          resultJson: heartbeatRuns.resultJson,
+          finishedAt: heartbeatRuns.finishedAt,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agents.status })
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    // Run must be cancelled (not failed) with the dependency-gate error code.
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_dependencies_blocked");
+    expect(run?.errorCode).not.toBe("adapter_failed");
+    expect(run?.resultJson).toMatchObject({ stopReason: "issue_dependencies_blocked" });
+    expect(run?.finishedAt).toBeTruthy();
+
+    // Wakeup must be skipped (not failed).
+    expect(wakeup?.status).toBe("skipped");
+
+    // Agent must be idle (not in error state).
+    expect(agent?.status).toBe("idle");
+    expect(agent?.status).not.toBe("error");
+
+    // Adapter must not have been invoked — the gate fires before execution.
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  }, 20_000);
 
   it("suppresses normal wakeups while allowing comment interaction wakes under a pause hold", async () => {
     const companyId = randomUUID();
