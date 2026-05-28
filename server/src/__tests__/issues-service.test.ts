@@ -3236,3 +3236,147 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
   });
 });
+
+describeEmbeddedPostgres("issueService cross-tenant parentId/goalId/projectId rejection (F5)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-cross-tenant-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueRelations);
+    await db.delete(issues);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedTwoCompanies() {
+    const companyA = randomUUID();
+    const companyB = randomUUID();
+    await db.insert(companies).values([
+      { id: companyA, name: "Company A", issuePrefix: "AAA", requireBoardApprovalForNewAgents: false },
+      { id: companyB, name: "Company B", issuePrefix: "BBB", requireBoardApprovalForNewAgents: false },
+    ]);
+    return { companyA, companyB };
+  }
+
+  it("create rejects parentId from another company", async () => {
+    const { companyA, companyB } = await seedTwoCompanies();
+    const parentIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId: companyA,
+      title: "Parent in company A",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(
+      svc.create(companyB, { title: "Child", status: "todo", priority: "medium", parentId: parentIssueId }),
+    ).rejects.toMatchObject({ message: expect.stringContaining("same company") });
+  });
+
+  it("create rejects goalId from another company", async () => {
+    const { companyA, companyB } = await seedTwoCompanies();
+    const goalId = randomUUID();
+    await db.insert(goals).values({
+      id: goalId,
+      companyId: companyA,
+      title: "Goal in company A",
+      level: "task",
+      status: "active",
+    });
+
+    await expect(
+      svc.create(companyB, { title: "Issue", status: "todo", priority: "medium", goalId }),
+    ).rejects.toMatchObject({ message: expect.stringContaining("same company") });
+  });
+
+  it("create rejects projectId from another company", async () => {
+    const { companyA, companyB } = await seedTwoCompanies();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId: companyA,
+      name: "Project in company A",
+      status: "in_progress",
+    });
+
+    await expect(
+      svc.create(companyB, { title: "Issue", status: "todo", priority: "medium", projectId }),
+    ).rejects.toMatchObject({ message: expect.stringContaining("same company") });
+  });
+
+  it("update rejects parentId from another company", async () => {
+    const { companyA, companyB } = await seedTwoCompanies();
+    const parentIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId: companyA,
+      title: "Parent in company A",
+      status: "todo",
+      priority: "medium",
+    });
+    const [targetIssue] = await db
+      .insert(issues)
+      .values({ companyId: companyB, title: "Target", status: "todo", priority: "medium" })
+      .returning();
+
+    await expect(
+      svc.update(targetIssue.id, { parentId: parentIssueId }),
+    ).rejects.toMatchObject({ message: expect.stringContaining("same company") });
+  });
+
+  it("update rejects goalId from another company", async () => {
+    const { companyA, companyB } = await seedTwoCompanies();
+    const goalId = randomUUID();
+    await db.insert(goals).values({
+      id: goalId,
+      companyId: companyA,
+      title: "Goal in company A",
+      level: "task",
+      status: "active",
+    });
+    const [targetIssue] = await db
+      .insert(issues)
+      .values({ companyId: companyB, title: "Target", status: "todo", priority: "medium" })
+      .returning();
+
+    await expect(
+      svc.update(targetIssue.id, { goalId }),
+    ).rejects.toMatchObject({ message: expect.stringContaining("same company") });
+  });
+
+  it("update rejects projectId from another company", async () => {
+    const { companyA, companyB } = await seedTwoCompanies();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId: companyA,
+      name: "Project in company A",
+      status: "in_progress",
+    });
+    const [targetIssue] = await db
+      .insert(issues)
+      .values({ companyId: companyB, title: "Target", status: "todo", priority: "medium" })
+      .returning();
+
+    await expect(
+      svc.update(targetIssue.id, { projectId }),
+    ).rejects.toMatchObject({ message: expect.stringContaining("same company") });
+  });
+});
