@@ -106,7 +106,7 @@ Operational fields:
 Notes:
 - OpenCode supports multiple providers and models. Use \
   \`opencode models\` to list available options in provider/model format.
-- Paperclip requires an explicit \`model\` value for \`opencode_local\` agents.
+- The default model is \`anthropic/claude-sonnet-4-5\`. Override with the \`model\` field if needed.
 - Runs are executed with: opencode run --format json ...
 - Sessions are resumed with --session when stored session cwd matches current cwd.
 - The adapter sets OPENCODE_DISABLE_PROJECT_CONFIG=true to prevent OpenCode from \
