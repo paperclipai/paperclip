@@ -644,56 +644,58 @@ export function issueThreadInteractionService(db: Db) {
       throw unprocessable("A decline reason is required for this confirmation");
     }
 
-    const now = new Date();
-    const [updated] = await db
-      .update(issueThreadInteractions)
-      .set({
-        status: "rejected",
-        result: {
-          version: 1,
-          outcome: "rejected",
-          reason: reason || null,
-        },
-        resolvedByAgentId: args.actor.agentId ?? null,
-        resolvedByUserId: args.actor.userId ?? null,
-        resolvedAt: now,
-        updatedAt: now,
-      })
-      .where(and(
-        eq(issueThreadInteractions.id, args.current.id),
-        eq(issueThreadInteractions.status, "pending"),
-      ))
-      .returning();
+    return db.transaction(async (tx) => {
+      const now = new Date();
+      const [updated] = await tx
+        .update(issueThreadInteractions)
+        .set({
+          status: "rejected",
+          result: {
+            version: 1,
+            outcome: "rejected",
+            reason: reason || null,
+          },
+          resolvedByAgentId: args.actor.agentId ?? null,
+          resolvedByUserId: args.actor.userId ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, args.current.id),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
 
-    if (!updated) {
-      throw conflict("Interaction has already been resolved");
-    }
+      if (!updated) {
+        throw conflict("Interaction has already been resolved");
+      }
 
-    const issueContext = await db
-      .select({
-        id: issues.id,
-        companyId: issues.companyId,
-        status: issues.status,
-      })
-      .from(issues)
-      .where(eq(issues.id, args.issue.id))
-      .then((rows) => rows[0] ?? null);
+      const issueContext = await tx
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(eq(issues.id, args.issue.id))
+        .then((rows) => rows[0] ?? null);
 
-    if (!issueContext || issueContext.companyId !== args.issue.companyId) {
-      throw notFound("Issue not found");
-    }
+      if (!issueContext || issueContext.companyId !== args.issue.companyId) {
+        throw notFound("Issue not found");
+      }
 
-    if (issueContext.status === "awaiting_human") {
-      await issueService(db).update(args.issue.id, {
-        status: "todo",
-        actorAgentId: args.actor.agentId ?? null,
-        actorUserId: args.actor.userId ?? null,
-      });
-    } else {
-      await touchIssue(db, args.issue.id);
-    }
+      if (issueContext.status === "awaiting_human") {
+        await issueService(db).update(args.issue.id, {
+          status: "todo",
+          actorAgentId: args.actor.agentId ?? null,
+          actorUserId: args.actor.userId ?? null,
+        }, tx);
+      } else {
+        await touchIssue(tx, args.issue.id);
+      }
 
-    return hydrateInteraction(updated);
+      return hydrateInteraction(updated);
+    });
   }
 
   return {
