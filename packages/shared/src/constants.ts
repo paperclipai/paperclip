@@ -622,6 +622,21 @@ export const LIVE_EVENT_TYPES = [
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
+export const WEBHOOK_EVENT_TYPES = [
+  "issue.status_changed",
+  "issue.comment_added",
+  "issue.completed",
+] as const;
+export type WebhookEventType = (typeof WEBHOOK_EVENT_TYPES)[number];
+
+export const WEBHOOK_DELIVERY_STATUSES = [
+  "pending",
+  "delivering",
+  "delivered",
+  "failed",
+] as const;
+export type WebhookDeliveryStatus = (typeof WEBHOOK_DELIVERY_STATUSES)[number];
+
 export const PRINCIPAL_TYPES = ["user", "agent"] as const;
 export type PrincipalType = (typeof PRINCIPAL_TYPES)[number];
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { activityLog } from "@paperclipai/db";
-import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
+import { PLUGIN_EVENT_TYPES, type PluginEventType, type WebhookEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
@@ -9,6 +9,7 @@ import { sanitizeRecord } from "../redaction.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { webhookService } from "./webhooks.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
 const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>> = {
@@ -24,6 +25,14 @@ const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>>
   budget_soft_threshold_crossed: "budget.incident.opened",
   budget_hard_threshold_crossed: "budget.incident.opened",
   budget_incident_resolved: "budget.incident.resolved",
+};
+
+const ACTIVITY_ACTION_TO_WEBHOOK_EVENT: Readonly<Record<string, WebhookEventType>> = {
+  "issue.updated": "issue.status_changed",
+  "issue.created": "issue.status_changed",
+  "issue_comment_added": "issue.comment_added",
+  "issue_comment_created": "issue.comment_added",
+  "issue.comment.created": "issue.comment_added",
 };
 
 let _pluginEventBus: PluginEventBus | null = null;
@@ -115,5 +124,25 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       },
     };
     publishPluginDomainEvent(event);
+  }
+
+  const webhookEventType = ACTIVITY_ACTION_TO_WEBHOOK_EVENT[input.action];
+  if (webhookEventType && input.entityType === "issue") {
+    const isCompleted = webhookEventType === "issue.status_changed"
+      && redactedDetails?.status === "done";
+    const eventToDispatch = isCompleted ? "issue.completed" as WebhookEventType : webhookEventType;
+
+    const svc = webhookService(db);
+    svc.dispatchEvent(input.companyId, eventToDispatch, {
+      event: eventToDispatch,
+      issueId: input.entityId,
+      action: input.action,
+      actorType: input.actorType,
+      actorId: input.actorId,
+      metadata: redactedDetails ?? {},
+      timestamp: new Date().toISOString(),
+    }).catch((err) => {
+      logger.error({ err, issueId: input.entityId, eventType: eventToDispatch }, "webhook dispatch failed");
+    });
   }
 }
