@@ -259,9 +259,34 @@ async function applyPendingMigrationsManually(
       );
       if (existingEntry) continue;
 
+      // Layer 1: if all DDL statements already exist in the schema, record the
+      // history entry without running any SQL (handles hash-mismatch cases).
+      const contentAlreadyApplied = await migrationContentAlreadyApplied(sql, migrationContent);
+      if (contentAlreadyApplied) {
+        await recordMigrationHistoryEntry(
+          sql,
+          qualifiedTable,
+          columnNames,
+          migrationFile,
+          hash,
+          folderMillisByFileName.get(migrationFile) ?? Date.now(),
+        );
+        continue;
+      }
+
       await runInTransaction(sql, async () => {
         for (const statement of splitMigrationStatements(migrationContent)) {
-          await sql.unsafe(statement);
+          try {
+            await sql.unsafe(statement);
+          } catch (err: unknown) {
+            // Layer 2: ignore idempotency errors — the object already exists.
+            // Codes: 42P07 relation exists, 42701 column exists,
+            //        42P16 invalid_table_definition (constraint), 42723 duplicate_function.
+            const code = (err as { code?: string }).code;
+            if (code !== "42P07" && code !== "42701" && code !== "42P16" && code !== "42723") {
+              throw err;
+            }
+          }
         }
 
         await recordMigrationHistoryEntry(
