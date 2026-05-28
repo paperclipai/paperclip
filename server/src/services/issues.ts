@@ -4882,7 +4882,12 @@ export function issueService(db: Db) {
       });
     },
 
-    assertCheckoutOwner: async (id: string, actorAgentId: string, actorRunId: string | null) => {
+    assertCheckoutOwner: async (
+      id: string,
+      actorAgentId: string,
+      actorRunId: string | null,
+      options?: { allowUnownedAdoption?: boolean },
+    ) => {
       await clearExecutionRunIfTerminal(id);
       const current = await db
         .select({
@@ -4911,7 +4916,8 @@ export function issueService(db: Db) {
         current.status === "in_progress" &&
         current.assigneeAgentId === actorAgentId &&
         current.checkoutRunId == null &&
-        (current.executionRunId == null || current.executionRunId === actorRunId)
+        (current.executionRunId == null || current.executionRunId === actorRunId) &&
+        options?.allowUnownedAdoption !== false
       ) {
         const adopted = await adoptUnownedCheckoutRun({
           issueId: id,
