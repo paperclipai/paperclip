@@ -459,3 +459,8 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export {
+  createWebhookSchema,
+  type CreateWebhook,
+} from "./webhook.js";

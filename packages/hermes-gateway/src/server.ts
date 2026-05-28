@@ -84,6 +84,7 @@ app.post<{ Body: InboundPayload }>("/api/v1/inbound", async (request, reply) => 
 
       await conversationStore.create({
         platform: payload.platform,
+        platformUserId: payload.sender.platformUserId,
         platformConversationId: payload.conversation.platformConversationId,
         threadId: payload.conversation.threadId,
         paperclipIssueId: issue.id,
@@ -168,7 +169,7 @@ app.post<{ Body: PaperclipWebhookEvent }>(
     const outbound: OutboundPayload = {
       platform: mapping.platform,
       recipient: {
-        platformUserId: mapping.paperclipUserId,
+        platformUserId: mapping.platformUserId,
         platformConversationId: mapping.platformConversationId,
       },
       content: { type: "text", text: messageText },

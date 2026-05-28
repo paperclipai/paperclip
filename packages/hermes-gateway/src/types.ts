@@ -51,6 +51,7 @@ export interface OutboundPayload {
 export interface ConversationMapping {
   id: string;
   platform: Platform;
+  platformUserId: string;
   platformConversationId: string;
   threadId: string | null;
   paperclipIssueId: string;

@@ -12,6 +12,7 @@ export interface ConversationStore {
 
   create(params: {
     platform: Platform;
+    platformUserId: string;
     platformConversationId: string;
     threadId: string | null;
     paperclipIssueId: string;
@@ -67,6 +68,7 @@ export class InMemoryConversationStore implements ConversationStore {
 
   async create(params: {
     platform: Platform;
+    platformUserId: string;
     platformConversationId: string;
     threadId: string | null;
     paperclipIssueId: string;

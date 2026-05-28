@@ -66,6 +66,7 @@ describe("IntentEngine", () => {
   it("appends comment when active mapping exists", async () => {
     await store.create({
       platform: "telegram",
+      platformUserId: "user-1",
       platformConversationId: "conv-1",
       threadId: null,
       paperclipIssueId: "issue-123",
@@ -84,6 +85,7 @@ describe("IntentEngine", () => {
   it("creates new issue on intent split keyword", async () => {
     await store.create({
       platform: "telegram",
+      platformUserId: "user-1",
       platformConversationId: "conv-1",
       threadId: null,
       paperclipIssueId: "issue-123",
@@ -101,6 +103,7 @@ describe("IntentEngine", () => {
   it("creates new issue after inactivity timeout", async () => {
     const mapping = await store.create({
       platform: "telegram",
+      platformUserId: "user-1",
       platformConversationId: "conv-1",
       threadId: null,
       paperclipIssueId: "issue-123",
