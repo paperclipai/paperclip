@@ -4,6 +4,7 @@ import {
   AGENT_ROLES,
   AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
+  PERMISSION_KEYS,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
@@ -149,7 +150,7 @@ export const resetInfrastructureStatusSchema = z.object({
 export type ResetInfrastructureStatus = z.infer<typeof resetInfrastructureStatusSchema>;
 
 export const agentGrantPayloadSchema = z.object({
-  permissionKey: z.string().min(1),
+  permissionKey: z.enum(PERMISSION_KEYS),
   scope: z.record(z.unknown()).nullable().optional(),
 });
 
@@ -162,7 +163,7 @@ export const putAgentGrantsSchema = z.object({
 export type PutAgentGrants = z.infer<typeof putAgentGrantsSchema>;
 
 export const deleteAgentGrantSchema = z.object({
-  permissionKey: z.string().min(1),
+  permissionKey: z.enum(PERMISSION_KEYS),
 });
 
 export type DeleteAgentGrant = z.infer<typeof deleteAgentGrantSchema>;

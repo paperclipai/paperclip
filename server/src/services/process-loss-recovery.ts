@@ -130,15 +130,17 @@ export function classifyProcessLossCause(
  * runs, it calls `markTick()` at the *end* of a successful pass. The next invocation
  * then reads `isHealthy()` to determine whether a recent tick has completed.
  *
- * TTL is 5 s — short enough to be meaningless during normal operation (ticks every
- * 30 s), but long enough to cover the tail of a slow tick without false negatives.
+ * TTL must be >= 2× the scheduler interval (default 30 s) so that `isHealthy()`
+ * returns true on the pass immediately following a successful tick. With TTL < interval
+ * the cache always expires between ticks, making `isHealthy()` permanently false and
+ * classifying every process-loss as infra/weak.
  */
 export interface ApiHealthCache {
   markTick(): void;
   isHealthy(): boolean;
 }
 
-export function makeApiHealthCache(ttlMs = 5_000): ApiHealthCache {
+export function makeApiHealthCache(ttlMs = 60_000): ApiHealthCache {
   let lastTickAt: number | null = null;
   return {
     markTick() {
