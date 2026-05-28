@@ -1,4 +1,9 @@
 export { claudeSessionCwdMatchesExecutionTarget, execute, runClaudeLogin } from "./execute.js";
+export {
+  readAgentEnvFile,
+  resolveAgentDir,
+  resolveAgentEnvFilePath,
+} from "./agent-env.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { listClaudeModels } from "./models.js";
 export { testEnvironment } from "./test.js";

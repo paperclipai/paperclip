@@ -35,6 +35,7 @@ import { validate } from "../middleware/validate.js";
 import {
   agentService,
   agentInstructionsService,
+  removeAgentArtifacts,
   accessService,
   approvalService,
   companySkillService,
@@ -2812,6 +2813,15 @@ export function agentRoutes(
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
+    }
+
+    try {
+      await removeAgentArtifacts({ id: agent.id, companyId: agent.companyId });
+    } catch (err) {
+      console.warn(
+        { err, agentId: agent.id, companyId: agent.companyId },
+        "agent.deleted: failed to clean up filesystem artifacts",
+      );
     }
 
     await logActivity(db, {
