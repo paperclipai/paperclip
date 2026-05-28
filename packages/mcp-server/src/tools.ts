@@ -162,9 +162,9 @@ const apiRequestSchema = z.object({
 });
 
 const notionCreateBlockCommentSchema = z.object({
-  block_id: z.string().min(1),
+  block_id: z.string().uuid(),
   rich_text: z.array(z.record(z.unknown())).optional(),
-  markdown: z.string().optional(),
+  plain_text: z.string().optional(),
 });
 
 const workspaceRuntimeControlTargetSchema = z.object({
@@ -188,8 +188,8 @@ const waitForIssueWorkspaceServiceSchema = z.object({
 const NOTION_API_BASE = "https://api.notion.com/v1";
 const NOTION_API_VERSION = "2022-06-28";
 
-function wrapMarkdownAsRichText(markdown: string): Array<Record<string, unknown>> {
-  return [{ type: "text", text: { content: markdown } }];
+function wrapPlainTextAsRichText(text: string): Array<Record<string, unknown>> {
+  return [{ type: "text", text: { content: text } }];
 }
 
 function sleep(ms: number) {
@@ -620,16 +620,19 @@ export function createToolDefinitions(client: PaperclipApiClient, notionApiKey: 
     ),
     makeTool(
       "notionCreateBlockComment",
-      "Create a comment on a Notion block via the Notion REST API (supports block_id; the remote MCP tool does not)",
+      "Create a comment on a Notion block via the Notion REST API (supports block_id; the remote MCP tool does not). Use rich_text for structured Notion rich_text arrays, or plain_text for a simple string (stored verbatim — Notion does not parse markdown syntax).",
       notionCreateBlockCommentSchema,
-      async ({ block_id, rich_text, markdown }) => {
+      async ({ block_id, rich_text, plain_text }) => {
         if (!notionApiKey) {
           throw new Error("NOTION_INTEGRATION_TOKEN is not configured; cannot call Notion API");
         }
-        if (rich_text === undefined && markdown === undefined) {
-          throw new Error("At least one of rich_text or markdown must be provided");
+        if (rich_text === undefined && plain_text === undefined) {
+          throw new Error("Provide either rich_text or plain_text");
         }
-        const resolvedRichText = rich_text ?? wrapMarkdownAsRichText(markdown!);
+        if (rich_text !== undefined && plain_text !== undefined) {
+          throw new Error("Provide either rich_text or plain_text, not both");
+        }
+        const resolvedRichText = rich_text ?? wrapPlainTextAsRichText(plain_text!);
         const response = await fetch(`${NOTION_API_BASE}/comments`, {
           method: "POST",
           headers: {
