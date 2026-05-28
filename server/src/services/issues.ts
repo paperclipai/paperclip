@@ -241,6 +241,7 @@ export interface IssueFilters {
   offset?: number;
   sortField?: "updated";
   sortDir?: "asc" | "desc";
+  priority?: string;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -3543,6 +3544,10 @@ export function issueService(db: Db) {
           .where(and(eq(issueLabels.companyId, companyId), eq(issueLabels.labelId, filters.labelId)));
         if (labeledIssueIds.length === 0) return [];
         conditions.push(inArray(issues.id, labeledIssueIds.map((row) => row.issueId)));
+      }
+      if (filters?.priority) {
+        const priorities = filters.priority.split(',').map(p => p.trim()).filter(Boolean);
+        if (priorities.length > 0) conditions.push(inArray(issues.priority, priorities));
       }
       if (hasSearch) {
         conditions.push(

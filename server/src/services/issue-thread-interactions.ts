@@ -128,6 +128,12 @@ function hydrateInteraction(
         payload: requestConfirmationPayloadSchema.parse(row.payload),
         result: row.result ? requestConfirmationResultSchema.parse(row.result) : null,
       } satisfies RequestConfirmationInteraction;
+    case "comment":
+      return {
+        ...base,
+        kind: "comment",
+        payload: row.payload,
+      } satisfies IssueThreadInteraction;
     default:
       throw unprocessable(`Unknown interaction kind: ${row.kind}`);
   }
@@ -760,7 +766,13 @@ export function issueThreadInteractionService(db: Db) {
             createdIssues: [],
           };
         }
-        default:
+        case "comment":
+      return {
+        ...base,
+        kind: "comment",
+        payload: row.payload,
+      } satisfies IssueThreadInteraction;
+    default:
           throw unprocessable(`Interactions of kind ${current.kind} cannot be accepted`);
       }
     },
@@ -930,7 +942,13 @@ export function issueThreadInteractionService(db: Db) {
             input: data,
             actor,
           });
-        default:
+        case "comment":
+      return {
+        ...base,
+        kind: "comment",
+        payload: row.payload,
+      } satisfies IssueThreadInteraction;
+    default:
           throw unprocessable(`Interactions of kind ${current.kind} cannot be rejected`);
       }
     },

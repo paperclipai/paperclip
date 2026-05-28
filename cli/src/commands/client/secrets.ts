@@ -499,3 +499,58 @@ export function registerSecretCommands(program: Command): void {
       }),
   );
 }
+
+  addCommonClientOptions(
+    secrets
+      .command("rotate")
+      .description("Rotate a secret by providing a new value and calling the API endpoint")
+      .requiredOption("-C, --company-id <id>", "Company ID")
+      .requiredOption("--id <id>", "Secret ID to rotate")
+      .option("--value <value>", "New secret value (optional; will prompt if not provided)")
+      .action(async (opts: { companyId: string; id: string; value?: string }) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          let newValue = opts.value;
+          if (!newValue) {
+            newValue = await ctx.prompt({
+              type: "password",
+              message: "Enter new secret value:",
+              validate: (input) => input.trim().length > 0 || "Value cannot be empty",
+            });
+          }
+          const rotated = await ctx.api.post<CompanySecret>(`/api/secrets/${opts.id}/rotate`, { value: newValue });
+          printOutput(ctx.json ? rotated : renderSecret(rotated), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    secrets
+      .command("delete")
+      .description("Delete a secret after confirmation")
+      .requiredOption("-C, --company-id <id>", "Company ID")
+      .requiredOption("--id <id>", "Secret ID to delete")
+      .option("--yes", "Skip confirmation prompt")
+      .action(async (opts: { companyId: string; id: string; yes?: boolean }) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          if (!opts.yes) {
+            const confirmed = await ctx.prompt({
+              type: "confirm",
+              message: `Are you sure you want to delete secret ${opts.id}? This cannot be undone.`,
+              default: false,
+            });
+            if (!confirmed) {
+              console.log("Operation cancelled.");
+              return;
+            }
+          }
+          await ctx.api.delete(`/api/secrets/${opts.id}`);
+          printOutput(`Secret ${opts.id} deleted successfully.`, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );

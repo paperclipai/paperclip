@@ -89,6 +89,7 @@ export interface RoutineManagedByPlugin {
 }
 
 export interface RoutineRevisionSnapshotRoutineV1 {
+  labelIds: string[];
   id: string;
   companyId: string;
   projectId: string | null;

@@ -73,7 +73,7 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
-import { redactEventPayload } from "../redaction.js";
+import { redactEventPayload, REDACTED_EVENT_VALUE } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -1269,6 +1269,21 @@ export function agentRoutes(
     };
   }
 
+  function redactPlainEnvBindings(config: Record<string, unknown> | null): Record<string, unknown> | null {
+    if (!config) return config;
+    const env = config.env;
+    if (!env || typeof env !== "object" || Array.isArray(env)) return config;
+    const redactedEnv: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
+      if (value !== null && typeof value === "object" && !Array.isArray(value) && (value as Record<string, unknown>).type === "plain") {
+        redactedEnv[key] = { type: "plain", value: REDACTED_EVENT_VALUE };
+      } else {
+        redactedEnv[key] = value;
+      }
+    }
+    return { ...config, env: redactedEnv };
+  }
+
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
@@ -1280,7 +1295,7 @@ export function agentRoutes(
       status: agent.status,
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
-      adapterConfig: redactEventPayload(agent.adapterConfig),
+      adapterConfig: redactPlainEnvBindings(redactEventPayload(agent.adapterConfig)),
       runtimeConfig: redactEventPayload(agent.runtimeConfig),
       permissions: agent.permissions,
       updatedAt: agent.updatedAt,
@@ -2631,7 +2646,9 @@ export function agentRoutes(
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
       });
-      patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
+              if (patchData.adapterConfig !== undefined) {
+          patchData.adapterConfig = { ...existing.adapterConfig, ...patchData.adapterConfig };
+        }
     }
     if (requestedRuntimeConfig) {
       const baseAdapterConfig = asRecord(patchData.adapterConfig) ?? asRecord(existing.adapterConfig) ?? {};
