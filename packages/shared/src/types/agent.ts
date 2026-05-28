@@ -12,6 +12,8 @@ import type {
 
 export interface AgentPermissions {
   canCreateAgents: boolean;
+  triageAuthority?: boolean;
+  triageAuthorityFields?: string[];
 }
 
 export interface AgentModelProfileConfig {

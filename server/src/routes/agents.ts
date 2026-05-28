@@ -2268,7 +2268,11 @@ export function agentRoutes(
       await assertBoardCanManageAgentsForCompany(req, existing.companyId);
     }
 
-    const agent = await svc.updatePermissions(id, req.body);
+    const nextPermissions = {
+      ...(existing.permissions ?? {}),
+      ...req.body,
+    };
+    const agent = await svc.updatePermissions(id, nextPermissions as Record<string, unknown>);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -2276,6 +2280,8 @@ export function agentRoutes(
 
     const effectiveCanAssignTasks =
       agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
+    const effectiveCanCreateInteractions =
+      agent.role === "ceo" || Boolean(agent.permissions?.canCreateInteractions) || Boolean(req.body.canCreateInteractions);
     await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
     await access.setPrincipalPermission(
       agent.companyId,
@@ -2283,6 +2289,14 @@ export function agentRoutes(
       agent.id,
       "tasks:assign",
       effectiveCanAssignTasks,
+      req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+    );
+    await access.setPrincipalPermission(
+      agent.companyId,
+      "agent",
+      agent.id,
+      "issue.interactions.create",
+      effectiveCanCreateInteractions,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
     );
 
@@ -2297,8 +2311,11 @@ export function agentRoutes(
       entityType: "agent",
       entityId: agent.id,
       details: {
+        triageAuthority: agent.permissions?.triageAuthority ?? false,
+        triageAuthorityFields: agent.permissions?.triageAuthorityFields ?? null,
         canCreateAgents: agent.permissions?.canCreateAgents ?? false,
         canAssignTasks: effectiveCanAssignTasks,
+        canCreateInteractions: effectiveCanCreateInteractions,
       },
     });
 
