@@ -373,6 +373,44 @@ export interface PendingHumanInboxInteraction {
   issue: PendingHumanInboxInteractionIssue;
 }
 
+export type AwaitingHumanBridgeStatus = "pending_delivery" | "waiting_for_human" | "closed" | "failed";
+
+export type AwaitingHumanBridgeCloseOutcome =
+  | "approved"
+  | "rejected"
+  | "expired"
+  | "superseded"
+  | "cancelled";
+
+export type InteractionAwaitingHumanHandoffPhase =
+  | "none"
+  | "sending"
+  | "listening"
+  | "checking"
+  | "completed"
+  | "failed";
+
+/** User-facing status for an interaction's external awaiting-human handoff (e.g. ClickUp). */
+export interface InteractionAwaitingHumanHandoffStatus {
+  interactionId: string;
+  provider: string | null;
+  providerLabel: string;
+  phase: InteractionAwaitingHumanHandoffPhase;
+  label: string;
+  detail: string | null;
+  /** True while the system is actively checking the external channel for a reply. */
+  isCheckingNow: boolean;
+  lastCheckedAt: string | null;
+  nextCheckAt: string | null;
+  closeOutcome: AwaitingHumanBridgeCloseOutcome | null;
+}
+
+export interface IssueInteractionHandoffStatusResponse {
+  issueId: string;
+  serverNow: string;
+  byInteractionId: Record<string, InteractionAwaitingHumanHandoffStatus>;
+}
+
 export interface IssueThreadInteractionActorFields {
   createdByAgentId?: string | null;
   createdByUserId?: string | null;
