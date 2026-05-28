@@ -370,6 +370,17 @@ async function createSshAuthArgs(
     "ConnectTimeout=10",
     "-o",
     `StrictHostKeyChecking=${config.strictHostKeyChecking ? "yes" : "no"}`,
+    // Reuse one TCP+SSH session for all calls in a run. Without this every
+    // command opens a new connection, which trips per-IP rate limits on
+    // hardened sshd hosts and surfaces as a ConnectTimeout on the 6th dial.
+    // %C hashes host/port/user so concurrent runs against different targets
+    // don't collide on the control socket path.
+    "-o",
+    "ControlMaster=auto",
+    "-o",
+    `ControlPath=${path.join(os.tmpdir(), "paperclip-ssh-cm-%C")}`,
+    "-o",
+    "ControlPersist=60s",
   ];
 
   if (config.strictHostKeyChecking) {

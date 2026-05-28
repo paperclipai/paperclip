@@ -166,6 +166,71 @@ describe("ssh env-lab fixture", () => {
     ).rejects.toThrow("Invalid SSH environment variable key: BAD KEY");
   });
 
+  it("emits ControlMaster=auto, ControlPath, and ControlPersist on every SSH invocation", async () => {
+    const target = await buildSshSpawnTarget({
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: "/srv/paperclip/workspace",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----",
+        knownHosts: null,
+        strictHostKeyChecking: false,
+      },
+      command: "true",
+      args: [],
+      env: {},
+    });
+    try {
+      const args = target.args;
+      const indexOfOption = (value: string) => {
+        for (let i = 0; i < args.length - 1; i += 1) {
+          if (args[i] === "-o" && args[i + 1] === value) return i;
+        }
+        return -1;
+      };
+      expect(indexOfOption("ControlMaster=auto")).toBeGreaterThanOrEqual(0);
+      const controlPathIdx = args.findIndex(
+        (entry, idx) => idx > 0 && args[idx - 1] === "-o" && entry.startsWith("ControlPath="),
+      );
+      expect(controlPathIdx).toBeGreaterThanOrEqual(0);
+      const controlPathValue = args[controlPathIdx];
+      expect(controlPathValue).toContain("paperclip-ssh-cm-");
+      expect(controlPathValue.endsWith("%C")).toBe(true);
+      expect(controlPathValue.startsWith("ControlPath=")).toBe(true);
+      expect(path.isAbsolute(controlPathValue.slice("ControlPath=".length))).toBe(true);
+      expect(indexOfOption("ControlPersist=60s")).toBeGreaterThanOrEqual(0);
+    } finally {
+      await target.cleanup();
+    }
+  });
+
+  it("emits ControlMaster args even without a privateKey", async () => {
+    const target = await buildSshSpawnTarget({
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: "/srv/paperclip/workspace",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: false,
+      },
+      command: "true",
+      args: [],
+      env: {},
+    });
+    try {
+      expect(target.args).toContain("ControlMaster=auto");
+      expect(target.args).toContain("ControlPersist=60s");
+      expect(target.args.some((entry) => entry.startsWith("ControlPath="))).toBe(true);
+    } finally {
+      await target.cleanup();
+    }
+  });
+
   it("syncs a local directory into the remote fixture workspace", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
     cleanupDirs.push(rootDir);
