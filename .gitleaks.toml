@@ -1,0 +1,39 @@
+# Gitleaks configuration for paperclipai/paperclip.
+# Allowlists prevent false positives on test fixtures and documentation.
+# See: https://github.com/gitleaks/gitleaks/blob/master/config/gitleaks.toml
+
+title = "Paperclip Gitleaks Config"
+
+[allowlist]
+description = "Known test fixtures, example values, and documentation strings"
+
+# Regex patterns for values that are clearly test/example data
+regexes = [
+  # Generic test key patterns used throughout test fixtures
+  '''test[-_]key''',
+  '''sk-test-''',
+  # Example device keys and certs in documentation / test helpers
+  '''-----BEGIN.*PRIVATE KEY.*EXAMPLE''',
+  # Hardcoded example passwords used only in embedded postgres dev setup
+  '''postgres://paperclip:paperclip@127\.0\.0\.1''',
+]
+
+# Specific paths that are known to contain test fixtures or example values
+paths = [
+  # All test files — these intentionally contain fake/example credentials
+  '''\.test\.ts$''',
+  '''\.test\.tsx$''',
+  '''\.spec\.ts$''',
+  # Documentation
+  '''doc/.*''',
+  '''docs/.*''',
+  '''PUBLISHING\.md''',
+  '''RELEASING\.md''',
+  # Example environment file — by definition contains placeholder values
+  '''\.env\.example$''',
+  # Migration SQL files that use example schema definitions
+  '''packages/db/src/migrations/.*\.sql$''',
+]
+
+# Specific commit SHAs to ignore (add as needed)
+commits = []
