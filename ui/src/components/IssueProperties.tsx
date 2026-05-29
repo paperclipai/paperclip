@@ -401,6 +401,8 @@ export function IssueProperties({
   const [scheduledRetryOpen, setScheduledRetryOpen] = useState(false);
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
+  const [reviewerAssigneeOpen, setReviewerAssigneeOpen] = useState(false);
+  const [reviewerAssigneeSearch, setReviewerAssigneeSearch] = useState("");
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
@@ -788,6 +790,28 @@ export function IssueProperties({
     : issue.assigneeUserId
       ? `user:${issue.assigneeUserId}`
       : "";
+  const selectedReviewerValue = issue.reviewerAgentId
+    ? `agent:${issue.reviewerAgentId}`
+    : issue.reviewerUserId
+      ? `user:${issue.reviewerUserId}`
+      : "";
+  const [reviewerSelectionValue, setReviewerSelectionValue] = useState(selectedReviewerValue);
+  useEffect(() => {
+    setReviewerSelectionValue(selectedReviewerValue);
+  }, [selectedReviewerValue]);
+  const reviewerUpdateFromSelection = useCallback((value: string) => {
+    if (value.startsWith("agent:")) {
+      return { reviewerAgentId: value.slice("agent:".length), reviewerUserId: null };
+    }
+    if (value.startsWith("user:")) {
+      return { reviewerAgentId: null, reviewerUserId: value.slice("user:".length) };
+    }
+    return { reviewerAgentId: null, reviewerUserId: null };
+  }, []);
+  const statusUpdatePayload = useCallback((status: string) => {
+    if (status !== "in_review") return { status };
+    return { status, ...reviewerUpdateFromSelection(reviewerSelectionValue) };
+  }, [reviewerSelectionValue, reviewerUpdateFromSelection]);
   const updateExecutionPolicy = (nextReviewers: string[], nextApprovers: string[]) => {
     onUpdate({
       executionPolicy: buildExecutionPolicy({
@@ -836,7 +860,7 @@ export function IssueProperties({
       <button
         type="button"
         className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-        onClick={() => onUpdate({ status: "in_review" })}
+        onClick={() => onUpdate(statusUpdatePayload("in_review"))}
       >
         {stageType === "review" ? "Run review now" : "Run approval now"}
       </button>
@@ -1374,6 +1398,102 @@ export function IssueProperties({
       </div>
     </>
   );
+  const reviewerAssigneeLabel = userLabel(issue.reviewerUserId);
+  const reviewerAssigneeTrigger = issue.reviewerAgentId
+    ? <Identity name={agentName(issue.reviewerAgentId) ?? issue.reviewerAgentId.slice(0, 8)} size="sm" />
+    : reviewerAssigneeLabel
+      ? (
+        <>
+          <User className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-sm">{reviewerAssigneeLabel}</span>
+        </>
+      )
+      : <span className="text-xs text-muted-foreground">No reviewer</span>;
+  const reviewerAssigneePickerOptions = [
+    { id: "", kind: "none" as const, label: "No reviewer", searchText: "" },
+    ...(currentUserId
+      ? [{
+          id: `user:${currentUserId}`,
+          kind: "user" as const,
+          userId: currentUserId,
+          label: "Assign to me",
+          searchText: userLabel(currentUserId) ?? "",
+        }]
+      : []),
+    ...(issue.createdByUserId && issue.createdByUserId !== currentUserId
+      ? [{
+          id: `user:${issue.createdByUserId}`,
+          kind: "user" as const,
+          userId: issue.createdByUserId,
+          label: creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester",
+          searchText: creatorUserLabel ?? "requester",
+        }]
+      : []),
+    ...otherUserOptions.map((option) => ({
+      id: option.id,
+      kind: "user" as const,
+      userId: option.id.slice("user:".length),
+      label: option.label,
+      searchText: option.searchText ?? "",
+    })),
+    ...sortedAgents.map((agent) => ({
+      id: `agent:${agent.id}`,
+      kind: "agent" as const,
+      agent,
+      label: agent.name,
+      searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
+    })),
+  ];
+  const reviewerAssigneeContent = (
+    <>
+      <input
+        className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+        placeholder="Search reviewers..."
+        value={reviewerAssigneeSearch}
+        onChange={(e) => setReviewerAssigneeSearch(e.target.value)}
+        autoFocus={!inline}
+      />
+      <div className="max-h-48 overflow-y-auto overscroll-contain">
+        {reviewerAssigneePickerOptions
+          .filter((option) => {
+            if (!reviewerAssigneeSearch.trim()) return true;
+            const q = reviewerAssigneeSearch.toLowerCase();
+            return `${option.label} ${option.searchText}`.toLowerCase().includes(q);
+          })
+          .map((option) => (
+            <button
+              key={`reviewer-${option.id || "__none__"}`}
+              className={cn(
+                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                option.id === reviewerSelectionValue && "bg-accent",
+              )}
+              onClick={() => {
+                if (option.kind === "agent") {
+                  const next = `agent:${option.agent.id}`;
+                  setReviewerSelectionValue(next);
+                  onUpdate(reviewerUpdateFromSelection(next));
+                } else if (option.kind === "user") {
+                  const next = `user:${option.userId}`;
+                  setReviewerSelectionValue(next);
+                  onUpdate(reviewerUpdateFromSelection(next));
+                } else {
+                  setReviewerSelectionValue("");
+                  onUpdate(reviewerUpdateFromSelection(""));
+                }
+                setReviewerAssigneeOpen(false);
+              }}
+            >
+              {option.kind === "agent" ? (
+                <AgentIcon icon={option.agent.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
+              ) : option.kind === "user" ? (
+                <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+              ) : null}
+              {option.label}
+            </button>
+          ))}
+      </div>
+    </>
+  );
 
   const executionParticipantsContent = (
     stageType: "review" | "approval",
@@ -1759,9 +1879,25 @@ export function IssueProperties({
           <StatusIcon
             status={issue.status}
             blockerAttention={issue.blockerAttention}
-            onChange={(status) => onUpdate({ status })}
+            onChange={(status) => onUpdate(statusUpdatePayload(status))}
             showLabel
           />
+          <Popover
+            open={reviewerAssigneeOpen}
+            onOpenChange={(open) => {
+              setReviewerAssigneeOpen(open);
+              if (!open) setReviewerAssigneeSearch("");
+            }}
+          >
+            <PopoverTrigger asChild>
+              <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded-full border border-border px-2 py-1 text-xs transition-colors min-w-0 max-w-full text-left">
+                {reviewerAssigneeTrigger}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-52 p-1" align="start" collisionPadding={16}>
+              {reviewerAssigneeContent}
+            </PopoverContent>
+          </Popover>
         </PropertyRow>
 
         <PropertyRow label="Priority">

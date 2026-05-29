@@ -314,4 +314,47 @@ describe("issue update comment wakeups", () => {
       }),
     );
   });
+
+  it("wakes reviewer agent when issue enters in_review with reviewerAgentId", async () => {
+    const reviewerAgentId = "22222222-2222-4222-8222-222222222222";
+    const existing = makeIssue({
+      status: "in_progress",
+      reviewerAgentId: null,
+      reviewerUserId: null,
+    });
+    const updated = makeIssue({
+      status: "in_review",
+      reviewerAgentId,
+      reviewerUserId: null,
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "in_review",
+        reviewerAgentId,
+        reviewerUserId: null,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      reviewerAgentId,
+      expect.objectContaining({
+        source: "assignment",
+        reason: "review_requested",
+        payload: expect.objectContaining({
+          issueId: existing.id,
+          mutation: "update",
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: existing.id,
+          taskId: existing.id,
+          wakeReason: "review_requested",
+          source: "issue.review_requested",
+        }),
+      }),
+    );
+  });
 });
