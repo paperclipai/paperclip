@@ -149,6 +149,18 @@ export function parseCursorJsonl(stdout: string) {
   };
 }
 
+/** True when stream-json output includes a terminal `result` event. */
+export function hasCursorTerminalStreamResult(stdout: string): boolean {
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = normalizeCursorStreamLine(rawLine).line;
+    if (!line) continue;
+    const event = parseJson(line);
+    if (!event) continue;
+    if (asString(event.type, "").trim() === "result") return true;
+  }
+  return false;
+}
+
 export function isCursorUnknownSessionError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)

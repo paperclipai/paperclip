@@ -45,7 +45,7 @@ import {
   joinPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
-import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
+import { parseCursorJsonl, isCursorUnknownSessionError, hasCursorTerminalStreamResult } from "./parse.js";
 import { prepareCursorSandboxCommand } from "./remote-command.js";
 import { normalizeCursorStreamLine } from "../shared/stream.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
@@ -310,6 +310,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     asNumber(config.timeoutSec, 0),
   );
   const graceSec = asNumber(config.graceSec, 20);
+  const terminalResultCleanupGraceMs = Math.max(
+    0,
+    asNumber(config.terminalResultCleanupGraceMs, 5_000),
+  );
   await ensureAdapterExecutionTargetRuntimeCommandInstalled({
     runId,
     target: executionTarget,
@@ -640,6 +644,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           return;
         }
         await flushStdoutChunk(chunk);
+      },
+      terminalResultCleanup: {
+        graceMs: terminalResultCleanupGraceMs,
+        hasTerminalResult: ({ stdout }) => hasCursorTerminalStreamResult(stdout),
       },
     });
     await flushStdoutChunk("", true);
