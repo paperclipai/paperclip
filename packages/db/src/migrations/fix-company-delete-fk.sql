@@ -1,0 +1,2 @@
+ALTER TABLE cost_events DROP CONSTRAINT IF EXISTS cost_events_company_id_fkey; ALTER TABLE cost_events ADD CONSTRAINT cost_events_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE;
+ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_company_id_fkey; ALTER TABLE projects ADD CONSTRAINT projects_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE;
