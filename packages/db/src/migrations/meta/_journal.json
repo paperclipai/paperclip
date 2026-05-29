@@ -666,6 +666,13 @@
       "when": 1748534400000,
       "tag": "0094_issues_updated_at_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1748617200000,
+      "tag": "0095_backfill_subscription_cost_cents",
+      "breakpoints": true
     }
   ]
 }
