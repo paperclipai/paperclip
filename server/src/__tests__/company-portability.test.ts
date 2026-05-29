@@ -638,6 +638,106 @@ describe("company portability", () => {
     expect(asTextFile(exported.files["skills/paperclipai/paperclip/paperclip/references/api.md"])).toContain("# API");
   });
 
+  it("exports catalog skill provenance in portable Paperclip frontmatter", async () => {
+    const portability = companyPortabilityService({} as any);
+    const catalogKey = "paperclipai/bundled/software-development/review";
+    const originHash = "sha256:catalog-origin";
+    const catalogSkill = {
+      id: "skill-catalog",
+      companyId: "company-1",
+      key: catalogKey,
+      slug: "review",
+      name: "review",
+      description: "Catalog review skill",
+      markdown: "---\nname: review\ndescription: Catalog review skill\n---\n\n# Review\n",
+      sourceType: "catalog",
+      sourceLocator: "/tmp/paperclip/catalog/review",
+      sourceRef: originHash,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [
+        { path: "SKILL.md", kind: "skill" },
+        { path: "references/checklist.md", kind: "reference" },
+      ],
+      metadata: {
+        sourceKind: "catalog",
+        skillKey: catalogKey,
+        catalogId: "paperclipai:bundled:software-development:review",
+        catalogKey,
+        catalogKind: "bundled",
+        catalogCategory: "software-development",
+        catalogPath: "catalog/bundled/software-development/review",
+        packageName: "@paperclipai/skills-catalog",
+        packageVersion: "0.3.1",
+        originHash,
+        originVersion: "0.3.1",
+        originSnapshotLocator: "/tmp/local-only-origin",
+        installedHash: "sha256:installed",
+        userModifiedAt: "2026-05-01T00:00:00.000Z",
+        updateHoldReason: "local_modifications",
+        auditVerdict: "warning",
+        auditCodes: ["local_modifications"],
+        auditScannedAt: "2026-05-02T00:00:00.000Z",
+        auditScanVersion: "skills-audit-v1",
+      },
+    };
+    companySkillSvc.listFull.mockResolvedValue([catalogSkill]);
+    companySkillSvc.readFile.mockImplementation(async (_companyId: string, skillId: string, relativePath: string) => ({
+      skillId,
+      path: relativePath,
+      kind: relativePath === "SKILL.md" ? "skill" : "reference",
+      content: relativePath === "SKILL.md"
+        ? "---\nname: review\ndescription: Catalog review skill\n---\n\n# Review\n"
+        : "# Checklist\n",
+      language: "markdown",
+      markdown: true,
+      editable: true,
+    }));
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: false,
+        agents: false,
+        projects: false,
+        issues: false,
+        skills: true,
+      },
+      expandReferencedSkills: true,
+    });
+
+    const skillMarkdown = asTextFile(exported.files["skills/paperclipai/bundled/software-development/review/SKILL.md"]);
+    expect(skillMarkdown).toContain("paperclip:");
+    expect(skillMarkdown).toContain("catalog:");
+    expect(skillMarkdown).toContain(`sourceRef: "${originHash}"`);
+    expect(skillMarkdown).toContain('catalogId: "paperclipai:bundled:software-development:review"');
+    expect(skillMarkdown).toContain(`catalogKey: "${catalogKey}"`);
+    expect(skillMarkdown).toContain('catalogKind: "bundled"');
+    expect(skillMarkdown).toContain('catalogPath: "catalog/bundled/software-development/review"');
+    expect(skillMarkdown).toContain('packageName: "@paperclipai/skills-catalog"');
+    expect(skillMarkdown).toContain('packageVersion: "0.3.1"');
+    expect(skillMarkdown).toContain('installedHash: "sha256:installed"');
+    expect(skillMarkdown).toContain('auditVerdict: "warning"');
+    expect(skillMarkdown).not.toContain("originSnapshotLocator");
+    expect(exported.manifest.skills[0]).toMatchObject({
+      key: catalogKey,
+      sourceType: "catalog",
+      sourceRef: originHash,
+      metadata: expect.objectContaining({
+        sourceKind: "catalog",
+        skillKey: catalogKey,
+        originHash,
+        catalogId: "paperclipai:bundled:software-development:review",
+        catalogKey,
+        catalogKind: "bundled",
+        catalogPath: "catalog/bundled/software-development/review",
+        packageName: "@paperclipai/skills-catalog",
+        packageVersion: "0.3.1",
+        installedHash: "sha256:installed",
+        auditCodes: ["local_modifications"],
+      }),
+    });
+  });
+
   it("exports only selected skills when skills filter is provided", async () => {
     const portability = companyPortabilityService({} as any);
 

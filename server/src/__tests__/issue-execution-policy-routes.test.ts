@@ -52,6 +52,7 @@ function registerModuleMocks() {
         agent: ref.match(/^[0-9a-f-]{36}$/) ? { id: ref } : null,
       })),
     }),
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({

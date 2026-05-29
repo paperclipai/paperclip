@@ -95,6 +95,7 @@ function registerRouteMocks() {
     }),
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     feedbackService: () => mockFeedbackService,

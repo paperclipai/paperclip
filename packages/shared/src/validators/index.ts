@@ -52,6 +52,11 @@ export {
   type UpsertSidebarOrderPreference,
 } from "./sidebar-preferences.js";
 export {
+  resourceMembershipStateSchema,
+  updateResourceMembershipSchema,
+  type UpdateResourceMembership,
+} from "./resource-memberships.js";
+export {
   companySkillSourceTypeSchema,
   companySkillTrustLevelSchema,
   companySkillCompatibilitySchema,
@@ -62,6 +67,8 @@ export {
   companySkillUsageAgentSchema,
   companySkillDetailSchema,
   companySkillUpdateStatusSchema,
+  companySkillAuditFindingSchema,
+  companySkillAuditResultSchema,
   companySkillImportSchema,
   companySkillProjectScanRequestSchema,
   companySkillProjectScanSkippedSchema,
@@ -70,10 +77,23 @@ export {
   companySkillCreateSchema,
   companySkillFileDetailSchema,
   companySkillFileUpdateSchema,
+  catalogSkillKindSchema,
+  catalogSkillFileSchema,
+  catalogSkillSchema,
+  catalogSkillListQuerySchema,
+  catalogSkillFileDetailSchema,
+  companySkillInstallCatalogSchema,
+  companySkillInstallCatalogResultSchema,
+  companySkillInstallUpdateSchema,
+  companySkillResetSchema,
   type CompanySkillImport,
   type CompanySkillProjectScan,
   type CompanySkillCreate,
   type CompanySkillFileUpdate,
+  type CatalogSkillListQuery,
+  type CompanySkillInstallCatalog,
+  type CompanySkillInstallUpdate,
+  type CompanySkillReset,
 } from "./company-skill.js";
 export {
   agentSkillStateSchema,
@@ -146,6 +166,21 @@ export {
   type UpdateProjectWorkspace,
   type ProjectExecutionWorkspacePolicy,
 } from "./project.js";
+
+export {
+  createDocumentAnnotationCommentSchema,
+  createDocumentAnnotationThreadSchema,
+  documentAnnotationAnchorConfidenceSchema,
+  documentAnnotationAnchorSelectorSchema,
+  documentAnnotationAnchorStateSchema,
+  documentAnnotationTextPositionSelectorSchema,
+  documentAnnotationTextQuoteSelectorSchema,
+  documentAnnotationThreadStatusSchema,
+  updateDocumentAnnotationThreadSchema,
+  type CreateDocumentAnnotationComment,
+  type CreateDocumentAnnotationThread,
+  type UpdateDocumentAnnotationThread,
+} from "./document-annotation.js";
 
 export {
   createIssueSchema,

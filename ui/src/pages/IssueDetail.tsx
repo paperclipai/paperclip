@@ -3777,6 +3777,8 @@ export function IssueDetail() {
           });
         }}
         extraActions={!hasAttachments ? attachmentUploadButton : null}
+        agentMap={agentMap}
+        userProfileMap={userProfileMap}
       />
 
       {attachmentsInitialLoading ? (

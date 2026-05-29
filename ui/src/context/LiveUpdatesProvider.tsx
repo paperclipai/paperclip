@@ -657,6 +657,14 @@ function invalidateActivityQueries(
   const action = readString(payload.action);
   const actorType = readString(payload.actorType);
   const actorId = readString(payload.actorId);
+  const details = readRecord(payload.details);
+
+  if (action?.startsWith("resource_membership.")) {
+    const targetUserId = readString(details?.userId);
+    if (!targetUserId || targetUserId === currentActor.userId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.resourceMemberships.mine(companyId) });
+    }
+  }
 
   if (entityType === "issue") {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId), refetchType: "none" });
@@ -664,7 +672,6 @@ function invalidateActivityQueries(
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId), refetchType: "none" });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId), refetchType: "none" });
     if (entityId) {
-      const details = readRecord(payload.details);
       const selfCommentActivity =
         ((action === "issue.comment_added") ||
           (action === "issue.updated" && readString(details?.source) === "comment")) &&

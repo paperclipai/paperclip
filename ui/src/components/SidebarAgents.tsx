@@ -3,6 +3,8 @@ import { Link, NavLink, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   MoreHorizontal,
+  Loader2,
+  LogOut,
   PauseCircle,
   Pencil,
   PlayCircle,
@@ -22,6 +24,7 @@ import { cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { useLiveUpdatesHealth } from "../context/LiveUpdatesProvider";
 import { usePageVisible } from "../lib/issue-run-polling";
 import { useAgentOrder } from "../hooks/useAgentOrder";
+import { resourceMembershipState, useResourceMembershipMutation, useResourceMemberships } from "../hooks/useResourceMemberships";
 import {
   AGENT_SORT_MODE_UPDATED_EVENT,
   getAgentSortModeStorageKey,
@@ -84,6 +87,8 @@ function SidebarAgentItem({
   agent,
   disabled,
   isMobile,
+  leaving,
+  onLeaveAgent,
   onPauseResume,
   runCount,
   setSidebarOpen,
@@ -93,6 +98,8 @@ function SidebarAgentItem({
   agent: Agent;
   disabled: boolean;
   isMobile: boolean;
+  leaving: boolean;
+  onLeaveAgent: (agent: Agent) => void;
   onPauseResume: (agent: Agent, action: "pause" | "resume") => void;
   runCount: number;
   setSidebarOpen: (open: boolean) => void;
@@ -188,6 +195,17 @@ function SidebarAgentItem({
             {isPaused ? <PlayCircle className="size-4" /> : <PauseCircle className="size-4" />}
             <span>{pauseResumeDisabledLabel}</span>
           </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onClick={() => {
+              if (leaving) return;
+              onLeaveAgent(agent);
+            }}
+            disabled={leaving}
+          >
+            {leaving ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <LogOut className="size-4" />}
+            <span>{leaving ? "Leaving..." : "Leave agent"}</span>
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
@@ -215,6 +233,8 @@ export function SidebarAgents() {
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
+  const membershipsQuery = useResourceMemberships(selectedCompanyId);
+  const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
 
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
@@ -234,10 +254,15 @@ export function SidebarAgents() {
 
   const visibleAgents = useMemo(() => {
     const filtered = (agents ?? []).filter(
-      (a: Agent) => a.status !== "terminated"
+      (a: Agent) =>
+        a.status !== "terminated" &&
+        (
+          !membershipsQuery.isSuccess ||
+          resourceMembershipState(membershipsQuery.data, "agent", a.id) !== "left"
+        )
     );
     return filtered;
-  }, [agents]);
+  }, [agents, membershipsQuery.data, membershipsQuery.isSuccess]);
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const sortModeStorageKey = useMemo(() => {
     if (!selectedCompanyId) return null;
@@ -348,6 +373,23 @@ export function SidebarAgents() {
     },
   });
 
+  const leaveAgent = useCallback(
+    (agent: Agent) => membershipMutation.mutate({
+      resourceType: "agent",
+      resourceId: agent.id,
+      resourceName: agent.name,
+      state: "left",
+    }),
+    [membershipMutation],
+  );
+  const agentLeaving = useCallback(
+    (agent: Agent) =>
+      membershipMutation.isPending &&
+      membershipMutation.variables?.resourceType === "agent" &&
+      membershipMutation.variables.resourceId === agent.id,
+    [membershipMutation.isPending, membershipMutation.variables],
+  );
+
   return (
     <SidebarSection
       label="Agents"
@@ -379,6 +421,8 @@ export function SidebarAgents() {
             agent={agent}
             disabled={pendingAgentIds.has(agent.id)}
             isMobile={isMobile}
+            leaving={agentLeaving(agent)}
+            onLeaveAgent={leaveAgent}
             onPauseResume={(targetAgent, action) => pauseResumeAgent.mutate({ agent: targetAgent, action })}
             runCount={runCount}
             setSidebarOpen={setSidebarOpen}
