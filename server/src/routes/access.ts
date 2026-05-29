@@ -79,6 +79,7 @@ import {
   claimBoardOwnership,
   inspectBoardClaimChallenge
 } from "../board-claim.js";
+import { claimFirstInstanceAdmin } from "../first-admin-claim.js";
 import { getStorageService } from "../storage/index.js";
 
 function hashToken(token: string) {
@@ -2453,6 +2454,31 @@ export function accessRoutes(
     throw conflict("Board claim challenge is no longer available");
   });
 
+  router.post("/bootstrap/claim", async (req, res) => {
+    if (
+      opts.deploymentMode !== "authenticated" ||
+      opts.deploymentExposure !== "private"
+    ) {
+      throw notFound("Browser first-admin claim is not available");
+    }
+    if (
+      req.actor.type !== "board" ||
+      req.actor.source !== "session" ||
+      !req.actor.userId
+    ) {
+      throw unauthorized("Sign in from a browser session before claiming first admin");
+    }
+
+    const claimed = await claimFirstInstanceAdmin(db, {
+      userId: req.actor.userId,
+    });
+    if (claimed.status === "already_claimed") {
+      throw conflict("Someone else has already claimed this instance");
+    }
+
+    res.json({ claimed: true, userId: claimed.userId });
+  });
+
   router.post(
     "/cli-auth/challenges",
     validate(createCliAuthChallengeSchema),
@@ -3276,16 +3302,31 @@ export function accessRoutes(
           );
         }
         const userId = req.actor.userId ?? "local-board";
-        const existingAdmin = await access.isInstanceAdmin(userId);
-        if (!existingAdmin) {
-          await access.promoteInstanceAdmin(userId);
+        const claimed = await claimFirstInstanceAdmin(db, {
+          userId,
+          onClaim: async (tx) => {
+            const updatedInvite = await tx
+              .update(invites)
+              .set({ acceptedAt: new Date(), updatedAt: new Date() })
+              .where(
+                and(
+                  eq(invites.id, invite.id),
+                  isNull(invites.acceptedAt),
+                  isNull(invites.revokedAt)
+                )
+              )
+              .returning()
+              .then((rows) => rows[0] ?? null);
+            if (!updatedInvite) {
+              throw conflict("Bootstrap invite is no longer available");
+            }
+            return updatedInvite;
+          },
+        });
+        if (claimed.status === "already_claimed") {
+          throw conflict("Someone else has already claimed this instance");
         }
-        const updatedInvite = await db
-          .update(invites)
-          .set({ acceptedAt: new Date(), updatedAt: new Date() })
-          .where(eq(invites.id, invite.id))
-          .returning()
-          .then((rows) => rows[0] ?? invite);
+        const updatedInvite = claimed.value ?? invite;
         res.status(202).json({
           inviteId: updatedInvite.id,
           inviteType: updatedInvite.inviteType,

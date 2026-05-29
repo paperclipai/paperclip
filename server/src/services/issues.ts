@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -9,6 +10,7 @@ import {
   assets,
   companies,
   companyMemberships,
+  documentRevisions,
   documents,
   goals,
   heartbeatRuns,
@@ -17,6 +19,7 @@ import {
   issueAttachments,
   issueInboxArchives,
   issueLabels,
+  issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
   issueComments,
@@ -29,6 +32,7 @@ import {
   projects,
 } from "@paperclipai/db";
 import type {
+  AcceptedPlanDecomposition,
   IssueCommentAuthorType,
   IssueCommentMetadata,
   IssueCommentPresentation,
@@ -245,6 +249,7 @@ export interface IssueFilters {
 
 type IssueRow = typeof issues.$inferSelect;
 type IssueLabelRow = typeof labels.$inferSelect;
+type IssuePlanDecompositionRow = typeof issuePlanDecompositions.$inferSelect;
 type IssueActiveRunRow = {
   id: string;
   status: string;
@@ -284,6 +289,30 @@ type IssueLastActivityStat = {
   latestCommentAt: Date | null;
   latestLogAt: Date | null;
 };
+
+function serializeAcceptedPlanDecomposition(
+  decomposition: IssuePlanDecompositionRow,
+): AcceptedPlanDecomposition {
+  return {
+    id: decomposition.id,
+    companyId: decomposition.companyId,
+    sourceIssueId: decomposition.sourceIssueId,
+    acceptedPlanRevisionId: decomposition.acceptedPlanRevisionId,
+    acceptedInteractionId: decomposition.acceptedInteractionId,
+    status: decomposition.status as AcceptedPlanDecomposition["status"],
+    requestFingerprint: decomposition.requestFingerprint,
+    // Intentionally omit requestedChildren here; the API only needs stable counts
+    // and child ids, while the durable table keeps the full child draft payload.
+    requestedChildCount: decomposition.requestedChildCount,
+    childIssueIds: normalizeIssuePlanDecompositionChildIds(decomposition.childIssueIds),
+    ownerAgentId: decomposition.ownerAgentId,
+    ownerUserId: decomposition.ownerUserId,
+    ownerRunId: decomposition.ownerRunId,
+    completedAt: decomposition.completedAt,
+    createdAt: decomposition.createdAt,
+    updatedAt: decomposition.updatedAt,
+  };
+}
 type IssueUserContextInput = {
   createdByUserId: string | null;
   assigneeUserId: string | null;
@@ -302,6 +331,16 @@ type IssueChildCreateInput = IssueCreateInput & {
   blockParentUntilDone?: boolean;
   actorAgentId?: string | null;
   actorUserId?: string | null;
+};
+type AcceptedPlanDecompositionInput = {
+  acceptedPlanRevisionId: string;
+  children: IssueChildCreateInput[];
+  actorAgentId?: string | null;
+  actorUserId?: string | null;
+  actorRunId?: string | null;
+};
+type AcceptedPlanDocumentInteraction = {
+  id: string;
 };
 type IssueRelationSummaryMap = {
   blockedBy: IssueRelationIssueSummary[];
@@ -374,6 +413,167 @@ function appendAcceptanceCriteriaToDescription(description: string | null | unde
   const base = description?.trim() ?? "";
   const criteriaMarkdown = ["## Acceptance Criteria", "", ...criteria.map((item) => `- ${item}`)].join("\n");
   return base ? `${base}\n\n${criteriaMarkdown}` : criteriaMarkdown;
+}
+
+function normalizeAcceptedPlanDecompositionFingerprintValue(value: unknown): unknown {
+  if (value === undefined) return null;
+  if (
+    value == null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeAcceptedPlanDecompositionFingerprintValue(item));
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(record)
+        .sort()
+        .map((key) => [key, normalizeAcceptedPlanDecompositionFingerprintValue(record[key])]),
+    );
+  }
+  return String(value);
+}
+
+const ACCEPTED_PLAN_DECOMPOSITION_FINGERPRINT_CHILD_METADATA_KEYS = new Set([
+  "id",
+  "companyId",
+  "parentId",
+  "identifier",
+  "checkoutRunId",
+  "executionRunId",
+  "executionLockedAt",
+  "startedAt",
+  "completedAt",
+  "cancelledAt",
+  "hiddenAt",
+  "createdAt",
+  "updatedAt",
+  "createdByAgentId",
+  "createdByUserId",
+  "updatedByAgentId",
+  "updatedByUserId",
+  "actorAgentId",
+  "actorUserId",
+]);
+
+function normalizeAcceptedPlanDecompositionFingerprintChild(child: IssueChildCreateInput) {
+  return Object.fromEntries(
+    Object.entries(child).filter(([key]) => !ACCEPTED_PLAN_DECOMPOSITION_FINGERPRINT_CHILD_METADATA_KEYS.has(key)),
+  );
+}
+
+function createAcceptedPlanDecompositionRequestFingerprint(input: {
+  acceptedPlanRevisionId: string;
+  children: IssueChildCreateInput[];
+}) {
+  const canonical = JSON.stringify(normalizeAcceptedPlanDecompositionFingerprintValue({
+    acceptedPlanRevisionId: input.acceptedPlanRevisionId,
+    children: input.children.map(normalizeAcceptedPlanDecompositionFingerprintChild),
+  }));
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
+function normalizeIssuePlanDecompositionChildIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+}
+
+export function readAcceptedPlanConfirmationTarget(payload: unknown): {
+  revisionId: string;
+  key: string;
+  issueId: string;
+} | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const target = (payload as Record<string, unknown>).target;
+  if (!target || typeof target !== "object" || Array.isArray(target)) return null;
+  const record = target as Record<string, unknown>;
+  if (record.type !== "issue_document") return null;
+  const revisionId = readStringFromRecord(record, "revisionId");
+  const key = readStringFromRecord(record, "key");
+  const issueId = readStringFromRecord(record, "issueId");
+  if (!revisionId || !key || !issueId) return null;
+  return { revisionId, key, issueId };
+}
+
+async function resolveAcceptedPlanClaimOwner(input: {
+  dbOrTx: Pick<Db, "select">;
+  claim: Pick<typeof issuePlanDecompositions.$inferSelect, "ownerAgentId" | "ownerUserId" | "ownerRunId">;
+  actorAgentId?: string | null;
+  actorUserId?: string | null;
+  actorRunId?: string | null;
+}) {
+  const nextOwner = {
+    ownerAgentId: input.actorAgentId ?? null,
+    ownerUserId: input.actorUserId ?? null,
+    ownerRunId: input.actorRunId ?? null,
+  };
+  if (
+    input.claim.ownerAgentId === nextOwner.ownerAgentId
+    && input.claim.ownerUserId === nextOwner.ownerUserId
+    && input.claim.ownerRunId === nextOwner.ownerRunId
+  ) {
+    return nextOwner;
+  }
+
+  if (!input.claim.ownerRunId) {
+    return nextOwner;
+  }
+
+  const existingOwnerRun = await input.dbOrTx
+    .select({ status: heartbeatRuns.status })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, input.claim.ownerRunId))
+    .then((rows) => rows[0] ?? null);
+  if (existingOwnerRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingOwnerRun.status)) {
+    return {
+      ownerAgentId: input.claim.ownerAgentId,
+      ownerUserId: input.claim.ownerUserId,
+      ownerRunId: input.claim.ownerRunId,
+    };
+  }
+
+  return nextOwner;
+}
+
+async function findAcceptedPlanDocumentInteraction(
+  dbOrTx: Pick<Db, "select">,
+  input: {
+    companyId: string;
+    sourceIssueId: string;
+    acceptedPlanRevisionId: string;
+  },
+): Promise<AcceptedPlanDocumentInteraction | null> {
+  const rows = await dbOrTx
+    .select({
+      id: issueThreadInteractions.id,
+      payload: issueThreadInteractions.payload,
+    })
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.companyId, input.companyId),
+      eq(issueThreadInteractions.issueId, input.sourceIssueId),
+      eq(issueThreadInteractions.kind, "request_confirmation"),
+      eq(issueThreadInteractions.status, "accepted"),
+    ))
+    .orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.createdAt));
+
+  for (const row of rows) {
+    const target = readAcceptedPlanConfirmationTarget(row.payload);
+    if (
+      target?.issueId === input.sourceIssueId &&
+      target.key === "plan" &&
+      target.revisionId === input.acceptedPlanRevisionId
+    ) {
+      return { id: row.id };
+    }
+  }
+  return null;
 }
 
 function createIssueDependencyReadiness(issueId: string): IssueDependencyReadiness {
@@ -4056,6 +4256,278 @@ export function issueService(db: Db) {
         issue: child,
         parentBlockerAdded: Boolean(blockParentUntilDone),
       };
+    },
+
+    decomposeAcceptedPlan: async (
+      sourceIssueId: string,
+      data: AcceptedPlanDecompositionInput,
+    ) => {
+      const sourceIssue = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          projectId: issues.projectId,
+          goalId: issues.goalId,
+        })
+        .from(issues)
+        .where(eq(issues.id, sourceIssueId))
+        .then((rows) => rows[0] ?? null);
+      if (!sourceIssue) throw notFound("Source issue not found");
+
+      const requestFingerprint = createAcceptedPlanDecompositionRequestFingerprint({
+        acceptedPlanRevisionId: data.acceptedPlanRevisionId,
+        children: data.children,
+      });
+
+      const initialClaim = await db.transaction(async (tx) => {
+        await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${sourceIssue.id} for update`);
+
+        const belongsToPlanDocument = await tx
+          .select({ revisionId: documentRevisions.id })
+          .from(issueDocuments)
+          .innerJoin(documentRevisions, eq(issueDocuments.documentId, documentRevisions.documentId))
+          .where(and(
+            eq(issueDocuments.companyId, sourceIssue.companyId),
+            eq(issueDocuments.issueId, sourceIssue.id),
+            eq(issueDocuments.key, "plan"),
+            eq(documentRevisions.id, data.acceptedPlanRevisionId),
+          ))
+          .then((rows) => rows[0] ?? null);
+        if (!belongsToPlanDocument) {
+          throw unprocessable("acceptedPlanRevisionId must belong to the source issue's plan document");
+        }
+
+        const acceptedInteraction = await findAcceptedPlanDocumentInteraction(tx, {
+          companyId: sourceIssue.companyId,
+          sourceIssueId: sourceIssue.id,
+          acceptedPlanRevisionId: data.acceptedPlanRevisionId,
+        });
+        if (!acceptedInteraction) {
+          throw unprocessable("acceptedPlanRevisionId must have an accepted plan confirmation");
+        }
+
+        const existing = await tx
+          .select()
+          .from(issuePlanDecompositions)
+          .where(and(
+            eq(issuePlanDecompositions.companyId, sourceIssue.companyId),
+            eq(issuePlanDecompositions.sourceIssueId, sourceIssue.id),
+            eq(issuePlanDecompositions.acceptedPlanRevisionId, data.acceptedPlanRevisionId),
+          ))
+          .then((rows) => rows[0] ?? null);
+
+        const now = new Date();
+        if (!existing) {
+          const [created] = await tx
+            .insert(issuePlanDecompositions)
+            .values({
+              companyId: sourceIssue.companyId,
+              sourceIssueId: sourceIssue.id,
+              acceptedPlanRevisionId: data.acceptedPlanRevisionId,
+              acceptedInteractionId: acceptedInteraction.id,
+              status: "in_flight",
+              requestFingerprint,
+              requestedChildCount: data.children.length,
+              requestedChildren: data.children as unknown as Record<string, unknown>[],
+              childIssueIds: [],
+              ownerAgentId: data.actorAgentId ?? null,
+              ownerUserId: data.actorUserId ?? null,
+              ownerRunId: data.actorRunId ?? null,
+              updatedAt: now,
+            })
+            .returning();
+          if (!created) throw new Error("Failed to create accepted-plan decomposition claim");
+          return created;
+        }
+
+        if (existing.requestFingerprint !== requestFingerprint) {
+          throw conflict("Accepted-plan decomposition already exists for this revision with a different child set");
+        }
+
+        return existing;
+      });
+
+      let currentClaim = initialClaim;
+      const newlyCreatedIssues: Array<typeof issues.$inferSelect> = [];
+
+      while (true) {
+        const step = await db.transaction(async (tx) => {
+          await tx.execute(
+            sql`select ${issuePlanDecompositions.id}
+                from ${issuePlanDecompositions}
+                where ${issuePlanDecompositions.id} = ${currentClaim.id}
+                for update`,
+          );
+
+          const claim = await tx
+            .select()
+            .from(issuePlanDecompositions)
+            .where(eq(issuePlanDecompositions.id, currentClaim.id))
+            .then((rows) => rows[0] ?? null);
+          if (!claim) throw notFound("Accepted-plan decomposition claim not found");
+          if (claim.requestFingerprint !== requestFingerprint) {
+            throw conflict("Accepted-plan decomposition already exists for this revision with a different child set");
+          }
+
+          const existingChildIssueIds = normalizeIssuePlanDecompositionChildIds(claim.childIssueIds);
+          if (claim.status === "completed" || existingChildIssueIds.length >= data.children.length) {
+            const nextIds = existingChildIssueIds.slice(0, data.children.length);
+            if (claim.status === "completed" && nextIds.length === data.children.length) {
+              return {
+                claim,
+                createdIssue: null,
+              };
+            }
+
+            const completedAt = claim.completedAt ?? new Date();
+            const ownerPatch = await resolveAcceptedPlanClaimOwner({
+              dbOrTx: tx,
+              claim,
+              actorAgentId: data.actorAgentId,
+              actorUserId: data.actorUserId,
+              actorRunId: data.actorRunId,
+            });
+            const [completed] = await tx
+              .update(issuePlanDecompositions)
+              .set({
+                status: "completed",
+                childIssueIds: nextIds,
+                completedAt,
+                ...ownerPatch,
+                updatedAt: completedAt,
+              })
+              .where(eq(issuePlanDecompositions.id, claim.id))
+              .returning();
+            if (!completed) throw new Error("Failed to complete accepted-plan decomposition claim");
+            return {
+              claim: completed,
+              createdIssue: null,
+            };
+          }
+
+          const nextChildInput = data.children[existingChildIssueIds.length];
+          if (!nextChildInput) {
+            throw new Error("Accepted-plan decomposition child cursor moved past the requested children");
+          }
+
+          const createdChild = await issueService(tx as unknown as Db).createChild(sourceIssue.id, nextChildInput);
+          const nextIds = [...existingChildIssueIds, createdChild.issue.id];
+          const now = new Date();
+          const nextStatus = nextIds.length === data.children.length ? "completed" : "in_flight";
+          const ownerPatch = await resolveAcceptedPlanClaimOwner({
+            dbOrTx: tx,
+            claim,
+            actorAgentId: data.actorAgentId,
+            actorUserId: data.actorUserId,
+            actorRunId: data.actorRunId,
+          });
+          const [updatedClaim] = await tx
+            .update(issuePlanDecompositions)
+            .set({
+              status: nextStatus,
+              childIssueIds: nextIds,
+              completedAt: nextStatus === "completed" ? now : null,
+              ...ownerPatch,
+              updatedAt: now,
+            })
+            .where(eq(issuePlanDecompositions.id, claim.id))
+            .returning();
+          if (!updatedClaim) throw new Error("Failed to persist accepted-plan decomposition progress");
+          return {
+            claim: updatedClaim,
+            createdIssue: createdChild.issue,
+          };
+        });
+
+        currentClaim = step.claim;
+        if (step.createdIssue) {
+          newlyCreatedIssues.push(step.createdIssue);
+        }
+        if (step.claim.status === "completed") break;
+      }
+
+      const childIssueIds = normalizeIssuePlanDecompositionChildIds(currentClaim.childIssueIds);
+      const childIssueRows = childIssueIds.length > 0
+        ? await db
+            .select()
+            .from(issues)
+            .where(and(eq(issues.companyId, sourceIssue.companyId), inArray(issues.id, childIssueIds)))
+        : [];
+      const childIssueMap = new Map(childIssueRows.map((row) => [row.id, row]));
+      const orderedChildIssues = childIssueIds
+        .map((childIssueId) => childIssueMap.get(childIssueId))
+        .filter((row): row is typeof issues.$inferSelect => Boolean(row));
+
+      const decomposition = serializeAcceptedPlanDecomposition(currentClaim);
+
+      return {
+        decomposition,
+        childIssueIds: decomposition.childIssueIds,
+        childIssues: orderedChildIssues,
+        newlyCreatedIssues,
+      };
+    },
+
+    listAcceptedPlanDecompositions: async (sourceIssueId: string) => {
+      const sourceIssue = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, sourceIssueId))
+        .then((rows) => rows[0] ?? null);
+      if (!sourceIssue) return [];
+
+      const rows = await db
+        .select({
+          decomposition: issuePlanDecompositions,
+          revisionNumber: documentRevisions.revisionNumber,
+        })
+        .from(issuePlanDecompositions)
+        .leftJoin(
+          documentRevisions,
+          eq(documentRevisions.id, issuePlanDecompositions.acceptedPlanRevisionId),
+        )
+        .where(and(
+          eq(issuePlanDecompositions.companyId, sourceIssue.companyId),
+          eq(issuePlanDecompositions.sourceIssueId, sourceIssue.id),
+        ))
+        .orderBy(desc(issuePlanDecompositions.createdAt));
+
+      if (rows.length === 0) return [];
+
+      const allChildIds = new Set<string>();
+      for (const row of rows) {
+        for (const childId of normalizeIssuePlanDecompositionChildIds(row.decomposition.childIssueIds)) {
+          allChildIds.add(childId);
+        }
+      }
+
+      const childIssueRows = allChildIds.size > 0
+        ? await db
+            .select({
+              id: issues.id,
+              identifier: issues.identifier,
+              title: issues.title,
+              status: issues.status,
+              priority: issues.priority,
+              assigneeAgentId: issues.assigneeAgentId,
+              assigneeUserId: issues.assigneeUserId,
+            })
+            .from(issues)
+            .where(and(eq(issues.companyId, sourceIssue.companyId), inArray(issues.id, Array.from(allChildIds))))
+        : [];
+      const childIssueMap = new Map(childIssueRows.map((row) => [row.id, row]));
+
+      return rows.map((row) => {
+        const decomposition = serializeAcceptedPlanDecomposition(row.decomposition);
+        const childIds = decomposition.childIssueIds;
+        return {
+          ...decomposition,
+          acceptedPlanRevisionNumber: row.revisionNumber ?? null,
+          childIssues: childIds
+            .map((childId) => childIssueMap.get(childId) ?? null)
+            .filter((entry): entry is NonNullable<typeof entry> => entry !== null),
+        };
+      });
     },
 
     create: async (

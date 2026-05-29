@@ -1947,7 +1947,7 @@ describe("realizeExecutionWorkspace", () => {
       config: {
         workspaceStrategy: {
           type: "git_worktree",
-          // No baseRef configured — origin/HEAD should win over fallback branches.
+          // No baseRef configured — origin/master is preferred over the symbolic-ref.
         },
       },
       issue: {
@@ -1967,7 +1967,7 @@ describe("realizeExecutionWorkspace", () => {
     expect(workspace.created).toBe(true);
     const worktreeOp = operations.find(op => op.phase === "worktree_prepare" && op.metadata?.created);
     expect(worktreeOp).toBeDefined();
-    expect(worktreeOp!.metadata!.baseRef).toBe("origin/main");
+    expect(worktreeOp!.metadata!.baseRef).toBe("origin/master");
   }, 10_000);
 
   it("removes a created git worktree and branch during cleanup", async () => {
