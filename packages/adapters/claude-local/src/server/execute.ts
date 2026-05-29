@@ -64,6 +64,32 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+// After this many consecutive adapter_failed runs the session is rotated (clearSession=true).
+// Configurable via CLAUDE_LOCAL_CONSECUTIVE_FAILURE_ROTATE_THRESHOLD env var.
+const CONSECUTIVE_FAILURE_SESSION_ROTATE_THRESHOLD = parseInt(
+  process.env.CLAUDE_LOCAL_CONSECUTIVE_FAILURE_ROTATE_THRESHOLD ?? "2",
+  10,
+);
+
+const FAILURE_COUNT_DIR = "/tmp/paperclip/claude-local";
+function failureCountPath(agentId: string): string {
+  return path.join(FAILURE_COUNT_DIR, `failure-count-${agentId}`);
+}
+
+async function readConsecutiveFailures(agentId: string): Promise<number> {
+  try {
+    const raw = await fs.readFile(failureCountPath(agentId), "utf8");
+    return parseInt(raw.trim(), 10) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function writeConsecutiveFailures(agentId: string, count: number): Promise<void> {
+  await fs.mkdir(FAILURE_COUNT_DIR, { recursive: true });
+  await fs.writeFile(failureCountPath(agentId), String(count), "utf8");
+}
+
 interface ClaudeExecutionInput {
   runId: string;
   agent: AdapterExecutionContext["agent"];
@@ -774,7 +800,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsedStream: ReturnType<typeof parseClaudeStreamJson>;
       parsed: Record<string, unknown> | null;
     },
-    opts: { fallbackSessionId: string | null; clearSessionOnMissingSession?: boolean },
+    opts: { fallbackSessionId: string | null; clearSessionOnMissingSession?: boolean; consecutiveFailures?: number },
   ): AdapterExecutionResult => {
     const { proc, parsedStream, parsed } = attempt;
     const loginMeta = detectClaudeLoginRequired({
@@ -937,9 +963,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
-      clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
+      clearSession:
+        clearSessionForMaxTurns ||
+        Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId) ||
+        Boolean(failed && (opts.consecutiveFailures ?? 0) >= CONSECUTIVE_FAILURE_SESSION_ROTATE_THRESHOLD),
     };
   };
+
+  const agentId = agent.id;
+  const consecutiveFailures = await readConsecutiveFailures(agentId);
 
   try {
     const initial = await runAttempt(sessionId ?? null);
@@ -955,10 +987,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
       );
       const retry = await runAttempt(null);
-      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+      const retryFailed = (retry.proc.exitCode ?? 0) !== 0 || asBoolean(retry.parsed?.is_error, false);
+      await writeConsecutiveFailures(agentId, retryFailed ? consecutiveFailures + 1 : 0);
+      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true, consecutiveFailures });
     }
 
-    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    const initialFailed = (initial.proc.exitCode ?? 0) !== 0 || asBoolean(initial.parsed?.is_error, false);
+    await writeConsecutiveFailures(agentId, initialFailed ? consecutiveFailures + 1 : 0);
+    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId, consecutiveFailures });
   } finally {
     if (paperclipBridge) {
       await paperclipBridge.stop();
