@@ -8,6 +8,7 @@ import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   GLOBAL_MAX_CONCURRENT_RUNS,
+  COMPANY_MAX_CONCURRENT_RUNS,
   PREMIUM_MAX_CONCURRENT_RUNS,
   AGENT_HARD_CAP_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
@@ -215,6 +216,14 @@ const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const AGENT_ONLY_STALE_COMMENT_WAKE_SUPPRESSION_THRESHOLD = 3;
+const HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS = readPositiveIntFromEnv(
+  "HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS",
+  GLOBAL_MAX_CONCURRENT_RUNS,
+);
+const HEARTBEAT_COMPANY_MAX_CONCURRENT_RUNS = readPositiveIntFromEnv(
+  "HEARTBEAT_COMPANY_MAX_CONCURRENT_RUNS",
+  COMPANY_MAX_CONCURRENT_RUNS,
+);
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -268,6 +277,14 @@ function resolveCodexTransientFallbackMode(attempt: number): CodexTransientFallb
   if (attempt === 2) return "safer_invocation";
   if (attempt === 3) return "fresh_session";
   return "fresh_session_safer_invocation";
+}
+
+function readPositiveIntFromEnv(name: string, fallback: number) {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return parsed;
 }
 
 function readHeartbeatRunErrorFamily(
@@ -5963,7 +5980,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
-  async function countGlobalRunningRuns(companyId: string) {
+  async function countGlobalRunningRuns() {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "running"));
+    return Number(count ?? 0);
+  }
+
+  async function countCompanyRunningRuns(companyId: string) {
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)` })
       .from(heartbeatRuns)
@@ -6951,8 +6976,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       // Global cap: at most GLOBAL_MAX_CONCURRENT_RUNS running across the entire instance
-      const globalRunningCount = await countGlobalRunningRuns(agent.companyId);
-      if (globalRunningCount >= GLOBAL_MAX_CONCURRENT_RUNS) return [];
+      const globalRunningCount = await countGlobalRunningRuns();
+      if (globalRunningCount >= HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS) return [];
+
+      const companyRunningCount = await countCompanyRunningRuns(agent.companyId);
+      if (companyRunningCount >= HEARTBEAT_COMPANY_MAX_CONCURRENT_RUNS) return [];
 
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
@@ -10241,8 +10269,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const [globalRow] = await db
         .select({ count: sql<number>`count(*)` })
         .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
+        .where(eq(heartbeatRuns.status, "running"));
       const globalRunning = Number(globalRow?.count ?? 0);
+
+      const [companyRow] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
+      const companyRunning = Number(companyRow?.count ?? 0);
 
       const [premiumRow] = await db
         .select({ count: sql<number>`count(*)` })
@@ -10265,7 +10299,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const queued = Number(queuedRow?.count ?? 0);
 
       return {
-        global: { running: globalRunning, cap: GLOBAL_MAX_CONCURRENT_RUNS },
+        global: { running: globalRunning, cap: HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS },
+        company: { running: companyRunning, cap: HEARTBEAT_COMPANY_MAX_CONCURRENT_RUNS },
         premium: { running: premiumRunning, cap: PREMIUM_MAX_CONCURRENT_RUNS },
         perAgent: { cap: AGENT_HARD_CAP_CONCURRENT_RUNS },
         queued,
