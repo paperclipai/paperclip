@@ -41,6 +41,26 @@ function readRunningPostmasterPid(postmasterPidFile: string): number | null {
   }
 }
 
+async function isPostgresPid(pid: number): Promise<boolean> {
+  try {
+    const commFile = `/proc/${pid}/comm`;
+    if (existsSync(commFile)) {
+      const comm = readFileSync(commFile, "utf8").trim();
+      return comm === "postgres" || comm === "postmaster";
+    }
+    // Fallback for non-Linux: check via ps
+    const { execFile } = await import("node:child_process");
+    const name = await new Promise<string>((resolve) => {
+      execFile("ps", ["-o", "comm=", "-p", String(pid)], (_err, stdout) =>
+        resolve(stdout.trim()),
+      );
+    });
+    return name === "postgres" || name === "postmaster";
+  } catch {
+    return false;
+  }
+}
+
 function readPidFilePort(postmasterPidFile: string): number | null {
   if (!existsSync(postmasterPidFile)) return null;
   try {
@@ -125,7 +145,7 @@ async function ensureEmbeddedPostgresConnection(
     }
   }
 
-  if (runningPid) {
+  if (runningPid && (await isPostgresPid(runningPid))) {
     const port = runningPort ?? preferredPort;
     const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
     await ensurePostgresDatabase(adminConnectionString, "paperclip");
