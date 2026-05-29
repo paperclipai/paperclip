@@ -70,6 +70,7 @@ import {
   issueThreadInteractionService,
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
+  ISSUE_LIST_MAX_OFFSET,
   issueReferenceService,
   issueService,
   clampIssueListLimit,
@@ -1913,6 +1914,10 @@ export function issueRoutes(
     }
     if (rawOffset !== undefined && (parsedOffset === null || !Number.isInteger(parsedOffset) || parsedOffset < 0)) {
       res.status(400).json({ error: "offset must be a non-negative integer" });
+      return;
+    }
+    if (parsedOffset !== null && parsedOffset > ISSUE_LIST_MAX_OFFSET) {
+      res.status(400).json({ error: `offset must not exceed ${ISSUE_LIST_MAX_OFFSET} — use cursor-based pagination for deep result sets` });
       return;
     }
     if (sortField !== undefined && sortField !== "updated") {
