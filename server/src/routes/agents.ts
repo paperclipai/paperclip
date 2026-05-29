@@ -1825,6 +1825,11 @@ export function agentRoutes(
       res.json(await buildAgentDetail(agent, { restricted: true }));
       return;
     }
+    const shouldRedact = req.query.redact === "true" || req.query.redact === "1";
+    if (shouldRedact) {
+      res.json(redactAgentConfiguration(agent));
+      return;
+    }
     res.json(await buildAgentDetail(agent));
   });
 
