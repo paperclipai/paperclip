@@ -148,6 +148,11 @@ describe("isGeminiUnknownSessionError", () => {
     expect(isGeminiUnknownSessionError("", "failed to resume session")).toBe(true);
   });
 
+  it("returns true for 'Invalid session identifier' (expired session)", () => {
+    expect(isGeminiUnknownSessionError("", "Invalid session identifier")).toBe(true);
+    expect(isGeminiUnknownSessionError("", "invalid session abc123")).toBe(true);
+  });
+
   it("returns false for unrelated errors", () => {
     expect(isGeminiUnknownSessionError("", "rate limit exceeded")).toBe(false);
   });
