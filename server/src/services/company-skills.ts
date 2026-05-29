@@ -1035,7 +1035,7 @@ export async function discoverProjectWorkspaceSkillDirectories(target: ProjectSk
     .sort((left, right) => left.skillDir.localeCompare(right.skillDir));
 }
 
-async function readLocalSkillImports(companyId: string, sourcePath: string): Promise<ImportedSkill[]> {
+export async function readLocalSkillImports(companyId: string, sourcePath: string): Promise<ImportedSkill[]> {
   const resolvedPath = path.resolve(sourcePath);
   const stat = await fs.stat(resolvedPath).catch(() => null);
   if (!stat) {
@@ -1089,10 +1089,20 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
   const imports: ImportedSkill[] = [];
   for (const skillPath of skillPaths) {
     const skillDir = path.posix.dirname(skillPath);
+    // When SKILL.md sits at the import root, path.posix.dirname returns ".",
+    // so prefix-matching with `${skillDir}/` would become "./" and never match
+    // entries returned by walkLocalFiles (which are relative paths without "./").
+    // Treat that case as "everything walked from root belongs to this skill".
+    const isRootSkill = skillDir === ".";
+    const skillDirPrefix = isRootSkill ? "" : `${skillDir}/`;
     const inventory = allFiles
-      .filter((entry) => entry === skillPath || entry.startsWith(`${skillDir}/`))
+      .filter((entry) => entry === skillPath || (isRootSkill ? true : entry.startsWith(skillDirPrefix)))
       .map((entry) => {
-        const relative = entry === skillPath ? "SKILL.md" : entry.slice(skillDir.length + 1);
+        const relative = entry === skillPath
+          ? "SKILL.md"
+          : isRootSkill
+          ? entry
+          : entry.slice(skillDir.length + 1);
         return {
           path: normalizePortablePath(relative),
           kind: classifyInventoryKind(relative),
