@@ -6,11 +6,12 @@ import {
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
   updateExecutionWorkspaceSchema,
+  reapExecutionWorkspacesSchema,
   workspaceRuntimeControlTargetSchema,
 } from "@paperclipai/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { executionWorkspaceService, logActivity, workspaceOperationService } from "../services/index.js";
+import { executionWorkspaceReaperService, executionWorkspaceService, logActivity, workspaceOperationService } from "../services/index.js";
 import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
@@ -36,7 +37,55 @@ const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 export function executionWorkspaceRoutes(db: Db) {
   const router = Router();
   const svc = executionWorkspaceService(db);
+  const reaperSvc = executionWorkspaceReaperService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
+
+  function parseBooleanQuery(value: unknown, fallback: boolean) {
+    if (value === undefined) return fallback;
+    if (value === "true" || value === "1") return true;
+    if (value === "false" || value === "0") return false;
+    return fallback;
+  }
+
+  router.get("/companies/:companyId/execution-workspaces/reap", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const report = await reaperSvc.reap(companyId, {
+      dryRun: true,
+      deleteFiles: parseBooleanQuery(req.query.deleteFiles, false),
+    });
+    res.json(report);
+  });
+
+  router.post("/companies/:companyId/execution-workspaces/reap", validate(reapExecutionWorkspacesSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const report = await reaperSvc.reap(companyId, req.body);
+    if (!report.dryRun && report.archivedCount > 0) {
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "execution_workspace.reaped",
+        entityType: "company",
+        entityId: companyId,
+        details: {
+          dryRun: report.dryRun,
+          deleteFiles: report.deleteFiles,
+          checkedCount: report.checkedCount,
+          candidateCount: report.candidateCount,
+          archivedCount: report.archivedCount,
+          excludedActiveCount: report.excludedActiveCount,
+          noopArchivedCount: report.noopArchivedCount,
+          noopNoReasonCount: report.noopNoReasonCount,
+        },
+      });
+    }
+    res.json(report);
+  });
 
   router.get("/companies/:companyId/execution-workspaces", async (req, res) => {
     const companyId = req.params.companyId as string;

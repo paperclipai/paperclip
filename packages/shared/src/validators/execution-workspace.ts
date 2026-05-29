@@ -114,6 +114,11 @@ export const executionWorkspaceCloseReadinessSchema = z.object({
   runtimeServices: z.array(workspaceRuntimeServiceSchema),
 }).strict();
 
+export const reapExecutionWorkspacesSchema = z.object({
+  dryRun: z.boolean().optional().default(true),
+  deleteFiles: z.boolean().optional().default(false),
+}).strict();
+
 export const updateExecutionWorkspaceSchema = z.object({
   name: z.string().min(1).optional(),
   cwd: z.string().optional().nullable(),
@@ -129,3 +134,4 @@ export const updateExecutionWorkspaceSchema = z.object({
 }).strict();
 
 export type UpdateExecutionWorkspace = z.infer<typeof updateExecutionWorkspaceSchema>;
+export type ReapExecutionWorkspaces = z.infer<typeof reapExecutionWorkspacesSchema>;
