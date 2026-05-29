@@ -48,6 +48,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { assertPackageVersionConsistency } from "./version.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -91,6 +92,7 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
+  assertPackageVersionConsistency();
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
