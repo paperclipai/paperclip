@@ -7,8 +7,22 @@ export interface ProviderCredential {
   name: string;
   type: CredentialType;
   isDefault: boolean;
+  // Auto-rotation bookkeeping (see server credential rotator). `cooldownUntil`
+  // is an ISO timestamp while the credential is parked after an upstream limit.
+  cooldownUntil: string | null;
+  cooldownReason: string | null;
+  lastUsedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CredentialUsage {
+  credentialId: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  costCents: number;
+  events: number;
 }
 
 export interface RevealedCredential {
@@ -56,6 +70,10 @@ export const credentialsApi = {
   remove: (id: string, force = false) =>
     api.delete<{ ok: true }>(`/credentials/${id}${force ? "?force=true" : ""}`),
   reveal: (id: string) => api.get<RevealedCredential>(`/credentials/${id}/reveal`),
+  usage: (companyId: string, days = 30) =>
+    api.get<{ days: number; usage: CredentialUsage[] }>(
+      `/companies/${companyId}/credentials/usage?days=${days}`,
+    ),
   test: (id: string) =>
     api.post<{ ok: boolean; message: string }>(`/credentials/${id}/test`, {}),
   probe: (type: CredentialType, credential: Record<string, unknown>) =>
