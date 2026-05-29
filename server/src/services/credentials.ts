@@ -224,6 +224,7 @@ export function credentialService(db: Db) {
  * - `gemini_api_key`: sets GEMINI_API_KEY and GOOGLE_API_KEY.
  * - `openai_api_key`: sets OPENAI_API_KEY (covers codex-local and cursor-local).
  * - `openrouter_api_key`: sets OPENROUTER_API_KEY (covers opencode-local).
+ * - `deepseek_api_key`: sets DEEPSEEK_API_KEY (covers deepseek-api).
  */
 export async function resolveCredentialEnv(
   db: Db,
@@ -410,6 +411,15 @@ export async function resolveCredentialEnv(
         return { env: {} };
       }
       return { env: { OPENROUTER_API_KEY: apiKey } };
+    }
+
+    case "deepseek_api_key": {
+      const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
+      if (!apiKey) {
+        logger.warn({ agentId, credentialId }, "deepseek_api_key credential missing apiKey");
+        return { env: {} };
+      }
+      return { env: { DEEPSEEK_API_KEY: apiKey } };
     }
 
     default:

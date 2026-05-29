@@ -625,6 +625,15 @@ async function probeCredential(type: string, payload: Record<string, unknown>): 
       if (res.ok) return { ok: true, message: "API key valid" };
       return { ok: false, reason: classifyStatus(res.status), message: `OpenRouter API returned ${res.status}` };
     }
+    case "deepseek_api_key": {
+      const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
+      if (!apiKey) return { ok: false, reason: "invalid", message: "Missing apiKey" };
+      const res = await probeFetch("https://api.deepseek.com/v1/models", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (res.ok) return { ok: true, message: "API key valid" };
+      return { ok: false, reason: classifyStatus(res.status), message: `DeepSeek API returned ${res.status}` };
+    }
     case "gemini_api_key": {
       const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
       if (!apiKey) return { ok: false, reason: "invalid", message: "Missing apiKey" };

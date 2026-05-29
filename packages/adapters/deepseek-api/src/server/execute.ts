@@ -151,7 +151,13 @@ async function streamChatCompletion(params: {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const config = parseObject(ctx.agent.adapterConfig);
+  // Read the fully-resolved runtime config (ctx.config), not the static
+  // agent.adapterConfig record. ctx.config is built from the agent's adapter
+  // config and then has project env, secrets, and resolved provider
+  // credentials merged in (see resolveAllCredentialEnv in heartbeat). Reading
+  // it here is what lets a managed `deepseek_api_key` credential inject
+  // DEEPSEEK_API_KEY into env. Every other in-process adapter reads ctx.config.
+  const config = parseObject(ctx.config);
   const apiKey = resolveApiKey(config);
   if (!apiKey) {
     return {
