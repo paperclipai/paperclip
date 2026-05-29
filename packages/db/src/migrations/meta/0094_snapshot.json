@@ -1,6 +1,6 @@
 {
-  "id": "8b20879c-4a71-4a03-adb8-d1567d5540a3",
-  "prevId": "12c69904-b428-4f64-8d48-e8712c6fc4c9",
+  "id": "ee9399cc-9bfc-4055-8e95-45ed52a86b13",
+  "prevId": "8b20879c-4a71-4a03-adb8-d1567d5540a3",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1393,6 +1393,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "is_router": {
+          "name": "is_router",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         }
       },
       "indexes": {

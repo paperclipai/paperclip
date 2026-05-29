@@ -30,6 +30,7 @@ import {
   labels,
   projectWorkspaces,
   projects,
+  workspaceOperations,
 } from "@paperclipai/db";
 import type {
   AcceptedPlanDecomposition,
@@ -360,6 +361,8 @@ export type IssueDependencyReadiness = {
   blockerIssueIds: string[];
   unresolvedBlockerIssueIds: string[];
   unresolvedBlockerCount: number;
+  /** Blockers whose status is `done` but whose execution workspace has not yet finalized. */
+  pendingFinalizeBlockerIssueIds: string[];
   allBlockersDone: boolean;
   isDependencyReady: boolean;
 };
@@ -591,9 +594,68 @@ function createIssueDependencyReadiness(issueId: string): IssueDependencyReadine
     blockerIssueIds: [],
     unresolvedBlockerIssueIds: [],
     unresolvedBlockerCount: 0,
+    pendingFinalizeBlockerIssueIds: [],
     allBlockersDone: true,
     isDependencyReady: true,
   };
+}
+
+/**
+ * Returns the set of execution-workspace ids whose most recent workspace operation
+ * is NOT a successful `workspace_finalize`. These workspaces have either an in-flight
+ * run, a failed finalize, or never reached the finalize barrier — dependents that
+ * read this workspace must wait until finalize succeeds.
+ *
+ * Workspaces with no recorded operations are considered finalized (nothing has
+ * touched them since they were realized).
+ */
+export async function listUnfinalizedExecutionWorkspaceIds(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  executionWorkspaceIds: string[],
+): Promise<Set<string>> {
+  const unfinalized = new Set<string>();
+  if (executionWorkspaceIds.length === 0) return unfinalized;
+
+  // Pull every workspace op for the candidate workspaces and pick the latest per
+  // workspace in memory. Per-workspace LATERAL queries would be tighter, but the
+  // candidate set is tiny in practice (one workspace per blocker per readiness call).
+  const rows = await dbOrTx
+    .select({
+      executionWorkspaceId: workspaceOperations.executionWorkspaceId,
+      phase: workspaceOperations.phase,
+      status: workspaceOperations.status,
+      startedAt: workspaceOperations.startedAt,
+    })
+    .from(workspaceOperations)
+    .where(
+      and(
+        eq(workspaceOperations.companyId, companyId),
+        inArray(workspaceOperations.executionWorkspaceId, executionWorkspaceIds),
+      ),
+    );
+
+  const latestByWorkspace = new Map<string, { phase: string; status: string; startedAt: Date }>();
+  for (const row of rows) {
+    if (!row.executionWorkspaceId) continue;
+    const current = latestByWorkspace.get(row.executionWorkspaceId);
+    if (!current || row.startedAt > current.startedAt) {
+      latestByWorkspace.set(row.executionWorkspaceId, {
+        phase: row.phase,
+        status: row.status,
+        startedAt: row.startedAt,
+      });
+    }
+  }
+
+  for (const workspaceId of executionWorkspaceIds) {
+    const latest = latestByWorkspace.get(workspaceId);
+    if (!latest) continue; // no ops recorded → treat as finalized
+    if (latest.phase === "workspace_finalize" && latest.status === "succeeded") continue;
+    unfinalized.add(workspaceId);
+  }
+
+  return unfinalized;
 }
 
 async function listIssueDependencyReadinessMap(
@@ -613,6 +675,7 @@ async function listIssueDependencyReadinessMap(
       issueId: issueRelations.relatedIssueId,
       blockerIssueId: issueRelations.issueId,
       blockerStatus: issues.status,
+      blockerExecutionWorkspaceId: issues.executionWorkspaceId,
     })
     .from(issueRelations)
     .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -624,6 +687,21 @@ async function listIssueDependencyReadinessMap(
       ),
     );
 
+  // Collect executionWorkspaceIds of "done" blockers — these are the only ones
+  // subject to the workspace-finalize barrier. Blockers that aren't done already
+  // mark the dependent as not-ready and don't need a finalize check.
+  const doneBlockerWorkspaceIds = new Set<string>();
+  for (const row of blockerRows) {
+    if (row.blockerStatus === "done" && row.blockerExecutionWorkspaceId) {
+      doneBlockerWorkspaceIds.add(row.blockerExecutionWorkspaceId);
+    }
+  }
+  const unfinalizedWorkspaceIds = await listUnfinalizedExecutionWorkspaceIds(
+    dbOrTx,
+    companyId,
+    [...doneBlockerWorkspaceIds],
+  );
+
   for (const row of blockerRows) {
     const current = readinessMap.get(row.issueId) ?? createIssueDependencyReadiness(row.issueId);
     current.blockerIssueIds.push(row.blockerIssueId);
@@ -632,6 +710,21 @@ async function listIssueDependencyReadinessMap(
     if (row.blockerStatus !== "done") {
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
       current.unresolvedBlockerCount += 1;
+      current.allBlockersDone = false;
+      current.isDependencyReady = false;
+    } else if (
+      row.blockerExecutionWorkspaceId &&
+      unfinalizedWorkspaceIds.has(row.blockerExecutionWorkspaceId)
+    ) {
+      // Workspace-finalize barrier: the blocker's most recent run on its
+      // execution workspace hasn't recorded a successful workspace_finalize.
+      // Treat the dependent as not-ready until sync-back lands (or the run
+      // finalizes); a subsequent finalize wake will re-evaluate readiness.
+      // `allBlockersDone` is cleared too so that callers using it as a
+      // proxy for "this dependent can proceed" still see the gate.
+      current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
+      current.unresolvedBlockerCount += 1;
+      current.pendingFinalizeBlockerIssueIds.push(row.blockerIssueId);
       current.allBlockersDone = false;
       current.isDependencyReady = false;
     }
@@ -4131,45 +4224,33 @@ export function issueService(db: Db) {
         );
       if (candidates.length === 0) return [];
 
-      const candidateIds = candidates.map((candidate) => candidate.id);
-      const blockerRows = await db
-        .select({
-          issueId: issueRelations.relatedIssueId,
-          blockerIssueId: issueRelations.issueId,
-          blockerStatus: issues.status,
-        })
-        .from(issueRelations)
-        .innerJoin(issues, eq(issueRelations.issueId, issues.id))
-        .where(
-          and(
-            eq(issueRelations.companyId, blockerIssue.companyId),
-            eq(issueRelations.type, "blocks"),
-            inArray(issueRelations.relatedIssueId, candidateIds),
-          ),
-        );
+      const wakeableCandidates = candidates.filter(
+        (candidate) =>
+          candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status),
+      );
+      if (wakeableCandidates.length === 0) return [];
 
-      const blockersByIssueId = new Map<string, Array<{ blockerIssueId: string; blockerStatus: string }>>();
-      for (const row of blockerRows) {
-        const list = blockersByIssueId.get(row.issueId) ?? [];
-        list.push({ blockerIssueId: row.blockerIssueId, blockerStatus: row.blockerStatus });
-        blockersByIssueId.set(row.issueId, list);
-      }
+      // Defer to the unified readiness check so that a dependent only fires when
+      // (a) every blocker is done AND (b) every done blocker's workspace has
+      // recorded a successful workspace_finalize. The finalize hook also calls
+      // this function on completion, so a wake initially gated by an in-flight
+      // sync-back will re-fire once the restore lands locally.
+      const readinessMap = await listIssueDependencyReadinessMap(
+        db,
+        blockerIssue.companyId,
+        wakeableCandidates.map((candidate) => candidate.id),
+      );
 
-      return candidates
-        .filter((candidate) => candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status))
+      return wakeableCandidates
         .map((candidate) => {
-          const blockers = blockersByIssueId.get(candidate.id) ?? [];
-          return {
-            ...candidate,
-            blockerIssueIds: blockers.map((blocker) => blocker.blockerIssueId),
-            allBlockersDone: blockers.length > 0 && blockers.every((blocker) => blocker.blockerStatus === "done"),
-          };
+          const readiness = readinessMap.get(candidate.id) ?? createIssueDependencyReadiness(candidate.id);
+          return { candidate, readiness };
         })
-        .filter((candidate) => candidate.allBlockersDone)
-        .map((candidate) => ({
+        .filter(({ readiness }) => readiness.isDependencyReady && readiness.blockerIssueIds.length > 0)
+        .map(({ candidate, readiness }) => ({
           id: candidate.id,
           assigneeAgentId: candidate.assigneeAgentId!,
-          blockerIssueIds: candidate.blockerIssueIds,
+          blockerIssueIds: readiness.blockerIssueIds,
         }));
     },
 

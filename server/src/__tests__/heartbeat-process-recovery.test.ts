@@ -19,6 +19,7 @@ import {
   documents,
   environmentLeases,
   environments,
+  executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -31,6 +32,7 @@ import {
   issueTreeHolds,
   issueWorkProducts,
   issues,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -378,6 +380,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(companySkills);
+      await db.delete(workspaceOperations);
+      await db.delete(executionWorkspaces);
       await db.delete(issuePlanDecompositions);
       await db.delete(issueThreadInteractions);
       await db.delete(documentAnnotationComments);
