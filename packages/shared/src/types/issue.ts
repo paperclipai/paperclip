@@ -498,6 +498,8 @@ export interface Issue {
   isUnreadForMe?: boolean;
   createdAt: Date;
   updatedAt: Date;
+  /** Custom fields registered by plugins via ctx.properties.register */
+  properties?: Record<string, unknown>;
 }
 
 export interface IssueComment {
@@ -781,5 +783,3 @@ export interface IssueAttachment {
   updatedAt: Date;
   contentPath: string;
 }
-  /** Custom fields registered by plugins via ctx.properties.register */
-  properties?: Record<string, any>;
