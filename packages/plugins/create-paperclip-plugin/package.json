@@ -13,20 +13,25 @@
   },
   "type": "module",
   "bin": {
-    "create-paperclip-plugin": "./dist/index.js"
+    "create-paperclip-plugin": "./dist/bin.js"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./bin": "./src/bin.ts"
   },
   "publishConfig": {
     "access": "public",
     "bin": {
-      "create-paperclip-plugin": "./dist/index.js"
+      "create-paperclip-plugin": "./dist/bin.js"
     },
     "exports": {
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
+      },
+      "./bin": {
+        "types": "./dist/bin.d.ts",
+        "import": "./dist/bin.js"
       }
     },
     "main": "./dist/index.js",
