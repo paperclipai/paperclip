@@ -1064,6 +1064,224 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
   }, 20_000);
 
+  it("archives but skips delete-files cleanup for unsafe git and project workspaces", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const sourceDoneIssueId = randomUUID();
+    const dirtyWorkspaceId = randomUUID();
+    const untrackedWorkspaceId = randomUUID();
+    const unmergedWorkspaceId = randomUUID();
+    const primaryWorkspaceId = randomUUID();
+    const sharedWorkspaceId = randomUUID();
+
+    async function addRuntimeWorktree(branchName: string) {
+      const worktreePath = path.join(path.dirname(repoRoot), `${branchName}-${randomUUID()}`);
+      tempDirs.add(worktreePath);
+      await runGit(repoRoot, ["worktree", "add", "-b", branchName, worktreePath, "main"]);
+      return worktreePath;
+    }
+
+    const dirtyBranch = "paperclip-reaper-dirty";
+    const untrackedBranch = "paperclip-reaper-untracked";
+    const unmergedBranch = "paperclip-reaper-unmerged";
+    const dirtyPath = await addRuntimeWorktree(dirtyBranch);
+    const untrackedPath = await addRuntimeWorktree(untrackedBranch);
+    const unmergedPath = await addRuntimeWorktree(unmergedBranch);
+    await fs.writeFile(path.join(dirtyPath, "README.md"), "# Test repo\nmodified\n", "utf8");
+    await fs.writeFile(path.join(untrackedPath, "untracked.txt"), "left behind\n", "utf8");
+    await fs.writeFile(path.join(unmergedPath, "feature.txt"), "hello\n", "utf8");
+    await runGit(unmergedPath, ["add", "feature.txt"]);
+    await runGit(unmergedPath, ["commit", "-m", "Feature commit"]);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace reaper safety",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "git_repo",
+      isPrimary: true,
+      cwd: repoRoot,
+    });
+    await db.insert(issues).values({
+      id: sourceDoneIssueId,
+      companyId,
+      projectId,
+      title: "Finished source issue",
+      status: "done",
+      priority: "medium",
+      identifier: "PAP-60",
+    });
+    await db.insert(executionWorkspaces).values([
+      {
+        id: dirtyWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: sourceDoneIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Dirty tracked workspace",
+        status: "active",
+        providerType: "git_worktree",
+        cwd: dirtyPath,
+        providerRef: dirtyPath,
+        branchName: dirtyBranch,
+        baseRef: "main",
+        metadata: { createdByRuntime: true },
+      },
+      {
+        id: untrackedWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: sourceDoneIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Untracked workspace",
+        status: "active",
+        providerType: "git_worktree",
+        cwd: untrackedPath,
+        providerRef: untrackedPath,
+        branchName: untrackedBranch,
+        baseRef: "main",
+        metadata: { createdByRuntime: true },
+      },
+      {
+        id: unmergedWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: sourceDoneIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Unmerged workspace",
+        status: "active",
+        providerType: "git_worktree",
+        cwd: unmergedPath,
+        providerRef: unmergedPath,
+        branchName: unmergedBranch,
+        baseRef: "main",
+        metadata: { createdByRuntime: true },
+      },
+      {
+        id: primaryWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: sourceDoneIssueId,
+        mode: "isolated_workspace",
+        strategyType: "project_primary",
+        name: "Project primary workspace",
+        status: "active",
+        providerType: "local_fs",
+        cwd: repoRoot,
+        providerRef: repoRoot,
+        metadata: { createdByRuntime: true },
+      },
+      {
+        id: sharedWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: sourceDoneIssueId,
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        name: "Shared workspace session",
+        status: "active",
+        providerType: "local_fs",
+        cwd: repoRoot,
+        providerRef: repoRoot,
+        metadata: { createdByRuntime: true },
+      },
+    ]);
+
+    const report = await executionWorkspaceReaperService(db).reap(companyId, {
+      dryRun: false,
+      deleteFiles: true,
+    });
+    const itemById = new Map(report.items.map((item) => [item.workspaceId, item]));
+    const rows = await db
+      .select({
+        id: executionWorkspaces.id,
+        status: executionWorkspaces.status,
+      })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [
+        dirtyWorkspaceId,
+        untrackedWorkspaceId,
+        unmergedWorkspaceId,
+        primaryWorkspaceId,
+        sharedWorkspaceId,
+      ]));
+
+    expect(report).toMatchObject({
+      dryRun: false,
+      deleteFiles: true,
+      checkedCount: 5,
+      candidateCount: 5,
+      archivedCount: 5,
+    });
+    expect(itemById.get(dirtyWorkspaceId)).toMatchObject({
+      plannedAction: "archive_record_cleanup_skipped",
+      archived: true,
+      cleanupAttempted: false,
+      cleanupDeleted: false,
+      cleanupSkippedReason: "workspace has modified tracked files",
+    });
+    expect(itemById.get(untrackedWorkspaceId)).toMatchObject({
+      plannedAction: "archive_record_cleanup_skipped",
+      archived: true,
+      cleanupAttempted: false,
+      cleanupDeleted: false,
+      cleanupSkippedReason: "workspace has untracked files",
+    });
+    expect(itemById.get(unmergedWorkspaceId)).toMatchObject({
+      plannedAction: "archive_record_cleanup_skipped",
+      archived: true,
+      cleanupAttempted: false,
+      cleanupDeleted: false,
+      cleanupSkippedReason: "workspace has unmerged commits ahead of its base ref",
+    });
+    expect(itemById.get(primaryWorkspaceId)).toMatchObject({
+      plannedAction: "archive_record_cleanup_skipped",
+      archived: true,
+      cleanupAttempted: false,
+      cleanupDeleted: false,
+      cleanupSkippedReason: "project primary workspaces are not filesystem cleanup targets",
+    });
+    expect(itemById.get(sharedWorkspaceId)).toMatchObject({
+      plannedAction: "archive_record_cleanup_skipped",
+      archived: true,
+      cleanupAttempted: false,
+      cleanupDeleted: false,
+      cleanupSkippedReason: "shared workspace sessions are not filesystem cleanup targets",
+    });
+    expect(rows).toHaveLength(5);
+    expect(new Set(rows.map((row) => row.status))).toEqual(new Set(["archived"]));
+    await expect(fs.access(dirtyPath)).resolves.toBeUndefined();
+    await expect(fs.access(untrackedPath)).resolves.toBeUndefined();
+    await expect(fs.access(unmergedPath)).resolves.toBeUndefined();
+    await expect(fs.access(repoRoot)).resolves.toBeUndefined();
+  }, 30_000);
+
   it("warns about dirty and unmerged git worktrees and reports cleanup actions", async () => {
     const repoRoot = await createTempRepo();
     tempDirs.add(repoRoot);

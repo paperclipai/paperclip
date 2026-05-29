@@ -28,21 +28,28 @@ export function registerExecutionWorkspaceCommands(program: Command): void {
       .command("reap")
       .description("Dry-run or archive conservative execution-workspace cleanup candidates")
       .option("-C, --company-id <id>", "Company ID")
-      .option("--dry-run", "Only list planned actions", true)
+      .option("--dry-run", "Only list planned actions")
       .option("--apply", "Archive eligible DB records")
       .option("--delete-files", "After archiving, delete eligible filesystem workspaces that pass close-readiness checks")
-      .action(async (opts: ExecutionWorkspaceReapOptions) => {
+      .action(async (opts: ExecutionWorkspaceReapOptions, command: Command) => {
         try {
+          if (opts.apply && command.getOptionValueSource("dryRun") === "cli") {
+            throw new Error("Choose either --apply or --dry-run, not both.");
+          }
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const dryRun = opts.apply ? false : opts.dryRun !== false;
-          const payload = reapExecutionWorkspacesSchema.parse({
-            dryRun,
-            deleteFiles: opts.deleteFiles ?? false,
-          });
-          const report = await ctx.api.post<ExecutionWorkspaceReapReport>(
-            `/api/companies/${ctx.companyId}/execution-workspaces/reap`,
-            payload,
-          );
+          const deleteFiles = opts.deleteFiles ?? false;
+          const path = `/api/companies/${ctx.companyId}/execution-workspaces/reap`;
+          const report = opts.apply
+            ? await ctx.api.post<ExecutionWorkspaceReapReport>(
+                path,
+                reapExecutionWorkspacesSchema.parse({
+                  dryRun: false,
+                  deleteFiles,
+                }),
+              )
+            : await ctx.api.get<ExecutionWorkspaceReapReport>(
+                deleteFiles ? `${path}?deleteFiles=true` : path,
+              );
           if (ctx.json) {
             printOutput(report, { json: true });
             return;
