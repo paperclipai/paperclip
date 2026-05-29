@@ -641,7 +641,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       biller: "google",
       model,
       billingType,
-      costUsd: attempt.parsed.costUsd != null
+      costUsd: attempt.parsed.costUsd != null && attempt.parsed.costUsd > 0
         ? attempt.parsed.costUsd
         : (attempt.parsed.usage.inputTokens > 0 || attempt.parsed.usage.outputTokens > 0)
           ? (attempt.parsed.usage.inputTokens * 0.00025 + attempt.parsed.usage.outputTokens * 0.0005) / 1000
