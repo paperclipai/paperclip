@@ -330,7 +330,11 @@ export function loadConfig(): Config {
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
-    heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    // Default lowered from 30000 to 10000: with up to ~10 agents and a few hundred issues
+    // the cost of an extra tick is negligible (one indexed agents-table scan + a coalesced
+    // wake) but the latency win on cron drift / scheduled retries / event response is ~3x.
+    // Floor remains 10000 to protect downstream rate limits.
+    heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 10000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };

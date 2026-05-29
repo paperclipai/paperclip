@@ -33,6 +33,12 @@ export const agents = pgTable(
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     permissions: jsonb("permissions").$type<Record<string, unknown>>().notNull().default({}),
     lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
+    // Per-agent error backoff: when an agent's adapter returns 'failed' status N times
+    // in a row, scheduled (timer-source) wakes are skipped until backoffUntil. Reset to 0
+    // on a successful run. Manual / on_demand wakes bypass the backoff so an operator
+    // can always retry.
+    consecutiveFailureCount: integer("consecutive_failure_count").notNull().default(0),
+    backoffUntil: timestamp("backoff_until", { withTimezone: true }),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

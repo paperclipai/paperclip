@@ -6385,11 +6385,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ? "idle"
           : "error";
 
+    // Per-agent exponential backoff on consecutive failures.
+    // - Reset to 0 on success (idle) or running (mid-task heartbeat).
+    // - Increment on failed/timed_out outcomes, capped at 6 (= 32 min backoff).
+    // - 30s base × 2^N, capped at 30 min, jittered ±15%.
+    const isFailureOutcome = outcome === "failed" || outcome === "timed_out";
+    const isSuccessOutcome = outcome === "succeeded" || outcome === "cancelled";
+    let nextFailureCount = existing.consecutiveFailureCount ?? 0;
+    let nextBackoffUntil: Date | null = existing.backoffUntil ?? null;
+    if (isSuccessOutcome) {
+      nextFailureCount = 0;
+      nextBackoffUntil = null;
+    } else if (isFailureOutcome) {
+      nextFailureCount = Math.min(6, nextFailureCount + 1);
+      const baseMs = 30_000 * Math.pow(2, nextFailureCount - 1);
+      const cappedMs = Math.min(baseMs, 30 * 60_000);
+      const jitterMs = cappedMs * (0.85 + Math.random() * 0.30);
+      nextBackoffUntil = new Date(Date.now() + jitterMs);
+    }
+
     const updated = await db
       .update(agents)
       .set({
         status: nextStatus,
         lastHeartbeatAt: new Date(),
+        consecutiveFailureCount: nextFailureCount,
+        backoffUntil: nextBackoffUntil,
         updatedAt: new Date(),
       })
       .where(eq(agents.id, agentId))
@@ -8884,6 +8905,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
+      return null;
+    }
+    // Per-agent error backoff: scheduled (timer) wakes are skipped while the agent is
+    // in its post-failure cooldown window. on_demand / assignment / automation wakes
+    // bypass this so an operator can always force a retry.
+    if (source === "timer" && agent.backoffUntil && agent.backoffUntil > new Date()) {
+      await writeSkippedRequest("agent.backoff.active");
       return null;
     }
 
