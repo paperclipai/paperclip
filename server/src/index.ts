@@ -366,9 +366,21 @@ export async function startServer(): Promise<StartedServer> {
     const isPidRunning = (pid: number): boolean => {
       try {
         process.kill(pid, 0);
-        return true;
       } catch {
         return false;
+      }
+      // process.kill(pid, 0) only checks that a process with this PID exists.
+      // After a reboot, another process may recycle the same PID. Verify the
+      // process is actually postgres/postmaster before trusting the pid file.
+      try {
+        // Linux: /proc/<pid>/comm contains the process name (sync, no child process)
+        const comm = readFileSync(`/proc/${pid}/comm`, "utf8").trim().toLowerCase();
+        return comm === "postgres" || comm === "postmaster" || comm.startsWith("postgres");
+      } catch {
+        // /proc not available (macOS/other). Trust the pid file — false negatives
+        // (not starting when postgres already runs) are safer than false positives
+        // (skipping startup when a different process owns the PID after reboot).
+        return true;
       }
     };
   
