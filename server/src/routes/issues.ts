@@ -1385,7 +1385,7 @@ export function issueRoutes(
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null; checkoutRunId?: string | null },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1430,8 +1430,24 @@ export function issueRoutes(
     if (!runId) return false;
     const targetStatus = typeof req.body?.status === "string" ? req.body.status : undefined;
     const targetIsTerminal = targetStatus === "done" || targetStatus === "cancelled";
+    // For terminal transitions, normally block adoption to prevent a second run from
+    // closing an issue mid-flight. But if the stale checkout run is already dead (terminal),
+    // the same agent should be able to reclaim its own issue — there is no live contention.
+    let allowAdoption = !targetIsTerminal;
+    if (!allowAdoption && issue.checkoutRunId && issue.checkoutRunId !== runId) {
+      const staleRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, issue.checkoutRunId))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const terminalStatuses = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+      if (staleRun && terminalStatuses.has(staleRun.status)) {
+        allowAdoption = true;
+      }
+    }
     const ownership = await svc.assertCheckoutOwner(issue.id, actorAgentId, runId, {
-      allowUnownedAdoption: !targetIsTerminal,
+      allowUnownedAdoption: allowAdoption,
     });
     if (ownership.adoptedFromRunId) {
       const actor = getActorInfo(req);
