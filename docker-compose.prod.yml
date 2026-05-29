@@ -1,0 +1,65 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: paperclip-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-paperclip}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+      POSTGRES_DB: ${DB_NAME:-paperclip}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-paperclip} -d ${DB_NAME:-paperclip}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - ../db-data/paperclip-pgdata:/var/lib/postgresql/data
+    networks:
+      - internal
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env.prod
+    container_name: paperclip-server
+    restart: unless-stopped
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3100"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      PAPERCLIP_HOME: "/paperclip"
+      DATABASE_URL: postgres://${DB_USER:-paperclip}:${DB_PASSWORD}@db:5432/${DB_NAME:-paperclip}
+      SERVE_UI: "true"
+      PAPERCLIP_DEPLOYMENT_MODE: "${PAPERCLIP_DEPLOYMENT_MODE:-authenticated}"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "${PAPERCLIP_DEPLOYMENT_EXPOSURE:-private}"
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-https://paperclip.aiotso.net}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ../db-data/paperclip-data:/paperclip
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "3100:3100"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      internal:
+      proxy-nw:
+        aliases:
+          - paperclip-server
+
+#volumes:
+#  paperclip-pgdata:
+#  paperclip-data:
+
+networks:
+  internal:
+    driver: bridge
+  proxy-nw:
+    external: true
