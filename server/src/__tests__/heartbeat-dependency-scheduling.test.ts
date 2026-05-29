@@ -17,17 +17,27 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.ts";
-import { heartbeatService } from "../services/heartbeat.ts";
+import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.js";
+import { heartbeatService } from "../services/heartbeat.js";
 import {
   composeSweepWakeFramePage,
   sweepWakeFrameSlug,
-} from "../services/sweep-wake-preflight.ts";
-import { runningProcesses } from "../adapters/index.ts";
+} from "../services/sweep-wake-preflight.js";
+import { runningProcesses } from "../adapters/index.js";
 
 const mockGbrainCall = vi.hoisted(() => vi.fn());
 const mockAdapterExecute = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn<
+    (ctx: { runId: string }) => Promise<{
+      exitCode: number;
+      signal: string | null;
+      timedOut: boolean;
+      errorMessage: string | null;
+      provider: string;
+      model: string;
+      resultJson?: Record<string, unknown>;
+    }>
+  >(async () => ({
     exitCode: 0,
     signal: null,
     timedOut: false,

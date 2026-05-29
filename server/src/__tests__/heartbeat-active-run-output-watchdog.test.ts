@@ -18,16 +18,16 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.ts";
+import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.js";
 import {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
   heartbeatService,
-} from "../services/heartbeat.ts";
-import { recoveryService } from "../services/recovery/service.ts";
-import { getRunLogStore } from "../services/run-log-store.ts";
-import { runningProcesses } from "../adapters/index.ts";
+} from "../services/heartbeat.js";
+import { recoveryService } from "../services/recovery/service.js";
+import { getRunLogStore } from "../services/run-log-store.js";
+import { runningProcesses } from "../adapters/index.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({

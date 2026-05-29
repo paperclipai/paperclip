@@ -59,9 +59,9 @@ vi.mock("../adapters/index.ts", async () => {
   };
 });
 
-import { heartbeatService } from "../services/heartbeat.ts";
-import { instanceSettingsService } from "../services/instance-settings.ts";
-import { runningProcesses } from "../adapters/index.ts";
+import { heartbeatService } from "../services/heartbeat.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { runningProcesses } from "../adapters/index.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -967,11 +967,11 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
     await db
       .update(issues)
-      .set({ status: "done", blockedByIssueIds: [] })
+      .set({ status: "done" })
       .where(eq(issues.id, escalations[0]!.id));
     await db
       .update(issues)
-      .set({ status: "done", blockedByIssueIds: [] })
+      .set({ status: "done" })
       .where(eq(issues.id, blockerIssueId));
 
     const second = await heartbeat.reconcileIssueGraphLiveness();

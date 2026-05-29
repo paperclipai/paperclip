@@ -17,7 +17,7 @@ import {
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
-} from "../services/heartbeat.ts";
+} from "../services/heartbeat.js";
 
 function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}): ResolvedWorkspaceForRun {
   return {
@@ -214,10 +214,14 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
 describe("buildRealizedExecutionWorkspaceFromPersisted", () => {
   it("reuses the persisted execution workspace path instead of deriving a new worktree", () => {
     const result = buildRealizedExecutionWorkspaceFromPersisted({
-      base: buildResolvedWorkspace({
-        cwd: "/tmp/project-primary",
+      base: {
+        baseCwd: "/tmp/project-primary",
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
         repoRef: "main",
-      }),
+      },
       workspace: {
         id: "execution-workspace-1",
         companyId: "company-1",
@@ -229,6 +233,7 @@ describe("buildRealizedExecutionWorkspaceFromPersisted", () => {
         name: "PAP-880-thumbs-capture-for-evals-feature",
         status: "active",
         cwd: "/tmp/reused-worktree",
+        agentCwd: "/tmp/reused-worktree",
         repoUrl: "https://example.com/paperclip.git",
         baseRef: "main",
         branchName: "PAP-880-thumbs-capture-for-evals-feature",
@@ -247,12 +252,13 @@ describe("buildRealizedExecutionWorkspaceFromPersisted", () => {
       },
     });
 
-    expect(result.created).toBe(false);
-    expect(result.strategy).toBe("git_worktree");
-    expect(result.cwd).toBe("/tmp/reused-worktree");
-    expect(result.worktreePath).toBe("/tmp/reused-worktree");
-    expect(result.branchName).toBe("PAP-880-thumbs-capture-for-evals-feature");
-    expect(result.source).toBe("task_session");
+    expect(result).not.toBeNull();
+    expect(result!.created).toBe(false);
+    expect(result!.strategy).toBe("git_worktree");
+    expect(result!.cwd).toBe("/tmp/reused-worktree");
+    expect(result!.worktreePath).toBe("/tmp/reused-worktree");
+    expect(result!.branchName).toBe("PAP-880-thumbs-capture-for-evals-feature");
+    expect(result!.source).toBe("task_session");
   });
 });
 

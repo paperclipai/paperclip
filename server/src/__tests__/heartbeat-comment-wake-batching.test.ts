@@ -12,9 +12,9 @@ import {
   issueComments,
   issues,
 } from "@paperclipai/db";
-import { heartbeatService } from "../services/heartbeat.ts";
-import { SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY } from "../services/recovery/index.ts";
-import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.ts";
+import { heartbeatService } from "../services/heartbeat.js";
+import { SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY } from "../services/recovery/index.js";
+import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 10_000, intervalMs = 50) {
   const startedAt = Date.now();
@@ -524,7 +524,6 @@ describe("heartbeat comment wake batching", () => {
 
     const secondRun = await heartbeat.wakeup(agentId, {
       source: "automation",
-      triggerDetail: "github_pr_review_requested",
       reason: "github_pr_review_requested",
       payload: {
         issueId,
@@ -629,7 +628,6 @@ describe("heartbeat comment wake batching", () => {
 
     const secondRun = await heartbeat.wakeup(agentId, {
       source: "automation",
-      triggerDetail: "github_pr_review_requested",
       reason: "github_pr_review_requested",
       payload: {
         source: "github",

@@ -21,22 +21,39 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { heartbeatService } from "../services/heartbeat.ts";
-import { instanceSettingsService } from "../services/instance-settings.ts";
+import { heartbeatService } from "../services/heartbeat.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 
 const execFileAsync = promisify(execFile);
 
-const adapterExecute = vi.hoisted(() => vi.fn(async () => ({
-  exitCode: 0,
-  signal: null,
-  timedOut: false,
-  sessionParams: { sessionId: "fresh-session" },
-  sessionDisplayId: "fresh-session",
-  summary: "Accepted plan workspace refresh test run.",
-  resultJson: { summary: "Accepted plan workspace refresh test run." },
-  provider: "test",
-  model: "test-model",
-})));
+const adapterExecute = vi.hoisted(() =>
+  vi.fn<
+    (ctx: {
+      runtime: { sessionId: string | null; sessionParams: Record<string, unknown> | null };
+      context: Record<string, unknown>;
+    }) => Promise<{
+      exitCode: number;
+      signal: string | null;
+      timedOut: boolean;
+      sessionParams?: Record<string, unknown>;
+      sessionDisplayId?: string;
+      summary?: string;
+      resultJson?: Record<string, unknown>;
+      provider: string;
+      model: string;
+    }>
+  >(async () => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    sessionParams: { sessionId: "fresh-session" },
+    sessionDisplayId: "fresh-session",
+    summary: "Accepted plan workspace refresh test run.",
+    resultJson: { summary: "Accepted plan workspace refresh test run." },
+    provider: "test",
+    model: "test-model",
+  })),
+);
 
 const allowCcrotateGate = {
   checkAdapter: async () => ({ allow: true as const }),
