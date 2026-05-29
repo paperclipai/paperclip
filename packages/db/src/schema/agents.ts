@@ -37,6 +37,8 @@ export const agents = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     lastRunError: jsonb("last_run_error").$type<{
+    consecutiveFailureCount: integer("consecutive_failure_count").notNull().default(0),
+    lastFailureFingerprint: text("last_failure_fingerprint"),
       error: string;
       errorCode: string;
       exitCode: number | null;
