@@ -116,6 +116,13 @@ import { parseIssueExecutionWorkspaceSettings } from "../services/execution-work
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+
+function isPostgresTextOverflowError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: string }).code;
+  // 22001 = string_data_right_truncation, 22P05 = untranslatable_character
+  return code === "22001" || code === "22P05";
+}
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -2797,19 +2804,28 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     const referenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-    const result = await documentsSvc.upsertIssueDocument({
-      issueId: issue.id,
-      key: keyParsed.data,
-      title: req.body.title ?? null,
-      format: req.body.format,
-      body: req.body.body,
-      changeSummary: req.body.changeSummary ?? null,
-      baseRevisionId: req.body.baseRevisionId ?? null,
-      createdByAgentId: actor.agentId ?? null,
-      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-      createdByRunId: actor.runId ?? null,
-      lockedDocumentStrategy: req.actor.type === "agent" ? "create_new_document" : "conflict",
-    });
+    let result;
+    try {
+      result = await documentsSvc.upsertIssueDocument({
+        issueId: issue.id,
+        key: keyParsed.data,
+        title: req.body.title ?? null,
+        format: req.body.format,
+        body: req.body.body,
+        changeSummary: req.body.changeSummary ?? null,
+        baseRevisionId: req.body.baseRevisionId ?? null,
+        createdByAgentId: actor.agentId ?? null,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+        createdByRunId: actor.runId ?? null,
+        lockedDocumentStrategy: req.actor.type === "agent" ? "create_new_document" : "conflict",
+      });
+    } catch (err) {
+      if (isPostgresTextOverflowError(err)) {
+        res.status(400).json({ error: "Document body exceeds the maximum allowed size" });
+        return;
+      }
+      throw err;
+    }
     const doc = result.document;
     const redirectedFromLockedDocument =
       "redirectedFromLockedDocument" in result ? result.redirectedFromLockedDocument : null;
@@ -5056,13 +5072,22 @@ export function issueRoutes(
     const agentSourceRunId = req.actor.type === "agent" ? requireAgentRunId(req, res) : null;
     if (req.actor.type === "agent" && !agentSourceRunId) return;
 
-    const interaction = await issueThreadInteractionService(db).create(issue, {
-      ...req.body,
-      sourceRunId: req.actor.type === "agent" ? agentSourceRunId : req.body.sourceRunId ?? null,
-    }, {
-      agentId: actor.agentId,
-      userId: actor.actorType === "user" ? actor.actorId : null,
-    });
+    let interaction;
+    try {
+      interaction = await issueThreadInteractionService(db).create(issue, {
+        ...req.body,
+        sourceRunId: req.actor.type === "agent" ? agentSourceRunId : req.body.sourceRunId ?? null,
+      }, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+    } catch (err) {
+      if (isPostgresTextOverflowError(err)) {
+        res.status(400).json({ error: "Interaction body exceeds the maximum allowed size" });
+        return;
+      }
+      throw err;
+    }
 
     await logActivity(db, {
       companyId: issue.companyId,
@@ -5657,15 +5682,24 @@ export function issueRoutes(
       }
     }
 
-    const comment = await svc.addComment(id, req.body.body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
-      runId: actor.runId,
-    }, {
-      authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-      presentation: req.body.presentation ?? null,
-      metadata: req.body.metadata ?? null,
-    });
+    let comment;
+    try {
+      comment = await svc.addComment(id, req.body.body, {
+        agentId: actor.agentId ?? undefined,
+        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        runId: actor.runId,
+      }, {
+        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        presentation: req.body.presentation ?? null,
+        metadata: req.body.metadata ?? null,
+      });
+    } catch (err) {
+      if (isPostgresTextOverflowError(err)) {
+        res.status(400).json({ error: "Comment body exceeds the maximum allowed size" });
+        return;
+      }
+      throw err;
+    }
     await issueReferencesSvc.syncComment(comment.id);
     const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
     const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
