@@ -1720,6 +1720,29 @@ export function issueRoutes(
     }
     return resolved.agent.id;
   }
+
+  async function normalizeIssueReviewerAgentReference(
+    companyId: string,
+    rawReviewerAgentId: string | null | undefined,
+  ) {
+    if (rawReviewerAgentId === undefined || rawReviewerAgentId === null) {
+      return rawReviewerAgentId;
+    }
+
+    const raw = rawReviewerAgentId.trim();
+    if (raw.length === 0) {
+      return rawReviewerAgentId;
+    }
+
+    const resolved = await agentsSvc.resolveByReference(companyId, raw);
+    if (resolved.ambiguous) {
+      throw conflict("Agent shortname is ambiguous in this company. Use the agent ID.");
+    }
+    if (!resolved.agent) {
+      throw notFound("Agent not found");
+    }
+    return resolved.agent.id;
+  }
   function toValidTimestamp(value: Date | string | null | undefined) {
     if (!value) return null;
     const timestamp = value instanceof Date ? value.getTime() : new Date(value).getTime();
@@ -2154,6 +2177,8 @@ export function issueRoutes(
         blocks: relationsWithRecoveryActions.blocks,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        reviewerAgentId: issue.reviewerAgentId,
+        reviewerUserId: issue.reviewerUserId,
         originKind: issue.originKind,
         originId: issue.originId,
         updatedAt: issue.updatedAt,
@@ -3527,6 +3552,18 @@ export function issueRoutes(
       actor.actorType,
     );
     assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+    const requestedStatus = req.body.status as string | undefined;
+    const requestedExecutionState =
+      req.body.executionState === undefined ? null : parseIssueExecutionState(req.body.executionState);
+    if (
+      requestedStatus === "in_review" &&
+      (!requestedExecutionState || requestedExecutionState.status !== "pending") &&
+      !req.body.reviewerAgentId &&
+      !req.body.reviewerUserId
+    ) {
+      res.status(400).json({ error: "reviewer_required" });
+      return;
+    }
     const issue = await svc.create(companyId, {
       ...req.body,
       executionPolicy,
@@ -3917,6 +3954,10 @@ export function issueRoutes(
       existing.companyId,
       req.body.assigneeAgentId as string | null | undefined,
     );
+    const normalizedReviewerAgentId = await normalizeIssueReviewerAgentReference(
+      existing.companyId,
+      req.body.reviewerAgentId as string | null | undefined,
+    );
     const titleOrDescriptionChanged = req.body.title !== undefined || req.body.description !== undefined;
     const existingRelations =
       Array.isArray(req.body.blockedByIssueIds)
@@ -3944,6 +3985,10 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(existing.companyId, updateFields.executionWorkspaceSettings?.environmentId);
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
+    const requestedReviewerAgentId =
+      normalizedReviewerAgentId === undefined ? existing.reviewerAgentId : normalizedReviewerAgentId;
+    const requestedReviewerUserId =
+      req.body.reviewerUserId === undefined ? existing.reviewerUserId : (req.body.reviewerUserId as string | null);
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
     const recoveryRelevantSourceMutationRequested =
       req.body.status !== undefined ||
@@ -4083,6 +4128,12 @@ export function issueRoutes(
     }
     const monitorChanged = monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) === false;
     assertCanManageIssueMonitor(req, existing.assigneeAgentId, req.body.executionPolicy !== undefined && monitorChanged);
+    if (normalizedReviewerAgentId !== undefined) {
+      updateFields.reviewerAgentId = normalizedReviewerAgentId;
+    }
+    if (req.body.reviewerUserId !== undefined) {
+      updateFields.reviewerUserId = req.body.reviewerUserId as string | null;
+    }
 
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
@@ -4114,6 +4165,21 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+    const nextStatus =
+      updateFields.status === undefined ? existing.status : updateFields.status as string;
+    const nextExecutionStateForValidation =
+      updateFields.executionState === undefined
+        ? parseIssueExecutionState(existing.executionState)
+        : parseIssueExecutionState(updateFields.executionState);
+    if (
+      nextStatus === "in_review" &&
+      (!nextExecutionStateForValidation || nextExecutionStateForValidation.status !== "pending") &&
+      !requestedReviewerAgentId &&
+      !requestedReviewerUserId
+    ) {
+      res.status(400).json({ error: "reviewer_required" });
+      return;
+    }
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
@@ -4650,6 +4716,8 @@ export function issueRoutes(
 
     const assigneeChanged =
       issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
+    const reviewerChanged =
+      issue.reviewerAgentId !== existing.reviewerAgentId || issue.reviewerUserId !== existing.reviewerUserId;
     const statusChangedFromBacklog =
       existing.status === "backlog" &&
       issue.status !== "backlog" &&
@@ -4683,6 +4751,32 @@ export function issueRoutes(
 
       if (executionStageWakeup) {
         addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
+      } else if (
+        issue.status === "in_review" &&
+        issue.reviewerAgentId &&
+        (existing.status !== "in_review" || reviewerChanged)
+      ) {
+        addWakeup(issue.reviewerAgentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "review_requested",
+          payload: {
+            issueId: issue.id,
+            ...(comment ? { commentId: comment.id } : {}),
+            mutation: "update",
+            ...(interruptedRunId ? { interruptedRunId } : {}),
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            wakeReason: "review_requested",
+            source: "issue.review_requested",
+            ...(comment ? { commentId: comment.id, wakeCommentId: comment.id } : {}),
+            ...(interruptedRunId ? { interruptedRunId } : {}),
+          },
+        });
       } else if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
         addWakeup(issue.assigneeAgentId, {
           source: "assignment",
