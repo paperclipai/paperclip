@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
+  isClaudeThinkingBlockReuseError,
   isClaudeTransientUpstreamError,
 } from "./parse.js";
 
@@ -91,6 +92,42 @@ describe("isClaudeTransientUpstreamError", () => {
     expect(
       isClaudeTransientUpstreamError({
         errorMessage: "Invalid request_error: Unknown parameter 'foo'.",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isClaudeThinkingBlockReuseError", () => {
+  it("detects the 400 raised when a resumed session replays thinking blocks", () => {
+    const message =
+      "API Error: 400 messages.3.content.17: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified. These blocks must remain as they were in the original response.";
+    expect(isClaudeThinkingBlockReuseError({ errorMessage: message })).toBe(true);
+    expect(
+      isClaudeThinkingBlockReuseError({
+        parsed: { is_error: true, result: message },
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeThinkingBlockReuseError({
+        parsed: { is_error: true, errors: [{ type: "invalid_request_error", message }] },
+      }),
+    ).toBe(true);
+    expect(isClaudeThinkingBlockReuseError({ stderr: message })).toBe(true);
+  });
+
+  it("does not match unrelated failures", () => {
+    expect(
+      isClaudeThinkingBlockReuseError({
+        parsed: { result: "No conversation found with session id abc-123" },
+      }),
+    ).toBe(false);
+    expect(
+      isClaudeThinkingBlockReuseError({ errorMessage: "Overloaded. Try again later." }),
+    ).toBe(false);
+    expect(isClaudeThinkingBlockReuseError({})).toBe(false);
+    expect(
+      isClaudeThinkingBlockReuseError({
+        errorMessage: "Extended thinking is enabled for this run.",
       }),
     ).toBe(false);
   });

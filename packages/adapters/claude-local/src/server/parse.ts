@@ -13,6 +13,8 @@ const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+const CLAUDE_THINKING_BLOCK_REUSE_RE =
+  /(?:redacted_)?thinking[\s\S]{0,200}?cannot\s+be\s+modified|cannot\s+be\s+modified[\s\S]{0,200}?(?:redacted_)?thinking/i;
 
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
@@ -194,6 +196,21 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
   return allMessages.some((msg) =>
     /no conversation found with session id|unknown session|session .* not found/i.test(msg),
   );
+}
+
+// Anthropic 400 raised when a resumed session replays an assistant turn whose
+// extended-thinking blocks can no longer be sent verbatim (e.g. the prior run
+// was interrupted mid-turn). The persisted session is then permanently
+// unresumable, so the caller must reset history and start a fresh session.
+export function isClaudeThinkingBlockReuseError(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const haystack = buildClaudeTransientHaystack(input);
+  if (!haystack) return false;
+  return CLAUDE_THINKING_BLOCK_REUSE_RE.test(haystack);
 }
 
 function buildClaudeTransientHaystack(input: {
