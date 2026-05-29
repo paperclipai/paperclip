@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
+  isClaudeThinkingBlocksModifiedError,
   isClaudeTransientUpstreamError,
+  parseClaudeStreamJson,
 } from "./parse.js";
 
 describe("isClaudeTransientUpstreamError", () => {
@@ -93,6 +95,94 @@ describe("isClaudeTransientUpstreamError", () => {
         errorMessage: "Invalid request_error: Unknown parameter 'foo'.",
       }),
     ).toBe(false);
+  });
+});
+
+describe("isClaudeThinkingBlocksModifiedError", () => {
+  it("detects the canonical Anthropic API 400 thinking-block error", () => {
+    expect(
+      isClaudeThinkingBlocksModifiedError({
+        is_error: true,
+        result:
+          "API Error: 400 messages.3.content.4: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified. These blocks must remain as they were in the original response.",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects redacted_thinking variant", () => {
+    expect(
+      isClaudeThinkingBlocksModifiedError({
+        is_error: true,
+        errors: [
+          {
+            message:
+              "redacted_thinking blocks in the latest assistant message cannot be modified.",
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for unrelated errors", () => {
+    expect(
+      isClaudeThinkingBlocksModifiedError({
+        is_error: true,
+        result: "API Error: 400 Invalid request: unknown parameter 'foo'.",
+      }),
+    ).toBe(false);
+    expect(isClaudeThinkingBlocksModifiedError(null)).toBe(false);
+    expect(isClaudeThinkingBlocksModifiedError(undefined)).toBe(false);
+  });
+});
+
+describe("parseClaudeStreamJson — hasThinkingBlocks", () => {
+  function makeAssistantEvent(contentBlocks: Record<string, unknown>[]) {
+    return JSON.stringify({
+      type: "assistant",
+      session_id: "sess-1",
+      message: { content: contentBlocks },
+    });
+  }
+
+  const resultLine = JSON.stringify({
+    type: "result",
+    session_id: "sess-1",
+    result: "done",
+    usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0 },
+    total_cost_usd: 0.001,
+  });
+
+  it("sets hasThinkingBlocks when a thinking block is present", () => {
+    const stdout = [
+      makeAssistantEvent([
+        { type: "thinking", thinking: "internal reasoning..." },
+        { type: "text", text: "Hello" },
+      ]),
+      resultLine,
+    ].join("\n");
+    expect(parseClaudeStreamJson(stdout).hasThinkingBlocks).toBe(true);
+  });
+
+  it("sets hasThinkingBlocks when a redacted_thinking block is present", () => {
+    const stdout = [
+      makeAssistantEvent([
+        { type: "redacted_thinking", data: "encrypted..." },
+      ]),
+      resultLine,
+    ].join("\n");
+    expect(parseClaudeStreamJson(stdout).hasThinkingBlocks).toBe(true);
+  });
+
+  it("leaves hasThinkingBlocks false when only text blocks are present", () => {
+    const stdout = [
+      makeAssistantEvent([{ type: "text", text: "Hello" }]),
+      resultLine,
+    ].join("\n");
+    expect(parseClaudeStreamJson(stdout).hasThinkingBlocks).toBe(false);
+  });
+
+  it("leaves hasThinkingBlocks false on empty output", () => {
+    expect(parseClaudeStreamJson("").hasThinkingBlocks).toBe(false);
   });
 });
 

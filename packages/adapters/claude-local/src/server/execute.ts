@@ -52,6 +52,7 @@ import {
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
+  isClaudeThinkingBlocksModifiedError,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
 } from "./parse.js";
@@ -879,6 +880,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       } as Record<string, unknown>)
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
+    const clearSessionForThinkingBlocks = parsedStream.hasThinkingBlocks;
     const parsedIsError = asBoolean(parsed.is_error, false);
     const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
     const errorMessage = failed
@@ -937,7 +939,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
-      clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
+      clearSession: clearSessionForMaxTurns || clearSessionForThinkingBlocks || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
     };
   };
 
@@ -953,6 +955,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await onLog(
         "stdout",
         `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+      );
+      const retry = await runAttempt(null);
+      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+    }
+
+    if (
+      sessionId &&
+      !initial.proc.timedOut &&
+      (initial.proc.exitCode ?? 0) !== 0 &&
+      initial.parsed &&
+      isClaudeThinkingBlocksModifiedError(initial.parsed)
+    ) {
+      await onLog(
+        "stdout",
+        `[paperclip] Claude resume session "${sessionId}" failed due to modified thinking/redacted_thinking blocks; retrying with a fresh session.\n`,
       );
       const retry = await runAttempt(null);
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
