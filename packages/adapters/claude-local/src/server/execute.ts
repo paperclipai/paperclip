@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -63,6 +65,47 @@ import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const _require = createRequire(import.meta.url);
+
+function resolveMcpServerStdioPath(): string | null {
+  try {
+    const pkgJsonPath = _require.resolve("@paperclipai/mcp-server/package.json");
+    return path.join(path.dirname(pkgJsonPath), "dist", "stdio.js");
+  } catch {
+    return null;
+  }
+}
+
+async function writeMcpConfigFile(opts: {
+  runId: string;
+  env: Record<string, string>;
+}): Promise<string | null> {
+  const stdioPath = resolveMcpServerStdioPath();
+  if (!stdioPath) return null;
+  const mcpEnv: Record<string, string> = {};
+  for (const key of [
+    "PAPERCLIP_API_KEY",
+    "PAPERCLIP_API_URL",
+    "PAPERCLIP_AGENT_ID",
+    "PAPERCLIP_COMPANY_ID",
+    "PAPERCLIP_RUN_ID",
+  ]) {
+    if (opts.env[key]) mcpEnv[key] = opts.env[key];
+  }
+  const config = {
+    mcpServers: {
+      paperclip: {
+        type: "stdio",
+        command: process.execPath,
+        args: [stdioPath],
+        env: mcpEnv,
+      },
+    },
+  };
+  const tmpPath = path.join(os.tmpdir(), `paperclip-mcp-${opts.runId}.json`);
+  await fs.writeFile(tmpPath, JSON.stringify(config, null, 2), "utf-8");
+  return tmpPath;
+}
 
 interface ClaudeExecutionInput {
   runId: string;
@@ -672,6 +715,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
 
+  const mcpConfigPath = executionTargetIsRemote
+    ? null
+    : await writeMcpConfigFile({ runId, env }).catch(() => null);
+
   const buildClaudeArgs = (
     resumeSessionId: string | null,
     attemptInstructionsFilePath: string | undefined,
@@ -698,6 +745,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
+    if (mcpConfigPath) args.push("--mcp-config", mcpConfigPath);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
@@ -960,6 +1008,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
+    if (mcpConfigPath) {
+      await fs.unlink(mcpConfigPath).catch(() => {});
+    }
     if (paperclipBridge) {
       await paperclipBridge.stop();
     }
