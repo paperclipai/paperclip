@@ -10,6 +10,8 @@ import {
   appendStderrExcerpt,
   createPluginWorkerHandle,
   formatWorkerFailureMessage,
+  shouldDropDroppableMessage,
+  MAX_WORKER_STDIN_BACKLOG_BYTES,
 } from "../services/plugin-worker-manager.js";
 
 const FIXTURES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -27,6 +29,28 @@ const TEST_MANIFEST: PaperclipPluginManifestV1 = {
   capabilities: [],
   entrypoints: { worker: "dist/worker.js" },
 };
+
+describe("plugin-worker-manager stdin backpressure", () => {
+  it("does not drop droppable messages when the stdin backlog is under the cap", () => {
+    expect(shouldDropDroppableMessage(0)).toBe(false);
+    expect(shouldDropDroppableMessage(1_024)).toBe(false);
+    expect(shouldDropDroppableMessage(MAX_WORKER_STDIN_BACKLOG_BYTES)).toBe(false);
+  });
+
+  it("drops droppable messages once the stdin backlog exceeds the cap", () => {
+    expect(shouldDropDroppableMessage(MAX_WORKER_STDIN_BACKLOG_BYTES + 1)).toBe(true);
+    expect(shouldDropDroppableMessage(MAX_WORKER_STDIN_BACKLOG_BYTES * 4)).toBe(true);
+  });
+
+  it("respects a caller-provided cap", () => {
+    expect(shouldDropDroppableMessage(2_048, 1_024)).toBe(true);
+    expect(shouldDropDroppableMessage(512, 1_024)).toBe(false);
+  });
+
+  it("exposes a positive default backlog cap", () => {
+    expect(MAX_WORKER_STDIN_BACKLOG_BYTES).toBeGreaterThan(0);
+  });
+});
 
 describe("plugin-worker-manager stderr failure context", () => {
   it("appends worker stderr context to failure messages", () => {

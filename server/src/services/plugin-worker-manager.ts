@@ -105,6 +105,33 @@ const CRASH_WINDOW_MS = 10 * 60 * 1_000;
 /** Maximum number of stderr characters retained for worker failure context. */
 const MAX_STDERR_EXCERPT_CHARS = 8_000;
 
+/**
+ * Maximum number of bytes allowed to sit un-drained in a worker's stdin pipe
+ * before droppable (fire-and-forget) messages are discarded instead of queued.
+ *
+ * Host→worker notifications — especially `agents.sessions.event` carrying every
+ * agent Job-pod log chunk — are written to the worker's stdin pipe. `write()`
+ * queues un-flushed chunks as native Buffers (off-heap) when the worker drains
+ * slower than the host produces. Under bursty agent-log load this grows process
+ * RSS off-heap until the container is cgroup-OOMKilled (the JS heap is
+ * separately capped by --max-old-space-size, so it is not the heap that
+ * overflows). Bounding the backlog for droppable traffic caps that growth:
+ * lossy delivery of best-effort notifications is preferable to an OOM that
+ * kills every in-flight run. RPC requests/responses are never dropped.
+ */
+export const MAX_WORKER_STDIN_BACKLOG_BYTES = 8 * 1_024 * 1_024;
+
+/**
+ * Decide whether a droppable (fire-and-forget) worker message should be
+ * discarded given the current un-drained stdin backlog. Pure for testability.
+ */
+export function shouldDropDroppableMessage(
+  writableLength: number,
+  cap: number = MAX_WORKER_STDIN_BACKLOG_BYTES,
+): boolean {
+  return writableLength > cap;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -434,12 +461,41 @@ export function createPluginWorkerHandle(
   // JSON-RPC message sending
   // -----------------------------------------------------------------------
 
-  function sendMessage(message: unknown): void {
+  // Throttle the "dropped notification" warning so a sustained backlog does not
+  // itself spam the logs (which would add to the pressure it is reporting on).
+  let lastDropWarnAt = 0;
+  let droppedSinceWarn = 0;
+
+  function sendMessage(message: unknown, opts?: { droppable?: boolean }): boolean {
     if (!childProcess?.stdin?.writable) {
       throw new Error(`Worker process for plugin "${pluginId}" is not writable`);
     }
+    // Best-effort notifications are dropped when the stdin pipe is backed up,
+    // rather than queued as unbounded off-heap Buffers. RPC traffic
+    // (droppable=false) is always written so request/response stays correct.
+    if (
+      opts?.droppable &&
+      shouldDropDroppableMessage(childProcess.stdin.writableLength)
+    ) {
+      droppedSinceWarn += 1;
+      const now = Date.now();
+      if (now - lastDropWarnAt > 5_000) {
+        log.warn(
+          {
+            backlogBytes: childProcess.stdin.writableLength,
+            cap: MAX_WORKER_STDIN_BACKLOG_BYTES,
+            droppedSinceLastWarn: droppedSinceWarn,
+          },
+          "worker stdin backlogged; dropping fire-and-forget notification(s)",
+        );
+        lastDropWarnAt = now;
+        droppedSinceWarn = 0;
+      }
+      return false;
+    }
     const serialized = serializeMessage(message as any);
     childProcess.stdin.write(serialized);
+    return true;
   }
 
   // -----------------------------------------------------------------------
@@ -1157,11 +1213,17 @@ export function createPluginWorkerHandle(
     notify(method: string, params: unknown) {
       if (status !== "running") return;
       try {
-        sendMessage({
-          jsonrpc: JSONRPC_VERSION,
-          method,
-          params,
-        });
+        // Notifications are fire-and-forget: drop them under stdin backpressure
+        // instead of queuing unbounded off-heap Buffers (see
+        // MAX_WORKER_STDIN_BACKLOG_BYTES).
+        sendMessage(
+          {
+            jsonrpc: JSONRPC_VERSION,
+            method,
+            params,
+          },
+          { droppable: true },
+        );
       } catch {
         log.warn({ method }, "failed to send notification to worker");
       }

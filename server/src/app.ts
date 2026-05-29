@@ -343,6 +343,11 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
   app.use(llmRoutes(db));
 
   const hostServicesDisposers = new Map<string, () => void>();
+  // Forward reference: the worker manager's onWorkerEvent (below) must reach the
+  // host-service cleanup controller, but that controller is constructed later
+  // (it depends on the plugin lifecycle). onWorkerEvent only fires at runtime on
+  // a worker crash — long after init completes — so a forward reference is safe.
+  let hostServiceCleanup: ReturnType<typeof createPluginHostServiceCleanup> | undefined;
   const { createPluginStreamBus } = await import("./services/plugin-stream-bus.js");
   const streamBus = createPluginStreamBus();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager({
@@ -356,6 +361,18 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
         streamBus.publish(pluginId, channel, companyId, null, "close");
       } else if (method === "streams.open") {
         streamBus.publish(pluginId, channel, companyId, null, "open");
+      }
+    },
+    // On a worker crash, dispose that plugin's host-service subscriptions so the
+    // auto-restarted generation re-subscribes cleanly instead of leaving stale
+    // (duplicate) event handlers registered. Each leaked handler multiplies the
+    // host→worker notification fan-out that drives off-heap stdin buildup.
+    onWorkerEvent: (event) => {
+      if (event.type === "plugin.worker.crashed") {
+        hostServiceCleanup?.handleWorkerEvent({
+          type: event.type,
+          pluginId: event.pluginId,
+        });
       }
     },
   });
@@ -504,7 +521,7 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
     }),
   );
 
-  const hostServiceCleanup = createPluginHostServiceCleanup(lifecycle, hostServicesDisposers);
+  hostServiceCleanup = createPluginHostServiceCleanup(lifecycle, hostServicesDisposers);
   let viteHtmlRenderer: ReturnType<typeof createCachedViteHtmlRenderer> | null = null;
   const loader = pluginLoader(
     db,
@@ -756,8 +773,8 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
     disableFeedbackExportFlushes();
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
-    hostServiceCleanup.disposeAll();
-    hostServiceCleanup.teardown();
+    hostServiceCleanup?.disposeAll();
+    hostServiceCleanup?.teardown();
   };
   app.locals.paperclipShutdown = shutdownAppServices;
 
