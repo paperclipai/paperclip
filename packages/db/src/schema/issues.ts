@@ -131,6 +131,12 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    unhiddenUpdatedIdx: index("issues_company_unhidden_updated_idx")
+      .on(table.companyId, table.updatedAt.desc())
+      .where(sql`${table.hiddenAt} IS NULL`),
+    createdByUserIdx: index("issues_company_created_by_user_idx")
+      .on(table.companyId, table.createdByUserId)
+      .where(sql`${table.createdByUserId} IS NOT NULL`),
     activeStrandedIssueRecoveryIdx: uniqueIndex("issues_active_stranded_issue_recovery_uq")
       .on(table.companyId, table.originKind, table.originId)
       .where(
