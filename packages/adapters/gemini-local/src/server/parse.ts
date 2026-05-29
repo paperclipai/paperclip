@@ -151,19 +151,19 @@ export function parseGeminiJsonl(stdout: string) {
         asString(event.response, "").trim();
       if (resultText && messages.length === 0) messages.push(resultText);
       if (event.total_cost_usd !== undefined) {
-        costUsd = asNumber(event.total_cost_usd);
+        costUsd = asNumber(event.total_cost_usd, 0);
       } else if (event.cost_usd !== undefined) {
-        costUsd = asNumber(event.cost_usd);
+        costUsd = asNumber(event.cost_usd, 0);
       } else if (event.cost !== undefined) {
-        costUsd = asNumber(event.cost);
+        costUsd = asNumber(event.cost, 0);
       } else {
         // Fallback: compute from token usage using Gemini pricing
-        const model = event.model || 'gemini-2.5-flash';
+        const model = asString(event.model, "gemini-2.5-flash");
         const inputCostPerM = model.includes('pro') ? 3.5 : 0.35;
         const outputCostPerM = model.includes('pro') ? 10.5 : 1.05;
         costUsd = (usage.inputTokens / 1_000_000) * inputCostPerM + (usage.outputTokens / 1_000_000) * outputCostPerM;
         console.warn(`[gemini_local] Fallback cost calculation: model=${model}, inputTokens=${usage.inputTokens}, outputTokens=${usage.outputTokens}, estimated costUsd=${costUsd.toFixed(6)} (original costUsd=null)`);
-      } || costUsd;
+      }
       const status = asString(event.status, "").toLowerCase();
       const isError =
         event.is_error === true ||
@@ -202,19 +202,19 @@ export function parseGeminiJsonl(stdout: string) {
     if (type === "step_finish" || event.usage || event.usageMetadata) {
       accumulateUsage(usage, event.usage ?? event.usageMetadata);
       if (event.total_cost_usd !== undefined) {
-        costUsd = asNumber(event.total_cost_usd);
+        costUsd = asNumber(event.total_cost_usd, 0);
       } else if (event.cost_usd !== undefined) {
-        costUsd = asNumber(event.cost_usd);
+        costUsd = asNumber(event.cost_usd, 0);
       } else if (event.cost !== undefined) {
-        costUsd = asNumber(event.cost);
+        costUsd = asNumber(event.cost, 0);
       } else {
         // Fallback: compute from token usage using Gemini pricing
-        const model = event.model || 'gemini-2.5-flash';
+        const model = asString(event.model, "gemini-2.5-flash");
         const inputCostPerM = model.includes('pro') ? 3.5 : 0.35;
         const outputCostPerM = model.includes('pro') ? 10.5 : 1.05;
         costUsd = (usage.inputTokens / 1_000_000) * inputCostPerM + (usage.outputTokens / 1_000_000) * outputCostPerM;
         console.warn(`[gemini_local] Fallback cost calculation: model=${model}, inputTokens=${usage.inputTokens}, outputTokens=${usage.outputTokens}, estimated costUsd=${costUsd.toFixed(6)} (original costUsd=null)`);
-      } || costUsd;
+      }
       continue;
     }
   }
