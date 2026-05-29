@@ -43,7 +43,7 @@ git commit -m "paperclip-startup-template"
 
 docker exec -u node -it paperclip /bin/bash
 
-docker build -t paperclip:v2026.403.1-stable \
+docker build -t ghcr.io/starlein/paperclip:v2026.403.1-stable \
   --label "org.opencontainers.image.description=v2026.403.1-stable - including companies-create-plugin - stable version"
 
 docker push ghcr.io/starlein/paperclip:v2026.403.1-stable
@@ -54,7 +54,7 @@ docker push ghcr.io/starlein/paperclip:v2026.403.1-stable
 ```bash
 # Build
 
-docker build -t paperclip:v2026.403.1-stable \
+docker build -t ghcr.io/starlein/paperclip:v2026.403.1-stable \
   --label "org.opencontainers.image.description=v2026.403.1-stable - including companies-create-plugin - stable version" .
 
 # Publish
@@ -127,6 +127,6 @@ paperclipai company import companies/paperclip-startup-template --dry-run
 
 Notes:
 
-- Keep `PAPERCLIP_AUTH_SECRET` stable for persistent authenticated sessions.
+- Keep `BETTER_AUTH_SECRET` stable for persistent authenticated sessions.
 - Persist data via the mounted `/paperclip` volume.
 - For full changelog across app code, see `doc/*` and release notes in the repo.

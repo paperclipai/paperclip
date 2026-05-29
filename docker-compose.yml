@@ -32,5 +32,4 @@ services:
       PAPERCLIP_AUTH_DISABLE_SIGN_UP: "true"
       USER_UID: ${USER_UID}
       USER_GID: ${USER_GID}
-      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${HOME}/.local/bin
-
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/paperclip/.local/bin
