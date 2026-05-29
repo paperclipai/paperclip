@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -465,6 +466,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     executionTargetIsRemote &&
     adapterExecutionTargetUsesManagedHome(executionTarget) &&
     !hasExplicitClaudeConfigDir;
+
+  // Claude Code 2.1.140+ silently exits with code 0 and no output when it
+  // cannot access its config directory (e.g. HOME=/home/paperclip doesn't
+  // exist for system-user installs). Ensure ~/.claude is accessible for local
+  // runs; fall back to a Paperclip-managed directory if HOME is missing or
+  // the config dir can't be created.
+  if (!executionTargetIsRemote && !hasExplicitClaudeConfigDir) {
+    const effectiveHome = effectiveEnv.HOME ?? "";
+    const claudeConfigDir = effectiveHome ? path.join(effectiveHome, ".claude") : "";
+    let configDirAccessible = false;
+    if (claudeConfigDir) {
+      try {
+        await fs.mkdir(claudeConfigDir, { recursive: true });
+        configDirAccessible = true;
+      } catch {
+        // HOME exists but .claude can't be created — fall through to fallback
+      }
+    }
+    if (!configDirAccessible) {
+      const fallback = path.join(os.tmpdir(), "paperclip", "claude-config", agent.id);
+      await fs.mkdir(fallback, { recursive: true });
+      env.CLAUDE_CONFIG_DIR = fallback;
+      await onLog(
+        "stdout",
+        `[paperclip] Warning: cannot access ${claudeConfigDir || "~/.claude"} — using fallback Claude config dir ${fallback}. ` +
+          `Configure HOME or CLAUDE_CONFIG_DIR in the adapter env to suppress this warning.\n`,
+      );
+    }
+  }
+
   const claudeConfigSeedDir = useManagedRemoteClaudeConfig
     ? await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
     : null;
