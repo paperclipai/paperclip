@@ -26,4 +26,5 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
+[ -f "/paperclip/secrets/master.key" ] && chown node:node "/paperclip/secrets/master.key"
 exec gosu node "$@"
