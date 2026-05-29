@@ -1381,6 +1381,44 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  // Profile-keyed narrow-grant enforcement. When a `tasks:manage_active_checkouts`
+  // grant was issued with `scope.profile`, the mutation chokepoint records the
+  // decision on the request so downstream route handlers can apply additional
+  // per-op constraints (field allow-list on PATCH, hard deny on DELETE) without
+  // re-running authorization. Today `risk_compliance_v1` is the only profile.
+  const NARROW_PATCH_FIELDS = new Set(["status", "assigneeAgentId", "blockedByIssueIds", "comment"]);
+
+  function enforceNarrowGrantOp(
+    req: Request,
+    res: Response,
+    op: "patch" | "delete_issue" | "delete_comment",
+    body?: Record<string, unknown>,
+  ): boolean {
+    const profile = req.access?.checkoutOverride?.grant?.scope?.profile;
+    if (typeof profile !== "string") return true;
+    if (profile !== "risk_compliance_v1") return true;
+    if (op === "patch") {
+      const offenders = Object.keys(body ?? {}).filter((k) => !NARROW_PATCH_FIELDS.has(k));
+      if (offenders.length > 0) {
+        res.status(403).json({
+          error: `Profile ${profile} cannot patch field: ${offenders[0]}`,
+          details: {
+            profile,
+            disallowedFields: offenders,
+            allowedFields: Array.from(NARROW_PATCH_FIELDS),
+          },
+        });
+        return false;
+      }
+      return true;
+    }
+    res.status(403).json({
+      error: `Profile ${profile} cannot ${op.replace("_", " ")}`,
+      details: { profile },
+    });
+    return false;
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -1396,8 +1434,29 @@ export function issueRoutes(
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
-      if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
+      // Capture the full decision so route handlers can introspect grant scope (e.g.
+      // narrow-grant scope profiles applying per-op constraints).
+      const overrideDecision = await access.decide({
+        actor: { type: "agent", agentId: actorAgentId, companyId: issue.companyId },
+        action: "tasks:manage_active_checkouts",
+        resource: { type: "issue", companyId: issue.companyId, assigneeAgentId: issue.assigneeAgentId },
+      });
+      if (overrideDecision.allowed) {
+        if (!req.access) req.access = {};
+        req.access.checkoutOverride = overrideDecision;
         return true;
+      }
+      if (overrideDecision.reason === "deny_ceo_immunity") {
+        res.status(403).json({
+          error: "Profile risk_compliance_v1 cannot mutate CEO-assigned issues",
+          details: {
+            reason: "deny_ceo_immunity",
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+            actorAgentId,
+          },
+        });
+        return false;
       }
       if (issue.status === "in_progress") {
         res.status(409).json({
@@ -3908,6 +3967,7 @@ export function issueRoutes(
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!enforceNarrowGrantOp(req, res, "patch", req.body)) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -4880,6 +4940,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!enforceNarrowGrantOp(req, res, "delete_issue")) return;
     const attachments = await svc.listAttachments(id);
 
     const issue = await svc.remove(id);
@@ -5472,6 +5533,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!enforceNarrowGrantOp(req, res, "delete_comment")) return;
 
     const comment = await svc.getComment(commentId);
     if (!comment || comment.issueId !== id) {

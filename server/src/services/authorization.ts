@@ -68,7 +68,8 @@ export type AuthorizationDecision = {
     | "deny_missing_grant"
     | "deny_policy_restricted"
     | "deny_scope"
-    | "deny_unsupported_action";
+    | "deny_unsupported_action"
+    | "deny_ceo_immunity";
   grant?: {
     principalType: PrincipalType;
     principalId: string;
@@ -777,7 +778,30 @@ export function authorizationService(db: Db) {
         permissionKey,
         scope: input.scope,
       });
-      if (grantDecision.allowed) return grantDecision;
+      if (grantDecision.allowed) {
+        // Scope-profile carve-out: narrow grants can declare a `scope.profile` that
+        // applies structural deny rules at this chokepoint. Profile `risk_compliance_v1`
+        // (per the ITM-40 board ratification of GR-002 stop-early authority) cannot
+        // mutate CEO-assigned issues — role-based so a future CEO inherits immunity
+        // automatically. Future profiles (`auditor_v1`, `risk_compliance_v2`) can
+        // compose alongside without changing this gate.
+        if (
+          input.action === "tasks:manage_active_checkouts" &&
+          grantDecision.grant?.scope?.profile === "risk_compliance_v1" &&
+          input.resource.type === "issue" &&
+          input.resource.assigneeAgentId
+        ) {
+          const target = await loadAgent(input.resource.assigneeAgentId);
+          if (target?.role === "ceo") {
+            return deny({
+              action: input.action,
+              reason: "deny_ceo_immunity",
+              explanation: "Profile risk_compliance_v1 cannot mutate CEO-assigned issues.",
+            });
+          }
+        }
+        return grantDecision;
+      }
     }
 
     if (
