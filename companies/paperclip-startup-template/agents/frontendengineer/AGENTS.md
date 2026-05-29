@@ -11,7 +11,7 @@ skills:
   - paperclip-commit-message
   - paperclip-pr-from-branch
   - progress-comment-template
----
+  - design-guide
 
 You are agent FrontendEngineer (Front-end Engineer) at this Paperclip company.
 
