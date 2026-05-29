@@ -310,6 +310,12 @@ type IssueRelationSummaryMap = {
   blockedBy: IssueRelationIssueSummary[];
   blocks: IssueRelationIssueSummary[];
 };
+export type CanonicalIssueSummary = {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+};
 export type IssueDependencyReadiness = {
   issueId: string;
   blockerIssueIds: string[];
@@ -2622,6 +2628,10 @@ async function blockedInboxIssueConditions(
   if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
     conditions.push(ne(issues.originKind, "routine_execution"));
   }
+  if (filters?.priority) {
+    const priorities = filters.priority.split(",").map((p) => p.trim()).filter(Boolean);
+    if (priorities.length > 0) conditions.push(inArray(issues.priority, priorities));
+  }
 
   return { conditions, contextUserId };
 }
@@ -3878,6 +3888,39 @@ export function issueService(db: Db) {
       if (!issue) throw notFound("Issue not found");
       const relations = await getIssueRelationSummaryMap(issue.companyId, [issueId], db);
       return relations.get(issueId) ?? { blockedBy: [], blocks: [] };
+    },
+
+    getCanonicalIssue: async (issueId: string): Promise<CanonicalIssueSummary | null> => {
+      const issue = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
+      const canonical = await db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+        })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+        .where(
+          and(
+            eq(issueRelations.companyId, issue.companyId),
+            eq(issueRelations.issueId, issueId),
+            inArray(issueRelations.type, ["duplicateOf", "supersededBy"]),
+          ),
+        )
+        .limit(1);
+      if (canonical.length === 0) return null;
+      return {
+        id: canonical[0].id,
+        identifier: canonical[0].identifier,
+        title: canonical[0].title,
+        status: canonical[0].status,
+      };
     },
 
     getDependencyReadiness: async (issueId: string, dbOrTx: any = db) => {
