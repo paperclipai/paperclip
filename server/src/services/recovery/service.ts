@@ -2357,7 +2357,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
-          sql`(${issues.originKind} is null or ${issues.originKind} <> ${STRANDED_ISSUE_RECOVERY_ORIGIN_KIND})`,
         ),
       );
 
@@ -2375,11 +2374,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
 
     for (const issue of candidates) {
-      if (issue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND) {
-        result.skipped += 1;
-        continue;
-      }
-
       const agentId = issue.assigneeAgentId;
       if (!agentId) {
         result.skipped += 1;

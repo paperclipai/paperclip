@@ -8375,9 +8375,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
-        if (issueCommentPolicyResult.outcome === "satisfied") {
-          livenessRun = await classifyAndPersistRunLiveness(livenessRun, parseObject(livenessRun.resultJson)) ?? livenessRun;
-        }
         await releaseIssueExecutionAndPromote(livenessRun);
         await handleRunLivenessContinuation(livenessRun);
         await handleSuccessfulRunHandoff(
