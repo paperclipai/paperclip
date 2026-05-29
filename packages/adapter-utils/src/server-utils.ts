@@ -76,6 +76,16 @@ function signalRunningProcess(
 }
 
 export const runningProcesses = new Map<string, RunningProcess>();
+
+export function killAllRunningProcesses(signal: NodeJS.Signals = "SIGTERM"): void {
+  for (const running of runningProcesses.values()) {
+    try {
+      signalRunningProcess(running, signal);
+    } catch {
+      // best-effort
+    }
+  }
+}
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
