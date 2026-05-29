@@ -3343,6 +3343,68 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       childIssueSummaryTruncated: false,
     });
   });
+
+  it("does not wake parent when all children are harness-generated system issues", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const parentId = randomUUID();
+    const productivityReviewChildId = randomUUID();
+    const staleActiveRunChildId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Parent issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId,
+        issueNumber: 1,
+      },
+      {
+        id: productivityReviewChildId,
+        companyId,
+        parentId,
+        title: "Productivity review",
+        status: "done",
+        priority: "medium",
+        originKind: "issue_productivity_review",
+        issueNumber: 2,
+      },
+      {
+        id: staleActiveRunChildId,
+        companyId,
+        parentId,
+        title: "Stale active run evaluation",
+        status: "done",
+        priority: "medium",
+        originKind: "stale_active_run_evaluation",
+        issueNumber: 3,
+      },
+    ]);
+
+    // Both children are terminal (done) but system-harness-generated. They must
+    // be filtered out of the wake-readiness check. The parent has no real
+    // work-children, so we should not wake it. See PCL-2418.
+    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toBeNull();
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
