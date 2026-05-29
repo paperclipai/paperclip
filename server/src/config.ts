@@ -85,6 +85,12 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  heapAlarmThresholdPercent: number;
+  heapDrainThresholdPercent: number;
+  heapMonitorIntervalMs: number;
+  fleetCircuitBreakerWindowMs: number;
+  fleetCircuitBreakerThreshold: number;
+  runRequeueStalenessMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
 }
@@ -331,6 +337,12 @@ export function loadConfig(): Config {
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    heapAlarmThresholdPercent: Math.max(1, Math.min(99, Number(process.env.PAPERCLIP_HEAP_ALARM_THRESHOLD_PERCENT) || 70)),
+    heapDrainThresholdPercent: Math.max(1, Math.min(99, Number(process.env.PAPERCLIP_HEAP_DRAIN_THRESHOLD_PERCENT) || 75)),
+    heapMonitorIntervalMs: Math.max(5000, Number(process.env.PAPERCLIP_HEAP_MONITOR_INTERVAL_MS) || 30000),
+    fleetCircuitBreakerWindowMs: Math.max(1000, Number(process.env.PAPERCLIP_FLEET_CB_WINDOW_MS) || 60000),
+    fleetCircuitBreakerThreshold: Math.max(1, Number(process.env.PAPERCLIP_FLEET_CB_THRESHOLD) || 4),
+    runRequeueStalenessMs: Math.max(0, Number(process.env.PAPERCLIP_RUN_REQUEUE_STALENESS_MS) || 5 * 60 * 1000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };
