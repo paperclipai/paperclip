@@ -84,6 +84,7 @@ import {
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const STANDUP_OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -124,6 +125,64 @@ function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export function isAllZeroCeoStandupSeed(input: { title?: string | null; description?: string | null }) {
+  const title = input.title ?? "";
+  const description = input.description ?? "";
+  if (!/\bCEO\s+Standup\b/i.test(`${title}\n${description}`)) return false;
+
+  return [
+    /\bIN\s+STAGING\b[^\n]*[-—]\s*0\s+(?:items?|issues?)\b/i,
+    /\bIN\s+PROGRESS\b[^\n]*[-—]\s*0\s+(?:items?|issues?)\b/i,
+    /\bBLOCKED(?:\/STALE)?\b[^\n]*[-—]\s*0\s+(?:items?|issues?)\b/i,
+    /\bBACKLOG\b[^\n]*[-—]\s*0\s+(?:items?|issues?)\b/i,
+  ].every((pattern) => pattern.test(description));
+}
+
+async function countLiveOpenIssuesForStandupGuard(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  excludeIssueId?: string | null,
+) {
+  const conditions = [
+    eq(issues.companyId, companyId),
+    isNull(issues.hiddenAt),
+    inArray(issues.status, STANDUP_OPEN_ISSUE_STATUSES),
+  ];
+  if (excludeIssueId) {
+    conditions.push(ne(issues.id, excludeIssueId));
+  }
+
+  const [row] = await dbOrTx
+    .select({ count: sql<number>`count(*)::int` })
+    .from(issues)
+    .where(and(...conditions));
+  return Number(row?.count ?? 0);
+}
+
+async function assertCeoStandupSeedIsNotFalseZero(input: {
+  dbOrTx: Pick<Db, "select">;
+  companyId: string;
+  title?: string | null;
+  description?: string | null;
+  excludeIssueId?: string | null;
+}) {
+  if (!isAllZeroCeoStandupSeed(input)) return;
+
+  const liveOpenIssues = await countLiveOpenIssuesForStandupGuard(
+    input.dbOrTx,
+    input.companyId,
+    input.excludeIssueId,
+  );
+  if (liveOpenIssues === 0) return;
+
+  throw unprocessable(
+    [
+      `Refusing to emit an all-zero CEO standup seed while ${liveOpenIssues} live open issues exist.`,
+      "Generate the seed from canonical live issue/deployment data or leave the artifact uncreated.",
+    ].join(" "),
+  );
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -4558,6 +4617,12 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      await assertCeoStandupSeedIsNotFalseZero({
+        dbOrTx: db,
+        companyId,
+        title: issueData.title,
+        description: issueData.description,
+      });
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
@@ -4851,6 +4916,15 @@ export function issueService(db: Db) {
       }
       if (nextExecutionWorkspaceId) {
         await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
+      }
+      if (issueData.title !== undefined || issueData.description !== undefined) {
+        await assertCeoStandupSeedIsNotFalseZero({
+          dbOrTx,
+          companyId: existing.companyId,
+          title: issueData.title !== undefined ? issueData.title : existing.title,
+          description: issueData.description !== undefined ? issueData.description : existing.description,
+          excludeIssueId: existing.id,
+        });
       }
 
       applyStatusSideEffects(issueData.status, patch);

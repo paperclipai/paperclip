@@ -33,6 +33,7 @@ import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
   ISSUE_LIST_MAX_LIMIT,
+  isAllZeroCeoStandupSeed,
   issueService,
 } from "../services/issues.ts";
 import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
@@ -108,6 +109,36 @@ describe("deriveIssueCommentRunLogAttribution", () => {
     );
 
     expect(derived.has(commentId)).toBe(false);
+  });
+});
+
+describe("isAllZeroCeoStandupSeed", () => {
+  it("detects the false zero-state CEO standup seed shape", () => {
+    expect(isAllZeroCeoStandupSeed({
+      title: "CEO Standup - May 28, 2026",
+      description: [
+        "As CEO of Measure Coffee, write today's engineering standup summary.",
+        "",
+        "SHIPPED (last 24h) — 0 items:",
+        "IN STAGING — 0 items:",
+        "IN PROGRESS — 0 items:",
+        "BLOCKED/STALE (7+ days) — 0 items:",
+        "BACKLOG — 0 items:",
+      ].join("\n"),
+    })).toBe(true);
+  });
+
+  it("does not flag a live-count seed with nonzero operating data", () => {
+    expect(isAllZeroCeoStandupSeed({
+      title: "CEO Standup - May 28, 2026",
+      description: [
+        "OPEN ISSUE STATUS COUNTS: in_review=25, blocked=98, todo/backlog=25, in_progress=1, open_total=149",
+        "IN STAGING - 25 items:",
+        "IN PROGRESS - 1 items:",
+        "BLOCKED/STALE - 98 items:",
+        "BACKLOG - 25 items:",
+      ].join("\n"),
+    })).toBe(false);
   });
 });
 
@@ -1523,6 +1554,75 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  function falseZeroStandupDescription() {
+    return [
+      "As CEO of Measure Coffee, write today's engineering standup summary.",
+      "",
+      "The data below is complete and accurate.",
+      "",
+      "SHIPPED (last 24h) — 0 items:",
+      "IN STAGING — 0 items:",
+      "IN PROGRESS — 0 items:",
+      "BLOCKED/STALE (7+ days) — 0 items:",
+      "BACKLOG — 0 items:",
+    ].join("\n");
+  }
+
+  it("rejects all-zero CEO standup seed creation when live open issues exist", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Measure Coffee",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Ready for review",
+      status: "in_review",
+      priority: "medium",
+    });
+
+    await expect(svc.create(companyId, {
+      title: "CEO Standup - May 28, 2026",
+      description: falseZeroStandupDescription(),
+      status: "todo",
+      priority: "medium",
+    })).rejects.toThrow(/Refusing to emit an all-zero CEO standup seed while 1 live open issues exist/);
+  });
+
+  it("rejects updating an issue into an all-zero CEO standup seed when live open issues exist", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Measure Coffee",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Blocked launch validation",
+      status: "blocked",
+      priority: "high",
+    });
+
+    const draft = await svc.create(companyId, {
+      title: "Draft standup",
+      description: "Placeholder.",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(svc.update(draft.id, {
+      title: "CEO Standup - May 28, 2026",
+      description: falseZeroStandupDescription(),
+    })).rejects.toThrow(/Refusing to emit an all-zero CEO standup seed while 1 live open issues exist/);
   });
 
   it("inherits the parent issue workspace linkage when child workspace fields are omitted", async () => {
