@@ -1,5 +1,6 @@
 export const RECOVERY_ORIGIN_KINDS = {
   issueGraphLivenessEscalation: "harness_liveness_escalation",
+  issueProductivityReview: "issue_productivity_review",
   strandedIssueRecovery: "stranded_issue_recovery",
   staleActiveRunEvaluation: "stale_active_run_evaluation",
 } as const;
@@ -16,6 +17,10 @@ export const RECOVERY_KEY_PREFIXES = {
 export type RecoveryOriginKind = typeof RECOVERY_ORIGIN_KINDS[keyof typeof RECOVERY_ORIGIN_KINDS];
 export type RecoveryReasonKind = typeof RECOVERY_REASON_KINDS[keyof typeof RECOVERY_REASON_KINDS];
 export type RecoveryKeyPrefix = typeof RECOVERY_KEY_PREFIXES[keyof typeof RECOVERY_KEY_PREFIXES];
+
+export function isStrandedIssueRecoveryOriginKind(originKind: string | null | undefined) {
+  return originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
+}
 
 export function buildIssueGraphLivenessIncidentKey(input: {
   companyId: string;

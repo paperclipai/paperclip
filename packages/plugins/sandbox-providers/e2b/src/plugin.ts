@@ -1,5 +1,11 @@
 import path from "node:path";
-import { CommandExitError, Sandbox, SandboxNotFoundError, TimeoutError } from "e2b";
+import { randomUUID } from "node:crypto";
+import {
+  CommandExitError,
+  Sandbox,
+  SandboxNotFoundError,
+  TimeoutError,
+} from "e2b";
 import { definePlugin } from "@paperclipai/plugin-sdk";
 import type {
   PluginEnvironmentAcquireLeaseParams,
@@ -28,11 +34,11 @@ function parseDriverConfig(raw: Record<string, unknown>): E2bDriverConfig {
   const template = typeof raw.template === "string" && raw.template.trim().length > 0
     ? raw.template.trim()
     : "base";
-  const timeoutMs = Number(raw.timeoutMs ?? 300_000);
+  const timeoutMs = Number(raw.timeoutMs ?? 3_600_000);
   return {
     template,
     apiKey: typeof raw.apiKey === "string" && raw.apiKey.trim().length > 0 ? raw.apiKey.trim() : null,
-    timeoutMs: Number.isFinite(timeoutMs) ? Math.trunc(timeoutMs) : 300_000,
+    timeoutMs: Number.isFinite(timeoutMs) ? Math.trunc(timeoutMs) : 3_600_000,
     reuseLease: raw.reuseLease === true,
   };
 }
@@ -61,6 +67,34 @@ async function createSandbox(config: E2bDriverConfig): Promise<Sandbox> {
 
 function formatErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function readTimeoutStream(error: TimeoutError, key: "stdout" | "stderr"): string {
+  const record = error as unknown as Record<string, unknown>;
+  const direct = record[key];
+  if (typeof direct === "string" && direct.length > 0) return direct;
+  const nested = (record as { result?: Record<string, unknown> }).result?.[key];
+  if (typeof nested === "string") return nested;
+  return typeof direct === "string" ? direct : "";
+}
+
+function buildTimeoutExecuteResult(error: TimeoutError): PluginEnvironmentExecuteResult {
+  const stdout = readTimeoutStream(error, "stdout");
+  const stderrOutput = readTimeoutStream(error, "stderr");
+  const message = error.message.trim();
+  const stderr = stderrOutput.length > 0
+    ? message.length > 0 && !stderrOutput.includes(message)
+      ? `${stderrOutput}${stderrOutput.endsWith("\n") ? "" : "\n"}${message}\n`
+      : stderrOutput
+    : message.length > 0
+      ? `${message}\n`
+      : "";
+  return {
+    exitCode: null,
+    timedOut: true,
+    stdout,
+    stderr,
+  };
 }
 
 async function ensureSandboxWorkspace(sandbox: Sandbox, remoteCwd: string): Promise<void> {
@@ -99,6 +133,7 @@ function leaseMetadata(input: {
 }) {
   return {
     provider: "e2b",
+    shellCommand: "bash",
     template: input.config.template,
     timeoutMs: input.config.timeoutMs,
     reuseLease: input.config.reuseLease,
@@ -113,8 +148,48 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-function buildCommandLine(command: string, args: string[] = []) {
-  return `exec ${[command, ...args].map(shellQuote).join(" ")}`;
+function isValidShellEnvKey(value: string) {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
+
+// Mirror SSH's buildSshSpawnTarget: source the user's login profiles (and nvm)
+// before exec so commands run with the same PATH the user sees in an
+// interactive shell. e2b's `sandbox.commands.run` otherwise spawns a
+// non-login, non-interactive shell whose PATH does not include npm-globals,
+// nvm shims, or anything else the template installs via .profile/.bashrc —
+// which makes the hello probe fail with `exec: <cli>: not found` even when
+// the binary is on disk.
+function buildLoginShellScript(input: {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+}): string {
+  const env = input.env ?? {};
+  for (const key of Object.keys(env)) {
+    if (!isValidShellEnvKey(key)) {
+      throw new Error(`Invalid sandbox environment variable key: ${key}`);
+    }
+  }
+  const envArgs = Object.entries(env)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+    .map(([key, value]) => `${key}=${shellQuote(value)}`);
+  const commandParts = [shellQuote(input.command), ...input.args.map(shellQuote)].join(" ");
+  const execLine = envArgs.length > 0
+    ? `exec env ${envArgs.join(" ")} ${commandParts}`
+    : `exec ${commandParts}`;
+  return [
+    'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+    // .bash_profile typically sources .bashrc itself; only source .bashrc
+    // directly when no .bash_profile exists to avoid re-running idempotency-
+    // sensitive setup (nvm, PATH prepends) twice on templates that wire
+    // .bash_profile -> .bashrc.
+    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+    'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
+    '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true',
+    execLine,
+  ].join(" && ");
 }
 
 async function killSandboxBestEffort(sandbox: Sandbox, reason: string): Promise<void> {
@@ -316,28 +391,61 @@ const plugin = definePlugin({
 
     const config = parseDriverConfig(params.config);
     const sandbox = await connectSandbox(config, params.lease.providerLeaseId);
-    const started = await sandbox.commands.run(buildCommandLine(params.command, params.args), {
-      background: true,
-      stdin: params.stdin != null,
-      cwd: params.cwd,
-      envs: params.env,
-      timeoutMs: params.timeoutMs ?? config.timeoutMs,
-    }) as Awaited<ReturnType<Sandbox["commands"]["run"]>> & {
-      pid: number;
-      stdout: string;
-      stderr: string;
-      wait(): Promise<{ exitCode: number; stdout: string; stderr: string }>;
-    };
+    // Refresh the sandbox death clock on every command. E2B's `timeoutMs` is
+    // the absolute sandbox lifetime from create/connect; without this, a run
+    // longer than `config.timeoutMs` will have its sandbox killed mid-command
+    // and the next call throws "Sandbox is probably not running anymore".
+    // The refresh is best-effort: the sandbox is already healthy at this
+    // point, so a transient API error on setTimeout should not block the
+    // command from running. Worst case the existing lifetime stands.
+    try {
+      await sandbox.setTimeout(config.timeoutMs);
+    } catch {
+      // ignore — keep going with the existing sandbox lifetime
+    }
+    const baseCommand = buildLoginShellScript({
+      command: params.command,
+      args: params.args ?? [],
+      env: params.env,
+    });
+    const timeoutMs = params.timeoutMs ?? config.timeoutMs;
+
+    // For commands with stdin, stage the payload to a temp file inside the
+    // sandbox and shell-redirect it. Streaming stdin via `sendStdin` raced
+    // with fast-failing commands (the process exits before the RPC lands),
+    // and the previous code awaited a foreground `run` before sending stdin
+    // at all, so the data was never delivered. The staged-file approach
+    // keeps execution synchronous, avoids the race, and is unaffected by
+    // whether the command exits in microseconds or minutes.
+    let stagedStdinPath: string | null = null;
+    if (params.stdin != null) {
+      stagedStdinPath = `/tmp/paperclip-stdin-${randomUUID()}`;
+      try {
+        await sandbox.files.write(stagedStdinPath, params.stdin);
+      } catch (error) {
+        // Best-effort cleanup in case the write partially succeeded; ignore
+        // remove failures so the original error is what propagates.
+        await sandbox.files.remove(stagedStdinPath).catch(() => undefined);
+        throw error;
+      }
+    }
+
+    const command = stagedStdinPath
+      ? `${baseCommand} < ${shellQuote(stagedStdinPath)}`
+      : baseCommand;
 
     try {
-      if (params.stdin != null) {
-        try {
-          await sandbox.commands.sendStdin(started.pid, params.stdin);
-        } finally {
-          await sandbox.commands.closeStdin(started.pid);
-        }
-      }
-      const result = await started.wait();
+      // Env is interpolated into the script via `exec env KEY=val …` after
+      // profile sourcing so user-configured env wins over anything profiles
+      // export. No need to pass `envs:` separately.
+      const result = await sandbox.commands.run(command, {
+        cwd: params.cwd,
+        timeoutMs,
+      }) as Awaited<ReturnType<Sandbox["commands"]["run"]>> & {
+        exitCode: number;
+        stdout: string;
+        stderr: string;
+      };
       return {
         exitCode: result.exitCode,
         timedOut: false,
@@ -346,24 +454,21 @@ const plugin = definePlugin({
       };
     } catch (error) {
       if (error instanceof CommandExitError) {
-        const commandError = error as CommandExitError;
         return {
-          exitCode: commandError.exitCode,
+          exitCode: error.exitCode,
           timedOut: false,
-          stdout: commandError.stdout,
-          stderr: commandError.stderr,
+          stdout: error.stdout,
+          stderr: error.stderr,
         };
       }
       if (error instanceof TimeoutError) {
-        const timeoutError = error as TimeoutError;
-        return {
-          exitCode: null,
-          timedOut: true,
-          stdout: started.stdout,
-          stderr: started.stderr || `${timeoutError.message}\n`,
-        };
+        return buildTimeoutExecuteResult(error);
       }
       throw error;
+    } finally {
+      if (stagedStdinPath) {
+        await sandbox.files.remove(stagedStdinPath).catch(() => undefined);
+      }
     }
   },
 });

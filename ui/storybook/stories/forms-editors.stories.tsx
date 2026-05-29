@@ -92,6 +92,8 @@ Ship criteria for the board UI refresh:
 - [x] Keep comments and task updates auditable
 - [ ] Attach screenshots after QA
 
+Tooling: lean on [/react-perf-optimizer](skill://skill-react-perf?s=react-perf-optimizer) and [/vercel-react-best-practices](skill://skill-vercel-react?s=vercel-react-best-practices) so we don't regress render performance on the page it's open to. Inline skill chips like [/release-changelog](skill://skill-release?s=release-changelog) must sit on the surrounding text line, not hang below it.
+
 | Surface | Owner | State |
 | --- | --- | --- |
 | Issues | CodexCoder | In progress |
@@ -197,28 +199,44 @@ const adapterErrors = {
 };
 
 const storybookSecrets: CompanySecret[] = [
-  {
-    id: "secret-openai",
-    companyId: "company-storybook",
-    name: "OPENAI_API_KEY",
-    provider: "local_encrypted",
-    externalRef: null,
-    latestVersion: 3,
-    description: null,
-    createdByAgentId: null,
+	  {
+	    id: "secret-openai",
+	    companyId: "company-storybook",
+	    key: "openai-api-key",
+	    name: "OPENAI_API_KEY",
+	    provider: "local_encrypted",
+	    status: "active",
+	    managedMode: "paperclip_managed",
+	    externalRef: null,
+	    providerConfigId: null,
+	    providerMetadata: null,
+	    latestVersion: 3,
+	    description: null,
+	    lastResolvedAt: new Date("2026-04-20T09:00:00.000Z"),
+	    lastRotatedAt: new Date("2026-04-18T10:00:00.000Z"),
+	    deletedAt: null,
+	    createdByAgentId: null,
     createdByUserId: "user-board",
     createdAt: new Date("2026-04-18T10:00:00.000Z"),
     updatedAt: new Date("2026-04-20T10:00:00.000Z"),
   },
-  {
-    id: "secret-github",
-    companyId: "company-storybook",
-    name: "GITHUB_TOKEN",
-    provider: "local_encrypted",
-    externalRef: null,
-    latestVersion: 1,
-    description: null,
-    createdByAgentId: null,
+	  {
+	    id: "secret-github",
+	    companyId: "company-storybook",
+	    key: "github-token",
+	    name: "GITHUB_TOKEN",
+	    provider: "local_encrypted",
+	    status: "active",
+	    managedMode: "paperclip_managed",
+	    externalRef: null,
+	    providerConfigId: null,
+	    providerMetadata: null,
+	    latestVersion: 1,
+	    description: null,
+	    lastResolvedAt: null,
+	    lastRotatedAt: new Date("2026-04-19T10:00:00.000Z"),
+	    deletedAt: null,
+	    createdByAgentId: null,
     createdByUserId: "user-board",
     createdAt: new Date("2026-04-19T10:00:00.000Z"),
     updatedAt: new Date("2026-04-19T10:00:00.000Z"),

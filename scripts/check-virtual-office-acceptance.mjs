@@ -743,7 +743,7 @@ assertIncludes(
   ["Hermes AI-98235 post-cleanup diagnostic wake review ledger", checklistSource, "| AI-98235 post-cleanup diagnostic wake review |"],
   ["Hermes recovery issue recursion guard progress", progressSource, "does not create recovery issues for stranded recovery issues"],
   ["Hermes recovery issue recursion guard code", fs.readFileSync(path.join(repoRoot, "server", "src", "services", "recovery", "service.ts"), "utf8"), "STRANDED_ISSUE_RECOVERY_ORIGIN_KIND"],
-  ["Hermes recovery issue recursion guard test", fs.readFileSync(path.join(repoRoot, "server", "src", "__tests__", "heartbeat-process-recovery.test.ts"), "utf8"), "does not create recovery issues for stranded recovery issues"],
+  ["Hermes recovery issue recursion guard test", fs.readFileSync(path.join(repoRoot, "server", "src", "__tests__", "heartbeat-process-recovery.test.ts"), "utf8"), "blocks stranded recovery issues in place instead of creating nested recovery issues"],
   ["Hermes WSL bridge query file routing progress", progressSource, "Hermes WSL bridge query-file routing"],
   ["Hermes WSL bridge query file routing SOP", hermesSopSource, "Hermes WSL bridge query-file routing"],
   ["Hermes WSL bridge query file routing ledger", checklistSource, "| Hermes WSL bridge query-file routing |"],

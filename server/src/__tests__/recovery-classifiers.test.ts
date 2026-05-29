@@ -10,6 +10,7 @@ import {
   buildRunLivenessContinuationIdempotencyKey,
   classifyIssueGraphLiveness,
   decideRunLivenessContinuation,
+  isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "../services/recovery/index.ts";
 
@@ -71,6 +72,100 @@ describe("recovery classifier boundary", () => {
     };
 
     expect(classifyIssueGraphLiveness(input)).toEqual(classifyIssueGraphLivenessCompat(input));
+  });
+
+  it("treats a scheduled monitor as an explicit review action path", () => {
+    const findings = classifyIssueGraphLiveness({
+      now: "2026-04-30T18:00:00.000Z",
+      issues: [
+        {
+          id: issueId,
+          companyId,
+          identifier: "PAP-2945",
+          title: "Wait for external review",
+          status: "in_review",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionState: null,
+          monitorNextCheckAt: "2026-04-30T19:00:00.000Z",
+        },
+      ],
+      relations: [],
+      agents: [
+        {
+          id: agentId,
+          companyId,
+          name: "Coder",
+          role: "engineer",
+          status: "idle",
+          reportsTo: managerId,
+        },
+      ],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
+  it("does not treat overdue or exhausted monitors as explicit waiting paths", () => {
+    const baseIssue = {
+      id: issueId,
+      companyId,
+      identifier: "PAP-2945",
+      title: "Wait for external review",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+    };
+    const agents = [
+      {
+        id: agentId,
+        companyId,
+        name: "Coder",
+        role: "engineer",
+        status: "idle",
+        reportsTo: managerId,
+      },
+    ];
+
+    const overdue = classifyIssueGraphLiveness({
+      now: "2026-04-30T20:00:00.000Z",
+      issues: [
+        {
+          ...baseIssue,
+          executionState: null,
+          monitorNextCheckAt: "2026-04-30T19:00:00.000Z",
+        },
+      ],
+      relations: [],
+      agents,
+    });
+
+    const exhausted = classifyIssueGraphLiveness({
+      now: "2026-04-30T18:00:00.000Z",
+      issues: [
+        {
+          ...baseIssue,
+          executionPolicy: {
+            monitor: {
+              nextCheckAt: "2026-04-30T19:00:00.000Z",
+              maxAttempts: 1,
+            },
+          },
+          executionState: null,
+          monitorNextCheckAt: "2026-04-30T19:00:00.000Z",
+          monitorAttemptCount: 1,
+        },
+      ],
+      relations: [],
+      agents,
+    });
+
+    expect(overdue[0]?.state).toBe("in_review_without_action_path");
+    expect(exhausted[0]?.state).toBe("in_review_without_action_path");
   });
 
   it("keeps run liveness continuation decision parity with the compatibility export", () => {
@@ -142,5 +237,12 @@ describe("recovery classifier boundary", () => {
       livenessState: "plan_only",
       nextAttempt: 1,
     })).toBe("run_liveness_continuation:issue-1:run-1:plan_only:1");
+  });
+
+  it("classifies stranded recovery origins as recovery-owned work", () => {
+    expect(isStrandedIssueRecoveryOriginKind("stranded_issue_recovery")).toBe(true);
+    expect(isStrandedIssueRecoveryOriginKind("harness_liveness_escalation")).toBe(false);
+    expect(isStrandedIssueRecoveryOriginKind("manual")).toBe(false);
+    expect(isStrandedIssueRecoveryOriginKind(null)).toBe(false);
   });
 });

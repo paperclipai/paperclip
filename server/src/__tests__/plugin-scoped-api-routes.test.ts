@@ -98,6 +98,7 @@ describe.sequential("plugin scoped API routes", () => {
   const pluginId = "11111111-1111-4111-8111-111111111111";
   const companyId = "22222222-2222-4222-8222-222222222222";
   const agentId = "33333333-3333-4333-8333-333333333333";
+  const peerAgentId = "33333333-3333-4333-8333-333333333334";
   const runId = "44444444-4444-4444-8444-444444444444";
   const issueId = "55555555-5555-4555-8555-555555555555";
 
@@ -248,6 +249,55 @@ describe.sequential("plugin scoped API routes", () => {
       params: { issueId },
       body: { step: "next" },
       actor: expect.objectContaining({ actorType: "agent", agentId, runId }),
+      companyId,
+    }));
+  });
+
+  it("allows non-assignee agents on in-progress required checkout routes without claiming checkout ownership", async () => {
+    const apiRoutes = manifest([
+      {
+        routeKey: "issue.advance",
+        method: "POST",
+        path: "/issues/:issueId/advance",
+        auth: "agent",
+        capability: "api.routes.register",
+        checkoutPolicy: "required-for-agent-in-progress",
+        companyResolution: { from: "issue", param: "issueId" },
+      },
+    ]);
+    mockIssueService.getById.mockResolvedValue({
+      id: issueId,
+      companyId,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    const { app, workerManager } = await createApp({
+      actor: {
+        type: "agent",
+        agentId: peerAgentId,
+        companyId,
+        runId,
+        source: "agent_key",
+      },
+      plugin: {
+        id: pluginId,
+        pluginKey: apiRoutes.id,
+        status: "ready",
+        manifestJson: apiRoutes,
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/api/issues/${issueId}/advance`)
+      .send({ step: "next" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "handleApiRequest", expect.objectContaining({
+      routeKey: "issue.advance",
+      params: { issueId },
+      body: { step: "next" },
+      actor: expect.objectContaining({ actorType: "agent", agentId: peerAgentId, runId }),
       companyId,
     }));
   });

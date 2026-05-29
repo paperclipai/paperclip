@@ -182,7 +182,7 @@ export async function probePluginEnvironmentDriver(input: {
     companyId: input.companyId,
     environmentId: input.environmentId,
     config: input.config.driverConfig,
-  });
+  }, 120_000);
 
   return {
     ok: result.ok,
@@ -227,7 +227,7 @@ export async function probePluginSandboxProviderDriver(input: {
     companyId: input.companyId,
     environmentId: input.environmentId,
     config: driverConfig,
-  });
+  }, 120_000);
 
   return {
     ok: result.ok,
@@ -247,6 +247,7 @@ export async function resumePluginEnvironmentLease(input: {
   workerManager: PluginWorkerManager;
   companyId: string;
   environmentId: string;
+  issueId?: string | null;
   config: PluginEnvironmentConfig;
   providerLeaseId: string;
   leaseMetadata?: Record<string, unknown>;
@@ -256,6 +257,7 @@ export async function resumePluginEnvironmentLease(input: {
     driverKey: input.config.driverKey,
     companyId: input.companyId,
     environmentId: input.environmentId,
+    issueId: input.issueId ?? null,
     config: input.config.driverConfig,
     providerLeaseId: input.providerLeaseId,
     leaseMetadata: input.leaseMetadata,
@@ -267,6 +269,7 @@ export async function destroyPluginEnvironmentLease(input: {
   workerManager: PluginWorkerManager;
   companyId: string;
   environmentId: string;
+  issueId?: string | null;
   config: PluginEnvironmentConfig;
   providerLeaseId: string | null;
   leaseMetadata?: Record<string, unknown>;
@@ -276,6 +279,7 @@ export async function destroyPluginEnvironmentLease(input: {
     driverKey: input.config.driverKey,
     companyId: input.companyId,
     environmentId: input.environmentId,
+    issueId: input.issueId ?? null,
     config: input.config.driverConfig,
     providerLeaseId: input.providerLeaseId,
     leaseMetadata: input.leaseMetadata,
@@ -313,5 +317,31 @@ export async function executePluginEnvironmentCommand(input: {
         workerManager: input.workerManager,
         config: input.config,
       });
-  return await input.workerManager.call(plugin.id, "environmentExecute", input.params);
+  return await input.workerManager.call(
+    plugin.id,
+    "environmentExecute",
+    input.params,
+    resolvePluginExecuteRpcTimeoutMs({
+      requestedTimeoutMs: input.params.timeoutMs,
+      config: input.config.driverConfig,
+    }),
+  );
+}
+
+const RPC_OVERHEAD_BUFFER_MS = 30_000;
+
+export function resolvePluginExecuteRpcTimeoutMs(input: {
+  requestedTimeoutMs?: number;
+  config: Record<string, unknown>;
+}): number | undefined {
+  let baseMs: number | undefined;
+  if (Number.isFinite(input.requestedTimeoutMs) && (input.requestedTimeoutMs ?? 0) > 0) {
+    baseMs = Math.trunc(input.requestedTimeoutMs!);
+  } else {
+    const configTimeoutMs = typeof input.config.timeoutMs === "number" ? input.config.timeoutMs : null;
+    if (configTimeoutMs && Number.isFinite(configTimeoutMs) && configTimeoutMs > 0) {
+      baseMs = Math.trunc(configTimeoutMs);
+    }
+  }
+  return baseMs != null ? baseMs + RPC_OVERHEAD_BUFFER_MS : undefined;
 }

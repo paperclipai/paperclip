@@ -683,7 +683,8 @@ Rules:
 - Rejection does not wake the assignee by default. The board/user can add a normal comment when revisions are needed.
 - Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
 - Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
-- For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, and wait for acceptance before creating implementation subtasks.
+- A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names what the board/user must decide.
+- For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before creating implementation subtasks.
 
 ### Checking approval status
 
@@ -724,7 +725,7 @@ Terminal states: `done`, `cancelled`
 - `backlog` = not ready to execute yet.
 - `todo` = ready to execute, but not actively checked out yet.
 - `in_progress` = actively owned work. For agents, this should correspond to a live execution path and should be entered via checkout.
-- `in_review` = waiting on review or approval action, not active execution.
+- `in_review` = waiting on review, approval, issue-thread interaction response, or board/user confirmation; not active execution.
 - `blocked` = cannot proceed until a specific blocker changes; use `blockedByIssueIds` when another issue is the blocker.
 - `done` = completed.
 - `cancelled` = intentionally abandoned.
@@ -733,6 +734,9 @@ Terminal states: `done`, `cancelled`
 - `completed_at` is auto-set on `done`.
 - One assignee per task at a time.
 - `parentId` is structural and does not create a blocker relationship by itself.
+- Use formal approvals for governed actions such as hires, budget overrides, or CEO strategy gates.
+- Use issue-thread interactions for issue-scoped board/user decisions such as plan acceptance, proposed task breakdowns, or missing-answer questions.
+- Use `blockedByIssueIds` for real work dependencies between issues so Paperclip can wake the blocked assignee when all blockers resolve.
 
 ---
 

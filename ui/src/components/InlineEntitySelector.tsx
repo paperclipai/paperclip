@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { orderItemsBySelectedAndRecent } from "../lib/recent-selections";
@@ -29,6 +29,8 @@ interface InlineEntitySelectorProps {
   openOnFocus?: boolean;
 }
 
+const EMPTY_RECENT_OPTION_IDS: string[] = [];
+
 export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySelectorProps>(
   function InlineEntitySelector(
     {
@@ -43,7 +45,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       className,
       renderTriggerValue,
       renderOption,
-      recentOptionIds = [],
+      recentOptionIds = EMPTY_RECENT_OPTION_IDS,
       disablePortal,
       openOnFocus = true,
     },
@@ -52,6 +54,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState("");
     const [highlightedIndex, setHighlightedIndex] = useState(0);
+    const highlightedIndexRef = useRef(0);
     const inputRef = useRef<HTMLInputElement>(null);
     const shouldPreventCloseAutoFocusRef = useRef(false);
     const isPointerDownRef = useRef(false);
@@ -72,11 +75,17 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
 
     const currentOption = options.find((option) => option.id === value) ?? null;
 
+    const setHighlightedIndexValue = useCallback((next: number | ((current: number) => number)) => {
+      const resolved = typeof next === "function" ? next(highlightedIndexRef.current) : next;
+      highlightedIndexRef.current = resolved;
+      setHighlightedIndex(resolved);
+    }, []);
+
     useEffect(() => {
       if (!open) return;
       const selectedIndex = filteredOptions.findIndex((option) => option.id === value);
-      setHighlightedIndex(selectedIndex >= 0 ? selectedIndex : 0);
-    }, [filteredOptions, open, value]);
+      setHighlightedIndexValue(selectedIndex >= 0 ? selectedIndex : 0);
+    }, [filteredOptions, open, setHighlightedIndexValue, value]);
 
     const commitSelection = (index: number, moveNext: boolean) => {
       const option = filteredOptions[index] ?? filteredOptions[0];
@@ -153,14 +162,16 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
             onKeyDown={(event) => {
               if (event.key === "ArrowDown") {
                 event.preventDefault();
-                setHighlightedIndex((current) =>
+                event.stopPropagation();
+                setHighlightedIndexValue((current) =>
                   filteredOptions.length === 0 ? 0 : (current + 1) % filteredOptions.length,
                 );
                 return;
               }
               if (event.key === "ArrowUp") {
                 event.preventDefault();
-                setHighlightedIndex((current) => {
+                event.stopPropagation();
+                setHighlightedIndexValue((current) => {
                   if (filteredOptions.length === 0) return 0;
                   return current <= 0 ? filteredOptions.length - 1 : current - 1;
                 });
@@ -168,16 +179,19 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
               }
               if (event.key === "Enter") {
                 event.preventDefault();
-                commitSelection(highlightedIndex, true);
+                event.stopPropagation();
+                commitSelection(highlightedIndexRef.current, true);
                 return;
               }
               if (event.key === "Tab" && !event.shiftKey) {
                 event.preventDefault();
-                commitSelection(highlightedIndex, true);
+                event.stopPropagation();
+                commitSelection(highlightedIndexRef.current, true);
                 return;
               }
               if (event.key === "Escape") {
                 event.preventDefault();
+                event.stopPropagation();
                 setOpen(false);
               }
             }}
@@ -197,7 +211,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
                       "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm touch-manipulation",
                       isHighlighted && "bg-accent",
                     )}
-                    onMouseEnter={() => setHighlightedIndex(index)}
+                    onMouseEnter={() => setHighlightedIndexValue(index)}
                     onClick={() => commitSelection(index, true)}
                   >
                     {renderOption ? renderOption(option, isSelected) : <span className="truncate">{option.label}</span>}

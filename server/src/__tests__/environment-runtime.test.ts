@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -178,6 +177,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         provider: "local_encrypted",
         value: config.privateKey,
       });
+      await secretService(db).createBinding({
+        companyId,
+        secretId: secret.id,
+        targetType: "environment",
+        targetId: environmentId,
+        configPath: "privateKeySecretRef",
+      });
       config = {
         ...config,
         privateKey: null,
@@ -329,26 +335,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const statePath = path.join(fixtureRoot, "state.json");
     const fixture = await startSshEnvLabFixture({ statePath });
     const sshConfig = await buildSshEnvLabFixtureConfig(fixture);
-    const healthServer = createServer((req, res) => {
-      if (req.url === "/api/health") {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ status: "ok" }));
-        return;
-      }
-      res.writeHead(404).end();
-    });
-    await new Promise<void>((resolve, reject) => {
-      healthServer.once("error", reject);
-      healthServer.listen(0, "127.0.0.1", () => resolve());
-    });
-    const address = healthServer.address();
-    if (!address || typeof address === "string") {
-      await new Promise<void>((resolve) => healthServer.close(() => resolve()));
-      throw new Error("Expected the test health server to listen on a TCP port.");
-    }
-    const runtimeApiUrl = `http://127.0.0.1:${address.port}`;
-    const previousCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
-    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([runtimeApiUrl]);
     const { companyId, environment, runId } = await seedEnvironment({
       driver: "ssh",
       name: "Fixture SSH",
@@ -372,7 +358,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         username: sshConfig.username,
         remoteWorkspacePath: sshConfig.remoteWorkspacePath,
         remoteCwd: sshConfig.remoteWorkspacePath,
-        paperclipApiUrl: runtimeApiUrl,
       });
 
       const released = await runtime.releaseRunLeases(runId);
@@ -381,12 +366,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect(released[0]?.environment.driver).toBe("ssh");
       expect(released[0]?.lease.status).toBe("released");
     } finally {
-      if (previousCandidates === undefined) {
-        delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
-      } else {
-        process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = previousCandidates;
-      }
-      await new Promise<void>((resolve) => healthServer.close(() => resolve()));
     }
   });
 
@@ -551,8 +530,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(executed.stdout).toBe("ok\n");
     expect(released).toHaveLength(1);
     expect(released[0]?.lease.status).toBe("released");
-    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentExecute", expect.anything());
-    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentReleaseLease", expect.anything());
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentExecute", expect.anything(), 31000);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentReleaseLease", expect.anything(), 31234);
   });
 
   it("uses resolved secret-ref config for plugin-backed sandbox execute and release", async () => {
@@ -576,6 +555,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       driver: "sandbox",
       config: providerConfig,
     };
+    await secretService(db).createBinding({
+      companyId,
+      secretId: apiSecret.id,
+      targetType: "environment",
+      targetId: environment.id,
+      configPath: "apiKey",
+    });
     await environmentService(db).update(environment.id, {
       driver: "sandbox",
       name: environment.name,
@@ -676,7 +662,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       args: ["ok"],
       cwd: "/workspace",
       env: {},
-      timeoutMs: 1000,
     });
 
     await environmentService(db).update(environment.id, {
@@ -692,12 +677,201 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       config: expect.objectContaining({
         apiKey: "resolved-provider-key",
       }),
-    }));
+    }), 31234);
     expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentReleaseLease", expect.objectContaining({
       config: expect.objectContaining({
         apiKey: "resolved-provider-key",
       }),
-    }));
+    }), 31234);
+  });
+
+  it("waits briefly for a ready sandbox provider plugin worker to come online", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: false,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Eventually Running Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.eventually-running-sandbox-provider",
+      packageName: "@acme/eventually-running-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.eventually-running-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Eventually Running Sandbox Provider",
+        description: "Test plugin worker startup grace period",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    let runningChecks = 0;
+    const workerManager = {
+      isRunning: vi.fn((id: string) => {
+        if (id !== pluginId) return false;
+        runningChecks += 1;
+        return runningChecks >= 3;
+      }),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "sandbox-1",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: false,
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, {
+      pluginWorkerManager: workerManager,
+      pluginWorkerReadyTimeoutMs: 25,
+      pluginWorkerReadyPollMs: 1,
+    });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("sandbox-1");
+    expect(workerManager.isRunning).toHaveBeenCalledTimes(3);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.anything(), 31234);
+  });
+
+  it("extends plugin-backed sandbox lease RPC timeouts from provider config", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1_234,
+      bridgeRequestTimeoutMs: 40_000,
+      reuseLease: false,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Long Lease Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.long-lease-sandbox-provider",
+      packageName: "@acme/long-lease-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.long-lease-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Long Lease Sandbox Provider",
+        description: "Test plugin worker acquire timeout",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "sandbox-1",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1_234,
+              bridgeRequestTimeoutMs: 40_000,
+              reuseLease: false,
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("sandbox-1");
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "environmentAcquireLease",
+      expect.objectContaining({
+        driverKey: "fake-plugin",
+        config: {
+          image: "fake:test",
+          timeoutMs: 1_234,
+          bridgeRequestTimeoutMs: 40_000,
+          reuseLease: false,
+        },
+      }),
+      70_000,
+    );
   });
 
   it("falls back to acquire when plugin-backed sandbox lease resume throws", async () => {
@@ -807,7 +981,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(workerManager.call).toHaveBeenNthCalledWith(1, pluginId, "environmentResumeLease", expect.objectContaining({
       driverKey: "fake-plugin",
       providerLeaseId: "stale-plugin-lease",
-    }));
+    }), 31234);
     expect(workerManager.call).toHaveBeenNthCalledWith(2, pluginId, "environmentAcquireLease", expect.objectContaining({
       driverKey: "fake-plugin",
       config: {
@@ -816,7 +990,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         reuseLease: true,
       },
       runId,
-    }));
+    }), 31234);
   });
 
   it("releases a sandbox run lease from metadata after the environment config changes", async () => {
@@ -931,6 +1105,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       driverKey: "fake-plugin",
       companyId,
       environmentId: environment.id,
+      issueId: null,
       config: { template: "base" },
       runId,
       workspaceMode: undefined,
@@ -966,6 +1141,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       driverKey: "fake-plugin",
       companyId,
       environmentId: environment.id,
+      issueId: null,
       config: {},
       providerLeaseId: "plugin-lease-1",
       leaseMetadata: expect.objectContaining({
@@ -1124,6 +1300,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       driverKey: "fake-plugin",
       companyId,
       environmentId: environment.id,
+      issueId: null,
       config: { template: "base" },
       providerLeaseId: "plugin-lease-full",
       leaseMetadata: expect.objectContaining({
@@ -1149,11 +1326,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       args: ["ok"],
       cwd: "/workspace/project",
       env: { FOO: "bar" },
-    }));
+    }), 31000);
     expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentDestroyLease", {
       driverKey: "fake-plugin",
       companyId,
       environmentId: environment.id,
+      issueId: null,
       config: { template: "base" },
       providerLeaseId: "plugin-lease-full",
       leaseMetadata: expect.objectContaining({

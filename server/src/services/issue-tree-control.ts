@@ -71,7 +71,7 @@ type RestoreTreeStatusResult = TreeStatusUpdateResult & {
 const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
 const ACTIVE_RUN_STATUSES = ["queued", "running"] as const;
 const DEFAULT_RELEASE_POLICY: IssueTreeHoldReleasePolicy = { strategy: "manual" };
-const MAX_PAUSE_HOLD_GATE_DEPTH = 15;
+const MAX_PAUSE_HOLD_ANCESTOR_DEPTH = 100;
 export const ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS: ReadonlySet<string> = new Set([
   "issue_commented",
   "issue_reopened_via_comment",
@@ -548,6 +548,22 @@ export function issueTreeControlService(db: Db) {
     return byIssueId;
   }
 
+  async function activePauseHoldsForIssueIds(companyId: string, issueIds: string[]) {
+    if (issueIds.length === 0) return [];
+    return db
+      .select()
+      .from(issueTreeHolds)
+      .where(
+        and(
+          eq(issueTreeHolds.companyId, companyId),
+          eq(issueTreeHolds.status, "active"),
+          eq(issueTreeHolds.mode, "pause"),
+          inArray(issueTreeHolds.rootIssueId, issueIds),
+        ),
+      )
+      .orderBy(asc(issueTreeHolds.createdAt), asc(issueTreeHolds.id));
+  }
+
   async function getActivePauseHoldGate(
     companyId: string,
     issueId: string,
@@ -573,9 +589,12 @@ export function issueTreeControlService(db: Db) {
     const holdByRootIssueId = new Map(activePauseHolds.map((hold) => [hold.rootIssueId, hold]));
     let currentIssueId: string | null = issueId;
     const visited = new Set<string>();
-    let depth = 0;
 
-    while (currentIssueId && !visited.has(currentIssueId) && depth < MAX_PAUSE_HOLD_GATE_DEPTH) {
+    while (
+      currentIssueId
+      && !visited.has(currentIssueId)
+      && visited.size < MAX_PAUSE_HOLD_ANCESTOR_DEPTH
+    ) {
       visited.add(currentIssueId);
       const hold = holdByRootIssueId.get(currentIssueId);
       if (hold) {
@@ -596,7 +615,6 @@ export function issueTreeControlService(db: Db) {
         .where(and(eq(issues.id, currentIssueId), eq(issues.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
       currentIssueId = parent?.parentId ?? null;
-      depth += 1;
     }
 
     return null;
@@ -690,12 +708,99 @@ export function issueTreeControlService(db: Db) {
       releasePolicy?: IssueTreeHoldReleasePolicy | null;
       actor: ActorInput;
     },
-  ) {
+  ): Promise<{
+    hold: IssueTreeHold;
+    preview: IssueTreeControlPreview;
+    resumedPauseHoldIds?: string[];
+  }> {
     const holdReleasePolicy = normalizeReleasePolicy(input.releasePolicy);
     const holdPreview = await preview(companyId, rootIssueId, {
       mode: input.mode,
       releasePolicy: holdReleasePolicy,
     });
+
+    if (input.mode === "resume") {
+      const issueIds = [...new Set(holdPreview.issues.map((issue) => issue.id))];
+      const activePauseHolds = await activePauseHoldsForIssueIds(companyId, issueIds);
+      const releaseReason = input.reason ?? "Subtree resume applied.";
+
+      const { hold: resumeHold } = await db.transaction(async (tx) => {
+        const [createdHold] = await tx
+          .insert(issueTreeHolds)
+          .values({
+            companyId,
+            rootIssueId,
+            mode: input.mode,
+            status: "active",
+            reason: input.reason ?? null,
+            releasePolicy: holdReleasePolicy as unknown as Record<string, unknown>,
+            createdByActorType: input.actor.actorType,
+            createdByAgentId: input.actor.agentId ?? null,
+            createdByUserId: input.actor.userId ?? (input.actor.actorType === "user" ? input.actor.actorId : null),
+            createdByRunId: input.actor.runId ?? null,
+          })
+          .returning();
+
+        const memberRows = holdPreview.issues.map((issue) => ({
+          companyId,
+          holdId: createdHold.id,
+          issueId: issue.id,
+          parentIssueId: issue.parentId,
+          depth: issue.depth,
+          issueIdentifier: issue.identifier,
+          issueTitle: issue.title,
+          issueStatus: issue.status,
+          assigneeAgentId: issue.assigneeAgentId,
+          assigneeUserId: issue.assigneeUserId,
+          activeRunId: issue.activeRun?.id ?? null,
+          activeRunStatus: issue.activeRun?.status ?? null,
+          skipped: issue.skipped,
+          skipReason: issue.skipReason,
+        }));
+
+        const createdMembers = memberRows.length > 0
+          ? await tx
+            .insert(issueTreeHoldMembers)
+            .values(memberRows)
+            .returning()
+          : [];
+
+        return { hold: toHold(createdHold, createdMembers) };
+      });
+
+      const resumedPauseHoldIds = activePauseHolds.map((hold) => hold.id);
+      if (resumedPauseHoldIds.length > 0) {
+        await Promise.all(
+          activePauseHolds.map((pauseHold) =>
+            releaseHold(companyId, pauseHold.rootIssueId, pauseHold.id, {
+              reason: releaseReason,
+              metadata: {
+                resumedByResumeHoldId: resumeHold.id,
+                resumeHoldMode: "tree_resume",
+                resumedPauseHoldId: pauseHold.id,
+              },
+              actor: input.actor,
+            }),
+          ),
+        );
+      }
+
+      const releasedResumeHold = await releaseHold(companyId, rootIssueId, resumeHold.id, {
+        reason: releaseReason,
+        metadata: {
+          resumedPauseHoldIds,
+          resumeMode: "subtree",
+          ...(input.releasePolicy ? { releasePolicy: holdReleasePolicy } : {}),
+        },
+        actor: input.actor,
+      });
+
+      return {
+        hold: releasedResumeHold,
+        preview: holdPreview,
+        resumedPauseHoldIds,
+      };
+    }
 
     const { hold, members } = await db.transaction(async (tx) => {
       const [createdHold] = await tx

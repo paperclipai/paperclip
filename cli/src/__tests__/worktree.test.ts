@@ -190,8 +190,9 @@ describe("worktree helpers", () => {
     ).toEqual(["worktree", "add", "-b", "my-worktree", "/tmp/my-worktree", "origin/main"]);
   });
 
-  it("rewrites loopback auth URLs to the new port only", () => {
+  it("rewrites auth URLs only when they already include a port", () => {
     expect(rewriteLocalUrlPort("http://127.0.0.1:3100", 3110)).toBe("http://127.0.0.1:3110/");
+    expect(rewriteLocalUrlPort("http://my-host.ts.net:3100", 3110)).toBe("http://my-host.ts.net:3110/");
     expect(rewriteLocalUrlPort("https://paperclip.example", 3110)).toBe("https://paperclip.example");
   });
 
@@ -507,6 +508,45 @@ describe("worktree helpers", () => {
       } else {
         process.env.PAPERCLIP_AGENT_JWT_SECRET = originalJwtSecret;
       }
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves repo-managed worktree checkouts when --force re-runs from the source repo", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-force-preserve-"));
+    const repoRoot = path.join(tempRoot, "repo");
+    const originalCwd = process.cwd();
+
+    try {
+      fs.mkdirSync(repoRoot, { recursive: true });
+      const repoConfigDir = path.join(repoRoot, ".paperclip");
+      fs.mkdirSync(repoConfigDir, { recursive: true });
+      fs.writeFileSync(path.join(repoConfigDir, "config.json"), "stale", "utf8");
+      fs.writeFileSync(path.join(repoConfigDir, ".env"), "STALE=1", "utf8");
+
+      // Simulate the repo-managed worktrees subfolder that holds every
+      // worktree checkout (the directory PAPA-358 reported as nuked).
+      const worktreesDir = path.join(repoConfigDir, "worktrees");
+      const checkoutDir = path.join(worktreesDir, "PAP-100-feature");
+      fs.mkdirSync(checkoutDir, { recursive: true });
+      const sentinelPath = path.join(checkoutDir, "sentinel.txt");
+      fs.writeFileSync(sentinelPath, "do-not-delete", "utf8");
+
+      process.chdir(repoRoot);
+
+      await worktreeInitCommand({
+        seed: false,
+        force: true,
+        fromConfig: path.join(tempRoot, "missing", "config.json"),
+        home: path.join(tempRoot, ".paperclip-worktrees"),
+      });
+
+      expect(fs.existsSync(sentinelPath)).toBe(true);
+      expect(fs.readFileSync(sentinelPath, "utf8")).toBe("do-not-delete");
+      expect(fs.existsSync(path.join(repoConfigDir, "config.json"))).toBe(true);
+      expect(fs.readFileSync(path.join(repoConfigDir, "config.json"), "utf8")).not.toBe("stale");
+    } finally {
+      process.chdir(originalCwd);
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
