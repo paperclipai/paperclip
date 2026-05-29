@@ -8,6 +8,7 @@ export const BUILTIN_ADAPTER_TYPES = new Set([
   "codex_local",
   "cursor_cloud",
   "cursor",
+  "deepseek_api",
   "gemini_local",
   "openclaw_gateway",
   "opencode_local",

@@ -111,6 +111,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Managed remote Cursor agent",
     icon: MousePointer2,
   },
+  deepseek_api: {
+    label: "DeepSeek API",
+    description: "Call DeepSeek's chat completions API directly with an API key",
+    icon: Bot,
+  },
   openclaw_gateway: {
     label: "OpenClaw Gateway",
     description: "Invoke OpenClaw via gateway protocol",
