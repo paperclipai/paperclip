@@ -5,6 +5,7 @@ import { normalizeIssueExecutionPolicy } from "../services/issue-execution-polic
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  create: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   createChild: vi.fn(),
@@ -147,6 +148,13 @@ describe("issue execution policy routes", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.create.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      identifier: "PAP-1001",
+      title: "Created issue",
+      status: "todo",
+    });
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
@@ -163,7 +171,7 @@ describe("issue execution policy routes", () => {
     mockAccessService.hasPermission.mockResolvedValue(false);
   });
 
-  it("rejects an agent-authored in_review transition without a review path", async () => {
+  it("rejects in_review transition without reviewer", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
@@ -187,13 +195,9 @@ describe("issue execution policy routes", () => {
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ status: "in_review" });
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toContain("invalid_issue_disposition");
-    expect(res.body.error).toContain("request_confirmation");
-    expect(res.body.details).toMatchObject({
-      code: "invalid_issue_disposition",
-      missing: "review_path",
-    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("reviewer_required");
+    expect(res.body.details).toMatchObject({ code: "reviewer_required" });
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
@@ -227,7 +231,10 @@ describe("issue execution policy routes", () => {
       runId: "run-1",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ status: "in_review" });
+      .send({
+        status: "in_review",
+        reviewerAgentId: "44444444-4444-4444-8444-444444444444",
+      });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(
@@ -272,7 +279,11 @@ describe("issue execution policy routes", () => {
       runId: "run-1",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ status: "in_review", executionPolicy: policy });
+      .send({
+        status: "in_review",
+        reviewerAgentId: "44444444-4444-4444-8444-444444444444",
+        executionPolicy: policy,
+      });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(
@@ -324,6 +335,7 @@ describe("issue execution policy routes", () => {
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({
         status: "in_review",
+        reviewerAgentId: "44444444-4444-4444-8444-444444444444",
         executionPolicy: {
           monitor: {
             nextCheckAt: "2026-12-01T12:00:00.000Z",
@@ -365,7 +377,10 @@ describe("issue execution policy routes", () => {
 
     const res = await request(await createApp())
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ status: "in_review" });
+      .send({
+        status: "in_review",
+        reviewerAgentId: "44444444-4444-4444-8444-444444444444",
+      });
 
     expect(res.status).toBe(200);
     expect(mockIssueThreadInteractionService.listForIssue).not.toHaveBeenCalled();
@@ -420,6 +435,42 @@ describe("issue execution policy routes", () => {
     expect(updatePatch.assigneeUserId).toBeUndefined();
     expect(updatePatch.executionState).toBeUndefined();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects create issue in_review without reviewer", async () => {
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Needs reviewer",
+        status: "in_review",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("reviewer_required");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows create issue in_review with reviewerAgentId", async () => {
+    mockIssueService.create.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      identifier: "PAP-2001",
+      title: "Needs reviewer",
+      status: "in_review",
+      reviewerAgentId: "44444444-4444-4444-8444-444444444444",
+      reviewerUserId: null,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Needs reviewer",
+        status: "in_review",
+        reviewerAgentId: "44444444-4444-4444-8444-444444444444",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalled();
   });
 
   it("triggers a scheduled monitor immediately from the dedicated route", async () => {

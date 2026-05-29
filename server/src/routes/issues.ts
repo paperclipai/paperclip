@@ -887,6 +887,8 @@ export function issueRoutes(
       companyId: string;
       status: string;
       assigneeUserId?: string | null;
+      reviewerAgentId?: string | null;
+      reviewerUserId?: string | null;
       executionState?: unknown;
       monitorNextCheckAt?: Date | null;
     };
@@ -902,6 +904,14 @@ export function issueRoutes(
       ? input.existing.assigneeUserId
       : input.updateFields.assigneeUserId;
     if (typeof nextAssigneeUserId === "string" && nextAssigneeUserId.trim().length > 0) return;
+    const nextReviewerAgentId = input.updateFields.reviewerAgentId === undefined
+      ? input.existing.reviewerAgentId
+      : input.updateFields.reviewerAgentId;
+    const nextReviewerUserId = input.updateFields.reviewerUserId === undefined
+      ? input.existing.reviewerUserId
+      : input.updateFields.reviewerUserId;
+    if (typeof nextReviewerAgentId === "string" && nextReviewerAgentId.trim().length > 0) return;
+    if (typeof nextReviewerUserId === "string" && nextReviewerUserId.trim().length > 0) return;
 
     const nextExecutionState = input.updateFields.executionState === undefined
       ? input.existing.executionState
@@ -931,6 +941,22 @@ export function issueRoutes(
         "typed_execution_state_current_participant",
         "scheduled_issue_monitor",
       ],
+    });
+  }
+
+  function assertReviewerRequiredForInReview(input: {
+    nextStatus: unknown;
+    reviewerAgentId: unknown;
+    reviewerUserId: unknown;
+  }) {
+    if (input.nextStatus !== "in_review") return;
+    const hasReviewerAgent =
+      typeof input.reviewerAgentId === "string" && input.reviewerAgentId.trim().length > 0;
+    const hasReviewerUser =
+      typeof input.reviewerUserId === "string" && input.reviewerUserId.trim().length > 0;
+    if (hasReviewerAgent || hasReviewerUser) return;
+    throw new HttpError(400, "reviewer_required", {
+      code: "reviewer_required",
     });
   }
 
@@ -2517,6 +2543,11 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
+    assertReviewerRequiredForInReview({
+      nextStatus: req.body.status,
+      reviewerAgentId: req.body.reviewerAgentId,
+      reviewerUserId: req.body.reviewerUserId,
+    });
     const executionPolicy = applyActorMonitorScheduledBy(
       normalizeIssueExecutionPolicy(req.body.executionPolicy),
       actor.actorType,
@@ -2924,6 +2955,12 @@ export function issueRoutes(
         };
       }
     }
+
+    assertReviewerRequiredForInReview({
+      nextStatus: updateFields.status,
+      reviewerAgentId: updateFields.reviewerAgentId ?? existing.reviewerAgentId,
+      reviewerUserId: updateFields.reviewerUserId ?? existing.reviewerUserId,
+    });
 
     await assertAgentInReviewReviewPath({
       existing,
