@@ -16,6 +16,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let command = asString(config.command, "");
   if (!command) throw new Error("Process adapter missing command");
 
+  if (ctx.agent.status === "paused" || ctx.agent.status === "terminated" || ctx.agent.status === "pending_approval") {
+    throw new Error("Cannot spawn child process: agent is paused, terminated, or pending approval");
+  }
   const args = asStringArray(config.args);
   const cwd = asString(config.cwd, process.cwd());
   const envConfig = parseObject(config.env);

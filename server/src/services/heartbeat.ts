@@ -7921,6 +7921,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+    // Re-read agent state immediately before adapter invocation to prevent pause bypass
+    const preAdapterAgent = await getAgent(agent.id);
+    if (preAdapterAgent && (preAdapterAgent.status === "paused" || preAdapterAgent.status === "terminated" || preAdapterAgent.status === "pending_approval")) {
+      logger.info({ runId, agentId: agent.id }, "Aborting adapter execution: agent paused/terminated after claim");
+      await setRunStatus(run.id, "aborted", { finishedAt: new Date() });
+      return;
+    }
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
