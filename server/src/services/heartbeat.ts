@@ -9975,6 +9975,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
+        // Skip if the agent already has an active (queued or running) timer run.
+        // The coalescing logic would normally deduplicate, but this avoids unnecessary
+        // DB writes and closes a race window when the scheduler tick interval is short.
+        const activeTimerRunCount = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.agentId, agent.id),
+              inArray(heartbeatRuns.status, ["queued", "running"]),
+              eq(heartbeatRuns.invocationSource, "timer"),
+            ),
+          )
+          .then((rows) => rows[0]?.count ?? 0);
+        // Default to 1 concurrent timer run — users can raise via maxConcurrentRuns.
+        if (activeTimerRunCount >= 1) {
+          skipped += 1;
+          continue;
+        }
+
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
           triggerDetail: "system",
