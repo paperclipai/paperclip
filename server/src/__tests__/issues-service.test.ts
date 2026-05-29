@@ -1411,6 +1411,9 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
     const defaultResult = await svc.list(companyId);
     expect(defaultResult.find((issue) => issue.id === blockedId)?.blockedBy).toBeUndefined();
+    expect(defaultResult.find((issue) => issue.id === blockedId)?.blockedByIssueIds).toEqual([blockerId]);
+    expect(defaultResult.find((issue) => issue.id === blockerId)?.blockedByIssueIds).toEqual([]);
+    expect(defaultResult.find((issue) => issue.id === unblockedId)?.blockedByIssueIds).toEqual([]);
 
     const result = await svc.list(companyId, { includeBlockedBy: true });
     const byId = new Map(result.map((issue) => [issue.id, issue]));
