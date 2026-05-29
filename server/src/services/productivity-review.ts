@@ -41,7 +41,7 @@ export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review e
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
-type ProductivityReviewTrigger = "no_comment_streak" | "long_active_duration" | "high_churn";
+type ProductivityReviewTrigger = "no_comment_streak" | "high_churn";
 
 type ProductivityReviewThresholds = {
   noCommentStreakRuns: number;
@@ -186,7 +186,10 @@ function choosePrimaryTrigger(input: {
 }): ProductivityReviewTrigger | null {
   if (input.noComment) return "no_comment_streak";
   if (input.highChurn) return "high_churn";
-  if (input.longActive) return "long_active_duration";
+  // LAM-295: long_active_duration removed per board directive 2026-05-09.
+  // longActive is still computed in collectEvidence as observability evidence
+  // (multi-heartbeat work like design docs / customer jobs / campaigns hit 6h
+  // legitimately and should not spawn a productivity review).
   return null;
 }
 
@@ -196,8 +199,7 @@ function isSoftStopTrigger(trigger: ProductivityReviewTrigger) {
 
 function formatTrigger(trigger: ProductivityReviewTrigger) {
   if (trigger === "no_comment_streak") return "No-comment streak";
-  if (trigger === "high_churn") return "High churn";
-  return "Long active duration";
+  return "High churn";
 }
 
 export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: EnqueueWakeup }) {
@@ -685,7 +687,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         title: `Review productivity for ${evidence.sourceIssue.identifier ?? evidence.sourceIssue.title}`,
         description: buildReviewMarkdown(evidence, opts.prefix),
         status: "todo",
-        priority: evidence.trigger === "long_active_duration" ? "medium" : "high",
+        priority: "high",
         parentId: evidence.sourceIssue.id,
         projectId: evidence.sourceIssue.projectId,
         goalId: evidence.sourceIssue.goalId,

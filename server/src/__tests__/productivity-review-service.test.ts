@@ -337,7 +337,11 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listProductivityReviews(seeded.companyId)).toHaveLength(4);
   });
 
-  it("creates a long-active review without enabling a continuation hold", async () => {
+  // LAM-295: long_active_duration no longer spawns a productivity review.
+  // Multi-heartbeat work (design docs, customer jobs, campaigns) legitimately
+  // exceeds the 6h threshold; the trigger was over-firing. The longActive
+  // boolean is still computed in collectEvidence as observability evidence.
+  it("does not create a review when only the long-active threshold is crossed", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue({
       status: "in_progress",
@@ -353,10 +357,8 @@ describeEmbeddedPostgres("productivity review service", () => {
       now,
     });
 
-    expect(result.created).toBe(1);
-    const [review] = await listProductivityReviews(seeded.companyId);
-    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
-    expect(review?.priority).toBe("medium");
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
     expect(hold.held).toBe(false);
   });
 
