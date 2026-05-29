@@ -3533,6 +3533,29 @@ export function issueRoutes(
   router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+
+    if (req.body.idempotencyKey) {
+      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+      const existing = await db
+        .select()
+        .from(issueRows)
+        .where(
+          and(
+            eq(issueRows.companyId, companyId),
+            eq(issueRows.idempotencyKey, req.body.idempotencyKey),
+          ),
+        )
+        .limit(1);
+      if (existing.length > 0 && existing[0].createdAt >= fiveMinutesAgo) {
+        const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(existing[0].id);
+        return res.status(200).json({
+          ...existing[0],
+          relatedWork: referenceSummary,
+          referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+        });
+      }
+    }
+
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, req.body))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
