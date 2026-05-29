@@ -160,6 +160,7 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
       providerConfig: {
         workspaceId: "workspace-123",
         channelId: null,
+        attachmentTaskId: null,
       },
       clickupPersonalToken: "new-token",
     }, {
@@ -174,6 +175,7 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
       providerConfig: {
         workspaceId: "workspace-123",
         channelId: null,
+        attachmentTaskId: null,
       },
       hasStoredAuthToken: true,
     }));
