@@ -6415,7 +6415,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const updated = await db
       .update(agents)
       .set({
-        status: nextStatus,
+        status: outcome === "failed"         status: nextStatus,        status: nextStatus, ((existing.consecutiveFailureCount || 0) >= (parseInt(process.env.CIRCUIT_BREAKER_FAILURE_THRESHOLD || "5")) ? "paused" : nextStatus),
+        pauseReason: outcome === "failed"         status: nextStatus,        status: nextStatus, ((existing.consecutiveFailureCount || 0) >= (parseInt(process.env.CIRCUIT_BREAKER_FAILURE_THRESHOLD || "5")) ? "circuit_breaker" : null),
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
         ...(nextStatus === "error" && latestFailedRun
@@ -6996,6 +6997,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (run.status === "queued") {
       const claimed = await claimQueuedRun(run);
       if (!claimed) {
+    // Pre-adapter guard: re-read agent state to ensure not paused/terminated/pending_approval
+    const currentAgent = await db.select().from(agents).where(eq(agents.id, agent.id)).limit(1).then(r => r[0]);
+    if (currentAgent && ["paused", "terminated", "pending_approval"].includes(currentAgent.status)) {
+      logger.info({ runId, agentId: agent.id }, "Aborting executeRun due to paused/terminated/pending_approval agent state");
+      await setRunStatus(runId, "aborted", { finishedAt: new Date(), reason: "agent_state_aborted" });
+      return;
+    }
         // claimQueuedRun can also leave the run queued when dependencies are unresolved.
         return;
       }
@@ -7920,6 +7928,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
+    // Double-check agent state immediately before executing adapter to prevent leaks during pause
+    const currentAgent = await db.select().from(agents).where(eq(agents.id, agent.id)).limit(1).then(r => r[0]);
+    if (currentAgent && ["paused", "terminated", "pending_approval"].includes(currentAgent.status)) {
+      logger.info({ runId, agentId: agent.id }, "Aborting adapter execution due to paused/terminated/pending_approval agent state");
+      await setRunStatus(runId, "aborted", { finishedAt: new Date(), reason: "agent_state_aborted" });
+      return;
+    }
       }
       const adapterResult = await adapter.execute({
         runId: run.id,
