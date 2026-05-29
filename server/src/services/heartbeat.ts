@@ -9597,6 +9597,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     }
 
+    try {
+      await environmentRuntime.destroyRunLeases(run.id);
+    } catch (err) {
+      logger.warn({ err, runId: run.id }, "Failed to destroy environment leases during cancel");
+    }
+
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: new Date(),
       error: reason,
@@ -9670,6 +9676,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           pid: run.processPid,
           processGroupId: run.processGroupId,
         });
+      }
+
+      try {
+        await environmentRuntime.destroyRunLeases(run.id);
+      } catch (err) {
+        logger.warn({ err, runId: run.id }, "Failed to destroy environment leases during cancel");
       }
       await releaseIssueExecutionAndPromote(run);
     }
