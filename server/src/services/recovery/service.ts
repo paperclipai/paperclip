@@ -629,6 +629,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function findRecentlyClosedStaleRunEvaluation(
+    companyId: string,
+    runId: string,
+    since: Date,
+  ) {
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        completedAt: issues.completedAt,
+        cancelledAt: issues.cancelledAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+          sql`coalesce(${issues.completedAt}, ${issues.cancelledAt}) >= ${since.toISOString()}::timestamptz`,
+        ),
+      )
+      .orderBy(
+        desc(sql`coalesce(${issues.completedAt}, ${issues.cancelledAt})`),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -943,6 +974,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       now: input.now,
     });
     const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
+    if (level === "suspicious") {
+      const recentClose = await findRecentlyClosedStaleRunEvaluation(
+        input.run.companyId,
+        input.run.id,
+        new Date(input.now.getTime() - ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS),
+      );
+      if (recentClose) {
+        return { kind: "deduped" as const, evaluationIssueId: recentClose.id };
+      }
+    }
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
     if (existing) {
       if (level === "critical" && existing.priority !== "high") {
@@ -1077,6 +1118,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       created: 0,
       existing: 0,
       escalated: 0,
+      deduped: 0,
       snoozed: 0,
       skipped: 0,
       evaluationIssueIds: [] as string[],
@@ -1091,6 +1133,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (outcome.kind === "created") result.created += 1;
       else if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;
+      else if (outcome.kind === "deduped") result.deduped += 1;
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
         result.evaluationIssueIds.push(outcome.evaluationIssueId);

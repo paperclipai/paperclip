@@ -270,6 +270,102 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(source?.status).toBe("blocked");
   });
 
+  it("dedups repeat suspicious reviews after a closed review on the same alive run", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const firstEvaluationId = first.evaluationIssueIds[0];
+    expect(firstEvaluationId).toBeTruthy();
+
+    const closedAt = new Date(now.getTime() + 4 * 60_000);
+    await db
+      .update(issues)
+      .set({ status: "done", completedAt: closedAt, updatedAt: closedAt })
+      .where(eq(issues.id, firstEvaluationId!));
+
+    // The run is still genuinely silent. Without dedup this would create review #2.
+    const stillSilentRun = await db
+      .update(heartbeatRuns)
+      .set({ startedAt: new Date(closedAt.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS - 60_000) })
+      .where(eq(heartbeatRuns.id, runId))
+      .returning();
+    expect(stillSilentRun).toHaveLength(1);
+
+    const within = await heartbeat.scanSilentActiveRuns({ now: closedAt, companyId });
+    expect(within.created).toBe(0);
+    expect(within.deduped).toBe(1);
+    expect(within.evaluationIssueIds).toContain(firstEvaluationId);
+
+    const stillOne = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(stillOne).toHaveLength(1);
+
+    // After the rearm window expires a fresh review may fire again.
+    const afterRearm = new Date(closedAt.getTime() + ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS + 60_000);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        startedAt: new Date(afterRearm.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS - 60_000),
+        processStartedAt: new Date(afterRearm.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS - 60_000),
+        lastOutputAt: null,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const after = await heartbeat.scanSilentActiveRuns({ now: afterRearm, companyId });
+    expect(after.created).toBe(1);
+    expect(after.deduped).toBe(0);
+    expect(after.evaluationIssueIds[0]).not.toBe(firstEvaluationId);
+  });
+
+  it("still fires critical reviews even when a suspicious review was just closed", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const firstEvaluationId = first.evaluationIssueIds[0];
+
+    const closedAt = new Date(now.getTime() + 5 * 60_000);
+    await db
+      .update(issues)
+      .set({ status: "done", completedAt: closedAt, updatedAt: closedAt })
+      .where(eq(issues.id, firstEvaluationId!));
+
+    // Critical-threshold scan happens within the suspicious dedup window.
+    const criticalNow = new Date(closedAt.getTime() + 10 * 60_000);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        startedAt: new Date(criticalNow.getTime() - ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS - 60_000),
+        processStartedAt: new Date(criticalNow.getTime() - ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS - 60_000),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const critical = await heartbeat.scanSilentActiveRuns({ now: criticalNow, companyId });
+    expect(critical.created).toBe(1);
+    expect(critical.deduped).toBe(0);
+    const newId = critical.evaluationIssueIds[0];
+    expect(newId).not.toBe(firstEvaluationId);
+
+    const [escalated] = await db
+      .select({ priority: issues.priority })
+      .from(issues)
+      .where(eq(issues.id, newId!));
+    expect(escalated?.priority).toBe("high");
+  });
+
   it("skips snoozed runs and healthy noisy runs", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const stale = await seedRunningRun({
