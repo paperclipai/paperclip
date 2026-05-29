@@ -1321,6 +1321,7 @@ export interface PluginIssueSummariesClient {
  * - `issues.orchestration.read` for orchestration summaries
  * - `issue.comments.read` for `listComments`
  * - `issue.comments.create` for `createComment`
+ * - `issue.interactions.read` for `listInteractions`
  * - `issue.interactions.create` for `createInteraction`, `suggestTasks`, `askUserQuestions`, and `requestConfirmation`
  * - `issue.documents.read` for `documents.list` and `documents.get`
  * - `issue.documents.write` for `documents.upsert` and `documents.delete`
@@ -1430,6 +1431,17 @@ export interface PluginIssuesClient {
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<IssueComment>;
+  /**
+   * List the issue-thread interactions (`suggest_tasks`, `ask_user_questions`,
+   * `request_confirmation`) attached to an issue, oldest first. Optionally
+   * filter by interaction `status` (e.g. `"pending"`). Returns `[]` when the
+   * issue does not belong to `companyId`. Requires `issue.interactions.read`.
+   */
+  listInteractions(
+    issueId: string,
+    companyId: string,
+    options?: { status?: IssueThreadInteraction["status"] },
+  ): Promise<IssueThreadInteraction[]>;
   createInteraction(
     issueId: string,
     interaction: CreateIssueThreadInteraction,

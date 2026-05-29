@@ -311,6 +311,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `project.workspaces.read` |
 | | `issues.read` |
 | | `issue.comments.read` |
+| | `issue.interactions.read` |
 | | `issue.documents.read` |
 | | `issue.relations.read` |
 | | `issue.subtree.read` |

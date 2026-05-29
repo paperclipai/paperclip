@@ -42,6 +42,7 @@ import { fileURLToPath } from "node:url";
 
 import type {
   AskUserQuestionsInteraction,
+  IssueThreadInteraction,
   PaperclipPluginManifestV1,
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
@@ -847,6 +848,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
         async listComments(issueId: string, companyId: string) {
           return callHost("issues.listComments", { issueId, companyId });
+        },
+
+        async listInteractions(
+          issueId: string,
+          companyId: string,
+          options?: { status?: IssueThreadInteraction["status"] },
+        ) {
+          return callHost("issues.listInteractions", { issueId, companyId, status: options?.status });
         },
 
         async createComment(issueId: string, body: string, companyId: string, options?: { authorAgentId?: string }) {

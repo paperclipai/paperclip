@@ -1101,6 +1101,10 @@ export interface WorkerToHostMethods {
     params: { issueId: string; companyId: string },
     result: IssueComment[],
   ];
+  "issues.listInteractions": [
+    params: { issueId: string; companyId: string; status?: IssueThreadInteraction["status"] },
+    result: IssueThreadInteraction[],
+  ];
   "issues.createComment": [
     params: { issueId: string; body: string; companyId: string; authorAgentId?: string },
     result: IssueComment,

@@ -1609,6 +1609,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         if (!isInCompany(issues.get(issueId), companyId)) return [];
         return issueComments.get(issueId) ?? [];
       },
+      async listInteractions(issueId, companyId, options) {
+        requireCapability(manifest, capabilitySet, "issue.interactions.read");
+        if (!isInCompany(issues.get(issueId), companyId)) return [];
+        const all = issueInteractions.get(issueId) ?? [];
+        return options?.status ? all.filter((interaction) => interaction.status === options.status) : all;
+      },
       async createComment(issueId, body, companyId, options) {
         requireCapability(manifest, capabilitySet, "issue.comments.create");
         const parentIssue = issues.get(issueId);
