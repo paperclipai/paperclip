@@ -1,0 +1,6 @@
+#!/bin/bash
+exit 0
+EOF
+#chmod +x ~/bin/xdg-open
+#PATH="$HOME/bin:$PATH" paperclipai auth login --api-base http://localhost:3100
+
