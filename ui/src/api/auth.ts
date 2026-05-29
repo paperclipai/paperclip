@@ -60,11 +60,15 @@ function extractAuthError(payload: AuthErrorBody, status: number) {
   return new AuthApiError(message, status, payload, code);
 }
 
-async function authPost(path: string, body: Record<string, unknown>) {
+async function authPost(
+  path: string,
+  body: Record<string, unknown>,
+  extraHeaders?: Record<string, string>,
+) {
   const res = await fetch(`/api/auth${path}`, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...extraHeaders },
     body: JSON.stringify(body),
   });
   const payload = await res.json().catch(() => null);
@@ -109,8 +113,17 @@ export const authApi = {
     await authPost("/sign-in/email", input);
   },
 
-  signUpEmail: async (input: { name: string; email: string; password: string }) => {
-    await authPost("/sign-up/email", input);
+  signUpEmail: async (
+    input: { name: string; email: string; password: string },
+    options?: { inviteToken?: string | null },
+  ) => {
+    const inviteToken = options?.inviteToken?.trim();
+    // Invite-only instances gate sign-up behind a valid invite token (TWB-60).
+    // Attach it as a header so it never collides with Better Auth's body schema.
+    const extraHeaders = inviteToken
+      ? { "x-paperclip-invite-token": inviteToken }
+      : undefined;
+    await authPost("/sign-up/email", input, extraHeaders);
   },
 
   getProfile: async (): Promise<CurrentUserProfile> => {
