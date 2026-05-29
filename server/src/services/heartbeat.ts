@@ -6394,7 +6394,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
   ) {
     const existing = await getAgent(agentId);
-    const latestFailedRun = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "failed"))).orderBy(desc(heartbeatRuns.finishedAt)).limit(1).then(rows => rows[0] || null);
+    const latestFailedRun = await db
+      .select({
+        id: heartbeatRuns.id,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        exitCode: heartbeatRuns.exitCode,
+        signal: heartbeatRuns.signal,
+        resultJson: heartbeatRuns.resultJson,
+        finishedAt: heartbeatRuns.finishedAt,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "failed")))
+      .orderBy(desc(heartbeatRuns.finishedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
     const errorContext = latestFailedRun ? { error: latestFailedRun.error, errorCode: latestFailedRun.errorCode, resultError: (latestFailedRun.resultJson as Record<string, unknown> | null)?.error ?? null } : null;
     if (!existing) return;
 
@@ -9350,7 +9364,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const activeRuns = await db
-      .select()
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        createdAt: heartbeatRuns.createdAt,
+        updatedAt: heartbeatRuns.updatedAt,
+      })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES])))
       .orderBy(desc(heartbeatRuns.createdAt));
@@ -9387,7 +9407,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
         .returning()
-        .then((rows) => rows[0] ?? coalescedTargetRun);
+        .then((rows) => rows[0]!);
 
       await db.insert(agentWakeupRequests).values({
         companyId: agent.companyId,
