@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
 
 const mockIssueService = vi.hoisted(() => ({
+  create: vi.fn(),
   getById: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
@@ -47,6 +48,10 @@ function registerModuleMocks() {
     accessService: () => mockAccessService,
     agentService: () => ({
       getById: vi.fn(async () => null),
+      resolveByReference: vi.fn(async (_companyId: string, reference: string) => ({
+        agent: { id: reference },
+        ambiguous: false,
+      })),
     }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
@@ -385,6 +390,115 @@ describe("issue execution policy routes", () => {
     expect(mockIssueApprovalService.listApprovalsForIssue).not.toHaveBeenCalled();
   });
 
+  it("rejects moving an issue to in_review without reviewer", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      assigneeUserId: null,
+      reviewerAgentId: null,
+      reviewerUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1000",
+      title: "Manual review handoff",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "reviewer_required" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows moving an issue to in_review with reviewerAgentId in patch payload", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      assigneeUserId: null,
+      reviewerAgentId: null,
+      reviewerUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1001",
+      title: "Manual review handoff",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", reviewerAgentId });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        reviewerAgentId,
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch.status).toBe("in_review");
+    expect(updatePatch.reviewerAgentId).toBe(reviewerAgentId);
+  });
+
+  it("allows moving an issue to in_review when reviewer already exists on row", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      assigneeUserId: null,
+      reviewerAgentId: "33333333-3333-4333-8333-333333333333",
+      reviewerUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Manual review handoff",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
+  });
   it("does not auto-start execution review when reviewers are added to an already in_review issue", async () => {
     const policy = normalizeIssueExecutionPolicy({
       stages: [
@@ -401,6 +515,8 @@ describe("issue execution policy routes", () => {
       status: "in_review",
       assigneeAgentId: null,
       assigneeUserId: "local-board",
+      reviewerAgentId: "33333333-3333-4333-8333-333333333333",
+      reviewerUserId: null,
       createdByUserId: "local-board",
       identifier: "PAP-999",
       title: "Execution policy edit",
