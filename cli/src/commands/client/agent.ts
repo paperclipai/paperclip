@@ -21,6 +21,10 @@ interface AgentListOptions extends BaseClientOptions {
   companyId?: string;
 }
 
+interface AgentGetOptions extends BaseClientOptions {
+  redact?: boolean;
+}
+
 interface AgentLocalCliOptions extends BaseClientOptions {
   companyId?: string;
   keyName?: string;
@@ -204,10 +208,16 @@ export function registerAgentCommands(program: Command): void {
       .command("get")
       .description("Get one agent")
       .argument("<agentId>", "Agent ID")
-      .action(async (agentId: string, opts: BaseClientOptions) => {
+      .option("--redact", "Redact sensitive values (plain env bindings, API tokens) from the output", false)
+      .action(async (agentId: string, opts: AgentGetOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const row = await ctx.api.get<Agent>(`/api/agents/${agentId}`);
+          // Use the /configuration endpoint when redacting — it applies server-side
+          // redaction of plain env binding values and sensitive config fields (GH#6895).
+          const url = opts.redact
+            ? `/api/agents/${agentId}/configuration`
+            : `/api/agents/${agentId}`;
+          const row = await ctx.api.get<Agent>(url);
           printOutput(row, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
