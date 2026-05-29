@@ -383,6 +383,13 @@ export function shouldScheduleAutomaticRunRetry(
   return prReview?.reviewKind === "pr_review";
 }
 
+function isPrReviewRetryContext(contextSnapshot: Record<string, unknown>) {
+  const reviewKind = readNonEmptyString(contextSnapshot.reviewKind);
+  if (reviewKind === "pr_review") return true;
+  const taskKey = readNonEmptyString(contextSnapshot.taskKey);
+  return taskKey?.startsWith("pr_review:") === true;
+}
+
 function mergeAdapterRecoveryMetadata(input: {
   resultJson: Record<string, unknown> | null | undefined;
   errorFamily?: string | null;
@@ -7855,13 +7862,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
+      const contextSnapshot = parseObject(run.contextSnapshot);
+      const prReviewRetry = isPrReviewRetryContext(contextSnapshot);
       const shouldRetry =
         (
           tracksLocalChild &&
           (!!run.processPid || !!run.processGroupId) &&
-          (run.processLossRetryCount ?? 0) < 1
+          (run.processLossRetryCount ?? 0) < 1 &&
+          prReviewRetry
         ) ||
-        (externalLifecyclePreAdapter && (run.processLossRetryCount ?? 0) < 1);
+        (externalLifecyclePreAdapter && (run.processLossRetryCount ?? 0) < 1 && prReviewRetry);
       const baseMessage = externalLifecyclePreAdapter
         ? "Process lost before external adapter invocation -- server may have restarted"
         : buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);

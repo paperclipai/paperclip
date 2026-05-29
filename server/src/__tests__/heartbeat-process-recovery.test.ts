@@ -1337,6 +1337,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processPid: null,
       processGroupId: null,
       includeIssue: false,
+      contextSnapshot: {
+        reviewKind: "pr_review",
+        taskKey: "pr_review:paperclipai/paperclip:122",
+      },
     });
 
     const result = await heartbeat.reapOrphanedRuns();
@@ -1365,6 +1369,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: 999_999_999,
       contextSnapshot: {
+        reviewKind: "pr_review",
+        taskKey: "pr_review:paperclipai/paperclip:123",
         modelProfile: "cheap",
         allowDeliverableWork: false,
         allowDocumentUpdates: false,
@@ -1407,6 +1413,43 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBe(runId);
   });
 
+  it("does not queue a process-loss retry for non-PR orphaned local runs", async () => {
+    const { agentId, runId } = await seedRunFixture({
+      processPid: 999_999_999,
+      includeIssue: false,
+      contextSnapshot: {
+        wakeReason: "heartbeat_timer",
+        taskKey: null,
+      },
+    });
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+
+    const failedRun = runs.find((row) => row.id === runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+
+    const retryChildren = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.retryOfRunId, runId), eq(heartbeatRuns.agentId, agentId)));
+    expect(retryChildren).toHaveLength(0);
+
+    const retryWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.reason, "process_lost_retry")));
+    expect(retryWakeups).toHaveLength(0);
+  });
+
   it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {
     const orphan = await spawnOrphanedProcessGroup();
     cleanupPids.add(orphan.descendantPid);
@@ -1415,6 +1458,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: orphan.processPid,
       processGroupId: orphan.processGroupId,
+      contextSnapshot: {
+        reviewKind: "pr_review",
+        taskKey: "pr_review:paperclipai/paperclip:124",
+      },
     });
 
     const result = await heartbeat.reapOrphanedRuns();
