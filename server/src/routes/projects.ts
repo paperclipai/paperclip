@@ -14,7 +14,7 @@ import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } fr
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { projectService, logActivity, workspaceOperationService } from "../services/index.js";
-import { conflict, forbidden } from "../errors.js";
+import { conflict, forbidden, unprocessable } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -452,7 +452,7 @@ export function projectRoutes(db: Db) {
       run: async () => {
         if (action === "run") {
           if (!workspaceCommand || workspaceCommand.kind !== "job") {
-            throw new Error("Workspace job selection is required");
+            throw unprocessable("Workspace job selection is required");
           }
           return await runWorkspaceJobForControl({
             actor: {

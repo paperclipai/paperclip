@@ -23,6 +23,7 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
+import { unprocessable } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -276,11 +277,11 @@ export function executionWorkspaceRoutes(db: Db) {
 
         if (action === "run") {
           if (!workspaceCommand || workspaceCommand.kind !== "job") {
-            throw new Error("Workspace job selection is required");
+            throw unprocessable("Workspace job selection is required");
           }
           const availableWorkspace = await ensureWorkspaceAvailable();
           if (!availableWorkspace) {
-            throw new Error("Execution workspace needs a local path before Paperclip can run workspace commands");
+            throw unprocessable("Execution workspace needs a local path before Paperclip can run workspace commands");
           }
           return await runWorkspaceJobForControl({
             actor: {
@@ -331,7 +332,7 @@ export function executionWorkspaceRoutes(db: Db) {
         if (action === "start" || action === "restart") {
           const availableWorkspace = await ensureWorkspaceAvailable();
           if (!availableWorkspace) {
-            throw new Error("Execution workspace needs a local path before Paperclip can manage local runtime services");
+            throw unprocessable("Execution workspace needs a local path before Paperclip can manage local runtime services");
           }
           const startedServices = await startRuntimeServicesForWorkspaceControl({
             db,
