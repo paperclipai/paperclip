@@ -1909,6 +1909,7 @@ const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
   "interactionId",
   "interactionKind",
   "interactionStatus",
+  "interactionRejectionReason",
   "continuationPolicy",
 ] as const;
 
@@ -2210,6 +2211,7 @@ async function buildPaperclipWakePayload(input: {
       : null,
     interactionKind: readNonEmptyString(input.contextSnapshot.interactionKind),
     interactionStatus: readNonEmptyString(input.contextSnapshot.interactionStatus),
+    interactionRejectionReason: readNonEmptyString(input.contextSnapshot.interactionRejectionReason),
     checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
     dependencyBlockedInteraction: input.contextSnapshot.dependencyBlockedInteraction === true,
     treeHoldInteraction: input.contextSnapshot.treeHoldInteraction === true,

@@ -659,6 +659,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
     continuationPolicy: string;
     sourceCommentId?: string | null;
     sourceRunId?: string | null;
+    rejectionReason?: string | null;
   };
   actor: { actorType: "user" | "agent"; actorId: string };
   source: string;
@@ -687,6 +688,9 @@ function queueResolvedInteractionContinuationWakeup(input: {
       interactionId: input.interaction.id,
       interactionKind: input.interaction.kind,
       interactionStatus: input.interaction.status,
+      interactionRejectionReason: input.interaction.kind === "request_confirmation" && input.interaction.status === "rejected"
+        ? (input.interaction.rejectionReason ?? null)
+        : null,
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
       mutation: "interaction",
@@ -699,6 +703,9 @@ function queueResolvedInteractionContinuationWakeup(input: {
       interactionId: input.interaction.id,
       interactionKind: input.interaction.kind,
       interactionStatus: input.interaction.status,
+      interactionRejectionReason: input.interaction.kind === "request_confirmation" && input.interaction.status === "rejected"
+        ? (input.interaction.rejectionReason ?? null)
+        : null,
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
       wakeReason: "issue_commented",
@@ -5329,10 +5336,31 @@ export function issueRoutes(
         },
       });
 
+      if (
+        interaction.kind === "request_confirmation" &&
+        interaction.status === "rejected" &&
+        issue.assigneeAgentId
+      ) {
+        const declineReason = interaction.result?.reason?.trim() ?? null;
+        const commentBody = declineReason
+          ? `**Confirmation declined**\n\nReason: ${declineReason}`
+          : "**Confirmation declined**";
+        await svc.addComment(issue.id, commentBody, {
+          agentId: actor.agentId ?? undefined,
+          userId: actor.actorType === "user" ? actor.actorId : undefined,
+          runId: actor.runId,
+        });
+      }
+
       queueResolvedInteractionContinuationWakeup({
         heartbeat,
         issue,
-        interaction,
+        interaction: {
+          ...interaction,
+          rejectionReason: interaction.kind === "request_confirmation" && interaction.status === "rejected"
+            ? ((interaction.result as { reason?: string | null } | null | undefined)?.reason ?? null)
+            : null,
+        },
         actor,
         source: "issue.interaction.reject",
       });
