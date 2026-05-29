@@ -945,11 +945,12 @@ export function issueRoutes(
   }
 
   function assertReviewerRequiredForInReview(input: {
+    previousStatus: unknown;
     nextStatus: unknown;
     reviewerAgentId: unknown;
     reviewerUserId: unknown;
   }) {
-    if (input.nextStatus !== "in_review") return;
+    if (input.nextStatus !== "in_review" || input.previousStatus === "in_review") return;
     const hasReviewerAgent =
       typeof input.reviewerAgentId === "string" && input.reviewerAgentId.trim().length > 0;
     const hasReviewerUser =
@@ -2544,6 +2545,7 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     assertReviewerRequiredForInReview({
+      previousStatus: undefined,
       nextStatus: req.body.status,
       reviewerAgentId: req.body.reviewerAgentId,
       reviewerUserId: req.body.reviewerUserId,
@@ -2957,6 +2959,7 @@ export function issueRoutes(
     }
 
     assertReviewerRequiredForInReview({
+      previousStatus: existing.status,
       nextStatus: updateFields.status,
       reviewerAgentId: updateFields.reviewerAgentId ?? existing.reviewerAgentId,
       reviewerUserId: updateFields.reviewerUserId ?? existing.reviewerUserId,
