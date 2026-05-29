@@ -86,6 +86,7 @@ function registerCompanyRouteMocks() {
     companyPortabilityService: () => mockCompanyPortabilityService,
     companyService: () => mockCompanyService,
     feedbackService: () => mockFeedbackService,
+    heartbeatService: () => ({}),
     logActivity: mockLogActivity,
   }));
 }

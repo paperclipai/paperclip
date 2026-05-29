@@ -156,6 +156,7 @@ import {
   type Issue,
   type IssueAttachment,
   type IssueComment,
+  type IssueExecutionStagePrincipal,
   type IssueWorkMode,
   type IssueThreadInteraction,
   type RequestConfirmationInteraction,
@@ -390,11 +391,7 @@ function ActorIdentity({ evt, agentMap, userProfileMap }: { evt: ActivityEvent; 
 }
 
 export function resolveStageParticipantLabel(
-  participant: Issue["executionState"] extends infer T
-    ? T extends { currentParticipant: infer P } | null | undefined
-      ? P
-      : never
-    : never,
+  participant: IssueExecutionStagePrincipal | null,
   agentMap: Map<string, Agent>,
   userProfileMap?: Map<string, import("../lib/company-members").CompanyUserProfile> | null,
 ) {
