@@ -26,6 +26,24 @@ function resolveApiKey(config: Record<string, unknown>): string | null {
   return nonEmpty(config.apiKey);
 }
 
+/**
+ * Translate a Retry-After header (delta-seconds or HTTP-date) into an ISO
+ * timestamp the heartbeat rotator can use as the credential cooldown deadline.
+ */
+function computeRetryNotBefore(retryAfter: string | null | undefined): string | null {
+  if (!retryAfter) return null;
+  const trimmed = retryAfter.trim();
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = Number.parseInt(trimmed, 10);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return new Date(Date.now() + seconds * 1000).toISOString();
+    }
+  }
+  const date = new Date(trimmed);
+  if (!Number.isNaN(date.getTime())) return date.toISOString();
+  return null;
+}
+
 function resolveTemperature(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim().length > 0) {
@@ -87,9 +105,12 @@ async function streamChatCompletion(params: {
 
   if (!response.ok || !response.body) {
     const errText = await response.text().catch(() => "");
-    throw new Error(
+    const err = new Error(
       `DeepSeek API ${response.status} ${response.statusText}${errText ? `: ${errText.slice(0, 500)}` : ""}`,
-    );
+    ) as Error & { status?: number; retryAfter?: string | null };
+    err.status = response.status;
+    err.retryAfter = response.headers.get("retry-after");
+    throw err;
   }
 
   const reader = response.body.getReader();
@@ -237,6 +258,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     const message = err instanceof Error ? err.message : String(err);
     await ctx.onLog("stderr", `[deepseek-api] ${message}\n`);
+    const status =
+      typeof (err as { status?: unknown }).status === "number"
+        ? (err as { status: number }).status
+        : null;
+    // 429 (rate limit), 503/529 (overloaded) → mark transient so the heartbeat
+    // rotator cools this credential down and swaps to the next bound one.
+    if (status === 429 || status === 503 || status === 529) {
+      const retryNotBefore = computeRetryNotBefore((err as { retryAfter?: string | null }).retryAfter);
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: message,
+        errorCode: "deepseek_transient_upstream",
+        errorFamily: "transient_upstream",
+        ...(retryNotBefore ? { retryNotBefore } : {}),
+      };
+    }
     return {
       exitCode: 1,
       signal: null,

@@ -92,7 +92,7 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
     expect(resolved.credentialIds).toEqual(expect.arrayContaining([claudeCred.id, openaiCred.id]));
   });
 
-  it("rejects assigning two credentials of the same provider type", async () => {
+  it("allows a same-type rotation pool and rotates least-recently-used", async () => {
     const { company, agent } = await setupCompanyAndAgent();
     const svc = credentialService(db);
 
@@ -107,11 +107,25 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
       credential: { apiKey: "sk-2" },
     });
 
+    // Binding two credentials of the same type is now permitted — they form a
+    // rotation pool.
     const result = await svc.setForAgent(agent.id, [first.id, second.id]);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toBe("duplicate_type");
-    expect(result.type).toBe("claude_api_key");
+    expect(result.ok).toBe(true);
+
+    // Exactly one pool member is chosen per resolve.
+    const resolved = await resolveAllCredentialEnv(db, agent.id);
+    expect(resolved.chosen).toHaveLength(1);
+    expect(resolved.chosen[0].type).toBe("claude_api_key");
+    expect(resolved.credentialIds).toHaveLength(1);
+    expect([first.id, second.id]).toContain(resolved.chosen[0].credentialId);
+    expect(resolved.env.ANTHROPIC_API_KEY).toBeDefined();
+
+    // The chosen credential's lastUsedAt is now set, so the next resolve rotates
+    // to the other (least-recently-used) member.
+    const firstChoice = resolved.chosen[0].credentialId;
+    const resolved2 = await resolveAllCredentialEnv(db, agent.id);
+    expect(resolved2.chosen).toHaveLength(1);
+    expect(resolved2.chosen[0].credentialId).not.toBe(firstChoice);
   });
 
   it("falls back to legacy agents.credential_id when the join is empty", async () => {

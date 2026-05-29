@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentCredentials, agents, providerCredentials } from "@paperclipai/db";
+import { agentCredentials, agents, costEvents, providerCredentials } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -166,8 +166,12 @@ export function credentialService(db: Db) {
 
     /**
      * Replace the full set of credentials assigned to an agent.
-     * Enforces at most one credential per provider type per agent.
-     * Returns `{ error: "duplicate_type", type }` if validation fails.
+     *
+     * Multiple credentials of the same provider type ARE allowed — they form a
+     * rotation pool that the heartbeat picker rotates through (least-recently-
+     * used, skipping any on cooldown). The `duplicate_type` error variant is
+     * retained in the return type for backward compatibility but is no longer
+     * produced.
      */
     async setForAgent(
       agentId: string,
@@ -191,21 +195,61 @@ export function credentialService(db: Db) {
         return { ok: false, error: "credential_not_found", credentialId: missing };
       }
 
-      const typeCounts = new Map<string, number>();
-      for (const c of creds) {
-        const next = (typeCounts.get(c.type) ?? 0) + 1;
-        if (next > 1) {
-          return { ok: false, error: "duplicate_type", type: c.type };
-        }
-        typeCounts.set(c.type, next);
-      }
-
       await db.transaction(async (tx) => {
         await tx.delete(agentCredentials).where(eq(agentCredentials.agentId, agentId));
         await tx.insert(agentCredentials).values(uniqueIds.map((credentialId) => ({ agentId, credentialId })));
       });
 
       return { ok: true, credentials: creds.map(stripCredential) };
+    },
+
+    /**
+     * Aggregate token/cost usage per managed credential for a company over a
+     * trailing window, from cost_events.credentialId. Used by the Credentials
+     * UI to show how much each credential (and each pool member) has spent.
+     */
+    async usageByCredential(
+      companyId: string,
+      sinceMs: number,
+    ): Promise<
+      Array<{
+        credentialId: string;
+        inputTokens: number;
+        outputTokens: number;
+        cachedInputTokens: number;
+        costCents: number;
+        events: number;
+      }>
+    > {
+      const since = new Date(Date.now() - Math.max(0, sinceMs));
+      const rows = await db
+        .select({
+          credentialId: costEvents.credentialId,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)`,
+          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)`,
+          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)`,
+          events: sql<number>`count(*)`,
+        })
+        .from(costEvents)
+        .where(
+          and(
+            eq(costEvents.companyId, companyId),
+            gte(costEvents.occurredAt, since),
+            isNotNull(costEvents.credentialId),
+          ),
+        )
+        .groupBy(costEvents.credentialId);
+      return rows
+        .filter((r): r is typeof r & { credentialId: string } => r.credentialId != null)
+        .map((r) => ({
+          credentialId: r.credentialId,
+          inputTokens: Number(r.inputTokens),
+          outputTokens: Number(r.outputTokens),
+          cachedInputTokens: Number(r.cachedInputTokens),
+          costCents: Number(r.costCents),
+          events: Number(r.events),
+        }));
     },
   };
 
@@ -431,23 +475,118 @@ export async function resolveCredentialEnv(
   }
 }
 
+const HOME_OWNER_CREDENTIAL_TYPES = new Set(["claude_oauth", "codex_oauth"]);
+
 /**
- * Resolve env for ALL credentials assigned to an agent via the agent_credentials
- * join table. Falls back to the legacy `agents.credential_id` singular FK when
- * the join is empty so existing single-credential agents keep working.
+ * Default cooldown applied to a credential that hit a rate/quota limit when the
+ * provider did not send a usable Retry-After header.
+ */
+export const CREDENTIAL_DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
+
+/**
+ * Provider credential types each adapter authenticates with. Used to map a
+ * failed run (known by its adapterType) back to the specific credential the run
+ * consumed, so a reactive cooldown lands on the right rotation-pool member.
+ * Mirrors the UI's credentialTypesForAdapterType in AgentConfigForm.
+ */
+const ADAPTER_CREDENTIAL_TYPES: Record<string, readonly string[]> = {
+  claude_local: ["claude_oauth", "claude_api_key"],
+  claude_tui: ["claude_oauth", "claude_api_key"],
+  gemini_local: ["gemini_api_key"],
+  codex_local: ["codex_oauth", "openai_api_key"],
+  cursor: ["openai_api_key"],
+  deepseek_api: ["deepseek_api_key"],
+  opencode_local: ["openrouter_api_key", "openai_api_key", "claude_api_key", "gemini_api_key"],
+  acpx_local: ["claude_oauth", "claude_api_key", "codex_oauth", "openai_api_key"],
+};
+
+export function credentialTypesForAdapterType(adapterType: string): readonly string[] {
+  return ADAPTER_CREDENTIAL_TYPES[adapterType] ?? [];
+}
+
+type RotationCandidate = {
+  credentialId: string;
+  type: string;
+  cooldownUntil: Date | null;
+  lastUsedAt: Date | null;
+};
+
+/**
+ * Pick one credential from a same-type pool: prefer credentials not on cooldown,
+ * and among those the least-recently-used (null lastUsedAt = never used = first).
+ * If every candidate is cooling down, fall back to the one whose cooldown expires
+ * soonest so the agent can still attempt a run rather than be wedged.
+ */
+function pickPoolCredential(candidates: RotationCandidate[], nowMs: number): RotationCandidate {
+  const byLru = (a: RotationCandidate, b: RotationCandidate) =>
+    (a.lastUsedAt ? a.lastUsedAt.getTime() : 0) - (b.lastUsedAt ? b.lastUsedAt.getTime() : 0);
+  const available = candidates.filter(
+    (c) => !c.cooldownUntil || c.cooldownUntil.getTime() <= nowMs,
+  );
+  if (available.length > 0) return [...available].sort(byLru)[0];
+  return [...candidates].sort(
+    (a, b) => (a.cooldownUntil?.getTime() ?? 0) - (b.cooldownUntil?.getTime() ?? 0),
+  )[0];
+}
+
+async function touchCredentialLastUsed(db: Db, credentialId: string): Promise<void> {
+  await db
+    .update(providerCredentials)
+    .set({ lastUsedAt: new Date() })
+    .where(eq(providerCredentials.id, credentialId));
+}
+
+/**
+ * Put a credential on cooldown after an upstream rate/quota limit. The heartbeat
+ * picker skips it until `cooldownUntil`, rotating the agent to another bound
+ * credential of the same provider type.
+ */
+export async function setCredentialCooldown(
+  db: Db,
+  credentialId: string,
+  cooldownUntil: Date,
+  reason: string | null,
+): Promise<void> {
+  await db
+    .update(providerCredentials)
+    .set({ cooldownUntil, cooldownReason: reason, updatedAt: new Date() })
+    .where(eq(providerCredentials.id, credentialId));
+}
+
+/**
+ * Resolve env for an agent's bound credentials, ONE per provider type. When an
+ * agent binds several credentials of the same type they form a rotation pool;
+ * the least-recently-used non-cooling member is selected (see pickPoolCredential)
+ * and its lastUsedAt is bumped. Falls back to the legacy `agents.credential_id`
+ * singular FK when the join is empty so existing single-credential agents keep
+ * working.
  *
  * Provider env vars do not collide across types (Anthropic / OpenAI / Gemini /
- * OpenRouter each own distinct keys), but HOME is the one shared key — if both
- * claude_oauth and codex_oauth are assigned, the last write wins. Codex is
+ * OpenRouter / DeepSeek each own distinct keys), but HOME is the one shared key —
+ * if both claude_oauth and codex_oauth are chosen, the last write wins. Codex is
  * resolved last so CODEX_HOME + its HOME take precedence; the Claude CLI still
  * finds its .credentials.json via the agent-specific HOME path it shares.
+ *
+ * Returns `chosen` (the selected credentialId + type per provider type) so the
+ * caller can attribute a run's usage and any rate-limit cooldown to the exact
+ * credential it used.
  */
 export async function resolveAllCredentialEnv(
   db: Db,
   agentId: string,
-): Promise<{ env: Record<string, string>; home?: string; credentialIds: string[] }> {
+): Promise<{
+  env: Record<string, string>;
+  home?: string;
+  credentialIds: string[];
+  chosen: Array<{ credentialId: string; type: string }>;
+}> {
   const joinRows = await db
-    .select({ credentialId: agentCredentials.credentialId, type: providerCredentials.type })
+    .select({
+      credentialId: agentCredentials.credentialId,
+      type: providerCredentials.type,
+      cooldownUntil: providerCredentials.cooldownUntil,
+      lastUsedAt: providerCredentials.lastUsedAt,
+    })
     .from(agentCredentials)
     .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
     .where(eq(agentCredentials.agentId, agentId));
@@ -458,30 +597,58 @@ export async function resolveAllCredentialEnv(
       .from(agents)
       .where(eq(agents.id, agentId))
       .limit(1);
-    if (!agent?.credentialId) return { env: {}, credentialIds: [] };
+    if (!agent?.credentialId) return { env: {}, credentialIds: [], chosen: [] };
     const res = await resolveCredentialEnv(db, agentId, agent.credentialId);
-    return { env: res.env, home: res.home, credentialIds: [agent.credentialId] };
+    await touchCredentialLastUsed(db, agent.credentialId);
+    const [row] = await db
+      .select({ type: providerCredentials.type })
+      .from(providerCredentials)
+      .where(eq(providerCredentials.id, agent.credentialId))
+      .limit(1);
+    return {
+      env: res.env,
+      home: res.home,
+      credentialIds: [agent.credentialId],
+      chosen: row ? [{ credentialId: agent.credentialId, type: row.type }] : [],
+    };
   }
 
-  // Resolve oauth types last so their HOME overrides take precedence over any
-  // api-key types (which never set HOME).
-  const homeOwnerTypes = new Set(["claude_oauth", "codex_oauth"]);
-  const ordered = [...joinRows].sort((a, b) => {
-    const aHome = homeOwnerTypes.has(a.type) ? 1 : 0;
-    const bHome = homeOwnerTypes.has(b.type) ? 1 : 0;
+  // Group bound credentials by provider type, then select exactly one per type
+  // (rotation pool). Preserves behaviour for agents with a single credential per
+  // type while enabling LRU rotation when several of the same type are bound.
+  const nowMs = Date.now();
+  const byType = new Map<string, RotationCandidate[]>();
+  for (const r of joinRows) {
+    const list = byType.get(r.type) ?? [];
+    list.push(r);
+    byType.set(r.type, list);
+  }
+  const chosenCandidates: RotationCandidate[] = [];
+  for (const list of byType.values()) {
+    chosenCandidates.push(pickPoolCredential(list, nowMs));
+  }
+
+  // Resolve oauth (HOME-owning) types last so their HOME overrides take
+  // precedence over any api-key types (which never set HOME).
+  const ordered = [...chosenCandidates].sort((a, b) => {
+    const aHome = HOME_OWNER_CREDENTIAL_TYPES.has(a.type) ? 1 : 0;
+    const bHome = HOME_OWNER_CREDENTIAL_TYPES.has(b.type) ? 1 : 0;
     return aHome - bHome;
   });
 
   const env: Record<string, string> = {};
   let home: string | undefined;
   const credentialIds: string[] = [];
+  const chosen: Array<{ credentialId: string; type: string }> = [];
 
-  for (const row of ordered) {
-    const res = await resolveCredentialEnv(db, agentId, row.credentialId);
+  for (const candidate of ordered) {
+    const res = await resolveCredentialEnv(db, agentId, candidate.credentialId);
     Object.assign(env, res.env);
     if (res.home) home = res.home;
-    credentialIds.push(row.credentialId);
+    credentialIds.push(candidate.credentialId);
+    chosen.push({ credentialId: candidate.credentialId, type: candidate.type });
+    await touchCredentialLastUsed(db, candidate.credentialId);
   }
 
-  return { env, home, credentialIds };
+  return { env, home, credentialIds, chosen };
 }

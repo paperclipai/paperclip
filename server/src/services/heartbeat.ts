@@ -62,7 +62,12 @@ import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
-import { resolveAllCredentialEnv } from "./credentials.js";
+import {
+  CREDENTIAL_DEFAULT_COOLDOWN_MS,
+  credentialTypesForAdapterType,
+  resolveAllCredentialEnv,
+  setCredentialCooldown,
+} from "./credentials.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
@@ -6637,6 +6642,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     result: AdapterExecutionResult,
     session: { legacySessionId: string | null },
     normalizedUsage?: UsageTotals | null,
+    usedCredentialId?: string | null,
   ) {
     await ensureRuntimeState(agent);
     const usage = normalizedUsage ?? normalizeUsageTotals(result.usage);
@@ -6671,6 +6677,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await costs.createEvent(agent.companyId, {
         heartbeatRunId: run.id,
         agentId: agent.id,
+        credentialId: usedCredentialId ?? null,
         issueId: ledgerScope.issueId,
         projectId: ledgerScope.projectId,
         provider,
@@ -7073,8 +7080,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectEnv: projectContext?.env ?? null,
       secretsSvc,
     });
+    // Lifted out of the try so the post-run cooldown hook and per-credential
+    // usage attribution can see which credential this run actually used (the
+    // chosen pool member whose type matches the agent's adapter).
+    let runActiveCredentialId: string | null = null;
     try {
       const credResolution = await resolveAllCredentialEnv(db, agent.id);
+      const eligibleTypes = new Set(credentialTypesForAdapterType(agent.adapterType));
+      runActiveCredentialId =
+        (credResolution.chosen.find((c) => eligibleTypes.has(c.type)) ?? credResolution.chosen[0])
+          ?.credentialId ?? null;
       if (Object.keys(credResolution.env).length > 0) {
         resolvedConfig.env = {
           ...parseObject(resolvedConfig.env),
@@ -7883,6 +7898,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
       }
 
+      // Reactive credential rotation: if this run hit an upstream rate/quota
+      // limit, cool down the credential it used so the next run rotates to
+      // another bound credential of the same provider type (see
+      // resolveAllCredentialEnv / pickPoolCredential). Honor the provider's
+      // retry-after when present, else fall back to the default cooldown.
+      if (
+        runActiveCredentialId &&
+        outcome === "failed" &&
+        adapterResult.errorFamily === "transient_upstream"
+      ) {
+        const retryAt = readNonEmptyString(adapterResult.retryNotBefore);
+        const parsed = retryAt ? new Date(retryAt) : null;
+        const cooldownUntil =
+          parsed && Number.isFinite(parsed.getTime()) && parsed.getTime() > Date.now()
+            ? parsed
+            : new Date(Date.now() + CREDENTIAL_DEFAULT_COOLDOWN_MS);
+        try {
+          await setCredentialCooldown(
+            db,
+            runActiveCredentialId,
+            cooldownUntil,
+            adapterResult.errorCode ?? "transient_upstream",
+          );
+          await onLog(
+            "stderr",
+            `[paperclip] credential ${runActiveCredentialId} cooling down until ${cooldownUntil.toISOString()} after upstream limit\n`,
+          );
+        } catch (err) {
+          logger.warn(
+            {
+              agentId: agent.id,
+              credentialId: runActiveCredentialId,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "failed to set credential cooldown after upstream limit",
+          );
+        }
+      }
+
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
         error: runErrorMessage,
@@ -7960,7 +8014,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (finalizedRun) {
         await updateRuntimeState(agent, finalizedRun, adapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
-        }, normalizedUsage);
+        }, normalizedUsage, runActiveCredentialId);
         if (taskKey) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {

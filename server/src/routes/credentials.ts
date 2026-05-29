@@ -42,6 +42,18 @@ export function credentialRoutes(db: Db) {
     res.json(rows);
   });
 
+  // Per-credential token/cost usage over a trailing window (default 30 days).
+  // Feeds the Credentials UI's usage column; aggregates cost_events.credentialId.
+  router.get("/companies/:companyId/credentials/usage", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const daysRaw = Number.parseInt(String(req.query.days ?? "30"), 10);
+    const days = Number.isFinite(daysRaw) ? Math.min(365, Math.max(1, daysRaw)) : 30;
+    const usage = await svc.usageByCredential(companyId, days * 24 * 60 * 60 * 1000);
+    res.json({ days, usage });
+  });
+
   // Create a credential
   router.post(
     "/companies/:companyId/credentials",

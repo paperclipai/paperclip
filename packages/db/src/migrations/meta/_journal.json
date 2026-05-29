@@ -701,6 +701,13 @@
       "when": 1779000060000,
       "tag": "0099_adapter_type_claude_tui",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1779000120000,
+      "tag": "0100_credential_rotation",
+      "breakpoints": true
     }
   ]
 }
