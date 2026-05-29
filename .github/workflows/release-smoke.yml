@@ -59,7 +59,9 @@ jobs:
         run: pnpm install --no-frozen-lockfile
 
       - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
+        # Release smoke runs headless Chromium only, so the headless shell is
+        # enough and keeps CI browser setup inside the job budget.
+        run: pnpm exec playwright install --with-deps --only-shell chromium
 
       - name: Launch Docker smoke harness
         run: |

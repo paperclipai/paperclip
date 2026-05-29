@@ -274,7 +274,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Playwright
-        run: npx playwright install --with-deps chromium
+        # The PR e2e job runs Chromium in headless mode only, so install the
+        # smaller headless shell instead of the full Chrome-for-Testing bundle.
+        run: pnpm exec playwright install --with-deps --only-shell chromium
 
       - name: Generate Paperclip config
         run: |
