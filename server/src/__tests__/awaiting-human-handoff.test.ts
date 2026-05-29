@@ -103,6 +103,44 @@ describe("maybeLogAwaitingHumanHandoff", () => {
     expect(logActivity).toHaveBeenCalledTimes(1);
   });
 
+  it("renders absolute target links for relative request confirmation targets", async () => {
+    process.env.BIZBOX_PUBLIC_URL = "https://bizbox.example";
+
+    const created = await maybeLogAwaitingHumanHandoff(mockDbWithAwaitingHumanRows(), {
+      previousIssue: basePreviousIssue,
+      updatedIssue: baseUpdatedIssue,
+      source: "issue_thread_interactions.create",
+      handoffKind: "request_confirmation",
+      actor: baseActor,
+      interaction: {
+        id: "interaction-1b",
+        kind: "request_confirmation",
+        title: null,
+        summary: null,
+        payload: {
+          version: 1,
+          prompt: "Do you approve attached growth image for use?",
+          target: {
+            type: "custom",
+            key: "growth-image-attachment",
+            label: "Growth image attachment",
+            href: "/api/attachments/347bbaac-d44e-4c4e-9d76-63a2b9e495a8/content",
+          },
+        },
+      },
+    });
+
+    expect(created).toBe(true);
+    expect(enqueueAwaitingHumanNotification).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        notification: expect.objectContaining({
+          body: expect.stringContaining("Target link: https://bizbox.example/api/attachments/347bbaac-d44e-4c4e-9d76-63a2b9e495a8/content"),
+        }),
+      }),
+    );
+  });
+
   it("sends a ClickUp notification for ask_user_questions handoffs", async () => {
     const created = await maybeLogAwaitingHumanHandoff(mockDbWithAwaitingHumanRows(), {
       previousIssue: basePreviousIssue,

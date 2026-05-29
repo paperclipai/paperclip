@@ -9,12 +9,53 @@ import {
 import type { AwaitingHumanBridgeAdapter, AwaitingHumanBridgePollEvent } from "./awaiting-human-bridge.js";
 import { awaitingHumanBridges, type Db } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
+import { Readable } from "node:stream";
 import { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
 import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
 import { normalizeReviewFile, readAwaitingHumanReviewFileBody } from "./awaiting-human-review-files.js";
+import { issueService } from "./issues.js";
 
 const CLICKUP_REVIEW_ATTACHMENT_ENTITY_ID = "86d35fwx8";
+
+function readString(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function extractIssueAttachmentIdFromHref(href: string) {
+  try {
+    const url = new URL(href);
+    const match = url.pathname.match(/^\/api\/attachments\/([^/]+)\/content$/);
+    return match?.[1]?.trim() || null;
+  } catch {
+    const match = href.match(/^\/api\/attachments\/([^/]+)\/content$/);
+    return match?.[1]?.trim() || null;
+  }
+}
+
+async function readStreamToBuffer(stream: Readable) {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+function insertClickUpAttachmentLine(body: string | null | undefined, url: string) {
+  if (!body?.trim()) return `ClickUp attachment: ${url}`;
+  const lines = body.split("\n");
+  const targetLinkIndex = lines.findIndex((line) => line.startsWith("Target link:"));
+  if (targetLinkIndex >= 0) {
+    lines.splice(targetLinkIndex + 1, 0, `ClickUp attachment: ${url}`);
+    return lines.join("\n");
+  }
+  const disclaimerIndex = lines.findIndex((line) => line.trim() === "Disclaimer:");
+  if (disclaimerIndex >= 0) {
+    lines.splice(disclaimerIndex, 0, `ClickUp attachment: ${url}`, "");
+    return lines.join("\n");
+  }
+  return `${body}\n\nClickUp attachment: ${url}`;
+}
 
 async function loadCompanyOverrides(db: Db, companyId: string): Promise<ClickUpAwaitingHumanConfigOverrides> {
   const resolved = await awaitingHumanSettingsService(db).resolveClickUpRuntimeConfig(companyId);
@@ -201,6 +242,44 @@ export function clickupAwaitingHumanBridgeAdapter(db: Db): AwaitingHumanBridgeAd
         };
       }
 
+      const targetHref = readString(clickupNotification.target?.href);
+      const targetAttachmentId = targetHref ? extractIssueAttachmentIdFromHref(targetHref) : null;
+      if (targetAttachmentId && targetHref && input.storage) {
+        const targetAttachment = await issueService(db).getAttachmentById(targetAttachmentId);
+        if (targetAttachment?.companyId === input.companyId) {
+          const object = await input.storage.getObject(targetAttachment.companyId, targetAttachment.objectKey);
+          const body = await readStreamToBuffer(object.stream);
+          const uploadedTarget = await uploadClickUpReviewFile(
+            overrides,
+            CLICKUP_REVIEW_ATTACHMENT_ENTITY_ID,
+            {
+              source: "artifact",
+              deliverableId: targetAttachment.id,
+              title: readString(clickupNotification.target?.label) ?? targetAttachment.originalFilename ?? "attachment",
+              filename: targetAttachment.originalFilename ?? "attachment",
+              contentType: targetAttachment.contentType ?? object.contentType ?? "application/octet-stream",
+              byteSize: targetAttachment.byteSize ?? object.contentLength ?? body.length,
+              contentPath: targetHref,
+              deliverableUrl: targetHref,
+              attachmentId: targetAttachment.id,
+              objectKey: targetAttachment.objectKey,
+              sha256: targetAttachment.sha256,
+            },
+            body,
+          );
+          if (uploadedTarget.attachmentUrl) {
+            clickupNotification = {
+              ...clickupNotification,
+              target: {
+                ...clickupNotification.target,
+                clickupAttachmentUrl: uploadedTarget.attachmentUrl,
+              },
+              body: insertClickUpAttachmentLine(clickupNotification.body, uploadedTarget.attachmentUrl),
+            };
+          }
+        }
+      }
+
       const result = await sendAwaitingHumanNotification({
         companyId: input.companyId,
         issueId: input.issueId,
@@ -252,13 +331,7 @@ export function clickupAwaitingHumanBridgeAdapter(db: Db): AwaitingHumanBridgeAd
         }, "clickup awaiting human reply detect failed");
         return { status: "failed" as const, detail, events: [] };
       }
-      const events: AwaitingHumanBridgePollEvent[] = detected.events.map((event) => ({
-        kind: event.kind,
-        externalEventId: event.externalEventId,
-        externalMessageId: event.externalMessageId,
-        body: event.body ?? null,
-        metadata: event.metadata ?? {},
-      }));
+      const events: AwaitingHumanBridgePollEvent[] = detected.events;
       const status: "ok" | "skipped" | "failed" =
         detected.status === "sent"
           ? "ok"
@@ -305,22 +378,10 @@ export function clickupAwaitingHumanBridgeAdapter(db: Db): AwaitingHumanBridgeAd
       const overrides = await loadCompanyOverrides(db, input.companyId);
       const detected = await detectClickUpAwaitingHumanBridgeEvents(messageId, overrides);
       if (detected.status === "failed" || detected.status === "skipped") {
-        return { status: detected.status, detail: detected.detail, events: detected.events.map((event) => ({
-          kind: event.kind,
-          externalEventId: event.externalEventId,
-          externalMessageId: event.externalMessageId,
-          body: event.body ?? null,
-          metadata: event.metadata ?? {},
-        })) };
+        return { status: detected.status, detail: detected.detail, events: detected.events };
       }
 
-      const events: AwaitingHumanBridgePollEvent[] = detected.events.map((event) => ({
-        kind: event.kind,
-        externalEventId: event.externalEventId,
-        externalMessageId: event.externalMessageId,
-        body: event.body ?? null,
-        metadata: event.metadata ?? {},
-      }));
+      const events: AwaitingHumanBridgePollEvent[] = detected.events;
 
       const replyMessageIds = new Set<string>();
       for (const event of events) {

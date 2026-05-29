@@ -1,6 +1,13 @@
 import type { Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import type {
+  AwaitingHumanNotificationPayload,
+  AwaitingHumanNotificationResult,
+  AwaitingHumanNotificationReviewFile,
+  SendAwaitingHumanNotificationInput,
+} from "./awaiting-human-notifications.js";
 import { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
+import type { AwaitingHumanBridgePollEvent } from "./awaiting-human-bridge-registry.js";
 
 const CLICKUP_CHAT_MESSAGE_MAX_CHARS = 1_800;
 const MAX_TITLE_LENGTH = 120;
@@ -9,44 +16,6 @@ const MAX_DETAIL_BULLETS = 5;
 const MAX_BULLET_LENGTH = 220;
 const DEFAULT_CLICKUP_TIMEOUT_SEC = 30;
 const CLICKUP_ATTACHMENT_FILE_FIELD = "attachment[0]";
-export interface AwaitingHumanNotificationReviewFile {
-  source: "artifact" | "document";
-  deliverableId: string;
-  title: string;
-  filename: string;
-  contentType: string;
-  byteSize: number;
-  contentPath: string;
-  deliverableUrl: string;
-  clickupTaskUrl?: string | null;
-  clickupAttachmentId?: string | null;
-  clickupAttachmentUrl?: string | null;
-  attachmentId?: string | null;
-  objectKey?: string | null;
-  sha256?: string | null;
-}
-
-export interface AwaitingHumanNotificationPayload {
-  title: string;
-  summary: string;
-  link: string;
-  cta: string;
-  labels: string[];
-  kind?: string | null;
-  audience?: string | null;
-  body?: string | null;
-  reviewFile?: AwaitingHumanNotificationReviewFile | null;
-}
-
-export interface SendAwaitingHumanNotificationInput {
-  companyId: string;
-  issueId: string;
-  handoffKind:
-    | "request_confirmation"
-    | "ask_user_questions"
-    | "human_owned_blocker";
-  notification: AwaitingHumanNotificationPayload;
-}
 
 export interface ClickUpTransportTestNotification {
   title: string;
@@ -54,13 +23,6 @@ export interface ClickUpTransportTestNotification {
   link: string;
   body?: string | null;
   cta?: string | null;
-}
-
-export interface AwaitingHumanNotificationResult {
-  status: "sent" | "skipped" | "failed" | "enqueued";
-  channel: "clickup-chat";
-  detail: string;
-  externalId?: string | null;
 }
 
 type ClickUpChatConfig = {
@@ -82,14 +44,6 @@ export interface ClickUpChatMessageReply {
   parentMessageId: string | null;
   reactionsUrl: string | null;
   content: string | null;
-}
-
-export interface ClickUpAwaitingHumanBridgeEvent {
-  kind: "reply" | "approval_signal" | "reject_signal";
-  externalEventId: string;
-  externalMessageId: string;
-  body?: string | null;
-  metadata?: Record<string, unknown>;
 }
 
 function compactWhitespace(value: string) {
@@ -693,7 +647,7 @@ export async function detectClickUpAwaitingHumanBridgeEvents(
 ): Promise<{
   status: ClickUpApiStatus;
   detail: string;
-  events: ClickUpAwaitingHumanBridgeEvent[];
+  events: AwaitingHumanBridgePollEvent[];
 }> {
   const config = readClickUpChatConfig(overrides);
   if (!config.personalToken) {
@@ -723,7 +677,7 @@ export async function detectClickUpAwaitingHumanBridgeEvents(
     };
   }
 
-  const events: ClickUpAwaitingHumanBridgeEvent[] = [];
+  const events: AwaitingHumanBridgePollEvent[] = [];
   for (const reply of repliesResult.replies) {
     const replyId = readString(reply.id);
     const replyBody = readString(reply.content);

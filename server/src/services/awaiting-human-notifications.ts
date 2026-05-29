@@ -42,6 +42,11 @@ export interface AwaitingHumanNotificationPayload {
   audience?: string | null;
   interactionId?: string | null;
   body?: string | null;
+  target?: {
+    label?: string | null;
+    href?: string | null;
+    clickupAttachmentUrl?: string | null;
+  } | null;
   reviewFile?: AwaitingHumanNotificationReviewFile | null;
 }
 

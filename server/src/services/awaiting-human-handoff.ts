@@ -132,6 +132,32 @@ export function classifyRequestConfirmationReply(
   return null;
 }
 
+function resolveRenderedTargetLink(targetHref: string, link: string) {
+  const trimmedTargetHref = targetHref.trim();
+  if (!trimmedTargetHref) return null;
+  try {
+    return new URL(trimmedTargetHref).toString();
+  } catch {
+    // continue
+  }
+  if (link.trim()) {
+    try {
+      return new URL(trimmedTargetHref, link.trim()).toString();
+    } catch {
+      // continue
+    }
+  }
+  const baseUrl = resolveBaseUrl();
+  if (baseUrl) {
+    try {
+      return new URL(trimmedTargetHref, `${baseUrl}/`).toString();
+    } catch {
+      // continue
+    }
+  }
+  return trimmedTargetHref;
+}
+
 export function renderRequestConfirmationBody(
   interaction: AwaitingHumanInteraction | null | undefined,
   link = "",
@@ -153,13 +179,15 @@ export function renderRequestConfirmationBody(
       lines.push(`Target: ${interaction.payload.target.label.trim()}`);
     }
     if (interaction.payload.target.href?.trim()) {
-      lines.push(`Target link: ${interaction.payload.target.href.trim()}`);
+      const renderedTargetLink = resolveRenderedTargetLink(interaction.payload.target.href, link);
+      if (renderedTargetLink) {
+        lines.push(`Target link: ${renderedTargetLink}`);
+      }
     }
   }
   if (lines.length > 0) lines.push("");
   lines.push("Disclaimer:");
-  lines.push("It is your responsibility to read and verify this content. Not doing so may result in unattended negative consequence leading to financial loss or brand harm");
-  const body = lines.join("\n").trim();
+  lines.push("It is your responsibility to read and verify this content. Not doing so may result in unattended negative consequence leading to financial loss or brand harm"); const body = lines.join("\n").trim();
   if (!link.trim()) return body || null;
   return body ? `${body}\n\nOpen in Bizbox: ${link.trim()}` : `Open in Bizbox: ${link.trim()}`;
 }
@@ -276,6 +304,12 @@ function buildNotification(
       : input.handoffKind === "request_confirmation"
         ? renderRequestConfirmationBody(input.interaction, link)
         : null,
+    target: input.handoffKind === "request_confirmation" && input.interaction?.kind === "request_confirmation"
+      ? {
+        label: input.interaction.payload.target?.label ?? null,
+        href: input.interaction.payload.target?.href ?? null,
+      }
+      : null,
   };
 }
 
