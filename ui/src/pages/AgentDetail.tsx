@@ -1495,10 +1495,56 @@ function AgentOverview({
         )}
       </div>
 
+      {/* Heartbeat Config */}
+      <HeartbeatConfigSection agent={agent} />
+
       {/* Costs */}
       <div className="space-y-3">
         <h3 className="text-sm font-medium">Costs</h3>
         <CostsSection runtimeState={runtimeState} runs={runs} />
+      </div>
+    </div>
+  );
+}
+
+/* ---- Heartbeat Config Section ---- */
+
+function HeartbeatConfigSection({ agent }: { agent: AgentDetailRecord }) {
+  const heartbeat = (agent.runtimeConfig as Record<string, unknown>)?.heartbeat as Record<string, unknown> | undefined;
+  if (!heartbeat) return null;
+
+  const intervalSec = typeof heartbeat.intervalSec === "number" ? heartbeat.intervalSec : null;
+  const maxConcurrentRuns = typeof heartbeat.maxConcurrentRuns === "number" ? heartbeat.maxConcurrentRuns : null;
+  const enabled = heartbeat.enabled !== false;
+  const budgetMonthlyCents = agent.budgetMonthlyCents ?? 0;
+
+  const modelProfiles = (agent.runtimeConfig as Record<string, unknown>)?.modelProfiles as Record<string, unknown> | undefined;
+  const cheapModel = (modelProfiles?.cheap as Record<string, unknown> | undefined)?.adapterConfig as Record<string, unknown> | undefined;
+  const cheapModelName = typeof cheapModel?.model === "string" ? cheapModel.model : null;
+  const defaultModel = typeof (agent.adapterConfig as Record<string, unknown>)?.model === "string"
+    ? (agent.adapterConfig as Record<string, unknown>).model as string
+    : null;
+
+  const rows: { label: string; value: string }[] = [];
+  if (intervalSec !== null) rows.push({ label: "Heartbeat interval", value: `${intervalSec}s` });
+  if (maxConcurrentRuns !== null) rows.push({ label: "Max concurrent runs", value: String(maxConcurrentRuns) });
+  rows.push({ label: "Heartbeat", value: enabled ? "enabled" : "disabled" });
+  if (budgetMonthlyCents > 0) rows.push({ label: "Monthly budget", value: formatCents(budgetMonthlyCents) });
+  if (defaultModel) rows.push({ label: "Model", value: defaultModel });
+  if (cheapModelName) rows.push({ label: "Cheap model", value: cheapModelName });
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-medium">Configuration</h3>
+      <div className="border border-border rounded-lg p-4 grid grid-cols-2 md:grid-cols-3 gap-3">
+        {rows.map(({ label, value }) => (
+          <div key={label}>
+            <span className="text-xs text-muted-foreground block">{label}</span>
+            <span className="text-sm font-medium font-mono">{value}</span>
+          </div>
+        ))}
       </div>
     </div>
   );
