@@ -73,6 +73,10 @@ import {
   normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
 import {
+  recordProcessLostFailure,
+  PROCESS_LOST_RATE_LIMIT_WINDOW_MS,
+} from "./heartbeat-process-lost-rate-limiter.js";
+import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
@@ -5904,6 +5908,60 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function blockIssueForProcessLostRateLimit(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+    failureCount: number,
+    now: Date,
+  ) {
+    const issueRow = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issueRow || issueRow.status === "done" || issueRow.status === "cancelled") return;
+
+    const comment = [
+      "**Auto-paused: retry rate limit exceeded**",
+      "",
+      `This issue had ${failureCount} \`process_lost\` failures in the last hour.`,
+      "To resume: investigate the underlying cause and manually move this issue back to **Todo** or **In Progress**.",
+      "The retry cap resets automatically when you do.",
+    ].join("\n");
+
+    await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
+      );
+      await tx
+        .update(issues)
+        .set({
+          status: "blocked",
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+      await tx.insert(issueComments).values({
+        companyId: run.companyId,
+        issueId,
+        body: comment,
+      });
+    });
+
+    if (issueRow.assigneeAgentId) {
+      await enqueueWakeup(issueRow.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "process_lost_rate_limit_blocked",
+        payload: { issueId, processLostCount: failureCount },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+    }
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; requeueYoungRunAgeSeconds?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const requeueYoungRunAgeSeconds = opts?.requeueYoungRunAgeSeconds ?? 0;
@@ -6061,28 +6119,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         failureReason: finalizedRun.error ?? undefined,
       });
 
+      const contextIssueId = issueIdFromRunContext(finalizedRun.contextSnapshot);
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
-      if (shouldRetry) {
-        const agent = await getAgent(run.agentId);
-        if (agent) {
-          retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
+      let processLostCapHit = false;
+      if (contextIssueId) {
+        const rateLimitResult = recordProcessLostFailure(contextIssueId, now.getTime());
+        if (rateLimitResult.limitExceeded) {
+          processLostCapHit = true;
+          logger.warn(
+            {
+              issueId: contextIssueId,
+              runId: finalizedRun.id,
+              processLostCount: rateLimitResult.count,
+              windowMs: PROCESS_LOST_RATE_LIMIT_WINDOW_MS,
+              event: "process_lost_rate_limit_exceeded",
+            },
+            "process_lost rate limit exceeded; blocking issue to prevent retry storm",
+          );
+          await blockIssueForProcessLostRateLimit(finalizedRun, contextIssueId, rateLimitResult.count, now);
         }
-      } else {
-        await releaseIssueExecutionAndPromote(finalizedRun);
+      }
+      if (!processLostCapHit) {
+        if (shouldRetry) {
+          const agent = await getAgent(run.agentId);
+          if (agent) {
+            retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
+          }
+        } else {
+          await releaseIssueExecutionAndPromote(finalizedRun);
+        }
       }
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
         eventType: "lifecycle",
         stream: "system",
         level: "error",
-        message: shouldRetry
-          ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
-          : baseMessage,
+        message: processLostCapHit
+          ? `${baseMessage}; rate limit exceeded (${PROCESS_LOST_RATE_LIMIT_WINDOW_MS / 1000 / 60 / 60}h cap), issue blocked`
+          : shouldRetry
+            ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
+            : baseMessage,
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+          ...(processLostCapHit ? { processLostCapHit: true, issueId: contextIssueId } : {}),
         },
       });
 
