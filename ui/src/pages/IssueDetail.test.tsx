@@ -10,6 +10,7 @@ import { canBoardResolveRecoveryAction, IssueDetail } from "./IssueDetail";
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
   list: vi.fn(),
+  listAcceptedPlanDecompositions: vi.fn(),
   listComments: vi.fn(),
   listAttachments: vi.fn(),
   listFeedbackVotes: vi.fn(),
@@ -59,6 +60,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
 }));
 
 const mockNavigate = vi.hoisted(() => vi.fn());
@@ -823,6 +825,10 @@ describe("IssueDetail", () => {
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+    });
+    mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
     mockIssuesListRender.mockClear();
     mockIssueChatThreadRender.mockClear();
   });
@@ -856,6 +862,79 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("Issue detail smoke");
     expect(container.textContent).toContain("Chat thread");
     expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it("hides the plan decomposition panel by default", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Plan decomposition");
+    expect(mockIssuesApi.listAcceptedPlanDecompositions).not.toHaveBeenCalled();
+  });
+
+  it("shows the plan decomposition panel when the experimental flag is enabled", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: true,
+    });
+    mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([
+      {
+        id: "decomp-1",
+        companyId: "company-1",
+        sourceIssueId: "issue-1",
+        acceptedPlanRevisionId: "plan-rev-1",
+        acceptedPlanRevisionNumber: 2,
+        acceptedInteractionId: null,
+        status: "completed",
+        requestFingerprint: "fingerprint-1",
+        requestedChildCount: 2,
+        childIssueIds: ["issue-2", "issue-3"],
+        childIssues: [
+          {
+            id: "issue-2",
+            identifier: "PAP-2",
+            title: "First child issue",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+        ],
+        ownerAgentId: null,
+        ownerUserId: null,
+        ownerRunId: null,
+        completedAt: "2026-05-28T06:00:00.000Z",
+        createdAt: "2026-05-28T05:50:00.000Z",
+        updatedAt: "2026-05-28T06:00:00.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Plan decomposition");
+    expect(container.textContent).toContain("Plan revision 2");
+    expect(container.textContent).toContain("2 of 2 child issues created");
+    expect(container.textContent).toContain("First child issue");
+    expect(mockIssuesApi.listAcceptedPlanDecompositions).toHaveBeenCalledWith("issue-1");
   });
 
   it("renders sibling previous and next navigation at the chat footer", async () => {

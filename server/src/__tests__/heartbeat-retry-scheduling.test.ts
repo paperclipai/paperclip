@@ -286,8 +286,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       retryOfRunId: sourceRunId,
       scheduledRetryAttempt: 1,
       scheduledRetryReason: "transient_failure",
-      contextSnapshot: expect.objectContaining({ modelProfile: "cheap" }),
     });
+    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
     expect(retryRun?.scheduledRetryAt?.toISOString()).toBe(expectedDueAt.toISOString());
 
     const earlyPromotion = await heartbeat.promoteDueScheduledRetries(new Date("2026-04-20T12:01:59.000Z"));

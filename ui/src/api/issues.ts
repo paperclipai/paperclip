@@ -1,4 +1,5 @@
 import type {
+  AcceptedPlanDecompositionSummary,
   AskUserQuestionsAnswer,
   Approval,
   CreateIssueTreeHold,
@@ -60,6 +61,8 @@ export const issuesApi = {
       q?: string;
       limit?: number;
       offset?: number;
+      sortField?: "updated";
+      sortDir?: "asc" | "desc";
     },
   ) => {
     const params = new URLSearchParams();
@@ -86,6 +89,8 @@ export const issuesApi = {
     if (filters?.q) params.set("q", filters.q);
     if (filters?.limit) params.set("limit", String(filters.limit));
     if (filters?.offset !== undefined) params.set("offset", String(filters.offset));
+    if (filters?.sortField) params.set("sortField", filters.sortField);
+    if (filters?.sortDir) params.set("sortDir", filters.sortDir);
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
   },
@@ -131,7 +136,7 @@ export const issuesApi = {
     data: {
       actionId?: string;
       outcome: "restored" | "false_positive" | "blocked" | "cancelled";
-      sourceIssueStatus: "done" | "in_review" | "blocked";
+      sourceIssueStatus: "todo" | "done" | "in_review" | "blocked";
       resolutionNote?: string | null;
     },
   ) => api.post<ResolveRecoveryActionResponse>(`/issues/${id}/recovery-actions/resolve`, data),
@@ -197,6 +202,8 @@ export const issuesApi = {
   },
   listInteractions: (id: string) =>
     api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
+  listAcceptedPlanDecompositions: (id: string) =>
+    api.get<AcceptedPlanDecompositionSummary[]>(`/issues/${id}/accepted-plan-decompositions`),
   createInteraction: (id: string, data: Record<string, unknown>) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions`, data),
   acceptInteraction: (
@@ -259,6 +266,10 @@ export const issuesApi = {
   getDocument: (id: string, key: string) => api.get<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   upsertDocument: (id: string, key: string, data: UpsertIssueDocument) =>
     api.put<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`, data),
+  lockDocument: (id: string, key: string) =>
+    api.post<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}/lock`, {}),
+  unlockDocument: (id: string, key: string) =>
+    api.post<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}/unlock`, {}),
   listDocumentRevisions: (id: string, key: string) =>
     api.get<DocumentRevision[]>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions`),
   restoreDocumentRevision: (id: string, key: string, revisionId: string) =>

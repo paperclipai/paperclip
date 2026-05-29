@@ -63,6 +63,29 @@ pnpm paperclipai agent list
 pnpm paperclipai agent get <agent-id>
 ```
 
+## Skills Commands
+
+```sh
+# Browse app-shipped catalog skills without changing company state
+pnpm paperclipai skills browse [--kind bundled|optional] [--category software-development] [--query github]
+pnpm paperclipai skills search "pull request" [--json]
+
+# Inspect catalog metadata and file inventory before install
+pnpm paperclipai skills inspect github-pr-workflow
+
+# Install a catalog skill into the company skill library
+# This does not attach the skill to any agent.
+pnpm paperclipai skills install github-pr-workflow --company-id <company-id>
+pnpm paperclipai skills install github-pr-workflow --as pr-flow --force --company-id <company-id>
+
+# External sources still use import instead of catalog install
+pnpm paperclipai skills import ./skills/my-skill --company-id <company-id>
+pnpm paperclipai skills import owner/repo/path/to/skill --company-id <company-id>
+
+# Attach desired company skills to an agent after install/import
+pnpm paperclipai skills agent sync <agent-id> --skill github-pr-workflow --company-id <company-id>
+```
+
 ## Approval Commands
 
 ```sh

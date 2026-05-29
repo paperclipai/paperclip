@@ -95,6 +95,7 @@ function SidebarSectionHeader({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
+          data-slot="icon-button"
           className={cn(
             "inline-flex min-w-0 max-w-full items-center rounded-md px-1 py-0.5 text-left outline-none transition-colors",
             "hover:bg-accent/50 focus-visible:bg-accent/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
@@ -150,12 +151,13 @@ function SidebarSectionHeader({
   );
 
   return (
-    <div className="group/sidebar-section px-3 py-1.5">
+    <div className="group/sidebar-section px-3 py-1.5 pointer-coarse:py-1">
       <div className="relative flex min-h-6 min-w-0 items-center gap-1">
         {collapsible ? (
           <CollapsibleTrigger asChild>
             <button
               type="button"
+              data-slot="icon-button"
               className="absolute -left-4 flex h-5 w-5 items-center justify-center rounded-sm outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
               aria-label={collapsible.open ? `Collapse ${label}` : `Expand ${label}`}
             >

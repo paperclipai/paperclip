@@ -58,8 +58,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
+      - name: Verify runner Chrome
+        # Release smoke also runs headless on GitHub's Ubuntu image, so use the
+        # runner's preinstalled Chrome instead of a Playwright browser download.
+        run: google-chrome --version
 
       - name: Launch Docker smoke harness
         run: |
@@ -89,6 +91,7 @@ jobs:
           PAPERCLIP_RELEASE_SMOKE_BASE_URL: ${{ env.SMOKE_BASE_URL }}
           PAPERCLIP_RELEASE_SMOKE_EMAIL: ${{ env.SMOKE_ADMIN_EMAIL }}
           PAPERCLIP_RELEASE_SMOKE_PASSWORD: ${{ env.SMOKE_ADMIN_PASSWORD }}
+          PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
         run: pnpm run test:release-smoke
 
       - name: Capture Docker logs

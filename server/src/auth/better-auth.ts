@@ -44,6 +44,28 @@ export function buildBetterAuthAdvancedOptions(input: { disableSecureCookies: bo
   };
 }
 
+export function shouldDisableSecureAuthCookies(input: {
+  deploymentMode: Config["deploymentMode"];
+  deploymentExposure?: Config["deploymentExposure"];
+  authBaseUrlMode: Config["authBaseUrlMode"];
+  authPublicBaseUrl: string | undefined;
+  publicUrl?: string | undefined;
+}): boolean {
+  const publicUrl = (
+    input.publicUrl?.trim() ||
+    (input.authBaseUrlMode === "explicit" ? input.authPublicBaseUrl?.trim() : "")
+  );
+  if (publicUrl) return publicUrl.startsWith("http://");
+
+  return (
+    input.deploymentMode === "authenticated" &&
+    (
+      (input.deploymentExposure === "private" && input.authBaseUrlMode === "auto") ||
+      input.deploymentExposure === undefined
+    )
+  );
+}
+
 function headersFromNodeHeaders(rawHeaders: IncomingHttpHeaders): Headers {
   const headers = new Headers();
   for (const [key, raw] of Object.entries(rawHeaders)) {
@@ -92,6 +114,7 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
 
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
+  const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() || baseUrl;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
   if (!secret) {
     throw new Error(
@@ -99,8 +122,13 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       "For local development, set BETTER_AUTH_SECRET=paperclip-dev-secret in your .env file.",
     );
   }
-  const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;
-  const isHttpOnly = publicUrl ? publicUrl.startsWith("http://") : false;
+  const disableSecureCookies = shouldDisableSecureAuthCookies({
+    deploymentMode: config.deploymentMode,
+    deploymentExposure: config.deploymentExposure,
+    authBaseUrlMode: config.authBaseUrlMode,
+    authPublicBaseUrl: config.authPublicBaseUrl,
+    publicUrl,
+  });
 
   const authConfig = {
     baseURL: baseUrl,
@@ -120,7 +148,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
-    advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies: isHttpOnly }),
+    advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
   };
 
   if (!baseUrl) {

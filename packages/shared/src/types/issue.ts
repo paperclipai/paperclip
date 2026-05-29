@@ -96,6 +96,9 @@ export interface IssueDocumentSummary {
   createdByUserId: string | null;
   updatedByAgentId: string | null;
   updatedByUserId: string | null;
+  lockedAt: Date | null;
+  lockedByAgentId: string | null;
+  lockedByUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -124,6 +127,71 @@ export interface LegacyPlanDocument {
   key: "plan";
   body: string;
   source: "issue_description";
+}
+
+export type AcceptedPlanDecompositionStatus = "in_flight" | "completed";
+
+export interface AcceptedPlanDecompositionChild {
+  projectId?: string | null;
+  projectWorkspaceId?: string | null;
+  goalId?: string | null;
+  blockedByIssueIds?: string[];
+  title: string;
+  description?: string | null;
+  status: IssueStatus;
+  workMode: IssueWorkMode;
+  priority: IssuePriority;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  requestDepth?: number;
+  billingCode?: string | null;
+  assigneeAdapterOverrides?: IssueAssigneeAdapterOverrides | null;
+  executionPolicy?: IssueExecutionPolicy | null;
+  executionWorkspaceId?: string | null;
+  executionWorkspacePreference?: string | null;
+  executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
+  labelIds?: string[];
+  acceptanceCriteria?: string[];
+  blockParentUntilDone?: boolean;
+}
+
+export interface AcceptedPlanDecomposition {
+  id: string;
+  companyId: string;
+  sourceIssueId: string;
+  acceptedPlanRevisionId: string;
+  acceptedInteractionId: string | null;
+  status: AcceptedPlanDecompositionStatus;
+  requestFingerprint: string;
+  requestedChildCount: number;
+  childIssueIds: string[];
+  ownerAgentId: string | null;
+  ownerUserId: string | null;
+  ownerRunId: string | null;
+  completedAt: Date | string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export interface AcceptedPlanDecompositionResult {
+  decomposition: AcceptedPlanDecomposition;
+  childIssueIds: string[];
+  newlyCreatedChildIssueIds: string[];
+}
+
+export interface AcceptedPlanDecompositionChildIssue {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  priority: IssuePriority;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+}
+
+export interface AcceptedPlanDecompositionSummary extends AcceptedPlanDecomposition {
+  acceptedPlanRevisionNumber: number | null;
+  childIssues: AcceptedPlanDecompositionChildIssue[];
 }
 
 export interface IssueRelationIssueSummary {

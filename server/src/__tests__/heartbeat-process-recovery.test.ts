@@ -11,21 +11,28 @@ import {
   companySkills,
   companies,
   costEvents,
+  documentAnnotationAnchorSnapshots,
+  documentAnnotationComments,
+  documentAnnotationThreads,
   createDb,
   documentRevisions,
   documents,
   environmentLeases,
   environments,
+  executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
+  issueThreadInteractions,
   issueTreeHoldMembers,
   issueTreeHolds,
   issueWorkProducts,
   issues,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -323,6 +330,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(costEvents);
     await db.delete(environmentLeases);
     await db.delete(environments);
+    await db.delete(issuePlanDecompositions);
+    await db.delete(issueThreadInteractions);
+    await db.delete(documentAnnotationComments);
+    await db.delete(documentAnnotationAnchorSnapshots);
+    await db.delete(documentAnnotationThreads);
     await db.delete(issueWorkProducts);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
@@ -368,6 +380,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(companySkills);
+      await db.delete(workspaceOperations);
+      await db.delete(executionWorkspaces);
+      await db.delete(issuePlanDecompositions);
+      await db.delete(issueThreadInteractions);
+      await db.delete(documentAnnotationComments);
+      await db.delete(documentAnnotationAnchorSnapshots);
+      await db.delete(documentAnnotationThreads);
+      await db.delete(issueDocuments);
+      await db.delete(documentRevisions);
+      await db.delete(documents);
       try {
         await db.delete(companies);
         break;
@@ -405,6 +427,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
+    contextSnapshot?: Record<string, unknown>;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -454,7 +477,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       triggerDetail: "system",
       status: input?.runStatus ?? "running",
       wakeupRequestId,
-      contextSnapshot: input?.includeIssue === false ? {} : { issueId },
+      contextSnapshot: input?.includeIssue === false
+        ? input?.contextSnapshot ?? {}
+        : { ...(input?.contextSnapshot ?? {}), issueId },
       processPid: input?.processPid ?? null,
       processGroupId: input?.processGroupId ?? null,
       processLossRetryCount: input?.processLossRetryCount ?? 0,
@@ -765,7 +790,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       companyId: input.companyId,
       reason: "source_scoped_recovery_action",
       source: "assignment",
-      payload: expect.objectContaining({ modelProfile: "cheap" }),
+      payload: expect.objectContaining({
+        modelProfile: "cheap",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      }),
     });
 
     const recoveryRun = recoveryWakeup?.runId
@@ -783,6 +813,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       sourceIssueId: input.issueId,
       strandedRunId: input.runId,
       modelProfile: "cheap",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
     });
     await waitForHeartbeatIdle(db);
     const sourceIssue = await db
@@ -920,6 +953,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: 999_999_999,
+      contextSnapshot: {
+        modelProfile: "cheap",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      },
     });
     const heartbeat = heartbeatService(db);
 
@@ -947,7 +986,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.status).toBe("queued");
     expect(retryRun?.retryOfRunId).toBe(runId);
     expect(retryRun?.processLossRetryCount).toBe(1);
-    expect(retryRun?.contextSnapshot).toMatchObject({ modelProfile: "cheap" });
+    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
 
     const issue = await db
       .select()
@@ -1253,8 +1292,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.scheduledRetryReason).toBe("transient_failure");
     expect(retryRun?.contextSnapshot).toMatchObject({
       codexTransientFallbackMode: "same_session",
-      modelProfile: "cheap",
     });
+    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
 
     const issue = await db
       .select()
@@ -1789,9 +1828,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       payload: expect.objectContaining({
         issueId,
         mutation: "assigned_todo_liveness_dispatch",
-        modelProfile: "cheap",
       }),
     });
+    expect(wakeups[0]?.payload as Record<string, unknown>).not.toHaveProperty("modelProfile");
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     expect(runs).toHaveLength(1);
@@ -1801,8 +1840,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       taskId: issueId,
       wakeReason: "issue_assigned",
       source: "issue.assigned_todo_liveness_dispatch",
-      modelProfile: "cheap",
     });
+    expect(runs[0]?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
     expect((runs[0]?.contextSnapshot as Record<string, unknown>)?.retryReason).toBeUndefined();
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
@@ -1909,9 +1948,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       payload: expect.objectContaining({
         issueId: unblocked.issueId,
         mutation: "assigned_todo_liveness_dispatch",
-        modelProfile: "cheap",
       }),
     });
+    expect(unblockedWakeups[0]?.payload as Record<string, unknown>).not.toHaveProperty("modelProfile");
     const unblockedRuns = await db
       .select()
       .from(heartbeatRuns)
@@ -1963,7 +2002,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const retryRun = runs.find((row) => row.id !== runId);
     expect(retryRun?.id).toBeTruthy();
     expect((retryRun?.contextSnapshot as Record<string, unknown>)?.retryReason).toBe("assignment_recovery");
-    expect(retryRun?.contextSnapshot).toMatchObject({ modelProfile: "cheap" });
+    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
@@ -2002,8 +2041,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         retryReason: "issue_continuation_needed",
         retryOfRunId: runId,
         source: "issue.continuation_recovery",
-        modelProfile: "cheap",
       });
+      expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
 
       const recoveries = await db
         .select()
@@ -2054,7 +2093,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const retryRun = runs.find((row) => row.id !== runId);
     expect((retryRun?.contextSnapshot as Record<string, unknown>)?.retryReason).toBe("assignment_recovery");
-    expect(retryRun?.contextSnapshot).toMatchObject({ modelProfile: "cheap" });
+    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
@@ -2296,7 +2335,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const retryRun = runs.find((row) => row.id !== runId);
     expect(retryRun?.id).toBeTruthy();
     expect((retryRun?.contextSnapshot as Record<string, unknown>)?.retryReason).toBe("issue_continuation_needed");
-    expect(retryRun?.contextSnapshot).toMatchObject({ modelProfile: "cheap" });
+    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
@@ -2786,8 +2825,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: "issue_continuation_needed",
       retryOfRunId: runId,
       source: "issue.productive_terminal_continuation_recovery",
-      modelProfile: "cheap",
     });
+    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
 
     const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
     expect(wakeups).toHaveLength(2);
@@ -2854,8 +2893,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: "issue_continuation_needed",
       retryOfRunId: runId,
       source: "issue.productive_terminal_continuation_recovery",
-      modelProfile: "cheap",
     });
+    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
   });
 
   it("does not treat a productive terminal run as healthy when in-progress work has no live path", async () => {
@@ -2910,8 +2949,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: "issue_continuation_needed",
       retryOfRunId: runId,
       source: "issue.productive_terminal_continuation_recovery",
-      modelProfile: "cheap",
     });
+    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
   });
 
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {
