@@ -164,6 +164,43 @@ Create the category parents first (status `blocked`, `blockedByIssueIds` = their
 
 Backlog GH issues (`feat`/`design`) are **not** sub-issued here — leave them for the PM dispatch routine to ingest on its next cycle.
 
+### Labels and project assignment (required on every issue)
+
+Every Paperclip issue created during onboarding **must** have:
+
+1. **`projectId`** set — Operations project for setup/onboarding tasks; the target project for product issues
+2. **A label** derived from the issue type:
+
+| Issue type | Label |
+|---|---|
+| Setup / environment / provisioning | `setup` |
+| Documentation gap | `docs` |
+| CI / pipeline | `ci` |
+| Bug imported from GitHub | `bug` |
+| PR needing review | `review` |
+| PR needing merge | `merge` |
+| Triage / unclear | `triage` |
+
+Apply labels to the **GitHub issue** too where applicable — if a GH issue is missing a `bug` or `fix` label but is clearly a bug, apply it:
+
+```bash
+gh issue edit <number> --repo <owner>/<repo> --add-label "bug"
+```
+
+### Sweep check before closing Step 3
+
+Before moving on, run a sweep of all issues created so far and verify:
+
+```
+For each created Paperclip issue:
+  - projectId is set? ✓/✗
+  - at least one label? ✓/✗
+  - parentId set (for children)? ✓/✗
+  - assigneeAgentId set? ✓/✗
+```
+
+Fix any gaps inline. Do not proceed to Step 4 with unlabelled or unprojectd issues.
+
 ---
 
 ## Step 4 — Assign a Lead Agent
@@ -225,7 +262,9 @@ Before closing the onboarding issue as done:
 
 - [ ] Paperclip project created with description
 - [ ] Repo discovery completed — inventory document posted
-- [ ] Setup tasks created for all unmet requirements
+- [ ] Setup tasks created for all unmet requirements, structured as sub-issues
+- [ ] **All issues have a label and correct `projectId`** — sweep passed
+- [ ] GitHub issues labelled correctly at source (bug labels applied where missing)
 - [ ] Lead agent assigned
 - [ ] Kickoff issue created
 - [ ] GitHub repo linked in PM dispatch
