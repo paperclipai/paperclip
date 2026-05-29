@@ -75,7 +75,7 @@ docker run -d --name paperclip \
   -e PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
   -e PAPERCLIP_INSTANCE_ID=default \
   -e PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
-  -e PAPERCLIP_AUTH_SECRET="$(openssl rand -hex 32)" \
+  -e BETTER_AUTH_SECRET="$(openssl rand -hex 32)" \
   -v "$(pwd)/data/docker-paperclip:/paperclip" \
   ghcr.io/starlein/paperclip:v2026.403.1-stable
 ```
