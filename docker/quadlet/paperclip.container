@@ -16,8 +16,12 @@ Environment=PAPERCLIP_PUBLIC_URL=http://localhost:3100
 EnvironmentFile=%h/.config/containers/systemd/paperclip.env
 
 [Service]
-Restart=on-failure
+# Restart=always covers both clean exits (RuntimeMaxSec rolling restart, heap-drain exit 0) and crash exits.
+Restart=always
+RestartSec=5
 TimeoutStartSec=120
+# Rolling restart: cap continuous uptime at 6 hours to prevent long-lived OOM accumulation.
+RuntimeMaxSec=21600
 
 [Install]
 WantedBy=default.target
