@@ -750,6 +750,18 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         if (!existingState?.returnAssignee) {
           throw unprocessable("This execution stage has no return assignee");
         }
+        // If the caller explicitly specified an assignee that differs from returnAssignee,
+        // reject clearly instead of silently overriding it with changes_requested routing.
+        if (
+          requestedAssigneePatchProvided &&
+          explicitAssignee !== null &&
+          !principalsEqual(explicitAssignee, existingState.returnAssignee)
+        ) {
+          throw unprocessable(
+            "Workflow-controlled assignment cannot be overridden via explicit assignee on a review stage. " +
+              "To request changes, omit the assignee field; the returnAssignee will be used automatically.",
+          );
+        }
         patch.status = "in_progress";
         Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
         patch.executionState = buildChangesRequestedState(existingState, activeStage);
