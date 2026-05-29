@@ -9145,23 +9145,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {
-          await tx.insert(agentWakeupRequests).values({
-            companyId: agent.companyId,
-            agentId,
-            source,
-            triggerDetail,
-            reason: "issue_dependencies_blocked",
-            payload: {
-              ...(payload ?? {}),
-              issueId,
-              unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
-            },
-            status: "skipped",
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
-            finishedAt: new Date(),
-          });
+          // Debounce: skip the DB write entirely if we already recorded a blocked
+          // skip for this agent+issue within the agent's heartbeat interval. This
+          // prevents the recovery service from flooding the wakeup log every 30 s
+          // for agents configured with a longer intervalSec (PAP-48 / GH#6414).
+          const debounceMs = policy.intervalSec > 0 ? policy.intervalSec * 1000 : 30_000;
+          const debounceThreshold = new Date(Date.now() - debounceMs);
+          const recentSkip = await tx
+            .select({ id: agentWakeupRequests.id })
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.agentId, agentId),
+                eq(agentWakeupRequests.status, "skipped"),
+                eq(agentWakeupRequests.reason, "issue_dependencies_blocked"),
+                gt(agentWakeupRequests.finishedAt, debounceThreshold),
+                sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+
+          if (!recentSkip) {
+            await tx.insert(agentWakeupRequests).values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "issue_dependencies_blocked",
+              payload: {
+                ...(payload ?? {}),
+                issueId,
+                unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
+              },
+              status: "skipped",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              finishedAt: new Date(),
+            });
+          }
           return { kind: "skipped" as const };
         }
 
