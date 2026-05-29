@@ -4,6 +4,7 @@ import {
   type ClickUpAwaitingHumanConfigOverrides,
   detectClickUpAwaitingHumanBridgeEvents,
   sendAwaitingHumanNotification,
+  uploadClickUpReviewFile,
 } from "./clickup-awaiting-human-transport.js";
 import type { AwaitingHumanBridgeAdapter, AwaitingHumanBridgePollEvent } from "./awaiting-human-bridge.js";
 import { awaitingHumanBridges, type Db } from "@paperclipai/db";
@@ -11,6 +12,9 @@ import { eq } from "drizzle-orm";
 import { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
 import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
+import { normalizeReviewFile, readAwaitingHumanReviewFileBody } from "./awaiting-human-review-files.js";
+
+const CLICKUP_REVIEW_ATTACHMENT_ENTITY_ID = "86d35fwx8";
 
 async function loadCompanyOverrides(db: Db, companyId: string): Promise<ClickUpAwaitingHumanConfigOverrides> {
   const resolved = await awaitingHumanSettingsService(db).resolveClickUpRuntimeConfig(companyId);
@@ -176,11 +180,32 @@ export function clickupAwaitingHumanBridgeAdapter(db: Db): AwaitingHumanBridgeAd
   return {
     async send(input) {
       const overrides = await loadCompanyOverrides(db, input.companyId);
+      const reviewFile = normalizeReviewFile(input.notification.reviewFile);
+
+      let clickupNotification = input.notification;
+      if (reviewFile && input.storage) {
+        const { body } = await readAwaitingHumanReviewFileBody(db, input.storage, input.companyId, reviewFile);
+        const uploaded = await uploadClickUpReviewFile(
+          overrides,
+          CLICKUP_REVIEW_ATTACHMENT_ENTITY_ID,
+          reviewFile,
+          body,
+        );
+        clickupNotification = {
+          ...input.notification,
+          reviewFile: {
+            ...reviewFile,
+            clickupAttachmentId: uploaded.attachmentId,
+            clickupAttachmentUrl: uploaded.attachmentUrl ?? null,
+          },
+        };
+      }
+
       const result = await sendAwaitingHumanNotification({
         companyId: input.companyId,
         issueId: input.issueId,
         handoffKind: input.handoffKind,
-        notification: input.notification,
+        notification: clickupNotification,
       }, overrides);
       if (result.status !== "sent") {
         throw new Error(result.detail);

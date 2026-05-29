@@ -20,6 +20,7 @@ export interface AwaitingHumanNotificationReviewFile {
   deliverableUrl: string;
   clickupTaskUrl?: string | null;
   clickupAttachmentId?: string | null;
+  clickupAttachmentUrl?: string | null;
   attachmentId?: string | null;
   objectKey?: string | null;
   sha256?: string | null;
@@ -40,7 +41,10 @@ export interface AwaitingHumanNotificationPayload {
 export interface SendAwaitingHumanNotificationInput {
   companyId: string;
   issueId: string;
-  handoffKind: "request_confirmation" | "ask_user_questions" | "human_owned_blocker";
+  handoffKind:
+    | "request_confirmation"
+    | "ask_user_questions"
+    | "human_owned_blocker";
   notification: AwaitingHumanNotificationPayload;
 }
 
@@ -63,7 +67,6 @@ type ClickUpChatConfig = {
   personalToken: string;
   workspaceId: string;
   channelId: string;
-  reviewListId: string;
 };
 
 export type ClickUpAwaitingHumanConfigOverrides = {
@@ -76,14 +79,9 @@ type ClickUpApiStatus = "sent" | "skipped" | "failed";
 
 export interface ClickUpChatMessageReply {
   id: string | null;
-  messageId: string | null;
+  parentMessageId: string | null;
   reactionsUrl: string | null;
   content: string | null;
-}
-
-export interface ClickUpChatMessageReaction {
-  name: string;
-  count: number;
 }
 
 export interface ClickUpAwaitingHumanBridgeEvent {
@@ -114,24 +112,36 @@ function formatBodySection(body: string | null | undefined) {
   const lines = body
     .split("\n")
     .map((line) => line.trimEnd())
-    .filter((line, index, all) => line.length > 0 || (index > 0 && all[index - 1]?.length > 0));
+    .filter(
+      (line, index, all) =>
+        line.length > 0 || (index > 0 && all[index - 1]?.length > 0),
+    );
   if (lines.length === 0) return null;
-  const limited = lines.slice(0, MAX_DETAIL_BULLETS * 6).map((line) => truncateText(line, MAX_BULLET_LENGTH));
+  const limited = lines
+    .slice(0, MAX_DETAIL_BULLETS * 6)
+    .map((line) => truncateText(line, MAX_BULLET_LENGTH));
   return trimTotal(limited.join("\n"), 1_000);
 }
 
 function readString(value: unknown) {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
 }
 
 async function readCompanyClickUpOverrides(
   db: Db,
   companyId: string,
-): Promise<ClickUpAwaitingHumanConfigOverrides & {
-  bridgeEnabled: boolean;
-  provider: string | null;
-}> {
-  const resolved = await awaitingHumanSettingsService(db).resolveClickUpRuntimeConfig(companyId);
+): Promise<
+  ClickUpAwaitingHumanConfigOverrides & {
+    bridgeEnabled: boolean;
+    provider: string | null;
+  }
+> {
+  const resolved =
+    await awaitingHumanSettingsService(db).resolveClickUpRuntimeConfig(
+      companyId,
+    );
   return {
     bridgeEnabled: resolved.enabled,
     provider: resolved.provider,
@@ -141,59 +151,35 @@ async function readCompanyClickUpOverrides(
   };
 }
 
-function readClickUpChatConfig(overrides?: ClickUpAwaitingHumanConfigOverrides): ClickUpChatConfig {
-  const personalToken = overrides?.personalToken?.trim()
-    || process.env.CLICKUP_PERSONAL_TOKEN?.trim()
-    || "";
-  const workspaceId = overrides?.workspaceId?.trim()
-    || process.env.CLICKUP_WORKSPACE_ID?.trim()
-    || "";
+function readClickUpChatConfig(
+  overrides?: ClickUpAwaitingHumanConfigOverrides,
+): ClickUpChatConfig {
+  const personalToken =
+    overrides?.personalToken?.trim() ||
+    process.env.CLICKUP_PERSONAL_TOKEN?.trim() ||
+    "";
+  const workspaceId =
+    overrides?.workspaceId?.trim() ||
+    process.env.CLICKUP_WORKSPACE_ID?.trim() ||
+    "";
   const overrideChannelId = overrides?.channelId?.trim() ?? "";
-  const channelId = overrideChannelId
-    || process.env.CLICKUP_AWAITING_HUMAN_CHANNEL_ID?.trim()
-    || process.env.CLICKUP_ENGINEERING_CHANNEL_ID?.trim()
-    || "";
+  const channelId =
+    overrideChannelId ||
+    process.env.CLICKUP_AWAITING_HUMAN_CHANNEL_ID?.trim() ||
+    process.env.CLICKUP_ENGINEERING_CHANNEL_ID?.trim() ||
+    "";
   return {
     personalToken,
     workspaceId,
     channelId,
-    reviewListId: process.env.CLICKUP_AWAITING_HUMAN_REVIEW_LIST_ID?.trim() ?? "",
   };
 }
 
-function normalizeReactionName(value: unknown) {
-  const raw = readString(value);
-  if (!raw) return null;
-  return raw.toLowerCase().replaceAll(" ", "_");
-}
-
-function extractReplyText(row: Record<string, unknown>, postData: Record<string, unknown> | null) {
-  const direct = readString(row.content)
-    ?? readString(row.message)
-    ?? readString(row.text)
-    ?? readString(row.body);
-  if (direct) return direct;
-
-  if (!postData) return null;
-
-  const nestedContent = postData.content;
-  if (typeof nestedContent === "string") {
-    return readString(nestedContent);
-  }
-  if (nestedContent && typeof nestedContent === "object" && !Array.isArray(nestedContent)) {
-    const nested = nestedContent as Record<string, unknown>;
-    return readString(nested.text)
-      ?? readString(nested.content)
-      ?? readString(nested.markdown)
-      ?? readString(nested.plaintext);
-  }
-
-  return readString(postData.message)
-    ?? readString(postData.text)
-    ?? readString(postData.body);
-}
-
-async function fetchText(url: string, init: RequestInit, timeoutSec = DEFAULT_CLICKUP_TIMEOUT_SEC) {
+async function fetchText(
+  url: string,
+  init: RequestInit,
+  timeoutSec = DEFAULT_CLICKUP_TIMEOUT_SEC,
+) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutSec * 1000);
   try {
@@ -209,7 +195,9 @@ async function fetchClickUpJson(
   config: ClickUpChatConfig,
   path: string,
   timeoutSec = DEFAULT_CLICKUP_TIMEOUT_SEC,
-): Promise<{ status: "ok"; payload: unknown } | { status: "failed"; detail: string }> {
+): Promise<
+  { status: "ok"; payload: unknown } | { status: "failed"; detail: string }
+> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutSec * 1000);
   try {
@@ -245,72 +233,30 @@ async function fetchClickUpJson(
   }
 }
 
-function extractReplyRows(payload: unknown): ClickUpChatMessageReply[] {
-  const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
-  const rows = Array.isArray(record?.data)
-    ? record.data
-    : Array.isArray(record?.replies)
-      ? record.replies
-      : Array.isArray(payload)
-        ? payload
-        : [];
+type ClickUpReplyMessageLinksResponse = {
+  reactions: string;
+  tagged_users: string;
+};
 
-  return rows.map((entry) => {
-    const row = entry && typeof entry === "object" ? entry as Record<string, unknown> : {};
-    const postData = row.post_data && typeof row.post_data === "object"
-      ? row.post_data as Record<string, unknown>
-      : row.postData && typeof row.postData === "object"
-        ? row.postData as Record<string, unknown>
-        : null;
-    const links = row.links && typeof row.links === "object" ? row.links as Record<string, unknown> : null;
-    return {
-      id: readString(row.id),
-      messageId:
-        readString(row.message_id)
-        ?? readString(row.messageId)
-        ?? (postData ? readString(postData.message_id) : null)
-        ?? (postData ? readString(postData.messageId) : null),
-      reactionsUrl: links ? readString(links.reactions) : null,
-      content: extractReplyText(row, postData),
-    };
-  });
-}
+type ClickUpReplyMessageResponse = {
+  id: string;
+  parent_message: string;
+  content: string;
+  links: ClickUpReplyMessageLinksResponse;
+};
 
-function extractReactionRows(payload: unknown): ClickUpChatMessageReaction[] {
-  const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
-  const rows = Array.isArray(record?.data)
-    ? record.data
-    : Array.isArray(record?.reactions)
-      ? record.reactions
-      : Array.isArray(payload)
-        ? payload
-        : [];
+type ClickUpGetChatMessageRepliesResponse = {
+  data: ClickUpReplyMessageResponse[];
+  next_cursor: string;
+};
 
-  const flattened: ClickUpChatMessageReaction[] = [];
-  for (const entry of rows) {
-    const row = entry && typeof entry === "object" ? entry as Record<string, unknown> : {};
-    const directName = normalizeReactionName(row.name ?? row.reaction ?? row.emoji ?? row.emoji_name);
-    if (directName) {
-      const count = typeof row.count === "number"
-        ? row.count
-        : typeof row.total === "number"
-          ? row.total
-          : Array.isArray(row.users)
-            ? row.users.length
-            : 1;
-      flattened.push({ name: directName, count: Math.max(0, count) });
-      continue;
-    }
-    const emoji = row.emoji && typeof row.emoji === "object" ? row.emoji as Record<string, unknown> : null;
-    const nestedName = normalizeReactionName(emoji?.name ?? emoji?.shortcode ?? emoji?.alias);
-    if (nestedName) {
-      flattened.push({
-        name: nestedName,
-        count: Array.isArray(row.users) ? row.users.length : 1,
-      });
-    }
-  }
-  return flattened;
+function extractReplyRows(payload: ClickUpGetChatMessageRepliesResponse): ClickUpChatMessageReply[] {
+  return payload.data.map((row) => ({
+    id: row.id,
+    parentMessageId: row.parent_message,
+    reactionsUrl: row.links.reactions,
+    content: row.content,
+  }));
 }
 
 function renderClickUpMessage(notification: AwaitingHumanNotificationPayload) {
@@ -330,8 +276,15 @@ function renderClickUpMessage(notification: AwaitingHumanNotificationPayload) {
     lines.push("");
     lines.push(`Review file: ${notification.reviewFile.filename}`);
     lines.push(`Bizbox deliverable: ${notification.reviewFile.deliverableUrl}`);
+    if (notification.reviewFile.clickupAttachmentUrl) {
+      lines.push(
+        `ClickUp attachment: ${notification.reviewFile.clickupAttachmentUrl}`,
+      );
+    }
     if (notification.reviewFile.clickupTaskUrl) {
-      lines.push(`ClickUp review task: ${notification.reviewFile.clickupTaskUrl}`);
+      lines.push(
+        `ClickUp review task: ${notification.reviewFile.clickupTaskUrl}`,
+      );
       if (notification.reviewFile.clickupAttachmentId) {
         lines.push("Review file attached on the ClickUp task.");
       }
@@ -346,15 +299,13 @@ function renderClickUpMessage(notification: AwaitingHumanNotificationPayload) {
   return trimTotal(lines.join("\n"), CLICKUP_CHAT_MESSAGE_MAX_CHARS);
 }
 
-function renderClickUpTransportTestMessage(notification: ClickUpTransportTestNotification) {
+function renderClickUpTransportTestMessage(
+  notification: ClickUpTransportTestNotification,
+) {
   const title = truncateText(notification.title, MAX_TITLE_LENGTH);
   const summary = truncateText(notification.summary, MAX_SUMMARY_LENGTH);
   const bodySection = formatBodySection(notification.body);
-  const lines = [
-    `**${title}**`,
-    "",
-    summary,
-  ];
+  const lines = [`**${title}**`, "", summary];
 
   if (bodySection) {
     lines.push("");
@@ -377,10 +328,18 @@ async function postClickUpChatMessage(
 ): Promise<AwaitingHumanNotificationResult> {
   const config = readClickUpChatConfig(overrides);
   if (!config.personalToken) {
-    return { status: "skipped", channel: "clickup-chat", detail: "missing-credential: CLICKUP_PERSONAL_TOKEN" };
+    return {
+      status: "skipped",
+      channel: "clickup-chat",
+      detail: "missing-credential: CLICKUP_PERSONAL_TOKEN",
+    };
   }
   if (!config.workspaceId) {
-    return { status: "skipped", channel: "clickup-chat", detail: "missing-target: CLICKUP_WORKSPACE_ID" };
+    return {
+      status: "skipped",
+      channel: "clickup-chat",
+      detail: "missing-target: CLICKUP_WORKSPACE_ID",
+    };
   }
 
   try {
@@ -389,7 +348,8 @@ async function postClickUpChatMessage(
       return {
         status: "skipped",
         channel: "clickup-chat",
-        detail: "missing-target: CLICKUP_AWAITING_HUMAN_CHANNEL_ID (or CLICKUP_ENGINEERING_CHANNEL_ID)",
+        detail:
+          "missing-target: CLICKUP_AWAITING_HUMAN_CHANNEL_ID (or CLICKUP_ENGINEERING_CHANNEL_ID)",
       };
     }
 
@@ -417,14 +377,9 @@ async function postClickUpChatMessage(
       };
     }
 
-    const payload = response.text.trim().length > 0
-      ? JSON.parse(response.text) as { id?: unknown; data?: { id?: unknown } }
-      : {};
-    const externalId = typeof payload.data?.id === "string"
-      ? payload.data.id
-      : typeof payload.id === "string"
-        ? payload.id
-        : null;
+    const externalId = response.text.trim().length > 0
+      ? parseClickUpCreateChatMessageResponse(response.text).messageId
+      : null;
 
     return {
       status: "sent",
@@ -445,74 +400,71 @@ export async function sendAwaitingHumanNotification(
   input: SendAwaitingHumanNotificationInput,
   overrides?: ClickUpAwaitingHumanConfigOverrides,
 ): Promise<AwaitingHumanNotificationResult> {
-  return postClickUpChatMessage(renderClickUpMessage(input.notification), overrides);
+  return postClickUpChatMessage(
+    renderClickUpMessage(input.notification),
+    overrides,
+  );
 }
 
 export async function sendClickUpTransportTestMessage(
   notification: ClickUpTransportTestNotification,
   overrides?: ClickUpAwaitingHumanConfigOverrides,
 ): Promise<AwaitingHumanNotificationResult> {
-  return postClickUpChatMessage(renderClickUpTransportTestMessage(notification), overrides);
+  return postClickUpChatMessage(
+    renderClickUpTransportTestMessage(notification),
+    overrides,
+  );
 }
 
-function parseClickUpTaskResponse(rawText: string): { taskId: string; taskUrl: string | null } {
-  const payload = JSON.parse(rawText) as Record<string, unknown>;
-  const taskId = readString(payload.id);
-  if (!taskId) throw new Error("clickup review task response missing id");
+type ClickUpCreateChatMessageResponse = {
+  id: string;
+};
+
+type ClickUpAttachmentResponse = {
+  id: string;
+  url: string;
+  parent_entity_type: string;
+  parent_id: string;
+  title: string;
+  mime_type: string;
+};
+
+type ClickUpApiErrorResponse = {
+  status: number;
+  message: string;
+  trace_id: number | null;
+  timestamp: number;
+};
+
+function parseClickUpCreateChatMessageResponse(rawText: string) {
+  const payload = JSON.parse(rawText) as ClickUpCreateChatMessageResponse;
   return {
-    taskId,
-    taskUrl: readString(payload.url),
+    messageId: payload.id,
   };
 }
 
-function findFirstAttachmentLike(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object") return null;
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const found = findFirstAttachmentLike(item);
-      if (found) return found;
-    }
-    return null;
-  }
-  const row = value as Record<string, unknown>;
-  if (readString(row.id) || readString(row.url)) return row;
-  for (const child of Object.values(row)) {
-    const found = findFirstAttachmentLike(child);
-    if (found) return found;
-  }
-  return null;
+function parseClickUpAttachmentResponse(rawText: string) {
+  const payload = JSON.parse(rawText) as ClickUpAttachmentResponse;
+  return {
+    attachmentId: payload.id,
+    attachmentUrl: payload.url,
+    parentEntityType: payload.parent_entity_type,
+    parentId: payload.parent_id,
+  };
 }
 
-export async function createClickUpReviewTask(config: ClickUpAwaitingHumanConfigOverrides, notification: AwaitingHumanNotificationPayload) {
-  const resolved = readClickUpChatConfig(config);
-  if (!resolved.reviewListId) {
-    throw new Error("missing-target: CLICKUP_AWAITING_HUMAN_REVIEW_LIST_ID");
+function parseClickUpApiErrorMessage(rawText: string) {
+  try {
+    const payload = JSON.parse(rawText) as ClickUpApiErrorResponse;
+    return readString(payload.message);
+  } catch {
+    return readString(rawText);
   }
-  const body = renderClickUpMessage(notification);
-  const response = await fetchText(
-    `https://api.clickup.com/api/v2/list/${encodeURIComponent(resolved.reviewListId)}/task`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: resolved.personalToken,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        name: truncateText(notification.title, 120),
-        description: body,
-        notify_all: false,
-      }),
-    },
-  );
-  if (!response.ok) {
-    throw new Error(`clickup review task create failed:${response.status}:${truncateText(response.text, 240)}`);
-  }
-  return parseClickUpTaskResponse(response.text);
 }
 
 export async function uploadClickUpReviewFile(
   config: ClickUpAwaitingHumanConfigOverrides,
-  taskId: string,
+  entityId: string,
   reviewFile: AwaitingHumanNotificationReviewFile,
   body: Buffer,
 ) {
@@ -525,27 +477,28 @@ export async function uploadClickUpReviewFile(
   );
   form.append("filename", reviewFile.filename);
   const response = await fetchText(
-    `https://api.clickup.com/api/v3/workspaces/${encodeURIComponent(resolved.workspaceId)}/attachments/${encodeURIComponent(taskId)}/attachments`,
+    `https://api.clickup.com/api/v3/workspaces/${encodeURIComponent(resolved.workspaceId)}/attachments/${encodeURIComponent(entityId)}/attachments`,
     {
       method: "POST",
       headers: {
+        Accept: "application/json",
         Authorization: resolved.personalToken,
       },
       body: form,
     },
   );
   if (!response.ok) {
-    throw new Error(`clickup review file upload failed:${response.status}:${truncateText(response.text, 240)}`);
+    throw new Error(
+      `clickup review file upload failed:${response.status}:${truncateText(response.text, 240)}`,
+    );
   }
-  const payload = response.text.trim().length > 0 ? JSON.parse(response.text) : {};
-  const attachment = findFirstAttachmentLike(payload);
-  const attachmentId = readString(attachment?.id);
-  if (!attachmentId) {
-    throw new Error(`clickup review file upload response missing attachment id:${truncateText(response.text, 240)}`);
+  if (response.text.trim().length === 0) {
+    throw new Error("clickup review file upload response missing body");
   }
+  const attachment = parseClickUpAttachmentResponse(response.text);
   return {
-    attachmentId,
-    attachmentUrl: readString(attachment?.url) ?? readString(attachment?.url_w_query),
+    attachmentId: attachment.attachmentId,
+    attachmentUrl: attachment.attachmentUrl,
   };
 }
 
@@ -584,46 +537,7 @@ export async function getClickUpChatMessageReplies(
   return {
     status: "sent",
     detail: "ok",
-    replies: extractReplyRows(response.payload),
-  };
-}
-
-export async function getClickUpChatMessageReactions(
-  messageId: string,
-  overrides?: ClickUpAwaitingHumanConfigOverrides,
-): Promise<{
-  status: ClickUpApiStatus;
-  detail: string;
-  reactions: ClickUpChatMessageReaction[];
-}> {
-  const config = readClickUpChatConfig(overrides);
-  if (!config.personalToken) {
-    return {
-      status: "skipped",
-      detail: "missing-credential: CLICKUP_PERSONAL_TOKEN",
-      reactions: [],
-    };
-  }
-  if (!config.workspaceId) {
-    return {
-      status: "skipped",
-      detail: "missing-target: CLICKUP_WORKSPACE_ID",
-      reactions: [],
-    };
-  }
-
-  const response = await fetchClickUpJson(
-    config,
-    `/chat/messages/${encodeURIComponent(messageId)}/reactions`,
-  );
-  if (response.status === "failed") {
-    return { status: "failed", detail: response.detail, reactions: [] };
-  }
-
-  return {
-    status: "sent",
-    detail: "ok",
-    reactions: extractReactionRows(response.payload),
+    replies: extractReplyRows(response.payload as ClickUpGetChatMessageRepliesResponse),
   };
 }
 
@@ -697,7 +611,8 @@ async function postClickUpChatMessageReaction(
     };
   }
 
-  if (response.status === 400 && /already exists/i.test(response.text)) {
+  const errorMessage = parseClickUpApiErrorMessage(response.text);
+  if (response.status === 400 && errorMessage && /already exists/i.test(errorMessage)) {
     return {
       status: "sent",
       detail: "already-exists",
@@ -706,41 +621,8 @@ async function postClickUpChatMessageReaction(
 
   return {
     status: "failed",
-    detail: `http-error:${response.status}:${truncateText(response.text, 240)}`,
+    detail: `http-error:${response.status}:${truncateText(errorMessage ?? response.text, 240)}`,
   };
-}
-
-export async function addClickUpChatMessageReactionByUrl(
-  reactionUrl: string,
-  reaction: string,
-  overrides?: ClickUpAwaitingHumanConfigOverrides,
-): Promise<{
-  status: ClickUpApiStatus;
-  detail: string;
-}> {
-  const config = readClickUpChatConfig(overrides);
-  if (!config.personalToken) {
-    return {
-      status: "skipped",
-      detail: "missing-credential: CLICKUP_PERSONAL_TOKEN",
-    };
-  }
-  const reactionName = reaction.trim();
-  if (!reactionName) {
-    return {
-      status: "skipped",
-      detail: "missing-target: reaction",
-    };
-  }
-
-  try {
-    return await postClickUpChatMessageReaction(reactionUrl, reactionName, config.personalToken);
-  } catch (error) {
-    return {
-      status: "failed",
-      detail: error instanceof Error ? error.message : String(error),
-    };
-  }
 }
 
 export async function deleteClickUpChatMessageReaction(
@@ -785,6 +667,7 @@ export async function deleteClickUpChatMessageReaction(
       },
     );
 
+    const errorMessage = parseClickUpApiErrorMessage(response.text);
     if (response.ok || response.status === 404) {
       return {
         status: "sent",
@@ -794,7 +677,7 @@ export async function deleteClickUpChatMessageReaction(
 
     return {
       status: "failed",
-      detail: `http-error:${response.status}:${truncateText(response.text, 240)}`,
+      detail: `http-error:${response.status}:${truncateText(errorMessage ?? response.text, 240)}`,
     };
   } catch (error) {
     return {
@@ -807,18 +690,37 @@ export async function deleteClickUpChatMessageReaction(
 export async function detectClickUpAwaitingHumanBridgeEvents(
   messageId: string,
   overrides?: ClickUpAwaitingHumanConfigOverrides,
-): Promise<{ status: ClickUpApiStatus; detail: string; events: ClickUpAwaitingHumanBridgeEvent[] }> {
+): Promise<{
+  status: ClickUpApiStatus;
+  detail: string;
+  events: ClickUpAwaitingHumanBridgeEvent[];
+}> {
   const config = readClickUpChatConfig(overrides);
   if (!config.personalToken) {
-    return { status: "skipped", detail: "missing-credential: CLICKUP_PERSONAL_TOKEN", events: [] };
+    return {
+      status: "skipped",
+      detail: "missing-credential: CLICKUP_PERSONAL_TOKEN",
+      events: [],
+    };
   }
   if (!config.workspaceId) {
-    return { status: "skipped", detail: "missing-target: CLICKUP_WORKSPACE_ID", events: [] };
+    return {
+      status: "skipped",
+      detail: "missing-target: CLICKUP_WORKSPACE_ID",
+      events: [],
+    };
   }
 
-  const repliesResult = await getClickUpChatMessageReplies(messageId, overrides);
+  const repliesResult = await getClickUpChatMessageReplies(
+    messageId,
+    overrides,
+  );
   if (repliesResult.status === "failed" || repliesResult.status === "skipped") {
-    return { status: repliesResult.status, detail: repliesResult.detail, events: [] };
+    return {
+      status: repliesResult.status,
+      detail: repliesResult.detail,
+      events: [],
+    };
   }
 
   const events: ClickUpAwaitingHumanBridgeEvent[] = [];
@@ -826,7 +728,10 @@ export async function detectClickUpAwaitingHumanBridgeEvents(
     const replyId = readString(reply.id);
     const replyBody = readString(reply.content);
     if (!replyId) {
-      logger.warn({ messageId, reply }, "Skipping ClickUp reply without stable reply.id");
+      logger.warn(
+        { messageId, reply },
+        "Skipping ClickUp reply without stable reply.id",
+      );
       continue;
     }
     if (!replyBody) continue;
@@ -837,7 +742,6 @@ export async function detectClickUpAwaitingHumanBridgeEvents(
       body: replyBody,
       metadata: {
         clickupReplyId: replyId,
-        ...(reply.reactionsUrl ? { clickupReplyReactionsUrl: reply.reactionsUrl } : {}),
       },
     });
   }
@@ -849,7 +753,4 @@ export async function detectClickUpAwaitingHumanBridgeEvents(
   return { status: "sent", detail: "no-replies", events: [] };
 }
 
-export {
-  readCompanyClickUpOverrides,
-  readClickUpChatConfig,
-};
+export { readCompanyClickUpOverrides, readClickUpChatConfig };

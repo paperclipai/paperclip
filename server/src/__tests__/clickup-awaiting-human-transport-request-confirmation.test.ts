@@ -19,8 +19,8 @@ describe("clickup awaiting human transport handoff messages", () => {
 
     const fetchMock = vi.fn().mockResolvedValueOnce({
       ok: true,
-      status: 200,
-      text: async () => JSON.stringify({ data: { id: "message-42" } }),
+      status: 201,
+      text: async () => JSON.stringify({ id: "message-42" }),
     });
     globalThis.fetch = fetchMock as typeof fetch;
 
@@ -57,6 +57,49 @@ describe("clickup awaiting human transport handoff messages", () => {
     expect(body.content).toContain("Proceed with new dev company project setup?");
     expect(body.content).toContain("If accepted: proceed with setup work.");
     expect(body.content).toContain("Open in Bizbox: https://bizbox.example/issues/CIT-3");
+  });
+
+  it("renders ClickUp attachment url when review file was uploaded", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+    process.env.CLICKUP_AWAITING_HUMAN_CHANNEL_ID = "channel-1";
+
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      text: async () => JSON.stringify({ id: "message-44" }),
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await sendAwaitingHumanNotification({
+      companyId: "company-1",
+      issueId: "issue-1",
+      handoffKind: "request_confirmation",
+      notification: {
+        title: "CIT-8 needs review",
+        summary: "Review uploaded file.",
+        link: "https://bizbox.example/issues/CIT-8",
+        cta: "",
+        labels: ["awaiting_human", "request_confirmation"],
+        reviewFile: {
+          source: "artifact",
+          deliverableId: "deliverable-1",
+          title: "Review image",
+          filename: "review.png",
+          contentType: "image/png",
+          byteSize: 14697,
+          contentPath: "/api/attachments/deliverable-1/content",
+          deliverableUrl: "https://bizbox.example/api/attachments/deliverable-1/content",
+          clickupAttachmentId: "attachment-1",
+          clickupAttachmentUrl: "https://app.clickup.com/attachment/1",
+        },
+      },
+    });
+
+    expect(result.status).toBe("sent");
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.content).toContain("Review file: review.png");
+    expect(body.content).toContain("ClickUp attachment: https://app.clickup.com/attachment/1");
   });
 
   it("renders ask_user_questions with body and bizbox open line", async () => {

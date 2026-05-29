@@ -2,11 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import {
   detectClickUpAwaitingHumanBridgeEvents,
-  getClickUpChatMessageReactions,
   getClickUpChatMessageReplies,
-  resolveAwaitingHumanReviewFile,
   sendAwaitingHumanNotification,
-} from "../services/awaiting-human-notifications.js";
+} from "../services/clickup-awaiting-human-transport.js";
+import { resolveAwaitingHumanReviewFile } from "../services/awaiting-human-review-files.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -37,7 +36,8 @@ describe.skip("sendAwaitingHumanNotification", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ data: { id: "message-42" } }),
+        status: 201,
+        text: async () => JSON.stringify({ id: "message-42" }),
       });
     globalThis.fetch = fetchMock as typeof fetch;
 
@@ -87,7 +87,8 @@ describe.skip("sendAwaitingHumanNotification", () => {
   it("uses explicit ClickUp transport overrides for token, workspace, and channel id", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ data: { id: "message-override" } }),
+      status: 201,
+      text: async () => JSON.stringify({ id: "message-override" }),
     });
     globalThis.fetch = fetchMock as typeof fetch;
 
@@ -127,7 +128,8 @@ describe.skip("sendAwaitingHumanNotification", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ data: { id: "message-42" } }),
+        status: 201,
+        text: async () => JSON.stringify({ id: "message-42" }),
       });
     globalThis.fetch = fetchMock as typeof fetch;
 
@@ -195,7 +197,8 @@ describe.skip("sendAwaitingHumanNotification", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ data: { id: "message-45" } }),
+        status: 201,
+        text: async () => JSON.stringify({ id: "message-45" }),
       });
     globalThis.fetch = fetchMock as typeof fetch;
 
@@ -227,7 +230,8 @@ describe.skip("sendAwaitingHumanNotification", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ data: { id: "message-46" } }),
+        status: 201,
+        text: async () => JSON.stringify({ id: "message-46" }),
       });
     globalThis.fetch = fetchMock as typeof fetch;
 
@@ -283,8 +287,8 @@ describe.skip("sendAwaitingHumanNotification", () => {
       ok: true,
       json: async () => ({
         data: [
-          { id: "reply-1", content: "Ship it" },
-          { id: "reply-2", message: "Approved" },
+          { id: "reply-1", parent_message: "message-42", content: "Ship it" },
+          { id: "reply-2", parent_message: "message-42", content: "Approved" },
         ],
       }),
     });
@@ -296,8 +300,8 @@ describe.skip("sendAwaitingHumanNotification", () => {
       status: "sent",
       detail: "ok",
       replies: [
-        { id: "reply-1", messageId: null, reactionsUrl: null, content: "Ship it" },
-        { id: "reply-2", messageId: null, reactionsUrl: null, content: "Approved" },
+        { id: "reply-1", parentMessageId: "message-42", reactionsUrl: null, content: "Ship it" },
+        { id: "reply-2", parentMessageId: "message-42", reactionsUrl: null, content: "Approved" },
       ],
     });
     expect(fetchMock).toHaveBeenCalledWith(
@@ -308,33 +312,6 @@ describe.skip("sendAwaitingHumanNotification", () => {
         }),
       }),
     );
-  });
-
-  it("retrieves ClickUp message reactions for approval polling", async () => {
-    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
-    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
-
-    const fetchMock = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        data: [
-          { reaction: "thumbsup", count: 2 },
-          { emoji: { name: "eyes" }, users: [{ id: "u1" }] },
-        ],
-      }),
-    });
-    globalThis.fetch = fetchMock as typeof fetch;
-
-    const result = await getClickUpChatMessageReactions("message-42");
-
-    expect(result).toEqual({
-      status: "sent",
-      detail: "ok",
-      reactions: [
-        { name: "thumbsup", count: 2 },
-        { name: "eyes", count: 1 },
-      ],
-    });
   });
 
   it("emits plain reply events for approval-like text (resolution happens in the bridge)", async () => {

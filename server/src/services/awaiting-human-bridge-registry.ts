@@ -1,4 +1,5 @@
 import type { Db } from "@paperclipai/db";
+import type { StorageService } from "../storage/types.js";
 import type { AwaitingHumanNotificationPayload } from "./awaiting-human-notifications.js";
 
 export type AwaitingHumanBridgePollEvent = {
@@ -20,6 +21,7 @@ export type AwaitingHumanBridgeAdapter = {
     agentId: string;
     handoffKind: "request_confirmation" | "ask_user_questions";
     notification: AwaitingHumanNotificationPayload;
+    storage?: StorageService;
     externalThreadId?: string | null;
   }): Promise<{
     externalThreadId: string | null;

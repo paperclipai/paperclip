@@ -24,12 +24,14 @@ import {
 } from "./awaiting-human-handoff.js";
 import type { AwaitingHumanNotificationPayload } from "./awaiting-human-notifications.js";
 import type { AwaitingHumanBridgeAdapter, AwaitingHumanBridgePollEvent } from "./awaiting-human-bridge-registry.js";
+import type { StorageService } from "../storage/types.js";
 export type { AwaitingHumanBridgeAdapter, AwaitingHumanBridgePollEvent };
 
 type AwaitingHumanBridgeDeps = {
   resolveProviderForCompany(companyId: string): Promise<string>;
   resolveAdapter(provider: string): AwaitingHumanBridgeAdapter;
   hasAdapter(provider: string): boolean;
+  storage?: StorageService;
   requestWakeup?: (input: {
     companyId: string;
     agentId: string;
@@ -729,6 +731,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
         agentId: input.agentId,
         handoffKind: input.handoffKind,
         notification: input.notification,
+        storage: deps.storage,
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);

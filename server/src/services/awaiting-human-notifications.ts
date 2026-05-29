@@ -10,6 +10,7 @@ import {
 } from "./awaiting-human-bridge-registry.js";
 import { awaitingHumanBridgeService } from "./awaiting-human-bridge.js";
 import { logger } from "../middleware/logger.js";
+import type { StorageService } from "../storage/types.js";
 
 const MAX_OUTBOX_ATTEMPTS = 8;
 const STALE_OUTBOX_PROCESSING_MS = 5 * 60 * 1000;
@@ -23,6 +24,9 @@ export interface AwaitingHumanNotificationReviewFile {
   byteSize: number;
   contentPath: string;
   deliverableUrl: string;
+  clickupTaskUrl?: string | null;
+  clickupAttachmentId?: string | null;
+  clickupAttachmentUrl?: string | null;
   attachmentId?: string | null;
   objectKey?: string | null;
   sha256?: string | null;
@@ -151,7 +155,7 @@ export async function enqueueAwaitingHumanNotification(
 
 export async function processAwaitingHumanNotificationOutbox(
   db: Db,
-  opts: { limit?: number; storage?: unknown } = {},
+  opts: { limit?: number; storage?: StorageService } = {},
 ) {
   const now = new Date();
   const limit = opts.limit ?? 20;
@@ -161,6 +165,7 @@ export async function processAwaitingHumanNotificationOutbox(
     resolveProviderForCompany: async (companyId) => bridgeSettings.resolveProvider(companyId),
     resolveAdapter: (provider) => resolveAwaitingHumanBridgeAdapter(provider, db),
     hasAdapter: (provider) => hasAwaitingHumanBridgeAdapter(provider),
+    storage: opts.storage,
   });
 
   await db.update(awaitingHumanNotificationOutbox).set({

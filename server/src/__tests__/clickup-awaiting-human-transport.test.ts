@@ -4,6 +4,7 @@ import {
   deleteClickUpChatMessageReaction,
   detectClickUpAwaitingHumanBridgeEvents,
   getClickUpChatMessageReplies,
+  uploadClickUpReviewFile,
 } from "../services/clickup-awaiting-human-transport.js";
 import { logger } from "../middleware/logger.js";
 
@@ -56,7 +57,12 @@ describe("addClickUpChatMessageReaction", () => {
     globalThis.fetch = vi.fn().mockResolvedValueOnce({
       ok: false,
       status: 400,
-      text: async () => "reaction already exists",
+      text: async () => JSON.stringify({
+        status: 400,
+        message: "reaction already exists",
+        trace_id: 123,
+        timestamp: 1671534256138,
+      }),
     }) as typeof fetch;
 
     const result = await addClickUpChatMessageReaction("message-42", "white_check_mark");
@@ -64,6 +70,29 @@ describe("addClickUpChatMessageReaction", () => {
     expect(result).toEqual({
       status: "sent",
       detail: "already-exists",
+    });
+  });
+
+  it("surfaces spec error messages for unsupported reactions", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      text: async () => JSON.stringify({
+        status: 400,
+        message: "reaction party_blob is not supported",
+        trace_id: 123,
+        timestamp: 1671534256138,
+      }),
+    }) as typeof fetch;
+
+    const result = await addClickUpChatMessageReaction("message-42", "party_blob");
+
+    expect(result).toEqual({
+      status: "failed",
+      detail: "http-error:400:reaction party_blob is not supported",
     });
   });
 });
@@ -99,8 +128,85 @@ describe("deleteClickUpChatMessageReaction", () => {
   });
 });
 
+describe("uploadClickUpReviewFile", () => {
+  it("posts multipart review files to task attachments endpoint", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        id: "attachment-1",
+        url: "https://app.clickup.com/attachment/1",
+        parent_entity_type: "tasks",
+        parent_id: "task-42",
+        title: "review.png",
+        mime_type: "image/png",
+      }),
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await uploadClickUpReviewFile(
+      {},
+      "task-42",
+      {
+        source: "artifact",
+        deliverableId: "deliverable-1",
+        title: "Review image",
+        filename: "review.png",
+        contentType: "image/png",
+        byteSize: 9,
+        contentPath: "artifacts/review.png",
+        deliverableUrl: "https://bizbox.example/deliverables/1",
+      },
+      Buffer.from("png-bytes"),
+    );
+
+    expect(result).toEqual({
+      attachmentId: "attachment-1",
+      attachmentUrl: "https://app.clickup.com/attachment/1",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.clickup.com/api/v3/workspaces/workspace-1/attachments/task-42/attachments",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "token-123",
+        }),
+        body: expect.any(FormData),
+      }),
+    );
+  });
+});
+
+describe("deleteClickUpChatMessageReaction", () => {
+  it("surfaces spec error messages for unsupported delete reactions", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      text: async () => JSON.stringify({
+        status: 400,
+        message: "reaction party_blob is not supported",
+        trace_id: 123,
+        timestamp: 1671534256138,
+      }),
+    }) as typeof fetch;
+
+    const result = await deleteClickUpChatMessageReaction("message-42", "party_blob");
+
+    expect(result).toEqual({
+      status: "failed",
+      detail: "http-error:400:reaction party_blob is not supported",
+    });
+  });
+});
+
 describe("getClickUpChatMessageReplies", () => {
-  it("extracts the reply message id from nested post data", async () => {
+  it("extracts reply rows from the spec response shape", async () => {
     process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
     process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
 
@@ -108,15 +214,13 @@ describe("getClickUpChatMessageReplies", () => {
       ok: true,
       status: 200,
       json: async () => ({
-        replies: [
+        data: [
           {
             id: "reply-row-1",
+            parent_message: "message-42",
             content: "approve",
             links: {
-              reactions: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-message-1/reactions",
-            },
-            post_data: {
-              id: "reply-message-1",
+              reactions: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-row-1/reactions",
             },
           },
         ],
@@ -131,8 +235,8 @@ describe("getClickUpChatMessageReplies", () => {
       replies: [
         {
           id: "reply-row-1",
-          messageId: null,
-          reactionsUrl: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-message-1/reactions",
+          parentMessageId: "message-42",
+          reactionsUrl: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-row-1/reactions",
           content: "approve",
         },
       ],
@@ -180,7 +284,7 @@ describe("getClickUpChatMessageReplies", () => {
     }
   });
 
-  it("extracts reply text from nested post_data content", async () => {
+  it("reads reply content from top-level content field", async () => {
     process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
     process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
 
@@ -191,9 +295,10 @@ describe("getClickUpChatMessageReplies", () => {
         data: [
           {
             id: "reply-row-2",
-            post_data: {
-              id: "reply-message-2",
-              content: { text: "Reject" },
+            parent_message: "message-42",
+            content: "Reject",
+            links: {
+              reactions: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-row-2/reactions",
             },
           },
         ],
@@ -217,8 +322,16 @@ describe("detectClickUpAwaitingHumanBridgeEvents", () => {
       status: 200,
       json: async () => ({
         data: [
-          { message_id: "parent-message-1", content: "First reply" },
-          { message_id: "parent-message-1", content: "Second reply" },
+          {
+            parent_message: "message-42",
+            content: "First reply",
+            links: { reactions: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-unknown-1/reactions", tagged_users: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-unknown-1/tagged_users" },
+          },
+          {
+            parent_message: "message-42",
+            content: "Second reply",
+            links: { reactions: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-unknown-2/reactions", tagged_users: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-unknown-2/tagged_users" },
+          },
         ],
       }),
     }) as typeof fetch;
@@ -231,15 +344,17 @@ describe("detectClickUpAwaitingHumanBridgeEvents", () => {
       events: [],
     });
     expect(warnSpy).toHaveBeenCalledTimes(2);
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
+    expect(warnSpy).toHaveBeenNthCalledWith(
+      1,
+      {
         messageId: "message-42",
-        reply: expect.objectContaining({
-          id: null,
-          messageId: "parent-message-1",
+        reply: {
+          id: undefined,
+          parentMessageId: "message-42",
+          reactionsUrl: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-unknown-1/reactions",
           content: "First reply",
-        }),
-      }),
+        },
+      },
       "Skipping ClickUp reply without stable reply.id",
     );
   });
@@ -252,7 +367,15 @@ describe("detectClickUpAwaitingHumanBridgeEvents", () => {
       ok: true,
       status: 200,
       json: async () => ({
-        data: [{ id: "reply-1", content: "Reject" }],
+        data: [{
+          id: "reply-1",
+          parent_message: "message-42",
+          content: "Reject",
+          links: {
+            reactions: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-1/reactions",
+            tagged_users: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-1/tagged_users",
+          },
+        }],
       }),
     }) as typeof fetch;
 
