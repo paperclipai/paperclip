@@ -3613,7 +3613,7 @@ export function issueRoutes(
       });
     }
 
-    void queueIssueAssignmentWakeup({
+    await queueIssueAssignmentWakeup({
       heartbeat,
       issue,
       reason: "issue_assigned",
@@ -3718,7 +3718,7 @@ export function issueRoutes(
           });
         }
 
-        void queueIssueAssignmentWakeup({
+        await queueIssueAssignmentWakeup({
           heartbeat,
           issue,
           reason: "issue_assigned",
@@ -5158,7 +5158,7 @@ export function issueRoutes(
       }
 
       for (const createdIssue of createdIssues) {
-        void queueIssueAssignmentWakeup({
+        await queueIssueAssignmentWakeup({
           heartbeat,
           issue: createdIssue,
           reason: "issue_assigned",
