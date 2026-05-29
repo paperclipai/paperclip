@@ -641,11 +641,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       biller: "google",
       model,
       billingType,
-      costUsd: attempt.parsed.costUsd != null
-        ? attempt.parsed.costUsd
-        : (attempt.parsed.usage.inputTokens > 0 || attempt.parsed.usage.outputTokens > 0)
-          ? (attempt.parsed.usage.inputTokens * 0.00025 + attempt.parsed.usage.outputTokens * 0.0005) / 1000
-          : null,
+      costUsd: attempt.parsed.costUsd,
       resultJson,
       summary: attempt.parsed.summary,
       question: attempt.parsed.question,
@@ -666,7 +662,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Gemini resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
       );
       const retry = await runAttempt(null);
-      const result = toResult(retry, true, true); result.clearSession = true; return result;
+      const retryResult = toResult(retry, true, true);
+      // Always clear after a stale-session fallback. The retry may emit a session
+      // ID that is itself stale (e.g. Gemini CLI surfaces a cached identity after
+      // server migration). Unconditional clear ensures the next heartbeat starts
+      // fresh and captures a stable new session it can actually reuse.
+      retryResult.clearSession = true;
+      retryResult.sessionId = undefined;
+      retryResult.sessionParams = undefined;
+      retryResult.sessionDisplayId = undefined;
+      return retryResult;
     }
 
     return toResult(initial);

@@ -9842,6 +9842,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     },
 
+    resetAllAgentSessions: async (companyId: string) => {
+      const clearedTaskSessions = await db
+        .delete(agentTaskSessions)
+        .where(eq(agentTaskSessions.companyId, companyId))
+        .returning()
+        .then((rows) => rows.length);
+
+      const updatedAgents = await db
+        .update(agentRuntimeState)
+        .set({ sessionId: null, lastError: null, updatedAt: new Date() })
+        .where(eq(agentRuntimeState.companyId, companyId))
+        .returning()
+        .then((rows) => rows.length);
+
+      return { clearedTaskSessions, updatedAgents };
+    },
+
     listEvents: (runId: string, afterSeq = 0, limit = 200) =>
       db
         .select()
