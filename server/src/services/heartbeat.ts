@@ -1404,6 +1404,14 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, _billingTy
   return Math.max(0, Math.round(costUsd * 100));
 }
 
+// Returns the market-rate cost in cents regardless of billing type, or null when
+// costUsd is unavailable. Used to populate shadow_cost_cents so subscription-plan
+// operators retain cost visibility even though cost_cents is always 0 for them.
+function normalizeShadowCostCents(costUsd: number | null | undefined): number | null {
+  if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return null;
+  return Math.max(0, Math.round(costUsd * 100));
+}
+
 async function resolveLedgerScopeForRun(
   db: Db,
   companyId: string,
@@ -6874,6 +6882,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
     const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
+    const shadowCostCents = normalizeShadowCostCents(result.costUsd);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
@@ -6910,6 +6919,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         cachedInputTokens,
         outputTokens,
         costCents: additionalCostCents,
+        shadowCostCents,
         occurredAt: new Date(),
       });
     }
