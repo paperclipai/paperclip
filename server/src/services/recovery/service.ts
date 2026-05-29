@@ -132,6 +132,16 @@ export type RunOutputSilenceSummary = {
   evaluationIssueAssigneeAgentId: string | null;
 };
 
+async function checkNetworkConnectivity(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const { createConnection } = require("net") as typeof import("net");
+    const socket = createConnection({ host: "8.8.8.8", port: 53, timeout: 3000 });
+    socket.once("connect", () => { socket.destroy(); resolve(true); });
+    socket.once("timeout", () => { socket.destroy(); resolve(false); });
+    socket.once("error", () => { socket.destroy(); resolve(false); });
+  });
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -1543,6 +1553,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       skipped: 0,
       evaluationIssueIds: [] as string[],
     };
+
+    if (candidates.length > 0) {
+      const networkOk = await checkNetworkConnectivity();
+      if (!networkOk) {
+        logger.info({ reason: "network_unreachable" }, "deferring recovery — network outage detected");
+        return result;
+      }
+    }
 
     for (const run of candidates) {
       if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
