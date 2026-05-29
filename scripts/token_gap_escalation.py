@@ -64,26 +64,53 @@ class TokenGapEscalationMonitor:
             return []
         return comments if isinstance(comments, list) else comments.get("items", [])
 
-    def _has_github_token_error(self, comments: list) -> bool:
-        """Check if comments indicate GitHub API token gap error."""
-        token_error_patterns = [
+    def _classify_error_source(self, comments: list) -> Optional[str]:
+        """Classify error source: github_credential, governance_expected, or unknown."""
+        # Paperclip governance error patterns (Least Privilege cross-agent blocks)
+        governance_patterns = [
+            r"cross-agent mutation",
+            r"least privilege",
+            r"403.*cross-agent",
+            r"paperclip.*403.*mutation",
+            r"governance.*block",
+            r"cross-origin.*mutation"
+        ]
+
+        # GitHub API credential/token error patterns
+        github_patterns = [
             r"github.*token",
-            r"authentication.*failed",
             r"bad credentials",
             r"invalid token",
             r"token.*expired",
-            r"token.*invalid",
             r"401.*github",
             r"github.*401",
-            r"permission denied.*github"
+            r"github.*403",
+            r"api\.github\.com.*401",
+            r"api\.github\.com.*403",
+            r"authentication.*failed.*github",
+            r"github.*rate.*limit",
+            r"github.*rate.*exceeded"
         ]
 
         for comment in comments:
             body = comment.get("body", "").lower()
-            for pattern in token_error_patterns:
+
+            # Check for governance errors first (these should NOT escalate)
+            for pattern in governance_patterns:
                 if re.search(pattern, body):
-                    return True
-        return False
+                    return "governance_expected"
+
+            # Check for GitHub credential errors (these SHOULD escalate)
+            for pattern in github_patterns:
+                if re.search(pattern, body):
+                    return "github_credential"
+
+        return None
+
+    def _has_github_token_error(self, comments: list) -> bool:
+        """Check if comments indicate a genuine GitHub API credential error (not governance)."""
+        error_source = self._classify_error_source(comments)
+        return error_source == "github_credential"
 
     def _has_existing_escalation(self, issue_id: str, comments: list) -> bool:
         """Check if issue already has an active escalation task (idempotency check)."""
@@ -201,8 +228,8 @@ This escalation task is idempotent - only one such task per blocked issue will b
             return False
 
     def find_and_escalate_token_gaps(self) -> dict:
-        """Find and escalate PR-merge issues blocked by token gaps > 4h."""
-        result = {"scanned": 0, "escalated": 0, "issues": []}
+        """Find and escalate PR-merge issues blocked by GitHub token gaps > 4h."""
+        result = {"scanned": 0, "escalated": 0, "issues": [], "governance_skipped": 0}
 
         # Query for blocked issues
         issues_response = self._api_request(
@@ -235,8 +262,15 @@ This escalation task is idempotent - only one such task per blocked issue will b
             # Fetch comments once per issue
             comments = self._get_issue_comments(issue_id)
 
-            # Check for token gap error in comments
-            if not self._has_github_token_error(comments):
+            # Classify the error source
+            error_source = self._classify_error_source(comments)
+            if error_source == "governance_expected":
+                # Expected governance block (Least Privilege cross-agent mutation)
+                print(f"⊘ Governance block (not escalating) {issue_identifier}")
+                result["governance_skipped"] += 1
+                continue
+            elif error_source != "github_credential":
+                # No recognized error pattern
                 continue
 
             # Check how long it's been blocked
@@ -268,7 +302,8 @@ This escalation task is idempotent - only one such task per blocked issue will b
 
         print(f"\nResults:")
         print(f"  Scanned: {result['scanned']} blocked issues")
-        print(f"  Escalated: {result['escalated']} token-gap issues")
+        print(f"  Governance blocks (not escalated): {result.get('governance_skipped', 0)}")
+        print(f"  Escalated: {result['escalated']} GitHub credential issues")
 
         if result['issues']:
             print(f"\nEscalated issues:")
