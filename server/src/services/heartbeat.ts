@@ -2225,7 +2225,9 @@ async function buildPaperclipWakePayload(input: {
   };
 }
 
-function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
+type HeartbeatRunWakeRow = Pick<typeof heartbeatRuns.$inferSelect, "id" | "status" | "contextSnapshot">;
+
+function runTaskKey(run: HeartbeatRunWakeRow) {
   return deriveTaskKey(run.contextSnapshot as Record<string, unknown> | null, null);
 }
 
@@ -6402,7 +6404,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
   ) {
     const existing = await getAgent(agentId);
-    const latestFailedRun = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "failed"))).orderBy(desc(heartbeatRuns.finishedAt)).limit(1).then(rows => rows[0] || null);
+    const latestFailedRun = await db
+      .select({ error: heartbeatRuns.error, errorCode: heartbeatRuns.errorCode, resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "failed")))
+      .orderBy(desc(heartbeatRuns.finishedAt))
+      .limit(1)
+      .then(rows => rows[0] || null);
     const errorContext = latestFailedRun ? { error: latestFailedRun.error, errorCode: latestFailedRun.errorCode, resultError: (latestFailedRun.resultJson as Record<string, unknown> | null)?.error ?? null } : null;
     if (!existing) return;
 
@@ -9360,7 +9368,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const activeRuns = await db
-      .select()
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES])))
       .orderBy(desc(heartbeatRuns.createdAt));
