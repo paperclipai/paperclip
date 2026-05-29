@@ -1382,6 +1382,38 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  async function hasCrossIssueCommentPermission(
+    actorAgentId: string,
+    companyId: string,
+  ) {
+    const decision = await access.decide({
+      actor: { type: "agent", agentId: actorAgentId, companyId },
+      action: "tasks:cross_issue_comment",
+      resource: { type: "company", companyId },
+    });
+    return decision.allowed;
+  }
+
+  async function assertAgentIssueCommentAllowed(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+  ) {
+    if (req.actor.type !== "agent") return true;
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    // If agent is not the assignee, check for cross-issue comment permission before applying mutation rules
+    if (issue.assigneeAgentId !== null && issue.assigneeAgentId !== actorAgentId) {
+      if (await hasCrossIssueCommentPermission(actorAgentId, issue.companyId)) {
+        return true;
+      }
+    }
+    return assertAgentIssueMutationAllowed(req, res, issue);
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -5525,7 +5557,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertAgentIssueCommentAllowed(req, res, issue))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
