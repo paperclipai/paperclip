@@ -406,6 +406,8 @@ export function IssueProperties({
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
   const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
   const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
+  const [billingCodeInput, setBillingCodeInput] = useState(issue.billingCode ?? "");
+  const [billingCodeEditing, setBillingCodeEditing] = useState(false);
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
   const normalizedBlockedBySearch = blockedBySearch.trim();
 
@@ -2100,7 +2102,47 @@ export function IssueProperties({
             <span className="text-sm">{formatDateTime(issue.completedAt)}</span>
           </PropertyRow>
         )}
-        {issue.billingCode && (<PropertyRow label="Billing Code"><TruncatedCopyable value={issue.billingCode} icon={Tag} /></PropertyRow>)}
+        <PropertyRow label="Billing Code">
+          {billingCodeEditing ? (
+            <input
+              autoFocus
+              type="text"
+              value={billingCodeInput}
+              onChange={(e) => setBillingCodeInput(e.target.value)}
+              onBlur={() => {
+                setBillingCodeEditing(false);
+                const next = billingCodeInput.trim() || null;
+                if (next !== (issue.billingCode ?? null)) onUpdate({ billingCode: next });
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                if (e.key === "Escape") { setBillingCodeInput(issue.billingCode ?? ""); setBillingCodeEditing(false); }
+              }}
+              placeholder="e.g. client-slug"
+              className="text-sm font-mono w-full rounded border border-border bg-transparent px-2 py-0.5 outline-none focus:border-ring placeholder:text-muted-foreground/50"
+              data-testid="issue-billing-code-input"
+            />
+          ) : issue.billingCode ? (
+            <button
+              type="button"
+              className="flex items-center gap-1.5 min-w-0 flex-1 text-left"
+              onClick={() => { setBillingCodeInput(issue.billingCode ?? ""); setBillingCodeEditing(true); }}
+              title="Click to edit billing code"
+              data-testid="issue-billing-code-display"
+            >
+              <TruncatedCopyable value={issue.billingCode} icon={Tag} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="text-xs text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+              onClick={() => { setBillingCodeInput(""); setBillingCodeEditing(true); }}
+              data-testid="issue-billing-code-add"
+            >
+              Add billing code
+            </button>
+          )}
+        </PropertyRow>
         <PropertyRow label="Created">
           <span className="text-sm">{formatDateTime(issue.createdAt)}</span>
         </PropertyRow>
