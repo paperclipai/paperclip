@@ -36,6 +36,15 @@ export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";
 export {
+  codexLimitProbeService,
+  CODEX_LIMIT_PROBE_CRON,
+  CODEX_LIMIT_PROBE_TIMEZONE,
+  resolveProbeProfiles,
+  type CodexLimitProbeService,
+  type ProbeProfileOutcome,
+  type ProbeTickOutcome,
+} from "./codex-limit-probe.js";
+export {
   productivityReviewService,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
 } from "./productivity-review.js";
