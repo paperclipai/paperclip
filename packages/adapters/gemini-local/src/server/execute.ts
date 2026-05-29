@@ -178,8 +178,6 @@ const GEMINI_SHARED_SYMLINK_FILES = [
   "projects.json",
 ] as const;
 
-const DEFAULT_MCP_REGISTRY_ROOT = "/Users/cassio/mcp-server/_paperclip";
-
 /**
  * Result of preparing a per-agent ephemeral Gemini HOME. The CLI is invoked
  * with `HOME=ephemeralHomeDir` so it reads `<ephemeralHomeDir>/.gemini/...`
@@ -197,15 +195,6 @@ type PreparedGeminiHome = {
   notes: string[];
   cleanup: () => Promise<void>;
 };
-
-function resolveMcpRegistryRoot(env: Record<string, string>): string {
-  return env.PAPERCLIP_MCP_REGISTRY_ROOT?.trim() || DEFAULT_MCP_REGISTRY_ROOT;
-}
-
-function resolveRunMcpScript(env: Record<string, string>): string | undefined {
-  const fromEnv = env.PAPERCLIP_MCP_RUN_SCRIPT?.trim();
-  return fromEnv && fromEnv.length > 0 ? fromEnv : undefined;
-}
 
 /**
  * Builds an ephemeral HOME for the gemini CLI when `MCP_LIST` is set,
@@ -237,13 +226,15 @@ export async function prepareEphemeralGeminiHome(input: {
     loadMcpRegistry,
     renderGeminiMcpSettings,
     resolveMcpAllowlist,
+    resolveMcpRegistryRootFromEnv,
+    resolveRunMcpScriptFromEnv,
   } = await import("@paperclipai/adapter-utils/mcp-allowlist");
 
-  const registry = await loadMcpRegistry(resolveMcpRegistryRoot(input.env));
+  const registry = await loadMcpRegistry(resolveMcpRegistryRootFromEnv(input.env));
   const result = resolveMcpAllowlist({
     rawAllowlist: raw,
     registry,
-    runMcpScript: resolveRunMcpScript(input.env),
+    runMcpScript: resolveRunMcpScriptFromEnv(input.env),
   });
   if (result.errors.length > 0) {
     const messages = result.errors.map((e) => `[${e.kind}] ${e.message}`).join("; ");

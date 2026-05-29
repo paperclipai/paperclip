@@ -7,6 +7,8 @@ import {
   type McpRegistry,
   renderOpencodeMcp,
   resolveMcpAllowlist,
+  resolveMcpRegistryRootFromEnv,
+  resolveRunMcpScriptFromEnv,
 } from "@paperclipai/adapter-utils/mcp-allowlist";
 
 type PreparedOpenCodeRuntimeConfig = {
@@ -14,8 +16,6 @@ type PreparedOpenCodeRuntimeConfig = {
   notes: string[];
   cleanup: () => Promise<void>;
 };
-
-const DEFAULT_MCP_REGISTRY_ROOT = "/Users/cassio/mcp-server/_paperclip";
 
 function resolveXdgConfigHome(env: Record<string, string>): string {
   return (
@@ -37,19 +37,6 @@ async function readJsonObject(filepath: string): Promise<Record<string, unknown>
   } catch {
     return {};
   }
-}
-
-function resolveMcpRegistryRoot(env: Record<string, string>): string {
-  const fromEnv = env.PAPERCLIP_MCP_REGISTRY_ROOT?.trim()
-    || process.env.PAPERCLIP_MCP_REGISTRY_ROOT?.trim();
-  if (fromEnv && fromEnv.length > 0) return fromEnv;
-  return DEFAULT_MCP_REGISTRY_ROOT;
-}
-
-function resolveRunMcpScript(env: Record<string, string>): string | undefined {
-  const fromEnv = env.PAPERCLIP_MCP_RUN_SCRIPT?.trim()
-    || process.env.PAPERCLIP_MCP_RUN_SCRIPT?.trim();
-  return fromEnv && fromEnv.length > 0 ? fromEnv : undefined;
 }
 
 /**
@@ -74,11 +61,11 @@ async function applyMcpListToOpencodeConfig(input: {
   if (typeof raw !== "string" || raw.trim().length === 0) {
     return null;
   }
-  const registry = input.registry ?? (await loadMcpRegistry(resolveMcpRegistryRoot(input.env)));
+  const registry = input.registry ?? (await loadMcpRegistry(resolveMcpRegistryRootFromEnv(input.env)));
   const result = resolveMcpAllowlist({
     rawAllowlist: raw,
     registry,
-    runMcpScript: resolveRunMcpScript(input.env),
+    runMcpScript: resolveRunMcpScriptFromEnv(input.env),
   });
   if (result.errors.length > 0) {
     const messages = result.errors.map((e) => `[${e.kind}] ${e.message}`).join("; ");

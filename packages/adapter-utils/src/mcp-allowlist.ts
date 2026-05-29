@@ -23,7 +23,44 @@ const ALLOWED_STATUSES = new Set([
   "validated-local-contract-no-live-call",
 ]);
 
-const RUN_MCP_BIN_DEFAULT = "/Users/cassio/mcp-server/_paperclip/bin/run-mcp.sh";
+/**
+ * Canonical sidecar root + wrapper script paths under the host bind-mount.
+ *
+ * These exist for ksio.dev's local deployment; any deployment that does
+ * not mount `/Users/cassio/mcp-server/_paperclip` must override at least
+ * `PAPERCLIP_MCP_REGISTRY_ROOT` (and usually `PAPERCLIP_MCP_RUN_SCRIPT`).
+ *
+ * `loadMcpRegistry` will refuse to silently produce `unknown_id` errors
+ * when the resolved root does not exist; callers that want to disable
+ * MCP entirely should leave `MCP_LIST` empty/unset.
+ */
+const DEFAULT_MCP_REGISTRY_ROOT = "/Users/cassio/mcp-server/_paperclip";
+const RUN_MCP_BIN_DEFAULT = `${DEFAULT_MCP_REGISTRY_ROOT}/bin/run-mcp.sh`;
+
+/** Env var that overrides the sidecar root used to load `registry.json`. */
+export const PAPERCLIP_MCP_REGISTRY_ROOT_ENV = "PAPERCLIP_MCP_REGISTRY_ROOT";
+/** Env var that overrides the wrapper script rendered into native MCP configs. */
+export const PAPERCLIP_MCP_RUN_SCRIPT_ENV = "PAPERCLIP_MCP_RUN_SCRIPT";
+
+/**
+ * Returns the sidecar root from `PAPERCLIP_MCP_REGISTRY_ROOT` in the supplied
+ * env, or the canonical ksio.dev default. Callers should pass a scoped
+ * `Record<string, string>` so the resolution stays deterministic.
+ */
+export function resolveMcpRegistryRootFromEnv(env: Record<string, string | undefined>): string {
+  const fromEnv = env[PAPERCLIP_MCP_REGISTRY_ROOT_ENV]?.trim();
+  return fromEnv && fromEnv.length > 0 ? fromEnv : DEFAULT_MCP_REGISTRY_ROOT;
+}
+
+/**
+ * Returns the wrapper script path from `PAPERCLIP_MCP_RUN_SCRIPT` in the
+ * supplied env. When unset, `loadMcpRegistry` callers fall back to
+ * `RUN_MCP_BIN_DEFAULT` via `resolveMcpAllowlist`.
+ */
+export function resolveRunMcpScriptFromEnv(env: Record<string, string | undefined>): string | undefined {
+  const fromEnv = env[PAPERCLIP_MCP_RUN_SCRIPT_ENV]?.trim();
+  return fromEnv && fromEnv.length > 0 ? fromEnv : undefined;
+}
 
 /**
  * Result of parsing the raw `MCP_LIST` env value.
@@ -162,12 +199,36 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
  * `unknown_id` at resolution time only if they were specifically asked for
  * — entries with a `null` manifest still count as "known" with the status
  * read from `registry.json`.
+ *
+ * Throws `McpRegistryNotFoundError` when `registry.json` is missing under
+ * `rootPath`. This is intentional: silently returning an empty registry
+ * would cause every `MCP_LIST` token to fail with `unknown_id` and hide
+ * the real problem (the override env var was not set, or the sidecar is
+ * not mounted in this deployment).
  */
+export class McpRegistryNotFoundError extends Error {
+  readonly rootPath: string;
+  readonly registryPath: string;
+  constructor(rootPath: string, registryPath: string) {
+    super(
+      `MCP_LIST resolution failed: registry.json not found under "${rootPath}". ` +
+        `Set ${PAPERCLIP_MCP_REGISTRY_ROOT_ENV} to the path of the _paperclip sidecar ` +
+        `for this deployment, or unset MCP_LIST to disable MCP injection.`,
+    );
+    this.name = "McpRegistryNotFoundError";
+    this.rootPath = rootPath;
+    this.registryPath = registryPath;
+  }
+}
+
 export async function loadMcpRegistry(rootPath: string): Promise<McpRegistry> {
   const registryPath = path.join(rootPath, "registry.json");
   const raw = await readJsonFile<{ servers?: McpRegistryServer[] }>(registryPath);
+  if (raw === null) {
+    throw new McpRegistryNotFoundError(rootPath, registryPath);
+  }
   const servers = new Map<string, McpRegistryEntry>();
-  if (!raw || !Array.isArray(raw.servers)) {
+  if (!Array.isArray(raw.servers)) {
     return { rootPath, servers };
   }
   for (const server of raw.servers) {

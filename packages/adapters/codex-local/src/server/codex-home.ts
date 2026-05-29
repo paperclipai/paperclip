@@ -8,12 +8,13 @@ import {
   type McpRegistry,
   renderCodexMcpToml,
   resolveMcpAllowlist,
+  resolveMcpRegistryRootFromEnv,
+  resolveRunMcpScriptFromEnv,
 } from "@paperclipai/adapter-utils/mcp-allowlist";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
-const DEFAULT_MCP_REGISTRY_ROOT = "/Users/cassio/mcp-server/_paperclip";
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -110,16 +111,6 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
   await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
 }
 
-function resolveMcpRegistryRoot(env: NodeJS.ProcessEnv): string {
-  const fromEnv = env.PAPERCLIP_MCP_REGISTRY_ROOT?.trim();
-  return fromEnv && fromEnv.length > 0 ? fromEnv : DEFAULT_MCP_REGISTRY_ROOT;
-}
-
-function resolveRunMcpScript(env: NodeJS.ProcessEnv): string | undefined {
-  const fromEnv = env.PAPERCLIP_MCP_RUN_SCRIPT?.trim();
-  return fromEnv && fromEnv.length > 0 ? fromEnv : undefined;
-}
-
 /**
  * Strips all `[mcp_servers.<id>]` sections from a TOML string. A section
  * runs from its header line until either EOF or the next top-level header
@@ -173,11 +164,11 @@ export async function applyMcpListToCodexHome(input: {
   if (typeof raw !== "string" || raw.trim().length === 0) {
     return null;
   }
-  const registry = input.registry ?? (await loadMcpRegistry(resolveMcpRegistryRoot(input.env)));
+  const registry = input.registry ?? (await loadMcpRegistry(resolveMcpRegistryRootFromEnv(input.env as Record<string, string | undefined>)));
   const result = resolveMcpAllowlist({
     rawAllowlist: raw,
     registry,
-    runMcpScript: resolveRunMcpScript(input.env),
+    runMcpScript: resolveRunMcpScriptFromEnv(input.env as Record<string, string | undefined>),
   });
   if (result.errors.length > 0) {
     const messages = result.errors.map((e) => `[${e.kind}] ${e.message}`).join("; ");

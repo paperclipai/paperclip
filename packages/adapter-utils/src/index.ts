@@ -65,8 +65,13 @@ export { inferOpenAiCompatibleBiller } from "./billing.js";
 export {
   parseMcpAllowlist,
   loadMcpRegistry,
+  McpRegistryNotFoundError,
+  PAPERCLIP_MCP_REGISTRY_ROOT_ENV,
+  PAPERCLIP_MCP_RUN_SCRIPT_ENV,
   resolveMcpAllowlist,
   resolveMcpAllowlistFromEnv,
+  resolveMcpRegistryRootFromEnv,
+  resolveRunMcpScriptFromEnv,
   renderOpencodeMcp,
   renderCodexMcpToml,
   renderGeminiMcpSettings,

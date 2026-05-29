@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   loadMcpRegistry,
+  McpRegistryNotFoundError,
   parseMcpAllowlist,
   renderBobMcpSettings,
   renderCodexMcpToml,
@@ -11,6 +12,8 @@ import {
   renderOpencodeMcp,
   resolveMcpAllowlist,
   resolveMcpAllowlistFromEnv,
+  resolveMcpRegistryRootFromEnv,
+  resolveRunMcpScriptFromEnv,
 } from "./mcp-allowlist.js";
 
 async function makeRegistryRoot(servers: Array<{ id: string; status: string; required?: string[] }>): Promise<string> {
@@ -87,14 +90,41 @@ describe("loadMcpRegistry", () => {
     expect(jira.manifest?.environment?.requiredNames).toEqual(["ATLASSIAN_API_TOKEN"]);
   });
 
-  it("returns empty registry when registry.json is missing", async () => {
+  it("throws McpRegistryNotFoundError when registry.json is missing", async () => {
     const empty = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-empty-"));
     try {
-      const registry = await loadMcpRegistry(empty);
-      expect(registry.servers.size).toBe(0);
+      await expect(loadMcpRegistry(empty)).rejects.toBeInstanceOf(McpRegistryNotFoundError);
+      // The error message must mention the override env var so operators can
+      // self-diagnose without reading the source.
+      await expect(loadMcpRegistry(empty)).rejects.toThrow(/PAPERCLIP_MCP_REGISTRY_ROOT/);
     } finally {
       await fs.rm(empty, { recursive: true, force: true });
     }
+  });
+});
+
+describe("resolveMcpRegistryRootFromEnv / resolveRunMcpScriptFromEnv", () => {
+  it("falls back to the canonical default when env is unset", () => {
+    expect(resolveMcpRegistryRootFromEnv({})).toBe("/Users/cassio/mcp-server/_paperclip");
+    expect(resolveRunMcpScriptFromEnv({})).toBeUndefined();
+  });
+
+  it("honors PAPERCLIP_MCP_REGISTRY_ROOT and PAPERCLIP_MCP_RUN_SCRIPT", () => {
+    expect(
+      resolveMcpRegistryRootFromEnv({ PAPERCLIP_MCP_REGISTRY_ROOT: "/srv/mcp" }),
+    ).toBe("/srv/mcp");
+    expect(
+      resolveRunMcpScriptFromEnv({ PAPERCLIP_MCP_RUN_SCRIPT: "/srv/run.sh" }),
+    ).toBe("/srv/run.sh");
+  });
+
+  it("treats whitespace-only overrides as unset", () => {
+    expect(
+      resolveMcpRegistryRootFromEnv({ PAPERCLIP_MCP_REGISTRY_ROOT: "   " }),
+    ).toBe("/Users/cassio/mcp-server/_paperclip");
+    expect(
+      resolveRunMcpScriptFromEnv({ PAPERCLIP_MCP_RUN_SCRIPT: "" }),
+    ).toBeUndefined();
   });
 });
 
