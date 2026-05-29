@@ -3,6 +3,7 @@ node_modules/
 **/node_modules
 **/node_modules/
 dist/
+ui/storybook-static/
 .env
 *.tsbuildinfo
 drizzle/meta/
@@ -54,4 +55,6 @@ tests/e2e/playwright-report/
 tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
+.superpowers/
 .claude/worktrees/
+.herenow

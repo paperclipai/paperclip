@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -13,12 +13,12 @@ import {
   issueComments,
   issues,
 } from "@paperclipai/db";
-import { errorHandler } from "../middleware/index.js";
-import { userProfileRoutes } from "../routes/user-profiles.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+let errorHandler: typeof import("../middleware/index.js").errorHandler;
+let userProfileRoutes: typeof import("../routes/user-profiles.js").userProfileRoutes;
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -42,6 +42,16 @@ describeEmbeddedPostgres("GET /companies/:companyId/users/:userSlug/profile", ()
   }, 20_000);
 
   beforeEach(async () => {
+    vi.resetModules();
+    vi.doUnmock("../routes/user-profiles.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    const [routes, middleware] = await Promise.all([
+      vi.importActual<typeof import("../routes/user-profiles.js")>("../routes/user-profiles.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+    userProfileRoutes = routes.userProfileRoutes;
+    errorHandler = middleware.errorHandler;
     companyId = randomUUID();
     userId = randomUUID();
     agentId = randomUUID();
@@ -97,6 +107,9 @@ describeEmbeddedPostgres("GET /companies/:companyId/users/:userSlug/profile", ()
   });
 
   function createApp() {
+    if (!userProfileRoutes || !errorHandler) {
+      throw new Error("user profile route test dependencies were not loaded");
+    }
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {

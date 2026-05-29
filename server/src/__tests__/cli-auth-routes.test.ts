@@ -35,6 +35,8 @@ vi.mock("../services/index.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
@@ -45,15 +47,31 @@ function registerModuleMocks() {
   }));
 }
 
+let appImportCounter = 0;
+
 async function createApp(actor: any, db: any = {} as any) {
+  appImportCounter += 1;
+  const routeModulePath = `../routes/access.js?cli-auth-routes-${appImportCounter}`;
+  const middlewareModulePath = `../middleware/index.js?cli-auth-routes-${appImportCounter}`;
   const [{ accessRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import(routeModulePath) as Promise<typeof import("../routes/access.js")>,
+    import(middlewareModulePath) as Promise<typeof import("../middleware/index.js")>,
   ]);
+
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.actor = actor;
+    req.actor = {
+      ...actor,
+      companyIds: Array.isArray(actor.companyIds) ? [...actor.companyIds] : actor.companyIds,
+      memberships: Array.isArray(actor.memberships)
+        ? actor.memberships.map((membership: unknown) =>
+            typeof membership === "object" && membership !== null
+              ? { ...membership }
+              : membership,
+          )
+        : actor.memberships,
+    };
     next();
   });
   app.use(
@@ -69,16 +87,18 @@ async function createApp(actor: any, db: any = {} as any) {
   return app;
 }
 
-describe("cli auth routes", () => {
+describe.sequential("cli auth routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../routes/access.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.resetAllMocks();
   });
 
-  it("creates a CLI auth challenge with approval metadata", async () => {
+  it.sequential("creates a CLI auth challenge with approval metadata", async () => {
     mockBoardAuthService.createCliAuthChallenge.mockResolvedValue({
       challenge: {
         id: "challenge-1",
@@ -97,7 +117,7 @@ describe("cli auth routes", () => {
         requestedAccess: "board",
       });
 
-    expect(res.status).toBe(201);
+    expect(res.status, res.text || JSON.stringify(res.body)).toBe(201);
     expect(res.body).toMatchObject({
       id: "challenge-1",
       token: "pcp_cli_auth_secret",
@@ -109,18 +129,18 @@ describe("cli auth routes", () => {
     expect(res.body.approvalUrl).toContain("/cli-auth/challenge-1?token=pcp_cli_auth_secret");
   });
 
-  it("rejects anonymous access to generic skill documents", async () => {
-    const app = await createApp({ type: "none", source: "none" });
-    const [indexRes, skillRes] = await Promise.all([
-      request(app).get("/api/skills/index"),
-      request(app).get("/api/skills/paperclip"),
-    ]);
+  it.sequential("rejects anonymous access to generic skill documents", async () => {
+    const indexApp = await createApp({ type: "none", source: "none" });
+    const skillApp = await createApp({ type: "none", source: "none" });
 
-    expect(indexRes.status).toBe(401);
-    expect(skillRes.status).toBe(401);
+    const indexRes = await request(indexApp).get("/api/skills/index");
+    const skillRes = await request(skillApp).get("/api/skills/paperclip");
+
+    expect(indexRes.status, JSON.stringify(indexRes.body)).toBe(401);
+    expect(skillRes.status, skillRes.text || JSON.stringify(skillRes.body)).toBe(401);
   });
 
-  it("serves the invite-scoped paperclip skill anonymously for active invites", async () => {
+  it.sequential("serves the invite-scoped paperclip skill anonymously for active invites", async () => {
     const invite = {
       id: "invite-1",
       companyId: "company-1",
@@ -151,7 +171,7 @@ describe("cli auth routes", () => {
     expect(res.text).toContain("# Paperclip Skill");
   });
 
-  it("marks challenge status as requiring sign-in for anonymous viewers", async () => {
+  it.sequential("marks challenge status as requiring sign-in for anonymous viewers", async () => {
     mockBoardAuthService.describeCliAuthChallenge.mockResolvedValue({
       id: "challenge-1",
       status: "pending",
@@ -174,7 +194,7 @@ describe("cli auth routes", () => {
     expect(res.body.canApprove).toBe(false);
   });
 
-  it("approves a CLI auth challenge for a signed-in board user", async () => {
+  it.sequential("approves a CLI auth challenge for a signed-in board user", async () => {
     mockBoardAuthService.approveCliAuthChallenge.mockResolvedValue({
       status: "approved",
       challenge: {
@@ -219,7 +239,7 @@ describe("cli auth routes", () => {
     );
   });
 
-  it("logs approve activity for instance admins without company memberships", async () => {
+  it.sequential("logs approve activity for instance admins without company memberships", async () => {
     mockBoardAuthService.approveCliAuthChallenge.mockResolvedValue({
       status: "approved",
       challenge: {
@@ -252,7 +272,7 @@ describe("cli auth routes", () => {
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
 
-  it("logs revoke activity with resolved audit company ids", async () => {
+  it.sequential("logs revoke activity with resolved audit company ids", async () => {
     mockBoardAuthService.assertCurrentBoardKey.mockResolvedValue({
       id: "board-key-3",
       userId: "admin-2",

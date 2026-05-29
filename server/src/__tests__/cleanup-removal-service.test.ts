@@ -7,8 +7,12 @@ import {
   companies,
   companySkills,
   createDb,
+  documents,
+  documentRevisions,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueDocuments,
   issueExecutionDecisions,
   issueReadStates,
   issues,
@@ -39,10 +43,13 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
     await db.delete(issueReadStates);
     await db.delete(issueComments);
     await db.delete(issueExecutionDecisions);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(companySkills);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
@@ -148,6 +155,8 @@ describeEmbeddedPostgres("cleanup removal services", () => {
 
   it("removes issue read states and activity rows before deleting the company", async () => {
     const { companyId, issueId, runId } = await seedFixture();
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
 
     await db.insert(issueReadStates).values({
       id: randomUUID(),
@@ -177,12 +186,76 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       details: {},
     });
 
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Run summary",
+      latestBody: "body",
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+      createdByAgentId: null,
+      createdByUserId: "user-1",
+      updatedByAgentId: null,
+      updatedByUserId: "user-1",
+    });
+
+    await db.insert(issueDocuments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      documentId,
+      key: "summary",
+    });
+
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId,
+      documentId,
+      revisionNumber: 1,
+      title: "Run summary",
+      format: "markdown",
+      body: "body",
+      createdByAgentId: null,
+      createdByUserId: "user-1",
+      createdByRunId: runId,
+    });
+
     const removed = await companyService(db).remove(companyId);
 
     expect(removed?.id).toBe(companyId);
     await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toHaveLength(0);
+    await expect(db.select().from(documents).where(eq(documents.id, documentId))).resolves.toHaveLength(0);
+    await expect(db.select().from(documentRevisions).where(eq(documentRevisions.id, revisionId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueReadStates).where(eq(issueReadStates.companyId, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+  });
+
+  it("removes heartbeat events by run id before deleting company-owned runs", async () => {
+    const { agentId, companyId, runId } = await seedFixture();
+    const otherCompanyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Company",
+      issuePrefix: `O${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(heartbeatRunEvents).values({
+      companyId: otherCompanyId,
+      runId,
+      agentId,
+      seq: 1,
+      eventType: "output",
+      message: "event with mismatched company scope",
+    });
+
+    const removed = await companyService(db).remove(companyId);
+
+    expect(removed?.id).toBe(companyId);
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
+    await expect(db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId))).resolves.toHaveLength(0);
+    await expect(db.select().from(companies).where(eq(companies.id, otherCompanyId))).resolves.toHaveLength(1);
   });
 });

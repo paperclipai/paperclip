@@ -38,6 +38,8 @@ const mockProjectService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 function registerServiceMocks() {
+  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
@@ -47,11 +49,39 @@ function registerServiceMocks() {
     getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
   }));
 
+  vi.doMock("../services/access.js", () => ({
+    accessService: () => mockAccessService,
+  }));
+
+  vi.doMock("../services/activity-log.js", () => ({
+    logActivity: mockLogActivity,
+  }));
+
+  vi.doMock("../services/execution-workspaces.js", () => ({
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
+  }));
+
+  vi.doMock("../services/heartbeat.js", () => ({
+    heartbeatService: () => mockHeartbeatService,
+  }));
+
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueService,
+  }));
+
+  vi.doMock("../services/projects.js", () => ({
+    projectService: () => mockProjectService,
+  }));
+
   vi.doMock("../services/index.js", () => ({
+    companyService: () => ({
+      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    }),
     accessService: () => mockAccessService,
     agentService: () => ({
       getById: vi.fn(async () => null),
     }),
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     feedbackService: () => ({
@@ -74,6 +104,28 @@ function registerServiceMocks() {
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),
     issueApprovalService: () => ({}),
+    issueReferenceService: () => ({
+      deleteDocumentSource: async () => undefined,
+      diffIssueReferenceSummary: () => ({
+        addedReferencedIssues: [],
+        removedReferencedIssues: [],
+        currentReferencedIssues: [],
+      }),
+      emptySummary: () => ({ outbound: [], inbound: [] }),
+      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+      syncComment: async () => undefined,
+      syncDocument: async () => undefined,
+      syncIssue: async () => undefined,
+    }),
+    issueThreadInteractionService: () => ({
+      listForIssue: vi.fn(async () => []),
+      expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+      expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+    }),
+    issueRecoveryActionService: () => ({
+      getActiveForIssue: vi.fn(async () => null),
+      listActiveForIssues: vi.fn(async () => new Map()),
+    }),
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
     projectService: () => mockProjectService,
@@ -86,8 +138,8 @@ function registerServiceMocks() {
 
 async function createApp() {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import("../routes/issues.js"),
+    import("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -134,17 +186,23 @@ function makeClosedWorkspace() {
   };
 }
 
-describe("closed isolated workspace issue routes", () => {
+describe.sequential("closed isolated workspace issue routes", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/access.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/execution-workspaces.js");
+    vi.doUnmock("../services/heartbeat.js");
     vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/projects.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerServiceMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockExecutionWorkspaceService.getById.mockResolvedValue(makeClosedWorkspace());
   });

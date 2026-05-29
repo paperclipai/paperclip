@@ -48,6 +48,21 @@
  */
 
 import type { PluginContext } from "./types.js";
+import type {
+  PluginEnvironmentAcquireLeaseParams,
+  PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentExecuteParams,
+  PluginEnvironmentExecuteResult,
+  PluginEnvironmentLease,
+  PluginEnvironmentProbeParams,
+  PluginEnvironmentProbeResult,
+  PluginEnvironmentRealizeWorkspaceParams,
+  PluginEnvironmentRealizeWorkspaceResult,
+  PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentResumeLeaseParams,
+  PluginEnvironmentValidateConfigParams,
+  PluginEnvironmentValidationResult,
+} from "./protocol.js";
 
 // ---------------------------------------------------------------------------
 // Health check result
@@ -228,6 +243,48 @@ export interface PluginDefinition {
    * access, capabilities, and checkout policy.
    */
   onApiRequest?(input: PluginApiRequestInput): Promise<PluginApiResponse>;
+  /**
+   * Called to validate provider-specific configuration for a plugin-hosted
+   * environment driver.
+   */
+  onEnvironmentValidateConfig?(
+    params: PluginEnvironmentValidateConfigParams,
+  ): Promise<PluginEnvironmentValidationResult>;
+
+  /** Called to test reachability or readiness of a plugin-hosted environment. */
+  onEnvironmentProbe?(
+    params: PluginEnvironmentProbeParams,
+  ): Promise<PluginEnvironmentProbeResult>;
+
+  /** Called before a run starts to acquire a provider lease. */
+  onEnvironmentAcquireLease?(
+    params: PluginEnvironmentAcquireLeaseParams,
+  ): Promise<PluginEnvironmentLease>;
+
+  /** Called to reconnect to a previously acquired provider lease. */
+  onEnvironmentResumeLease?(
+    params: PluginEnvironmentResumeLeaseParams,
+  ): Promise<PluginEnvironmentLease>;
+
+  /** Called when a run finishes and the provider lease can be released. */
+  onEnvironmentReleaseLease?(
+    params: PluginEnvironmentReleaseLeaseParams,
+  ): Promise<void>;
+
+  /** Called when the host needs to force-destroy provider state. */
+  onEnvironmentDestroyLease?(
+    params: PluginEnvironmentDestroyLeaseParams,
+  ): Promise<void>;
+
+  /** Called to materialize the run workspace inside the provider lease. */
+  onEnvironmentRealizeWorkspace?(
+    params: PluginEnvironmentRealizeWorkspaceParams,
+  ): Promise<PluginEnvironmentRealizeWorkspaceResult>;
+
+  /** Called to execute a command inside the provider lease. */
+  onEnvironmentExecute?(
+    params: PluginEnvironmentExecuteParams,
+  ): Promise<PluginEnvironmentExecuteResult>;
 }
 
 // ---------------------------------------------------------------------------

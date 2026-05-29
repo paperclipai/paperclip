@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import type {
@@ -203,6 +203,7 @@ export function readExecutionWorkspaceConfig(metadata: Record<string, unknown> |
   if (!raw) return null;
 
   const config: ExecutionWorkspaceConfig = {
+    environmentId: readNullableString(raw.environmentId),
     provisionCommand: readNullableString(raw.provisionCommand),
     teardownCommand: readNullableString(raw.teardownCommand),
     cleanupCommand: readNullableString(raw.cleanupCommand),
@@ -226,6 +227,7 @@ export function mergeExecutionWorkspaceConfig(
 ): Record<string, unknown> | null {
   const nextMetadata = isRecord(metadata) ? { ...metadata } : {};
   const current = readExecutionWorkspaceConfig(metadata) ?? {
+    environmentId: null,
     provisionCommand: null,
     teardownCommand: null,
     cleanupCommand: null,
@@ -240,6 +242,7 @@ export function mergeExecutionWorkspaceConfig(
   }
 
   const nextConfig: ExecutionWorkspaceConfig = {
+    environmentId: patch.environmentId !== undefined ? readNullableString(patch.environmentId) : current.environmentId,
     provisionCommand: patch.provisionCommand !== undefined ? readNullableString(patch.provisionCommand) : current.provisionCommand,
     teardownCommand: patch.teardownCommand !== undefined ? readNullableString(patch.teardownCommand) : current.teardownCommand,
     cleanupCommand: patch.cleanupCommand !== undefined ? readNullableString(patch.cleanupCommand) : current.cleanupCommand,
@@ -260,6 +263,7 @@ export function mergeExecutionWorkspaceConfig(
 
   if (hasConfig) {
     nextMetadata.config = {
+      environmentId: nextConfig.environmentId,
       provisionCommand: nextConfig.provisionCommand,
       teardownCommand: nextConfig.teardownCommand,
       cleanupCommand: nextConfig.cleanupCommand,
@@ -340,12 +344,18 @@ function toExecutionWorkspace(
   };
 }
 
-function toExecutionWorkspaceSummary(row: Pick<ExecutionWorkspaceRow, "id" | "name" | "mode" | "projectWorkspaceId">): ExecutionWorkspaceSummary {
+function toExecutionWorkspaceSummary(
+  row: Pick<ExecutionWorkspaceRow, "id" | "name" | "mode" | "status" | "cwd" | "branchName" | "projectWorkspaceId" | "lastUsedAt">,
+): ExecutionWorkspaceSummary {
   return {
     id: row.id,
     name: row.name,
     mode: row.mode as ExecutionWorkspaceSummary["mode"],
+    status: row.status as ExecutionWorkspaceSummary["status"],
+    cwd: row.cwd ?? null,
+    branchName: row.branchName ?? null,
     projectWorkspaceId: row.projectWorkspaceId ?? null,
+    lastUsedAt: row.lastUsedAt,
   };
 }
 
@@ -408,6 +418,8 @@ export function executionWorkspaceService(db: Db) {
     }
     if (filters?.reuseEligible) {
       conditions.push(inArray(executionWorkspaces.status, ["active", "idle", "in_review"]));
+      conditions.push(isNull(executionWorkspaces.closedAt));
+      conditions.push(inArray(executionWorkspaces.mode, ["isolated_workspace", "operator_branch", "adapter_managed", "cloud_sandbox"]));
     }
     return conditions;
   }
@@ -448,7 +460,11 @@ export function executionWorkspaceService(db: Db) {
           id: executionWorkspaces.id,
           name: executionWorkspaces.name,
           mode: executionWorkspaces.mode,
+          status: executionWorkspaces.status,
+          cwd: executionWorkspaces.cwd,
+          branchName: executionWorkspaces.branchName,
           projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
+          lastUsedAt: executionWorkspaces.lastUsedAt,
         })
         .from(executionWorkspaces)
         .where(and(...conditions))
@@ -738,6 +754,37 @@ export function executionWorkspaceService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toExecutionWorkspace(row) : null;
+    },
+
+    clearEnvironmentSelection: async (companyId: string, environmentId: string) => {
+      return db.transaction(async (tx) => {
+        const rows = await tx
+          .select({
+            id: executionWorkspaces.id,
+            metadata: executionWorkspaces.metadata,
+          })
+          .from(executionWorkspaces)
+          .where(eq(executionWorkspaces.companyId, companyId));
+
+        let cleared = 0;
+        const updatedAt = new Date();
+        for (const row of rows) {
+          const metadata = (row.metadata as Record<string, unknown> | null) ?? null;
+          const config = readExecutionWorkspaceConfig(metadata);
+          if (config?.environmentId !== environmentId) continue;
+
+          await tx
+            .update(executionWorkspaces)
+            .set({
+              metadata: mergeExecutionWorkspaceConfig(metadata, { environmentId: null }),
+              updatedAt,
+            })
+            .where(eq(executionWorkspaces.id, row.id));
+          cleared += 1;
+        }
+
+        return cleared;
+      });
     },
   };
 }

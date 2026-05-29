@@ -27,14 +27,14 @@ Generates:
 - `esbuild` and `rollup` config files using SDK bundler presets
 - dev server script for hot-reload (`paperclip-plugin-dev-server`)
 
-The scaffold intentionally uses plain React elements rather than host-provided UI kit components, because the current plugin runtime does not ship a stable shared component library yet.
+The scaffold starts with plain React elements so the generated plugin stays minimal. For Paperclip-native controls, import shared host components such as `MarkdownEditor`, `FileTree`, `AssigneePicker`, and `ProjectPicker` from `@paperclipai/plugin-sdk/ui`.
 
 Inside this repo, the generated package uses `@paperclipai/plugin-sdk` via `workspace:*`.
 
 Outside this repo, the scaffold snapshots `@paperclipai/plugin-sdk` from your local Paperclip checkout into a `.paperclip-sdk/` tarball and points the generated package at that local file by default. You can override the SDK source explicitly:
 
 ```bash
-node packages/plugins/create-paperclip-plugin/dist/index.js @acme/my-plugin \
+node packages/plugins/create-paperclip-plugin/dist/bin.js @acme/my-plugin \
   --output /absolute/path/to/plugins \
   --sdk-path /absolute/path/to/paperclip/packages/plugins/sdk
 ```

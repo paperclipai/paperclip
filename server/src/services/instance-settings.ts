@@ -3,6 +3,7 @@ import { companies, instanceSettings } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
@@ -14,9 +15,11 @@ import {
 import { eq } from "drizzle-orm";
 
 const DEFAULT_SINGLETON_KEY = "default";
+const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
+const instanceExperimentalSettingsStorageSchema = instanceExperimentalSettingsSchema.strip();
 
 function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
-  const parsed = instanceGeneralSettingsSchema.safeParse(raw ?? {});
+  const parsed = instanceGeneralSettingsStorageSchema.safeParse(raw ?? {});
   if (parsed.success) {
     return {
       censorUsernameInLogs: parsed.data.censorUsernameInLogs ?? false,
@@ -34,17 +37,30 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   };
 }
 
-function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettings {
-  const parsed = instanceExperimentalSettingsSchema.safeParse(raw ?? {});
+export function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettings {
+  const parsed = instanceExperimentalSettingsStorageSchema.safeParse(raw ?? {});
   if (parsed.success) {
     return {
+      enableEnvironments: parsed.data.enableEnvironments ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
+      enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
+      enableCloudSync: parsed.data.enableCloudSync ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
+      enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
+      issueGraphLivenessAutoRecoveryLookbackHours:
+        parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
+        DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
     };
   }
   return {
+    enableEnvironments: false,
     enableIsolatedWorkspaces: false,
+    enableIssuePlanDecompositions: false,
+    enableCloudSync: false,
     autoRestartDevServerWhenIdle: false,
+    enableIssueGraphLivenessAutoRecovery: false,
+    issueGraphLivenessAutoRecoveryLookbackHours:
+      DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   };
 }
 

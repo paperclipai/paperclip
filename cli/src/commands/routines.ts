@@ -9,6 +9,7 @@ import {
   createEmbeddedPostgresLogBuffer,
   ensurePostgresDatabase,
   formatEmbeddedPostgresError,
+  prepareEmbeddedPostgresNativeRuntime,
   routines,
 } from "@paperclipai/db";
 import { eq, inArray } from "drizzle-orm";
@@ -116,6 +117,7 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
       "Embedded PostgreSQL support requires dependency `embedded-postgres`. Reinstall dependencies and try again.",
     );
   }
+  await prepareEmbeddedPostgresNativeRuntime();
 
   const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
   const runningPid = readRunningPostmasterPid(postmasterPidFile);

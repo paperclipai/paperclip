@@ -9,6 +9,7 @@ import {
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
+  mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
@@ -158,6 +159,81 @@ describe("applyPersistedExecutionWorkspaceConfig", () => {
   });
 });
 
+describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
+  it("merges config snapshot for newly realized workspaces", () => {
+    expect(mergeExecutionWorkspaceMetadataForPersistence({
+      existingMetadata: null,
+      source: "task_session",
+      createdByRuntime: true,
+      configSnapshot: {
+        environmentId: "env-new",
+        provisionCommand: "bash ./scripts/provision.sh",
+      },
+      shouldReuseExisting: false,
+      baseRef: null,
+      baseRefSha: null,
+    })).toEqual({
+      source: "task_session",
+      createdByRuntime: true,
+      config: {
+        environmentId: "env-new",
+        provisionCommand: "bash ./scripts/provision.sh",
+        teardownCommand: null,
+        cleanupCommand: null,
+        desiredState: null,
+        serviceStates: null,
+        workspaceRuntime: null,
+      },
+    });
+  });
+
+  it("preserves persisted config snapshot when reusing an existing workspace", () => {
+    expect(mergeExecutionWorkspaceMetadataForPersistence({
+      existingMetadata: {
+        config: {
+          environmentId: "env-old",
+          provisionCommand: "bash ./scripts/existing-provision.sh",
+        },
+      },
+      source: "task_session",
+      createdByRuntime: false,
+      configSnapshot: {
+        environmentId: "env-new",
+        provisionCommand: "bash ./scripts/new-provision.sh",
+      },
+      shouldReuseExisting: true,
+      baseRef: null,
+      baseRefSha: null,
+    })).toEqual({
+      config: {
+        environmentId: "env-old",
+        provisionCommand: "bash ./scripts/existing-provision.sh",
+      },
+      source: "task_session",
+      createdByRuntime: false,
+    });
+  });
+
+  it("records the resolved base ref SHA for newly realized workspaces", () => {
+    expect(mergeExecutionWorkspaceMetadataForPersistence({
+      existingMetadata: null,
+      source: "task_session",
+      createdByRuntime: true,
+      configSnapshot: null,
+      shouldReuseExisting: false,
+      baseRef: "origin/main",
+      baseRefSha: "abc1234567890",
+    })).toEqual({
+      source: "task_session",
+      createdByRuntime: true,
+      baseRefSnapshot: {
+        baseRef: "origin/main",
+        resolvedSha: "abc1234567890",
+      },
+    });
+  });
+});
+
 describe("buildRealizedExecutionWorkspaceFromPersisted", () => {
   it("reuses the persisted execution workspace path instead of deriving a new worktree", () => {
     const result = buildRealizedExecutionWorkspaceFromPersisted({
@@ -265,6 +341,18 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeSource: "on_demand",
         wakeTriggerDetail: "manual",
         forceFreshSession: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("resets session context for accepted planning confirmations that refresh workspace selection", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeReason: "issue_commented",
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        forceFreshSession: true,
+        workspaceRefreshReason: "accepted_plan_confirmation",
       }),
     ).toBe(true);
   });
