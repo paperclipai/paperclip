@@ -213,6 +213,21 @@ export function validatePluginMigrationStatement(
   }
 
   const refs = extractQualifiedRefs(statement);
+
+  // CREATE INDEX ON <bare-table> — no schema qualifier in the pattern.
+  // Treat these as targeting the plugin's namespace so they pass validation.
+  const bareIndexTableRe =
+    /\bcreate\s+(?:unique\s+)?index(?:\s+concurrently)?\s+(?:if\s+not\s+exists\s+)?"?[A-Za-z_][A-Za-z0-9_]*"?\s+on\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\s*(?:\(|$)/gi;
+  for (const m of statement.matchAll(bareIndexTableRe)) {
+    const table = m[1]!;
+    // Only add the synthetic ref when there is no schema-qualified ref for this table
+    // (avoids double-counting CREATE INDEX ... ON namespace.table which already matched).
+    const alreadyCaptured = refs.some((r) => r.keyword === "create index" && r.table === table);
+    if (!alreadyCaptured) {
+      refs.push({ keyword: "create index", schema: namespace, table });
+    }
+  }
+
   if (refs.length === 0 && !normalized.startsWith("comment ")) {
     throw new Error("Plugin migration objects must use fully qualified schema names");
   }
