@@ -203,7 +203,130 @@ Fix any gaps inline. Do not proceed to Step 4 with unlabelled or unprojectd issu
 
 ---
 
-## Step 4 — Assign a Lead Agent
+## Step 4 — Create Project Documentation Hub
+
+Every project must have a single issue that serves as the permanent documentation home. Create it immediately after the kickoff issue, under the target project (not Operations):
+
+```bash
+POST /api/companies/{companyId}/issues
+{
+  "title": "[Docs] <Project Name> — Project Documentation Hub",
+  "description": "Central documentation for <Project Name>. All five sections must be kept up to date. See attached documents.",
+  "projectId": "<target-project-id>",
+  "status": "in_progress",
+  "priority": "high",
+  "assigneeAgentId": "<lead-agent-id>",
+  "label": "docs"
+}
+```
+
+This issue stays `in_progress` permanently — it is a living document, not a task to close.
+
+### Required documents (create all five)
+
+Use `PUT /api/issues/{issueId}/documents/{key}` to create each:
+
+**`prd`** — Product Requirements
+```markdown
+# PRD: <Project Name>
+
+## Scope
+<What does this project do? What problem does it solve?>
+
+## Goals
+- <Goal 1>
+- <Goal 2>
+
+## User Stories
+- As a <user>, I want to <action> so that <outcome>
+
+## Acceptance Criteria
+- [ ] <criterion>
+```
+
+**`tech-stack`** — Technical Stack
+```markdown
+# Technical Stack: <Project Name>
+
+## Languages
+- <language> <version>
+
+## Frameworks & Libraries
+- <framework> <version> — <purpose>
+
+## Infrastructure
+- <service> — <provider, version, region>
+
+## External Services
+- <service> — <what it's used for, API version>
+```
+
+**`access-guide`** — Access & Credentials Guide
+```markdown
+# Access & Credentials: <Project Name>
+
+## Repositories
+- <repo URL> — <how to request access>
+
+## Services & Environments
+- <service>: <how to get credentials, who to ask>
+
+## Environment Variables
+- `<VAR_NAME>` — <where to find the value>
+
+## Notes
+<Any special access requirements, VPN, SSH keys, etc.>
+```
+
+**`architecture`** — Architecture Notes
+```markdown
+# Architecture: <Project Name>
+
+## System Overview
+<High-level description of how the system works>
+
+## Data Flow
+<How data moves through the system>
+
+## Key Components
+- <component> — <purpose>
+
+## Decisions & ADRs
+- <decision> — <rationale, date>
+
+## Known Constraints
+- <constraint>
+```
+
+**`runbooks`** — Runbooks
+```markdown
+# Runbooks: <Project Name>
+
+## Deployment
+1. <step>
+
+## Rollback
+1. <step>
+
+## Incident Response
+1. Identify: <how to detect the problem>
+2. Contain: <immediate action>
+3. Resolve: <fix steps>
+4. Post-mortem: <what to document>
+
+## Common Operations
+- <operation>: `<command or procedure>`
+```
+
+### Populate from discovery
+
+Fill each document with whatever was found during repo discovery (Step 2). Stub out sections that are unknown — do not leave them blank. Use `_Not yet documented_` for missing sections so agents know they need filling, not that they were forgotten.
+
+The hub issue is also where the inventory document (from Step 2) is linked in the description.
+
+---
+
+## Step 6 — Assign a Lead Agent
 
 Every project must have one lead agent who owns delivery:
 
@@ -218,7 +341,7 @@ Every project must have one lead agent who owns delivery:
 
 ---
 
-## Step 5 — Create a Project Kickoff Issue
+## Step 7 — Create a Project Kickoff Issue
 
 ```bash
 POST /api/companies/{companyId}/issues
@@ -236,7 +359,7 @@ Attach the inventory document from Step 2 to this issue.
 
 ---
 
-## Step 6 — Link the GitHub Repo to PM Dispatch
+## Step 8 — Link the GitHub Repo to PM Dispatch
 
 If the project has a GitHub repo, update the PM dispatch routine to pull its issues:
 
@@ -246,7 +369,7 @@ If the project has a GitHub repo, update the PM dispatch routine to pull its iss
 
 ---
 
-## Step 7 — Configure Routines (Optional)
+## Step 9 — Configure Routines (Optional)
 
 | Routine | Cadence | Purpose |
 |---|---|---|
@@ -256,7 +379,7 @@ If the project has a GitHub repo, update the PM dispatch routine to pull its iss
 
 ---
 
-## Step 8 — Verify
+## Step 10 — Verify
 
 Before closing the onboarding issue as done:
 
@@ -265,6 +388,7 @@ Before closing the onboarding issue as done:
 - [ ] Setup tasks created for all unmet requirements, structured as sub-issues
 - [ ] **All issues have a label and correct `projectId`** — sweep passed
 - [ ] GitHub issues labelled correctly at source (bug labels applied where missing)
+- [ ] **Documentation hub issue created** with all 5 documents (`prd`, `tech-stack`, `access-guide`, `architecture`, `runbooks`) — no blank sections, stubs use `_Not yet documented_`
 - [ ] Lead agent assigned
 - [ ] Kickoff issue created
 - [ ] GitHub repo linked in PM dispatch
