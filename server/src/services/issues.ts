@@ -3742,6 +3742,13 @@ export function issueService(db: Db) {
       if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
       if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
       if (!shouldIncludePluginOperationIssues(filters)) conditions.push(nonPluginOperationIssueCondition());
+      if (filters?.priority) {
+        const priorities = filters.priority.split(",").map((p) => p.trim()).filter(Boolean);
+        if (priorities.length > 0) conditions.push(inArray(issues.priority, priorities));
+      }
+      if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
+        conditions.push(ne(issues.originKind, "routine_execution"));
+      }
       const [row] = await db
         .select({ count: sql<number>`count(*)` })
         .from(issues)
