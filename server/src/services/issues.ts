@@ -4968,11 +4968,13 @@ export function issueService(db: Db) {
         }
       }
 
+      // Routine execution issues retain their assignee so the routine can re-fire to the same agent.
+      const preserveAssignee = existing.originKind === "routine_execution";
       const updated = await db
         .update(issues)
         .set({
           status: "todo",
-          assigneeAgentId: null,
+          assigneeAgentId: preserveAssignee ? existing.assigneeAgentId : null,
           checkoutRunId: null,
           executionRunId: null,
           executionAgentNameKey: null,
