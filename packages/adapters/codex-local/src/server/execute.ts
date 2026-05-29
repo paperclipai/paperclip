@@ -44,7 +44,7 @@ import {
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
 } from "./parse.js";
-import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
+import { applyMcpListToCodexHome, pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -359,6 +359,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       desiredSkillNames,
     },
   );
+  // Apply per-agent MCP_LIST allowlist to $CODEX_HOME/config.toml before any
+  // remote CODEX_HOME sync so the rendered mcp_servers entries travel with
+  // the home asset. Reads MCP_LIST from envConfig (the resolved adapter env)
+  // because process.env doesn't carry per-agent values.
+  const mcpListFromConfig =
+    typeof envConfig.MCP_LIST === "string" && envConfig.MCP_LIST.trim().length > 0
+      ? envConfig.MCP_LIST
+      : "";
+  if (mcpListFromConfig) {
+    const mcpEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      MCP_LIST: mcpListFromConfig,
+    };
+    if (typeof envConfig.PAPERCLIP_MCP_REGISTRY_ROOT === "string"
+        && envConfig.PAPERCLIP_MCP_REGISTRY_ROOT.trim().length > 0) {
+      mcpEnv.PAPERCLIP_MCP_REGISTRY_ROOT = envConfig.PAPERCLIP_MCP_REGISTRY_ROOT;
+    }
+    if (typeof envConfig.PAPERCLIP_MCP_RUN_SCRIPT === "string"
+        && envConfig.PAPERCLIP_MCP_RUN_SCRIPT.trim().length > 0) {
+      mcpEnv.PAPERCLIP_MCP_RUN_SCRIPT = envConfig.PAPERCLIP_MCP_RUN_SCRIPT;
+    }
+    const mcpResult = await applyMcpListToCodexHome({
+      home: effectiveCodexHome,
+      env: mcpEnv,
+    });
+    if (mcpResult) {
+      for (const note of mcpResult.notes) {
+        await onLog("stdout", `[paperclip] ${note}\n`);
+      }
+    }
+  }
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
     executionTarget,
     asNumber(config.timeoutSec, 0),

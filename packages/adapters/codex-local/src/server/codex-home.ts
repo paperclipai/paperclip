@@ -3,10 +3,17 @@ import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
+import {
+  loadMcpRegistry,
+  type McpRegistry,
+  renderCodexMcpToml,
+  resolveMcpAllowlist,
+} from "@paperclipai/adapter-utils/mcp-allowlist";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
+const DEFAULT_MCP_REGISTRY_ROOT = "/Users/cassio/mcp-server/_paperclip";
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -103,11 +110,109 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
   await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
 }
 
+function resolveMcpRegistryRoot(env: NodeJS.ProcessEnv): string {
+  const fromEnv = env.PAPERCLIP_MCP_REGISTRY_ROOT?.trim();
+  return fromEnv && fromEnv.length > 0 ? fromEnv : DEFAULT_MCP_REGISTRY_ROOT;
+}
+
+function resolveRunMcpScript(env: NodeJS.ProcessEnv): string | undefined {
+  const fromEnv = env.PAPERCLIP_MCP_RUN_SCRIPT?.trim();
+  return fromEnv && fromEnv.length > 0 ? fromEnv : undefined;
+}
+
+/**
+ * Strips all `[mcp_servers.<id>]` sections from a TOML string. A section
+ * runs from its header line until either EOF or the next top-level header
+ * line. We don't need a full TOML parser here because the codex config
+ * surface we care about is well-defined: codex CLI reads `mcp_servers.*`
+ * tables and any non-mcp section is copied through untouched.
+ */
+export function stripCodexMcpSections(toml: string): string {
+  const lines = toml.split(/\r?\n/);
+  const out: string[] = [];
+  let skipping = false;
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("[")) {
+      const headerMatch = trimmed.match(/^\[(\[?)([^\]]+)/);
+      if (headerMatch && /^mcp_servers\.[A-Za-z0-9_.\-]+/.test(headerMatch[2].trim())) {
+        skipping = true;
+        continue;
+      }
+      // any other section header ends the skip mode
+      skipping = false;
+    }
+    if (!skipping) out.push(line);
+  }
+  // Trim trailing empty lines but keep one final newline.
+  while (out.length > 0 && out[out.length - 1].trim() === "") {
+    out.pop();
+  }
+  return out.length > 0 ? `${out.join("\n")}\n` : "";
+}
+
+/**
+ * Applies the per-agent `MCP_LIST` allowlist to `$CODEX_HOME/config.toml`.
+ *
+ * - Reads existing `config.toml` (may not exist).
+ * - Strips every `[mcp_servers.*]` section.
+ * - Appends the rendered fragments for ids in the allowlist.
+ *
+ * Returns notes for logging, or `null` when MCP_LIST is empty/unset (in
+ * which case the file is left untouched).
+ *
+ * Fail-closed: throws on resolution errors so the caller never spawns the
+ * CLI with a partial / silently-broken MCP set.
+ */
+export async function applyMcpListToCodexHome(input: {
+  home: string;
+  env: NodeJS.ProcessEnv;
+  registry?: McpRegistry;
+}): Promise<{ notes: string[] } | null> {
+  const raw = input.env.MCP_LIST;
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return null;
+  }
+  const registry = input.registry ?? (await loadMcpRegistry(resolveMcpRegistryRoot(input.env)));
+  const result = resolveMcpAllowlist({
+    rawAllowlist: raw,
+    registry,
+    runMcpScript: resolveRunMcpScript(input.env),
+  });
+  if (result.errors.length > 0) {
+    const messages = result.errors.map((e) => `[${e.kind}] ${e.message}`).join("; ");
+    throw new Error(`codex_local: MCP_LIST validation failed — ${messages}`);
+  }
+  const tomlPath = path.join(input.home, "config.toml");
+  let existing = "";
+  try {
+    existing = await fs.readFile(tomlPath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | null)?.code !== "ENOENT") throw err;
+  }
+  const base = stripCodexMcpSections(existing);
+  const rendered = renderCodexMcpToml(result.resolved);
+  const next = rendered.length > 0
+    ? `${base}${base.length > 0 && !base.endsWith("\n\n") ? "\n" : ""}${rendered}\n`
+    : base;
+  // Avoid writing if nothing actually changed; this keeps the file's mtime
+  // stable for callers that diff config artifacts.
+  if (next !== existing) {
+    await fs.mkdir(input.home, { recursive: true });
+    await fs.writeFile(tomlPath, next, "utf8");
+  }
+  return {
+    notes: [
+      `Applied MCP_LIST allowlist to ${tomlPath}: rendered ${result.resolved.length} mcp_servers entries.`,
+    ],
+  };
+}
+
 export async function prepareManagedCodexHome(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
   companyId?: string,
-  options: { apiKey?: string | null } = {},
+  options: { apiKey?: string | null; registry?: McpRegistry } = {},
 ): Promise<string> {
   const targetHome = resolveManagedCodexHomeDir(env, companyId);
   const apiKey = nonEmpty(options.apiKey ?? undefined);

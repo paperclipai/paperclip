@@ -76,4 +76,115 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(prepared.notes).toEqual([]);
     await prepared.cleanup();
   });
+
+  it("applies MCP_LIST and writes filtered mcp tree", async () => {
+    const configHome = await makeConfigHome({
+      mcp: {
+        "jira-ibm": { type: "local", command: ["legacy", "args"], enabled: true },
+        "ghost-mcp": { type: "local", command: ["should-be-removed"], enabled: true },
+      },
+    });
+    const registryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-mcp-"));
+    cleanupPaths.add(registryRoot);
+    await fs.mkdir(path.join(registryRoot, "manifests"), { recursive: true });
+    await fs.writeFile(
+      path.join(registryRoot, "registry.json"),
+      JSON.stringify({
+        servers: [
+          { id: "jira-ibm", status: "validated", manifest: "manifests/jira-ibm.json" },
+          { id: "wikipedia", status: "validated", manifest: "manifests/wikipedia.json" },
+        ],
+      }),
+    );
+    await fs.writeFile(
+      path.join(registryRoot, "manifests", "jira-ibm.json"),
+      JSON.stringify({ id: "jira-ibm", environment: { requiredNames: [] } }),
+    );
+    await fs.writeFile(
+      path.join(registryRoot, "manifests", "wikipedia.json"),
+      JSON.stringify({ id: "wikipedia", environment: { requiredNames: [] } }),
+    );
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: {
+        XDG_CONFIG_HOME: configHome,
+        MCP_LIST: "jira-ibm, wikipedia",
+        PAPERCLIP_MCP_REGISTRY_ROOT: registryRoot,
+        PAPERCLIP_MCP_RUN_SCRIPT: "/run-mcp.sh",
+      },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+
+    const mcp = (runtimeConfig as { mcp?: Record<string, unknown> }).mcp ?? {};
+    expect(Object.keys(mcp).sort()).toEqual(["jira-ibm", "wikipedia"]);
+    // Inherited config wins for jira-ibm.
+    expect(mcp["jira-ibm"]).toMatchObject({ command: ["legacy", "args"] });
+    // wikipedia is rendered from registry pointing at run-mcp.sh.
+    expect(mcp.wikipedia).toMatchObject({
+      type: "local",
+      command: ["bash", "/run-mcp.sh", "wikipedia"],
+      enabled: true,
+    });
+    expect(prepared.notes.some((n) => n.includes("MCP_LIST"))).toBe(true);
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+  });
+
+  it("fails closed on unknown MCP_LIST id", async () => {
+    const configHome = await makeConfigHome({});
+    const registryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-mcp-"));
+    cleanupPaths.add(registryRoot);
+    await fs.mkdir(path.join(registryRoot, "manifests"), { recursive: true });
+    await fs.writeFile(
+      path.join(registryRoot, "registry.json"),
+      JSON.stringify({ servers: [] }),
+    );
+
+    await expect(
+      prepareOpenCodeRuntimeConfig({
+        env: {
+          XDG_CONFIG_HOME: configHome,
+          MCP_LIST: "ghost",
+          PAPERCLIP_MCP_REGISTRY_ROOT: registryRoot,
+        },
+        config: {},
+      }),
+    ).rejects.toThrow(/MCP_LIST validation failed/);
+  });
+
+  it("fails closed on blocked MCP_LIST status", async () => {
+    const configHome = await makeConfigHome({});
+    const registryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-mcp-"));
+    cleanupPaths.add(registryRoot);
+    await fs.mkdir(path.join(registryRoot, "manifests"), { recursive: true });
+    await fs.writeFile(
+      path.join(registryRoot, "registry.json"),
+      JSON.stringify({
+        servers: [{ id: "box", status: "blocked-runtime-mismatch", manifest: "manifests/box.json" }],
+      }),
+    );
+    await fs.writeFile(
+      path.join(registryRoot, "manifests", "box.json"),
+      JSON.stringify({ id: "box" }),
+    );
+
+    await expect(
+      prepareOpenCodeRuntimeConfig({
+        env: {
+          XDG_CONFIG_HOME: configHome,
+          MCP_LIST: "box",
+          PAPERCLIP_MCP_REGISTRY_ROOT: registryRoot,
+        },
+        config: {},
+      }),
+    ).rejects.toThrow(/blocked_status/);
+  });
 });

@@ -2,12 +2,20 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
+import {
+  loadMcpRegistry,
+  type McpRegistry,
+  renderOpencodeMcp,
+  resolveMcpAllowlist,
+} from "@paperclipai/adapter-utils/mcp-allowlist";
 
 type PreparedOpenCodeRuntimeConfig = {
   env: Record<string, string>;
   notes: string[];
   cleanup: () => Promise<void>;
 };
+
+const DEFAULT_MCP_REGISTRY_ROOT = "/Users/cassio/mcp-server/_paperclip";
 
 function resolveXdgConfigHome(env: Record<string, string>): string {
   return (
@@ -31,13 +39,81 @@ async function readJsonObject(filepath: string): Promise<Record<string, unknown>
   }
 }
 
+function resolveMcpRegistryRoot(env: Record<string, string>): string {
+  const fromEnv = env.PAPERCLIP_MCP_REGISTRY_ROOT?.trim()
+    || process.env.PAPERCLIP_MCP_REGISTRY_ROOT?.trim();
+  if (fromEnv && fromEnv.length > 0) return fromEnv;
+  return DEFAULT_MCP_REGISTRY_ROOT;
+}
+
+function resolveRunMcpScript(env: Record<string, string>): string | undefined {
+  const fromEnv = env.PAPERCLIP_MCP_RUN_SCRIPT?.trim()
+    || process.env.PAPERCLIP_MCP_RUN_SCRIPT?.trim();
+  return fromEnv && fromEnv.length > 0 ? fromEnv : undefined;
+}
+
+/**
+ * Applies the per-agent `MCP_LIST` allowlist to the in-memory opencode
+ * config. Filters whatever was inherited from the shared `opencode.json#mcp`
+ * tree, keeping only ids in the allowlist; for ids in the allowlist that
+ * aren't already in `mcp`, adds the rendered entry from the registry.
+ *
+ * Fail-closed: any resolution error (invalid token / unknown id / blocked
+ * status) is thrown so the caller never spawns the CLI with a partial /
+ * silently-broken MCP set.
+ *
+ * Returns `null` when MCP_LIST is empty/unset, signaling that the existing
+ * `opencode.json#mcp` block should remain untouched.
+ */
+async function applyMcpListToOpencodeConfig(input: {
+  config: Record<string, unknown>;
+  env: Record<string, string>;
+  registry?: McpRegistry;
+}): Promise<{ config: Record<string, unknown>; notes: string[] } | null> {
+  const raw = input.env.MCP_LIST;
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return null;
+  }
+  const registry = input.registry ?? (await loadMcpRegistry(resolveMcpRegistryRoot(input.env)));
+  const result = resolveMcpAllowlist({
+    rawAllowlist: raw,
+    registry,
+    runMcpScript: resolveRunMcpScript(input.env),
+  });
+  if (result.errors.length > 0) {
+    const messages = result.errors.map((e) => `[${e.kind}] ${e.message}`).join("; ");
+    throw new Error(`opencode_local: MCP_LIST validation failed — ${messages}`);
+  }
+  const allowedIds = new Set(result.resolved.map((entry) => entry.id));
+  const inheritedMcp = isPlainObject(input.config.mcp) ? input.config.mcp : {};
+  const filteredInherited: Record<string, unknown> = {};
+  for (const [id, value] of Object.entries(inheritedMcp)) {
+    if (allowedIds.has(id)) filteredInherited[id] = value;
+  }
+  const rendered = renderOpencodeMcp(result.resolved);
+  // Inherited entry (if present and shape-compatible) wins; for missing ids
+  // we add the rendered fallback that points at run-mcp.sh.
+  const finalMcp: Record<string, unknown> = { ...rendered, ...filteredInherited };
+  const nextConfig = { ...input.config, mcp: finalMcp };
+  const notes = [
+    `Applied MCP_LIST allowlist: kept ${Object.keys(filteredInherited).length} inherited entries; injected ${
+      Object.keys(rendered).length - Object.keys(filteredInherited).length
+    } rendered entries; total ${Object.keys(finalMcp).length}.`,
+  ];
+  return { config: nextConfig, notes };
+}
+
 export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
+  registry?: McpRegistry;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
-  if (!skipPermissions) {
+  const hasMcpList =
+    typeof input.env.MCP_LIST === "string" && input.env.MCP_LIST.trim().length > 0;
+
+  if (!skipPermissions && !hasMcpList) {
     return {
       env: input.env,
       notes: [],
@@ -78,16 +154,42 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   }
 
   const existingConfig = await readJsonObject(runtimeConfigPath);
-  const existingPermission = isPlainObject(existingConfig.permission)
-    ? existingConfig.permission
-    : {};
-  const nextConfig = {
-    ...existingConfig,
-    permission: {
-      ...existingPermission,
-      external_directory: "allow",
-    },
-  };
+  let nextConfig: Record<string, unknown> = existingConfig;
+  const notes: string[] = [];
+
+  if (skipPermissions) {
+    const existingPermission = isPlainObject(nextConfig.permission)
+      ? nextConfig.permission
+      : {};
+    nextConfig = {
+      ...nextConfig,
+      permission: {
+        ...existingPermission,
+        external_directory: "allow",
+      },
+    };
+    notes.push(
+      "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
+    );
+  }
+
+  try {
+    const mcpResult = await applyMcpListToOpencodeConfig({
+      config: nextConfig,
+      env: input.env,
+      registry: input.registry,
+    });
+    if (mcpResult) {
+      nextConfig = mcpResult.config;
+      notes.push(...mcpResult.notes);
+    }
+  } catch (err) {
+    // Cleanup the tmp dir before propagating, otherwise the spawn fails
+    // and we leak the directory.
+    await fs.rm(runtimeConfigHome, { recursive: true, force: true });
+    throw err;
+  }
+
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
 
   return {
@@ -95,9 +197,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       ...input.env,
       XDG_CONFIG_HOME: runtimeConfigHome,
     },
-    notes: [
-      "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
-    ],
+    notes,
     cleanup: async () => {
       await fs.rm(runtimeConfigHome, { recursive: true, force: true });
     },

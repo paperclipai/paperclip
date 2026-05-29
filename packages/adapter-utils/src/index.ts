@@ -62,6 +62,33 @@ export {
 } from "./command-redaction.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
+export {
+  parseMcpAllowlist,
+  loadMcpRegistry,
+  resolveMcpAllowlist,
+  resolveMcpAllowlistFromEnv,
+  renderOpencodeMcp,
+  renderCodexMcpToml,
+  renderGeminiMcpSettings,
+  renderBobMcpSettings,
+  MCP_ALLOWLIST_DEFAULTS,
+} from "./mcp-allowlist.js";
+export type {
+  ParsedMcpAllowlist,
+  McpRegistry,
+  McpRegistryEntry,
+  McpRegistryServer,
+  McpManifest,
+  McpManifestEnvironment,
+  McpEntry,
+  McpResolutionError,
+  McpResolutionErrorKind,
+  ResolveMcpAllowlistInput,
+  ResolveMcpAllowlistResult,
+  OpencodeMcpServerConfig,
+  GeminiMcpServerConfig,
+  BobMcpServerConfig,
+} from "./mcp-allowlist.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
 // The sandbox callback bridge stays available via its dedicated subpath export.
 export type {

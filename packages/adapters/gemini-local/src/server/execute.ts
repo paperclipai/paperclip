@@ -171,6 +171,157 @@ async function buildGeminiSkillsDir(
   return target;
 }
 
+const GEMINI_SHARED_SYMLINK_FILES = [
+  "oauth_creds.json",
+  "google_accounts.json",
+  "installation_id",
+  "projects.json",
+] as const;
+
+const DEFAULT_MCP_REGISTRY_ROOT = "/Users/cassio/mcp-server/_paperclip";
+
+/**
+ * Result of preparing a per-agent ephemeral Gemini HOME. The CLI is invoked
+ * with `HOME=ephemeralHomeDir` so it reads `<ephemeralHomeDir>/.gemini/...`
+ * — credentials are symlinked from the real shared `~/.gemini/`, and
+ * `settings.json` is rewritten with an `mcpServers` map filtered by the
+ * `MCP_LIST` allowlist. Skills are linked into the ephemeral
+ * `<ephemeralHomeDir>/.gemini/skills/` so they don't pollute the shared
+ * skills dir.
+ *
+ * Cleanup removes the temp dir; safe to call even on failure.
+ */
+type PreparedGeminiHome = {
+  ephemeralHomeDir: string;
+  skillsHome: string;
+  notes: string[];
+  cleanup: () => Promise<void>;
+};
+
+function resolveMcpRegistryRoot(env: Record<string, string>): string {
+  return env.PAPERCLIP_MCP_REGISTRY_ROOT?.trim() || DEFAULT_MCP_REGISTRY_ROOT;
+}
+
+function resolveRunMcpScript(env: Record<string, string>): string | undefined {
+  const fromEnv = env.PAPERCLIP_MCP_RUN_SCRIPT?.trim();
+  return fromEnv && fromEnv.length > 0 ? fromEnv : undefined;
+}
+
+/**
+ * Builds an ephemeral HOME for the gemini CLI when `MCP_LIST` is set,
+ * isolating the per-agent `mcpServers` selection from the shared
+ * `~/.gemini/settings.json`.
+ *
+ * Returns `null` when MCP_LIST is empty / unset, signalling the caller
+ * should keep using the shared HOME (legacy path).
+ *
+ * Fail-closed: throws on resolution errors so the caller never spawns the
+ * CLI with a partial / silently-broken MCP set.
+ *
+ * Exported for unit tests; runtime callers go through the integrated
+ * `execute` flow.
+ */
+export async function prepareEphemeralGeminiHome(input: {
+  env: Record<string, string>;
+  sharedHomeDir: string;
+  skillsEntries: Array<{ key: string; runtimeName: string; source: string }>;
+  desiredSkillNames?: string[];
+}): Promise<PreparedGeminiHome | null> {
+  const raw = input.env.MCP_LIST;
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return null;
+  }
+
+  // Lazy import to avoid loading the registry when MCP_LIST is unset.
+  const {
+    loadMcpRegistry,
+    renderGeminiMcpSettings,
+    resolveMcpAllowlist,
+  } = await import("@paperclipai/adapter-utils/mcp-allowlist");
+
+  const registry = await loadMcpRegistry(resolveMcpRegistryRoot(input.env));
+  const result = resolveMcpAllowlist({
+    rawAllowlist: raw,
+    registry,
+    runMcpScript: resolveRunMcpScript(input.env),
+  });
+  if (result.errors.length > 0) {
+    const messages = result.errors.map((e) => `[${e.kind}] ${e.message}`).join("; ");
+    throw new Error(`gemini_local: MCP_LIST validation failed — ${messages}`);
+  }
+
+  const ephemeralHomeDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-home-"));
+  const cleanup = async () => {
+    await fs.rm(ephemeralHomeDir, { recursive: true, force: true });
+  };
+
+  try {
+    const ephemeralGeminiDir = path.join(ephemeralHomeDir, ".gemini");
+    await fs.mkdir(ephemeralGeminiDir, { recursive: true });
+
+    const sharedGeminiDir = path.join(input.sharedHomeDir, ".gemini");
+
+    // Symlink credential / state files so the CLI keeps using the host-level
+    // Gemini auth and project metadata. We deliberately don't symlink
+    // `settings.json` so we can write a per-agent version.
+    for (const name of GEMINI_SHARED_SYMLINK_FILES) {
+      const source = path.join(sharedGeminiDir, name);
+      try {
+        await fs.access(source);
+      } catch {
+        continue;
+      }
+      await fs.symlink(source, path.join(ephemeralGeminiDir, name));
+    }
+
+    // Read the shared settings.json (best-effort) so we preserve auth /
+    // theme settings, then overlay mcpServers.
+    let baseSettings: Record<string, unknown> = {};
+    try {
+      const raw = await fs.readFile(path.join(sharedGeminiDir, "settings.json"), "utf8");
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        baseSettings = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // ignore
+    }
+    const renderedMcp = renderGeminiMcpSettings(result.resolved);
+    const nextSettings = { ...baseSettings, ...renderedMcp };
+    await fs.writeFile(
+      path.join(ephemeralGeminiDir, "settings.json"),
+      `${JSON.stringify(nextSettings, null, 2)}\n`,
+      "utf8",
+    );
+
+    // Materialize skills directly inside the ephemeral home so we don't
+    // touch the shared `~/.gemini/skills/`.
+    const skillsHome = path.join(ephemeralGeminiDir, "skills");
+    await fs.mkdir(skillsHome, { recursive: true });
+    const desiredSet = new Set(input.desiredSkillNames ?? input.skillsEntries.map((e) => e.key));
+    for (const entry of input.skillsEntries) {
+      if (!desiredSet.has(entry.key)) continue;
+      try {
+        await fs.symlink(entry.source, path.join(skillsHome, entry.runtimeName));
+      } catch {
+        // ignore — best-effort, the legacy path also tolerates missing skills
+      }
+    }
+
+    return {
+      ephemeralHomeDir,
+      skillsHome,
+      notes: [
+        `Prepared ephemeral Gemini HOME with MCP_LIST allowlist (${result.resolved.length} entries) at ${ephemeralHomeDir}.`,
+      ],
+      cleanup,
+    };
+  } catch (err) {
+    await cleanup();
+    throw err;
+  }
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
@@ -207,14 +358,56 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const geminiSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredGeminiSkillNames = resolvePaperclipDesiredSkillNames(config, geminiSkillEntries);
-  if (!executionTargetIsRemote) {
-    await ensureGeminiSkillsInjected(onLog, geminiSkillEntries, desiredGeminiSkillNames);
-  }
 
   const envConfig = parseObject(config.env);
+  const mcpListFromConfig =
+    typeof envConfig.MCP_LIST === "string" && envConfig.MCP_LIST.trim().length > 0
+      ? envConfig.MCP_LIST
+      : "";
+  const mcpRegistryRootFromConfig =
+    typeof envConfig.PAPERCLIP_MCP_REGISTRY_ROOT === "string"
+      && envConfig.PAPERCLIP_MCP_REGISTRY_ROOT.trim().length > 0
+      ? envConfig.PAPERCLIP_MCP_REGISTRY_ROOT
+      : "";
+  const mcpRunScriptFromConfig =
+    typeof envConfig.PAPERCLIP_MCP_RUN_SCRIPT === "string"
+      && envConfig.PAPERCLIP_MCP_RUN_SCRIPT.trim().length > 0
+      ? envConfig.PAPERCLIP_MCP_RUN_SCRIPT
+      : "";
+
+  // When MCP_LIST is set we route the CLI through an ephemeral HOME so the
+  // per-agent mcpServers selection doesn't bleed into the shared
+  // ~/.gemini/settings.json. Skills also live inside that ephemeral HOME,
+  // so we skip the legacy `ensureGeminiSkillsInjected` path which writes
+  // into the shared `~/.gemini/skills/`.
+  let preparedEphemeralHome: PreparedGeminiHome | null = null;
+  if (!executionTargetIsRemote) {
+    if (mcpListFromConfig) {
+      const mcpEnv: Record<string, string> = { MCP_LIST: mcpListFromConfig };
+      if (mcpRegistryRootFromConfig) mcpEnv.PAPERCLIP_MCP_REGISTRY_ROOT = mcpRegistryRootFromConfig;
+      if (mcpRunScriptFromConfig) mcpEnv.PAPERCLIP_MCP_RUN_SCRIPT = mcpRunScriptFromConfig;
+      preparedEphemeralHome = await prepareEphemeralGeminiHome({
+        env: mcpEnv,
+        sharedHomeDir: os.homedir(),
+        skillsEntries: geminiSkillEntries,
+        desiredSkillNames: desiredGeminiSkillNames,
+      });
+      if (preparedEphemeralHome) {
+        for (const note of preparedEphemeralHome.notes) {
+          await onLog("stdout", `[paperclip] ${note}\n`);
+        }
+      }
+    } else {
+      await ensureGeminiSkillsInjected(onLog, geminiSkillEntries, desiredGeminiSkillNames);
+    }
+  }
+
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  if (preparedEphemeralHome) {
+    env.HOME = preparedEphemeralHome.ephemeralHomeDir;
+  }
   env.PAPERCLIP_RUN_ID = runId;
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
@@ -671,6 +864,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       paperclipBridge?.stop(),
       restoreRemoteWorkspace?.(),
       localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
+      preparedEphemeralHome?.cleanup().catch(() => undefined) ?? Promise.resolve(),
     ]);
   }
 }
