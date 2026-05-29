@@ -70,6 +70,7 @@ export const issues = pgTable(
   },
   (table) => ({
     companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
+    companyUpdatedAtIdx: index("issues_company_updated_at_idx").on(table.companyId, table.updatedAt),
     assigneeStatusIdx: index("issues_company_assignee_status_idx").on(
       table.companyId,
       table.assigneeAgentId,
