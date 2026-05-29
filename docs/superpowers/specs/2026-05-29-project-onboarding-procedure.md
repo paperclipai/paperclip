@@ -121,28 +121,48 @@ Post this inventory as a document on the kickoff issue (key: `inventory`).
 
 ---
 
-## Step 3 — Create Setup Tasks from Inventory
+## Step 3 — Structure All Findings as Sub-Issues
 
-For each item in the inventory that is **not already satisfied**, create a Paperclip task.
+**Every item found in discovery becomes a child issue of the kickoff issue.** No flat tasks. The kickoff issue is the parent; everything discovered hangs off it with `parentId` set to the kickoff issue ID. When all children reach `done`, Paperclip wakes the parent automatically and the kickoff closes.
 
-**From doc/dependency scan:**
-- Missing environment variable → `[Setup] Configure <VAR_NAME> for <project>` → DevOpsEngineer
-- Missing service → `[Setup] Provision <service> for <project>` → DevOpsEngineer
-- Undocumented requirement → `[Docs] Document <requirement> in <project> README` → lead agent
-- Broken setup step → `[Fix] <description of broken step>` → appropriate engineer
-- Missing CI check → `[CI] Add <check> to <project> pipeline` → DevOpsEngineer
+Group children into **category parent issues** first, then individual tasks under those:
 
-**From GitHub issues scan:**
-- Critical issues (`bug`/`fix`) → create Paperclip task immediately, title prefixed `[GH#N]`, routed by topic per the standard routing table
-- Backlog issues → leave for PM dispatch routine to ingest on its next cycle (no manual task needed)
-- Ambiguous/unlabelled → `[Triage] GH#N: <title>` → CTO
+```
+[Kickoff] MyProject
+├── [Onboarding] Setup — environment & services
+│   ├── [Setup] Configure AUTOBOT_AUDIT_LOG_FILE
+│   ├── [Setup] Provision Redis
+│   └── [CI] Add linting check to pipeline
+├── [Onboarding] Docs gaps
+│   └── [Docs] Document local dev setup in README
+├── [Onboarding] GitHub issues — critical
+│   ├── [GH#42] fix(backend): crash on startup
+│   └── [GH#38] bug(auth): token refresh fails
+├── [Onboarding] GitHub issues — triage
+│   └── [Triage] GH#51: unclear ownership
+└── [Onboarding] Pull requests — action needed
+    ├── [Merge] PR#88: approved but unmerged
+    └── [Review] PR#91: open 9 days, no review
+```
 
-**From pull request scan:**
-- Failing CI → `[Fix CI] PR#N: <title>` → DevOpsEngineer or BackendEngineer depending on failing check
-- Approved, not merged → `[Merge] PR#N: <title> — approved but unmerged` → CodeReviewer
-- Open > 7 days, no review → `[Review] PR#N: <title>` → CodeReviewer
+Create the category parents first (status `blocked`, `blockedByIssueIds` = their children), then the leaf children. Set `projectId` to the Operations project on every issue.
 
-Set `projectId` to the Operations project ID on all setup tasks — they belong to Operations, not the target project, until resolved.
+**Routing for leaf children:**
+
+| Finding | Assignee |
+|---|---|
+| Missing env var | DevOpsEngineer |
+| Missing service | DevOpsEngineer |
+| Undocumented requirement | lead agent |
+| Broken setup step | appropriate engineer by topic |
+| Missing CI check | DevOpsEngineer |
+| Critical GH issue (`bug`/`fix`) | routed by topic per standard routing table |
+| Ambiguous GH issue | CTO |
+| Failing CI on PR | DevOpsEngineer or BackendEngineer |
+| Approved + unmerged PR | CodeReviewer |
+| Stale PR (>7 days, no review) | CodeReviewer |
+
+Backlog GH issues (`feat`/`design`) are **not** sub-issued here — leave them for the PM dispatch routine to ingest on its next cycle.
 
 ---
 
