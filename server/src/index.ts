@@ -675,8 +675,11 @@ export async function startServer(): Promise<StartedServer> {
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
+    // Runs younger than RUN_REQUEUE_AGE_SECONDS (default 300s) are requeued rather than failed,
+    // recovering work that was interrupted by an unexpected server restart (e.g. OOM).
+    const startupRequeueAgeSeconds = Math.max(0, parseInt(process.env.RUN_REQUEUE_AGE_SECONDS ?? "300", 10) || 300);
     void heartbeat
-      .reapOrphanedRuns()
+      .reapOrphanedRuns({ requeueYoungRunAgeSeconds: startupRequeueAgeSeconds })
       .then(() => heartbeat.promoteDueScheduledRetries())
       .then(async (promotion) => {
         await heartbeat.resumeQueuedRuns();

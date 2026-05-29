@@ -393,6 +393,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
+    startedAt?: Date;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -448,7 +449,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processLossRetryCount: input?.processLossRetryCount ?? 0,
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
-      startedAt: now,
+      startedAt: input?.startedAt ?? now,
       updatedAt: new Date("2026-03-19T00:00:00.000Z"),
     });
 
@@ -947,6 +948,87 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(lease?.status).toBe("failed");
     expect(lease?.releasedAt).toBeTruthy();
+  });
+
+  it("requeues a young orphaned run on startup instead of permanently failing it", async () => {
+    // Seed a run that started 30 seconds ago (within the 300s default threshold)
+    const recentStart = new Date(Date.now() - 30_000);
+    const { agentId, runId, issueId } = await seedRunFixture({ startedAt: recentStart });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ requeueYoungRunAgeSeconds: 300 });
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+    expect(result.requeued).toBe(1);
+    expect(result.requeuedRunIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs.find((row) => row.id === runId);
+    const requeuedRun = runs.find((row) => row.id !== runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("startup_requeue");
+
+    expect(requeuedRun?.status).toBe("queued");
+    expect(requeuedRun?.retryOfRunId).toBe(runId);
+    // processLossRetryCount must not be incremented — this is a server restart, not a process loss
+    expect(requeuedRun?.processLossRetryCount).toBe(0);
+
+    const requeuedSnapshot = requeuedRun?.contextSnapshot as Record<string, unknown> | undefined;
+    expect(requeuedSnapshot?.wakeReason).toBe("startup_requeue");
+    expect(requeuedSnapshot?.retryReason).toBe("startup_requeue");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(requeuedRun?.id ?? null);
+  });
+
+  it("does not requeue a run that started before the startup requeue threshold", async () => {
+    // Seed a run that started 10 minutes ago (beyond the 300s threshold)
+    const oldStart = new Date(Date.now() - 10 * 60_000);
+    const { runId } = await seedRunFixture({ startedAt: oldStart });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ requeueYoungRunAgeSeconds: 300 });
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+    expect(result.requeued).toBe(0);
+    expect(result.requeuedRunIds).toEqual([]);
+
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+  });
+
+  it("does not requeue when requeueYoungRunAgeSeconds is not set (default call)", async () => {
+    const recentStart = new Date(Date.now() - 30_000);
+    const { runId } = await seedRunFixture({ startedAt: recentStart });
+    const heartbeat = heartbeatService(db);
+
+    // Default call with no opts — no startup requeue should occur
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.requeued).toBe(0);
+    expect(result.requeuedRunIds).toEqual([]);
+
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
   });
 
   it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {

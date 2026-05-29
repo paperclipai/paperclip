@@ -4314,6 +4314,109 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return queued;
   }
 
+  async function enqueueStartupRequeue(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    now: Date,
+  ) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
+    const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    const retryContextSnapshot = {
+      ...contextSnapshot,
+      retryOfRunId: run.id,
+      wakeReason: "startup_requeue",
+      retryReason: "startup_requeue",
+    };
+
+    const queued = await db.transaction(async (tx) => {
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: "startup_requeue",
+          payload: {
+            ...(issueId ? { issueId } : {}),
+            retryOfRunId: run.id,
+          },
+          status: "queued",
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const retryRun = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: retryContextSnapshot,
+          sessionIdBefore: sessionBefore,
+          retryOfRunId: run.id,
+          processLossRetryCount: run.processLossRetryCount ?? 0,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          runId: retryRun.id,
+          updatedAt: now,
+        })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      if (issueId) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: retryRun.id,
+            executionAgentNameKey: normalizeAgentNameKey(agent.name),
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+      }
+
+      return retryRun;
+    });
+
+    publishLiveEvent({
+      companyId: queued.companyId,
+      type: "heartbeat.run.queued",
+      payload: {
+        runId: queued.id,
+        agentId: queued.agentId,
+        invocationSource: queued.invocationSource,
+        triggerDetail: queued.triggerDetail,
+        wakeupRequestId: queued.wakeupRequestId,
+      },
+    });
+
+    await appendRunEvent(queued, 1, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: "Queued automatic retry after server restart interrupted an in-flight run",
+      payload: {
+        retryOfRunId: run.id,
+      },
+    });
+
+    return queued;
+  }
+
   type ScheduledRetryGate =
     | { allowed: true }
     | {
@@ -5801,8 +5904,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; requeueYoungRunAgeSeconds?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const requeueYoungRunAgeSeconds = opts?.requeueYoungRunAgeSeconds ?? 0;
     const now = new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
@@ -5817,6 +5921,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(eq(heartbeatRuns.status, "running"));
 
     const reaped: string[] = [];
+    const requeued: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
@@ -5859,6 +5964,69 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           pid: run.processPid,
           processGroupId: run.processGroupId,
         });
+      }
+
+      // Startup requeue: if the run started within the threshold, requeue it instead of permanently failing it.
+      // This recovers work that was just starting when the server was killed (e.g. OOM restart).
+      if (requeueYoungRunAgeSeconds > 0) {
+        const startedAtMs = run.startedAt ? new Date(run.startedAt).getTime() : 0;
+        const ageSeconds = (now.getTime() - startedAtMs) / 1000;
+        if (ageSeconds < requeueYoungRunAgeSeconds) {
+          const agent = await getAgent(run.agentId);
+          if (agent) {
+            const startupMessage = `Server restart interrupted in-flight run (age ${Math.round(ageSeconds)}s); requeuing`;
+            let finalizedRun = await setRunStatus(run.id, "failed", {
+              error: startupMessage,
+              errorCode: "startup_requeue",
+              finishedAt: now,
+              resultJson: mergeRunStopMetadataForAgent(
+                { adapterType, adapterConfig },
+                "failed",
+                {
+                  resultJson: parseObject(run.resultJson),
+                  errorCode: "startup_requeue",
+                  errorMessage: startupMessage,
+                },
+              ),
+            });
+            await setWakeupStatus(run.wakeupRequestId, "failed", {
+              finishedAt: now,
+              error: startupMessage,
+            });
+            if (!finalizedRun) finalizedRun = await getRun(run.id);
+            if (!finalizedRun) continue;
+            finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
+            await releaseEnvironmentLeasesForRun({
+              runId: finalizedRun.id,
+              companyId: finalizedRun.companyId,
+              agentId: finalizedRun.agentId,
+              status: finalizedRun.status,
+              failureReason: finalizedRun.error ?? undefined,
+            });
+            const requeuedRun = await enqueueStartupRequeue(finalizedRun, agent, now);
+            logger.info(
+              { runId: run.id, ageSeconds: Math.round(ageSeconds), reason: "startup_requeue" },
+              "startup requeue: requeued in-flight run interrupted by server restart",
+            );
+            await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: `${startupMessage}; queued as ${requeuedRun.id}`,
+              payload: {
+                retryRunId: requeuedRun.id,
+                ageSeconds: Math.round(ageSeconds),
+                ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
+              },
+            });
+            await finalizeAgentStatus(run.agentId, "failed");
+            await startNextQueuedRunForAgent(run.agentId);
+            runningProcesses.delete(run.id);
+            reaped.push(run.id);
+            requeued.push(run.id);
+            continue;
+          }
+        }
       }
 
       const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
@@ -5927,7 +6095,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (reaped.length > 0) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
-    return { reaped: reaped.length, runIds: reaped };
+    return { reaped: reaped.length, runIds: reaped, requeued: requeued.length, requeuedRunIds: requeued };
   }
 
   async function resumeQueuedRuns() {
