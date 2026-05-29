@@ -29,6 +29,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
   logActivity: mockLogActivity,
+  heartbeatService: () => ({}),
 }));
 
 function createApp(actor: Record<string, unknown> = {

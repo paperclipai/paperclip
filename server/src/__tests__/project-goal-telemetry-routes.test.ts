@@ -40,6 +40,7 @@ vi.mock("../services/index.js", () => ({
   projectService: () => mockProjectService,
   secretService: () => mockSecretService,
   workspaceOperationService: () => mockWorkspaceOperationService,
+  heartbeatService: () => ({}),
 }));
 
 vi.mock("../services/workspace-runtime.js", () => ({

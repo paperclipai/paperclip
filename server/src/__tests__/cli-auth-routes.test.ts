@@ -32,6 +32,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   notifyHireApproved: vi.fn(),
   deduplicateAgentName: vi.fn((name: string) => name),
+  heartbeatService: () => ({}),
 }));
 
 function registerModuleMocks() {
