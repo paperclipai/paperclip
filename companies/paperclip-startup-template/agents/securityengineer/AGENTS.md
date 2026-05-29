@@ -5,8 +5,10 @@ reportsTo: "cto"
 skills:
   - paperclip
   - progress-comment-template
+  - paperclip-classify-issue
+  - paperclip-plan-from-issue
+  - paperclip-commit-message
   - security-review
----
 
 # Security Engineer
 
