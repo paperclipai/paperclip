@@ -449,13 +449,11 @@ export function extractMentionedSkillIdsFromSources(
   companyId: string,
   sources: Array<string | null | undefined>,
 ): string[] {
-  sources: Array<string | null | undefined>,
-): string[] {
   const mentionedIds = new Set<string>();
   for (const source of sources) {
     if (typeof source !== "string" || source.length === 0) continue;
     // Match all skill:// URIs
-    const skillUriRegex = /skill://([a-zA-Z0-9._-]+)/g;
+    const skillUriRegex = /skill:\/\/([a-zA-Z0-9._-]+)/g;
     let match;
     while ((match = skillUriRegex.exec(source)) !== null) {
       const rawId = match[1];
@@ -465,7 +463,7 @@ export function extractMentionedSkillIdsFromSources(
       } else {
         // Resolve slug to UUID via company skills service
         try {
-          const resolved = companySkillsService.resolveRequestedSkillKeysOrThrow(input.companyId, [rawId]);
+          const resolved = companySkillsService.resolveRequestedSkillKeysOrThrow(companyId, [rawId]);
           if (resolved.length > 0) {
             mentionedIds.add(resolved[0].id);
           }
@@ -475,9 +473,6 @@ export function extractMentionedSkillIdsFromSources(
         }
       }
     }
-  }
-  return [...mentionedIds];
-}
   }
   return [...mentionedIds];
 }
@@ -6415,8 +6410,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const updated = await db
       .update(agents)
       .set({
-        status: outcome === "failed"         status: nextStatus,        status: nextStatus, ((existing.consecutiveFailureCount || 0) >= (parseInt(process.env.CIRCUIT_BREAKER_FAILURE_THRESHOLD || "5")) ? "paused" : nextStatus),
-        pauseReason: outcome === "failed"         status: nextStatus,        status: nextStatus, ((existing.consecutiveFailureCount || 0) >= (parseInt(process.env.CIRCUIT_BREAKER_FAILURE_THRESHOLD || "5")) ? "circuit_breaker" : null),
+        status: outcome === "failed" && (existing.consecutiveFailureCount || 0) + 1 >= parseInt(process.env.CIRCUIT_BREAKER_FAILURE_THRESHOLD || "5") ? "paused" : nextStatus,
+        pauseReason: outcome === "failed" && (existing.consecutiveFailureCount || 0) + 1 >= parseInt(process.env.CIRCUIT_BREAKER_FAILURE_THRESHOLD || "5") ? "circuit_breaker" : null,
+        consecutiveFailureCount: outcome === "failed" ? (existing.consecutiveFailureCount || 0) + 1 : 0,
+        lastFailureFingerprint: outcome === "failed" ? (errorContext?.errorCode ?? errorContext?.error?.slice(0, 120) ?? null) : null,
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
         ...(nextStatus === "error" && latestFailedRun
