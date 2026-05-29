@@ -51,10 +51,10 @@ vi.mock("../services/activity-log.js", () => ({
 import {
   environmentRunOrchestrator,
   EnvironmentRunError,
-} from "../services/environment-run-orchestrator.ts";
+} from "../services/environment-run-orchestrator.js";
 import type { Environment, EnvironmentLease, ExecutionWorkspace } from "@paperclipai/shared";
-import type { RealizedExecutionWorkspace } from "../services/workspace-runtime.ts";
-import type { EnvironmentRuntimeService } from "../services/environment-runtime.ts";
+import type { RealizedExecutionWorkspace } from "../services/workspace-runtime.js";
+import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -126,16 +126,16 @@ function makePersistedExecutionWorkspace(
     projectId: "project-1",
     projectWorkspaceId: null,
     sourceIssueId: null,
-    mode: "standard",
+    mode: "shared_workspace",
     strategyType: "project_primary",
     name: "workspace",
-    status: "open",
+    status: "active",
     cwd: "/workspace/project",
     agentCwd: "/workspace/project",
     repoUrl: null,
     baseRef: null,
     branchName: null,
-    providerType: "local",
+    providerType: "local_fs",
     providerRef: null,
     derivedFromExecutionWorkspaceId: null,
     lastUsedAt: new Date(),

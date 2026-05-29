@@ -6,7 +6,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { environmentService } from "../services/environments.ts";
+import { environmentService } from "../services/environments.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -24,7 +24,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
 
   beforeAll(async () => {
     const started = await startEmbeddedPostgresTestDatabase("environment-service");
-    stopDb = started.stop;
+    stopDb = started.cleanup;
     db = createDb(started.connectionString);
     svc = environmentService(db);
   });
@@ -234,11 +234,13 @@ describeEmbeddedPostgres("environmentService leases", () => {
 
     const first = await svc.create(companyId, {
       name: "Production SSH",
+      status: "active",
       driver: "ssh",
       config: { host: "prod.example.com", username: "deploy" },
     });
     const second = await svc.create(companyId, {
       name: "Staging SSH",
+      status: "active",
       driver: "ssh",
       config: { host: "staging.example.com", username: "deploy" },
     });
