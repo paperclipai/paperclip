@@ -240,6 +240,43 @@ describe("readLocalSkillImports — directory walks", () => {
     const bImport = imports.find((skill) => skill.slug === "b")!;
     expect(bImport.fileInventory.map((entry) => entry.path).sort()).toEqual(["SKILL.md"]);
   });
+
+  it("does not let a root-level SKILL.md absorb files of nested sibling skills", async () => {
+    // Mixed layout: SKILL.md at the import root AND a nested SKILL.md sub-skill.
+    // The root skill's inventory must NOT include files that belong to the nested
+    // skill, otherwise both skills would register the same files (double-inclusion).
+    const root = await makeTempDir("paperclip-skill-mixed-root-nested-");
+    await fs.writeFile(
+      path.join(root, "SKILL.md"),
+      "---\nname: root-skill\n---\n\n# root\n",
+      "utf8",
+    );
+    await fs.mkdir(path.join(root, "references"), { recursive: true });
+    await fs.writeFile(path.join(root, "references", "guide.md"), "# guide\n", "utf8");
+    const nested = path.join(root, "nested");
+    await fs.mkdir(path.join(nested, "scripts"), { recursive: true });
+    await fs.writeFile(path.join(nested, "SKILL.md"), "---\nname: nested\n---\n\n# nested\n", "utf8");
+    await fs.writeFile(path.join(nested, "scripts", "tool.py"), "print('hi')\n", "utf8");
+
+    const imports = await readLocalSkillImports(
+      "66666666-6666-4666-8666-666666666666",
+      root,
+    );
+
+    expect(imports.map((skill) => skill.slug).sort()).toEqual(["nested", "root-skill"]);
+    const rootImport = imports.find((skill) => skill.slug === "root-skill")!;
+    // Root keeps only its own files; the nested/ subtree is excluded.
+    expect(rootImport.fileInventory.map((entry) => entry.path).sort()).toEqual([
+      "SKILL.md",
+      "references/guide.md",
+    ]);
+    const nestedImport = imports.find((skill) => skill.slug === "nested")!;
+    // Nested keeps its own files, paths still relative to its own directory.
+    expect(nestedImport.fileInventory.map((entry) => entry.path).sort()).toEqual([
+      "SKILL.md",
+      "scripts/tool.py",
+    ]);
+  });
 });
 
 describe("missing local skill reconciliation", () => {
