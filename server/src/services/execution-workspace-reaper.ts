@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import type {
@@ -19,6 +19,7 @@ import {
 
 const ACTIVE_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const CLEANUP_WARNINGS_STORAGE_REASON = "cleanup_warnings";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type SourceIssueRow = Pick<typeof issues.$inferSelect, "id" | "identifier" | "status">;
@@ -55,6 +56,35 @@ function getReportedReason(
   fallback: ExecutionWorkspaceReapItem["reason"],
 ) {
   return reasons[0] ?? fallback;
+}
+
+function isArchiveCandidate(item: ExecutionWorkspaceReapItem) {
+  return (
+    item.plannedAction === "archive_record" ||
+    item.plannedAction === "archive_record_and_delete_files" ||
+    item.plannedAction === "archive_record_cleanup_skipped"
+  );
+}
+
+function cleanupWarningReason(count: number) {
+  return count === 1
+    ? "filesystem cleanup reported 1 warning"
+    : `filesystem cleanup reported ${count} warnings`;
+}
+
+function disappearedBeforeArchive(item: ExecutionWorkspaceReapItem): ExecutionWorkspaceReapItem {
+  return {
+    ...item,
+    reason: "none",
+    reasons: [],
+    pathExists: false,
+    activeLinkedCount: 0,
+    plannedAction: "noop_no_cleanup_reason",
+    archived: false,
+    cleanupAttempted: false,
+    cleanupDeleted: false,
+    cleanupSkippedReason: "workspace disappeared before archive",
+  };
 }
 
 function isCleanupUnsafe(readiness: ExecutionWorkspaceCloseReadiness): string | null {
@@ -106,11 +136,16 @@ export function executionWorkspaceReaperService(db: Db) {
   const workspaceSvc = executionWorkspaceService(db);
   const operationsSvc = workspaceOperationService(db);
 
-  async function buildDryRunItems(companyId: string, deleteFiles: boolean): Promise<ExecutionWorkspaceReapItem[]> {
+  async function buildReapItems(companyId: string, deleteFiles: boolean, workspaceId?: string): Promise<ExecutionWorkspaceReapItem[]> {
     const rows = await db
       .select()
       .from(executionWorkspaces)
-      .where(eq(executionWorkspaces.companyId, companyId));
+      .where(
+        workspaceId
+          ? and(eq(executionWorkspaces.companyId, companyId), eq(executionWorkspaces.id, workspaceId))
+          : eq(executionWorkspaces.companyId, companyId),
+      )
+      .orderBy(executionWorkspaces.id);
     const workspaceIds = rows.map((row) => row.id);
     const sourceIssueIds = Array.from(new Set(rows.map((row) => row.sourceIssueId).filter((value): value is string => Boolean(value))));
 
@@ -199,6 +234,41 @@ export function executionWorkspaceReaperService(db: Db) {
     return items;
   }
 
+  async function buildApplyItem(companyId: string, workspaceId: string, deleteFiles: boolean) {
+    return await buildReapItems(companyId, deleteFiles, workspaceId).then((items) => items[0] ?? null);
+  }
+
+  function sourceIssueMissingPredicate(companyId: string) {
+    return sql`(
+      ${executionWorkspaces.sourceIssueId} is null
+      or not exists (
+        select 1
+        from ${issues}
+        where ${issues.companyId} = ${companyId}
+          and ${issues.id} = ${executionWorkspaces.sourceIssueId}
+      )
+    )`;
+  }
+
+  function sourceIssueTerminalPredicate(companyId: string) {
+    return sql`exists (
+      select 1
+      from ${issues}
+      where ${issues.companyId} = ${companyId}
+        and ${issues.id} = ${executionWorkspaces.sourceIssueId}
+        and ${issues.status} in ('done', 'cancelled')
+    )`;
+  }
+
+  function cleanupReasonStillAppliesPredicate(companyId: string, item: ExecutionWorkspaceReapItem) {
+    const predicates = [];
+    if (item.reasons.includes("path_missing")) predicates.push(sql`true`);
+    if (item.reasons.includes("source_issue_missing")) predicates.push(sourceIssueMissingPredicate(companyId));
+    if (item.reasons.includes("source_issue_terminal")) predicates.push(sourceIssueTerminalPredicate(companyId));
+    if (predicates.length === 0) return sql`false`;
+    return predicates.length === 1 ? predicates[0]! : or(...predicates);
+  }
+
   async function archiveWorkspace(companyId: string, item: ExecutionWorkspaceReapItem) {
     const now = new Date();
     const cleanupReason = `reaper:${item.reasons.join(",")}`;
@@ -216,6 +286,7 @@ export function executionWorkspaceReaperService(db: Db) {
           eq(executionWorkspaces.id, item.workspaceId),
           eq(executionWorkspaces.companyId, companyId),
           sql`${executionWorkspaces.status} <> 'archived'`,
+          cleanupReasonStillAppliesPredicate(companyId, item),
           sql`not exists (
             select 1
             from ${issues}
@@ -298,7 +369,7 @@ export function executionWorkspaceReaperService(db: Db) {
       await db
         .update(executionWorkspaces)
         .set({
-          cleanupReason: `reaper:${item.reasons.join(",")}; cleanup:${cleanup.warnings.join(" | ")}`,
+          cleanupReason: `reaper:${item.reasons.join(",")}; cleanup:${CLEANUP_WARNINGS_STORAGE_REASON}:${cleanup.warnings.length}`,
           updatedAt: new Date(),
         })
         .where(eq(executionWorkspaces.id, item.workspaceId));
@@ -307,7 +378,7 @@ export function executionWorkspaceReaperService(db: Db) {
     return {
       cleanupAttempted: true,
       cleanupDeleted: cleanup.cleaned,
-      cleanupSkippedReason: cleanup.warnings.length > 0 ? cleanup.warnings.join(" | ") : null,
+      cleanupSkippedReason: cleanup.warnings.length > 0 ? cleanupWarningReason(cleanup.warnings.length) : null,
     };
   }
 
@@ -315,32 +386,38 @@ export function executionWorkspaceReaperService(db: Db) {
     reap: async (companyId: string, options?: ExecutionWorkspaceReapOptions): Promise<ExecutionWorkspaceReapReport> => {
       const dryRun = options?.dryRun ?? true;
       const deleteFiles = options?.deleteFiles ?? false;
-      const dryRunItems = await buildDryRunItems(companyId, deleteFiles);
+      const dryRunItems = await buildReapItems(companyId, deleteFiles);
       if (dryRun) {
         return makeReport(companyId, true, deleteFiles, dryRunItems);
       }
 
       const items: ExecutionWorkspaceReapItem[] = [];
       for (const item of dryRunItems) {
-        const isCandidate =
-          item.plannedAction === "archive_record" ||
-          item.plannedAction === "archive_record_and_delete_files" ||
-          item.plannedAction === "archive_record_cleanup_skipped";
-        if (!isCandidate) {
+        if (!isArchiveCandidate(item)) {
           items.push(item);
           continue;
         }
 
-        const archived = await archiveWorkspace(companyId, item);
+        const applyItem = await buildApplyItem(companyId, item.workspaceId, deleteFiles);
+        if (!applyItem) {
+          items.push(disappearedBeforeArchive(item));
+          continue;
+        }
+        if (!isArchiveCandidate(applyItem)) {
+          items.push(applyItem);
+          continue;
+        }
+
+        const archived = await archiveWorkspace(companyId, applyItem);
         const cleanup = archived
-          ? await cleanupWorkspace(companyId, item)
+          ? await cleanupWorkspace(companyId, applyItem)
           : {
               cleanupAttempted: false,
               cleanupDeleted: false,
               cleanupSkippedReason: "workspace became ineligible before archive",
             };
         items.push({
-          ...item,
+          ...applyItem,
           archived,
           cleanupAttempted: cleanup.cleanupAttempted,
           cleanupDeleted: cleanup.cleanupDeleted,

@@ -5,7 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import {
   companies,
   createDb,
@@ -13,6 +13,7 @@ import {
   issues,
   projectWorkspaces,
   projects,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -157,6 +158,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(workspaceOperations);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -670,6 +672,242 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       status: "active",
     });
   });
+
+  it("revalidates apply candidates before archiving", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const sourceDoneIssueId = randomUUID();
+    const sourceActiveIssueId = randomUUID();
+    const firstWorkspaceId = "00000000-0000-4000-8000-000000000001";
+    const staleWorkspaceId = "00000000-0000-4000-8000-000000000002";
+    const projectWorkspacePath = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-reaper-project-"));
+    const firstWorkspacePath = await createTempRepo();
+    const staleWorkspacePath = path.join(os.tmpdir(), `paperclip-reaper-late-${randomUUID()}`);
+    tempDirs.add(projectWorkspacePath);
+    tempDirs.add(firstWorkspacePath);
+    tempDirs.add(staleWorkspacePath);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace reaper race",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: projectWorkspacePath,
+    });
+    await db.insert(issues).values([
+      {
+        id: sourceDoneIssueId,
+        companyId,
+        projectId,
+        title: "Finished source",
+        status: "done",
+        priority: "medium",
+        identifier: "PAP-30",
+      },
+      {
+        id: sourceActiveIssueId,
+        companyId,
+        projectId,
+        title: "Active source",
+        status: "in_progress",
+        priority: "medium",
+        identifier: "PAP-31",
+      },
+    ]);
+    await db.insert(executionWorkspaces).values([
+      {
+        id: firstWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: sourceDoneIssueId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "First candidate",
+        status: "active",
+        providerType: "local_fs",
+        cwd: firstWorkspacePath,
+        metadata: {
+          createdByRuntime: true,
+          config: {
+            cleanupCommand: `mkdir -p ${JSON.stringify(staleWorkspacePath)}`,
+          },
+        },
+      },
+      {
+        id: staleWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: sourceActiveIssueId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "Stale path-missing candidate",
+        status: "active",
+        providerType: "local_fs",
+        cwd: staleWorkspacePath,
+        metadata: {
+          createdByRuntime: true,
+        },
+      },
+    ]);
+
+    const report = await executionWorkspaceReaperService(db).reap(companyId, {
+      dryRun: false,
+      deleteFiles: true,
+    });
+    const itemById = new Map(report.items.map((item) => [item.workspaceId, item]));
+    const rows = await db
+      .select({
+        id: executionWorkspaces.id,
+        status: executionWorkspaces.status,
+      })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [firstWorkspaceId, staleWorkspaceId]));
+    const statusById = new Map(rows.map((row) => [row.id, row.status]));
+
+    expect(report).toMatchObject({
+      dryRun: false,
+      deleteFiles: true,
+      checkedCount: 2,
+      candidateCount: 1,
+      archivedCount: 1,
+      noopNoReasonCount: 1,
+    });
+    expect(itemById.get(firstWorkspaceId)).toMatchObject({
+      plannedAction: "archive_record_and_delete_files",
+      archived: true,
+      cleanupAttempted: true,
+      cleanupDeleted: true,
+    });
+    expect(itemById.get(staleWorkspaceId)).toMatchObject({
+      reason: "none",
+      reasons: [],
+      pathExists: true,
+      plannedAction: "noop_no_cleanup_reason",
+      archived: false,
+    });
+    expect(statusById.get(firstWorkspaceId)).toBe("archived");
+    expect(statusById.get(staleWorkspaceId)).toBe("active");
+  }, 20_000);
+
+  it("sanitizes delete-files cleanup warnings in reaper output and storage", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const sourceDoneIssueId = randomUUID();
+    const candidateWorkspaceId = randomUUID();
+    const projectWorkspacePath = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-reaper-project-"));
+    const candidateWorkspacePath = await createTempRepo();
+    const rawCleanupOutput = "raw-cleanup-output-should-not-leak";
+    const rawCleanupError = "raw-cleanup-error-should-not-leak";
+    tempDirs.add(projectWorkspacePath);
+    tempDirs.add(candidateWorkspacePath);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace reaper cleanup",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: projectWorkspacePath,
+    });
+    await db.insert(issues).values({
+      id: sourceDoneIssueId,
+      companyId,
+      projectId,
+      title: "Finished source issue",
+      status: "done",
+      priority: "medium",
+      identifier: "PAP-40",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: candidateWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      sourceIssueId: sourceDoneIssueId,
+      mode: "isolated_workspace",
+      strategyType: "directory",
+      name: "Cleanup warning candidate",
+      status: "active",
+      providerType: "local_fs",
+      cwd: candidateWorkspacePath,
+      metadata: {
+        createdByRuntime: true,
+        config: {
+          cleanupCommand: `printf ${JSON.stringify(rawCleanupOutput)}; printf ${JSON.stringify(rawCleanupError)} >&2; exit 7`,
+        },
+      },
+    });
+
+    const report = await executionWorkspaceReaperService(db).reap(companyId, {
+      dryRun: false,
+      deleteFiles: true,
+    });
+    const item = report.items.find((entry) => entry.workspaceId === candidateWorkspaceId);
+    const row = await db
+      .select({
+        status: executionWorkspaces.status,
+        cleanupReason: executionWorkspaces.cleanupReason,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, candidateWorkspaceId))
+      .then((rows) => rows[0]);
+    const serializedItem = JSON.stringify(item);
+
+    expect(item).toMatchObject({
+      plannedAction: "archive_record_and_delete_files",
+      archived: true,
+      cleanupAttempted: true,
+      cleanupDeleted: true,
+      cleanupSkippedReason: "filesystem cleanup reported 1 warning",
+    });
+    expect(serializedItem).not.toContain(rawCleanupOutput);
+    expect(serializedItem).not.toContain(rawCleanupError);
+    expect(serializedItem).not.toContain("printf");
+    expect(row).toMatchObject({
+      status: "archived",
+      cleanupReason: "reaper:source_issue_terminal; cleanup:cleanup_warnings:1",
+    });
+    expect(row?.cleanupReason).not.toContain(rawCleanupOutput);
+    expect(row?.cleanupReason).not.toContain(rawCleanupError);
+    expect(row?.cleanupReason).not.toContain("printf");
+  }, 20_000);
 
   it("warns about dirty and unmerged git worktrees and reports cleanup actions", async () => {
     const repoRoot = await createTempRepo();

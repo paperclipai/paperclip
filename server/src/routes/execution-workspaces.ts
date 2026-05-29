@@ -24,7 +24,7 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectExecutionWorkspaceCommandPaths,
@@ -59,6 +59,7 @@ export function executionWorkspaceRoutes(db: Db) {
 
   router.post("/companies/:companyId/execution-workspaces/reap", validate(reapExecutionWorkspacesSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
+    assertBoard(req);
     assertCompanyAccess(req, companyId);
     const report = await reaperSvc.reap(companyId, req.body);
     if (!report.dryRun && report.archivedCount > 0) {

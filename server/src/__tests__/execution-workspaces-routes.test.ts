@@ -30,11 +30,11 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
 
-function createApp(companyIds = ["company-1"]) {
+function createApp(companyIds = ["company-1"], actor?: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
+    (req as any).actor = actor ?? {
       type: "board",
       userId: "local-board",
       companyIds,
@@ -147,6 +147,23 @@ describe.sequential("execution workspace routes", () => {
         excludedActiveCount: 1,
       }),
     }));
+  });
+
+  it("rejects agent callers for mutating reaper runs", async () => {
+    const res = await request(createApp(["company-1"], {
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    }))
+      .post("/api/companies/company-1/execution-workspaces/reap")
+      .send({ dryRun: false });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Board access required");
+    expect(mockExecutionWorkspaceReaperService.reap).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
 });
