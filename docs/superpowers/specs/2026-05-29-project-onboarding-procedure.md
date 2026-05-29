@@ -55,6 +55,30 @@ This is the core of onboarding. The assigned agent reads the target repo to unde
 7. **CI config:** `.github/workflows/*.yml` — what checks run, what they require
 8. **Ansible / provisioning:** `ansible/`, `provision*.yml` — infrastructure requirements
 
+### GitHub state scan
+
+Run these after reading the docs:
+
+```bash
+# Open issues — full list with labels and age
+gh issue list --repo <owner>/<repo> --state open --json number,title,labels,createdAt,assignees --limit 200
+
+# Open pull requests — with CI status and review state
+gh pr list --repo <owner>/<repo> --state open --json number,title,headRefName,reviewDecision,statusCheckRollup,createdAt,assignees --limit 50
+```
+
+Classify each:
+
+| Item | Classification |
+|---|---|
+| Issue: `bug`/`fix` label or title | Critical — needs a Paperclip task immediately |
+| Issue: `feat`/`design` | Backlog — will be picked up by PM dispatch routine |
+| Issue: no label, ambiguous | Flag for CTO triage |
+| PR: failing CI | Needs fix — create a Paperclip task |
+| PR: approved, not merged | Stale — create a Paperclip task to merge or close |
+| PR: open > 7 days, no review | Needs review — assign to CodeReviewer |
+| PR: draft | Monitor — no action needed |
+
 ### What to extract
 
 From the above, build a structured inventory:
@@ -78,6 +102,17 @@ From the above, build a structured inventory:
 ### CI checks that must pass
 - [ ] <check name>
 
+### Open GitHub issues (summary)
+- Total open: N
+- Critical (bug/fix): N — listed below
+- Backlog (feat/design): N — PM dispatch will handle
+
+### Open pull requests (summary)
+- Total open: N
+- Failing CI: N — listed below
+- Stale (approved, unmerged): N — listed below
+- Needs review (>7 days): N — listed below
+
 ### Known gaps / undocumented requirements
 - <anything found missing or unclear in the docs>
 ```
@@ -88,13 +123,24 @@ Post this inventory as a document on the kickoff issue (key: `inventory`).
 
 ## Step 3 — Create Setup Tasks from Inventory
 
-For each item in the inventory that is **not already satisfied**, create a Paperclip task:
+For each item in the inventory that is **not already satisfied**, create a Paperclip task.
 
+**From doc/dependency scan:**
 - Missing environment variable → `[Setup] Configure <VAR_NAME> for <project>` → DevOpsEngineer
 - Missing service → `[Setup] Provision <service> for <project>` → DevOpsEngineer
 - Undocumented requirement → `[Docs] Document <requirement> in <project> README` → lead agent
 - Broken setup step → `[Fix] <description of broken step>` → appropriate engineer
 - Missing CI check → `[CI] Add <check> to <project> pipeline` → DevOpsEngineer
+
+**From GitHub issues scan:**
+- Critical issues (`bug`/`fix`) → create Paperclip task immediately, title prefixed `[GH#N]`, routed by topic per the standard routing table
+- Backlog issues → leave for PM dispatch routine to ingest on its next cycle (no manual task needed)
+- Ambiguous/unlabelled → `[Triage] GH#N: <title>` → CTO
+
+**From pull request scan:**
+- Failing CI → `[Fix CI] PR#N: <title>` → DevOpsEngineer or BackendEngineer depending on failing check
+- Approved, not merged → `[Merge] PR#N: <title> — approved but unmerged` → CodeReviewer
+- Open > 7 days, no review → `[Review] PR#N: <title>` → CodeReviewer
 
 Set `projectId` to the Operations project ID on all setup tasks — they belong to Operations, not the target project, until resolved.
 
