@@ -4,7 +4,7 @@ title: "Chief Marketing Officer"
 reportsTo: "ceo"
 skills:
   - paperclip
----
+  - progress-comment-template
 
 ## Communication & Coordination Standard
 
