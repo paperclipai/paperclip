@@ -59,6 +59,8 @@ export const queryKeys = {
     detail: (id: string) => ["issues", "detail", id] as const,
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
     interactions: (issueId: string) => ["issues", "interactions", issueId] as const,
+    acceptedPlanDecompositions: (issueId: string) =>
+      ["issues", "accepted-plan-decompositions", issueId] as const,
     feedbackVotes: (issueId: string) => ["issues", "feedback-votes", issueId] as const,
     costSummary: (issueId: string, options: { excludeRoot?: boolean } = {}) =>
       options.excludeRoot

@@ -22,6 +22,7 @@ import {
   createIssueThreadInteractionSchema,
   createIssueWorkProductSchema,
   createIssueLabelSchema,
+  createAcceptedPlanDecompositionSchema,
   checkoutIssueSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
@@ -99,6 +100,7 @@ import { assertEnvironmentSelectionForCompany } from "./environment-selection.js
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
 import { environmentService } from "../services/environments.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
@@ -3692,6 +3694,151 @@ export function issueRoutes(
     res.status(201).json(issue);
   });
 
+  router.get("/issues/:id/accepted-plan-decompositions", async (req, res) => {
+    const sourceIssueId = req.params.id as string;
+    const sourceIssue = await svc.getById(sourceIssueId);
+    if (!sourceIssue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, sourceIssue.companyId);
+    const decompositions = await svc.listAcceptedPlanDecompositions(sourceIssue.id);
+    res.json(decompositions);
+  });
+
+  router.post("/issues/:id/accepted-plan-decompositions", validate(createAcceptedPlanDecompositionSchema), async (req, res) => {
+    const sourceIssueId = req.params.id as string;
+    const sourceIssue = await svc.getById(sourceIssueId);
+    if (!sourceIssue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, sourceIssue.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, sourceIssue))) return;
+
+    for (const child of req.body.children as Array<typeof req.body.children[number]>) {
+      assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(child));
+      if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, sourceIssue, child))) return;
+      if (child.assigneeAgentId || child.assigneeUserId) {
+        await assertCanAssignTasks(req, sourceIssue.companyId, {
+          projectId: child.projectId ?? sourceIssue.projectId ?? null,
+          parentIssueId: sourceIssue.id,
+          assigneeAgentId: child.assigneeAgentId ?? null,
+          assigneeUserId: child.assigneeUserId ?? null,
+        });
+      }
+      await assertIssueEnvironmentSelection(sourceIssue.companyId, child.executionWorkspaceSettings?.environmentId);
+    }
+
+    const actor = getActorInfo(req);
+    const normalizedChildren = req.body.children.map((child: typeof req.body.children[number]) => {
+      const executionPolicy = applyActorMonitorScheduledBy(
+        normalizeIssueExecutionPolicy(child.executionPolicy),
+        actor.actorType,
+      );
+      assertCanManageIssueMonitor(req, child.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+      return {
+        ...child,
+        executionPolicy,
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+        actorAgentId: actor.agentId,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      };
+    });
+
+    const result = await svc.decomposeAcceptedPlan(sourceIssue.id, {
+      acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
+      children: normalizedChildren,
+      actorAgentId: actor.agentId,
+      actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      actorRunId: actor.runId ?? null,
+    });
+
+    await logActivity(db, {
+      companyId: sourceIssue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.accepted_plan_decomposition_updated",
+      entityType: "issue",
+      entityId: sourceIssue.id,
+      details: {
+        identifier: sourceIssue.identifier,
+        acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
+        decompositionId: result.decomposition.id,
+        status: result.decomposition.status,
+        requestedChildCount: req.body.children.length,
+        childIssueIds: result.childIssueIds,
+        newlyCreatedChildIssueIds: result.newlyCreatedIssues.map((issue) => issue.id),
+      },
+    });
+
+    for (const issue of result.newlyCreatedIssues) {
+      await logActivity(db, {
+        companyId: sourceIssue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.child_created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          parentId: sourceIssue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          inheritedExecutionWorkspaceFromIssueId: sourceIssue.id,
+          acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
+          ...buildCreateIssueActivityStatusDetails(issue, res),
+        },
+      });
+
+      const executionPolicy = normalizeIssueExecutionPolicy(issue.executionPolicy);
+      if (executionPolicy?.monitor) {
+        await logActivity(db, {
+          companyId: sourceIssue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.monitor_scheduled",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            identifier: issue.identifier,
+            parentId: sourceIssue.id,
+            acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
+            nextCheckAt: executionPolicy.monitor.nextCheckAt,
+            notes: executionPolicy.monitor.notes,
+            scheduledBy: executionPolicy.monitor.scheduledBy,
+            serviceName: executionPolicy.monitor.serviceName ?? null,
+            timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
+            maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
+            recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+          },
+        });
+      }
+
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "issue_assigned",
+        mutation: "accepted_plan_decomposition",
+        contextSource: "issue.accepted_plan_decomposition",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
+
+    res.json({
+      decomposition: result.decomposition,
+      childIssueIds: result.childIssueIds,
+      newlyCreatedChildIssueIds: result.newlyCreatedIssues.map((issue) => issue.id),
+    });
+  });
+
   router.post("/issues/:id/monitor/check-now", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -5118,10 +5265,12 @@ export function issueRoutes(
         });
       }
 
+      const acceptedPlanTarget = readAcceptedPlanConfirmationTarget(interaction.payload);
       const acceptedPlanConfirmation =
         interaction.kind === "request_confirmation" &&
         interaction.status === "accepted" &&
-        issue.workMode === "planning";
+        acceptedPlanTarget?.issueId === issue.id &&
+        acceptedPlanTarget.key === "plan";
       queueResolvedInteractionContinuationWakeup({
         heartbeat,
         issue: continuationWakeIssue,
