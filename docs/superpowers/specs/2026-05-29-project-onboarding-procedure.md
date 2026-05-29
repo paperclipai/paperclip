@@ -127,4 +127,4 @@ Before closing the kickoff issue as done, confirm:
 | Onboarding | `3da3b2dd-deeb-4e0e-bf0c-9ffff4f2eba0` | in_progress | CEO |
 | Autobot | `22d17c44-a12c-4913-b389-8c1690ea4b25` | planned | FoundingEngineer |
 | AutoBot Marketing | `31a12eb4-35ad-44d0-a101-ea9901fe131b` | planned | CMO |
-| Infrastructure | `bdb497cb-e7cb-421b-ad1d-b68e7f0b48b8` | in_progress | DevOpsEngineer |
+| Operations | `bdb497cb-e7cb-421b-ad1d-b68e7f0b48b8` | in_progress | ProjectManager |
