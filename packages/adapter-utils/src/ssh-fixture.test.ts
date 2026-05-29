@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  _createSshDialPacingQueueForTests,
   buildSshSpawnTarget,
   buildSshEnvLabFixtureConfig,
   getSshEnvLabSupport,
@@ -166,7 +167,7 @@ describe("ssh env-lab fixture", () => {
     ).rejects.toThrow("Invalid SSH environment variable key: BAD KEY");
   });
 
-  it("emits ControlMaster=auto, ControlPath, and ControlPersist on every SSH invocation", async () => {
+  it("emits ControlMaster=auto, ControlPath, and ControlPersist on every SSH invocation (non-Windows only; REI-510 gates it on win32)", async () => {
     const target = await buildSshSpawnTarget({
       spec: {
         host: "ssh.example.test",
@@ -190,6 +191,15 @@ describe("ssh env-lab fixture", () => {
         }
         return -1;
       };
+      if (process.platform === "win32") {
+        // Windows OpenSSH 9.5p2 ControlMaster is broken (REI-510). The fix
+        // gates the multiplexing flags off on win32 and falls back to the
+        // dial-pacing queue to stay under the IONOS rate limit instead.
+        expect(indexOfOption("ControlMaster=auto")).toBe(-1);
+        expect(args.findIndex((entry) => entry.startsWith("ControlPath="))).toBe(-1);
+        expect(indexOfOption("ControlPersist=60s")).toBe(-1);
+        return;
+      }
       expect(indexOfOption("ControlMaster=auto")).toBeGreaterThanOrEqual(0);
       const controlPathIdx = args.findIndex(
         (entry, idx) => idx > 0 && args[idx - 1] === "-o" && entry.startsWith("ControlPath="),
@@ -250,7 +260,7 @@ describe("ssh env-lab fixture", () => {
     SSH_FIXTURE_TEST_TIMEOUT_MS,
   );
 
-  it("emits ControlMaster args even without a privateKey", async () => {
+  it("emits ControlMaster args even without a privateKey (non-Windows only)", async () => {
     const target = await buildSshSpawnTarget({
       spec: {
         host: "ssh.example.test",
@@ -267,12 +277,79 @@ describe("ssh env-lab fixture", () => {
       env: {},
     });
     try {
+      if (process.platform === "win32") {
+        expect(target.args).not.toContain("ControlMaster=auto");
+        expect(target.args).not.toContain("ControlPersist=60s");
+        expect(target.args.some((entry) => entry.startsWith("ControlPath="))).toBe(false);
+        return;
+      }
       expect(target.args).toContain("ControlMaster=auto");
       expect(target.args).toContain("ControlPersist=60s");
       expect(target.args.some((entry) => entry.startsWith("ControlPath="))).toBe(true);
     } finally {
       await target.cleanup();
     }
+  });
+
+  it("serializes Windows SSH dials through a FIFO queue with a post-completion pacing delay (REI-510)", async () => {
+    const pacingMs = 50;
+    const queue = _createSshDialPacingQueueForTests({ isWindows: true, pacingMs });
+    const events: Array<{ kind: "start" | "end"; id: number; at: number }> = [];
+    const start = Date.now();
+    const stamp = () => Date.now() - start;
+    const task = (id: number, durationMs: number) => async () => {
+      events.push({ kind: "start", id, at: stamp() });
+      await new Promise((resolve) => setTimeout(resolve, durationMs));
+      events.push({ kind: "end", id, at: stamp() });
+      return id;
+    };
+
+    const all = await Promise.all([
+      queue(task(1, 30)),
+      queue(task(2, 30)),
+      queue(task(3, 30)),
+    ]);
+    expect(all).toEqual([1, 2, 3]);
+
+    const startEvents = events.filter((e) => e.kind === "start").sort((a, b) => a.at - b.at);
+    const endEvents = events.filter((e) => e.kind === "end").sort((a, b) => a.at - b.at);
+
+    // Task ids must start in submission order — no overlap, FIFO.
+    expect(startEvents.map((e) => e.id)).toEqual([1, 2, 3]);
+    expect(endEvents.map((e) => e.id)).toEqual([1, 2, 3]);
+
+    // Second task starts no earlier than first task's end + pacingMs - jitter.
+    const jitterMs = 15;
+    expect(startEvents[1].at).toBeGreaterThanOrEqual(endEvents[0].at + pacingMs - jitterMs);
+    expect(startEvents[2].at).toBeGreaterThanOrEqual(endEvents[1].at + pacingMs - jitterMs);
+  });
+
+  it("does not serialize SSH dials on non-Windows platforms (queue is a passthrough)", async () => {
+    const queue = _createSshDialPacingQueueForTests({ isWindows: false, pacingMs: 500 });
+    const overlaps: number[] = [];
+    let active = 0;
+    const task = async () => {
+      active += 1;
+      overlaps.push(active);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      active -= 1;
+    };
+    await Promise.all([queue(task), queue(task), queue(task)]);
+    // On non-Windows the queue is a no-op, so we must observe concurrent
+    // execution — at least one tick must report >1 active operations.
+    expect(Math.max(...overlaps)).toBeGreaterThan(1);
+  });
+
+  it("releases the Windows FIFO chain when a queued task rejects so subsequent dials proceed", async () => {
+    const queue = _createSshDialPacingQueueForTests({ isWindows: true, pacingMs: 20 });
+    await expect(queue(async () => { throw new Error("boom"); })).rejects.toThrow("boom");
+    // Without finally-release the next task would hang forever. Race against
+    // a 1s timeout so an unreleased chain shows up as a test failure.
+    const result = await Promise.race([
+      queue(async () => "ok"),
+      new Promise<string>((_, reject) => setTimeout(() => reject(new Error("queue stuck")), 1_000)),
+    ]);
+    expect(result).toBe("ok");
   });
 
   it("syncs a local directory into the remote fixture workspace", async () => {
