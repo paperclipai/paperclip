@@ -7,7 +7,9 @@ import {
   costEvents,
   heartbeatRuns,
   issueComments,
+  issueLabels,
   issues,
+  labels,
   projects,
 } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
@@ -475,8 +477,19 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       ? Math.max(0, now.getTime() - activeStartedAt.getTime())
       : null;
 
+    // KSI-687 D4: when the issue is paused on a codex usage-limit retry, the
+    // `codex-limit` operational label is present. Suppress `longActive` so we
+    // don't fire a productivity review for a pause that the system already
+    // knows about. The label is cleared automatically when the retry resumes.
+    const codexLimitLabelId = await issuesSvc.getCodexLimitLabelId(sourceIssue.companyId);
+    const isCodexLimitPaused = codexLimitLabelId != null && await db
+      .select({ issueId: issueLabels.issueId })
+      .from(issueLabels)
+      .where(and(eq(issueLabels.issueId, sourceIssue.id), eq(issueLabels.labelId, codexLimitLabelId)))
+      .then((rows) => rows.length > 0);
+
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
-    const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    const longActive = !isCodexLimitPaused && elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
