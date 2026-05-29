@@ -234,6 +234,9 @@ export interface HostServices {
     listInteractions(params: WorkerToHostMethods["issues.listInteractions"][0]): Promise<WorkerToHostMethods["issues.listInteractions"][1]>;
     createComment(params: WorkerToHostMethods["issues.createComment"][0]): Promise<WorkerToHostMethods["issues.createComment"][1]>;
     createInteraction(params: WorkerToHostMethods["issues.createInteraction"][0]): Promise<WorkerToHostMethods["issues.createInteraction"][1]>;
+    acceptInteraction(params: WorkerToHostMethods["issues.acceptInteraction"][0]): Promise<WorkerToHostMethods["issues.acceptInteraction"][1]>;
+    rejectInteraction(params: WorkerToHostMethods["issues.rejectInteraction"][0]): Promise<WorkerToHostMethods["issues.rejectInteraction"][1]>;
+    respondInteraction(params: WorkerToHostMethods["issues.respondInteraction"][0]): Promise<WorkerToHostMethods["issues.respondInteraction"][1]>;
   };
 
   /** Provides `issues.documents.list`, `issues.documents.get`, `issues.documents.upsert`, `issues.documents.delete`. */
@@ -441,6 +444,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.listInteractions": "issue.interactions.read",
   "issues.createComment": "issue.comments.create",
   "issues.createInteraction": "issue.interactions.create",
+  "issues.acceptInteraction": "issue.interactions.resolve",
+  "issues.rejectInteraction": "issue.interactions.resolve",
+  "issues.respondInteraction": "issue.interactions.resolve",
 
   // Issue Documents
   "issues.documents.list": "issue.documents.read",
@@ -837,6 +843,15 @@ export function createHostClientHandlers(
     }),
     "issues.listInteractions": gated("issues.listInteractions", async (params) => {
       return services.issues.listInteractions(params);
+    }),
+    "issues.acceptInteraction": gated("issues.acceptInteraction", async (params) => {
+      return services.issues.acceptInteraction(params);
+    }),
+    "issues.rejectInteraction": gated("issues.rejectInteraction", async (params) => {
+      return services.issues.rejectInteraction(params);
+    }),
+    "issues.respondInteraction": gated("issues.respondInteraction", async (params) => {
+      return services.issues.respondInteraction(params);
     }),
     "issues.createComment": gated("issues.createComment", async (params) => {
       return services.issues.createComment(params);

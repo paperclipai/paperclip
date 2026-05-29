@@ -41,6 +41,7 @@ import { createInterface, type Interface as ReadlineInterface } from "node:readl
 import { fileURLToPath } from "node:url";
 
 import type {
+  AskUserQuestionsAnswer,
   AskUserQuestionsInteraction,
   IssueThreadInteraction,
   PaperclipPluginManifestV1,
@@ -920,6 +921,60 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             },
             authorAgentId: options?.authorAgentId,
           }) as Promise<RequestConfirmationInteraction>;
+        },
+
+        async acceptInteraction(
+          issueId: string,
+          interactionId: string,
+          companyId: string,
+          options?: { selectedClientKeys?: string[]; actorAgentId?: string; actorUserId?: string },
+        ) {
+          return callHost("issues.acceptInteraction", {
+            issueId,
+            companyId,
+            interactionId,
+            selectedClientKeys: options?.selectedClientKeys,
+            actorAgentId: options?.actorAgentId,
+            actorUserId: options?.actorUserId,
+          });
+        },
+
+        async rejectInteraction(
+          issueId: string,
+          interactionId: string,
+          companyId: string,
+          options?: { reason?: string; actorAgentId?: string; actorUserId?: string },
+        ) {
+          return callHost("issues.rejectInteraction", {
+            issueId,
+            companyId,
+            interactionId,
+            reason: options?.reason,
+            actorAgentId: options?.actorAgentId,
+            actorUserId: options?.actorUserId,
+          });
+        },
+
+        async respondInteraction(
+          issueId: string,
+          interactionId: string,
+          companyId: string,
+          response: {
+            answers: AskUserQuestionsAnswer[];
+            summaryMarkdown?: string | null;
+            actorAgentId?: string;
+            actorUserId?: string;
+          },
+        ) {
+          return callHost("issues.respondInteraction", {
+            issueId,
+            companyId,
+            interactionId,
+            answers: response.answers,
+            summaryMarkdown: response.summaryMarkdown,
+            actorAgentId: response.actorAgentId,
+            actorUserId: response.actorUserId,
+          });
         },
 
         documents: {

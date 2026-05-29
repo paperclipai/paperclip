@@ -333,6 +333,8 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `issues.checkout` |
 | | `issues.wakeup` |
 | | `issue.comments.create` |
+| | `issue.interactions.create` |
+| | `issue.interactions.resolve` |
 | | `issue.documents.write` |
 | | `issue.relations.write` |
 | | `activity.log.write` |
