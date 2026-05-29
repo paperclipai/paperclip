@@ -54,14 +54,20 @@ RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" &
 FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
+ARG DOCKER_GID=981
 WORKDIR /app
-COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
   && apt-get update \
-  && apt-get install -y --no-install-recommends openssh-client jq \
+  && apt-get install -y --no-install-recommends openssh-client jq docker.io \
   && rm -rf /var/lib/apt/lists/* \
+  && groupadd -g ${DOCKER_GID} --non-unique docker-host \
+  && usermod -aG docker-host node \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
+
+RUN npx playwright install --with-deps chromium
+
+COPY --chown=node:node --from=build /app /app
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
