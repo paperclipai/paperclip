@@ -86,7 +86,7 @@ type GatewayClientRequestOptions = {
   expectFinal?: boolean;
 };
 
-const PROTOCOL_VERSION = 3;
+const PROTOCOL_VERSION = 4; // [paperclip-jarvis-patch] OpenClaw 2026.5.22 expects protocol 4
 const PROTOCOL_VERSION_MAX = 4;
 const DEFAULT_SCOPES = ["operator.admin"];
 const DEFAULT_CLIENT_ID = "gateway-client";
