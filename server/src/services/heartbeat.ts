@@ -190,7 +190,7 @@ export function redactDetectedSuccessfulRunProgressSummaryForBoard(
 
 const MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS = 100;
 const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
-const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
@@ -8872,6 +8872,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+
+    // Timer-source runs are capped at 1 concurrent (running + queued) to prevent unbounded queue
+    // growth when a heartbeat outlasts its interval. Non-timer wakes (assignment, on_demand) are
+    // not subject to this cap so agents can handle parallel task events.
+    if (source === "timer") {
+      const [{ count: timerActiveCount }] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            inArray(heartbeatRuns.status, ["running", "queued"]),
+          ),
+        );
+      if (Number(timerActiveCount ?? 0) >= policy.maxConcurrentRuns) {
+        await writeSkippedRequest("heartbeat.maxConcurrentRuns.reached");
+        return null;
+      }
     }
 
     if (issueId) {
