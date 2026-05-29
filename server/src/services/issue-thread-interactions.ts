@@ -594,6 +594,22 @@ export function issueThreadInteractionService(db: Db) {
     }
 
     const now = new Date();
+
+    let rejectionCommentId: string | null = null;
+    if (reason.length > 0) {
+      const [comment] = await db
+        .insert(issueComments)
+        .values({
+          companyId: args.issue.companyId,
+          issueId: args.issue.id,
+          authorUserId: args.actor.userId ?? null,
+          authorType: args.actor.userId ? "user" : null,
+          body: reason,
+        })
+        .returning({ id: issueComments.id });
+      rejectionCommentId = comment?.id ?? null;
+    }
+
     const [updated] = await db
       .update(issueThreadInteractions)
       .set({
@@ -602,6 +618,7 @@ export function issueThreadInteractionService(db: Db) {
           version: 1,
           outcome: "rejected",
           reason: reason || null,
+          commentId: rejectionCommentId,
         },
         resolvedByAgentId: args.actor.agentId ?? null,
         resolvedByUserId: args.actor.userId ?? null,
@@ -615,6 +632,9 @@ export function issueThreadInteractionService(db: Db) {
       .returning();
 
     if (!updated) {
+      if (rejectionCommentId) {
+        await db.delete(issueComments).where(eq(issueComments.id, rejectionCommentId));
+      }
       throw conflict("Interaction has already been resolved");
     }
     await touchIssue(db, args.issue.id);
