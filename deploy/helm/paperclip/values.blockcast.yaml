@@ -203,8 +203,19 @@ env:
     # of the container budget while leaving ~1 GiB for libuv / native deps /
     # binary code / stack / fs cache. Tune up further if the heap-used metric
     # gets close to this ceiling under load.
+    #
+    # 2026-05-29: paperclip-0 was OOMKilled (exitCode 137) roughly every ~3.5h
+    # — 6 restarts in 21h — orphaning in-flight heartbeat runs ("Process lost
+    # before external adapter invocation"), which flipped the CEO agent (the
+    # most-active orchestrator) to status=error on each kill. The kill is a
+    # cgroup OOM at the container limit, NOT a V8 heap-ceiling stall, so the
+    # overflow is off-heap (native Buffers / libuv / fs cache), not the JS
+    # object heap. Band-aid: raise the container limit 6Gi→10Gi for runway and
+    # the V8 ceiling 4608→6144 so the heap still has room, while tripling native
+    # headroom (~1.5Gi→~4Gi). Root-cause of the off-heap growth is still under
+    # investigation; revert both once the leak is fixed.
     - name: NODE_OPTIONS
-      value: "--max-old-space-size=4608"
+      value: "--max-old-space-size=6144"
     # Anthropic routing for paperclip-spawned agent Job pods. Agents reach
     # Anthropic through paperclip-public-tools → ccrotate-serve using the
     # pcp_board_* bearer, so they don't need /paperclip/.ccrotate/ on disk.
@@ -235,7 +246,11 @@ resources:
     memory: 2Gi
   limits:
     cpu: "4"
-    memory: 6Gi
+    # 2026-05-29: 6Gi→10Gi to stop the ~3.5h cgroup-OOM cadence that was
+    # orphaning in-flight heartbeat runs (CEO agent → status=error). Off-heap
+    # growth band-aid; paired with NODE_OPTIONS --max-old-space-size=6144 above.
+    # Node k8s-paperclip-2 has ~188Gi allocatable at 58% committed — ample.
+    memory: 10Gi
 
 persistence:
   enabled: true
