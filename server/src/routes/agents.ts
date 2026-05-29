@@ -1277,17 +1277,44 @@ export function agentRoutes(
 
   function redactPlainEnvBindings(config: Record<string, unknown> | null): Record<string, unknown> | null {
     if (!config) return config;
-    const env = config.env;
-    if (!env || typeof env !== "object" || Array.isArray(env)) return config;
-    const redactedEnv: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
-      if (value !== null && typeof value === "object" && !Array.isArray(value) && (value as Record<string, unknown>).type === "plain") {
-        redactedEnv[key] = { type: "plain", value: REDACTED_EVENT_VALUE };
-      } else {
-        redactedEnv[key] = value;
+    const result = { ...config };
+
+    // Redact top-level env bindings of type "plain".
+    const env = result.env;
+    if (env && typeof env === "object" && !Array.isArray(env)) {
+      const redactedEnv: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
+        if (value !== null && typeof value === "object" && !Array.isArray(value) && (value as Record<string, unknown>).type === "plain") {
+          redactedEnv[key] = { type: "plain", value: REDACTED_EVENT_VALUE };
+        } else {
+          redactedEnv[key] = value;
+        }
       }
+      result.env = redactedEnv;
     }
-    return { ...config, env: redactedEnv };
+
+    // Recurse into modelProfiles[*].adapterConfig so nested env bindings are also redacted.
+    const modelProfiles = result.modelProfiles;
+    if (modelProfiles && typeof modelProfiles === "object" && !Array.isArray(modelProfiles)) {
+      const redactedProfiles: Record<string, unknown> = {};
+      for (const [key, profile] of Object.entries(modelProfiles as Record<string, unknown>)) {
+        if (profile !== null && typeof profile === "object" && !Array.isArray(profile)) {
+          const profileRecord = profile as Record<string, unknown>;
+          const nestedAdapterConfig = profileRecord.adapterConfig;
+          if (nestedAdapterConfig !== null && typeof nestedAdapterConfig === "object" && !Array.isArray(nestedAdapterConfig)) {
+            redactedProfiles[key] = {
+              ...profileRecord,
+              adapterConfig: redactPlainEnvBindings(nestedAdapterConfig as Record<string, unknown>),
+            };
+            continue;
+          }
+        }
+        redactedProfiles[key] = profile;
+      }
+      result.modelProfiles = redactedProfiles;
+    }
+
+    return result;
   }
 
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
@@ -1302,7 +1329,7 @@ export function agentRoutes(
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
       adapterConfig: redactPlainEnvBindings(redactEventPayload(agent.adapterConfig)),
-      runtimeConfig: redactEventPayload(agent.runtimeConfig),
+      runtimeConfig: redactPlainEnvBindings(redactEventPayload(agent.runtimeConfig)),
       permissions: agent.permissions,
       updatedAt: agent.updatedAt,
     };
