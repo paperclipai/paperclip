@@ -476,6 +476,32 @@ export function agentService(db: Db) {
       return updated ? normalizeAgentRow(updated) : null;
     },
 
+    freeze: async (id: string) => {
+      const existing = await getById(id);
+      if (!existing) return null;
+      if (existing.status === "terminated") throw conflict("Cannot freeze terminated agent");
+      if (existing.frozenAt) return existing;
+      const updated = await db
+        .update(agents)
+        .set({ frozenAt: new Date(), updatedAt: new Date() })
+        .where(eq(agents.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return updated ? normalizeAgentRow(updated) : null;
+    },
+
+    unfreeze: async (id: string) => {
+      const existing = await getById(id);
+      if (!existing) return null;
+      const updated = await db
+        .update(agents)
+        .set({ frozenAt: null, updatedAt: new Date() })
+        .where(eq(agents.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return updated ? normalizeAgentRow(updated) : null;
+    },
+
     terminate: async (id: string) => {
       const existing = await getById(id);
       if (!existing) return null;
