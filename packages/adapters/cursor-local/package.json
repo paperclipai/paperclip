@@ -51,6 +51,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@paperclipai/mcp-server": "^1.0.0",
     "@paperclipai/adapter-utils": "workspace:*",
     "picocolors": "^1.1.1"
   },
