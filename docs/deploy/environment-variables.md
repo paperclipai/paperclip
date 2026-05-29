@@ -20,6 +20,18 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_DEPLOYMENT_EXPOSURE` | `private` | Exposure policy when deployment mode is `authenticated` |
 | `PAPERCLIP_API_URL` | (auto-derived) | Paperclip API base URL. When set externally (e.g., via Kubernetes ConfigMap, load balancer, or reverse proxy), the server preserves the value instead of deriving it from the listen host and port. Useful for deployments where the public-facing URL differs from the local bind address. |
 
+## First-Boot Admin Bootstrap
+
+These variables are optional. When both are present and the database has no
+`instance_admin` user yet, Paperclip seeds one instance admin and one board API
+key before serving HTTP requests. If either variable is missing, or an admin
+already exists, startup continues without changing admin users or keys.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAPERCLIP_BOOTSTRAP_ADMIN_EMAIL` | (unset) | Email for the first instance-admin user seeded on first boot |
+| `PAPERCLIP_BOOTSTRAP_BOARD_API_KEY` | (unset) | Plaintext board API key to hash and store for that first admin; the plaintext is never logged |
+
 ## Secrets
 
 | Variable | Default | Description |
