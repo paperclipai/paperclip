@@ -32,6 +32,7 @@ import {
 import {
   acceptInviteSchema,
   createCliAuthChallengeSchema,
+  createServiceAccountBoardTokenSchema,
   claimJoinRequestApiKeySchema,
   createCompanyInviteSchema,
   createOpenClawInvitePromptSchema,
@@ -2743,6 +2744,61 @@ export function accessRoutes(
     }
     res.json({ revoked: true, keyId: key.id });
   });
+
+  // Issue a long-lived board API token for a service account (CronJobs,
+  // cluster health-checks, MCP bridges, etc.). Skips the interactive CLI
+  // auth challenge flow. Instance-admin only — the issued token inherits
+  // the named user's permissions, so admins must choose userId carefully.
+  router.post(
+    "/service-account-tokens",
+    validate(createServiceAccountBoardTokenSchema),
+    async (req, res) => {
+      await assertInstanceAdmin(req);
+      const requesterUserId =
+        req.actor.type === "board" ? req.actor.userId ?? null : null;
+      const userId = req.body.userId ?? requesterUserId;
+      if (!userId) {
+        throw badRequest(
+          "userId is required when the caller has no associated user",
+        );
+      }
+      const ttlMs = req.body.ttlDays
+        ? req.body.ttlDays * 24 * 60 * 60 * 1000
+        : undefined;
+      const { token, key } = await boardAuth.createServiceAccountBoardKey({
+        userId,
+        name: req.body.name,
+        ttlMs,
+        neverExpires: req.body.neverExpires === true,
+      });
+      const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
+        userId,
+        boardApiKeyId: key.id,
+      });
+      for (const companyId of companyIds) {
+        await logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId: requesterUserId ?? userId,
+          action: "board_api_key.service_account_created",
+          entityType: "user",
+          entityId: userId,
+          details: {
+            boardApiKeyId: key.id,
+            name: key.name,
+            expiresAt: key.expiresAt?.toISOString() ?? null,
+          },
+        });
+      }
+      res.status(201).json({
+        token,
+        keyId: key.id,
+        name: key.name,
+        userId: key.userId,
+        expiresAt: key.expiresAt?.toISOString() ?? null,
+      });
+    },
+  );
 
   async function assertCompanyPermission(
     req: Request,

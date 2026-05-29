@@ -85,6 +85,22 @@ export const resolveCliAuthChallengeSchema = z.object({
 
 export type ResolveCliAuthChallenge = z.infer<typeof resolveCliAuthChallengeSchema>;
 
+export const createServiceAccountBoardTokenSchema = z
+  .object({
+    name: z.string().min(1).max(120),
+    userId: z.string().uuid().optional().nullable(),
+    ttlDays: z.number().int().positive().max(3650).optional().nullable(),
+    neverExpires: z.boolean().optional(),
+  })
+  .refine(
+    (val) => !(val.neverExpires === true && (val.ttlDays ?? null) !== null),
+    { message: "ttlDays must not be set when neverExpires is true" },
+  );
+
+export type CreateServiceAccountBoardToken = z.infer<
+  typeof createServiceAccountBoardTokenSchema
+>;
+
 export const updateMemberPermissionsSchema = z.object({
   grants: z.array(
     z.object({

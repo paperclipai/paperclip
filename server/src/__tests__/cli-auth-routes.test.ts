@@ -14,6 +14,7 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockBoardAuthService = vi.hoisted(() => ({
   createCliAuthChallenge: vi.fn(),
+  createServiceAccountBoardKey: vi.fn(),
   describeCliAuthChallenge: vi.fn(),
   approveCliAuthChallenge: vi.fn(),
   cancelCliAuthChallenge: vi.fn(),
@@ -301,5 +302,163 @@ describe.sequential("cli auth routes", () => {
         action: "board_api_key.revoked",
       }),
     );
+  });
+
+  it.sequential("rejects service-account token issuance for non-board actors", async () => {
+    const app = await createApp({ type: "none", source: "none" });
+    const res = await request(app)
+      .post("/api/service-account-tokens")
+      .send({ name: "ccrotate-health-check" });
+    expect(res.status).toBe(401);
+    expect(mockBoardAuthService.createServiceAccountBoardKey).not.toHaveBeenCalled();
+  });
+
+  it.sequential("rejects service-account token issuance for non-admin board users", async () => {
+    mockAccessService.isInstanceAdmin.mockResolvedValue(false);
+    const app = await createApp({
+      type: "board",
+      userId: "11111111-1111-1111-1111-111111111111",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [],
+    });
+    const res = await request(app)
+      .post("/api/service-account-tokens")
+      .send({ name: "ccrotate-health-check" });
+    expect(res.status).toBe(403);
+    expect(mockBoardAuthService.createServiceAccountBoardKey).not.toHaveBeenCalled();
+  });
+
+  it.sequential("issues a default 30-day service-account token for instance admins", async () => {
+    mockAccessService.isInstanceAdmin.mockResolvedValue(true);
+    const issuedExpiresAt = new Date("2026-06-27T17:00:00.000Z");
+    mockBoardAuthService.createServiceAccountBoardKey.mockResolvedValue({
+      token: "pcp_board_service_default",
+      key: {
+        id: "key-1",
+        userId: "admin-7",
+        name: "ccrotate-health-check",
+        expiresAt: issuedExpiresAt,
+      },
+    });
+    mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue(["company-a"]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "admin-7",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: ["company-a"],
+    });
+    const res = await request(app)
+      .post("/api/service-account-tokens")
+      .send({ name: "ccrotate-health-check" });
+
+    expect(res.status, res.text || JSON.stringify(res.body)).toBe(201);
+    expect(res.body).toMatchObject({
+      token: "pcp_board_service_default",
+      keyId: "key-1",
+      name: "ccrotate-health-check",
+      userId: "admin-7",
+      expiresAt: issuedExpiresAt.toISOString(),
+    });
+    expect(mockBoardAuthService.createServiceAccountBoardKey).toHaveBeenCalledWith({
+      userId: "admin-7",
+      name: "ccrotate-health-check",
+      ttlMs: undefined,
+      neverExpires: false,
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-a",
+        action: "board_api_key.service_account_created",
+        actorId: "admin-7",
+      }),
+    );
+  });
+
+  it.sequential("issues a never-expiring service-account token when requested", async () => {
+    mockAccessService.isInstanceAdmin.mockResolvedValue(true);
+    mockBoardAuthService.createServiceAccountBoardKey.mockResolvedValue({
+      token: "pcp_board_service_eternal",
+      key: {
+        id: "key-2",
+        userId: "admin-7",
+        name: "ccrotate-health-check",
+        expiresAt: null,
+      },
+    });
+    mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue([]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "admin-7",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [],
+    });
+    const res = await request(app)
+      .post("/api/service-account-tokens")
+      .send({ name: "ccrotate-health-check", neverExpires: true });
+
+    expect(res.status, res.text || JSON.stringify(res.body)).toBe(201);
+    expect(res.body.expiresAt).toBeNull();
+    expect(mockBoardAuthService.createServiceAccountBoardKey).toHaveBeenCalledWith({
+      userId: "admin-7",
+      name: "ccrotate-health-check",
+      ttlMs: undefined,
+      neverExpires: true,
+    });
+  });
+
+  it.sequential("converts ttlDays to milliseconds when calling the service", async () => {
+    mockAccessService.isInstanceAdmin.mockResolvedValue(true);
+    mockBoardAuthService.createServiceAccountBoardKey.mockResolvedValue({
+      token: "pcp_board_service_year",
+      key: {
+        id: "key-3",
+        userId: "admin-7",
+        name: "ccrotate-health-check",
+        expiresAt: new Date("2027-05-28T17:00:00.000Z"),
+      },
+    });
+    mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue([]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "admin-7",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [],
+    });
+    const res = await request(app)
+      .post("/api/service-account-tokens")
+      .send({ name: "ccrotate-health-check", ttlDays: 365 });
+
+    expect(res.status, res.text || JSON.stringify(res.body)).toBe(201);
+    expect(mockBoardAuthService.createServiceAccountBoardKey).toHaveBeenCalledWith({
+      userId: "admin-7",
+      name: "ccrotate-health-check",
+      ttlMs: 365 * 24 * 60 * 60 * 1000,
+      neverExpires: false,
+    });
+  });
+
+  it.sequential("rejects ttlDays combined with neverExpires", async () => {
+    mockAccessService.isInstanceAdmin.mockResolvedValue(true);
+    const app = await createApp({
+      type: "board",
+      userId: "admin-7",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [],
+    });
+    const res = await request(app)
+      .post("/api/service-account-tokens")
+      .send({ name: "ccrotate-health-check", ttlDays: 30, neverExpires: true });
+
+    expect(res.status).toBe(400);
+    expect(mockBoardAuthService.createServiceAccountBoardKey).not.toHaveBeenCalled();
   });
 });

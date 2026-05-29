@@ -332,6 +332,29 @@ export function boardAuthService(db: Db) {
     return { status: "cancelled" as const, challenge: updated };
   }
 
+  async function createServiceAccountBoardKey(input: {
+    userId: string;
+    name: string;
+    ttlMs?: number | null;
+    neverExpires?: boolean;
+  }) {
+    const token = createBoardApiToken();
+    const expiresAt = input.neverExpires
+      ? null
+      : new Date(Date.now() + (input.ttlMs ?? BOARD_API_KEY_TTL_MS));
+    const inserted = await db
+      .insert(boardApiKeys)
+      .values({
+        userId: input.userId,
+        name: input.name,
+        keyHash: hashBearerToken(token),
+        expiresAt,
+      })
+      .returning()
+      .then((rows) => rows[0]);
+    return { token, key: inserted };
+  }
+
   async function assertCurrentBoardKey(keyId: string | undefined, userId: string | undefined) {
     if (!keyId || !userId) throw conflict("Board API key context is required");
     const key = await db
@@ -349,6 +372,7 @@ export function boardAuthService(db: Db) {
     touchBoardApiKey,
     revokeBoardApiKey,
     createCliAuthChallenge,
+    createServiceAccountBoardKey,
     getCliAuthChallengeBySecret,
     describeCliAuthChallenge,
     approveCliAuthChallenge,
