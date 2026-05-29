@@ -202,6 +202,7 @@ const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const DETACHED_PROCESS_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -6718,6 +6719,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 processPid: run.processPid,
               },
             });
+          }
+        } else {
+          // Already marked as detached — terminate after max age to prevent zombie runs
+          const detachedSinceMs = now.getTime() - (run.updatedAt ? new Date(run.updatedAt).getTime() : 0);
+          if (detachedSinceMs >= DETACHED_PROCESS_MAX_AGE_MS) {
+            await terminateHeartbeatRunProcess({
+              pid: run.processPid,
+              processGroupId: run.processGroupId,
+            });
+            const timeoutMessage = `Detached process pid ${run.processPid} exceeded max age (${Math.round(detachedSinceMs / 1000)}s); forcibly terminated`;
+            const timedOutRun = await setRunStatus(run.id, "failed", {
+              error: timeoutMessage,
+              errorCode: "process_detached_timeout",
+              finishedAt: now,
+              resultJson: mergeRunStopMetadataForAgent(
+                { adapterType, adapterConfig },
+                "failed",
+                {
+                  resultJson: parseObject(run.resultJson),
+                  errorCode: "process_detached_timeout",
+                  errorMessage: timeoutMessage,
+                },
+              ),
+            });
+            if (timedOutRun) {
+              await setWakeupStatus(run.wakeupRequestId, "failed", {
+                finishedAt: now,
+                error: timeoutMessage,
+              });
+              await appendRunEvent(timedOutRun, await nextRunEventSeq(timedOutRun.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "error",
+                message: timeoutMessage,
+                payload: { processPid: run.processPid, detachedSinceMs },
+              });
+              reaped.push(run.id);
+            }
           }
         }
         continue;
