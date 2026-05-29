@@ -4115,7 +4115,9 @@ export function issueService(db: Db) {
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
-      if (!isolatedWorkspacesEnabled) {
+      // When inheritExecutionWorkspaceFromIssueId is explicitly set, the caller opted in to
+      // workspace reuse — preserve the fields so the inheritance block can populate them below.
+      if (!isolatedWorkspacesEnabled && !inheritExecutionWorkspaceFromIssueId) {
         delete issueData.executionWorkspaceId;
         delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
@@ -4151,7 +4153,7 @@ export function issueService(db: Db) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
           }
           if (
-            isolatedWorkspacesEnabled &&
+            (isolatedWorkspacesEnabled || !!inheritExecutionWorkspaceFromIssueId) &&
             !hasExplicitExecutionWorkspaceOverride &&
             workspaceSource.executionWorkspaceId
           ) {
