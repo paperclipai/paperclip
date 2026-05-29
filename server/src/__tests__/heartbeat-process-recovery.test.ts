@@ -1,14 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { and, asc, eq, or, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
-  agentRuntimeState,
   agentWakeupRequests,
   budgetPolicies,
-  companySkills,
   companies,
   costEvents,
   createDb,
@@ -20,7 +18,6 @@ import {
   issueDocuments,
   issueRecoveryActions,
   issueRelations,
-  issueTreeHoldMembers,
   issueTreeHolds,
   issues,
 } from "@paperclipai/db";
@@ -28,12 +25,25 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { runningProcesses } from "../adapters/index.ts";
-import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.ts";
+import { runningProcesses } from "../adapters/index.js";
+import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.js";
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 const mockAdapterExecute = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn<
+    (ctx: { runId: string }) => Promise<{
+      exitCode: number;
+      signal: string | null;
+      timedOut: boolean;
+      errorCode?: string;
+      errorFamily?: string;
+      errorMessage: string | null;
+      summary?: string;
+      provider: string;
+      model: string;
+      resultJson?: Record<string, unknown>;
+    }>
+  >(async () => ({
     exitCode: 0,
     signal: null,
     timedOut: false,
@@ -95,9 +105,9 @@ vi.mock("../adapters/index.ts", async () => {
   };
 });
 
-import { heartbeatService } from "../services/heartbeat.ts";
-import { setPluginEventBus } from "../services/activity-log.ts";
-import type { PluginEventBus, ScopedPluginEventBus } from "../services/plugin-event-bus.ts";
+import { heartbeatService } from "../services/heartbeat.js";
+import { setPluginEventBus } from "../services/activity-log.js";
+import type { PluginEventBus, ScopedPluginEventBus } from "../services/plugin-event-bus.js";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -1176,7 +1186,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const completedWakeup = await db
       .select()
       .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.id, completedRun!.wakeupRequestId))
+      .where(eq(agentWakeupRequests.id, completedRun!.wakeupRequestId!))
       .then((rows) => rows[0] ?? null);
     expect(completedWakeup?.status).toBe("completed");
 
@@ -1514,8 +1524,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       return rows.length > 0 ? rows : null;
     });
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("retried continuation");
-    expect(comments[0]?.body).toContain(`Recovery action: ${recovery.id}`);
+    expect(comments![0]?.body).toContain("retried continuation");
+    expect(comments![0]?.body).toContain(`Recovery action: ${recovery.id}`);
   });
 
   it("blocks failed recovery work in place during immediate terminal-run cleanup", async () => {
@@ -1585,14 +1595,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       return rows.length > 0 ? rows : null;
     });
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("stopped automatic stranded-work recovery");
-    expect(comments[0]?.body).toContain("recovery issues do not create nested `stranded_issue_recovery` issues");
+    expect(comments![0]?.body).toContain("stopped automatic stranded-work recovery");
+    expect(comments![0]?.body).toContain("recovery issues do not create nested `stranded_issue_recovery` issues");
     // Failure summary surfaces the errorCode (and a redacted error message
     // when present) so the recovery agent can see WHY the original assignee
     // failed without inspecting the linked run. Secrets are still scrubbed
     // — see the explicit `not.toContain` assertion above where applicable.
-    expect(comments[0]?.body).toContain("Latest retry failure:");
-    expect(comments[0]?.body).not.toContain("sk-test-recovery-secret");
+    expect(comments![0]?.body).toContain("Latest retry failure:");
+    expect(comments![0]?.body).not.toContain("sk-test-recovery-secret");
     await expect(sourceBlockerIssueIds(companyId, sourceIssueId)).resolves.toEqual([issueId]);
   });
 
@@ -2750,7 +2760,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         transitionedAt: expect.any(String),
       }),
     });
-    expect(new Date(String(event?.payload?.transitionedAt)).toString()).not.toBe("Invalid Date");
+    expect(new Date(String((event?.payload as { transitionedAt?: string } | undefined)?.transitionedAt)).toString()).not.toBe("Invalid Date");
 
     for (let index = 0; index < 2; index += 1) {
       const repeatResult = await heartbeat.reconcileStrandedAssignedIssues();
@@ -2851,7 +2861,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   // didAutomaticRecoveryFail so even a retried failure does not spawn the
   // wrapper).
   it("blocks stranded in-progress work immediately on a zero-token context_overflow startup failure (no recovery wrapper) (BLO-5681)", async () => {
-    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
       retryReason: "issue_continuation_needed",
@@ -3171,7 +3181,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("keeps repeated recovery failures on the same canonical recovery issue", async () => {
     const sourceIssueId = randomUUID();
-    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
     });
@@ -3349,7 +3359,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // sweep wakes the agent again, and the cycle burns provider quota for
     // zero forward progress. Threshold is 5; seed 5 consecutive succeeded
     // runs with livenessState=null to push the streak over the line.
-    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
       retryReason: "issue_continuation_needed",
@@ -3553,7 +3563,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // the failed run predates the unblock. Fix: skip escalation when the
     // latest run's createdAt <= the most recent unblock timestamp.
     const sourceIssueId = randomUUID();
-    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+    const { companyId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
     });

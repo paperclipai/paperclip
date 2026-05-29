@@ -26,7 +26,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { instanceSettingsService } from "../services/instance-settings.ts";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
@@ -35,7 +35,7 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
   parseExecutiveHoldMarkerTimestamp,
-} from "../services/issues.ts";
+} from "../services/issues.js";
 import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -1469,10 +1469,14 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       type: "blocks",
     });
 
-    const defaultResult = await svc.list(companyId);
+    // `blockedBy` is conditionally spread when `includeBlockedBy: true`; the
+    // service's inferred return type doesn't surface the optional field, so
+    // widen here for the assertions.
+    type WithBlockedBy = { id: string; blockedBy?: unknown };
+    const defaultResult = (await svc.list(companyId)) as WithBlockedBy[];
     expect(defaultResult.find((issue) => issue.id === blockedId)?.blockedBy).toBeUndefined();
 
-    const result = await svc.list(companyId, { includeBlockedBy: true });
+    const result = (await svc.list(companyId, { includeBlockedBy: true })) as WithBlockedBy[];
     const byId = new Map(result.map((issue) => [issue.id, issue]));
 
     expect(byId.get(blockedId)?.blockedBy).toEqual([
@@ -2916,7 +2920,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         issueId: ctx.blockedIssueId,
         kind: "request_confirmation",
         status: "pending",
-        payload: {},
+        payload: { version: 1, prompt: "Confirm to proceed" },
       });
 
       await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([]);
@@ -3922,7 +3926,7 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       runtimeConfig: {},
       permissions: {},
     });
-    if (runId) {
+    if (runId && status) {
       await db.insert(heartbeatRuns).values({
         id: runId,
         companyId,
