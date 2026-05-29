@@ -756,6 +756,23 @@ export type RequestConfirmationTarget =
   | RequestConfirmationIssueDocumentTarget
   | RequestConfirmationCustomTarget;
 
+export interface RequestConfirmationCommentContainsExpression {
+  type: "comment_contains";
+  pattern: string;
+  description?: string | null;
+}
+
+export interface RequestConfirmationEnvVarPresentExpression {
+  type: "env_var_present_by_name";
+  name: string;
+  evidence?: "presence_only" | "length_only" | null;
+  description?: string | null;
+}
+
+export type RequestConfirmationSatisfactionExpression =
+  | RequestConfirmationCommentContainsExpression
+  | RequestConfirmationEnvVarPresentExpression;
+
 export interface RequestConfirmationPayload {
   version: 1;
   prompt: string;
@@ -768,14 +785,16 @@ export interface RequestConfirmationPayload {
   detailsMarkdown?: string | null;
   supersedeOnUserComment?: boolean;
   target?: RequestConfirmationTarget | null;
+  satisfactionExpression?: RequestConfirmationSatisfactionExpression | null;
 }
 
 export interface RequestConfirmationResult {
   version: 1;
-  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target";
+  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target" | "auto_resolved";
   reason?: string | null;
   commentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
+  matchedExcerpt?: string | null;
 }
 
 export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {

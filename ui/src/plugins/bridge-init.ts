@@ -43,6 +43,8 @@ import {
   buildCompanyUserInlineOptions,
 } from "@/lib/company-members";
 import { collectLiveIssueIds } from "@/lib/liveIssueIds";
+import { usePageVisible } from "@/lib/issue-run-polling";
+import { useLiveUpdatesHealth } from "@/context/LiveUpdatesProvider";
 import { useProjectOrder } from "@/hooks/useProjectOrder";
 import {
   assigneeValueFromSelection,
@@ -246,6 +248,8 @@ function PluginSdkIssuesList({
   searchWithinLoadedIssues = true,
 }: PluginIssuesListProps) {
   const queryClient = useQueryClient();
+  const isPageVisible = usePageVisible();
+  const { isWsHealthy } = useLiveUpdatesHealth();
   const issueFilters = useMemo(
     () => compactIssueFilters({
       ...(filters ?? {}),
@@ -274,7 +278,8 @@ function PluginSdkIssuesList({
     queryKey: queryKeys.liveRuns(companyId ?? "__no-company__"),
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId!),
     enabled: !!companyId,
-    refetchInterval: 5000,
+    refetchInterval: isWsHealthy ? false : (isPageVisible ? 15_000 : false),
+    refetchIntervalInBackground: false,
   });
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
 

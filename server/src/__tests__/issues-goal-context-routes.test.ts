@@ -270,6 +270,32 @@ describe.sequential("issue goal context routes", () => {
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
   });
 
+  it("derives blockedByIssueIds from relation records on GET /issues/:id", async () => {
+    const staleBlockerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const canonicalBlockerId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      blockedByIssueIds: [staleBlockerId],
+    });
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [{
+        id: canonicalBlockerId,
+        identifier: "PAP-999",
+        title: "Canonical blocker",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      }],
+      blocks: [],
+    });
+
+    const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
+
+    expect(res.status).toBe(200);
+    expect(res.body.blockedByIssueIds).toEqual([canonicalBlockerId]);
+  });
+
   it("surfaces the project goal from GET /issues/:id/heartbeat-context", async () => {
     const res = await request(createApp()).get(
       "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",

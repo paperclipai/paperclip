@@ -839,6 +839,69 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  describe("blocked status requires blockedByIssueIds (FUL-4188)", () => {
+    const blockerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+    it("returns 422 when agent sets status=blocked without blockedByIssueIds", async () => {
+      const app = await createApp(ownerActor());
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "blocked" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.error).toBe("Blocked status requires blockedByIssueIds");
+      expect(res.body.details.rule).toBe("Blocked status requires at least one first-class blocker");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("returns 422 when agent sets status=blocked with empty blockedByIssueIds", async () => {
+      const app = await createApp(ownerActor());
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "blocked", blockedByIssueIds: [] });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.error).toBe("Blocked status requires blockedByIssueIds");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("succeeds when agent sets status=blocked with at least one blocker", async () => {
+      const app = await createApp(ownerActor());
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "blocked", blockedByIssueIds: [blockerId] });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalled();
+    });
+
+    it("allows board user to set status=blocked without blockedByIssueIds", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));
+      const app = await createApp(boardActor());
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "blocked" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalled();
+    });
+
+    it("allows patching an already-blocked issue without re-specifying blockedByIssueIds", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
+      const app = await createApp(ownerActor());
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .send({ comment: "Still blocked, providing status update." });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+    });
+  });
+
   it("uses the authorization decision path for assignment changes", async () => {
     const decide = vi.fn(async () => ({
       allowed: false,

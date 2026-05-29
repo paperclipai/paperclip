@@ -57,6 +57,7 @@ export function Dashboard() {
     queryKey: queryKeys.dashboard(selectedCompanyId!),
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    staleTime: 30_000,
   });
 
   const { data: activity } = useQuery({

@@ -4,6 +4,11 @@ import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
+import {
+  fetchAndStoreBoardKey,
+  getStoredBoardKey,
+  isLocalImplicitBoardAuthError,
+} from "../lib/local-board-auth";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
@@ -33,6 +38,8 @@ import {
   rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
 import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
+import { usePageVisible, ISSUE_RUN_POLL_MS, ISSUE_RUN_BACKGROUND_POLL_MS } from "../lib/issue-run-polling";
+import { useLiveUpdatesHealth } from "../context/LiveUpdatesProvider";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
 import {
   hasBlockingShortcutDialog,
@@ -150,6 +157,7 @@ import {
   type Issue,
   type IssueAttachment,
   type IssueComment,
+  type IssueExecutionStagePrincipal,
   type IssueWorkMode,
   type IssueThreadInteraction,
   type RequestConfirmationInteraction,
@@ -381,6 +389,20 @@ function ActorIdentity({ evt, agentMap, userProfileMap }: { evt: ActivityEvent; 
     return <Identity name={profile?.label ?? "Board"} avatarUrl={profile?.image} size="sm" />;
   }
   return <Identity name={id || "Unknown"} size="sm" />;
+}
+
+export function resolveStageParticipantLabel(
+  participant: IssueExecutionStagePrincipal | null,
+  agentMap: Map<string, Agent>,
+  userProfileMap?: Map<string, import("../lib/company-members").CompanyUserProfile> | null,
+) {
+  if (!participant) return "Approver";
+  if (participant.type === "agent") {
+    const agentName = participant.agentId ? agentMap.get(participant.agentId)?.name : null;
+    return agentName ?? "Assigned agent approver";
+  }
+  const userLabel = participant.userId ? userProfileMap?.get(participant.userId)?.label : null;
+  return userLabel ?? "Board approver";
 }
 
 function IssueSectionSkeleton({
@@ -739,6 +761,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onResumeFromBacklog,
   resumeFromBacklogPending,
 }: IssueDetailChatTabProps) {
+  const isPageVisible = usePageVisible();
+  const { isWsHealthy } = useLiveUpdatesHealth();
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -747,7 +771,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
-    refetchInterval: 3000,
+    // Poll only as a WS fallback; WS events invalidate immediately when healthy.
+    // Background tabs suppress polling entirely.
+    refetchInterval: isWsHealthy ? false : (isPageVisible ? ISSUE_RUN_POLL_MS : false),
+    refetchIntervalInBackground: false,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId),
   });
   const resolvedLiveRuns = liveRuns ?? [];
@@ -756,7 +783,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.activeRun(issueId),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
     enabled: !!executionRunId || issueStatus === "in_progress",
-    refetchInterval: liveRunCount > 0 ? false : 3000,
+    refetchInterval: liveRunCount > 0 ? false : (isWsHealthy ? false : (isPageVisible ? ISSUE_RUN_POLL_MS : false)),
+    refetchIntervalInBackground: false,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId),
   });
   const resolvedActiveRun = useMemo(
@@ -767,7 +795,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const { data: linkedRuns } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
-    refetchInterval: hasLiveRuns ? 5000 : false,
+    refetchInterval: (hasLiveRuns && !isWsHealthy && isPageVisible) ? 5000 : false,
+    refetchIntervalInBackground: false,
     placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId),
   });
   const resolvedActivity = activity ?? [];
@@ -1095,6 +1124,15 @@ function IssueDetailActivityTab({
       || issueTreeCostSummary.issueCount > 1);
   const shouldShowCostSummary =
     (linkedRuns && linkedRuns.length > 0) || hasIssueTreeCost;
+  const isAwaitingApproval = issue.executionState?.currentStageType === "approval";
+  const approvalParticipantLabel = resolveStageParticipantLabel(
+    issue.executionState?.currentParticipant ?? null,
+    agentMap,
+    userProfileMap,
+  );
+  const actionableApproval = linkedApprovals?.find(
+    (approval) => approval.status === "pending" || approval.status === "revision_requested",
+  ) ?? null;
 
   if (initialLoading) {
     return <IssueSectionSkeleton titleWidth="w-20" rows={4} />;
@@ -1102,6 +1140,40 @@ function IssueDetailActivityTab({
 
   return (
     <>
+      {isAwaitingApproval ? (
+        <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
+          <div className="font-medium">Awaiting Approval</div>
+          <div className="mt-0.5 text-xs text-amber-800/90 dark:text-amber-200/90">
+            Current approver: {approvalParticipantLabel}
+          </div>
+          {actionableApproval ? (
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                className="bg-green-700 text-white hover:bg-green-600"
+                onClick={() => onApprovalAction(actionableApproval.id, "approve")}
+                disabled={pendingApprovalAction?.approvalId === actionableApproval.id}
+              >
+                {pendingApprovalAction?.approvalId === actionableApproval.id
+                  && pendingApprovalAction.action === "approve"
+                  ? "Approving..."
+                  : "Approve"}
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => onApprovalAction(actionableApproval.id, "reject")}
+                disabled={pendingApprovalAction?.approvalId === actionableApproval.id}
+              >
+                {pendingApprovalAction?.approvalId === actionableApproval.id
+                  && pendingApprovalAction.action === "reject"
+                  ? "Rejecting..."
+                  : "Reject"}
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {shouldShowCostSummary && (
         <div className="mb-3 px-3 py-2 rounded-lg border border-border">
           <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
@@ -1236,6 +1308,8 @@ export function IssueDetail() {
   const location = useLocation();
   const { pushToast } = useToastActions();
   const { isMobile } = useSidebar();
+  const isPageVisible = usePageVisible();
+  const { isWsHealthy } = useLiveUpdatesHealth();
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
@@ -1343,7 +1417,8 @@ export function IssueDetail() {
     queryKey: queryKeys.issues.liveRuns(issueId!),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
     enabled: !!issueId,
-    refetchInterval: 3000,
+    refetchInterval: isWsHealthy ? false : (isPageVisible ? ISSUE_RUN_POLL_MS : false),
+    refetchIntervalInBackground: false,
     select: (runs) => runs.length,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId ?? "pending"),
   });
@@ -1352,7 +1427,8 @@ export function IssueDetail() {
     queryKey: queryKeys.issues.activeRun(issueId!),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
     enabled: !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
-    refetchInterval: liveRunCount > 0 ? false : 3000,
+    refetchInterval: liveRunCount > 0 ? false : (isWsHealthy ? false : (isPageVisible ? ISSUE_RUN_POLL_MS : false)),
+    refetchIntervalInBackground: false,
     select: (run) => !!run,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId ?? "pending"),
   });
@@ -1393,7 +1469,10 @@ export function IssueDetail() {
     queryKey: resolvedCompanyId ? queryKeys.liveRuns(resolvedCompanyId) : ["live-runs", "pending"],
     queryFn: () => heartbeatsApi.liveRunsForCompany(resolvedCompanyId!),
     enabled: !!resolvedCompanyId,
-    refetchInterval: 5000,
+    // WS events keep this stale for immediate refresh; fallback poll guards background tabs.
+    // 30s aligns with Sidebar/Issues.tsx so React Query uses one shared interval (not the lower of competing subscribers).
+    refetchInterval: isWsHealthy ? false : (isPageVisible ? 30_000 : false),
+    refetchIntervalInBackground: false,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(resolvedCompanyId ?? "pending"),
   });
 
@@ -2108,13 +2187,24 @@ export function IssueDetail() {
     },
   });
   const acceptInteraction = useMutation({
-    mutationFn: ({
+    mutationFn: async ({
       interaction,
       selectedClientKeys,
     }: {
       interaction: ActionableIssueThreadInteraction;
       selectedClientKeys?: string[];
-    }) => issuesApi.acceptInteraction(issueId!, interaction.id, { selectedClientKeys }),
+    }) => {
+      const opts = { boardKey: getStoredBoardKey() ?? undefined };
+      try {
+        return await issuesApi.acceptInteraction(issueId!, interaction.id, { selectedClientKeys }, opts);
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 403 && isLocalImplicitBoardAuthError(err)) {
+          const boardKey = await fetchAndStoreBoardKey();
+          return await issuesApi.acceptInteraction(issueId!, interaction.id, { selectedClientKeys }, { boardKey });
+        }
+        throw err;
+      }
+    },
     onSuccess: (interaction) => {
       upsertInteractionInCache(interaction);
       if (interaction.kind === "suggest_tasks" && resolvedCompanyId && issue?.id) {
@@ -2146,8 +2236,18 @@ export function IssueDetail() {
     },
   });
   const rejectInteraction = useMutation({
-    mutationFn: ({ interaction, reason }: { interaction: ActionableIssueThreadInteraction; reason?: string }) =>
-      issuesApi.rejectInteraction(issueId!, interaction.id, reason),
+    mutationFn: async ({ interaction, reason }: { interaction: ActionableIssueThreadInteraction; reason?: string }) => {
+      const opts = { boardKey: getStoredBoardKey() ?? undefined };
+      try {
+        return await issuesApi.rejectInteraction(issueId!, interaction.id, reason, opts);
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 403 && isLocalImplicitBoardAuthError(err)) {
+          const boardKey = await fetchAndStoreBoardKey();
+          return await issuesApi.rejectInteraction(issueId!, interaction.id, reason, { boardKey });
+        }
+        throw err;
+      }
+    },
     onSuccess: (interaction) => {
       upsertInteractionInCache(interaction);
       invalidateIssueDetail();

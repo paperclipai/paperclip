@@ -168,10 +168,15 @@ export function useInboxBadge(companyId: string | null | undefined) {
     retry: false,
   });
 
+  // These three queries are always-mounted (Sidebar) and are heavy (up to 500 issues,
+  // 200 runs, full dashboard). Override staleTime and disable window-focus refetches
+  // so they are not hammered every time the user tabs back from terminal/IDE.
   const { data: dashboard } = useQuery({
     queryKey: queryKeys.dashboard(companyId!),
     queryFn: () => dashboardApi.summary(companyId!),
     enabled: !!companyId,
+    staleTime: 120_000,
+    refetchOnWindowFocus: false,
   });
 
   const { data: mineIssuesRaw = [] } = useQuery({
@@ -184,6 +189,8 @@ export function useInboxBadge(companyId: string | null | undefined) {
         limit: INBOX_BADGE_ISSUE_LIMIT,
       }),
     enabled: !!companyId,
+    staleTime: 120_000,
+    refetchOnWindowFocus: false,
   });
 
   const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
@@ -193,6 +200,8 @@ export function useInboxBadge(companyId: string | null | undefined) {
     queryKey: [...queryKeys.heartbeats(companyId!), "limit", INBOX_BADGE_HEARTBEAT_RUN_LIMIT],
     queryFn: () => heartbeatsApi.list(companyId!, undefined, INBOX_BADGE_HEARTBEAT_RUN_LIMIT),
     enabled: !!companyId,
+    staleTime: 120_000,
+    refetchOnWindowFocus: false,
   });
 
   return useMemo(

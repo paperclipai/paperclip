@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
+import { usePageVisible, ISSUE_RUN_POLL_MS } from "../lib/issue-run-polling";
+import { useLiveUpdatesHealth } from "../context/LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDateTime } from "../lib/utils";
 import { ExternalLink, Square } from "lucide-react";
@@ -27,19 +29,25 @@ function isRunActive(status: string): boolean {
 export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
   const queryClient = useQueryClient();
   const [cancellingRunIds, setCancellingRunIds] = useState(new Set<string>());
+  const isPageVisible = usePageVisible();
+  const { isWsHealthy } = useLiveUpdatesHealth();
+  // Poll only as WS fallback — WS events invalidate immediately when healthy.
+  const pollInterval = isWsHealthy ? false : (isPageVisible ? ISSUE_RUN_POLL_MS : false);
 
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
     enabled: !!issueId,
-    refetchInterval: 3000,
+    refetchInterval: pollInterval,
+    refetchIntervalInBackground: false,
   });
 
   const { data: activeRun } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueId),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
     enabled: !!issueId,
-    refetchInterval: 3000,
+    refetchInterval: pollInterval,
+    refetchIntervalInBackground: false,
   });
 
   const runs = useMemo(() => {

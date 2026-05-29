@@ -100,6 +100,24 @@ import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
 
+const LIVE_RUNS_CACHE_TTL_MS = 5_000;
+const LIVE_RUNS_CACHE_MAX_SIZE = 500;
+interface LiveRunsCacheEntry { data: unknown; expiresAt: number; }
+const liveRunsCache = new Map<string, LiveRunsCacheEntry>();
+
+function setLiveRunsCache(key: string, entry: LiveRunsCacheEntry) {
+  if (liveRunsCache.size >= LIVE_RUNS_CACHE_MAX_SIZE) {
+    const now = Date.now();
+    for (const [k, v] of liveRunsCache) {
+      if (now >= v.expiresAt) liveRunsCache.delete(k);
+    }
+    while (liveRunsCache.size >= LIVE_RUNS_CACHE_MAX_SIZE) {
+      liveRunsCache.delete(liveRunsCache.keys().next().value!);
+    }
+  }
+  liveRunsCache.set(key, entry);
+}
+
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
 
@@ -2550,6 +2568,13 @@ export function agentRoutes(
       return;
     }
     await assertCanUpdateAgent(req, existing);
+    if (hasOwn(req.body as object, "isRouter") && req.actor.type === "agent") {
+      const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
+      if (!actorAgent || actorAgent.role !== "ceo") {
+        res.status(403).json({ error: "Only board users or CEO agents can set isRouter" });
+        return;
+      }
+    }
 
     if (hasOwn(req.body as object, "permissions")) {
       res.status(422).json({ error: "Use /api/agents/:id/permissions for permission changes" });
@@ -3101,6 +3126,14 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
 
+    const cacheKey = `${companyId}:${req.url}`;
+    const nowMs = Date.now();
+    const cachedLiveRuns = liveRunsCache.get(cacheKey);
+    if (cachedLiveRuns && nowMs < cachedLiveRuns.expiresAt) {
+      res.json(cachedLiveRuns.data);
+      return;
+    }
+
     // `minCount` is a padding floor for callers that want a minimum number of
     // recent runs to render (e.g. dashboard cards). It must default to 0 so
     // callers asking for "live runs" get only actually-live runs — otherwise
@@ -3169,17 +3202,21 @@ export function agentRoutes(
         .limit(targetRunCount - liveRuns.length);
 
       const rows = [...liveRuns, ...recentRuns];
-      res.json(await Promise.all(rows.map(async (run) => ({
+      const paddedResult = await Promise.all(rows.map(async (run) => ({
         ...run,
         outputSilence: await heartbeat.buildRunOutputSilence(run),
-      }))));
+      })));
+      setLiveRunsCache(cacheKey, { data: paddedResult, expiresAt: nowMs + LIVE_RUNS_CACHE_TTL_MS });
+      res.json(paddedResult);
       return;
     }
 
-    res.json(await Promise.all(liveRuns.map(async (run) => ({
+    const liveResult = await Promise.all(liveRuns.map(async (run) => ({
       ...run,
       outputSilence: await heartbeat.buildRunOutputSilence(run),
-    }))));
+    })));
+    setLiveRunsCache(cacheKey, { data: liveResult, expiresAt: nowMs + LIVE_RUNS_CACHE_TTL_MS });
+    res.json(liveResult);
   });
 
   router.get("/heartbeat-runs/:runId", async (req, res) => {

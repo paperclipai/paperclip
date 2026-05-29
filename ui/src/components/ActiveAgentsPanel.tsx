@@ -6,6 +6,8 @@ import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import type { TranscriptEntry } from "../adapters";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import { useLiveUpdatesHealth } from "../context/LiveUpdatesProvider";
+import { usePageVisible } from "../lib/issue-run-polling";
 import { cn, relativeTime } from "../lib/utils";
 import {
   deriveActiveRecoveryDisplayState,
@@ -63,6 +65,8 @@ interface ActiveAgentsPanelProps {
   showMoreLink?: boolean;
 }
 
+const ACTIVE_AGENTS_FALLBACK_POLL_MS = 30_000;
+
 export function ActiveAgentsPanel({
   companyId,
   title = "Agents",
@@ -75,9 +79,14 @@ export function ActiveAgentsPanel({
   queryScope = "dashboard",
   showMoreLink = true,
 }: ActiveAgentsPanelProps) {
+  const { isWsHealthy } = useLiveUpdatesHealth();
+  const isPageVisible = usePageVisible();
   const { data: liveRuns } = useQuery({
     queryKey: [...queryKeys.liveRuns(companyId), queryScope, { minRunCount, fetchLimit }],
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, { minCount: minRunCount, limit: fetchLimit }),
+    // WS events keep this fresh when healthy; fallback poll guards against a disconnected WS.
+    refetchInterval: isWsHealthy ? false : (isPageVisible ? ACTIVE_AGENTS_FALLBACK_POLL_MS : false),
+    refetchIntervalInBackground: false,
   });
 
   const runs = liveRuns ?? [];

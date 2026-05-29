@@ -15,9 +15,9 @@ import {
   type DocumentAnnotationAnchorSnapshot,
   type DocumentAnnotationComment,
   type DocumentAnnotationThread,
-  CreateDocumentAnnotationComment,
-  CreateDocumentAnnotationThread,
-  UpdateDocumentAnnotationThread,
+  type CreateDocumentAnnotationComment,
+  type CreateDocumentAnnotationThread,
+  type UpdateDocumentAnnotationThread,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 

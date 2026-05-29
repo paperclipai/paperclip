@@ -1,6 +1,8 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { ActivityEvent, Issue, Agent } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { usePageVisible } from "../lib/issue-run-polling";
+import { useLiveUpdatesHealth } from "../context/LiveUpdatesProvider";
 import { Link } from "@/lib/router";
 import { accessApi, type CurrentBoardAccess } from "../api/access";
 import { activityApi, type RunForIssue, type RunLivenessState } from "../api/activity";
@@ -411,6 +413,8 @@ export function IssueRunLedger({
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [watchdogDecisionError, setWatchdogDecisionError] = useState<string | null>(null);
+  const isPageVisible = usePageVisible();
+  const { isWsHealthy } = useLiveUpdatesHealth();
   const { data: boardAccess } = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
@@ -419,21 +423,27 @@ export function IssueRunLedger({
   const { data: runs } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
-    refetchInterval: hasLiveRuns || issueStatus === "in_progress" ? 5000 : false,
+    // WS events invalidate this; only fall back to polling when WS is down and page visible.
+    refetchInterval: isWsHealthy ? false : ((hasLiveRuns || issueStatus === "in_progress") && isPageVisible ? 5000 : false),
+    refetchIntervalInBackground: false,
     placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId),
   });
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
     enabled: hasLiveRuns,
-    refetchInterval: 3000,
+    // WS-gated: only poll when WebSocket is unhealthy and page is in foreground.
+    refetchInterval: isWsHealthy ? false : (isPageVisible ? 5000 : false),
+    refetchIntervalInBackground: false,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId),
   });
   const { data: activeRun = null } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueId),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
     enabled: hasLiveRuns || issueStatus === "in_progress",
-    refetchInterval: hasLiveRuns ? false : 3000,
+    // WS-gated: poll activeRun as fallback only when WS is down and no live-runs feed is active.
+    refetchInterval: isWsHealthy ? false : (!hasLiveRuns && isPageVisible ? 5000 : false),
+    refetchIntervalInBackground: false,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId),
   });
   const watchdogDecision = useMutation({

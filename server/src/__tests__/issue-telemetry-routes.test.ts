@@ -7,6 +7,7 @@ const mockIssueService = vi.hoisted(() => ({
   getWakeableParentAfterChildCompletion: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   update: vi.fn(),
+  addComment: vi.fn(),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
@@ -43,6 +44,9 @@ function registerModuleMocks() {
     heartbeatService: () => ({
       wakeup: vi.fn(async () => undefined),
       reportRunActivity: vi.fn(async () => undefined),
+      getActiveRunForAgent: vi.fn(async () => null),
+      getRun: vi.fn(async () => null),
+      cancelRun: vi.fn(async () => null),
     }),
     instanceSettingsService: () => ({}),
     issueApprovalService: () => ({}),
@@ -126,6 +130,7 @@ describe("issue telemetry routes", () => {
       ...makeIssue("todo"),
       ...patch,
     }));
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-1", body: "Task completed." });
   });
 
   it("emits task-completed telemetry with the agent role, adapter type, and model", async () => {
@@ -145,7 +150,7 @@ describe("issue telemetry routes", () => {
     });
     const res = await request(app)
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ status: "done" });
+      .send({ status: "done", comment: "Task completed." });
 
     expect(res.status).toBe(200);
     await vi.waitFor(() => {

@@ -75,6 +75,7 @@ vi.mock("../services/index.js", () => ({
   companyService: () => mockCompanyService,
   feedbackService: () => mockFeedbackService,
   logActivity: mockLogActivity,
+  heartbeatService: () => ({}),
 }));
 
 function registerCompanyRouteMocks() {
@@ -85,6 +86,7 @@ function registerCompanyRouteMocks() {
     companyPortabilityService: () => mockCompanyPortabilityService,
     companyService: () => mockCompanyService,
     feedbackService: () => mockFeedbackService,
+    heartbeatService: () => ({}),
     logActivity: mockLogActivity,
   }));
 }

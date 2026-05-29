@@ -25,6 +25,9 @@ concurrency:
   group: release-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   verify_canary:
     if: github.event_name == 'push'
@@ -64,6 +67,9 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Verify @paperclipai/shared export chain
+        run: node scripts/check-shared-export-chain.mjs
 
   publish_canary:
     if: github.event_name == 'push'
@@ -120,6 +126,15 @@ jobs:
           fi
           git push origin "refs/tags/${tag}"
 
+  canary_smoke:
+    if: github.event_name == 'push'
+    needs: publish_canary
+    uses: ./.github/workflows/release-smoke.yml
+    with:
+      paperclip_version: canary
+      host_port: "3100"
+      artifact_name: canary-smoke
+
   verify_stable:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -159,6 +174,9 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Verify @paperclipai/shared export chain
+        run: node scripts/check-shared-export-chain.mjs
 
   preview_stable:
     if: github.event_name == 'workflow_dispatch' && inputs.dry_run
