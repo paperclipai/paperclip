@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -4820,6 +4820,70 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   ) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+
+    if (issueId) {
+      const windowStart = new Date(now.getTime() - 60 * 60 * 1000);
+      const [countRow] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.errorCode, "process_lost"),
+            gte(heartbeatRuns.finishedAt, windowStart),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ),
+        );
+      const recentCount = countRow?.count ?? 0;
+      if (recentCount >= 3) {
+        await issuesSvc.update(issueId, { status: "blocked" });
+        await issuesSvc.addComment(
+          issueId,
+          [
+            `**Auto-paused: \`process_lost\` retry rate limit exceeded.**`,
+            ``,
+            `- Recent \`process_lost\` failures (last 1 hour): ${recentCount}`,
+            `- Cap: 3 per hour`,
+            ``,
+            `Paperclip has blocked this issue to contain token burn. This cap resets when the issue is manually unblocked.`,
+            `A board operator or manager should investigate the \`process_lost\` root cause before resuming.`,
+          ].join("\n"),
+          {},
+          { authorType: "system" },
+        );
+        logger.warn(
+          {
+            issueId,
+            companyId: run.companyId,
+            errorClass: "process_lost",
+            recentCount,
+            cap: 3,
+            windowMs: 60 * 60 * 1000,
+            timestamp: now.toISOString(),
+          },
+          "process_loss_retry_rate_limit_exceeded",
+        );
+        await logActivity(db, {
+          companyId: run.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: null,
+          runId: null,
+          action: "issue.process_loss_retry_rate_limit",
+          entityType: "issue",
+          entityId: issueId,
+          details: {
+            errorClass: "process_lost",
+            recentCount,
+            cap: 3,
+            windowMs: 60 * 60 * 1000,
+            timestamp: now.toISOString(),
+          },
+        });
+        return null;
+      }
+    }
+
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot = withRecoveryModelProfileHint({

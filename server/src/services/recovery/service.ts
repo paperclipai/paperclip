@@ -399,6 +399,9 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
+const PROCESS_LOSS_RETRY_RATE_LIMIT_CAP = 3;
+const PROCESS_LOSS_RETRY_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+
 export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
@@ -436,6 +439,83 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function countRecentProcessLossRunsForIssue(
+    companyId: string,
+    issueId: string,
+    windowMs: number,
+    now: Date,
+  ): Promise<number> {
+    const windowStart = new Date(now.getTime() - windowMs);
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.errorCode, "process_lost"),
+          gte(heartbeatRuns.finishedAt, windowStart),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      );
+    return row?.count ?? 0;
+  }
+
+  async function enforceProcessLossRetryRateLimit(
+    issue: typeof issues.$inferSelect,
+    recentCount: number,
+    now: Date,
+  ): Promise<typeof issues.$inferSelect | null> {
+    const updated = await issuesSvc.update(issue.id, { status: "blocked" });
+    await issuesSvc.addComment(
+      issue.id,
+      [
+        `**Auto-paused: \`process_lost\` retry rate limit exceeded.**`,
+        ``,
+        `- Issue: \`${issue.identifier ?? issue.id}\``,
+        `- Recent \`process_lost\` failures (last 1 hour): ${recentCount}`,
+        `- Cap: ${PROCESS_LOSS_RETRY_RATE_LIMIT_CAP} per hour`,
+        ``,
+        `Paperclip has blocked this issue to contain token burn. This cap resets when the issue is manually unblocked.`,
+        `A board operator or manager should investigate the \`process_lost\` root cause before resuming.`,
+      ].join("\n"),
+      {},
+      { authorType: "system" },
+    );
+    logger.warn(
+      {
+        issueId: issue.id,
+        companyId: issue.companyId,
+        identifier: issue.identifier,
+        errorClass: "process_lost",
+        recentCount,
+        cap: PROCESS_LOSS_RETRY_RATE_LIMIT_CAP,
+        windowMs: PROCESS_LOSS_RETRY_RATE_LIMIT_WINDOW_MS,
+        timestamp: now.toISOString(),
+      },
+      "process_loss_retry_rate_limit_exceeded",
+    );
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.process_loss_retry_rate_limit",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        errorClass: "process_lost",
+        recentCount,
+        cap: PROCESS_LOSS_RETRY_RATE_LIMIT_CAP,
+        windowMs: PROCESS_LOSS_RETRY_RATE_LIMIT_WINDOW_MS,
+        timestamp: now.toISOString(),
+        previousStatus: issue.status,
+      },
+    });
+    return updated;
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
@@ -2384,6 +2464,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
         result.skipped += 1;
         continue;
+      }
+
+      if (issue.status === "in_progress") {
+        const rlNow = new Date();
+        const recentProcessLossCount = await countRecentProcessLossRunsForIssue(
+          issue.companyId,
+          issue.id,
+          PROCESS_LOSS_RETRY_RATE_LIMIT_WINDOW_MS,
+          rlNow,
+        );
+        if (recentProcessLossCount >= PROCESS_LOSS_RETRY_RATE_LIMIT_CAP) {
+          const updated = await enforceProcessLossRetryRateLimit(issue, recentProcessLossCount, rlNow);
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
       }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
