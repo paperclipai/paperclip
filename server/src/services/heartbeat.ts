@@ -5931,6 +5931,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
 
+    // cronExpression is not a valid heartbeat field — it belongs on routine triggers.
+    // Warn once so operators know their cron schedule is being silently ignored.
+    if (heartbeat.cronExpression != null) {
+      logger.warn(
+        { agentId: agent.id, cronExpression: heartbeat.cronExpression },
+        "heartbeat config contains 'cronExpression' which is not supported — use 'intervalSec' for timed heartbeats or create a routine trigger with a cron schedule. The cronExpression key is ignored.",
+      );
+    }
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
