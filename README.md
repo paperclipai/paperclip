@@ -385,7 +385,14 @@ strings, and `doc/` references — anything touched by the rebrand pass.
 - ✅ Brand SVG assets (wordmark + mark, light/dark) in
   [`doc/assets/brand/`](doc/assets/brand/).
 - ✅ Upstream remote wired with `no_push`.
-- ✅ CI policy & verify gates green on the rebrand PR.
+- ✅ All PR CI checks green on the rebrand PR — `policy`, `Build`,
+  `Typecheck + Release Registry`, the four serialized server suites,
+  three general-test groups, `e2e`, and `verify`. The post-rebrand
+  failures in `plugin-database`, the founding-role copy assertions, the
+  onboarding/planning-mode Playwright specs, and the signoff e2e suite
+  are all fixed; see commit `2b28b3e0` and
+  [`doc/plans/2026-05-29-canonicalize-run-id-header.md`](doc/plans/2026-05-29-canonicalize-run-id-header.md)
+  for the run-id-header follow-up.
 - ⚪ npm publishing for `@valadrien-os/*` is **deferred** — packages are valid
   workspace targets but `publishFromCi: false` until the scope is bootstrapped
   on npm. Re-enable per-package after the first publish lands.

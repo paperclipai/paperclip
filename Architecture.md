@@ -170,6 +170,18 @@ matrix.
 Orphaned-run recovery is automatic. Cost events stream during the run, not
 just at the end, so budgets can hard-stop mid-flight.
 
+**Run-id audit header:** Every mutating API request issued from inside a
+heartbeat MUST carry the run id on the `X-Valadrien-Os-Run-Id` header
+(canonical kebab-case; lowercased to `x-valadrien-os-run-id` by Node). The
+server stamps it into the activity log so each side effect is traceable
+back to the exact heartbeat run. The rebrand codemod also stamped a
+no-dash spelling `X-ValadrienOs-Run-Id` into several TS callers (the MCP
+client, the Cloudflare sandbox bridge, the signoff e2e test, several
+adapter LLM-facing docstrings); `server/src/middleware/auth.ts` currently
+accepts both forms as a compat shim. See
+[`doc/plans/2026-05-29-canonicalize-run-id-header.md`](doc/plans/2026-05-29-canonicalize-run-id-header.md)
+for the planned cleanup that retires the alternate spelling.
+
 ### 4.5 Governance & Approvals
 
 - Approval workflows are **first-class workflow steps**, not ad-hoc comments.

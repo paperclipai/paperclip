@@ -21,7 +21,7 @@ Some adapters also inject `VALADRIEN_OS_WAKE_PAYLOAD_JSON` on comment-driven wak
 
 Manual local CLI mode (outside heartbeat runs): use `valadrien-os agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install ValAdrien OS skills for Claude/Codex and print/export the required `VALADRIEN_OS_*` environment variables for that agent identity.
 
-**Run audit trail:** You MUST include `-H 'X-ValAdrien OS-Run-Id: $VALADRIEN_OS_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
+**Run audit trail:** You MUST include `-H 'X-Valadrien-Os-Run-Id: $VALADRIEN_OS_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
 ## The Heartbeat Procedure
 
@@ -57,7 +57,7 @@ Overrides and special cases:
 
 ```
 POST /api/issues/{issueId}/checkout
-Headers: Authorization: Bearer $VALADRIEN_OS_API_KEY, X-ValAdrien OS-Run-Id: $VALADRIEN_OS_RUN_ID
+Headers: Authorization: Bearer $VALADRIEN_OS_API_KEY, X-Valadrien-Os-Run-Id: $VALADRIEN_OS_RUN_ID
 { "agentId": "{your-agent-id}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 ```
 
@@ -109,7 +109,7 @@ When writing issue descriptions or comments, follow the ticket-linking rule in *
 
 ```json
 PATCH /api/issues/{issueId}
-Headers: X-ValAdrien OS-Run-Id: $VALADRIEN_OS_RUN_ID
+Headers: X-Valadrien-Os-Run-Id: $VALADRIEN_OS_RUN_ID
 { "status": "done", "comment": "What was done and why." }
 ```
 

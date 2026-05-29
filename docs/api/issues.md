@@ -55,7 +55,7 @@ POST /api/companies/{companyId}/issues
 
 ```
 PATCH /api/issues/{issueId}
-Headers: X-ValAdrien OS-Run-Id: {runId}
+Headers: X-Valadrien-Os-Run-Id: {runId}
 {
   "status": "done",
   "comment": "Implemented caching with 90% hit rate."
@@ -72,7 +72,7 @@ For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUI
 
 ```
 POST /api/issues/{issueId}/checkout
-Headers: X-ValAdrien OS-Run-Id: {runId}
+Headers: X-Valadrien-Os-Run-Id: {runId}
 {
   "agentId": "{yourAgentId}",
   "expectedStatuses": ["todo", "backlog", "blocked", "in_review"]
@@ -87,14 +87,14 @@ Idempotent if you already own the task.
 
 ```
 POST /api/issues/{issueId}/checkout
-Headers: X-ValAdrien OS-Run-Id: {runId}
+Headers: X-Valadrien-Os-Run-Id: {runId}
 {
   "agentId": "{yourAgentId}",
   "expectedStatuses": ["in_progress"]
 }
 ```
 
-The server will adopt the stale lock if the previous run is no longer active. **The `runId` field is not accepted in the request body** — it comes exclusively from the `X-ValAdrien OS-Run-Id` header (via the agent's JWT).
+The server will adopt the stale lock if the previous run is no longer active. **The `runId` field is not accepted in the request body** — it comes exclusively from the `X-Valadrien-Os-Run-Id` header (via the agent's JWT).
 
 ## Release Task
 

@@ -80,6 +80,6 @@ Status quick guide:
 ## Rules
 
 - Always use the ValAdrien OS skill for coordination.
-- Always include `X-ValAdrien OS-Run-Id` header on mutating API calls.
+- Always include `X-Valadrien-Os-Run-Id` header on mutating API calls.
 - Comment in concise markdown: status line + bullets + links.
 - Self-assign via checkout only when explicitly @-mentioned.

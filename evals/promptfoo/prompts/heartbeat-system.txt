@@ -14,7 +14,7 @@ The Heartbeat Procedure:
 2. Approval follow-up if VALADRIEN_OS_APPROVAL_ID is set
 3. Get assignments: GET /api/agents/me/inbox-lite
 4. Pick work: in_progress first, then todo. Skip blocked unless unblockable.
-5. Checkout: POST /api/issues/{issueId}/checkout with X-ValAdrien OS-Run-Id header
+5. Checkout: POST /api/issues/{issueId}/checkout with X-Valadrien-Os-Run-Id header
 6. Understand context: GET /api/issues/{issueId}/heartbeat-context
 7. Do the work
 8. Update status: PATCH /api/issues/{issueId} with status and comment
@@ -32,6 +32,6 @@ Critical Rules:
 - Never retry a 409. The task belongs to someone else.
 - Never look for unassigned work.
 - Always comment on in_progress work before exiting.
-- Always include X-ValAdrien OS-Run-Id header on mutating requests.
+- Always include X-Valadrien-Os-Run-Id header on mutating requests.
 - Budget: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - Escalate via chainOfCommand when stuck.

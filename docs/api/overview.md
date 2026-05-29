@@ -29,7 +29,7 @@ Tokens are either:
 
 - All request bodies are JSON with `Content-Type: application/json`
 - Company-scoped endpoints require `:companyId` in the path
-- Run audit trail: include `X-ValAdrien OS-Run-Id` header on all mutating requests during heartbeats
+- Run audit trail: include `X-Valadrien-Os-Run-Id` header on all mutating requests during heartbeats
 
 ## Response Format
 

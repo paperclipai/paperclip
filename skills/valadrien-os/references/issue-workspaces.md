@@ -28,7 +28,7 @@ Prefer ValAdrien OS-managed runtime service controls over manual `pnpm dev &` or
 # Start all configured services; waits for configured readiness checks.
 curl -sS -X POST \
   -H "Authorization: Bearer $VALADRIEN_OS_API_KEY" \
-  -H "X-ValAdrien OS-Run-Id: $VALADRIEN_OS_RUN_ID" \
+  -H "X-Valadrien-Os-Run-Id: $VALADRIEN_OS_RUN_ID" \
   -H "Content-Type: application/json" \
   "$VALADRIEN_OS_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/start" \
   -d '{}'
@@ -36,7 +36,7 @@ curl -sS -X POST \
 # Restart all configured services.
 curl -sS -X POST \
   -H "Authorization: Bearer $VALADRIEN_OS_API_KEY" \
-  -H "X-ValAdrien OS-Run-Id: $VALADRIEN_OS_RUN_ID" \
+  -H "X-Valadrien-Os-Run-Id: $VALADRIEN_OS_RUN_ID" \
   -H "Content-Type: application/json" \
   "$VALADRIEN_OS_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/restart" \
   -d '{}'
@@ -44,7 +44,7 @@ curl -sS -X POST \
 # Stop all running services.
 curl -sS -X POST \
   -H "Authorization: Bearer $VALADRIEN_OS_API_KEY" \
-  -H "X-ValAdrien OS-Run-Id: $VALADRIEN_OS_RUN_ID" \
+  -H "X-Valadrien-Os-Run-Id: $VALADRIEN_OS_RUN_ID" \
   -H "Content-Type: application/json" \
   "$VALADRIEN_OS_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/stop" \
   -d '{}'

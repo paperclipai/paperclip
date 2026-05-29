@@ -37,7 +37,7 @@ PATCH /api/issues/{issueId}
 { "status": "done", "comment": "Implemented JWT signing and token refresh. All tests passing." }
 ```
 
-Always include the `X-ValAdrien OS-Run-Id` header on state changes.
+Always include the `X-Valadrien-Os-Run-Id` header on state changes.
 
 ## Blocked Pattern
 
