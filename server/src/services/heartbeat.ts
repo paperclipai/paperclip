@@ -6392,6 +6392,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    options?: { errorCode?: string | null; errorMessage?: string | null },
   ) {
     const existing = await getAgent(agentId);
     const latestFailedRun = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "failed"))).orderBy(desc(heartbeatRuns.finishedAt)).limit(1).then(rows => rows[0] || null);
@@ -6412,10 +6413,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ? "idle"
           : "error";
 
+    const cbThreshold = parseInt(process.env.CIRCUIT_BREAKER_FAILURE_THRESHOLD ?? "5", 10);
+    const isFailed = outcome === "failed" || outcome === "timed_out";
+    const newFingerprint = isFailed
+      ? (options?.errorCode ?? options?.errorMessage?.slice(0, 120) ?? "unknown")
+      : null;
+    const fingerprintMatches = newFingerprint != null && newFingerprint === existing.lastFailureFingerprint;
+    const newCount = isFailed ? (fingerprintMatches ? (existing.consecutiveFailureCount ?? 0) + 1 : 1) : 0;
+    const shouldCircuitBreak = isFailed && newCount >= cbThreshold;
+
     const updated = await db
       .update(agents)
       .set({
-        status: nextStatus,
+        status: shouldCircuitBreak ? "paused" : nextStatus,
+        pauseReason: shouldCircuitBreak ? "circuit_breaker" : null,
+        consecutiveFailureCount: newCount,
+        lastFailureFingerprint: newFingerprint,
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
         ...(nextStatus === "error" && latestFailedRun
@@ -7920,6 +7933,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
+      }
+      // Re-read agent state immediately before adapter invocation to prevent pause bypass
+      const preAdapterAgent = await getAgent(agent.id);
+      if (preAdapterAgent && (preAdapterAgent.status === "paused" || preAdapterAgent.status === "terminated" || preAdapterAgent.status === "pending_approval")) {
+        logger.info({ runId, agentId: agent.id }, "Aborting adapter execution: agent paused/terminated after claim");
+        await setRunStatus(run.id, "aborted", { finishedAt: new Date() });
+        return;
       }
       const adapterResult = await adapter.execute({
         runId: run.id,
