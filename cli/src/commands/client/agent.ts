@@ -160,6 +160,16 @@ function buildAgentEnvExports(input: {
   ].join("\n");
 }
 
+/**
+ * Register all agent-related subcommands onto the given Commander program.
+ *
+ * Adds an `agent` command with the following subcommands:
+ * - `list` — list agents for a company
+ * - `get` — get details for a single agent (supports `--redact`)
+ * - `local-cli` — create an agent API key, install local skills, and print shell exports
+ *
+ * @param program - The parent Commander program instance to attach the `agent` command to.
+ */
 export function registerAgentCommands(program: Command): void {
   const agent = program.command("agent").description("Agent operations");
 
