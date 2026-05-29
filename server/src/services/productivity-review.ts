@@ -13,6 +13,7 @@ import {
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { budgetService } from "./budgets.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import { issueService } from "./issues.js";
 import {
   recoveryAssigneeAdapterOverrides,
@@ -203,6 +204,7 @@ function formatTrigger(trigger: ProductivityReviewTrigger) {
 export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: EnqueueWakeup }) {
   const issuesSvc = issueService(db);
   const budgets = budgetService(db);
+  const instanceSettings = instanceSettingsService(db);
 
   async function getCompanyIssuePrefix(companyId: string) {
     return db
@@ -763,6 +765,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     companyId?: string;
     thresholds?: Partial<ProductivityReviewThresholds>;
   }) {
+    const experimentalSettings = await instanceSettings.getExperimental();
+    if (experimentalSettings.enableIssueProductivityReview === false) {
+      return { scanned: 0, created: 0, updated: 0, existing: 0, snoozed: 0, creationCapped: 0, skipped: 0, failed: 0, reviewIssueIds: [], failedIssueIds: [] };
+    }
     const now = opts?.now ?? new Date();
     const thresholds = buildThresholds(opts?.thresholds);
     const candidates = await db
