@@ -204,10 +204,14 @@ export function registerAgentCommands(program: Command): void {
       .command("get")
       .description("Get one agent")
       .argument("<agentId>", "Agent ID")
-      .action(async (agentId: string, opts: BaseClientOptions) => {
+      .option("--redact", "Return redacted configuration (secrets replaced with [REDACTED])")
+      .action(async (agentId: string, opts: BaseClientOptions & { redact?: boolean }) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const row = await ctx.api.get<Agent>(`/api/agents/${agentId}`);
+          const path = opts.redact
+            ? `/api/agents/${agentId}/configuration`
+            : `/api/agents/${agentId}`;
+          const row = await ctx.api.get<Agent>(path);
           printOutput(row, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
