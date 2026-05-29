@@ -10,8 +10,12 @@ import { test, expect } from "@playwright/test";
  *   Step 4 — Ready to launch (summary + open issue)
  *
  * By default this runs in skip_llm mode: we do NOT assert that an LLM
- * heartbeat fires. Set PAPERCLIP_E2E_SKIP_LLM=false to enable LLM-dependent
- * assertions (requires a valid ANTHROPIC_API_KEY).
+ * heartbeat completes. We DO assert that at least one heartbeat run is
+ * queued/running for the new assignee within 30s of "Create & Open Issue".
+ * That run will fail-fast in CI without ANTHROPIC_API_KEY, which is fine —
+ * the assertion is regression coverage for the onboarding-wake handoff
+ * (companion fix to the orphan-runId bug). Set PAPERCLIP_E2E_SKIP_LLM=false
+ * to enable LLM-dependent assertions (requires a valid ANTHROPIC_API_KEY).
  */
 
 const SKIP_LLM = process.env.PAPERCLIP_E2E_SKIP_LLM !== "false";
@@ -73,24 +77,6 @@ test.describe("Onboarding wizard", () => {
         (a: { name: string }) => a.name === AGENT_NAME
       );
       expect(ceoAgentAfterCreate).toBeTruthy();
-
-      const disableWakeRes = await page.request.patch(
-        `${baseUrl}/api/agents/${ceoAgentAfterCreate.id}?companyId=${encodeURIComponent(companyAfterAgent.id)}`,
-        {
-          data: {
-            runtimeConfig: {
-              heartbeat: {
-                enabled: false,
-                intervalSec: 300,
-                wakeOnDemand: false,
-                cooldownSec: 10,
-                maxConcurrentRuns: 5,
-              },
-            },
-          },
-        }
-      );
-      expect(disableWakeRes.ok()).toBe(true);
     }
 
     const taskTitleInput = page.locator(
@@ -174,8 +160,8 @@ test.describe("Onboarding wizard", () => {
           expect(runsRes.ok()).toBe(true);
           const runs = await runsRes.json();
           return Array.isArray(runs) ? runs.length : -1;
-        }, { timeout: 10_000, intervals: [500, 1_000, 2_000] })
-        .toBe(0);
+        }, { timeout: 30_000, intervals: [500, 1_000, 2_000] })
+        .toBeGreaterThanOrEqual(1);
     }
   });
 });

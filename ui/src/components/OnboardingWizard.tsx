@@ -566,6 +566,33 @@ export function OnboardingWizard() {
         queryClient.invalidateQueries({
           queryKey: queryKeys.issues.list(createdCompanyId)
         });
+
+        // The server's `queueIssueAssignmentWakeup` runs fire-and-forget on
+        // issue create. On a rare wake-transaction failure, the issue can be
+        // stamped with an `executionRunId` for a run that never starts,
+        // leaving the freshly-onboarded agent locked to a phantom run with
+        // no live continuation path. Issue an explicit on-demand wake here
+        // so the user is told if the first run cannot be queued, instead of
+        // landing on an issue page whose assignee never ticks.
+        try {
+          await agentsApi.wakeup(
+            createdAgentId,
+            {
+              source: "on_demand",
+              triggerDetail: "manual",
+              reason: "onboarding_first_task",
+              payload: { issueId: issue.id }
+            },
+            createdCompanyId
+          );
+        } catch (wakeErr) {
+          setError(
+            wakeErr instanceof Error
+              ? `Task created but failed to start the agent: ${wakeErr.message}. Open the agent's run history to retry.`
+              : "Task created but failed to start the agent. Open the agent's run history to retry."
+          );
+          return;
+        }
       }
 
       setSelectedCompanyId(createdCompanyId);
