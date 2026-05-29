@@ -190,7 +190,7 @@ export function redactDetectedSuccessfulRunProgressSummaryForBoard(
 
 const MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS = 100;
 const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
-const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
@@ -9974,6 +9974,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        const activeRunCount = await countRunningRunsForAgent(agent.id);
+        if (activeRunCount >= policy.maxConcurrentRuns) {
+          skipped += 1;
+          if (elapsedMs > policy.intervalSec * 2000) {
+            logger.warn(
+              { agentId: agent.id, elapsedMs, intervalSec: policy.intervalSec, activeRunCount },
+              "heartbeat timer: agent heartbeat is running longer than 2x its interval — consider increasing intervalSec",
+            );
+          }
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
