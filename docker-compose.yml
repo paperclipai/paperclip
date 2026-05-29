@@ -2,7 +2,7 @@ services:
   paperclip:
 #    build:
 #      context: .
-    image: paperclip:v2026.407.0
+    image: ghcr.io/starlein/paperclip:v2026.403.1-stable
 #     dockerfile: Dockerfile
 #      target: production
 #      args:
