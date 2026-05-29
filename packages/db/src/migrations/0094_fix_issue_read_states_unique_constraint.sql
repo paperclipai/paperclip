@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "issue_read_states_company_issue_user_idx" ON "issue_read_states" USING btree ("company_id","issue_id","user_id");
