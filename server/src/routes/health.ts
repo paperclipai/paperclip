@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { statfs } from "node:fs/promises";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
@@ -8,6 +9,53 @@ import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRe
 import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
+
+export const DISK_THRESHOLD_WARNING = 0.85;
+export const DISK_THRESHOLD_ALERT = 0.90;
+export const DISK_THRESHOLD_CRITICAL = 0.95;
+
+export type DiskThresholdState = "healthy" | "warning" | "alert" | "critical";
+
+export interface DiskStatus {
+  totalBytes: number;
+  usedBytes: number;
+  availableBytes: number;
+  percentUsed: number;
+  thresholdState: DiskThresholdState;
+  checkedAt: string;
+  error?: string;
+}
+
+export async function getDiskStatus(path = "/"): Promise<DiskStatus> {
+  const checkedAt = new Date().toISOString();
+  try {
+    const stats = await statfs(path);
+    const totalBytes = stats.blocks * stats.bsize;
+    const availableBytes = stats.bavail * stats.bsize;
+    const usedBytes = totalBytes - stats.bfree * stats.bsize;
+    const percentUsed = totalBytes > 0 ? usedBytes / totalBytes : 0;
+    let thresholdState: DiskThresholdState = "healthy";
+    if (percentUsed >= DISK_THRESHOLD_CRITICAL) thresholdState = "critical";
+    else if (percentUsed >= DISK_THRESHOLD_ALERT) thresholdState = "alert";
+    else if (percentUsed >= DISK_THRESHOLD_WARNING) thresholdState = "warning";
+    return { totalBytes, usedBytes, availableBytes, percentUsed, thresholdState, checkedAt };
+  } catch (error) {
+    logger.warn({ err: error }, "Disk status check failed");
+    return {
+      totalBytes: 0,
+      usedBytes: 0,
+      availableBytes: 0,
+      percentUsed: 0,
+      thresholdState: "healthy",
+      checkedAt,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export function isDiskCritical(disk: DiskStatus): boolean {
+  return !disk.error && disk.thresholdState === "critical";
+}
 
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
@@ -153,6 +201,8 @@ export function healthRoutes(
       });
     }
 
+    const disk = await getDiskStatus();
+
     if (!exposeFullDetails) {
       res.json({
         status: "ok",
@@ -160,6 +210,7 @@ export function healthRoutes(
         deploymentExposure: opts.deploymentExposure,
         bootstrapStatus,
         bootstrapInviteActive,
+        disk,
         ...(devServer ? { devServer } : {}),
       });
       return;
@@ -173,6 +224,7 @@ export function healthRoutes(
       authReady: opts.authReady,
       bootstrapStatus,
       bootstrapInviteActive,
+      disk,
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },

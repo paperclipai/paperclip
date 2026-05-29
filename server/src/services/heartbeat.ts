@@ -9960,6 +9960,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     buildRunOutputSilence,
 
     tickTimers: async (now = new Date()) => {
+      // Block new timer dispatches when disk is at critical threshold to prevent Postgres OOM/crash.
+      const { getDiskStatus, isDiskCritical } = await import("../routes/health.js");
+      const disk = await getDiskStatus();
+      if (isDiskCritical(disk)) {
+        logger.warn(
+          { diskPercentUsed: disk.percentUsed, thresholdState: disk.thresholdState },
+          "Disk critical — skipping timer heartbeat dispatch",
+        );
+        return { checked: 0, enqueued: 0, skipped: 0, diskCritical: true };
+      }
+
       const allAgents = await db.select().from(agents);
       let checked = 0;
       let enqueued = 0;
