@@ -1986,6 +1986,17 @@ async function buildPaperclipWakePayload(input: {
   const annotationCommentId = readNonEmptyString(input.contextSnapshot.annotationCommentId);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const continuationSummary = input.continuationSummary ?? null;
+  // SLI-110 §5: latestCommentId is always the issue's current latest comment id,
+  // surfaced at the top level of every wake payload. Returns null on empty threads.
+  const issueLatestCommentId = issueId
+    ? await input.db
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(and(eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, issueId)))
+        .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+        .limit(1)
+        .then((rows) => rows[0]?.id ?? null)
+    : null;
   const issueSummary =
     input.issueSummary ??
     (issueId
@@ -2180,7 +2191,7 @@ async function buildPaperclipWakePayload(input: {
         }
       : null,
     commentIds,
-    latestCommentId: commentIds[commentIds.length - 1] ?? null,
+    latestCommentId: issueLatestCommentId ?? commentIds[commentIds.length - 1] ?? null,
     comments,
     annotationDeltas,
     commentWindow: {

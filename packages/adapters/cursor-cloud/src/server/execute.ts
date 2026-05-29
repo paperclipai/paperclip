@@ -18,6 +18,7 @@ import {
   joinPromptSections,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
+  readPaperclipLatestCommentIdFromContext,
   renderPaperclipWakePrompt,
   renderTemplate,
   stringifyPaperclipWakePayload,
@@ -122,6 +123,8 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
   if (wakeReason) env.PAPERCLIP_WAKE_REASON = wakeReason;
   if (wakeCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
+  const latestCommentId = readPaperclipLatestCommentIdFromContext(context);
+  if (latestCommentId) env.PAPERCLIP_LATEST_COMMENT_ID = latestCommentId;
   if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
   if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");

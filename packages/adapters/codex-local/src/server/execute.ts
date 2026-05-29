@@ -31,6 +31,7 @@ import {
   refreshPaperclipWorkspaceEnvForExecution,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
+  readPaperclipLatestCommentIdFromContext,
   resolvePaperclipDesiredSkillNames,
   renderTemplate,
   renderPaperclipWakePrompt,
@@ -443,6 +444,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   if (wakeCommentId) {
     env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
+  }
+  const latestCommentId = readPaperclipLatestCommentIdFromContext(context);
+  if (latestCommentId) {
+    env.PAPERCLIP_LATEST_COMMENT_ID = latestCommentId;
   }
   if (approvalId) {
     env.PAPERCLIP_APPROVAL_ID = approvalId;

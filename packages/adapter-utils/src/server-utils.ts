@@ -670,6 +670,19 @@ export function readPaperclipIssueWorkModeFromContext(value: unknown): string | 
   return wake?.issue?.workMode ?? null;
 }
 
+/**
+ * SLI-110: surfaces the issue's current latest comment id from the wake payload
+ * so adapters can inject `PAPERCLIP_LATEST_COMMENT_ID`. Returns null on empty
+ * threads.
+ */
+export function readPaperclipLatestCommentIdFromContext(value: unknown): string | null {
+  const context = parseObject(value);
+  const wake = normalizePaperclipWakePayload(context.paperclipWake);
+  if (wake?.latestCommentId) return wake.latestCommentId;
+  const direct = asString(context.latestCommentId, "").trim();
+  return direct || null;
+}
+
 export function renderPaperclipWakePrompt(
   value: unknown,
   options: { resumedSession?: boolean } = {},
@@ -698,7 +711,7 @@ export function renderPaperclipWakePrompt(
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
         `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
-        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
+        `- latest comment id: ${normalized.latestCommentId ?? "null"}`,
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
       ]
     : [
@@ -715,7 +728,7 @@ export function renderPaperclipWakePrompt(
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
         `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
-        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
+        `- latest comment id: ${normalized.latestCommentId ?? "null"}`,
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
       ];
 

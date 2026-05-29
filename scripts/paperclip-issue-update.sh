@@ -102,9 +102,23 @@ if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_API_KEY:-}" || -z "${PAPERC
   exit 1
 fi
 
-curl -sS -X PATCH \
-  "$PAPERCLIP_API_URL/api/issues/$issue_id" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -H 'Content-Type: application/json' \
-  --data-binary "$payload"
+curl_args=(
+  -sS -X PATCH
+  "$PAPERCLIP_API_URL/api/issues/$issue_id"
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"
+  -H 'Content-Type: application/json'
+)
+
+# SLI-110: auto-attach If-Match + Idempotency-Key when we're carrying a comment,
+# so the comment-freshness guard can detect a stale write.
+if [[ -n "$comment" ]]; then
+  if [[ -n "${PAPERCLIP_LATEST_COMMENT_ID:-}" ]]; then
+    curl_args+=( -H "If-Match: $PAPERCLIP_LATEST_COMMENT_ID" )
+  fi
+  idempotency_key="${PAPERCLIP_ISSUE_UPDATE_IDEMPOTENCY_KEY:-issue-update:${PAPERCLIP_RUN_ID}:${issue_id}}"
+  curl_args+=( -H "Idempotency-Key: $idempotency_key" )
+fi
+
+curl_args+=( --data-binary "$payload" )
+curl "${curl_args[@]}"
