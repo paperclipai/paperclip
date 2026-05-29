@@ -267,7 +267,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
   it("escalates stranded assigned work into a source action instead of a recovery issue", async () => {
     const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
-    const enqueueWakeup = vi.fn(async () => null);
+    const enqueueWakeup = vi.fn<
+      (agentId: string, opts?: { payload?: unknown }) => Promise<null>
+    >(async () => null);
     const recovery = recoveryService(db, { enqueueWakeup });
     const latestRun = {
       id: randomUUID(),
@@ -277,6 +279,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       errorCode: "adapter_failed",
       contextSnapshot: { retryReason: "issue_continuation_needed" },
       livenessState: "needs_followup",
+      resultJson: null,
+      usageJson: null,
+      createdAt: new Date(),
     } as const;
 
     await recovery.escalateStrandedAssignedIssue({
@@ -326,7 +331,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
   it("reuses the same source-scoped action when latest run IDs change while the cause stays the same", async () => {
     const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
-    const enqueueWakeup = vi.fn(async () => null);
+    const enqueueWakeup = vi.fn<
+      (agentId: string, opts?: { payload?: unknown }) => Promise<null>
+    >(async () => null);
     const recovery = recoveryService(db, { enqueueWakeup });
     const firstLatestRun = {
       id: randomUUID(),
@@ -336,6 +343,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       errorCode: "adapter_failed",
       contextSnapshot: { retryReason: "issue_continuation_needed" },
       livenessState: "needs_followup",
+      resultJson: null,
+      usageJson: null,
+      createdAt: new Date(),
     } as const;
     const secondLatestRun = {
       ...firstLatestRun,
@@ -398,6 +408,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       errorCode: "adapter_failed",
       contextSnapshot: { retryReason: "issue_continuation_needed" },
       livenessState: "needs_followup",
+      resultJson: null,
+      usageJson: null,
+      createdAt: new Date(),
     } as const;
 
     await recovery.escalateStrandedAssignedIssue({
@@ -475,6 +488,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        resultJson: null,
+        usageJson: null,
+        createdAt: new Date(),
       },
     });
 

@@ -15,6 +15,11 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { issueService } from "../services/issues.js";
+import type { IssueBlockerAttention } from "@paperclipai/shared";
+
+type IssueListItem = Awaited<ReturnType<ReturnType<typeof issueService>["list"]>>[number] & {
+  blockerAttention?: IssueBlockerAttention;
+};
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -129,7 +134,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: childId, blockedIssueId: parentId });
     await activeRun({ companyId, agentId, issueId: childId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = ((await svc.list(companyId, { status: "blocked" })) as IssueListItem[]).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
@@ -163,7 +168,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: idleBlockerId, blockedIssueId: parentId });
     await activeRun({ companyId, agentId, issueId: activeChildId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = ((await svc.list(companyId, { status: "blocked" })) as IssueListItem[]).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "needs_attention",
@@ -190,7 +195,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: leafId, blockedIssueId: blockerId });
     await activeRun({ companyId, agentId, issueId: leafId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = ((await svc.list(companyId, { status: "blocked" })) as IssueListItem[]).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
@@ -216,7 +221,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
     await activeRun({ companyId: other.companyId, agentId: other.agentId, issueId: blockerId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = ((await svc.list(companyId, { status: "blocked" })) as IssueListItem[]).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "needs_attention",
@@ -241,7 +246,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
     await activeRun({ companyId, agentId, issueId: blockerId, current: false });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = ((await svc.list(companyId, { status: "blocked" })) as IssueListItem[]).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "needs_attention",
@@ -265,7 +270,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
     await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = ((await svc.list(companyId, { status: "blocked" })) as IssueListItem[]).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "stalled",
@@ -292,7 +297,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
     await activeRun({ companyId, agentId, issueId: reviewLeafId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = ((await svc.list(companyId, { status: "blocked" })) as IssueListItem[]).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
@@ -314,7 +319,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: midId, blockedIssueId: rootId });
     await block({ companyId, blockerIssueId: leafId, blockedIssueId: midId });
 
-    const root = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === rootId);
+    const root = ((await svc.list(companyId, { status: "blocked" })) as IssueListItem[]).find((issue) => issue.id === rootId);
 
     expect(root?.blockerAttention).toMatchObject({
       state: "stalled",
@@ -344,7 +349,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
     await block({ companyId, blockerIssueId: cancelledLeafId, blockedIssueId: parentId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = ((await svc.list(companyId, { status: "blocked" })) as IssueListItem[]).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "needs_attention",
@@ -369,7 +374,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
     await activeRun({ companyId, agentId, issueId: blockerId, status: "scheduled_retry" });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = ((await svc.list(companyId, { status: "blocked" })) as IssueListItem[]).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "needs_attention",

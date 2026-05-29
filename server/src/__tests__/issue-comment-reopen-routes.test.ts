@@ -22,9 +22,9 @@ const mockAccessService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
-  getRun: vi.fn(async () => null),
+  getRun: vi.fn<() => Promise<unknown>>(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
-  cancelRun: vi.fn(async () => null),
+  cancelRun: vi.fn<() => Promise<unknown>>(async () => null),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
@@ -72,7 +72,7 @@ const mockIssueRecoveryActionService = vi.hoisted(() => ({
   getActiveForIssue: vi.fn(async () => null),
 }));
 const mockIssueTreeControlService = vi.hoisted(() => ({
-  getActivePauseHoldGate: vi.fn(async () => null),
+  getActivePauseHoldGate: vi.fn<() => Promise<unknown>>(async () => null),
 }));
 
 vi.mock("@paperclipai/shared/telemetry", () => ({
@@ -1410,7 +1410,7 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it("writes decision ids into executionState and inserts the decision inside the transaction", async () => {
-    const policy = await normalizePolicy({
+    const policy = (await normalizePolicy({
       stages: [
         {
           id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -1418,7 +1418,7 @@ describe.sequential("issue comment reopen routes", () => {
           participants: [{ type: "user", userId: "local-board" }],
         },
       ],
-    })!;
+    }))!;
     const issue = {
       ...makeIssue("todo"),
       status: "in_review",
@@ -1478,7 +1478,7 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it("coerces executor handoff patches into workflow-controlled review wakes", async () => {
-    const policy = await normalizePolicy({
+    const policy = (await normalizePolicy({
       stages: [
         {
           id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -1486,7 +1486,7 @@ describe.sequential("issue comment reopen routes", () => {
           participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
         },
       ],
-    })!;
+    }))!;
     const issue = {
       ...makeIssue("todo"),
       status: "in_progress",
@@ -1557,7 +1557,7 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it("wakes the return assignee with execution_changes_requested", async () => {
-    const policy = await normalizePolicy({
+    const policy = (await normalizePolicy({
       stages: [
         {
           id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -1565,7 +1565,7 @@ describe.sequential("issue comment reopen routes", () => {
           participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
         },
       ],
-    })!;
+    }))!;
     const issue = {
       ...makeIssue("todo"),
       status: "in_review",

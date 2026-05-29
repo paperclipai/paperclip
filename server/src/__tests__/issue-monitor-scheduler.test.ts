@@ -23,8 +23,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { heartbeatService } from "../services/heartbeat.ts";
-import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { heartbeatService } from "../services/heartbeat.js";
+import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -148,7 +148,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
     const monitorAttemptCount = input?.monitorAttemptCount ?? 0;
-    const monitor = {
+    const monitor: Record<string, unknown> = {
       nextCheckAt: nextCheckAt.toISOString(),
       notes: "Check deploy",
       scheduledBy: "assignee",
