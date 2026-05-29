@@ -2028,6 +2028,36 @@ async function buildPaperclipWakePayload(input: {
       : null);
   if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
 
+  const canonicalIssue = issueId
+    ? await input.db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+        })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+        .where(
+          and(
+            eq(issueRelations.companyId, input.companyId),
+            eq(issueRelations.issueId, issueId),
+            inArray(issueRelations.type, ["duplicateOf", "supersededBy"]),
+          ),
+        )
+        .limit(1)
+        .then((rows) =>
+          rows[0]
+            ? {
+                id: rows[0].id,
+                identifier: rows[0].identifier,
+                title: rows[0].title,
+                status: rows[0].status,
+              }
+            : null,
+        )
+    : null;
+
   const commentRows =
     commentIds.length === 0
       ? []
@@ -2161,6 +2191,14 @@ async function buildPaperclipWakePayload(input: {
           workMode: issueSummary.workMode,
         }
       : null,
+    ...(canonicalIssue
+      ? {
+          canonicalIssueId: canonicalIssue.id,
+          canonicalIssueIdentifier: canonicalIssue.identifier,
+          canonicalIssueStatus: canonicalIssue.status,
+          canonicalIssueTitle: canonicalIssue.title,
+        }
+      : {}),
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
       ? input.contextSnapshot.childIssueSummaries
       : [],

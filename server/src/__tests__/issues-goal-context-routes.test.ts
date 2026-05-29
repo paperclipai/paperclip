@@ -15,6 +15,7 @@ const mockIssueService = vi.hoisted(() => ({
   listProductivityReviews: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
   listAttachments: vi.fn(),
+  getCanonicalIssue: vi.fn(),
 }));
 
 const mockProjectService = vi.hoisted(() => ({
@@ -201,6 +202,7 @@ describe.sequential("issue goal context routes", () => {
     mockIssueService.listProductivityReviews.mockResolvedValue(new Map());
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.listAttachments.mockResolvedValue([]);
+    mockIssueService.getCanonicalIssue.mockResolvedValue(null);
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
