@@ -5,7 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import {
   companies,
   createDb,
@@ -133,8 +133,9 @@ async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", ["-C", cwd, ...args], { cwd });
 }
 
-async function createTempRepo() {
-  const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-execution-workspace-"));
+async function createTempRepo(repoRoot?: string) {
+  repoRoot ??= await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-execution-workspace-"));
+  await fs.mkdir(repoRoot, { recursive: true });
   await runGit(repoRoot, ["init"]);
   await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
   await runGit(repoRoot, ["config", "user.email", "test@paperclip.local"]);
@@ -681,12 +682,16 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const sourceActiveIssueId = randomUUID();
     const firstWorkspaceId = "00000000-0000-4000-8000-000000000001";
     const staleWorkspaceId = "00000000-0000-4000-8000-000000000002";
+    const lateActiveWorkspaceId = "00000000-0000-4000-8000-000000000003";
+    const lateActiveIssueId = randomUUID();
     const projectWorkspacePath = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-reaper-project-"));
     const firstWorkspacePath = await createTempRepo();
     const staleWorkspacePath = path.join(os.tmpdir(), `paperclip-reaper-late-${randomUUID()}`);
+    const lateActiveWorkspacePath = path.join(os.tmpdir(), `paperclip-reaper-late-active-${randomUUID()}`);
     tempDirs.add(projectWorkspacePath);
     tempDirs.add(firstWorkspacePath);
     tempDirs.add(staleWorkspacePath);
+    tempDirs.add(lateActiveWorkspacePath);
 
     await db.insert(companies).values({
       id: companyId,
@@ -768,7 +773,62 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
           createdByRuntime: true,
         },
       },
+      {
+        id: lateActiveWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: sourceDoneIssueId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "Late active-linked candidate",
+        status: "active",
+        providerType: "local_fs",
+        cwd: lateActiveWorkspacePath,
+        metadata: {
+          createdByRuntime: true,
+        },
+      },
     ]);
+    await db.execute(sql.raw(`
+      SET client_min_messages TO WARNING;
+      DROP TRIGGER IF EXISTS aiva1862_reaper_active_link_after_archive ON execution_workspaces;
+      DROP FUNCTION IF EXISTS aiva1862_reaper_active_link();
+      RESET client_min_messages;
+      CREATE FUNCTION aiva1862_reaper_active_link()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+        IF NEW.id = '${firstWorkspaceId}'::uuid AND NEW.status = 'archived' AND OLD.status <> 'archived' THEN
+          INSERT INTO issues (
+            id,
+            company_id,
+            project_id,
+            title,
+            status,
+            priority,
+            execution_workspace_id,
+            identifier
+          )
+          VALUES (
+            '${lateActiveIssueId}'::uuid,
+            '${companyId}'::uuid,
+            '${projectId}'::uuid,
+            'Late active linked issue',
+            'in_progress',
+            'medium',
+            '${lateActiveWorkspaceId}'::uuid,
+            'PAP-32'
+          );
+        END IF;
+        RETURN NEW;
+      END;
+      $$;
+      CREATE TRIGGER aiva1862_reaper_active_link_after_archive
+      AFTER UPDATE ON execution_workspaces
+      FOR EACH ROW EXECUTE FUNCTION aiva1862_reaper_active_link();
+    `));
 
     const report = await executionWorkspaceReaperService(db).reap(companyId, {
       dryRun: false,
@@ -781,15 +841,16 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         status: executionWorkspaces.status,
       })
       .from(executionWorkspaces)
-      .where(inArray(executionWorkspaces.id, [firstWorkspaceId, staleWorkspaceId]));
+      .where(inArray(executionWorkspaces.id, [firstWorkspaceId, staleWorkspaceId, lateActiveWorkspaceId]));
     const statusById = new Map(rows.map((row) => [row.id, row.status]));
 
     expect(report).toMatchObject({
       dryRun: false,
       deleteFiles: true,
-      checkedCount: 2,
+      checkedCount: 3,
       candidateCount: 1,
       archivedCount: 1,
+      excludedActiveCount: 1,
       noopNoReasonCount: 1,
     });
     expect(itemById.get(firstWorkspaceId)).toMatchObject({
@@ -805,8 +866,15 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       plannedAction: "noop_no_cleanup_reason",
       archived: false,
     });
+    expect(itemById.get(lateActiveWorkspaceId)).toMatchObject({
+      reason: "active_linked",
+      activeLinkedCount: 1,
+      plannedAction: "exclude_active_linked",
+      archived: false,
+    });
     expect(statusById.get(firstWorkspaceId)).toBe("archived");
     expect(statusById.get(staleWorkspaceId)).toBe("active");
+    expect(statusById.get(lateActiveWorkspaceId)).toBe("active");
   }, 20_000);
 
   it("sanitizes delete-files cleanup warnings in reaper output and storage", async () => {
@@ -907,6 +975,93 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(row?.cleanupReason).not.toContain(rawCleanupOutput);
     expect(row?.cleanupReason).not.toContain(rawCleanupError);
     expect(row?.cleanupReason).not.toContain("printf");
+  }, 20_000);
+
+  it("marks incomplete delete-files cleanup as cleanup_failed and retryable", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const sourceDoneIssueId = randomUUID();
+    const candidateWorkspaceId = randomUUID();
+    const candidateWorkspacePath = await createTempRepo();
+    tempDirs.add(candidateWorkspacePath);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace reaper incomplete cleanup",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(issues).values({
+      id: sourceDoneIssueId,
+      companyId,
+      projectId,
+      title: "Finished source issue",
+      status: "done",
+      priority: "medium",
+      identifier: "PAP-50",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: candidateWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: sourceDoneIssueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Incomplete cleanup candidate",
+      status: "active",
+      providerType: "git_worktree",
+      cwd: candidateWorkspacePath,
+      providerRef: candidateWorkspacePath,
+    });
+
+    const report = await executionWorkspaceReaperService(db).reap(companyId, {
+      dryRun: false,
+      deleteFiles: true,
+    });
+    const item = report.items.find((entry) => entry.workspaceId === candidateWorkspaceId);
+    const row = await db
+      .select({
+        status: executionWorkspaces.status,
+        cleanupReason: executionWorkspaces.cleanupReason,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, candidateWorkspaceId))
+      .then((rows) => rows[0]);
+    const retryReport = await executionWorkspaceReaperService(db).reap(companyId, {
+      dryRun: true,
+      deleteFiles: true,
+    });
+    const retryItem = retryReport.items.find((entry) => entry.workspaceId === candidateWorkspaceId);
+    const serializedItem = JSON.stringify(item);
+
+    expect(item).toMatchObject({
+      plannedAction: "archive_record_and_delete_files",
+      archived: true,
+      cleanupAttempted: true,
+      cleanupDeleted: false,
+      cleanupSkippedReason: "filesystem cleanup did not remove workspace; filesystem cleanup reported 1 warning",
+    });
+    expect(serializedItem).not.toContain(candidateWorkspacePath);
+    expect(serializedItem).not.toContain("git worktree remove");
+    expect(row).toMatchObject({
+      status: "cleanup_failed",
+      cleanupReason: "reaper:source_issue_terminal; cleanup:cleanup_incomplete:1",
+    });
+    expect(row?.cleanupReason).not.toContain(candidateWorkspacePath);
+    expect(retryItem).toMatchObject({
+      workspaceStatus: "cleanup_failed",
+      plannedAction: "archive_record_and_delete_files",
+      archived: false,
+    });
   }, 20_000);
 
   it("warns about dirty and unmerged git worktrees and reports cleanup actions", async () => {

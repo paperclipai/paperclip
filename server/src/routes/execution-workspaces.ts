@@ -31,8 +31,16 @@ import {
 } from "./workspace-command-authz.js";
 import { assertCanManageExecutionWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
 import { appendWithCap } from "../adapters/utils.js";
+import { badRequest } from "../errors.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
+
+function parseBooleanQuery(value: unknown, fallback: boolean, field: string) {
+  if (value === undefined) return fallback;
+  if (value === "true" || value === "1") return true;
+  if (value === "false" || value === "0") return false;
+  throw badRequest(`Invalid ${field} query value`);
+}
 
 export function executionWorkspaceRoutes(db: Db) {
   const router = Router();
@@ -40,19 +48,12 @@ export function executionWorkspaceRoutes(db: Db) {
   const reaperSvc = executionWorkspaceReaperService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
 
-  function parseBooleanQuery(value: unknown, fallback: boolean) {
-    if (value === undefined) return fallback;
-    if (value === "true" || value === "1") return true;
-    if (value === "false" || value === "0") return false;
-    return fallback;
-  }
-
   router.get("/companies/:companyId/execution-workspaces/reap", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const report = await reaperSvc.reap(companyId, {
       dryRun: true,
-      deleteFiles: parseBooleanQuery(req.query.deleteFiles, false),
+      deleteFiles: parseBooleanQuery(req.query.deleteFiles, false, "deleteFiles"),
     });
     res.json(report);
   });

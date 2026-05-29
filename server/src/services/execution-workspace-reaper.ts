@@ -20,6 +20,8 @@ import {
 const ACTIVE_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const CLEANUP_WARNINGS_STORAGE_REASON = "cleanup_warnings";
+const CLEANUP_FAILED_STORAGE_REASON = "cleanup_failed";
+const CLEANUP_INCOMPLETE_STORAGE_REASON = "cleanup_incomplete";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type SourceIssueRow = Pick<typeof issues.$inferSelect, "id" | "identifier" | "status">;
@@ -70,6 +72,18 @@ function cleanupWarningReason(count: number) {
   return count === 1
     ? "filesystem cleanup reported 1 warning"
     : `filesystem cleanup reported ${count} warnings`;
+}
+
+function cleanupStorageReason(item: ExecutionWorkspaceReapItem, cleanupReason: string, warningCount = 0) {
+  const warningSuffix = warningCount > 0 ? `:${warningCount}` : "";
+  return `reaper:${item.reasons.join(",")}; cleanup:${cleanupReason}${warningSuffix}`;
+}
+
+function cleanupFailureReason(kind: "failed" | "incomplete", warningCount = 0) {
+  const base = kind === "failed"
+    ? "filesystem cleanup failed"
+    : "filesystem cleanup did not remove workspace";
+  return warningCount > 0 ? `${base}; ${cleanupWarningReason(warningCount)}` : base;
 }
 
 function disappearedBeforeArchive(item: ExecutionWorkspaceReapItem): ExecutionWorkspaceReapItem {
@@ -189,7 +203,7 @@ export function executionWorkspaceReaperService(db: Db) {
       const activeLinkedCount = activeLinkedCountByWorkspaceId.get(row.id) ?? 0;
       const reasons: ExecutionWorkspaceReapReason[] = [];
       if (!sourceIssue) reasons.push("source_issue_missing");
-      else if (sourceIssue && TERMINAL_ISSUE_STATUSES.has(sourceIssue.status)) reasons.push("source_issue_terminal");
+      else if (TERMINAL_ISSUE_STATUSES.has(sourceIssue.status)) reasons.push("source_issue_terminal");
       if (!exists) reasons.push("path_missing");
 
       let plannedAction: ExecutionWorkspaceReapItem["plannedAction"];
@@ -327,52 +341,84 @@ export function executionWorkspaceReaperService(db: Db) {
       };
     }
 
-    await stopRuntimeServicesForExecutionWorkspace({
-      db,
-      executionWorkspaceId: workspace.id,
-      workspaceCwd: workspace.cwd,
-    });
-
-    const projectWorkspace = workspace.projectWorkspaceId
-      ? await db
-          .select({
-            cwd: projectWorkspaces.cwd,
-            cleanupCommand: projectWorkspaces.cleanupCommand,
-          })
-          .from(projectWorkspaces)
-          .where(and(eq(projectWorkspaces.id, workspace.projectWorkspaceId), eq(projectWorkspaces.companyId, companyId)))
-          .then((rows) => rows[0] ?? null)
-      : null;
-    const projectPolicy = workspace.projectId
-      ? await db
-          .select({
-            executionWorkspacePolicy: projects.executionWorkspacePolicy,
-          })
-          .from(projects)
-          .where(and(eq(projects.id, workspace.projectId), eq(projects.companyId, companyId)))
-          .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
-      : null;
-    const config = readExecutionWorkspaceConfig(workspace.metadata);
-
-    const cleanup = await cleanupExecutionWorkspaceArtifacts({
-      workspace,
-      projectWorkspace,
-      teardownCommand: config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
-      cleanupCommand: config?.cleanupCommand ?? null,
-      recorder: operationsSvc.createRecorder({
-        companyId,
+    let cleanup: Awaited<ReturnType<typeof cleanupExecutionWorkspaceArtifacts>>;
+    try {
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
         executionWorkspaceId: workspace.id,
-      }),
-    });
+        workspaceCwd: workspace.cwd,
+      });
+
+      const projectWorkspace = workspace.projectWorkspaceId
+        ? await db
+            .select({
+              cwd: projectWorkspaces.cwd,
+              cleanupCommand: projectWorkspaces.cleanupCommand,
+            })
+            .from(projectWorkspaces)
+            .where(and(eq(projectWorkspaces.id, workspace.projectWorkspaceId), eq(projectWorkspaces.companyId, companyId)))
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const projectPolicy = workspace.projectId
+        ? await db
+            .select({
+              executionWorkspacePolicy: projects.executionWorkspacePolicy,
+            })
+            .from(projects)
+            .where(and(eq(projects.id, workspace.projectId), eq(projects.companyId, companyId)))
+            .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
+        : null;
+      const config = readExecutionWorkspaceConfig(workspace.metadata);
+
+      cleanup = await cleanupExecutionWorkspaceArtifacts({
+        workspace,
+        projectWorkspace,
+        teardownCommand: config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
+        cleanupCommand: config?.cleanupCommand ?? null,
+        recorder: operationsSvc.createRecorder({
+          companyId,
+          executionWorkspaceId: workspace.id,
+        }),
+      });
+    } catch {
+      await db
+        .update(executionWorkspaces)
+        .set({
+          status: "cleanup_failed",
+          cleanupReason: cleanupStorageReason(item, CLEANUP_FAILED_STORAGE_REASON),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(executionWorkspaces.id, item.workspaceId), eq(executionWorkspaces.companyId, companyId)));
+      return {
+        cleanupAttempted: true,
+        cleanupDeleted: false,
+        cleanupSkippedReason: cleanupFailureReason("failed"),
+      };
+    }
 
     if (cleanup.warnings.length > 0) {
       await db
         .update(executionWorkspaces)
         .set({
-          cleanupReason: `reaper:${item.reasons.join(",")}; cleanup:${CLEANUP_WARNINGS_STORAGE_REASON}:${cleanup.warnings.length}`,
+          cleanupReason: cleanupStorageReason(item, CLEANUP_WARNINGS_STORAGE_REASON, cleanup.warnings.length),
           updatedAt: new Date(),
         })
-        .where(eq(executionWorkspaces.id, item.workspaceId));
+        .where(and(eq(executionWorkspaces.id, item.workspaceId), eq(executionWorkspaces.companyId, companyId)));
+    }
+    if (!cleanup.cleaned) {
+      await db
+        .update(executionWorkspaces)
+        .set({
+          status: "cleanup_failed",
+          cleanupReason: cleanupStorageReason(item, CLEANUP_INCOMPLETE_STORAGE_REASON, cleanup.warnings.length),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(executionWorkspaces.id, item.workspaceId), eq(executionWorkspaces.companyId, companyId)));
+      return {
+        cleanupAttempted: true,
+        cleanupDeleted: false,
+        cleanupSkippedReason: cleanupFailureReason("incomplete", cleanup.warnings.length),
+      };
     }
 
     return {

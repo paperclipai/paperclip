@@ -115,6 +115,15 @@ describe.sequential("execution workspace routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
+  it("rejects invalid reaper deleteFiles query values", async () => {
+    const res = await request(createApp())
+      .get("/api/companies/company-1/execution-workspaces/reap?deleteFiles=maybe");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid deleteFiles query value");
+    expect(mockExecutionWorkspaceReaperService.reap).not.toHaveBeenCalled();
+  });
+
   it("logs a bulk reaper activity entry when records are archived", async () => {
     mockExecutionWorkspaceReaperService.reap.mockResolvedValue({
       companyId: "company-1",
