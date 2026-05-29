@@ -3924,7 +3924,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const updated = await db
       .update(heartbeatRuns)
       .set({ status, ...patch, updatedAt: new Date() })
-      .where(eq(heartbeatRuns.id, runId))
+      .where(and(
+        eq(heartbeatRuns.id, runId),
+        notInArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+      ))
       .returning()
       .then((rows) => rows[0] ?? null);
 
@@ -5980,11 +5983,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
-  async function countGlobalRunningRuns() {
+  async function countGlobalRunningRuns(companyId: string) {
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)` })
       .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.status, "running"));
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
     return Number(count ?? 0);
   }
 
@@ -6975,8 +6978,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return [];
       }
 
-      // Global cap: at most GLOBAL_MAX_CONCURRENT_RUNS running across the entire instance
-      const globalRunningCount = await countGlobalRunningRuns();
+      // Global cap: at most GLOBAL_MAX_CONCURRENT_RUNS running per company
+      const globalRunningCount = await countGlobalRunningRuns(agent.companyId);
       if (globalRunningCount >= HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS) return [];
 
       const companyRunningCount = await countCompanyRunningRuns(agent.companyId);
@@ -8223,9 +8226,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
       });
-      if (persistedRun) {
-        persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
-      }
+      // If the run was already in a terminal state when we tried to update it
+      // (e.g., cancelled by a concurrent cancelRun() while the adapter executed),
+      // cancelRun() already handled all cleanup — skip finalization to avoid a
+      // duplicate releaseIssueExecutionAndPromote that would create a spurious recovery run.
+      if (!persistedRun) return;
+
+      persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
