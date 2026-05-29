@@ -2785,6 +2785,50 @@ export function agentRoutes(
     res.json(agent);
   });
 
+  router.post("/agents/:id/freeze", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    if (!(await getAccessibleAgent(req, res, id))) {
+      return;
+    }
+    const agent = await svc.freeze(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "agent.frozen",
+      entityType: "agent",
+      entityId: agent.id,
+    });
+    res.json(agent);
+  });
+
+  router.post("/agents/:id/unfreeze", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    if (!(await getAccessibleAgent(req, res, id))) {
+      return;
+    }
+    const agent = await svc.unfreeze(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "agent.unfrozen",
+      entityType: "agent",
+      entityId: agent.id,
+    });
+    res.json(agent);
+  });
+
   router.post("/agents/:id/approve", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;

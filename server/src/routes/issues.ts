@@ -6,6 +6,7 @@ import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agents as agentRows,
   executionWorkspaces,
   heartbeatRuns,
   issueExecutionDecisions,
@@ -1335,6 +1336,20 @@ export function issueRoutes(
     const parent = await svc.getById(input.parentIssueId);
     if (!parent || parent.companyId !== input.companyId) return null;
     return parent.projectId ?? null;
+  }
+
+  async function assertAgentNotFrozen(res: Response, agentId: string): Promise<boolean> {
+    const row = await db
+      .select({ frozenAt: agentRows.frozenAt })
+      .from(agentRows)
+      .where(eq(agentRows.id, agentId))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (row?.frozenAt != null) {
+      res.status(409).json({ error: "Cannot assign tasks to a frozen agent" });
+      return false;
+    }
+    return true;
   }
 
   async function assertCanAssignTasks(
@@ -3546,6 +3561,7 @@ export function issueRoutes(
         assigneeAgentId: req.body.assigneeAgentId ?? null,
         assigneeUserId: req.body.assigneeUserId ?? null,
       });
+      if (req.body.assigneeAgentId && !(await assertAgentNotFrozen(res, req.body.assigneeAgentId))) return;
     }
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
@@ -4064,6 +4080,7 @@ export function issueRoutes(
           assigneeUserId: nextAssigneeUserId,
         });
       }
+      if (nextAssigneeAgentId && !(await assertAgentNotFrozen(res, nextAssigneeAgentId))) return;
     }
 
     let issue;
