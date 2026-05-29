@@ -4888,20 +4888,28 @@ export function issueService(db: Db) {
         current.status === "in_progress" &&
         current.assigneeAgentId === actorAgentId &&
         current.checkoutRunId == null &&
-        (current.executionRunId == null || current.executionRunId === actorRunId) &&
         options?.allowUnownedAdoption !== false
       ) {
-        const adopted = await adoptUnownedCheckoutRun({
-          issueId: id,
-          actorAgentId,
-          actorRunId,
-        });
+        // Allow adoption when executionRunId is absent, matches actorRunId, or belongs to a stale run.
+        // Without the stale check, a dead process with executionRunId still "running" in the DB blocks
+        // all checkout attempts until the reaper clears it (GH#6798).
+        const executionRunIsAdoptable =
+          current.executionRunId == null ||
+          current.executionRunId === actorRunId ||
+          (await isTerminalOrMissingHeartbeatRun(current.executionRunId));
+        if (executionRunIsAdoptable) {
+          const adopted = await adoptUnownedCheckoutRun({
+            issueId: id,
+            actorAgentId,
+            actorRunId,
+          });
 
-        if (adopted) {
-          return {
-            ...adopted,
-            adoptedFromRunId: null as string | null,
-          };
+          if (adopted) {
+            return {
+              ...adopted,
+              adoptedFromRunId: null as string | null,
+            };
+          }
         }
       }
 
