@@ -3935,6 +3935,21 @@ export function issueRoutes(
       });
       return;
     }
+    // FUL-4188: prevent orphaned-blocked issues by requiring at least one blocker when setting status=blocked
+    if (
+      req.actor.type === "agent" &&
+      updateFields.status === "blocked" &&
+      (!Array.isArray(req.body.blockedByIssueIds) || (req.body.blockedByIssueIds as string[]).length === 0)
+    ) {
+      res.status(422).json({
+        error: "Blocked status requires blockedByIssueIds",
+        details: {
+          rule: "Blocked status requires at least one first-class blocker",
+          fix: "Include blockedByIssueIds with at least one issue ID in the same PATCH request as status=blocked",
+        },
+      });
+      return;
+    }
     if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
     if (resumeRequested !== true && reopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
