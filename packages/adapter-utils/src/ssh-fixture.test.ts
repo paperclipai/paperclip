@@ -206,6 +206,50 @@ describe("ssh env-lab fixture", () => {
     }
   });
 
+  it(
+    "reuses a single TCP connection across 10 sequential SSH commands via ControlMaster",
+    async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+      cleanupDirs.push(rootDir);
+      const statePath = path.join(rootDir, "state.json");
+
+      const started = await startSshEnvLabFixtureOrSkip(
+        statePath,
+        "ControlMaster connection-reuse test",
+      );
+      if (!started) return;
+      const config = await buildSshEnvLabFixtureConfig(started);
+
+      // Drain any "Connection from" lines emitted by fixture readiness probes
+      // so we measure only the connections opened by the loop below.
+      const baselineLog = await readFile(started.sshdLogPath, "utf8").catch(() => "");
+      const baselineAccepts = (baselineLog.match(/Connection from /g) ?? []).length;
+
+      for (let i = 0; i < 10; i += 1) {
+        // runSshCommand rejects on non-zero exit, so a passing await is enough
+        // to assert each call succeeded.
+        await runSshCommand(config, "true");
+      }
+
+      // sshd flushes accept events to the log file synchronously enough for
+      // the count to be stable by the time runSshCommand returns, but give
+      // the kernel a beat to flush before reading.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const finalLog = await readFile(started.sshdLogPath, "utf8");
+      const finalAccepts = (finalLog.match(/Connection from /g) ?? []).length;
+      const delta = finalAccepts - baselineAccepts;
+
+      // Without ControlMaster, 10 sequential runSshCommand calls would emit 10
+      // "Connection from" lines (one per TCP+SSH handshake). With ControlMaster
+      // the first call establishes the master and the remaining 9 multiplex
+      // over the same TCP connection.
+      expect(delta).toBe(1);
+
+      await stopSshEnvLabFixture(statePath);
+    },
+    SSH_FIXTURE_TEST_TIMEOUT_MS,
+  );
+
   it("emits ControlMaster args even without a privateKey", async () => {
     const target = await buildSshSpawnTarget({
       spec: {
