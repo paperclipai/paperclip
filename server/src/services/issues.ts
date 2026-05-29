@@ -62,6 +62,7 @@ import {
 } from "./issue-tree-control.js";
 import { parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
 import { clearProcessLostRateLimit } from "./heartbeat-process-lost-rate-limiter.js";
+import { clearTransientRetryCircuitBreaker } from "./heartbeat-transient-retry-circuit-breaker.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -3188,6 +3189,7 @@ export function issueService(db: Db) {
       const result = await (dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx));
       if (result && existing.status === "blocked" && issueData.status && issueData.status !== "blocked") {
         clearProcessLostRateLimit(id);
+        clearTransientRetryCircuitBreaker(id);
       }
       return result;
     },

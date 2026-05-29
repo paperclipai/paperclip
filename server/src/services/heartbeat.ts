@@ -77,6 +77,11 @@ import {
   PROCESS_LOST_RATE_LIMIT_WINDOW_MS,
 } from "./heartbeat-process-lost-rate-limiter.js";
 import {
+  recordTransientRetryScheduled,
+  TRANSIENT_RETRY_CIRCUIT_BREAKER_MAX,
+  TRANSIENT_RETRY_CIRCUIT_BREAKER_WINDOW_MS,
+} from "./heartbeat-transient-retry-circuit-breaker.js";
+import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
@@ -4781,6 +4786,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
     }
+
+    if (retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON && issueId) {
+      const cbResult = recordTransientRetryScheduled(issueId, now.getTime());
+      if (cbResult.limitExceeded) {
+        const windowHours = TRANSIENT_RETRY_CIRCUIT_BREAKER_WINDOW_MS / 1000 / 60 / 60;
+        const reason = `Transient failure circuit breaker tripped: ${cbResult.count} retries in the last ${windowHours}h (max ${TRANSIENT_RETRY_CIRCUIT_BREAKER_MAX}); blocking issue`;
+        logger.warn(
+          {
+            issueId,
+            runId: run.id,
+            transientRetryCount: cbResult.count,
+            windowMs: TRANSIENT_RETRY_CIRCUIT_BREAKER_WINDOW_MS,
+            event: "transient_retry_circuit_breaker_tripped",
+          },
+          reason,
+        );
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: reason,
+          payload: {
+            retryReason,
+            scheduledRetryAttempt: nextAttempt,
+            maxAttempts,
+            transientRetryCount: cbResult.count,
+            windowMs: TRANSIENT_RETRY_CIRCUIT_BREAKER_WINDOW_MS,
+            event: "transient_retry_circuit_breaker_tripped",
+          },
+        });
+        await blockIssueForTransientRetryCircuitBreaker(run, issueId, cbResult.count, now);
+        return {
+          outcome: "not_scheduled" as const,
+          reason,
+          errorCode: "issue_not_in_progress" as const,
+          issueId,
+        };
+      }
+    }
+
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot: Record<string, unknown> = {
@@ -5956,6 +6001,61 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         triggerDetail: "system",
         reason: "process_lost_rate_limit_blocked",
         payload: { issueId, processLostCount: failureCount },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+    }
+  }
+
+  async function blockIssueForTransientRetryCircuitBreaker(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+    retryCount: number,
+    now: Date,
+  ) {
+    const issueRow = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issueRow || issueRow.status === "done" || issueRow.status === "cancelled") return;
+
+    const windowHours = TRANSIENT_RETRY_CIRCUIT_BREAKER_WINDOW_MS / 1000 / 60 / 60;
+    const comment = [
+      "**Auto-paused: transient failure circuit breaker tripped**",
+      "",
+      `This issue had ${retryCount} transient failure retries in the last ${windowHours}h.`,
+      "To resume: investigate the underlying cause (adapter config, upstream API, credentials) and manually move this issue back to **Todo** or **In Progress**.",
+      "The circuit breaker resets automatically when you do.",
+    ].join("\n");
+
+    await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
+      );
+      await tx
+        .update(issues)
+        .set({
+          status: "blocked",
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+      await tx.insert(issueComments).values({
+        companyId: run.companyId,
+        issueId,
+        body: comment,
+      });
+    });
+
+    if (issueRow.assigneeAgentId) {
+      await enqueueWakeup(issueRow.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "transient_retry_circuit_breaker_blocked",
+        payload: { issueId, transientRetryCount: retryCount },
         requestedByActorType: "system",
         requestedByActorId: null,
       });

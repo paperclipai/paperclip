@@ -11,6 +11,7 @@ import {
   environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issueRelations,
   issues,
 } from "@paperclipai/db";
@@ -24,6 +25,10 @@ import {
   MAX_TURN_CONTINUATION_WAKE_REASON,
   heartbeatService,
 } from "../services/heartbeat.ts";
+import {
+  clearTransientRetryCircuitBreaker,
+  TRANSIENT_RETRY_CIRCUIT_BREAKER_MAX,
+} from "../services/heartbeat-transient-retry-circuit-breaker.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -49,6 +54,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -1335,5 +1341,154 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect((wakeupRequest?.payload as Record<string, unknown> | null)?.transientRetryNotBefore).toBe(
       retryNotBefore.toISOString(),
     );
+  });
+
+  describe("transient failure retry circuit breaker", () => {
+    const CB_NOW = new Date("2026-05-29T10:00:00.000Z");
+
+    async function seedCbFixture() {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "ClaudeCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Transient CB test",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      async function addFailedRun() {
+        const runId = randomUUID();
+        await db.insert(heartbeatRuns).values({
+          id: runId,
+          companyId,
+          agentId,
+          invocationSource: "assignment",
+          status: "failed",
+          error: "upstream overload",
+          errorCode: "adapter_failed",
+          finishedAt: CB_NOW,
+          scheduledRetryAttempt: 0,
+          resultJson: { errorFamily: "transient_upstream" },
+          contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+          updatedAt: CB_NOW,
+          createdAt: CB_NOW,
+        });
+        return runId;
+      }
+
+      return { companyId, agentId, issueId, addFailedRun };
+    }
+
+    it("blocks the issue and inserts a comment when the circuit breaker trips", async () => {
+      const { agentId, issueId, addFailedRun } = await seedCbFixture();
+
+      // First TRANSIENT_RETRY_CIRCUIT_BREAKER_MAX - 1 retries succeed
+      for (let i = 0; i < TRANSIENT_RETRY_CIRCUIT_BREAKER_MAX - 1; i++) {
+        const runId = await addFailedRun();
+        const result = await heartbeat.scheduleBoundedRetry(runId, { now: CB_NOW, random: () => 0.5 });
+        expect(result.outcome).toBe("scheduled");
+      }
+
+      // The MAX-th retry trips the breaker
+      const tripRunId = await addFailedRun();
+      const tripped = await heartbeat.scheduleBoundedRetry(tripRunId, { now: CB_NOW, random: () => 0.5 });
+
+      expect(tripped).toMatchObject({
+        outcome: "not_scheduled",
+        errorCode: "issue_not_in_progress",
+        issueId,
+      });
+
+      // Issue is now blocked with execution fields cleared
+      const issue = await db
+        .select({
+          status: issues.status,
+          executionRunId: issues.executionRunId,
+          executionAgentNameKey: issues.executionAgentNameKey,
+          executionLockedAt: issues.executionLockedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue?.status).toBe("blocked");
+      expect(issue?.executionRunId).toBeNull();
+      expect(issue?.executionAgentNameKey).toBeNull();
+      expect(issue?.executionLockedAt).toBeNull();
+
+      // A human-readable comment is inserted
+      const comment = await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(comment?.body).toContain("circuit breaker");
+      expect(comment?.body).toContain(`${TRANSIENT_RETRY_CIRCUIT_BREAKER_MAX}`);
+
+      // A wakeup is queued for the assignee
+      const wakeup = await db
+        .select({ agentId: agentWakeupRequests.agentId, reason: agentWakeupRequests.reason })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.reason, "transient_retry_circuit_breaker_blocked"))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeup?.agentId).toBe(agentId);
+
+      // A run event records the circuit breaker trip
+      const event = await db
+        .select({ message: heartbeatRunEvents.message, payload: heartbeatRunEvents.payload })
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, tripRunId))
+        .orderBy(sql`${heartbeatRunEvents.id} desc`)
+        .then((rows) => rows[0] ?? null);
+      expect(event?.message).toContain("circuit breaker tripped");
+      expect(event?.payload).toMatchObject({
+        event: "transient_retry_circuit_breaker_tripped",
+        transientRetryCount: TRANSIENT_RETRY_CIRCUIT_BREAKER_MAX,
+      });
+    });
+
+    it("resets after the issue is manually unblocked", async () => {
+      const { issueId, addFailedRun } = await seedCbFixture();
+
+      // Trip the circuit breaker
+      for (let i = 0; i < TRANSIENT_RETRY_CIRCUIT_BREAKER_MAX; i++) {
+        const runId = await addFailedRun();
+        await heartbeat.scheduleBoundedRetry(runId, { now: CB_NOW, random: () => 0.5 });
+      }
+
+      // Simulate manual unblock: issues.ts calls clearTransientRetryCircuitBreaker on status change
+      clearTransientRetryCircuitBreaker(issueId);
+      await db.update(issues).set({ status: "in_progress", updatedAt: CB_NOW }).where(eq(issues.id, issueId));
+
+      // Next retry after reset should succeed
+      const runId = await addFailedRun();
+      const result = await heartbeat.scheduleBoundedRetry(runId, { now: CB_NOW, random: () => 0.5 });
+      expect(result.outcome).toBe("scheduled");
+    });
   });
 });
