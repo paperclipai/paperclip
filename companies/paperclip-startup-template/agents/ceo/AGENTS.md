@@ -2,8 +2,9 @@
 name: "CEO"
 skills:
   - paperclip
+  - paperclip-create-agent
   - para-memory-files
----
+  - progress-comment-template
 
 ## Communication & Coordination Standard
 
