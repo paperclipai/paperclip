@@ -515,4 +515,126 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       },
     });
   });
+
+  describe("retry-now-by-agent", () => {
+    async function setAgentPermissions(
+      agentId: string,
+      permissions: Record<string, unknown>,
+    ) {
+      await db.update(agents).set({ permissions }).where(eq(agents.id, agentId));
+    }
+
+    it("rejects an agent without canManageScheduledRetry with 403", async () => {
+      const { companyId, agentId, issueId } = await seedIssueWithRetry();
+
+      const res = await request(createApp(agentActor(companyId, agentId)))
+        .post(`/api/issues/${issueId}/scheduled-retry/retry-now-by-agent`)
+        .send({});
+
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({ error: "Missing permission to manage scheduled retry" });
+    });
+
+    it("allows an agent with canManageScheduledRetry to promote and logs activity with agent_id", async () => {
+      const { companyId, agentId, issueId, retryRunId } = await seedIssueWithRetry();
+      await setAgentPermissions(agentId, { canManageScheduledRetry: true });
+
+      const res = await request(createApp(agentActor(companyId, agentId)))
+        .post(`/api/issues/${issueId}/scheduled-retry/retry-now-by-agent`)
+        .send({});
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({
+        outcome: "promoted",
+        scheduledRetry: {
+          runId: retryRunId,
+          status: "queued",
+        },
+      });
+
+      const [activity] = await db
+        .select({
+          action: activityLog.action,
+          actorType: activityLog.actorType,
+          actorId: activityLog.actorId,
+          agentId: activityLog.agentId,
+          entityId: activityLog.entityId,
+        })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.entityId, issueId),
+            eq(activityLog.action, "issue.scheduled_retry_retry_now_by_agent"),
+          ),
+        );
+      expect(activity).toMatchObject({
+        action: "issue.scheduled_retry_retry_now_by_agent",
+        actorType: "agent",
+        actorId: agentId,
+        agentId,
+        entityId: issueId,
+      });
+    });
+
+    it("treats a duplicate agent click as already_promoted", async () => {
+      const { companyId, agentId, issueId, retryRunId } = await seedIssueWithRetry();
+      await setAgentPermissions(agentId, { canManageScheduledRetry: true });
+      const app = createApp(agentActor(companyId, agentId));
+
+      const first = await request(app)
+        .post(`/api/issues/${issueId}/scheduled-retry/retry-now-by-agent`)
+        .send({});
+      expect(first.status, JSON.stringify(first.body)).toBe(200);
+      expect(first.body).toMatchObject({ outcome: "promoted" });
+
+      const second = await request(app)
+        .post(`/api/issues/${issueId}/scheduled-retry/retry-now-by-agent`)
+        .send({});
+      expect(second.status, JSON.stringify(second.body)).toBe(200);
+      expect(second.body).toMatchObject({
+        outcome: "already_promoted",
+        scheduledRetry: {
+          runId: retryRunId,
+          status: "queued",
+        },
+      });
+    });
+
+    it("allows board to call retry-now-by-agent (parity with primary route)", async () => {
+      const { companyId, issueId, retryRunId } = await seedIssueWithRetry();
+
+      const res = await request(createApp(boardActor(companyId)))
+        .post(`/api/issues/${issueId}/scheduled-retry/retry-now-by-agent`)
+        .send({});
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({
+        outcome: "promoted",
+        scheduledRetry: { runId: retryRunId, status: "queued" },
+      });
+    });
+
+    it("enforces company scoping for retry-now-by-agent (cross-tenant agent → 403)", async () => {
+      const { issueId } = await seedIssueWithRetry();
+      const otherCompanyId = randomUUID();
+      const otherAgentId = randomUUID();
+
+      const res = await request(createApp(agentActor(otherCompanyId, otherAgentId)))
+        .post(`/api/issues/${issueId}/scheduled-retry/retry-now-by-agent`)
+        .send({});
+
+      expect(res.status).toBe(403);
+    });
+
+    it("keeps the board-only retry-now route intact: agent → 403 even with new flag", async () => {
+      const { companyId, agentId, issueId } = await seedIssueWithRetry();
+      await setAgentPermissions(agentId, { canManageScheduledRetry: true });
+
+      const res = await request(createApp(agentActor(companyId, agentId)))
+        .post(`/api/issues/${issueId}/scheduled-retry/retry-now`)
+        .send({});
+
+      expect(res.status).toBe(403);
+    });
+  });
 });

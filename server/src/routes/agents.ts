@@ -2294,6 +2294,7 @@ export function agentRoutes(
       details: {
         canCreateAgents: agent.permissions?.canCreateAgents ?? false,
         canAssignTasks: effectiveCanAssignTasks,
+        canManageScheduledRetry: agent.permissions?.canManageScheduledRetry ?? false,
       },
     });
 

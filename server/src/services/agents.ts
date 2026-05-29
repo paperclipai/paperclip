@@ -547,7 +547,10 @@ export function agentService(db: Db) {
       return existing ? { agent: existing, activated: false } : null;
     },
 
-    updatePermissions: async (id: string, permissions: { canCreateAgents: boolean }) => {
+    updatePermissions: async (
+      id: string,
+      permissions: { canCreateAgents: boolean; canManageScheduledRetry?: boolean },
+    ) => {
       const existing = await getById(id);
       if (!existing) return null;
 

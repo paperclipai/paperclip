@@ -83,7 +83,7 @@ import {
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertAuthenticated, assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -3887,6 +3887,66 @@ export function issueRoutes(
       entityType: "issue",
       entityId: issue.id,
       agentId: result.scheduledRetry?.agentId ?? issue.assigneeAgentId ?? null,
+      runId: result.scheduledRetry?.runId ?? null,
+      details: {
+        outcome: result.outcome,
+        message: result.message,
+        scheduledRetry: result.scheduledRetry,
+      },
+    });
+
+    res.json(result);
+  });
+
+  router.post("/issues/:id/scheduled-retry/retry-now-by-agent", async (req, res) => {
+    assertAuthenticated(req);
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) {
+        res.status(403).json({ error: "Agent authentication required" });
+        return;
+      }
+      const actorAgent = await agentsSvc.getById(req.actor.agentId);
+      if (!actorAgent || actorAgent.companyId !== issue.companyId) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const allowed =
+        actorAgent.role === "ceo" ||
+        Boolean(actorAgent.permissions?.canManageScheduledRetry);
+      if (!allowed) {
+        res.status(403).json({ error: "Missing permission to manage scheduled retry" });
+        return;
+      }
+    } else if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const result = await heartbeat.retryScheduledRetryNow({
+      issueId: issue.id,
+      actor: {
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+      },
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: "issue.scheduled_retry_retry_now_by_agent",
+      entityType: "issue",
+      entityId: issue.id,
+      agentId: actor.agentId ?? result.scheduledRetry?.agentId ?? issue.assigneeAgentId ?? null,
       runId: result.scheduledRetry?.runId ?? null,
       details: {
         outcome: result.outcome,

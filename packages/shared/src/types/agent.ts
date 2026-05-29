@@ -12,6 +12,7 @@ import type {
 
 export interface AgentPermissions {
   canCreateAgents: boolean;
+  canManageScheduledRetry: boolean;
 }
 
 export interface AgentModelProfileConfig {
