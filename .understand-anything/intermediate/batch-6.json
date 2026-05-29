@@ -1,0 +1,714 @@
+{
+  "nodes": [
+    {
+      "id": "file:packages/shared/src/validators/issue.ts",
+      "type": "file",
+      "name": "issue.ts",
+      "filePath": "packages/shared/src/validators/issue.ts",
+      "summary": "Comprehensive Zod schema library defining all validation shapes for issues, including creation, updates, execution state, thread interactions, comments, approval links, and document upserts used across both server and client.",
+      "tags": ["validation", "schema-definition", "data-model", "type-definition"],
+      "complexity": "complex",
+      "languageNotes": "Exports 60 named Zod schemas with two helper functions that resolve default status values at parse time using z.preprocess."
+    },
+    {
+      "id": "function:packages/shared/src/validators/issue.ts:resolveCreateIssueStatusDefault",
+      "type": "function",
+      "name": "resolveCreateIssueStatusDefault",
+      "filePath": "packages/shared/src/validators/issue.ts",
+      "lineRange": [336, 357],
+      "summary": "Resolves the default issue status value from an input object by inspecting multiple fields, used during preprocess in createIssueInputSchema.",
+      "tags": ["validation", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/shared/src/validators/issue.ts:withCreateIssueStatusDefault",
+      "type": "function",
+      "name": "withCreateIssueStatusDefault",
+      "filePath": "packages/shared/src/validators/issue.ts",
+      "lineRange": [359, 369],
+      "summary": "Wraps a Zod schema with a preprocessing step that injects the resolved default issue status before validation runs.",
+      "tags": ["validation", "factory"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/shared/src/validators/routine.ts",
+      "type": "file",
+      "name": "routine.ts",
+      "filePath": "packages/shared/src/validators/routine.ts",
+      "summary": "Zod schema definitions for routine creation, updating, triggers, revision snapshots, and execution, shared across the platform for consistent routine API validation.",
+      "tags": ["validation", "schema-definition", "type-definition", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/agent-auth-jwt.ts",
+      "type": "file",
+      "name": "agent-auth-jwt.ts",
+      "filePath": "server/src/agent-auth-jwt.ts",
+      "summary": "Implements a lightweight HMAC-SHA256 JWT mechanism for authenticating local agent runs, providing createLocalAgentJwt and verifyLocalAgentJwt without any external JWT library dependency.",
+      "tags": ["security", "authentication", "utility", "service"],
+      "complexity": "moderate",
+      "languageNotes": "Uses Node's built-in crypto module with timing-safe comparison to prevent signature oracle attacks."
+    },
+    {
+      "id": "function:server/src/agent-auth-jwt.ts:createLocalAgentJwt",
+      "type": "function",
+      "name": "createLocalAgentJwt",
+      "filePath": "server/src/agent-auth-jwt.ts",
+      "lineRange": [68, 93],
+      "summary": "Creates a signed JWT containing agentId, companyId, adapterType, and runId claims with configurable expiry for local agent authentication.",
+      "tags": ["security", "authentication", "factory"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:server/src/agent-auth-jwt.ts:verifyLocalAgentJwt",
+      "type": "function",
+      "name": "verifyLocalAgentJwt",
+      "filePath": "server/src/agent-auth-jwt.ts",
+      "lineRange": [95, 141],
+      "summary": "Verifies and decodes a local agent JWT, checking signature integrity with timing-safe comparison and validating the expiry claim.",
+      "tags": ["security", "authentication", "validation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/auth-utils.ts",
+      "type": "file",
+      "name": "auth-utils.ts",
+      "filePath": "server/src/auth-utils.ts",
+      "summary": "Authentication utility helpers for resolving user sessions, deriving trusted origins, and providing middleware that extracts principal identity from incoming requests.",
+      "tags": ["authentication", "utility", "middleware", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/cloud-upstream.ts",
+      "type": "file",
+      "name": "cloud-upstream.ts",
+      "filePath": "server/src/cloud-upstream.ts",
+      "summary": "Manages cloud upstream run lifecycle — dispatching runs to remote Paperclip instances, polling for completion, and reconciling orphaned upstream runs on server startup.",
+      "tags": ["service", "api-handler", "event-handler", "middleware"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "server/src/index.ts",
+      "summary": "Main server entry point that bootstraps the full Paperclip platform: initializes the database (with optional embedded Postgres), runs migrations, configures auth, mounts all route handlers, starts heartbeat and routine schedulers, and binds the HTTP server.",
+      "tags": ["entry-point", "service", "middleware", "infrastructure"],
+      "complexity": "complex",
+      "languageNotes": "The startServer function is nearly 900 lines long and handles both cloud and embedded-Postgres deployment modes, demonstrating the breadth of the server's initialization responsibilities."
+    },
+    {
+      "id": "function:server/src/index.ts:startServer",
+      "type": "function",
+      "name": "startServer",
+      "filePath": "server/src/index.ts",
+      "lineRange": [92, 958],
+      "summary": "Orchestrates the entire server startup sequence including database setup, migrations, auth configuration, route mounting, heartbeat scheduling, and HTTP listener binding.",
+      "tags": ["entry-point", "service", "infrastructure"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/routine-runner.ts",
+      "type": "file",
+      "name": "routine-runner.ts",
+      "filePath": "server/src/routine-runner.ts",
+      "summary": "Implements the routine scheduling service that ticks cron-based triggers, creates run entries for due routines, and manages the lifecycle of scheduled recurring agent tasks.",
+      "tags": ["service", "event-handler", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/routes/agents.ts",
+      "type": "file",
+      "name": "agents.ts",
+      "filePath": "server/src/routes/agents.ts",
+      "summary": "Defines all Express routes for agent management including CRUD, adapter configuration, skill management, run lifecycle (create/list/read/logs), org-chart rendering, and heartbeat scheduler administration.",
+      "tags": ["api-handler", "service", "middleware"],
+      "complexity": "complex",
+      "languageNotes": "The agentRoutes factory spans 3300+ lines — the largest single route file in the server, handling every agent-related API endpoint."
+    },
+    {
+      "id": "function:server/src/routes/agents.ts:agentRoutes",
+      "type": "function",
+      "name": "agentRoutes",
+      "filePath": "server/src/routes/agents.ts",
+      "lineRange": [119, 3438],
+      "summary": "Factory function that mounts all agent-related REST endpoints onto an Express router, covering full agent lifecycle from creation through deletion plus run management.",
+      "tags": ["api-handler", "factory", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/routes/approvals.ts",
+      "type": "file",
+      "name": "approvals.ts",
+      "filePath": "server/src/routes/approvals.ts",
+      "summary": "Express routes for the issue approval workflow — listing, creating, approving, rejecting, and cancelling approval requests associated with agent runs.",
+      "tags": ["api-handler", "service", "middleware"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/routes/approvals.ts:approvalRoutes",
+      "type": "function",
+      "name": "approvalRoutes",
+      "filePath": "server/src/routes/approvals.ts",
+      "lineRange": [30, 363],
+      "summary": "Mounts approval workflow endpoints for issue thread interactions and approval payloads onto an Express router.",
+      "tags": ["api-handler", "factory"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/routes/board-auth.ts",
+      "type": "file",
+      "name": "board-auth.ts",
+      "filePath": "server/src/routes/board-auth.ts",
+      "summary": "Handles board-level authentication routes including API key issuance and CLI auth challenge flow for connecting external boards to the Paperclip instance.",
+      "tags": ["api-handler", "authentication", "security", "middleware"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/routes/companies.ts",
+      "type": "file",
+      "name": "companies.ts",
+      "filePath": "server/src/routes/companies.ts",
+      "summary": "Express routes for company management including creation, listing, member management, import/export triggering, and cloud-tenant company provisioning.",
+      "tags": ["api-handler", "service", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/routes/companies.ts:companyRoutes",
+      "type": "function",
+      "name": "companyRoutes",
+      "filePath": "server/src/routes/companies.ts",
+      "lineRange": [31, 444],
+      "summary": "Mounts all company CRUD and management endpoints onto an Express router, including import/export and member role operations.",
+      "tags": ["api-handler", "factory", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/routes/goals.ts",
+      "type": "file",
+      "name": "goals.ts",
+      "filePath": "server/src/routes/goals.ts",
+      "summary": "Express routes for company goals management — listing, creating, updating, and deleting goals that provide high-level objectives for agent companies.",
+      "tags": ["api-handler", "service", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/routes/issues.ts",
+      "type": "file",
+      "name": "issues.ts",
+      "filePath": "server/src/routes/issues.ts",
+      "summary": "The largest route file in the server, handling the full issue lifecycle: creation, assignment, execution state transitions, comments, thread interactions, document management, attachments, and recovery actions.",
+      "tags": ["api-handler", "service", "data-model", "middleware"],
+      "complexity": "complex",
+      "languageNotes": "Contains 33 helper functions alongside the main issueRoutes factory, reflecting the breadth of issue-related operations across the platform."
+    },
+    {
+      "id": "function:server/src/routes/issues.ts:issueRoutes",
+      "type": "function",
+      "name": "issueRoutes",
+      "filePath": "server/src/routes/issues.ts",
+      "lineRange": [237, 5699],
+      "summary": "Mounts all issue endpoints onto an Express router, covering the complete issue lifecycle from creation through execution, comments, and document management.",
+      "tags": ["api-handler", "factory", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/routes/plugins.ts",
+      "type": "file",
+      "name": "plugins.ts",
+      "filePath": "server/src/routes/plugins.ts",
+      "summary": "Express routes for plugin management: listing, installing, updating, uninstalling, and managing plugin configuration including examples and development mode plugin loading.",
+      "tags": ["api-handler", "service", "middleware"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/routes/plugins.ts:pluginRoutes",
+      "type": "function",
+      "name": "pluginRoutes",
+      "filePath": "server/src/routes/plugins.ts",
+      "lineRange": [365, 2854],
+      "summary": "Mounts all plugin lifecycle endpoints onto an Express router, handling install, update, delete, and configuration for both bundled and external plugins.",
+      "tags": ["api-handler", "factory", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/routes/projects.ts",
+      "type": "file",
+      "name": "projects.ts",
+      "filePath": "server/src/routes/projects.ts",
+      "summary": "Express routes for project management — CRUD operations on projects that group issues and provide workspace context for agent execution.",
+      "tags": ["api-handler", "service", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/routes/resource-memberships.ts",
+      "type": "file",
+      "name": "resource-memberships.ts",
+      "filePath": "server/src/routes/resource-memberships.ts",
+      "summary": "Express routes for managing resource-level memberships that control which agents or users can access specific projects or goals.",
+      "tags": ["api-handler", "service", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/routes/routines.ts",
+      "type": "file",
+      "name": "routines.ts",
+      "filePath": "server/src/routes/routines.ts",
+      "summary": "Express routes for routine management: creating, updating, deleting routines and their triggers, listing runs, and manually triggering routine execution.",
+      "tags": ["api-handler", "service", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/routes/runs.ts",
+      "type": "file",
+      "name": "runs.ts",
+      "filePath": "server/src/routes/runs.ts",
+      "summary": "Express routes for run lifecycle management — listing, reading, and aborting agent execution runs across companies.",
+      "tags": ["api-handler", "service", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/routes/secrets.ts",
+      "type": "file",
+      "name": "secrets.ts",
+      "filePath": "server/src/routes/secrets.ts",
+      "summary": "Express routes for managing secrets used in agent adapter configuration — listing, creating, updating, and deleting named secret values stored securely.",
+      "tags": ["api-handler", "service", "security"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/routes/users.ts",
+      "type": "file",
+      "name": "users.ts",
+      "filePath": "server/src/routes/users.ts",
+      "summary": "Express routes for user profile operations — reading current user info, updating display name and preferences, and managing user roles.",
+      "tags": ["api-handler", "service", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/routes/workspaces.ts",
+      "type": "file",
+      "name": "workspaces.ts",
+      "filePath": "server/src/routes/workspaces.ts",
+      "summary": "Express routes for execution workspace management — listing, creating, and managing the runtime workspaces where agent runs execute, including workspace operation logs and session state.",
+      "tags": ["api-handler", "service", "middleware"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/board-auth.ts",
+      "type": "file",
+      "name": "board-auth.ts",
+      "filePath": "server/src/services/board-auth.ts",
+      "summary": "Service implementing board authentication: token hashing, API key creation and expiry, CLI auth challenge lifecycle, and the main boardAuthService factory that provides persistence-backed token management.",
+      "tags": ["service", "authentication", "security", "factory"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/board-auth.ts:boardAuthService",
+      "type": "function",
+      "name": "boardAuthService",
+      "filePath": "server/src/services/board-auth.ts",
+      "lineRange": [52, 359],
+      "summary": "Factory that creates the board authentication service with database-backed methods for issuing/revoking API keys, managing CLI auth challenges, and verifying board credentials.",
+      "tags": ["service", "authentication", "factory"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/company-export.ts",
+      "type": "file",
+      "name": "company-export.ts",
+      "filePath": "server/src/services/company-export.ts",
+      "summary": "Implements company data export — serializing company configuration, agents, goals, projects, routines, and issues into a portable bundle for cross-instance portability.",
+      "tags": ["service", "data-model", "serialization"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/company-import.ts",
+      "type": "file",
+      "name": "company-import.ts",
+      "filePath": "server/src/services/company-import.ts",
+      "summary": "Implements company data import — deserializing and persisting a portable company bundle including agents, goals, projects, routines, and issues into the target Paperclip instance.",
+      "tags": ["service", "data-model", "serialization", "validation"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/heartbeat.ts",
+      "type": "file",
+      "name": "heartbeat.ts",
+      "filePath": "server/src/services/heartbeat.ts",
+      "summary": "The core runtime health and orchestration service that reaps orphaned runs, promotes scheduled retries, resumes queued runs, reconciles stranded issues, manages liveness checks, and processes productivity reviews on a periodic tick.",
+      "tags": ["service", "event-handler", "middleware", "monitoring"],
+      "complexity": "complex",
+      "languageNotes": "With 91 functions and 34 exports, this is the most complex single file in the server — it is the beating heart of the Paperclip agent orchestration runtime."
+    },
+    {
+      "id": "function:server/src/services/heartbeat.ts:heartbeatService",
+      "type": "function",
+      "name": "heartbeatService",
+      "filePath": "server/src/services/heartbeat.ts",
+      "lineRange": [338, 9960],
+      "summary": "Factory that creates the heartbeat service instance with all orchestration methods: run reaping, retry promotion, queue resumption, strandedness reconciliation, liveness checks, and productivity review scanning.",
+      "tags": ["service", "factory", "event-handler", "monitoring"],
+      "complexity": "complex"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:packages/shared/src/validators/issue.ts",
+      "target": "function:packages/shared/src/validators/issue.ts:resolveCreateIssueStatusDefault",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/shared/src/validators/issue.ts",
+      "target": "function:packages/shared/src/validators/issue.ts:withCreateIssueStatusDefault",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/shared/src/validators/issue.ts",
+      "target": "function:packages/shared/src/validators/issue.ts:resolveCreateIssueStatusDefault",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/shared/src/validators/issue.ts",
+      "target": "function:packages/shared/src/validators/issue.ts:withCreateIssueStatusDefault",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/agent-auth-jwt.ts",
+      "target": "function:server/src/agent-auth-jwt.ts:createLocalAgentJwt",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/agent-auth-jwt.ts",
+      "target": "function:server/src/agent-auth-jwt.ts:verifyLocalAgentJwt",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/agent-auth-jwt.ts",
+      "target": "function:server/src/agent-auth-jwt.ts:createLocalAgentJwt",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/agent-auth-jwt.ts",
+      "target": "function:server/src/agent-auth-jwt.ts:verifyLocalAgentJwt",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/index.ts",
+      "target": "function:server/src/index.ts:startServer",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/index.ts",
+      "target": "function:server/src/index.ts:startServer",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/index.ts",
+      "target": "file:server/src/services/heartbeat.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/index.ts",
+      "target": "file:server/src/routine-runner.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/index.ts",
+      "target": "file:server/src/routes/agents.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/index.ts",
+      "target": "file:server/src/routes/approvals.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/index.ts",
+      "target": "file:server/src/routes/companies.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/index.ts",
+      "target": "file:server/src/routes/goals.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/index.ts",
+      "target": "file:server/src/routes/issues.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/index.ts",
+      "target": "file:server/src/routes/plugins.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/index.ts",
+      "target": "file:server/src/routes/projects.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/index.ts",
+      "target": "file:server/src/routes/routines.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/index.ts",
+      "target": "file:server/src/routes/secrets.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/index.ts",
+      "target": "file:server/src/services/board-auth.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/index.ts",
+      "target": "file:server/src/cloud-upstream.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/index.ts",
+      "target": "file:server/src/auth-utils.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/routes/agents.ts",
+      "target": "function:server/src/routes/agents.ts:agentRoutes",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/routes/agents.ts",
+      "target": "function:server/src/routes/agents.ts:agentRoutes",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/routes/agents.ts",
+      "target": "file:server/src/agent-auth-jwt.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/routes/agents.ts",
+      "target": "file:server/src/routes/issues.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/routes/approvals.ts",
+      "target": "function:server/src/routes/approvals.ts:approvalRoutes",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/routes/approvals.ts",
+      "target": "function:server/src/routes/approvals.ts:approvalRoutes",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/routes/companies.ts",
+      "target": "function:server/src/routes/companies.ts:companyRoutes",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/routes/companies.ts",
+      "target": "function:server/src/routes/companies.ts:companyRoutes",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/routes/companies.ts",
+      "target": "file:server/src/services/company-export.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/routes/companies.ts",
+      "target": "file:server/src/services/company-import.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/routes/issues.ts",
+      "target": "function:server/src/routes/issues.ts:issueRoutes",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/routes/issues.ts",
+      "target": "function:server/src/routes/issues.ts:issueRoutes",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/routes/issues.ts",
+      "target": "file:packages/shared/src/validators/issue.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/routes/issues.ts",
+      "target": "file:server/src/services/heartbeat.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/routes/plugins.ts",
+      "target": "function:server/src/routes/plugins.ts:pluginRoutes",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/routes/plugins.ts",
+      "target": "function:server/src/routes/plugins.ts:pluginRoutes",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/routes/routines.ts",
+      "target": "file:packages/shared/src/validators/routine.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/routes/routines.ts",
+      "target": "file:server/src/routine-runner.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/services/board-auth.ts",
+      "target": "function:server/src/services/board-auth.ts:boardAuthService",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/board-auth.ts",
+      "target": "function:server/src/services/board-auth.ts:boardAuthService",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/routes/board-auth.ts",
+      "target": "file:server/src/services/board-auth.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:heartbeatService",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:heartbeatService",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "file:server/src/routes/issues.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "file:server/src/agent-auth-jwt.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/cloud-upstream.ts",
+      "target": "file:server/src/services/heartbeat.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/routine-runner.ts",
+      "target": "file:packages/shared/src/validators/routine.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    }
+  ]
+}

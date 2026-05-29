@@ -1,0 +1,608 @@
+{
+  "nodes": [
+    {
+      "id": "file:server/src/services/documents.ts",
+      "type": "file",
+      "name": "documents.ts",
+      "filePath": "server/src/services/documents.ts",
+      "summary": "Service layer for issue documents, providing CRUD operations for documents attached to issues with key normalization, deduplication, and legacy plan-body extraction.",
+      "tags": ["service", "data-model", "utility", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/documents.ts:documentService",
+      "type": "function",
+      "name": "documentService",
+      "filePath": "server/src/services/documents.ts",
+      "lineRange": [108, 734],
+      "summary": "Factory function returning the full document service object with methods for listing, reading, creating, updating, and deleting issue documents.",
+      "tags": ["service", "factory", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/documents.ts:extractLegacyPlanBody",
+      "type": "function",
+      "name": "extractLegacyPlanBody",
+      "filePath": "server/src/services/documents.ts",
+      "lineRange": [34, 40],
+      "summary": "Extracts plan body text from legacy XML-style <plan> tags embedded in issue descriptions.",
+      "tags": ["utility", "serialization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:server/src/services/documents.ts:mapIssueDocumentRow",
+      "type": "function",
+      "name": "mapIssueDocumentRow",
+      "filePath": "server/src/services/documents.ts",
+      "lineRange": [42, 85],
+      "summary": "Maps a raw database row to a typed IssueDocument object, optionally including the document body.",
+      "tags": ["serialization", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/services/goals.ts",
+      "type": "file",
+      "name": "goals.ts",
+      "filePath": "server/src/services/goals.ts",
+      "summary": "Service layer for company goals, providing query and management operations including fetching the default goal and CRUD for goal records.",
+      "tags": ["service", "data-model", "api-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:server/src/services/goals.ts:getDefaultCompanyGoal",
+      "type": "function",
+      "name": "getDefaultCompanyGoal",
+      "filePath": "server/src/services/goals.ts",
+      "lineRange": [7, 44],
+      "summary": "Retrieves the default goal for a company, used as the fallback goal when creating issues without an explicit goal assignment.",
+      "tags": ["service", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:server/src/services/goals.ts:goalService",
+      "type": "function",
+      "name": "goalService",
+      "filePath": "server/src/services/goals.ts",
+      "lineRange": [45, 185],
+      "summary": "Factory function returning the goal service object with methods for listing, creating, updating, and archiving company goals.",
+      "tags": ["service", "factory", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/services/issues.ts",
+      "type": "file",
+      "name": "issues.ts",
+      "filePath": "server/src/services/issues.ts",
+      "summary": "Core service layer for issues, implementing the full lifecycle of agent tasks including creation, status transitions, filtering, dependency resolution, blocker attention tracking, and inbox computation.",
+      "tags": ["service", "data-model", "api-handler", "event-handler"],
+      "complexity": "complex",
+      "languageNotes": "Largest service file in the codebase with 73 functions; implements complex SQL expressions for per-user read/touch state, inbox visibility, and blocker attention ranking."
+    },
+    {
+      "id": "function:server/src/services/issues.ts:issueService",
+      "type": "function",
+      "name": "issueService",
+      "filePath": "server/src/services/issues.ts",
+      "lineRange": [2760, 5536],
+      "summary": "Factory returning the full issue service object with methods covering issue CRUD, listing with filters, pagination, dependency management, status transitions, child issue creation, and blocker inbox computation.",
+      "tags": ["service", "factory", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/issues.ts:deriveIssueUserContext",
+      "type": "function",
+      "name": "deriveIssueUserContext",
+      "filePath": "server/src/services/issues.ts",
+      "lineRange": [745, 784],
+      "summary": "Derives per-user contextual data for an issue including read state, last comment time, and participation flags.",
+      "tags": ["service", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:server/src/services/issues.ts:deriveIssueCommentRunLogAttribution",
+      "type": "function",
+      "name": "deriveIssueCommentRunLogAttribution",
+      "filePath": "server/src/services/issues.ts",
+      "lineRange": [160, 215],
+      "summary": "Derives the run/agent attribution for a comment or log entry to associate issue activity with the correct agent run.",
+      "tags": ["service", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:server/src/services/issues.ts:listIssueBlockedInboxAttentionMap",
+      "type": "function",
+      "name": "listIssueBlockedInboxAttentionMap",
+      "filePath": "server/src/services/issues.ts",
+      "lineRange": [2103, 2760],
+      "summary": "Builds the blocked-inbox attention map for issues that require human or agent intervention, computing severity, response descriptions, and sort order.",
+      "tags": ["service", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/plugins.ts",
+      "type": "file",
+      "name": "plugins.ts",
+      "filePath": "server/src/services/plugins.ts",
+      "summary": "Service layer for plugin management within the Paperclip platform, handling plugin registration, lifecycle, and configuration (file not found on disk — may have been removed or split).",
+      "tags": ["service", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/projects.ts",
+      "type": "file",
+      "name": "projects.ts",
+      "filePath": "server/src/services/projects.ts",
+      "summary": "Service layer for projects, providing CRUD operations for workspace projects including workspace attachment, goal linking, runtime service configuration, and managed plugin project defaults.",
+      "tags": ["service", "data-model", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/projects.ts:projectService",
+      "type": "function",
+      "name": "projectService",
+      "filePath": "server/src/services/projects.ts",
+      "lineRange": [458, 1134],
+      "summary": "Factory returning the project service object with methods for listing, creating, updating, and deleting projects along with workspace and goal association management.",
+      "tags": ["service", "factory", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/projects.ts:resolveProjectNameForUniqueShortname",
+      "type": "function",
+      "name": "resolveProjectNameForUniqueShortname",
+      "filePath": "server/src/services/projects.ts",
+      "lineRange": [398, 457],
+      "summary": "Resolves a unique short name for a project by de-duplicating against existing project names within a company.",
+      "tags": ["utility", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/services/routines.ts",
+      "type": "file",
+      "name": "routines.ts",
+      "filePath": "server/src/services/routines.ts",
+      "summary": "Service layer for agent routines (scheduled and webhook-triggered tasks), implementing cron scheduling, variable resolution, dispatch fingerprinting, and revision snapshot management.",
+      "tags": ["service", "data-model", "event-handler", "api-handler"],
+      "complexity": "complex",
+      "languageNotes": "Contains timezone-aware cron scheduling logic with per-minute matching and next-tick computation, plus variable validation and routine revision diffing."
+    },
+    {
+      "id": "function:server/src/services/routines.ts:routineService",
+      "type": "function",
+      "name": "routineService",
+      "filePath": "server/src/services/routines.ts",
+      "lineRange": [473, 2397],
+      "summary": "Factory returning the full routine service object with methods for creating, updating, enabling, dispatching, and archiving routines, including webhook processing and revision tracking.",
+      "tags": ["service", "factory", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/routines.ts:nextCronTickInTimeZone",
+      "type": "function",
+      "name": "nextCronTickInTimeZone",
+      "filePath": "server/src/services/routines.ts",
+      "lineRange": [143, 162],
+      "summary": "Computes the next scheduled cron tick time in the given timezone, supporting minute-level precision with timezone offset awareness.",
+      "tags": ["utility", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:server/src/services/routines.ts:resolveRoutineVariableValues",
+      "type": "function",
+      "name": "resolveRoutineVariableValues",
+      "filePath": "server/src/services/routines.ts",
+      "lineRange": [294, 331],
+      "summary": "Resolves and validates routine variable values from dispatch inputs, applying defaults and enforcing type constraints.",
+      "tags": ["utility", "validation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/services/secrets.ts",
+      "type": "file",
+      "name": "secrets.ts",
+      "filePath": "server/src/services/secrets.ts",
+      "summary": "Service layer for secrets management, supporting multiple providers (local, AWS Secrets Manager, Vault) with binding canonicalization, key normalization, and runtime secret resolution for agent environments.",
+      "tags": ["service", "security", "data-model"],
+      "complexity": "complex",
+      "languageNotes": "Handles multi-provider secret resolution with error-code normalization and sensitive key redaction for agent runtime environments."
+    },
+    {
+      "id": "function:server/src/services/secrets.ts:secretService",
+      "type": "function",
+      "name": "secretService",
+      "filePath": "server/src/services/secrets.ts",
+      "lineRange": [295, 2319],
+      "summary": "Factory returning the full secret service object with methods for creating, importing, resolving, and managing secrets across multiple provider backends.",
+      "tags": ["service", "factory", "security"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/workspaces.ts",
+      "type": "file",
+      "name": "workspaces.ts",
+      "filePath": "server/src/services/workspaces.ts",
+      "summary": "Service layer for workspaces, managing workspace definitions, runtime configurations, and associations with projects and agents (file not found on disk — may have been removed or split into workspace-specific modules).",
+      "tags": ["service", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/__tests__/agents.test.ts",
+      "type": "file",
+      "name": "agents.test.ts",
+      "filePath": "server/src/__tests__/agents.test.ts",
+      "summary": "Integration test suite for agent APIs, covering agent creation, configuration, assignment, and lifecycle operations (file not found on disk — may have been renamed or removed).",
+      "tags": ["test", "api-handler", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/__tests__/approvals.test.ts",
+      "type": "file",
+      "name": "approvals.test.ts",
+      "filePath": "server/src/__tests__/approvals.test.ts",
+      "summary": "Integration test suite for issue approval workflows, verifying approval creation, state transitions, and agent notification behavior (file not found on disk).",
+      "tags": ["test", "api-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/__tests__/board-auth.test.ts",
+      "type": "file",
+      "name": "board-auth.test.ts",
+      "filePath": "server/src/__tests__/board-auth.test.ts",
+      "summary": "Integration tests for board-level authentication and authorization, verifying access controls on board-scoped API routes (file not found on disk).",
+      "tags": ["test", "middleware", "security"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:server/src/__tests__/cloud-upstream.test.ts",
+      "type": "file",
+      "name": "cloud-upstream.test.ts",
+      "filePath": "server/src/__tests__/cloud-upstream.test.ts",
+      "summary": "Integration test suite for cloud upstream synchronization, validating data sync, conflict resolution, and upstream connectivity (file not found on disk).",
+      "tags": ["test", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/__tests__/companies.test.ts",
+      "type": "file",
+      "name": "companies.test.ts",
+      "filePath": "server/src/__tests__/companies.test.ts",
+      "summary": "Integration test suite for company management APIs covering company creation, member management, and role-based access (file not found on disk).",
+      "tags": ["test", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/__tests__/goals.test.ts",
+      "type": "file",
+      "name": "goals.test.ts",
+      "filePath": "server/src/__tests__/goals.test.ts",
+      "summary": "Integration tests for the goals service and API, verifying goal creation, archiving, default goal assignment, and association with issues (file not found on disk).",
+      "tags": ["test", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/__tests__/heartbeat.test.ts",
+      "type": "file",
+      "name": "heartbeat.test.ts",
+      "filePath": "server/src/__tests__/heartbeat.test.ts",
+      "summary": "Integration tests for agent heartbeat processing, covering run-state transitions, liveness checks, timeout handling, and workspace session management (file not found on disk).",
+      "tags": ["test", "service", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/__tests__/issues.test.ts",
+      "type": "file",
+      "name": "issues.test.ts",
+      "filePath": "server/src/__tests__/issues.test.ts",
+      "summary": "Comprehensive integration test suite for the issues service and API, covering the full issue lifecycle, filters, dependencies, priority, and inbox computation (file not found on disk).",
+      "tags": ["test", "service", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/__tests__/plugins.test.ts",
+      "type": "file",
+      "name": "plugins.test.ts",
+      "filePath": "server/src/__tests__/plugins.test.ts",
+      "summary": "Integration tests for plugin registration, lifecycle, capability validation, and managed-agent/routine behaviors (file not found on disk).",
+      "tags": ["test", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/__tests__/projects.test.ts",
+      "type": "file",
+      "name": "projects.test.ts",
+      "filePath": "server/src/__tests__/projects.test.ts",
+      "summary": "Integration tests for project management APIs, verifying project creation, workspace attachment, goal linking, and unique shortname assignment (file not found on disk).",
+      "tags": ["test", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/__tests__/resource-memberships.test.ts",
+      "type": "file",
+      "name": "resource-memberships.test.ts",
+      "filePath": "server/src/__tests__/resource-memberships.test.ts",
+      "summary": "Integration tests for resource membership management, covering agent and user membership on companies, projects, and goals (file not found on disk).",
+      "tags": ["test", "api-handler", "security"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/__tests__/routines.test.ts",
+      "type": "file",
+      "name": "routines.test.ts",
+      "filePath": "server/src/__tests__/routines.test.ts",
+      "summary": "Integration tests for the routines service and API, covering schedule creation, variable resolution, dispatch, webhook triggers, and revision tracking (file not found on disk).",
+      "tags": ["test", "service", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/__tests__/runs.test.ts",
+      "type": "file",
+      "name": "runs.test.ts",
+      "filePath": "server/src/__tests__/runs.test.ts",
+      "summary": "Integration tests for agent run management, verifying run creation, log streaming, status polling, and cancellation flows (file not found on disk).",
+      "tags": ["test", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/__tests__/secrets.test.ts",
+      "type": "file",
+      "name": "secrets.test.ts",
+      "filePath": "server/src/__tests__/secrets.test.ts",
+      "summary": "Integration tests for the secrets service and API, validating secret CRUD, provider selection, binding, and runtime resolution (file not found on disk).",
+      "tags": ["test", "service", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/__tests__/users.test.ts",
+      "type": "file",
+      "name": "users.test.ts",
+      "filePath": "server/src/__tests__/users.test.ts",
+      "summary": "Integration tests for user management APIs including profile retrieval, settings updates, and membership validation (file not found on disk).",
+      "tags": ["test", "api-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/__tests__/workspaces.test.ts",
+      "type": "file",
+      "name": "workspaces.test.ts",
+      "filePath": "server/src/__tests__/workspaces.test.ts",
+      "summary": "Comprehensive integration tests for workspace management APIs, verifying workspace creation, runtime configuration, and project/agent associations (file not found on disk).",
+      "tags": ["test", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/workspace-adapter-bridge.ts",
+      "type": "file",
+      "name": "workspace-adapter-bridge.ts",
+      "filePath": "server/src/workspace-adapter-bridge.ts",
+      "summary": "Bridge layer connecting workspace runtime adapters to the core platform, translating adapter-specific events and operations into the canonical workspace model (file not found on disk).",
+      "tags": ["middleware", "service", "event-handler"],
+      "complexity": "complex"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:server/src/services/documents.ts",
+      "target": "function:server/src/services/documents.ts:documentService",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/documents.ts",
+      "target": "function:server/src/services/documents.ts:extractLegacyPlanBody",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/documents.ts",
+      "target": "function:server/src/services/documents.ts:mapIssueDocumentRow",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/documents.ts",
+      "target": "function:server/src/services/documents.ts:documentService",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/documents.ts",
+      "target": "function:server/src/services/documents.ts:extractLegacyPlanBody",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/goals.ts",
+      "target": "function:server/src/services/goals.ts:getDefaultCompanyGoal",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/goals.ts",
+      "target": "function:server/src/services/goals.ts:goalService",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/goals.ts",
+      "target": "function:server/src/services/goals.ts:getDefaultCompanyGoal",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/goals.ts",
+      "target": "function:server/src/services/goals.ts:goalService",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/issues.ts",
+      "target": "function:server/src/services/issues.ts:issueService",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/issues.ts",
+      "target": "function:server/src/services/issues.ts:deriveIssueUserContext",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/issues.ts",
+      "target": "function:server/src/services/issues.ts:deriveIssueCommentRunLogAttribution",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/issues.ts",
+      "target": "function:server/src/services/issues.ts:listIssueBlockedInboxAttentionMap",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/issues.ts",
+      "target": "function:server/src/services/issues.ts:issueService",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/issues.ts",
+      "target": "function:server/src/services/issues.ts:deriveIssueUserContext",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/issues.ts",
+      "target": "function:server/src/services/issues.ts:deriveIssueCommentRunLogAttribution",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/projects.ts",
+      "target": "function:server/src/services/projects.ts:projectService",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/projects.ts",
+      "target": "function:server/src/services/projects.ts:resolveProjectNameForUniqueShortname",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/projects.ts",
+      "target": "function:server/src/services/projects.ts:projectService",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/projects.ts",
+      "target": "function:server/src/services/projects.ts:resolveProjectNameForUniqueShortname",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/routines.ts",
+      "target": "function:server/src/services/routines.ts:routineService",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/routines.ts",
+      "target": "function:server/src/services/routines.ts:nextCronTickInTimeZone",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/routines.ts",
+      "target": "function:server/src/services/routines.ts:resolveRoutineVariableValues",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/routines.ts",
+      "target": "function:server/src/services/routines.ts:routineService",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/secrets.ts",
+      "target": "function:server/src/services/secrets.ts:secretService",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/secrets.ts",
+      "target": "function:server/src/services/secrets.ts:secretService",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/__tests__/goals.test.ts",
+      "target": "file:server/src/services/goals.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:server/src/__tests__/issues.test.ts",
+      "target": "file:server/src/services/issues.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:server/src/__tests__/projects.test.ts",
+      "target": "file:server/src/services/projects.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:server/src/__tests__/routines.test.ts",
+      "target": "file:server/src/services/routines.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:server/src/__tests__/secrets.test.ts",
+      "target": "file:server/src/services/secrets.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:server/src/__tests__/plugins.test.ts",
+      "target": "file:server/src/services/plugins.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    }
+  ]
+}

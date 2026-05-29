@@ -1,0 +1,775 @@
+{
+  "nodes": [
+    {
+      "id": "file:ui/src/components/SidebarProjects.test.tsx",
+      "type": "file",
+      "name": "SidebarProjects.test.tsx",
+      "filePath": "ui/src/components/SidebarProjects.test.tsx",
+      "summary": "Test suite for the SidebarProjects component, covering project listing, sorting modes, drag-and-drop reorder, and leave-project interactions.",
+      "tags": ["test", "component", "sidebar", "projects"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/SidebarProjects.tsx",
+      "type": "file",
+      "name": "SidebarProjects.tsx",
+      "filePath": "ui/src/components/SidebarProjects.tsx",
+      "summary": "Sidebar panel listing all projects with sortable drag-and-drop ordering, sort-mode persistence, membership pinning, and per-project context menus.",
+      "tags": ["component", "sidebar", "projects", "drag-and-drop"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/components/SidebarProjects.tsx:SidebarProjects",
+      "type": "function",
+      "name": "SidebarProjects",
+      "filePath": "ui/src/components/SidebarProjects.tsx",
+      "lineRange": [230, 440],
+      "summary": "Main exported component that fetches projects, manages sort and manual order state, provides DnD context, and renders sortable project items in the sidebar.",
+      "tags": ["component", "sidebar", "projects", "hook"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/components/SidebarProjects.tsx:ProjectItem",
+      "type": "function",
+      "name": "ProjectItem",
+      "filePath": "ui/src/components/SidebarProjects.tsx",
+      "lineRange": [108, 201],
+      "summary": "Renders a single project link row with active-state styling, plugin slot integration, and a leave-project action.",
+      "tags": ["component", "sidebar", "projects"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/components/SidebarProjects.tsx:SortableProjectItem",
+      "type": "function",
+      "name": "SortableProjectItem",
+      "filePath": "ui/src/components/SidebarProjects.tsx",
+      "lineRange": [203, 228],
+      "summary": "Wraps ProjectItem with dnd-kit useSortable to apply drag transform styles and provide a drag handle.",
+      "tags": ["component", "drag-and-drop", "sidebar"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/SidebarSection.tsx",
+      "type": "file",
+      "name": "SidebarSection.tsx",
+      "filePath": "ui/src/components/SidebarSection.tsx",
+      "summary": "Provides collapsible sidebar section layout with a configurable header, optional dropdown menu, and header action slot.",
+      "tags": ["component", "sidebar", "layout"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/components/SidebarSection.tsx:SidebarSection",
+      "type": "function",
+      "name": "SidebarSection",
+      "filePath": "ui/src/components/SidebarSection.tsx",
+      "lineRange": [185, 214],
+      "summary": "Exported component wrapping SidebarSectionHeader with its children content area, used to build collapsible sidebar navigation groups.",
+      "tags": ["component", "sidebar", "layout"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/SourceResolvedFoldBadge.tsx",
+      "type": "file",
+      "name": "SourceResolvedFoldBadge.tsx",
+      "filePath": "ui/src/components/SourceResolvedFoldBadge.tsx",
+      "summary": "Small badge component indicating that a run was automatically folded as a source-resolved false positive, with an optional icon.",
+      "tags": ["component", "badge", "run-status"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/SourceResolvedFoldCallout.tsx",
+      "type": "file",
+      "name": "SourceResolvedFoldCallout.tsx",
+      "filePath": "ui/src/components/SourceResolvedFoldCallout.tsx",
+      "summary": "Detailed callout panel explaining a source-resolved fold decision, showing evidence ID, timing, cleanup outcome, and related issue links.",
+      "tags": ["component", "callout", "run-status"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/components/SourceResolvedFoldCallout.tsx:SourceResolvedFoldCallout",
+      "type": "function",
+      "name": "SourceResolvedFoldCallout",
+      "filePath": "ui/src/components/SourceResolvedFoldCallout.tsx",
+      "lineRange": [46, 175],
+      "summary": "Renders a styled card with fold metadata rows including source issue, evidence, silence age, cleanup outcome, and related evaluation issue links.",
+      "tags": ["component", "callout", "run-status"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/access/CompanySettingsNav.test.tsx",
+      "type": "file",
+      "name": "CompanySettingsNav.test.tsx",
+      "filePath": "ui/src/components/access/CompanySettingsNav.test.tsx",
+      "summary": "Tests for the CompanySettingsNav component verifying correct tab selection based on the current URL pathname.",
+      "tags": ["test", "component", "navigation", "settings"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/access/CompanySettingsNav.tsx",
+      "type": "file",
+      "name": "CompanySettingsNav.tsx",
+      "filePath": "ui/src/components/access/CompanySettingsNav.tsx",
+      "summary": "Navigation tab bar for company settings pages, deriving the active tab from the current URL and navigating on tab change.",
+      "tags": ["component", "navigation", "settings", "api-handler"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/components/access/CompanySettingsNav.tsx:CompanySettingsNav",
+      "type": "function",
+      "name": "CompanySettingsNav",
+      "filePath": "ui/src/components/access/CompanySettingsNav.tsx",
+      "lineRange": [40, 61],
+      "summary": "Renders a tabs component for company settings navigation, syncing the active tab to the current route via useLocation and useNavigate.",
+      "tags": ["component", "navigation", "settings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/components/access/CompanySettingsNav.tsx:getCompanySettingsTab",
+      "type": "function",
+      "name": "getCompanySettingsTab",
+      "filePath": "ui/src/components/access/CompanySettingsNav.tsx",
+      "lineRange": [16, 38],
+      "summary": "Pure function that maps a URL pathname to the corresponding company settings tab key using pathname.includes checks.",
+      "tags": ["utility", "navigation", "settings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/transcript/useLiveRunTranscripts.ts",
+      "type": "file",
+      "name": "useLiveRunTranscripts.ts",
+      "filePath": "ui/src/components/transcript/useLiveRunTranscripts.ts",
+      "summary": "Custom hook that hydrates run transcripts from persisted log files via polling and real-time WebSocket streaming, merging chunks into a per-run transcript map.",
+      "tags": ["hook", "websocket", "real-time", "transcript"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/components/transcript/useLiveRunTranscripts.ts:useLiveRunTranscripts",
+      "type": "function",
+      "name": "useLiveRunTranscripts",
+      "filePath": "ui/src/components/transcript/useLiveRunTranscripts.ts",
+      "lineRange": [90, 428],
+      "summary": "Core hook managing log polling intervals, WebSocket connections, chunk deduplication, and transcript cache construction for a set of active runs.",
+      "tags": ["hook", "websocket", "real-time", "transcript"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/ui/dialog.tsx",
+      "type": "file",
+      "name": "dialog.tsx",
+      "filePath": "ui/src/components/ui/dialog.tsx",
+      "summary": "Radix UI dialog primitive wrappers (Dialog, DialogTrigger, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription) with Tailwind styling applied.",
+      "tags": ["component", "ui", "dialog", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/ui/textarea.tsx",
+      "type": "file",
+      "name": "textarea.tsx",
+      "filePath": "ui/src/components/ui/textarea.tsx",
+      "summary": "Thin styled wrapper around the HTML textarea element applying consistent Tailwind design system classes.",
+      "tags": ["component", "ui", "form"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/context/CompanyContext.tsx",
+      "type": "file",
+      "name": "CompanyContext.tsx",
+      "filePath": "ui/src/context/CompanyContext.tsx",
+      "summary": "React context provider and hook for the selected company, managing company selection state, localStorage persistence, bootstrap resolution, and company creation mutation.",
+      "tags": ["context", "service", "company", "singleton"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/context/CompanyContext.tsx:CompanyProvider",
+      "type": "function",
+      "name": "CompanyProvider",
+      "filePath": "ui/src/context/CompanyContext.tsx",
+      "lineRange": [66, 170],
+      "summary": "Provider component that fetches companies, resolves and persists the selected company ID, exposes setSelectedCompanyId and createCompany callbacks via context.",
+      "tags": ["context", "provider", "company"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/context/CompanyContext.tsx:useCompany",
+      "type": "function",
+      "name": "useCompany",
+      "filePath": "ui/src/context/CompanyContext.tsx",
+      "lineRange": [172, 178],
+      "summary": "Hook that reads the CompanyContext and throws if called outside CompanyProvider.",
+      "tags": ["hook", "context", "company"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/context/EditorAutocompleteContext.tsx",
+      "type": "file",
+      "name": "EditorAutocompleteContext.tsx",
+      "filePath": "ui/src/context/EditorAutocompleteContext.tsx",
+      "summary": "React context providing skill and routine mention autocomplete data for the editor, fetching company skills and active routines and exposing them as sorted mention lists.",
+      "tags": ["context", "editor", "autocomplete", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/context/EditorAutocompleteContext.tsx:EditorAutocompleteProvider",
+      "type": "function",
+      "name": "EditorAutocompleteProvider",
+      "filePath": "ui/src/context/EditorAutocompleteContext.tsx",
+      "lineRange": [41, 91],
+      "summary": "Provider that fetches company skills and routines, builds sorted mention suggestion lists, and exposes them through context.",
+      "tags": ["context", "provider", "autocomplete", "editor"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/context/LiveUpdatesProvider.test.ts",
+      "type": "file",
+      "name": "LiveUpdatesProvider.test.ts",
+      "filePath": "ui/src/context/LiveUpdatesProvider.test.ts",
+      "summary": "Comprehensive test suite for LiveUpdatesProvider covering WebSocket event handling, toast suppression logic, query invalidation, and comment hydration behavior.",
+      "tags": ["test", "websocket", "real-time", "context"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/context/LiveUpdatesProvider.tsx",
+      "type": "file",
+      "name": "LiveUpdatesProvider.tsx",
+      "filePath": "ui/src/context/LiveUpdatesProvider.tsx",
+      "summary": "Core real-time update provider that maintains a persistent WebSocket connection, processes live events (agent/run/issue/activity), invalidates React Query caches, hydrates comments, and dispatches gated toast notifications.",
+      "tags": ["context", "websocket", "real-time", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/context/LiveUpdatesProvider.tsx:LiveUpdatesProvider",
+      "type": "function",
+      "name": "LiveUpdatesProvider",
+      "filePath": "ui/src/context/LiveUpdatesProvider.tsx",
+      "lineRange": [931, 1051],
+      "summary": "Provider component that manages the WebSocket lifecycle (connect, reconnect, close), feeds events to handleLiveEvent, and renders children within the live-updates context.",
+      "tags": ["context", "provider", "websocket", "real-time"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/context/LiveUpdatesProvider.tsx:handleLiveEvent",
+      "type": "function",
+      "name": "handleLiveEvent",
+      "filePath": "ui/src/context/LiveUpdatesProvider.tsx",
+      "lineRange": [807, 875],
+      "summary": "Dispatches incoming WebSocket events by type (run status, agent status, activity, join request) — invalidating queries, hydrating comments, and pushing gated toasts as appropriate.",
+      "tags": ["event-handler", "websocket", "real-time"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/context/LiveUpdatesProvider.tsx:invalidateActivityQueries",
+      "type": "function",
+      "name": "invalidateActivityQueries",
+      "filePath": "ui/src/context/LiveUpdatesProvider.tsx",
+      "lineRange": [639, 770],
+      "summary": "Invalidates React Query caches for activity, issues, agents, projects, goals, approvals, costs, and other query keys based on the received activity event payload.",
+      "tags": ["event-handler", "cache", "real-time"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/context/LiveUpdatesProvider.tsx:buildActivityToast",
+      "type": "function",
+      "name": "buildActivityToast",
+      "filePath": "ui/src/context/LiveUpdatesProvider.tsx",
+      "lineRange": [441, 528],
+      "summary": "Builds a toast notification object from an activity event payload, resolving actor label and issue context for various action types (comment, update, reopen, etc.).",
+      "tags": ["utility", "toast", "real-time"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/hooks/useResourceMemberships.ts",
+      "type": "file",
+      "name": "useResourceMemberships.ts",
+      "filePath": "ui/src/hooks/useResourceMemberships.ts",
+      "summary": "Custom hooks for querying the current user's resource memberships (project/agent pins) and a mutation hook for toggling pin state with optimistic updates.",
+      "tags": ["hook", "membership", "projects", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/hooks/useResourceMemberships.ts:useResourceMembershipMutation",
+      "type": "function",
+      "name": "useResourceMembershipMutation",
+      "filePath": "ui/src/hooks/useResourceMemberships.ts",
+      "lineRange": [72, 114],
+      "summary": "Mutation hook for updating a project or agent membership with optimistic cache updates, error rollback, and success toast notifications.",
+      "tags": ["hook", "membership", "mutation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/i18n/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "ui/src/i18n/index.ts",
+      "summary": "Initializes and exports the i18next instance, the t translation helper, and the useTranslation hook for use throughout the UI.",
+      "tags": ["entry-point", "i18n", "utility", "barrel"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/i18n/locale-validation.test.ts",
+      "type": "file",
+      "name": "locale-validation.test.ts",
+      "filePath": "ui/src/i18n/locale-validation.test.ts",
+      "summary": "Tests for the locale validation utilities, checking placeholder consistency, blocked content detection, and missing/extra key reporting.",
+      "tags": ["test", "i18n", "validation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/i18n/locale-validation.ts",
+      "type": "file",
+      "name": "locale-validation.ts",
+      "filePath": "ui/src/i18n/locale-validation.ts",
+      "summary": "Validation utilities that compare a candidate locale message tree against the English reference, checking interpolation placeholder consistency, blocked HTML/script content, URL injection, and key completeness.",
+      "tags": ["validation", "i18n", "security", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/i18n/locale-validation.ts:validateLocaleMessages",
+      "type": "function",
+      "name": "validateLocaleMessages",
+      "filePath": "ui/src/i18n/locale-validation.ts",
+      "lineRange": [110, 114],
+      "summary": "Entry point that runs validateNode recursively on the full candidate locale tree and returns the list of validation errors.",
+      "tags": ["validation", "i18n", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/i18n/locale-validation.ts:assertValidLocaleMessages",
+      "type": "function",
+      "name": "assertValidLocaleMessages",
+      "filePath": "ui/src/i18n/locale-validation.ts",
+      "lineRange": [116, 121],
+      "summary": "Assertion wrapper around validateLocaleMessages that throws an error listing all validation failures, used in CI/test environments.",
+      "tags": ["validation", "i18n", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/i18n/locales.ts",
+      "type": "file",
+      "name": "locales.ts",
+      "filePath": "ui/src/i18n/locales.ts",
+      "summary": "Imports all locale JSON files and exports the locale message map, the list of supported locales, and the i18next resources object for initializing the i18n system.",
+      "tags": ["i18n", "configuration", "barrel"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/ar.json",
+      "type": "config",
+      "name": "ar.json",
+      "filePath": "ui/src/i18n/locales/ar.json",
+      "summary": "Arabic (ar) locale translation messages for the Paperclip UI.",
+      "tags": ["i18n", "configuration", "localization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/bn.json",
+      "type": "config",
+      "name": "bn.json",
+      "filePath": "ui/src/i18n/locales/bn.json",
+      "summary": "Bengali (bn) locale translation messages for the Paperclip UI.",
+      "tags": ["i18n", "configuration", "localization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/cs.json",
+      "type": "config",
+      "name": "cs.json",
+      "filePath": "ui/src/i18n/locales/cs.json",
+      "summary": "Czech (cs) locale translation messages for the Paperclip UI.",
+      "tags": ["i18n", "configuration", "localization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/da.json",
+      "type": "config",
+      "name": "da.json",
+      "filePath": "ui/src/i18n/locales/da.json",
+      "summary": "Danish (da) locale translation messages for the Paperclip UI.",
+      "tags": ["i18n", "configuration", "localization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/de.json",
+      "type": "config",
+      "name": "de.json",
+      "filePath": "ui/src/i18n/locales/de.json",
+      "summary": "German (de) locale translation messages for the Paperclip UI.",
+      "tags": ["i18n", "configuration", "localization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/el.json",
+      "type": "config",
+      "name": "el.json",
+      "filePath": "ui/src/i18n/locales/el.json",
+      "summary": "Greek (el) locale translation messages for the Paperclip UI.",
+      "tags": ["i18n", "configuration", "localization"],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:ui/src/components/SidebarProjects.tsx",
+      "target": "function:ui/src/components/SidebarProjects.tsx:SidebarProjects",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/SidebarProjects.tsx",
+      "target": "function:ui/src/components/SidebarProjects.tsx:ProjectItem",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/SidebarProjects.tsx",
+      "target": "function:ui/src/components/SidebarProjects.tsx:SortableProjectItem",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/SidebarProjects.tsx",
+      "target": "function:ui/src/components/SidebarProjects.tsx:SidebarProjects",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/SidebarSection.tsx",
+      "target": "function:ui/src/components/SidebarSection.tsx:SidebarSection",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/SidebarSection.tsx",
+      "target": "function:ui/src/components/SidebarSection.tsx:SidebarSection",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/SourceResolvedFoldCallout.tsx",
+      "target": "function:ui/src/components/SourceResolvedFoldCallout.tsx:SourceResolvedFoldCallout",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/SourceResolvedFoldCallout.tsx",
+      "target": "function:ui/src/components/SourceResolvedFoldCallout.tsx:SourceResolvedFoldCallout",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/access/CompanySettingsNav.tsx",
+      "target": "function:ui/src/components/access/CompanySettingsNav.tsx:CompanySettingsNav",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/access/CompanySettingsNav.tsx",
+      "target": "function:ui/src/components/access/CompanySettingsNav.tsx:getCompanySettingsTab",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/access/CompanySettingsNav.tsx",
+      "target": "function:ui/src/components/access/CompanySettingsNav.tsx:CompanySettingsNav",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/access/CompanySettingsNav.tsx",
+      "target": "function:ui/src/components/access/CompanySettingsNav.tsx:getCompanySettingsTab",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/access/CompanySettingsNav.test.tsx",
+      "target": "file:ui/src/components/access/CompanySettingsNav.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/components/transcript/useLiveRunTranscripts.ts",
+      "target": "function:ui/src/components/transcript/useLiveRunTranscripts.ts:useLiveRunTranscripts",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/transcript/useLiveRunTranscripts.ts",
+      "target": "function:ui/src/components/transcript/useLiveRunTranscripts.ts:useLiveRunTranscripts",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/context/CompanyContext.tsx",
+      "target": "function:ui/src/context/CompanyContext.tsx:CompanyProvider",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/context/CompanyContext.tsx",
+      "target": "function:ui/src/context/CompanyContext.tsx:useCompany",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/context/CompanyContext.tsx",
+      "target": "function:ui/src/context/CompanyContext.tsx:CompanyProvider",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/context/CompanyContext.tsx",
+      "target": "function:ui/src/context/CompanyContext.tsx:useCompany",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/context/EditorAutocompleteContext.tsx",
+      "target": "function:ui/src/context/EditorAutocompleteContext.tsx:EditorAutocompleteProvider",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/context/EditorAutocompleteContext.tsx",
+      "target": "function:ui/src/context/EditorAutocompleteContext.tsx:EditorAutocompleteProvider",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/context/EditorAutocompleteContext.tsx",
+      "target": "file:ui/src/context/CompanyContext.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/context/LiveUpdatesProvider.tsx",
+      "target": "function:ui/src/context/LiveUpdatesProvider.tsx:LiveUpdatesProvider",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/context/LiveUpdatesProvider.tsx",
+      "target": "function:ui/src/context/LiveUpdatesProvider.tsx:handleLiveEvent",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/context/LiveUpdatesProvider.tsx",
+      "target": "function:ui/src/context/LiveUpdatesProvider.tsx:invalidateActivityQueries",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/context/LiveUpdatesProvider.tsx",
+      "target": "function:ui/src/context/LiveUpdatesProvider.tsx:buildActivityToast",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/context/LiveUpdatesProvider.tsx",
+      "target": "function:ui/src/context/LiveUpdatesProvider.tsx:LiveUpdatesProvider",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/context/LiveUpdatesProvider.tsx",
+      "target": "file:ui/src/context/CompanyContext.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/context/LiveUpdatesProvider.test.ts",
+      "target": "file:ui/src/context/LiveUpdatesProvider.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/hooks/useResourceMemberships.ts",
+      "target": "function:ui/src/hooks/useResourceMemberships.ts:useResourceMembershipMutation",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/hooks/useResourceMemberships.ts",
+      "target": "function:ui/src/hooks/useResourceMemberships.ts:useResourceMembershipMutation",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/SidebarProjects.tsx",
+      "target": "file:ui/src/hooks/useResourceMemberships.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/SidebarProjects.tsx",
+      "target": "file:ui/src/context/CompanyContext.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/SidebarProjects.test.tsx",
+      "target": "file:ui/src/components/SidebarProjects.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/i18n/index.ts",
+      "target": "file:ui/src/i18n/locales.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/i18n/locale-validation.ts",
+      "target": "function:ui/src/i18n/locale-validation.ts:validateLocaleMessages",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/i18n/locale-validation.ts",
+      "target": "function:ui/src/i18n/locale-validation.ts:assertValidLocaleMessages",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/i18n/locale-validation.ts",
+      "target": "function:ui/src/i18n/locale-validation.ts:validateLocaleMessages",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/i18n/locale-validation.ts",
+      "target": "function:ui/src/i18n/locale-validation.ts:assertValidLocaleMessages",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/i18n/locale-validation.test.ts",
+      "target": "file:ui/src/i18n/locale-validation.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/i18n/locales.ts",
+      "target": "config:ui/src/i18n/locales/ar.json",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/i18n/locales.ts",
+      "target": "config:ui/src/i18n/locales/bn.json",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/i18n/locales.ts",
+      "target": "config:ui/src/i18n/locales/cs.json",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/i18n/locales.ts",
+      "target": "config:ui/src/i18n/locales/da.json",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/i18n/locales.ts",
+      "target": "config:ui/src/i18n/locales/de.json",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/i18n/locales.ts",
+      "target": "config:ui/src/i18n/locales/el.json",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:ui/src/i18n/locales/ar.json",
+      "target": "file:ui/src/i18n/locale-validation.ts",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "config:ui/src/i18n/locales/bn.json",
+      "target": "file:ui/src/i18n/locale-validation.ts",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "config:ui/src/i18n/locales/cs.json",
+      "target": "file:ui/src/i18n/locale-validation.ts",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "config:ui/src/i18n/locales/da.json",
+      "target": "file:ui/src/i18n/locale-validation.ts",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "config:ui/src/i18n/locales/de.json",
+      "target": "file:ui/src/i18n/locale-validation.ts",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "config:ui/src/i18n/locales/el.json",
+      "target": "file:ui/src/i18n/locale-validation.ts",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    }
+  ]
+}

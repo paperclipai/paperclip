@@ -5,6 +5,9 @@ node_modules/
 dist/
 ui/storybook-static/
 .env
+.env.prod
+.env.*.local
+docker-compose.override.yml
 *.tsbuildinfo
 drizzle/meta/
 .vite/

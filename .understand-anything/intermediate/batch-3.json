@@ -1,0 +1,687 @@
+{
+  "nodes": [
+    {
+      "id": "file:packages/db/src/schema/documents.ts",
+      "type": "file",
+      "name": "documents.ts",
+      "filePath": "packages/db/src/schema/documents.ts",
+      "summary": "Defines the Drizzle ORM schema for the documents table, capturing document metadata and revisions used across the Paperclip platform.",
+      "tags": ["data-model", "schema-definition", "database"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/db/src/schema/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/db/src/schema/index.ts",
+      "summary": "Central barrel that re-exports all 90 Drizzle ORM schema table objects, serving as the single import point for the entire database schema across the Paperclip application.",
+      "tags": ["barrel", "entry-point", "data-model", "schema-definition"],
+      "complexity": "moderate",
+      "languageNotes": "Pure re-export barrel with no logic — all 90 exports are Drizzle table definitions from sibling schema files."
+    },
+    {
+      "id": "file:packages/db/src/schema/project_memberships.ts",
+      "type": "file",
+      "name": "project_memberships.ts",
+      "filePath": "packages/db/src/schema/project_memberships.ts",
+      "summary": "Defines the Drizzle ORM schema for the project_memberships join table linking users and agents to projects with role information.",
+      "tags": ["data-model", "schema-definition", "database"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/db/src/schema/routines.ts",
+      "type": "file",
+      "name": "routines.ts",
+      "filePath": "packages/db/src/schema/routines.ts",
+      "summary": "Defines Drizzle ORM schemas for the four routines-related tables — routines, routineRevisions, routineTriggers, and routineRuns — capturing recurring scheduled tasks and their execution history.",
+      "tags": ["data-model", "schema-definition", "database", "event-handler"],
+      "complexity": "moderate",
+      "languageNotes": "Exports four tightly related tables capturing the full lifecycle of a scheduled routine: definition, revision history, triggers, and run records."
+    },
+    {
+      "id": "file:packages/db/src/test-embedded-postgres.ts",
+      "type": "file",
+      "name": "test-embedded-postgres.ts",
+      "filePath": "packages/db/src/test-embedded-postgres.ts",
+      "summary": "Provides test infrastructure for spinning up an embedded PostgreSQL instance with automatic port allocation, migration application, and cleanup, enabling isolated database tests without external dependencies.",
+      "tags": ["test", "utility", "database", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/db/src/test-embedded-postgres.ts:startEmbeddedPostgresTestDatabase",
+      "type": "function",
+      "name": "startEmbeddedPostgresTestDatabase",
+      "filePath": "packages/db/src/test-embedded-postgres.ts",
+      "lineRange": [146, 179],
+      "summary": "Starts an embedded PostgreSQL instance for tests, applies pending migrations, and returns connection details along with a cleanup callback.",
+      "tags": ["test", "database", "factory"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/db/src/test-embedded-postgres.ts:getEmbeddedPostgresTestSupport",
+      "type": "function",
+      "name": "getEmbeddedPostgresTestSupport",
+      "filePath": "packages/db/src/test-embedded-postgres.ts",
+      "lineRange": [139, 144],
+      "summary": "Probes platform support for embedded PostgreSQL and returns a support descriptor, caching the result for subsequent calls.",
+      "tags": ["test", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/examples/plugin-kitchen-sink-example/src/constants.ts",
+      "type": "file",
+      "name": "constants.ts",
+      "filePath": "packages/plugins/examples/plugin-kitchen-sink-example/src/constants.ts",
+      "summary": "Declares all shared constants for the kitchen-sink plugin example, including plugin ID, slot IDs, export names, job keys, tool names, stream channels, safe commands, and default configuration values.",
+      "tags": ["config", "utility", "type-definition"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/examples/plugin-kitchen-sink-example/src/manifest.ts",
+      "type": "file",
+      "name": "manifest.ts",
+      "filePath": "packages/plugins/examples/plugin-kitchen-sink-example/src/manifest.ts",
+      "summary": "Defines the full plugin manifest for the kitchen-sink example plugin, registering all slots, jobs, tools, webhooks, exports, and UI surface registrations that demonstrate the breadth of Paperclip's plugin API.",
+      "tags": ["config", "entry-point", "api-handler"],
+      "complexity": "complex",
+      "languageNotes": "A comprehensive 300-line manifest exercising virtually every plugin extension point in the Paperclip plugin system."
+    },
+    {
+      "id": "file:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "type": "file",
+      "name": "index.tsx",
+      "filePath": "packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "summary": "Implements the complete UI layer for the kitchen-sink example plugin, providing demo React components for every plugin UI surface including pages, settings, sidebar, dashboard widgets, context menus, toolbar buttons, and a full interactive console for testing plugin APIs.",
+      "tags": ["component", "entry-point", "api-handler", "event-handler"],
+      "complexity": "complex",
+      "languageNotes": "2476-line file with 41 React function components covering all Paperclip plugin UI extension surfaces — serves as the authoritative reference implementation."
+    },
+    {
+      "id": "function:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx:KitchenSinkConsole",
+      "type": "function",
+      "name": "KitchenSinkConsole",
+      "filePath": "packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "lineRange": [1347, 2093],
+      "summary": "An interactive console component that exposes every plugin SDK action and data hook, allowing developers to exercise the full Paperclip plugin API from the UI.",
+      "tags": ["component", "api-handler", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx:KitchenSinkSettingsPage",
+      "type": "function",
+      "name": "KitchenSinkSettingsPage",
+      "filePath": "packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "lineRange": [2105, 2238],
+      "summary": "Renders the plugin global settings page with configuration loading, editing, and saving via host fetch calls.",
+      "tags": ["component", "api-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx:KitchenSinkPageWidgets",
+      "type": "function",
+      "name": "KitchenSinkPageWidgets",
+      "filePath": "packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "lineRange": [517, 772],
+      "summary": "Renders the main plugin page with widgets demonstrating data queries, actions, toasts, navigation, streams, and CRUD operations.",
+      "tags": ["component", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx:KitchenSinkDashboardWidget",
+      "type": "function",
+      "name": "KitchenSinkDashboardWidget",
+      "filePath": "packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "lineRange": [2267, 2301],
+      "summary": "Dashboard widget component that links to the plugin page and writes metrics on click, demonstrating dashboard slot integration.",
+      "tags": ["component", "event-handler"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx:KitchenSinkSidebarLink",
+      "type": "function",
+      "name": "KitchenSinkSidebarLink",
+      "filePath": "packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "lineRange": [2303, 2334],
+      "summary": "Sidebar navigation link component that resolves its href via host navigation and highlights when active.",
+      "tags": ["component", "event-handler"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:packages/plugins/plugin-llm-wiki/migrations/003_spaces.sql:plugin_llm_wiki_8f50da974f",
+      "type": "table",
+      "name": "plugin_llm_wiki_8f50da974f",
+      "filePath": "packages/plugins/plugin-llm-wiki/migrations/003_spaces.sql",
+      "lineRange": [1, 21],
+      "summary": "Wiki spaces table storing space configuration including slug, display name, type, folder mode, access scope, owner, team assignment, and lifecycle status for the LLM Wiki plugin.",
+      "tags": ["database", "schema-definition", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/plugin-llm-wiki/migrations/003_spaces.sql",
+      "type": "file",
+      "name": "003_spaces.sql",
+      "filePath": "packages/plugins/plugin-llm-wiki/migrations/003_spaces.sql",
+      "summary": "Database migration introducing the wiki spaces concept to the LLM Wiki plugin, creating the spaces table and adding space foreign key columns to sources, operations, query sessions, and distillation runs.",
+      "tags": ["database", "migration", "schema-definition"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "config:packages/plugins/plugin-llm-wiki/package.json",
+      "type": "config",
+      "name": "package.json",
+      "filePath": "packages/plugins/plugin-llm-wiki/package.json",
+      "summary": "Package manifest for the plugin-llm-wiki Paperclip plugin, declaring build scripts, the paperclipPlugin entry point metadata, peer dependencies on the Paperclip plugin SDK, and dev dependencies for TypeScript compilation.",
+      "tags": ["configuration", "build-system", "infrastructure"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:packages/plugins/plugin-llm-wiki/templates/gitignore.template",
+      "type": "config",
+      "name": "gitignore.template",
+      "filePath": "packages/plugins/plugin-llm-wiki/templates/gitignore.template",
+      "summary": "Gitignore template file embedded by the LLM Wiki plugin to configure version-control exclusions inside wiki workspace folders.",
+      "tags": ["configuration", "infrastructure"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/plugin-llm-wiki/src/templates.ts",
+      "type": "file",
+      "name": "templates.ts",
+      "filePath": "packages/plugins/plugin-llm-wiki/src/templates.ts",
+      "summary": "Provides static template content and bootstrap file definitions for LLM Wiki workspaces, including required directory/file structures, default schemas, agent instruction files, and LLM prompt templates for query and lint operations.",
+      "tags": ["utility", "config", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/plugin-llm-wiki/src/ui/app.tsx",
+      "type": "file",
+      "name": "app.tsx",
+      "filePath": "packages/plugins/plugin-llm-wiki/src/ui/app.tsx",
+      "summary": "The main React application for the LLM Wiki plugin UI, implementing a full wiki browsing, editing, ingestion, query, distillation, and settings management experience with 171 component and hook functions across 7126 lines.",
+      "tags": ["component", "entry-point", "api-handler", "event-handler"],
+      "complexity": "complex",
+      "languageNotes": "Largest file in the batch at 7126 lines; the UI is organized into tab-based sections (Browse, Ingest, Query, Lint, Distillation, Settings) with a rich set of custom hooks that wrap usePluginData."
+    },
+    {
+      "id": "function:packages/plugins/plugin-llm-wiki/src/ui/app.tsx:PageDetail",
+      "type": "function",
+      "name": "PageDetail",
+      "filePath": "packages/plugins/plugin-llm-wiki/src/ui/app.tsx",
+      "lineRange": [3236, 3459],
+      "summary": "Renders a full wiki page detail view with markdown content, frontmatter properties, provenance drawer, freshness chips, and in-place editing.",
+      "tags": ["component", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/plugins/plugin-llm-wiki/src/ui/app.tsx:IngestTab",
+      "type": "function",
+      "name": "IngestTab",
+      "filePath": "packages/plugins/plugin-llm-wiki/src/ui/app.tsx",
+      "lineRange": [3978, 4142],
+      "summary": "Tab component for ingesting new sources into the wiki by URL or pasted content, with space selection and live paste-event capture.",
+      "tags": ["component", "event-handler", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/plugins/plugin-llm-wiki/src/ui/app.tsx:QueryTab",
+      "type": "function",
+      "name": "QueryTab",
+      "filePath": "packages/plugins/plugin-llm-wiki/src/ui/app.tsx",
+      "lineRange": [4349, 4548],
+      "summary": "Tab component that lets users run natural-language queries against the wiki knowledge base, displaying ranked page results with provenance.",
+      "tags": ["component", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/plugins/plugin-llm-wiki/src/ui/app.tsx:SpacePicker",
+      "type": "function",
+      "name": "SpacePicker",
+      "filePath": "packages/plugins/plugin-llm-wiki/src/ui/app.tsx",
+      "lineRange": [4144, 4287],
+      "summary": "Dropdown component for selecting or creating a wiki space, with click-outside close handling and space list rendering.",
+      "tags": ["component", "event-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "type": "file",
+      "name": "core.ts",
+      "filePath": "packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "summary": "The core business logic engine for the LLM Wiki plugin, implementing wiki page CRUD, source ingestion, distillation pipelines, Paperclip content bundling, query/lint operations, and space management across nearly 5000 lines.",
+      "tags": ["service", "api-handler", "data-model", "event-handler"],
+      "complexity": "complex",
+      "languageNotes": "The most complex single file in the batch — contains the full domain model for wiki spaces, pages, sources, operations, and distillation runs. The Paperclip content distillation subsystem (assemblePaperclipSourceBundle, createPaperclipDistillationRun) is particularly intricate."
+    },
+    {
+      "id": "function:packages/plugins/plugin-llm-wiki/src/wiki/core.ts:assemblePaperclipSourceBundle",
+      "type": "function",
+      "name": "assemblePaperclipSourceBundle",
+      "filePath": "packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "lineRange": [2611, 2766],
+      "summary": "Assembles a bounded content bundle from Paperclip issues and comments for distillation, respecting character limits and backfill windows.",
+      "tags": ["service", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/plugins/plugin-llm-wiki/src/wiki/core.ts:createPaperclipDistillationRun",
+      "type": "function",
+      "name": "createPaperclipDistillationRun",
+      "filePath": "packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "lineRange": [2768, 2846],
+      "summary": "Creates and executes a distillation run that calls the LLM to synthesize wiki pages from Paperclip source content.",
+      "tags": ["service", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/plugins/plugin-llm-wiki/src/wiki/core.ts:writeWikiPage",
+      "type": "function",
+      "name": "writeWikiPage",
+      "filePath": "packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "lineRange": [1843, 1862],
+      "summary": "Writes a wiki page to the local workspace folder and upserts its metadata in the plugin database, with hash-based conflict detection.",
+      "tags": ["service", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/plugins/plugin-llm-wiki/src/wiki/core.ts:standupPageContents",
+      "type": "function",
+      "name": "standupPageContents",
+      "filePath": "packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "lineRange": [3016, 3086],
+      "summary": "Generates the markdown content for a project standup wiki page from distilled issue concepts and narratives.",
+      "tags": ["service", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/plugins/plugin-llm-wiki/src/wiki/core.ts:enableActiveProjectDistillation",
+      "type": "function",
+      "name": "enableActiveProjectDistillation",
+      "filePath": "packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "lineRange": [2474, 2536],
+      "summary": "Triggers or schedules distillation runs for all active projects that have crossed their threshold of undistilled changes.",
+      "tags": ["service", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "config:packages/plugins/plugin-workspace-diff/package.json",
+      "type": "config",
+      "name": "package.json",
+      "filePath": "packages/plugins/plugin-workspace-diff/package.json",
+      "summary": "Package manifest for the plugin-workspace-diff Paperclip plugin, specifying its build pipeline, exports map (main entry and UI bundle), peer dependencies, and dev dependencies for esbuild and TypeScript compilation.",
+      "tags": ["configuration", "build-system", "infrastructure"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/plugin-workspace-diff/scripts/build-ui.mjs",
+      "type": "file",
+      "name": "build-ui.mjs",
+      "filePath": "packages/plugins/plugin-workspace-diff/scripts/build-ui.mjs",
+      "summary": "ESM build script that bundles the workspace-diff plugin UI with esbuild, targeting the browser with JSX transform and external React/ReactDOM.",
+      "tags": ["build-system", "script", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/plugin-workspace-diff/src/contracts.ts",
+      "type": "file",
+      "name": "contracts.ts",
+      "filePath": "packages/plugins/plugin-workspace-diff/src/contracts.ts",
+      "summary": "Defines shared TypeScript types and Zod-validated contract schemas for the workspace-diff plugin, including diff request/response shapes, file change types, and status variants used across the worker, manifest, and UI.",
+      "tags": ["type-definition", "validation", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/plugin-workspace-diff/src/diff-model.ts",
+      "type": "file",
+      "name": "diff-model.ts",
+      "filePath": "packages/plugins/plugin-workspace-diff/src/diff-model.ts",
+      "summary": "Implements the diff data model transformation layer, converting raw workspace diff output into structured change summaries grouped by file, directory, and change type.",
+      "tags": ["data-model", "utility", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/plugin-workspace-diff/src/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/plugins/plugin-workspace-diff/src/index.ts",
+      "summary": "Barrel entry point for the workspace-diff plugin package, re-exporting the plugin manifest as its sole public export.",
+      "tags": ["entry-point", "barrel"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/plugin-workspace-diff/src/manifest.ts",
+      "type": "file",
+      "name": "manifest.ts",
+      "filePath": "packages/plugins/plugin-workspace-diff/src/manifest.ts",
+      "summary": "Defines the plugin manifest for the workspace-diff plugin, registering the worker job, UI bundle path, and issue tab slot for showing workspace diffs in the issue detail view.",
+      "tags": ["config", "entry-point", "api-handler"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/plugin-workspace-diff/src/ui/index.tsx",
+      "type": "file",
+      "name": "index.tsx",
+      "filePath": "packages/plugins/plugin-workspace-diff/src/ui/index.tsx",
+      "summary": "React UI for the workspace-diff plugin that renders a diff viewer inside an issue tab, showing file-by-file changes with syntax-highlighted hunks, expand/collapse controls, and file filtering.",
+      "tags": ["component", "api-handler", "entry-point"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:packages/plugins/plugin-workspace-diff/src/worker.ts",
+      "type": "file",
+      "name": "worker.ts",
+      "filePath": "packages/plugins/plugin-workspace-diff/src/worker.ts",
+      "summary": "Plugin worker that handles diff computation jobs by calling out to the workspace git diff tooling and returning structured file change data back to the UI via the plugin action system.",
+      "tags": ["service", "event-handler", "api-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/plugin-workspace-diff/src/workspace-diff.ts",
+      "type": "file",
+      "name": "workspace-diff.ts",
+      "filePath": "packages/plugins/plugin-workspace-diff/src/workspace-diff.ts",
+      "summary": "Core diff computation logic for the workspace-diff plugin, implementing git diff parsing, file hunk extraction, binary file detection, and rename tracking for workspace snapshots.",
+      "tags": ["service", "utility", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:packages/plugins/plugin-workspace-diff/tests/contracts.spec.ts",
+      "type": "file",
+      "name": "contracts.spec.ts",
+      "filePath": "packages/plugins/plugin-workspace-diff/tests/contracts.spec.ts",
+      "summary": "Unit tests validating the workspace-diff plugin's contract Zod schemas, ensuring correct parsing and rejection of valid/invalid diff request and response shapes.",
+      "tags": ["test", "validation"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/plugin-workspace-diff/tests/diff-model.spec.ts",
+      "type": "file",
+      "name": "diff-model.spec.ts",
+      "filePath": "packages/plugins/plugin-workspace-diff/tests/diff-model.spec.ts",
+      "summary": "Unit tests for the diff-model transformation layer, covering various git diff scenarios including additions, deletions, renames, binary files, and empty diffs.",
+      "tags": ["test", "data-model"],
+      "complexity": "moderate"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:packages/db/src/test-embedded-postgres.ts",
+      "target": "function:packages/db/src/test-embedded-postgres.ts:startEmbeddedPostgresTestDatabase",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/db/src/test-embedded-postgres.ts",
+      "target": "function:packages/db/src/test-embedded-postgres.ts:startEmbeddedPostgresTestDatabase",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/db/src/test-embedded-postgres.ts",
+      "target": "function:packages/db/src/test-embedded-postgres.ts:getEmbeddedPostgresTestSupport",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/db/src/test-embedded-postgres.ts",
+      "target": "function:packages/db/src/test-embedded-postgres.ts:getEmbeddedPostgresTestSupport",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "target": "function:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx:KitchenSinkConsole",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "target": "function:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx:KitchenSinkConsole",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "target": "function:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx:KitchenSinkSettingsPage",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "target": "function:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx:KitchenSinkSettingsPage",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "target": "function:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx:KitchenSinkPageWidgets",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "target": "function:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx:KitchenSinkDashboardWidget",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "target": "function:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx:KitchenSinkDashboardWidget",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "target": "function:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx:KitchenSinkSidebarLink",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx",
+      "target": "function:packages/plugins/examples/plugin-kitchen-sink-example/src/ui/index.tsx:KitchenSinkSidebarLink",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/plugin-llm-wiki/migrations/003_spaces.sql",
+      "target": "table:packages/plugins/plugin-llm-wiki/migrations/003_spaces.sql:plugin_llm_wiki_8f50da974f",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/plugin-llm-wiki/src/ui/app.tsx",
+      "target": "function:packages/plugins/plugin-llm-wiki/src/ui/app.tsx:PageDetail",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/plugin-llm-wiki/src/ui/app.tsx",
+      "target": "function:packages/plugins/plugin-llm-wiki/src/ui/app.tsx:IngestTab",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/plugin-llm-wiki/src/ui/app.tsx",
+      "target": "function:packages/plugins/plugin-llm-wiki/src/ui/app.tsx:QueryTab",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/plugin-llm-wiki/src/ui/app.tsx",
+      "target": "function:packages/plugins/plugin-llm-wiki/src/ui/app.tsx:SpacePicker",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "target": "function:packages/plugins/plugin-llm-wiki/src/wiki/core.ts:assemblePaperclipSourceBundle",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "target": "function:packages/plugins/plugin-llm-wiki/src/wiki/core.ts:createPaperclipDistillationRun",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "target": "function:packages/plugins/plugin-llm-wiki/src/wiki/core.ts:writeWikiPage",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "target": "function:packages/plugins/plugin-llm-wiki/src/wiki/core.ts:standupPageContents",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "target": "function:packages/plugins/plugin-llm-wiki/src/wiki/core.ts:enableActiveProjectDistillation",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "target": "table:packages/plugins/plugin-llm-wiki/migrations/003_spaces.sql:plugin_llm_wiki_8f50da974f",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/plugin-llm-wiki/migrations/003_spaces.sql",
+      "target": "file:packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/plugins/plugin-llm-wiki/src/ui/app.tsx",
+      "target": "file:packages/plugins/plugin-llm-wiki/src/templates.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/plugin-workspace-diff/src/index.ts",
+      "target": "file:packages/plugins/plugin-workspace-diff/src/manifest.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/plugin-workspace-diff/src/manifest.ts",
+      "target": "file:packages/plugins/plugin-workspace-diff/src/worker.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/plugin-workspace-diff/src/worker.ts",
+      "target": "file:packages/plugins/plugin-workspace-diff/src/workspace-diff.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/plugin-workspace-diff/src/worker.ts",
+      "target": "file:packages/plugins/plugin-workspace-diff/src/contracts.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/plugin-workspace-diff/src/ui/index.tsx",
+      "target": "file:packages/plugins/plugin-workspace-diff/src/contracts.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/plugin-workspace-diff/src/ui/index.tsx",
+      "target": "file:packages/plugins/plugin-workspace-diff/src/diff-model.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/plugin-workspace-diff/src/workspace-diff.ts",
+      "target": "file:packages/plugins/plugin-workspace-diff/src/contracts.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/plugin-workspace-diff/src/diff-model.ts",
+      "target": "file:packages/plugins/plugin-workspace-diff/src/contracts.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/plugin-workspace-diff/tests/contracts.spec.ts",
+      "target": "file:packages/plugins/plugin-workspace-diff/src/contracts.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/plugins/plugin-workspace-diff/tests/diff-model.spec.ts",
+      "target": "file:packages/plugins/plugin-workspace-diff/src/diff-model.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "config:packages/plugins/plugin-workspace-diff/package.json",
+      "target": "file:packages/plugins/plugin-workspace-diff/src/index.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:packages/plugins/plugin-llm-wiki/package.json",
+      "target": "file:packages/plugins/plugin-llm-wiki/src/wiki/core.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:packages/plugins/plugin-llm-wiki/templates/gitignore.template",
+      "target": "file:packages/plugins/plugin-llm-wiki/src/templates.ts",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/plugins/plugin-workspace-diff/scripts/build-ui.mjs",
+      "target": "file:packages/plugins/plugin-workspace-diff/src/ui/index.tsx",
+      "type": "deploys",
+      "direction": "forward",
+      "weight": 0.7
+    }
+  ]
+}

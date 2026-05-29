@@ -1,0 +1,280 @@
+{
+  "nodes": [
+    {
+      "id": "file:ui/src/api/agents.ts",
+      "type": "file",
+      "name": "agents.ts",
+      "filePath": "ui/src/api/agents.ts",
+      "summary": "Comprehensive REST API client for agent management, covering CRUD operations, lifecycle controls (pause/resume/terminate), instructions bundles, skills, API keys, runtime state, adapter model discovery, and agent wakeup invocation within company scope.",
+      "tags": ["api-handler", "service", "utility"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/api/approvals.ts",
+      "type": "file",
+      "name": "approvals.ts",
+      "filePath": "ui/src/api/approvals.ts",
+      "summary": "Minimal REST API client for the approvals resource, exposing the approvalsApi object for listing and managing agent approval requests.",
+      "tags": ["api-handler", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/api/cloud-upstream.ts",
+      "type": "file",
+      "name": "cloud-upstream.ts",
+      "filePath": "ui/src/api/cloud-upstream.ts",
+      "summary": "API client module for cloud upstream integration (file not present in current checkout; likely moved or renamed to cloudUpstreams.ts).",
+      "tags": ["api-handler", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/api/companies.ts",
+      "type": "file",
+      "name": "companies.ts",
+      "filePath": "ui/src/api/companies.ts",
+      "summary": "REST API client for company resource management, providing CRUD operations and member/settings endpoints grouped under the companiesApi namespace.",
+      "tags": ["api-handler", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/api/goals.ts",
+      "type": "file",
+      "name": "goals.ts",
+      "filePath": "ui/src/api/goals.ts",
+      "summary": "Minimal REST API client for the goals resource, exposing goalsApi for listing and managing company-scoped goals.",
+      "tags": ["api-handler", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/api/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "ui/src/api/index.ts",
+      "summary": "Barrel entry point for the ui/src/api layer, re-exporting all domain API clients (agents, companies, issues, routines, goals, plugins, etc.) so consumers can import from a single location.",
+      "tags": ["entry-point", "barrel"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/api/issues.ts",
+      "type": "file",
+      "name": "issues.ts",
+      "filePath": "ui/src/api/issues.ts",
+      "summary": "Comprehensive REST API client for the issues resource, supporting rich filtering (status, assignee, project, labels, workspace), CRUD, comments, documents, attachments, feedback, approvals, recovery actions, and tree-control operations.",
+      "tags": ["api-handler", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/api/plugins.ts",
+      "type": "file",
+      "name": "plugins.ts",
+      "filePath": "ui/src/api/plugins.ts",
+      "summary": "Frontend API client for the plugin system, mapping 1:1 to server plugin REST endpoints for install, update, delete, UI contributions, health checks, and launcher context snapshots.",
+      "tags": ["api-handler", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/api/projects.ts",
+      "type": "file",
+      "name": "projects.ts",
+      "filePath": "ui/src/api/projects.ts",
+      "summary": "REST API client for project management providing CRUD operations with optional company scope, using path-building helpers for clean URL construction.",
+      "tags": ["api-handler", "service", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/api/resource-memberships.ts",
+      "type": "file",
+      "name": "resource-memberships.ts",
+      "filePath": "ui/src/api/resource-memberships.ts",
+      "summary": "API client module for resource membership management (file not present in current checkout; likely moved or renamed to resourceMemberships.ts).",
+      "tags": ["api-handler", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/api/routines.ts",
+      "type": "file",
+      "name": "routines.ts",
+      "filePath": "ui/src/api/routines.ts",
+      "summary": "REST API client for routine management covering CRUD, revision history, restore, trigger lifecycle (create/update/delete/rotate secret), run invocation, and aggregated activity fetching across routine-related entities.",
+      "tags": ["api-handler", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/api/runs.ts",
+      "type": "file",
+      "name": "runs.ts",
+      "filePath": "ui/src/api/runs.ts",
+      "summary": "Minimal API client module for agent run resources (file not present in current checkout).",
+      "tags": ["api-handler", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/api/secrets.ts",
+      "type": "file",
+      "name": "secrets.ts",
+      "filePath": "ui/src/api/secrets.ts",
+      "summary": "REST API client for secrets management, providing CRUD and rotation operations for company-scoped and agent-scoped secret values.",
+      "tags": ["api-handler", "service", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/api/users.ts",
+      "type": "file",
+      "name": "users.ts",
+      "filePath": "ui/src/api/users.ts",
+      "summary": "API client module for user resource operations (file not present in current checkout).",
+      "tags": ["api-handler", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/api/workspaces.ts",
+      "type": "file",
+      "name": "workspaces.ts",
+      "filePath": "ui/src/api/workspaces.ts",
+      "summary": "API client module for workspace management operations (file not present in current checkout).",
+      "tags": ["api-handler", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/AgentAccessSettings.tsx",
+      "type": "file",
+      "name": "AgentAccessSettings.tsx",
+      "filePath": "ui/src/components/AgentAccessSettings.tsx",
+      "summary": "React component for managing agent access and permission settings, allowing configuration of which users or roles can interact with a given agent (file not present in current checkout).",
+      "tags": ["component", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/AgentDetailModal.tsx",
+      "type": "file",
+      "name": "AgentDetailModal.tsx",
+      "filePath": "ui/src/components/AgentDetailModal.tsx",
+      "summary": "Large React modal component presenting full agent details, configuration, and action controls for viewing and editing a specific agent's properties (file not present in current checkout).",
+      "tags": ["component", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/AgentDetailModalPublish.tsx",
+      "type": "file",
+      "name": "AgentDetailModalPublish.tsx",
+      "filePath": "ui/src/components/AgentDetailModalPublish.tsx",
+      "summary": "React sub-component within the AgentDetailModal handling the publish/promote flow for making an agent configuration active (file not present in current checkout).",
+      "tags": ["component"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/AgentList.tsx",
+      "type": "file",
+      "name": "AgentList.tsx",
+      "filePath": "ui/src/components/AgentList.tsx",
+      "summary": "React component rendering a list of agents within a company, with status indicators and navigation to individual agent details (file not present in current checkout).",
+      "tags": ["component"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/AgentMemberships.tsx",
+      "type": "file",
+      "name": "AgentMemberships.tsx",
+      "filePath": "ui/src/components/AgentMemberships.tsx",
+      "summary": "React component managing an agent's project or resource memberships, enabling addition and removal of the agent from various organizational scopes (file not present in current checkout).",
+      "tags": ["component", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/AgentSelector.tsx",
+      "type": "file",
+      "name": "AgentSelector.tsx",
+      "filePath": "ui/src/components/AgentSelector.tsx",
+      "summary": "React dropdown/search component for selecting an agent from the available list within a company, used in issue assignment and other agent-selection contexts (file not present in current checkout).",
+      "tags": ["component", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/AppLogo.tsx",
+      "type": "file",
+      "name": "AppLogo.tsx",
+      "filePath": "ui/src/components/AppLogo.tsx",
+      "summary": "Simple React component rendering the Paperclip application logo, used in navigation bars and branding surfaces (file not present in current checkout).",
+      "tags": ["component"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/BoardView.tsx",
+      "type": "file",
+      "name": "BoardView.tsx",
+      "filePath": "ui/src/components/BoardView.tsx",
+      "summary": "React kanban-style board view component for issues, organizing cards by status columns with drag-and-drop or click-based status transitions (file not present in current checkout).",
+      "tags": ["component", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/CloudUpstreamModal.tsx",
+      "type": "file",
+      "name": "CloudUpstreamModal.tsx",
+      "filePath": "ui/src/components/CloudUpstreamModal.tsx",
+      "summary": "React modal component for configuring cloud upstream sync connections, allowing users to link a local Paperclip instance with a cloud-hosted upstream (file not present in current checkout).",
+      "tags": ["component", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/CompanySelector.tsx",
+      "type": "file",
+      "name": "CompanySelector.tsx",
+      "filePath": "ui/src/components/CompanySelector.tsx",
+      "summary": "React component providing a company picker UI, allowing users to switch between companies they have access to within the Paperclip platform (file not present in current checkout).",
+      "tags": ["component", "utility"],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:ui/src/api/index.ts",
+      "target": "file:ui/src/api/agents.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:ui/src/api/index.ts",
+      "target": "file:ui/src/api/approvals.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:ui/src/api/index.ts",
+      "target": "file:ui/src/api/companies.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:ui/src/api/index.ts",
+      "target": "file:ui/src/api/goals.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:ui/src/api/index.ts",
+      "target": "file:ui/src/api/issues.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:ui/src/api/index.ts",
+      "target": "file:ui/src/api/projects.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:ui/src/api/index.ts",
+      "target": "file:ui/src/api/routines.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    }
+  ]
+}

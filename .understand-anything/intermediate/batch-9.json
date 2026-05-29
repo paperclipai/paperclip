@@ -1,0 +1,449 @@
+{
+  "nodes": [
+    {
+      "id": "file:ui/src/components/ExecutionPolicyEditor.tsx",
+      "type": "file",
+      "name": "ExecutionPolicyEditor.tsx",
+      "filePath": "ui/src/components/ExecutionPolicyEditor.tsx",
+      "summary": "Reusable editor component for configuring execution policies on agents or projects, providing form controls for budget limits, retry settings, and concurrency rules.",
+      "tags": ["component", "utility", "configuration", "form"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/GoalDetail.tsx",
+      "type": "file",
+      "name": "GoalDetail.tsx",
+      "filePath": "ui/src/components/GoalDetail.tsx",
+      "summary": "Full-page detail view for a single goal, combining title/description inline editing, sub-goal tree, linked projects, and a slide-in properties panel powered by React Query.",
+      "tags": ["component", "data-model", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/components/GoalDetail.tsx:GoalPropertiesToggleButton",
+      "type": "function",
+      "name": "GoalPropertiesToggleButton",
+      "filePath": "ui/src/components/GoalDetail.tsx",
+      "lineRange": [29, 47],
+      "summary": "Small exported button component that toggles the visibility of the Goal properties side panel.",
+      "tags": ["component", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/components/GoalDetail.tsx:GoalDetail",
+      "type": "function",
+      "name": "GoalDetail",
+      "filePath": "ui/src/components/GoalDetail.tsx",
+      "lineRange": [49, 227],
+      "summary": "Main goal detail page component; fetches goal, sub-goals, and linked projects, then renders inline editors, a tabbed view, and a slide-in properties panel.",
+      "tags": ["component", "api-handler", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/GoalList.tsx",
+      "type": "file",
+      "name": "GoalList.tsx",
+      "filePath": "ui/src/components/GoalList.tsx",
+      "summary": "List view component that renders all goals for a company with filtering, sorting, and navigation links to individual goal detail pages.",
+      "tags": ["component", "data-model", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/IssueDetail.tsx",
+      "type": "file",
+      "name": "IssueDetail.tsx",
+      "filePath": "ui/src/components/IssueDetail.tsx",
+      "summary": "Comprehensive issue detail page integrating optimistic comment handling, live run tracking, keyboard shortcuts, inline editing, approvals, and breadcrumb management through multiple React Query hooks.",
+      "tags": ["component", "api-handler", "event-handler", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/IssueDetailComments.tsx",
+      "type": "file",
+      "name": "IssueDetailComments.tsx",
+      "filePath": "ui/src/components/IssueDetailComments.tsx",
+      "summary": "Tabbed comment thread sub-component for the issue detail view, handling optimistic comment creation, editing, deletion, and real-time updates.",
+      "tags": ["component", "event-handler", "utility"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/IssueDetailDocuments.tsx",
+      "type": "file",
+      "name": "IssueDetailDocuments.tsx",
+      "filePath": "ui/src/components/IssueDetailDocuments.tsx",
+      "summary": "Document attachments tab for the issue detail page, allowing users to view, upload, and remove files associated with an issue.",
+      "tags": ["component", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/IssueDetailRuns.tsx",
+      "type": "file",
+      "name": "IssueDetailRuns.tsx",
+      "filePath": "ui/src/components/IssueDetailRuns.tsx",
+      "summary": "Run history tab for the issue detail page, listing past agent execution runs associated with the issue with status and timing information.",
+      "tags": ["component", "utility", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/IssueList.tsx",
+      "type": "file",
+      "name": "IssueList.tsx",
+      "filePath": "ui/src/components/IssueList.tsx",
+      "summary": "Full-featured issue list component with filtering by status, assignee, project, and priority, rendering rows via IssueListRow with pagination support.",
+      "tags": ["component", "data-model", "utility"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/IssueListRow.tsx",
+      "type": "file",
+      "name": "IssueListRow.tsx",
+      "filePath": "ui/src/components/IssueListRow.tsx",
+      "summary": "Single row component for the issue list, displaying issue title, status badge, assignee avatar, priority indicator, and quick-action controls.",
+      "tags": ["component", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/IssueMentions.tsx",
+      "type": "file",
+      "name": "IssueMentions.tsx",
+      "filePath": "ui/src/components/IssueMentions.tsx",
+      "summary": "Component for displaying issues that mention the current issue, rendering backlinks and contextual previews for cross-issue references.",
+      "tags": ["component", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/IssueStatusSelect.tsx",
+      "type": "file",
+      "name": "IssueStatusSelect.tsx",
+      "filePath": "ui/src/components/IssueStatusSelect.tsx",
+      "summary": "Dropdown select component for changing an issue's status, presenting all valid status transitions with icons and labels.",
+      "tags": ["component", "utility", "validation"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/IssueSubtaskList.tsx",
+      "type": "file",
+      "name": "IssueSubtaskList.tsx",
+      "filePath": "ui/src/components/IssueSubtaskList.tsx",
+      "summary": "Renders the subtask checklist within an issue detail, supporting inline creation, completion toggling, and reordering of child issues.",
+      "tags": ["component", "utility", "data-model"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/IssueWorkspaceDetail.tsx",
+      "type": "file",
+      "name": "IssueWorkspaceDetail.tsx",
+      "filePath": "ui/src/components/IssueWorkspaceDetail.tsx",
+      "summary": "Detail panel for the workspace associated with an issue run, displaying file trees, environment variables, and execution context for a specific agent run.",
+      "tags": ["component", "service", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/MembersTab.tsx",
+      "type": "file",
+      "name": "MembersTab.tsx",
+      "filePath": "ui/src/components/MembersTab.tsx",
+      "summary": "Members management tab component used in project and company settings, listing current members, their roles, and providing invite and removal actions.",
+      "tags": ["component", "api-handler", "validation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/NavSidebar.tsx",
+      "type": "file",
+      "name": "NavSidebar.tsx",
+      "filePath": "ui/src/components/NavSidebar.tsx",
+      "summary": "Primary application navigation sidebar rendering company-scoped links to Issues, Goals, Projects, Agents, Routines, and Settings with active route highlighting.",
+      "tags": ["component", "entry-point", "navigation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/NewIssueModal.tsx",
+      "type": "file",
+      "name": "NewIssueModal.tsx",
+      "filePath": "ui/src/components/NewIssueModal.tsx",
+      "summary": "Modal dialog for creating new issues, with fields for title, description, project, assignee, priority, and optional agent trigger configuration.",
+      "tags": ["component", "api-handler", "validation", "form"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/PersonalTokensTab.tsx",
+      "type": "file",
+      "name": "PersonalTokensTab.tsx",
+      "filePath": "ui/src/components/PersonalTokensTab.tsx",
+      "summary": "User settings tab for managing personal API tokens, supporting token generation, display, copying, and revocation.",
+      "tags": ["component", "security", "api-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/PluginDetailModal.tsx",
+      "type": "file",
+      "name": "PluginDetailModal.tsx",
+      "filePath": "ui/src/components/PluginDetailModal.tsx",
+      "summary": "Modal displaying detailed information about a plugin including description, version, configuration schema, and install/uninstall actions.",
+      "tags": ["component", "api-handler", "configuration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/PluginList.tsx",
+      "type": "file",
+      "name": "PluginList.tsx",
+      "filePath": "ui/src/components/PluginList.tsx",
+      "summary": "List component rendering available and installed plugins with search/filter capability and action buttons to open the plugin detail modal.",
+      "tags": ["component", "utility", "configuration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/PluginsTab.tsx",
+      "type": "file",
+      "name": "PluginsTab.tsx",
+      "filePath": "ui/src/components/PluginsTab.tsx",
+      "summary": "Company or project settings tab for plugin management, combining the PluginList and PluginDetailModal into a coordinated UI for browsing and configuring plugins.",
+      "tags": ["component", "configuration", "api-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/ProjectDetail.tsx",
+      "type": "file",
+      "name": "ProjectDetail.tsx",
+      "filePath": "ui/src/components/ProjectDetail.tsx",
+      "summary": "Full project detail page with tabbed navigation covering overview, issue list, workspaces, configuration, and budget, wiring together React Query data with plugin slot support.",
+      "tags": ["component", "api-handler", "data-model", "entry-point"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/ProjectList.tsx",
+      "type": "file",
+      "name": "ProjectList.tsx",
+      "filePath": "ui/src/components/ProjectList.tsx",
+      "summary": "Grid or list view of all company projects with status badges, description previews, and links to individual project detail pages.",
+      "tags": ["component", "data-model", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/ResourceMemberships.tsx",
+      "type": "file",
+      "name": "ResourceMemberships.tsx",
+      "filePath": "ui/src/components/ResourceMemberships.tsx",
+      "summary": "Generic membership management component for resources (projects, agents) that handles adding, removing, and listing members with role selection.",
+      "tags": ["component", "api-handler", "validation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/RoutineDetail.tsx",
+      "type": "file",
+      "name": "RoutineDetail.tsx",
+      "filePath": "ui/src/components/RoutineDetail.tsx",
+      "summary": "Detailed configuration page for a routine, covering schedule editing, environment variables, agent assignment, trigger webhook setup, and run history tabs.",
+      "tags": ["component", "api-handler", "configuration", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/RoutineList.tsx",
+      "type": "file",
+      "name": "RoutineList.tsx",
+      "filePath": "ui/src/components/RoutineList.tsx",
+      "summary": "Routine list row component and helper utilities for displaying individual scheduled routines with status toggles, run-now buttons, and archive actions.",
+      "tags": ["component", "utility", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/components/RoutineList.tsx:RoutineListRow",
+      "type": "function",
+      "name": "RoutineListRow",
+      "filePath": "ui/src/components/RoutineList.tsx",
+      "lineRange": [52, 196],
+      "summary": "Exported row component rendering a single routine with project/agent context, last-run timestamp, status toggle, run-now button, and archive action menu.",
+      "tags": ["component", "utility", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/components/RoutineList.tsx:formatLastRunTimestamp",
+      "type": "function",
+      "name": "formatLastRunTimestamp",
+      "filePath": "ui/src/components/RoutineList.tsx",
+      "lineRange": [37, 40],
+      "summary": "Utility that formats a routine last-run timestamp value to a locale string.",
+      "tags": ["utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/components/RoutineList.tsx:formatRoutineRunStatus",
+      "type": "function",
+      "name": "formatRoutineRunStatus",
+      "filePath": "ui/src/components/RoutineList.tsx",
+      "lineRange": [42, 45],
+      "summary": "Utility that formats a routine run status string for display by normalizing underscores.",
+      "tags": ["utility"],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:ui/src/components/GoalDetail.tsx",
+      "target": "function:ui/src/components/GoalDetail.tsx:GoalPropertiesToggleButton",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/GoalDetail.tsx",
+      "target": "function:ui/src/components/GoalDetail.tsx:GoalDetail",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/GoalDetail.tsx",
+      "target": "function:ui/src/components/GoalDetail.tsx:GoalPropertiesToggleButton",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/GoalDetail.tsx",
+      "target": "function:ui/src/components/GoalDetail.tsx:GoalDetail",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/RoutineList.tsx",
+      "target": "function:ui/src/components/RoutineList.tsx:RoutineListRow",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/RoutineList.tsx",
+      "target": "function:ui/src/components/RoutineList.tsx:formatLastRunTimestamp",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/RoutineList.tsx",
+      "target": "function:ui/src/components/RoutineList.tsx:formatRoutineRunStatus",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/RoutineList.tsx",
+      "target": "function:ui/src/components/RoutineList.tsx:RoutineListRow",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/RoutineList.tsx",
+      "target": "function:ui/src/components/RoutineList.tsx:formatLastRunTimestamp",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/RoutineList.tsx",
+      "target": "function:ui/src/components/RoutineList.tsx:formatRoutineRunStatus",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/IssueDetail.tsx",
+      "target": "file:ui/src/components/IssueDetailComments.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/IssueDetail.tsx",
+      "target": "file:ui/src/components/IssueDetailDocuments.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/IssueDetail.tsx",
+      "target": "file:ui/src/components/IssueDetailRuns.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/IssueDetail.tsx",
+      "target": "file:ui/src/components/IssueStatusSelect.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/IssueDetail.tsx",
+      "target": "file:ui/src/components/IssueMentions.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/IssueDetail.tsx",
+      "target": "file:ui/src/components/IssueSubtaskList.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/IssueDetail.tsx",
+      "target": "file:ui/src/components/IssueWorkspaceDetail.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/IssueList.tsx",
+      "target": "file:ui/src/components/IssueListRow.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/ProjectDetail.tsx",
+      "target": "file:ui/src/components/MembersTab.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/ProjectDetail.tsx",
+      "target": "file:ui/src/components/PluginsTab.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/ProjectDetail.tsx",
+      "target": "file:ui/src/components/ResourceMemberships.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/PluginsTab.tsx",
+      "target": "file:ui/src/components/PluginList.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/PluginsTab.tsx",
+      "target": "file:ui/src/components/PluginDetailModal.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/RoutineDetail.tsx",
+      "target": "file:ui/src/components/RoutineList.tsx",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    }
+  ]
+}

@@ -1,0 +1,872 @@
+{
+  "nodes": [
+    {
+      "id": "config:ui/src/i18n/locales/ta.json",
+      "type": "config",
+      "name": "ta.json",
+      "filePath": "ui/src/i18n/locales/ta.json",
+      "summary": "Tamil (ta) i18n locale file providing translated UI strings under the 'app' namespace for the Paperclip frontend.",
+      "tags": ["configuration", "internationalization", "localization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/te.json",
+      "type": "config",
+      "name": "te.json",
+      "filePath": "ui/src/i18n/locales/te.json",
+      "summary": "Telugu (te) i18n locale file providing translated UI strings under the 'app' namespace for the Paperclip frontend.",
+      "tags": ["configuration", "internationalization", "localization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/th.json",
+      "type": "config",
+      "name": "th.json",
+      "filePath": "ui/src/i18n/locales/th.json",
+      "summary": "Thai (th) i18n locale file providing translated UI strings under the 'app' namespace for the Paperclip frontend.",
+      "tags": ["configuration", "internationalization", "localization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/tr.json",
+      "type": "config",
+      "name": "tr.json",
+      "filePath": "ui/src/i18n/locales/tr.json",
+      "summary": "Turkish (tr) i18n locale file providing translated UI strings under the 'app' namespace for the Paperclip frontend.",
+      "tags": ["configuration", "internationalization", "localization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/uk.json",
+      "type": "config",
+      "name": "uk.json",
+      "filePath": "ui/src/i18n/locales/uk.json",
+      "summary": "Ukrainian (uk) i18n locale file providing translated UI strings under the 'app' namespace for the Paperclip frontend.",
+      "tags": ["configuration", "internationalization", "localization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/ur.json",
+      "type": "config",
+      "name": "ur.json",
+      "filePath": "ui/src/i18n/locales/ur.json",
+      "summary": "Urdu (ur) i18n locale file providing translated UI strings under the 'app' namespace for the Paperclip frontend.",
+      "tags": ["configuration", "internationalization", "localization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/vi.json",
+      "type": "config",
+      "name": "vi.json",
+      "filePath": "ui/src/i18n/locales/vi.json",
+      "summary": "Vietnamese (vi) i18n locale file providing translated UI strings under the 'app' namespace for the Paperclip frontend.",
+      "tags": ["configuration", "internationalization", "localization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/zh-CN.json",
+      "type": "config",
+      "name": "zh-CN.json",
+      "filePath": "ui/src/i18n/locales/zh-CN.json",
+      "summary": "Simplified Chinese (zh-CN) i18n locale file providing translated UI strings under the 'app' namespace for the Paperclip frontend.",
+      "tags": ["configuration", "internationalization", "localization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/zh-TW.json",
+      "type": "config",
+      "name": "zh-TW.json",
+      "filePath": "ui/src/i18n/locales/zh-TW.json",
+      "summary": "Traditional Chinese (zh-TW) i18n locale file providing translated UI strings under the 'app' namespace for the Paperclip frontend.",
+      "tags": ["configuration", "internationalization", "localization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/index.css",
+      "type": "file",
+      "name": "index.css",
+      "filePath": "ui/src/index.css",
+      "summary": "Global CSS entry point defining Tailwind directives, CSS custom properties for the design system (colors, spacing, shadows), and base layer overrides applied across the entire Paperclip UI.",
+      "tags": ["entry-point", "design-system", "styling", "configuration"],
+      "complexity": "moderate",
+      "languageNotes": "Uses CSS custom properties (variables) extensively to power a theme/token system, likely consumed by Tailwind's theming layer."
+    },
+    {
+      "id": "file:ui/src/lib/activity-format.ts",
+      "type": "file",
+      "name": "activity-format.ts",
+      "filePath": "ui/src/lib/activity-format.ts",
+      "summary": "Provides formatting utilities for issue activity feed entries, converting structured activity data (participant changes, assignee updates, blocked-by relationships) into human-readable verb and action strings.",
+      "tags": ["utility", "formatting", "activity-feed", "serialization"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/lib/activity-format.ts:formatActivityVerb",
+      "type": "function",
+      "name": "formatActivityVerb",
+      "filePath": "ui/src/lib/activity-format.ts",
+      "lineRange": [296, 315],
+      "summary": "Exported function that converts a raw activity action string and its details into a human-readable verb phrase for display in the activity feed.",
+      "tags": ["utility", "formatting", "activity-feed"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/lib/activity-format.ts:formatIssueActivityAction",
+      "type": "function",
+      "name": "formatIssueActivityAction",
+      "filePath": "ui/src/lib/activity-format.ts",
+      "lineRange": [317, 359],
+      "summary": "Exported function that builds a complete formatted action description for an issue activity event, handling all activity types including updates, participant changes, and service events.",
+      "tags": ["utility", "formatting", "activity-feed"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/lib/activity-format.ts:formatIssueUpdatedAction",
+      "type": "function",
+      "name": "formatIssueUpdatedAction",
+      "filePath": "ui/src/lib/activity-format.ts",
+      "lineRange": [223, 252],
+      "summary": "Formats the action text for issue field update events, composing descriptions of status, priority, assignee, and other field changes.",
+      "tags": ["utility", "formatting"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/lib/activity-format.ts:formatStructuredIssueChange",
+      "type": "function",
+      "name": "formatStructuredIssueChange",
+      "filePath": "ui/src/lib/activity-format.ts",
+      "lineRange": [254, 294],
+      "summary": "Formats structured issue change details (blocked-by and participant additions/removals) into labelled description strings.",
+      "tags": ["utility", "formatting"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/lib/agent-onboarding-prompt.ts",
+      "type": "file",
+      "name": "agent-onboarding-prompt.ts",
+      "filePath": "ui/src/lib/agent-onboarding-prompt.ts",
+      "summary": "Builds the onboarding prompt text and candidate URL list sent to a new agent during setup, resolving connection candidates, onboarding text URLs, and resolution test URLs.",
+      "tags": ["utility", "agent-onboarding", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/lib/agent-onboarding-prompt.ts:buildAgentOnboardingPrompt",
+      "type": "function",
+      "name": "buildAgentOnboardingPrompt",
+      "filePath": "ui/src/lib/agent-onboarding-prompt.ts",
+      "lineRange": [7, 60],
+      "summary": "Exported function that assembles the complete onboarding prompt string for an agent, incorporating candidate URLs and resolution test URL into a structured text block.",
+      "tags": ["utility", "agent-onboarding"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/lib/document-revisions.test.ts",
+      "type": "file",
+      "name": "document-revisions.test.ts",
+      "filePath": "ui/src/lib/document-revisions.test.ts",
+      "summary": "Unit tests for document revision logic, using factory helpers to create mock document and revision objects and asserting revision diffing and ordering behavior.",
+      "tags": ["test", "document-revisions", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/lib/duplicate-agent-payload.test.ts",
+      "type": "file",
+      "name": "duplicate-agent-payload.test.ts",
+      "filePath": "ui/src/lib/duplicate-agent-payload.test.ts",
+      "summary": "Unit tests for the duplicate agent payload builder, verifying that name suffixing and deep cloning of agent configuration fields behave correctly.",
+      "tags": ["test", "agent-management", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/lib/duplicate-agent-payload.ts",
+      "type": "file",
+      "name": "duplicate-agent-payload.ts",
+      "filePath": "ui/src/lib/duplicate-agent-payload.ts",
+      "summary": "Constructs the API payload for duplicating an existing agent, deep-cloning agent settings, renaming it with a 'copy' suffix, and resetting non-transferable fields.",
+      "tags": ["utility", "agent-management", "factory"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/lib/duplicate-agent-payload.ts:buildDuplicateAgentPayload",
+      "type": "function",
+      "name": "buildDuplicateAgentPayload",
+      "filePath": "ui/src/lib/duplicate-agent-payload.ts",
+      "lineRange": [45, 78],
+      "summary": "Exported function that builds the full create-agent payload for duplicating an agent, including cloned environment, model config, and instructions.",
+      "tags": ["utility", "agent-management", "factory"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/lib/duplicate-agent-payload.ts:duplicateAgentName",
+      "type": "function",
+      "name": "duplicateAgentName",
+      "filePath": "ui/src/lib/duplicate-agent-payload.ts",
+      "lineRange": [40, 43],
+      "summary": "Exported function that appends a 'copy' suffix to an agent's name when duplicating it.",
+      "tags": ["utility", "agent-management"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/lib/mention-chips.ts",
+      "type": "file",
+      "name": "mention-chips.ts",
+      "filePath": "ui/src/lib/mention-chips.ts",
+      "summary": "Provides DOM manipulation utilities for rendering inline @mention chips in rich-text editors, parsing mention href attributes, applying/clearing CSS decorations, and building agent icon SVG masks.",
+      "tags": ["utility", "component", "mention-chips", "event-handler"],
+      "complexity": "complex",
+      "languageNotes": "Directly mutates DOM element styles and attributes to render mention chips without a React component lifecycle, using inline SVG data URIs for icon masks."
+    },
+    {
+      "id": "function:ui/src/lib/mention-chips.ts:parseMentionChipHref",
+      "type": "function",
+      "name": "parseMentionChipHref",
+      "filePath": "ui/src/lib/mention-chips.ts",
+      "lineRange": [44, 101],
+      "summary": "Exported function that parses an href string into a typed mention descriptor (issue, agent, project, user, skill, or routine) for decoration.",
+      "tags": ["utility", "mention-chips", "parsing"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/lib/mention-chips.ts:applyMentionChipDecoration",
+      "type": "function",
+      "name": "applyMentionChipDecoration",
+      "filePath": "ui/src/lib/mention-chips.ts",
+      "lineRange": [122, 142],
+      "summary": "Exported function that applies visual CSS decoration (classes, data attributes, inline custom properties) to a DOM element to render it as a styled mention chip.",
+      "tags": ["utility", "mention-chips", "styling"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/lib/mention-chips.ts:clearMentionChipDecoration",
+      "type": "function",
+      "name": "clearMentionChipDecoration",
+      "filePath": "ui/src/lib/mention-chips.ts",
+      "lineRange": [144, 162],
+      "summary": "Exported function that removes all previously applied mention chip CSS decoration from a DOM element, restoring it to its plain state.",
+      "tags": ["utility", "mention-chips", "styling"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/lib/mention-chips.ts:mentionChipInlineStyle",
+      "type": "function",
+      "name": "mentionChipInlineStyle",
+      "filePath": "ui/src/lib/mention-chips.ts",
+      "lineRange": [103, 120],
+      "summary": "Exported function that computes the CSS custom property map for a mention chip's inline style based on mention type and color.",
+      "tags": ["utility", "mention-chips", "styling"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/lib/pwa-install-mode.test.ts",
+      "type": "file",
+      "name": "pwa-install-mode.test.ts",
+      "filePath": "ui/src/lib/pwa-install-mode.test.ts",
+      "summary": "Unit tests for PWA install mode detection logic, verifying that display-mode media queries correctly identify standalone and browser installation states.",
+      "tags": ["test", "pwa", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/lib/queryKeys.ts",
+      "type": "file",
+      "name": "queryKeys.ts",
+      "filePath": "ui/src/lib/queryKeys.ts",
+      "summary": "Defines and exports the centralized `queryKeys` object containing all React Query cache key factories for every API resource in the Paperclip UI.",
+      "tags": ["utility", "query-keys", "service", "configuration"],
+      "complexity": "moderate",
+      "languageNotes": "Pattern of a single exported object with nested key factory functions ensures consistent React Query cache invalidation across the codebase."
+    },
+    {
+      "id": "file:ui/src/lib/source-resolved-watchdog-fold.ts",
+      "type": "file",
+      "name": "source-resolved-watchdog-fold.ts",
+      "filePath": "ui/src/lib/source-resolved-watchdog-fold.ts",
+      "summary": "Parses and formats the JSON fold data produced by the source-resolved watchdog process, extracting cleanup outcome, silence duration, evidence IDs, and related state for display in the agent detail view.",
+      "tags": ["utility", "parsing", "agent-management", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/lib/source-resolved-watchdog-fold.ts:parseSourceResolvedWatchdogFold",
+      "type": "function",
+      "name": "parseSourceResolvedWatchdogFold",
+      "filePath": "ui/src/lib/source-resolved-watchdog-fold.ts",
+      "lineRange": [74, 97],
+      "summary": "Exported function that parses a raw JSON value into a typed SourceResolvedWatchdogFold object, extracting all watchdog state fields with safe type coercions.",
+      "tags": ["utility", "parsing", "agent-management"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/lib/source-resolved-watchdog-fold.ts:readSourceResolvedWatchdogFold",
+      "type": "function",
+      "name": "readSourceResolvedWatchdogFold",
+      "filePath": "ui/src/lib/source-resolved-watchdog-fold.ts",
+      "lineRange": [99, 105],
+      "summary": "Exported function that reads and parses watchdog fold data from a raw result JSON string, returning null if the input is not a valid record.",
+      "tags": ["utility", "parsing"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/lib/source-resolved-watchdog-fold.ts:formatCleanupOutcome",
+      "type": "function",
+      "name": "formatCleanupOutcome",
+      "filePath": "ui/src/lib/source-resolved-watchdog-fold.ts",
+      "lineRange": [116, 118],
+      "summary": "Exported function that converts a cleanup outcome enum string into a human-readable label by replacing underscores with spaces.",
+      "tags": ["utility", "formatting"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/lib/source-resolved-watchdog-fold.ts:formatSilenceAgeMs",
+      "type": "function",
+      "name": "formatSilenceAgeMs",
+      "filePath": "ui/src/lib/source-resolved-watchdog-fold.ts",
+      "lineRange": [120, 129],
+      "summary": "Exported function that formats a silence duration in milliseconds into a human-readable hours/minutes/seconds string.",
+      "tags": ["utility", "formatting"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/lib/source-resolved-watchdog-fold.ts:shortenEvidenceId",
+      "type": "function",
+      "name": "shortenEvidenceId",
+      "filePath": "ui/src/lib/source-resolved-watchdog-fold.ts",
+      "lineRange": [131, 134],
+      "summary": "Exported function that truncates a watchdog evidence ID to its first 8 characters for compact display.",
+      "tags": ["utility", "formatting"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/lib/websocket-url.test.ts",
+      "type": "file",
+      "name": "websocket-url.test.ts",
+      "filePath": "ui/src/lib/websocket-url.test.ts",
+      "summary": "Unit tests for the WebSocket URL builder utilities, covering wildcard host detection, browser-reachable host resolution, and same-origin WebSocket URL construction.",
+      "tags": ["test", "websocket", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/lib/websocket-url.ts",
+      "type": "file",
+      "name": "websocket-url.ts",
+      "filePath": "ui/src/lib/websocket-url.ts",
+      "summary": "Provides utilities for constructing same-origin WebSocket URLs from the browser's current location, handling wildcard hostname edge cases used in development environments.",
+      "tags": ["utility", "websocket", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/lib/websocket-url.ts:buildSameOriginWebSocketUrl",
+      "type": "function",
+      "name": "buildSameOriginWebSocketUrl",
+      "filePath": "ui/src/lib/websocket-url.ts",
+      "lineRange": [13, 20],
+      "summary": "Exported function that builds a WebSocket URL using the current browser location's protocol, host, and a given path suffix.",
+      "tags": ["utility", "websocket"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/lib/websocket-url.ts:browserReachableHost",
+      "type": "function",
+      "name": "browserReachableHost",
+      "filePath": "ui/src/lib/websocket-url.ts",
+      "lineRange": [8, 11],
+      "summary": "Exported function that resolves the browser-reachable hostname, falling back to 'localhost' when the server advertises a wildcard host.",
+      "tags": ["utility", "websocket"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/pages/AgentDetail.tsx",
+      "type": "file",
+      "name": "AgentDetail.tsx",
+      "filePath": "ui/src/pages/AgentDetail.tsx",
+      "summary": "The primary agent detail page component, rendering tabbed views for agent overview, configuration, prompts, skills, run logs, and API key management, with supporting sub-components for run cards, log viewers, and workspace operations.",
+      "tags": ["component", "api-handler", "agent-management", "entry-point"],
+      "complexity": "complex",
+      "languageNotes": "Extremely large file (4400+ lines) containing many co-located sub-components and helper functions; prime candidate for module decomposition."
+    },
+    {
+      "id": "function:ui/src/pages/AgentDetail.tsx:AgentDetail",
+      "type": "function",
+      "name": "AgentDetail",
+      "filePath": "ui/src/pages/AgentDetail.tsx",
+      "lineRange": [669, 1327],
+      "summary": "Exported main page component that orchestrates fetching, state management, and rendering for the full agent detail view including header actions, tab routing, and dirty-state guards.",
+      "tags": ["component", "agent-management", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/AgentDetail.tsx:AgentSkillsTab",
+      "type": "function",
+      "name": "AgentSkillsTab",
+      "filePath": "ui/src/pages/AgentDetail.tsx",
+      "lineRange": [2639, 3053],
+      "summary": "Exported component tab that manages an agent's skill assignments, allowing users to search, add, configure, and remove skills with their parameters.",
+      "tags": ["component", "agent-management"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/AgentDetail.tsx:RunInvocationCard",
+      "type": "function",
+      "name": "RunInvocationCard",
+      "filePath": "ui/src/pages/AgentDetail.tsx",
+      "lineRange": [346, 437],
+      "summary": "Exported component that renders the details of a single run invocation including command, arguments, environment variables, and working directory with sensitive value redaction.",
+      "tags": ["component", "agent-management", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/pages/AgentDetail.tsx:PromptsTab",
+      "type": "function",
+      "name": "PromptsTab",
+      "filePath": "ui/src/pages/AgentDetail.tsx",
+      "lineRange": [1846, 2583],
+      "summary": "Large tab component managing the agent's prompt and instruction file editing workflow, including onboarding URL configuration and prompt template selection.",
+      "tags": ["component", "agent-management"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/AgentDetail.tsx:RunDetail",
+      "type": "function",
+      "name": "RunDetail",
+      "filePath": "ui/src/pages/AgentDetail.tsx",
+      "lineRange": [3192, 3653],
+      "summary": "Component that displays detailed information for a single agent run, including live and historical log streaming, invocation payload, and run metrics.",
+      "tags": ["component", "agent-management"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/AgentDetail.tsx:LogViewer",
+      "type": "function",
+      "name": "LogViewer",
+      "filePath": "ui/src/pages/AgentDetail.tsx",
+      "lineRange": [3657, 4239],
+      "summary": "Component that streams and renders live or stored agent run log entries with auto-scroll behavior and path/secret redaction.",
+      "tags": ["component", "agent-management"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/AgentDetail.tsx:KeysTab",
+      "type": "function",
+      "name": "KeysTab",
+      "filePath": "ui/src/pages/AgentDetail.tsx",
+      "lineRange": [4243, 4411],
+      "summary": "Component tab for managing agent API keys, supporting creation, display with copy-to-clipboard, and revocation of access tokens.",
+      "tags": ["component", "security", "agent-management"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/pages/AgentDetail.tsx:ConfigurationTab",
+      "type": "function",
+      "name": "ConfigurationTab",
+      "filePath": "ui/src/pages/AgentDetail.tsx",
+      "lineRange": [1697, 1842],
+      "summary": "Tab component for editing agent configuration fields such as adapter type, model, environment variables, and workspace settings.",
+      "tags": ["component", "agent-management", "configuration"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/Agents.test.tsx",
+      "type": "file",
+      "name": "Agents.test.tsx",
+      "filePath": "ui/src/pages/Agents.test.tsx",
+      "summary": "Unit tests for the Agents list page component, verifying agent filtering by status, org-tree rendering, and live run indicator behavior using mock agent data.",
+      "tags": ["test", "component", "agent-management"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/pages/Agents.tsx",
+      "type": "file",
+      "name": "Agents.tsx",
+      "filePath": "ui/src/pages/Agents.tsx",
+      "summary": "Agents list page rendering all agents in flat list or org-tree views with status filtering, live run indicators, and resource membership controls.",
+      "tags": ["component", "agent-management", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/Agents.tsx:Agents",
+      "type": "function",
+      "name": "Agents",
+      "filePath": "ui/src/pages/Agents.tsx",
+      "lineRange": [69, 364],
+      "summary": "Exported main page component that fetches agents, org tree, and live run data, then renders them in a filterable list or org-tree view with membership management controls.",
+      "tags": ["component", "agent-management", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/Agents.tsx:OrgTreeNode",
+      "type": "function",
+      "name": "OrgTreeNode",
+      "filePath": "ui/src/pages/Agents.tsx",
+      "lineRange": [366, 489],
+      "summary": "Recursive component that renders a single node in the agent organizational hierarchy tree, with live run indicators, membership toggles, and nested child reports.",
+      "tags": ["component", "agent-management"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/CloudUpstream.test.tsx",
+      "type": "file",
+      "name": "CloudUpstream.test.tsx",
+      "filePath": "ui/src/pages/CloudUpstream.test.tsx",
+      "summary": "Unit tests for the CloudUpstream page component, verifying run state transitions, log rendering, and upstream cloud connection status display.",
+      "tags": ["test", "component", "cloud-integration"],
+      "complexity": "moderate"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:ui/src/lib/activity-format.ts",
+      "target": "function:ui/src/lib/activity-format.ts:formatActivityVerb",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/activity-format.ts",
+      "target": "function:ui/src/lib/activity-format.ts:formatIssueActivityAction",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/activity-format.ts",
+      "target": "function:ui/src/lib/activity-format.ts:formatIssueUpdatedAction",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/activity-format.ts",
+      "target": "function:ui/src/lib/activity-format.ts:formatStructuredIssueChange",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/activity-format.ts",
+      "target": "function:ui/src/lib/activity-format.ts:formatActivityVerb",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/lib/activity-format.ts",
+      "target": "function:ui/src/lib/activity-format.ts:formatIssueActivityAction",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/lib/agent-onboarding-prompt.ts",
+      "target": "function:ui/src/lib/agent-onboarding-prompt.ts:buildAgentOnboardingPrompt",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/agent-onboarding-prompt.ts",
+      "target": "function:ui/src/lib/agent-onboarding-prompt.ts:buildAgentOnboardingPrompt",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/lib/duplicate-agent-payload.ts",
+      "target": "function:ui/src/lib/duplicate-agent-payload.ts:buildDuplicateAgentPayload",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/duplicate-agent-payload.ts",
+      "target": "function:ui/src/lib/duplicate-agent-payload.ts:duplicateAgentName",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/duplicate-agent-payload.ts",
+      "target": "function:ui/src/lib/duplicate-agent-payload.ts:buildDuplicateAgentPayload",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/lib/duplicate-agent-payload.ts",
+      "target": "function:ui/src/lib/duplicate-agent-payload.ts:duplicateAgentName",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/lib/duplicate-agent-payload.test.ts",
+      "target": "file:ui/src/lib/duplicate-agent-payload.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/lib/mention-chips.ts",
+      "target": "function:ui/src/lib/mention-chips.ts:parseMentionChipHref",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/mention-chips.ts",
+      "target": "function:ui/src/lib/mention-chips.ts:applyMentionChipDecoration",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/mention-chips.ts",
+      "target": "function:ui/src/lib/mention-chips.ts:clearMentionChipDecoration",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/mention-chips.ts",
+      "target": "function:ui/src/lib/mention-chips.ts:mentionChipInlineStyle",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/mention-chips.ts",
+      "target": "function:ui/src/lib/mention-chips.ts:parseMentionChipHref",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/lib/mention-chips.ts",
+      "target": "function:ui/src/lib/mention-chips.ts:applyMentionChipDecoration",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/lib/mention-chips.ts",
+      "target": "function:ui/src/lib/mention-chips.ts:clearMentionChipDecoration",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/lib/mention-chips.ts",
+      "target": "function:ui/src/lib/mention-chips.ts:mentionChipInlineStyle",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/lib/source-resolved-watchdog-fold.ts",
+      "target": "function:ui/src/lib/source-resolved-watchdog-fold.ts:parseSourceResolvedWatchdogFold",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/source-resolved-watchdog-fold.ts",
+      "target": "function:ui/src/lib/source-resolved-watchdog-fold.ts:readSourceResolvedWatchdogFold",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/source-resolved-watchdog-fold.ts",
+      "target": "function:ui/src/lib/source-resolved-watchdog-fold.ts:formatCleanupOutcome",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/source-resolved-watchdog-fold.ts",
+      "target": "function:ui/src/lib/source-resolved-watchdog-fold.ts:formatSilenceAgeMs",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/source-resolved-watchdog-fold.ts",
+      "target": "function:ui/src/lib/source-resolved-watchdog-fold.ts:shortenEvidenceId",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/source-resolved-watchdog-fold.ts",
+      "target": "function:ui/src/lib/source-resolved-watchdog-fold.ts:parseSourceResolvedWatchdogFold",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/lib/source-resolved-watchdog-fold.ts",
+      "target": "function:ui/src/lib/source-resolved-watchdog-fold.ts:readSourceResolvedWatchdogFold",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/lib/source-resolved-watchdog-fold.ts",
+      "target": "function:ui/src/lib/source-resolved-watchdog-fold.ts:formatCleanupOutcome",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/lib/source-resolved-watchdog-fold.ts",
+      "target": "function:ui/src/lib/source-resolved-watchdog-fold.ts:formatSilenceAgeMs",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/lib/source-resolved-watchdog-fold.ts",
+      "target": "function:ui/src/lib/source-resolved-watchdog-fold.ts:shortenEvidenceId",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/lib/websocket-url.ts",
+      "target": "function:ui/src/lib/websocket-url.ts:buildSameOriginWebSocketUrl",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/websocket-url.ts",
+      "target": "function:ui/src/lib/websocket-url.ts:browserReachableHost",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/lib/websocket-url.ts",
+      "target": "function:ui/src/lib/websocket-url.ts:buildSameOriginWebSocketUrl",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/lib/websocket-url.ts",
+      "target": "function:ui/src/lib/websocket-url.ts:browserReachableHost",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/lib/websocket-url.test.ts",
+      "target": "file:ui/src/lib/websocket-url.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/pages/AgentDetail.tsx",
+      "target": "function:ui/src/pages/AgentDetail.tsx:AgentDetail",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/AgentDetail.tsx",
+      "target": "function:ui/src/pages/AgentDetail.tsx:AgentSkillsTab",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/AgentDetail.tsx",
+      "target": "function:ui/src/pages/AgentDetail.tsx:RunInvocationCard",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/AgentDetail.tsx",
+      "target": "function:ui/src/pages/AgentDetail.tsx:PromptsTab",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/AgentDetail.tsx",
+      "target": "function:ui/src/pages/AgentDetail.tsx:RunDetail",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/AgentDetail.tsx",
+      "target": "function:ui/src/pages/AgentDetail.tsx:LogViewer",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/AgentDetail.tsx",
+      "target": "function:ui/src/pages/AgentDetail.tsx:KeysTab",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/AgentDetail.tsx",
+      "target": "function:ui/src/pages/AgentDetail.tsx:ConfigurationTab",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/AgentDetail.tsx",
+      "target": "function:ui/src/pages/AgentDetail.tsx:AgentDetail",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/AgentDetail.tsx",
+      "target": "function:ui/src/pages/AgentDetail.tsx:AgentSkillsTab",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/AgentDetail.tsx",
+      "target": "function:ui/src/pages/AgentDetail.tsx:RunInvocationCard",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/Agents.tsx",
+      "target": "function:ui/src/pages/Agents.tsx:Agents",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/Agents.tsx",
+      "target": "function:ui/src/pages/Agents.tsx:OrgTreeNode",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/Agents.tsx",
+      "target": "function:ui/src/pages/Agents.tsx:Agents",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/Agents.test.tsx",
+      "target": "file:ui/src/pages/Agents.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    }
+  ]
+}

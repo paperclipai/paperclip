@@ -1,0 +1,658 @@
+{
+  "nodes": [
+    {
+      "id": "file:packages/adapters/grok-local/src/server/test.ts",
+      "type": "file",
+      "name": "test.ts",
+      "filePath": "packages/adapters/grok-local/src/server/test.ts",
+      "summary": "Implements environment probing and validation logic for the Grok local adapter, running a series of checks against the configured execution target to verify tool availability, authentication, and model compatibility.",
+      "tags": ["service", "validation", "api-handler", "utility"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/adapters/grok-local/src/server/test.ts:parseGrokModelsOutput",
+      "type": "function",
+      "name": "parseGrokModelsOutput",
+      "filePath": "packages/adapters/grok-local/src/server/test.ts",
+      "lineRange": [64, 101],
+      "summary": "Parses stdout from the grok CLI `models` command, extracting authentication status, default model, and the full list of available models using regex-based line scanning.",
+      "tags": ["utility", "serialization", "validation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/adapters/grok-local/src/server/test.ts:testEnvironment",
+      "type": "function",
+      "name": "testEnvironment",
+      "filePath": "packages/adapters/grok-local/src/server/test.ts",
+      "lineRange": [103, 313],
+      "summary": "Orchestrates the full environment test suite for the grok adapter by running directory, binary, model listing, and inference probes, accumulating check results and returning an aggregated environment status.",
+      "tags": ["service", "validation", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/shared/turn-boundary.test.ts",
+      "type": "file",
+      "name": "turn-boundary.test.ts",
+      "filePath": "packages/adapters/grok-local/src/shared/turn-boundary.test.ts",
+      "summary": "Unit tests for the turn-boundary module, verifying that streaming chunks are correctly split and rejoined at conversational turn boundaries.",
+      "tags": ["test", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/shared/turn-boundary.ts",
+      "type": "file",
+      "name": "turn-boundary.ts",
+      "filePath": "packages/adapters/grok-local/src/shared/turn-boundary.ts",
+      "summary": "Provides stateful streaming utilities for detecting and inserting boundaries between conversational turns in Grok local adapter output, tracking backtick and sentence-ending state across chunks.",
+      "tags": ["utility", "service", "event-handler"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:packages/adapters/grok-local/src/shared/turn-boundary.ts:applyTurnBoundary",
+      "type": "function",
+      "name": "applyTurnBoundary",
+      "filePath": "packages/adapters/grok-local/src/shared/turn-boundary.ts",
+      "lineRange": [26, 54],
+      "summary": "Applies turn-boundary detection to an incoming streaming chunk by examining whitespace, capitalization, and backtick state to decide whether to inject a paragraph separator.",
+      "tags": ["utility", "event-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/ui/build-config.test.ts",
+      "type": "file",
+      "name": "build-config.test.ts",
+      "filePath": "packages/adapters/grok-local/src/ui/build-config.test.ts",
+      "summary": "Unit tests for `buildGrokLocalConfig`, covering environment variable parsing, binding resolution, and argument normalization.",
+      "tags": ["test", "config", "validation"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/ui/build-config.ts",
+      "type": "file",
+      "name": "build-config.ts",
+      "filePath": "packages/adapters/grok-local/src/ui/build-config.ts",
+      "summary": "Builds a normalized grok-local adapter configuration object from raw UI input, parsing comma-separated arguments, environment variable text blocks, and structured environment bindings.",
+      "tags": ["config", "utility", "validation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/adapters/grok-local/src/ui/build-config.ts:buildGrokLocalConfig",
+      "type": "function",
+      "name": "buildGrokLocalConfig",
+      "filePath": "packages/adapters/grok-local/src/ui/build-config.ts",
+      "lineRange": [54, 74],
+      "summary": "Constructs a typed grok-local configuration object by merging parsed environment bindings, extra env vars, and comma-separated CLI arguments from raw form values.",
+      "tags": ["config", "factory", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/ui/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/adapters/grok-local/src/ui/index.ts",
+      "summary": "Barrel file for the grok-local UI package, re-exporting stdout parsing and config-building utilities for external consumers.",
+      "tags": ["barrel", "entry-point", "exports"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/ui/parse-stdout.test.ts",
+      "type": "file",
+      "name": "parse-stdout.test.ts",
+      "filePath": "packages/adapters/grok-local/src/ui/parse-stdout.test.ts",
+      "summary": "Unit tests for the grok stdout parser, validating handling of thought blocks, text chunks, and error frames emitted by the grok CLI in JSONL format.",
+      "tags": ["test", "utility", "serialization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/ui/parse-stdout.ts",
+      "type": "file",
+      "name": "parse-stdout.ts",
+      "filePath": "packages/adapters/grok-local/src/ui/parse-stdout.ts",
+      "summary": "Implements JSONL-based stdout parsing for the Grok CLI, converting raw output lines into typed streaming events (text, thinking, stop, error) with stateful turn-boundary tracking.",
+      "tags": ["utility", "serialization", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/adapters/grok-local/src/ui/parse-stdout.ts:createGrokStdoutParser",
+      "type": "function",
+      "name": "createGrokStdoutParser",
+      "filePath": "packages/adapters/grok-local/src/ui/parse-stdout.ts",
+      "lineRange": [70, 80],
+      "summary": "Factory that creates a stateful grok stdout parser object with `parseLine` and `reset` methods, maintaining turn-boundary state across a streaming session.",
+      "tags": ["factory", "utility", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:packages/adapters/grok-local/src/ui/parse-stdout.ts:parseGrokStdoutLine",
+      "type": "function",
+      "name": "parseGrokStdoutLine",
+      "filePath": "packages/adapters/grok-local/src/ui/parse-stdout.ts",
+      "lineRange": [85, 87],
+      "summary": "Stateless convenience wrapper that parses a single grok JSONL stdout line with a fresh turn-boundary state, returning an array of streaming event entries.",
+      "tags": ["utility", "serialization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:packages/adapters/grok-local/tsconfig.json",
+      "type": "config",
+      "name": "tsconfig.json",
+      "filePath": "packages/adapters/grok-local/tsconfig.json",
+      "summary": "TypeScript compiler configuration for the grok-local adapter package, extending a shared base tsconfig and scoping compilation to the src directory.",
+      "tags": ["configuration", "typescript", "build-system"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/db/src/backup-lib.test.ts",
+      "type": "file",
+      "name": "backup-lib.test.ts",
+      "filePath": "packages/db/src/backup-lib.test.ts",
+      "summary": "Integration tests for the database backup and restore library, spinning up embedded Postgres instances to exercise full backup and restore flows including transform and retention scenarios.",
+      "tags": ["test", "database", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:packages/db/src/backup-lib.ts",
+      "type": "file",
+      "name": "backup-lib.ts",
+      "filePath": "packages/db/src/backup-lib.ts",
+      "summary": "Core database backup and restore library that orchestrates pg_dump, custom SQL data export with transform support (table filtering, column nullification, array formatting), and psql-based restore with retention pruning.",
+      "tags": ["database", "service", "utility"],
+      "complexity": "complex",
+      "languageNotes": "Mixes pg_dump-based binary backup with custom COPY TO STDOUT for fine-grained data transforms; uses gzip streaming pipeline for compression."
+    },
+    {
+      "id": "function:packages/db/src/backup-lib.ts:runDatabaseBackup",
+      "type": "function",
+      "name": "runDatabaseBackup",
+      "filePath": "packages/db/src/backup-lib.ts",
+      "lineRange": [521, 984],
+      "summary": "Main backup orchestration function that connects to Postgres, enumerates schemas, tables, enums, sequences, and foreign keys, emits SQL DDL and COPY data to a buffered writer, then compresses to gzip and prunes old backups.",
+      "tags": ["database", "service", "utility"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/db/src/backup-lib.ts:runDatabaseRestore",
+      "type": "function",
+      "name": "runDatabaseRestore",
+      "filePath": "packages/db/src/backup-lib.ts",
+      "lineRange": [986, 1019],
+      "summary": "Restores a database from a backup file using psql or a statement-level replay loop, with sanitized error reporting and support for both gzip and plain SQL formats.",
+      "tags": ["database", "service", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/db/src/backup-lib.ts:createBufferedTextFileWriter",
+      "type": "function",
+      "name": "createBufferedTextFileWriter",
+      "filePath": "packages/db/src/backup-lib.ts",
+      "lineRange": [439, 519],
+      "summary": "Creates a buffered async text file writer that accumulates lines in memory and flushes them in batches to reduce syscall overhead, with drain, writeRaw, close, and abort lifecycle methods.",
+      "tags": ["utility", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:packages/db/src/embedded-postgres-native.test.ts",
+      "type": "file",
+      "name": "embedded-postgres-native.test.ts",
+      "filePath": "packages/db/src/embedded-postgres-native.test.ts",
+      "summary": "Tests for the embedded Postgres native runtime preparation, verifying that the platform-specific binary resolution and shared library aliasing utilities work correctly.",
+      "tags": ["test", "database", "infrastructure"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/db/src/embedded-postgres-native.ts",
+      "type": "file",
+      "name": "embedded-postgres-native.ts",
+      "filePath": "packages/db/src/embedded-postgres-native.ts",
+      "summary": "Handles platform-aware initialization of the embedded Postgres native binary, resolving the correct npm package for the current OS/arch, prepending its bin directory to PATH, and creating Linux shared library symlinks.",
+      "tags": ["database", "infrastructure", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/db/src/embedded-postgres-native.ts:prepareEmbeddedPostgresNativeRuntime",
+      "type": "function",
+      "name": "prepareEmbeddedPostgresNativeRuntime",
+      "filePath": "packages/db/src/embedded-postgres-native.ts",
+      "lineRange": [74, 85],
+      "summary": "Top-level runtime setup that resolves the native package root, prepends PostgreSQL bin to PATH, and creates Linux shared library aliases as needed for the current platform.",
+      "tags": ["infrastructure", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/db/src/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/db/src/index.ts",
+      "summary": "Public barrel for the `@paperclip/db` package, re-exporting all database lifecycle utilities, migration runtime, backup/restore API, embedded Postgres test helpers, and schema relation objects.",
+      "tags": ["barrel", "entry-point", "database"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/db/src/migration-runtime.ts",
+      "type": "file",
+      "name": "migration-runtime.ts",
+      "filePath": "packages/db/src/migration-runtime.ts",
+      "summary": "Provides the runtime migration connection resolver that starts or reconnects to an embedded Postgres instance, discovers free ports, reads the Postgres postmaster PID file, and initializes the database before handing over a connection string.",
+      "tags": ["database", "service", "infrastructure"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/db/src/migration-runtime.ts:ensureEmbeddedPostgresConnection",
+      "type": "function",
+      "name": "ensureEmbeddedPostgresConnection",
+      "filePath": "packages/db/src/migration-runtime.ts",
+      "lineRange": [91, 183],
+      "summary": "Core function that boots an embedded Postgres instance from scratch or reuses a running one, handling initialization, startup errors, log capture, and database creation before returning a connection string.",
+      "tags": ["database", "infrastructure", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/db/src/migration-runtime.ts:resolveMigrationConnection",
+      "type": "function",
+      "name": "resolveMigrationConnection",
+      "filePath": "packages/db/src/migration-runtime.ts",
+      "lineRange": [185, 196],
+      "summary": "Exported entry point that determines the migration database target (external URL or embedded Postgres) and returns an active connection string for the migration runner.",
+      "tags": ["database", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:packages/db/src/migrations/0085_tranquil_the_executioner.sql:migration_0085",
+      "type": "table",
+      "name": "0085_tranquil_the_executioner.sql",
+      "filePath": "packages/db/src/migrations/0085_tranquil_the_executioner.sql",
+      "summary": "SQL migration that modifies the executioner-related schema — a small ALTER or UPDATE operation on an existing table (migration 0085 in the Drizzle sequence).",
+      "tags": ["database", "migration"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:packages/db/src/migrations/0086_routine_env_runtime_contract.sql:migration_0086",
+      "type": "table",
+      "name": "0086_routine_env_runtime_contract.sql",
+      "filePath": "packages/db/src/migrations/0086_routine_env_runtime_contract.sql",
+      "summary": "SQL migration that adds the `routine_runs_revision_idx` index to support the runtime contract for routine environment runs (migration 0086).",
+      "tags": ["database", "migration"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:packages/db/src/migrations/0087_backfill_environment_manage_human_defaults.sql:migration_0087",
+      "type": "table",
+      "name": "0087_backfill_environment_manage_human_defaults.sql",
+      "filePath": "packages/db/src/migrations/0087_backfill_environment_manage_human_defaults.sql",
+      "summary": "SQL migration that backfills default values for human environment management fields across existing rows (migration 0087).",
+      "tags": ["database", "migration"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:packages/db/src/migrations/0088_backfill_principal_access_compatibility.sql:migration_0088",
+      "type": "table",
+      "name": "0088_backfill_principal_access_compatibility.sql",
+      "filePath": "packages/db/src/migrations/0088_backfill_principal_access_compatibility.sql",
+      "summary": "SQL migration that backfills principal access compatibility data across the database to support a new access model (migration 0088, 76 lines).",
+      "tags": ["database", "migration", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:packages/db/src/migrations/0089_cloud_upstreams.sql:cloud_upstream_connections",
+      "type": "table",
+      "name": "cloud_upstream_connections",
+      "filePath": "packages/db/src/migrations/0089_cloud_upstreams.sql",
+      "summary": "Stores cloud upstream connection records including OAuth token state, PKI material, remote instance fingerprints, and sync targets for cross-instance Paperclip connectivity.",
+      "tags": ["database", "schema-definition", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:packages/db/src/migrations/0089_cloud_upstreams.sql:cloud_upstream_runs",
+      "type": "table",
+      "name": "cloud_upstream_runs",
+      "filePath": "packages/db/src/migrations/0089_cloud_upstreams.sql",
+      "summary": "Tracks cloud upstream synchronization runs with status, progress, dry-run flag, conflict/warning payloads, and idempotency keys for reliable cross-instance data sync operations.",
+      "tags": ["database", "schema-definition"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:packages/db/src/migrations/0090_resource_memberships.sql:agent_memberships",
+      "type": "table",
+      "name": "agent_memberships",
+      "filePath": "packages/db/src/migrations/0090_resource_memberships.sql",
+      "summary": "Junction table linking users to agents within a company, with a `state` field to represent pending/active/revoked membership status.",
+      "tags": ["database", "schema-definition"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:packages/db/src/migrations/0090_resource_memberships.sql:project_memberships",
+      "type": "table",
+      "name": "project_memberships",
+      "filePath": "packages/db/src/migrations/0090_resource_memberships.sql",
+      "summary": "Junction table linking users to projects within a company, mirroring the agent_memberships structure with its own unique constraint and index set.",
+      "tags": ["database", "schema-definition"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:packages/db/src/migrations/meta/0090_snapshot.json",
+      "type": "config",
+      "name": "0090_snapshot.json",
+      "filePath": "packages/db/src/migrations/meta/0090_snapshot.json",
+      "summary": "Drizzle ORM migration snapshot at version 0090, capturing the full database schema state including all tables, enums, sequences, policies, and views for diffing and rollback purposes.",
+      "tags": ["database", "configuration", "schema-definition"],
+      "complexity": "complex",
+      "languageNotes": "Drizzle Kit auto-generates these snapshots; they represent a point-in-time schema fingerprint used to compute the next migration diff."
+    },
+    {
+      "id": "config:packages/db/src/migrations/meta/_journal.json",
+      "type": "config",
+      "name": "_journal.json",
+      "filePath": "packages/db/src/migrations/meta/_journal.json",
+      "summary": "Drizzle ORM migration journal recording the ordered sequence of all applied migrations with their tag names and dialect, used as the authoritative migration history.",
+      "tags": ["database", "configuration", "migration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/db/src/schema/agent_memberships.ts",
+      "type": "file",
+      "name": "agent_memberships.ts",
+      "filePath": "packages/db/src/schema/agent_memberships.ts",
+      "summary": "Drizzle ORM schema definition for the `agent_memberships` table, declaring columns, types, and the table export used by query builders and migration generation.",
+      "tags": ["data-model", "schema-definition", "database"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/db/src/schema/cloud_upstreams.ts",
+      "type": "file",
+      "name": "cloud_upstreams.ts",
+      "filePath": "packages/db/src/schema/cloud_upstreams.ts",
+      "summary": "Drizzle ORM schema definitions for the `cloud_upstream_connections` and `cloud_upstream_runs` tables, declaring all columns and types for cross-instance sync infrastructure.",
+      "tags": ["data-model", "schema-definition", "database"],
+      "complexity": "moderate"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:packages/adapters/grok-local/src/server/test.ts",
+      "target": "function:packages/adapters/grok-local/src/server/test.ts:parseGrokModelsOutput",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/server/test.ts",
+      "target": "function:packages/adapters/grok-local/src/server/test.ts:testEnvironment",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/server/test.ts",
+      "target": "function:packages/adapters/grok-local/src/server/test.ts:parseGrokModelsOutput",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/server/test.ts",
+      "target": "function:packages/adapters/grok-local/src/server/test.ts:testEnvironment",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/shared/turn-boundary.test.ts",
+      "target": "file:packages/adapters/grok-local/src/shared/turn-boundary.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/shared/turn-boundary.ts",
+      "target": "function:packages/adapters/grok-local/src/shared/turn-boundary.ts:applyTurnBoundary",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/shared/turn-boundary.ts",
+      "target": "function:packages/adapters/grok-local/src/shared/turn-boundary.ts:applyTurnBoundary",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/ui/build-config.ts",
+      "target": "function:packages/adapters/grok-local/src/ui/build-config.ts:buildGrokLocalConfig",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/ui/build-config.ts",
+      "target": "function:packages/adapters/grok-local/src/ui/build-config.ts:buildGrokLocalConfig",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/ui/build-config.test.ts",
+      "target": "file:packages/adapters/grok-local/src/ui/build-config.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/ui/index.ts",
+      "target": "file:packages/adapters/grok-local/src/ui/parse-stdout.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/ui/index.ts",
+      "target": "file:packages/adapters/grok-local/src/ui/build-config.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/ui/parse-stdout.ts",
+      "target": "function:packages/adapters/grok-local/src/ui/parse-stdout.ts:createGrokStdoutParser",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/ui/parse-stdout.ts",
+      "target": "function:packages/adapters/grok-local/src/ui/parse-stdout.ts:parseGrokStdoutLine",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/ui/parse-stdout.ts",
+      "target": "function:packages/adapters/grok-local/src/ui/parse-stdout.ts:createGrokStdoutParser",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/ui/parse-stdout.ts",
+      "target": "function:packages/adapters/grok-local/src/ui/parse-stdout.ts:parseGrokStdoutLine",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/ui/parse-stdout.ts",
+      "target": "file:packages/adapters/grok-local/src/shared/turn-boundary.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/ui/parse-stdout.test.ts",
+      "target": "file:packages/adapters/grok-local/src/ui/parse-stdout.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "config:packages/adapters/grok-local/tsconfig.json",
+      "target": "file:packages/adapters/grok-local/src/server/test.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:packages/adapters/grok-local/tsconfig.json",
+      "target": "file:packages/adapters/grok-local/src/ui/index.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/db/src/backup-lib.ts",
+      "target": "function:packages/db/src/backup-lib.ts:runDatabaseBackup",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/db/src/backup-lib.ts",
+      "target": "function:packages/db/src/backup-lib.ts:runDatabaseRestore",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/db/src/backup-lib.ts",
+      "target": "function:packages/db/src/backup-lib.ts:createBufferedTextFileWriter",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/db/src/backup-lib.ts",
+      "target": "function:packages/db/src/backup-lib.ts:runDatabaseBackup",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/db/src/backup-lib.ts",
+      "target": "function:packages/db/src/backup-lib.ts:runDatabaseRestore",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/db/src/backup-lib.ts",
+      "target": "function:packages/db/src/backup-lib.ts:createBufferedTextFileWriter",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/db/src/backup-lib.test.ts",
+      "target": "file:packages/db/src/backup-lib.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/db/src/embedded-postgres-native.ts",
+      "target": "function:packages/db/src/embedded-postgres-native.ts:prepareEmbeddedPostgresNativeRuntime",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/db/src/embedded-postgres-native.ts",
+      "target": "function:packages/db/src/embedded-postgres-native.ts:prepareEmbeddedPostgresNativeRuntime",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/db/src/embedded-postgres-native.test.ts",
+      "target": "file:packages/db/src/embedded-postgres-native.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/db/src/index.ts",
+      "target": "file:packages/db/src/backup-lib.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/db/src/index.ts",
+      "target": "file:packages/db/src/embedded-postgres-native.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/db/src/index.ts",
+      "target": "file:packages/db/src/migration-runtime.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/db/src/migration-runtime.ts",
+      "target": "function:packages/db/src/migration-runtime.ts:ensureEmbeddedPostgresConnection",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/db/src/migration-runtime.ts",
+      "target": "function:packages/db/src/migration-runtime.ts:resolveMigrationConnection",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/db/src/migration-runtime.ts",
+      "target": "function:packages/db/src/migration-runtime.ts:resolveMigrationConnection",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/db/src/migration-runtime.ts",
+      "target": "file:packages/db/src/embedded-postgres-native.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "table:packages/db/src/migrations/0089_cloud_upstreams.sql:cloud_upstream_connections",
+      "target": "file:packages/db/src/schema/cloud_upstreams.ts",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:packages/db/src/migrations/0089_cloud_upstreams.sql:cloud_upstream_runs",
+      "target": "file:packages/db/src/schema/cloud_upstreams.ts",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:packages/db/src/migrations/0090_resource_memberships.sql:agent_memberships",
+      "target": "file:packages/db/src/schema/agent_memberships.ts",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "config:packages/db/src/migrations/meta/_journal.json",
+      "target": "config:packages/db/src/migrations/meta/0090_snapshot.json",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    }
+  ]
+}

@@ -1,0 +1,385 @@
+{
+  "nodes": [
+    {
+      "id": "file:ui/src/components/DevRestartBanner.test.tsx",
+      "type": "file",
+      "name": "DevRestartBanner.test.tsx",
+      "filePath": "ui/src/components/DevRestartBanner.test.tsx",
+      "summary": "Unit tests for the DevRestartBanner component, verifying rendering and behavior using React's createRoot and act.",
+      "tags": ["test", "component", "dev-tools"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/DevRestartBanner.tsx",
+      "type": "file",
+      "name": "DevRestartBanner.tsx",
+      "filePath": "ui/src/components/DevRestartBanner.tsx",
+      "summary": "React component that displays a development server restart notification banner with pending migrations, changed file paths, and a manual restart trigger using a timed auto-restart mechanism.",
+      "tags": ["component", "dev-tools", "event-handler", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/components/DevRestartBanner.tsx:formatRelativeTimestamp",
+      "type": "function",
+      "name": "formatRelativeTimestamp",
+      "filePath": "ui/src/components/DevRestartBanner.tsx",
+      "lineRange": [7, 20],
+      "summary": "Converts a timestamp value to a human-readable relative time string (seconds, minutes, or hours ago).",
+      "tags": ["utility", "date", "formatting"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/components/DevRestartBanner.tsx:DevRestartBanner",
+      "type": "function",
+      "name": "DevRestartBanner",
+      "filePath": "ui/src/components/DevRestartBanner.tsx",
+      "lineRange": [32, 132],
+      "summary": "Exported React component that shows a dev-server restart banner with auto-restart countdown, pending migrations list, changed files sample, and a manual restart confirmation dialog.",
+      "tags": ["component", "dev-tools", "event-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/KanbanBoard.test.tsx",
+      "type": "file",
+      "name": "KanbanBoard.test.tsx",
+      "filePath": "ui/src/components/KanbanBoard.test.tsx",
+      "summary": "Unit tests for the KanbanBoard component, including helpers to create mock issues and render the board with configurable props.",
+      "tags": ["test", "component", "kanban"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/KanbanBoard.tsx",
+      "type": "file",
+      "name": "KanbanBoard.tsx",
+      "filePath": "ui/src/components/KanbanBoard.tsx",
+      "summary": "Full-featured drag-and-drop Kanban board React component with configurable columns per issue status, collapsible columns, pagination-style reveal, live issue highlighting, and compact card mode powered by dnd-kit.",
+      "tags": ["component", "kanban", "drag-and-drop", "event-handler"],
+      "complexity": "complex",
+      "languageNotes": "Uses dnd-kit (useDroppable, useSortable, useSensors) for accessible drag-and-drop; exports multiple constants (thresholds, page sizes) so consumers can tune board behavior."
+    },
+    {
+      "id": "function:ui/src/components/KanbanBoard.tsx:resolveKanbanTargetStatus",
+      "type": "function",
+      "name": "resolveKanbanTargetStatus",
+      "filePath": "ui/src/components/KanbanBoard.tsx",
+      "lineRange": [49, 54],
+      "summary": "Exported helper that determines the destination status when a card is dropped, resolving whether the drop target is a column or another card.",
+      "tags": ["utility", "kanban", "drag-and-drop"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/components/KanbanBoard.tsx:KanbanColumn",
+      "type": "function",
+      "name": "KanbanColumn",
+      "filePath": "ui/src/components/KanbanBoard.tsx",
+      "lineRange": [74, 175],
+      "summary": "Internal React component rendering a single Kanban column with a droppable zone, collapsible header, visible issue cards, and a 'show more' pagination control.",
+      "tags": ["component", "kanban", "drag-and-drop"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/components/KanbanBoard.tsx:KanbanCard",
+      "type": "function",
+      "name": "KanbanCard",
+      "filePath": "ui/src/components/KanbanBoard.tsx",
+      "lineRange": [179, 273],
+      "summary": "Internal React component representing a single sortable Kanban card that displays issue metadata, assignee identity, and a handoff indicator, supporting compact and overlay modes.",
+      "tags": ["component", "kanban", "drag-and-drop"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/components/KanbanBoard.tsx:KanbanBoard",
+      "type": "function",
+      "name": "KanbanBoard",
+      "filePath": "ui/src/components/KanbanBoard.tsx",
+      "lineRange": [277, 378],
+      "summary": "Exported root Kanban board component orchestrating DndContext, drag start/end handlers, issue grouping by status, and rendering all KanbanColumn instances with a drag overlay.",
+      "tags": ["component", "kanban", "drag-and-drop", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/Layout.tsx",
+      "type": "file",
+      "name": "Layout.tsx",
+      "filePath": "ui/src/components/Layout.tsx",
+      "summary": "Central application shell component that wires together navigation sidebar, mobile nav, plugin slots, keyboard shortcuts, company selection sync, instance settings persistence, and scroll/focus management for the entire UI.",
+      "tags": ["component", "entry-point", "middleware", "event-handler"],
+      "complexity": "complex",
+      "languageNotes": "Heavily hooks-driven with 35 imports; manages localStorage persistence for instance settings path and dispatches custom DOM events for cross-component communication."
+    },
+    {
+      "id": "function:ui/src/components/Layout.tsx:Layout",
+      "type": "function",
+      "name": "Layout",
+      "filePath": "ui/src/components/Layout.tsx",
+      "lineRange": [65, 468],
+      "summary": "Exported React component serving as the top-level application layout, coordinating sidebar state, company routing, plugin slot resolution, keyboard shortcuts, mobile nav visibility, and scroll reset on navigation.",
+      "tags": ["component", "entry-point", "middleware"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/GoalDetail.test.tsx",
+      "type": "file",
+      "name": "GoalDetail.test.tsx",
+      "filePath": "ui/src/components/GoalDetail.test.tsx",
+      "summary": "Unit tests for the GoalDetail component, verifying goal display and interaction behavior.",
+      "tags": ["test", "component", "goals"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/GoalList.test.tsx",
+      "type": "file",
+      "name": "GoalList.test.tsx",
+      "filePath": "ui/src/components/GoalList.test.tsx",
+      "summary": "Unit tests for the GoalList component, verifying list rendering and goal item interactions.",
+      "tags": ["test", "component", "goals"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/IssueDetail.test.tsx",
+      "type": "file",
+      "name": "IssueDetail.test.tsx",
+      "filePath": "ui/src/components/IssueDetail.test.tsx",
+      "summary": "Comprehensive unit tests for the IssueDetail component, covering issue metadata display, status transitions, and action interactions.",
+      "tags": ["test", "component", "issues"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/IssueList.test.tsx",
+      "type": "file",
+      "name": "IssueList.test.tsx",
+      "filePath": "ui/src/components/IssueList.test.tsx",
+      "summary": "Unit tests for the IssueList component verifying list rendering, filtering, and empty state behavior.",
+      "tags": ["test", "component", "issues"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/IssueListRow.test.tsx",
+      "type": "file",
+      "name": "IssueListRow.test.tsx",
+      "filePath": "ui/src/components/IssueListRow.test.tsx",
+      "summary": "Unit tests for the IssueListRow component, validating row rendering, status badges, and click handlers.",
+      "tags": ["test", "component", "issues"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/IssueMentions.test.tsx",
+      "type": "file",
+      "name": "IssueMentions.test.tsx",
+      "filePath": "ui/src/components/IssueMentions.test.tsx",
+      "summary": "Unit tests for the IssueMentions component, verifying mention parsing and display.",
+      "tags": ["test", "component", "issues"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/IssueSubtaskList.test.tsx",
+      "type": "file",
+      "name": "IssueSubtaskList.test.tsx",
+      "filePath": "ui/src/components/IssueSubtaskList.test.tsx",
+      "summary": "Unit tests for the IssueSubtaskList component, verifying subtask enumeration and completion state rendering.",
+      "tags": ["test", "component", "issues"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/IssueWorkspaceDetail.test.tsx",
+      "type": "file",
+      "name": "IssueWorkspaceDetail.test.tsx",
+      "filePath": "ui/src/components/IssueWorkspaceDetail.test.tsx",
+      "summary": "Unit tests for the IssueWorkspaceDetail component, checking workspace context display within an issue view.",
+      "tags": ["test", "component", "issues"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/MembersTab.test.tsx",
+      "type": "file",
+      "name": "MembersTab.test.tsx",
+      "filePath": "ui/src/components/MembersTab.test.tsx",
+      "summary": "Unit tests for the MembersTab component, validating member listing and role display within company settings.",
+      "tags": ["test", "component", "members"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/NavSidebar.test.tsx",
+      "type": "file",
+      "name": "NavSidebar.test.tsx",
+      "filePath": "ui/src/components/NavSidebar.test.tsx",
+      "summary": "Unit tests for the NavSidebar component, verifying navigation link rendering and active state behavior.",
+      "tags": ["test", "component", "navigation"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/NewIssueModal.test.tsx",
+      "type": "file",
+      "name": "NewIssueModal.test.tsx",
+      "filePath": "ui/src/components/NewIssueModal.test.tsx",
+      "summary": "Unit tests for the NewIssueModal component, verifying modal open/close, form validation, and issue creation submission.",
+      "tags": ["test", "component", "issues"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/PluginList.test.tsx",
+      "type": "file",
+      "name": "PluginList.test.tsx",
+      "filePath": "ui/src/components/PluginList.test.tsx",
+      "summary": "Unit tests for the PluginList component, verifying plugin item rendering and install/uninstall action handling.",
+      "tags": ["test", "component", "plugins"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/PluginsTab.test.tsx",
+      "type": "file",
+      "name": "PluginsTab.test.tsx",
+      "filePath": "ui/src/components/PluginsTab.test.tsx",
+      "summary": "Unit tests for the PluginsTab component within company settings, verifying tab rendering and plugin management UI.",
+      "tags": ["test", "component", "plugins"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/ProjectDetail.test.tsx",
+      "type": "file",
+      "name": "ProjectDetail.test.tsx",
+      "filePath": "ui/src/components/ProjectDetail.test.tsx",
+      "summary": "Unit tests for the ProjectDetail component, checking project metadata display and edit interactions.",
+      "tags": ["test", "component", "projects"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/ProjectList.test.tsx",
+      "type": "file",
+      "name": "ProjectList.test.tsx",
+      "filePath": "ui/src/components/ProjectList.test.tsx",
+      "summary": "Unit tests for the ProjectList component, verifying project enumeration, empty state, and creation entry points.",
+      "tags": ["test", "component", "projects"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/ResourceMemberships.test.tsx",
+      "type": "file",
+      "name": "ResourceMemberships.test.tsx",
+      "filePath": "ui/src/components/ResourceMemberships.test.tsx",
+      "summary": "Unit tests for the ResourceMemberships component, validating membership assignment display and role management interactions.",
+      "tags": ["test", "component", "members"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/RoutineDetail.test.tsx",
+      "type": "file",
+      "name": "RoutineDetail.test.tsx",
+      "filePath": "ui/src/components/RoutineDetail.test.tsx",
+      "summary": "Unit tests for the RoutineDetail component, verifying scheduled routine metadata display and edit controls.",
+      "tags": ["test", "component", "routines"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/RoutineList.test.tsx",
+      "type": "file",
+      "name": "RoutineList.test.tsx",
+      "filePath": "ui/src/components/RoutineList.test.tsx",
+      "summary": "Unit tests for the RoutineList component, checking routine item rendering and creation action availability.",
+      "tags": ["test", "component", "routines"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/SecretList.test.tsx",
+      "type": "file",
+      "name": "SecretList.test.tsx",
+      "filePath": "ui/src/components/SecretList.test.tsx",
+      "summary": "Unit tests for the SecretList component, verifying secret item masking, listing, and add/remove interactions.",
+      "tags": ["test", "component", "security"],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:ui/src/components/DevRestartBanner.tsx",
+      "target": "function:ui/src/components/DevRestartBanner.tsx:formatRelativeTimestamp",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/DevRestartBanner.tsx",
+      "target": "function:ui/src/components/DevRestartBanner.tsx:DevRestartBanner",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/DevRestartBanner.tsx",
+      "target": "function:ui/src/components/DevRestartBanner.tsx:DevRestartBanner",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/KanbanBoard.tsx",
+      "target": "function:ui/src/components/KanbanBoard.tsx:resolveKanbanTargetStatus",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/KanbanBoard.tsx",
+      "target": "function:ui/src/components/KanbanBoard.tsx:KanbanColumn",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/KanbanBoard.tsx",
+      "target": "function:ui/src/components/KanbanBoard.tsx:KanbanCard",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/KanbanBoard.tsx",
+      "target": "function:ui/src/components/KanbanBoard.tsx:KanbanBoard",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/KanbanBoard.tsx",
+      "target": "function:ui/src/components/KanbanBoard.tsx:resolveKanbanTargetStatus",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/KanbanBoard.tsx",
+      "target": "function:ui/src/components/KanbanBoard.tsx:KanbanBoard",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/Layout.tsx",
+      "target": "function:ui/src/components/Layout.tsx:Layout",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/Layout.tsx",
+      "target": "function:ui/src/components/Layout.tsx:Layout",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/DevRestartBanner.test.tsx",
+      "target": "file:ui/src/components/DevRestartBanner.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/components/KanbanBoard.test.tsx",
+      "target": "file:ui/src/components/KanbanBoard.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    }
+  ]
+}

@@ -1,0 +1,231 @@
+{
+  "nodes": [
+    {
+      "id": "config:ui/src/i18n/locales/en.json",
+      "type": "config",
+      "name": "en.json",
+      "filePath": "ui/src/i18n/locales/en.json",
+      "summary": "English (en) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple",
+      "languageNotes": "Flat nested JSON structure under a single 'app' key; the 'noCompanies' group covers the empty-state onboarding flow."
+    },
+    {
+      "id": "config:ui/src/i18n/locales/es.json",
+      "type": "config",
+      "name": "es.json",
+      "filePath": "ui/src/i18n/locales/es.json",
+      "summary": "Spanish (es) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/fa.json",
+      "type": "config",
+      "name": "fa.json",
+      "filePath": "ui/src/i18n/locales/fa.json",
+      "summary": "Persian/Farsi (fa) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/fi.json",
+      "type": "config",
+      "name": "fi.json",
+      "filePath": "ui/src/i18n/locales/fi.json",
+      "summary": "Finnish (fi) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/fil.json",
+      "type": "config",
+      "name": "fil.json",
+      "filePath": "ui/src/i18n/locales/fil.json",
+      "summary": "Filipino (fil) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/fr.json",
+      "type": "config",
+      "name": "fr.json",
+      "filePath": "ui/src/i18n/locales/fr.json",
+      "summary": "French (fr) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/he.json",
+      "type": "config",
+      "name": "he.json",
+      "filePath": "ui/src/i18n/locales/he.json",
+      "summary": "Hebrew (he) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/hi.json",
+      "type": "config",
+      "name": "hi.json",
+      "filePath": "ui/src/i18n/locales/hi.json",
+      "summary": "Hindi (hi) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/hu.json",
+      "type": "config",
+      "name": "hu.json",
+      "filePath": "ui/src/i18n/locales/hu.json",
+      "summary": "Hungarian (hu) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/id.json",
+      "type": "config",
+      "name": "id.json",
+      "filePath": "ui/src/i18n/locales/id.json",
+      "summary": "Indonesian (id) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/it.json",
+      "type": "config",
+      "name": "it.json",
+      "filePath": "ui/src/i18n/locales/it.json",
+      "summary": "Italian (it) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/ja.json",
+      "type": "config",
+      "name": "ja.json",
+      "filePath": "ui/src/i18n/locales/ja.json",
+      "summary": "Japanese (ja) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/ko.json",
+      "type": "config",
+      "name": "ko.json",
+      "filePath": "ui/src/i18n/locales/ko.json",
+      "summary": "Korean (ko) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/mr.json",
+      "type": "config",
+      "name": "mr.json",
+      "filePath": "ui/src/i18n/locales/mr.json",
+      "summary": "Marathi (mr) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/ms.json",
+      "type": "config",
+      "name": "ms.json",
+      "filePath": "ui/src/i18n/locales/ms.json",
+      "summary": "Malay (ms) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/nb.json",
+      "type": "config",
+      "name": "nb.json",
+      "filePath": "ui/src/i18n/locales/nb.json",
+      "summary": "Norwegian Bokmål (nb) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/nl.json",
+      "type": "config",
+      "name": "nl.json",
+      "filePath": "ui/src/i18n/locales/nl.json",
+      "summary": "Dutch (nl) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/pa.json",
+      "type": "config",
+      "name": "pa.json",
+      "filePath": "ui/src/i18n/locales/pa.json",
+      "summary": "Punjabi (pa) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/pl.json",
+      "type": "config",
+      "name": "pl.json",
+      "filePath": "ui/src/i18n/locales/pl.json",
+      "summary": "Polish (pl) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/pt-BR.json",
+      "type": "config",
+      "name": "pt-BR.json",
+      "filePath": "ui/src/i18n/locales/pt-BR.json",
+      "summary": "Brazilian Portuguese (pt-BR) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/pt-PT.json",
+      "type": "config",
+      "name": "pt-PT.json",
+      "filePath": "ui/src/i18n/locales/pt-PT.json",
+      "summary": "European Portuguese (pt-PT) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/ro.json",
+      "type": "config",
+      "name": "ro.json",
+      "filePath": "ui/src/i18n/locales/ro.json",
+      "summary": "Romanian (ro) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/ru.json",
+      "type": "config",
+      "name": "ru.json",
+      "filePath": "ui/src/i18n/locales/ru.json",
+      "summary": "Russian (ru) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/sv.json",
+      "type": "config",
+      "name": "sv.json",
+      "filePath": "ui/src/i18n/locales/sv.json",
+      "summary": "Swedish (sv) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ui/src/i18n/locales/sw.json",
+      "type": "config",
+      "name": "sw.json",
+      "filePath": "ui/src/i18n/locales/sw.json",
+      "summary": "Swahili (sw) i18n locale file providing UI string translations for the Paperclip application, covering the empty-state 'no companies' onboarding prompt.",
+      "tags": ["configuration", "internationalization", "localization", "ui-strings"],
+      "complexity": "simple"
+    }
+  ],
+  "edges": []
+}

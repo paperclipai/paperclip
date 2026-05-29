@@ -1,0 +1,1251 @@
+{
+  "nodes": [
+    {
+      "id": "file:ui/src/pages/CloudUpstream.tsx",
+      "type": "file",
+      "name": "CloudUpstream.tsx",
+      "filePath": "ui/src/pages/CloudUpstream.tsx",
+      "summary": "Full-featured page component managing cloud upstream connections, including OAuth connect flow, diff preview, conflict resolution, entity activation, and run history with downloadable reports.",
+      "tags": ["component", "api-handler", "service", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/CloudUpstream.tsx:CloudUpstream",
+      "type": "function",
+      "name": "CloudUpstream",
+      "filePath": "ui/src/pages/CloudUpstream.tsx",
+      "lineRange": [66, 425],
+      "summary": "Primary page component orchestrating cloud upstream connect/preview/run/activation flows using multiple React Query mutations and local state.",
+      "tags": ["component", "api-handler", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/CloudUpstream.tsx:ActivationChecklist",
+      "type": "function",
+      "name": "ActivationChecklist",
+      "filePath": "ui/src/pages/CloudUpstream.tsx",
+      "lineRange": [519, 567],
+      "summary": "Renders per-entity-type activation checklist rows allowing selective upstream entity activation.",
+      "tags": ["component", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/pages/CloudUpstream.tsx:buildActivationRows",
+      "type": "function",
+      "name": "buildActivationRows",
+      "filePath": "ui/src/pages/CloudUpstream.tsx",
+      "lineRange": [569, 589],
+      "summary": "Builds activation row data from a run report by mapping activation categories to summary counts and reports.",
+      "tags": ["utility", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/CloudUpstreamUxLab.tsx",
+      "type": "file",
+      "name": "CloudUpstreamUxLab.tsx",
+      "filePath": "ui/src/pages/CloudUpstreamUxLab.tsx",
+      "summary": "UX lab/fixture harness for the CloudUpstream page, providing static fixture data for each state (connected, preview, run running/failed/succeeded) for UI development without a live API.",
+      "tags": ["component", "utility", "test"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/CloudUpstreamUxLab.tsx:CloudUpstreamUxLab",
+      "type": "function",
+      "name": "CloudUpstreamUxLab",
+      "filePath": "ui/src/pages/CloudUpstreamUxLab.tsx",
+      "lineRange": [95, 114],
+      "summary": "Entry point component for the CloudUpstream UX lab, reading fixture name from URL params and rendering the matching fixture.",
+      "tags": ["component", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/pages/CloudUpstreamUxLab.tsx:CloudUpstreamRender",
+      "type": "function",
+      "name": "CloudUpstreamRender",
+      "filePath": "ui/src/pages/CloudUpstreamUxLab.tsx",
+      "lineRange": [149, 316],
+      "summary": "Stateless render layer that visually composes all CloudUpstream UI panels from a fixture object, mirroring the real page layout without API calls.",
+      "tags": ["component", "utility"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/CloudUpstreamUxLab.tsx:buildFixture",
+      "type": "function",
+      "name": "buildFixture",
+      "filePath": "ui/src/pages/CloudUpstreamUxLab.tsx",
+      "lineRange": [735, 822],
+      "summary": "Factory that assembles complete fixture objects for each named CloudUpstream state used by the UX lab.",
+      "tags": ["factory", "utility"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/CompanyAccess.test.tsx",
+      "type": "file",
+      "name": "CompanyAccess.test.tsx",
+      "filePath": "ui/src/pages/CompanyAccess.test.tsx",
+      "summary": "Integration tests for the CompanyAccess page verifying member listing, role editing, join-request approval/rejection, and member removal with reassignment flows.",
+      "tags": ["test", "api-handler", "validation"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/CompanyAccess.tsx",
+      "type": "file",
+      "name": "CompanyAccess.tsx",
+      "filePath": "ui/src/pages/CompanyAccess.tsx",
+      "summary": "Company membership management page supporting member listing, role and status editing, join-request approval/rejection, and member archival with issue reassignment.",
+      "tags": ["component", "api-handler", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/CompanyAccess.tsx:CompanyAccess",
+      "type": "function",
+      "name": "CompanyAccess",
+      "filePath": "ui/src/pages/CompanyAccess.tsx",
+      "lineRange": [32, 524],
+      "summary": "Main page component managing company membership state with mutations for updating, approving, rejecting, and archiving members.",
+      "tags": ["component", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/CompanyAccess.tsx:CompanyAccessLegacyRoute",
+      "type": "function",
+      "name": "CompanyAccessLegacyRoute",
+      "filePath": "ui/src/pages/CompanyAccess.tsx",
+      "lineRange": [526, 584],
+      "summary": "Legacy route wrapper for the company access page that integrates plugin slots alongside the main access UI.",
+      "tags": ["component", "middleware"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/pages/CompanyAccess.tsx:PendingJoinRequestCard",
+      "type": "function",
+      "name": "PendingJoinRequestCard",
+      "filePath": "ui/src/pages/CompanyAccess.tsx",
+      "lineRange": [599, 645],
+      "summary": "Reusable card component for displaying a pending join request with approve and reject action buttons.",
+      "tags": ["component", "ui-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/CompanyExport.tsx",
+      "type": "file",
+      "name": "CompanyExport.tsx",
+      "filePath": "ui/src/pages/CompanyExport.tsx",
+      "summary": "Page allowing selective export of company configuration (agents, projects, tasks) as a zip archive with file tree filtering, YAML processing, and README generation.",
+      "tags": ["component", "api-handler", "serialization"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/CompanyExport.tsx:CompanyExport",
+      "type": "function",
+      "name": "CompanyExport",
+      "filePath": "ui/src/pages/CompanyExport.tsx",
+      "lineRange": [580, 1020],
+      "summary": "Main export page component with file tree navigation, selection state, YAML preview, and zip download functionality.",
+      "tags": ["component", "api-handler", "serialization"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/CompanyExport.tsx:filterPaperclipYaml",
+      "type": "function",
+      "name": "filterPaperclipYaml",
+      "filePath": "ui/src/pages/CompanyExport.tsx",
+      "lineRange": [80, 208],
+      "summary": "Filters a Paperclip YAML manifest to include only sections matching the user-selected agents, projects, and tasks.",
+      "tags": ["utility", "serialization"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/CompanyExport.tsx:generateReadmeFromSelection",
+      "type": "function",
+      "name": "generateReadmeFromSelection",
+      "filePath": "ui/src/pages/CompanyExport.tsx",
+      "lineRange": [401, 486],
+      "summary": "Generates a README markdown document from the export manifest and selected files, summarizing the company and its exported components.",
+      "tags": ["utility", "serialization"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/CompanyExport.tsx:downloadZip",
+      "type": "function",
+      "name": "downloadZip",
+      "filePath": "ui/src/pages/CompanyExport.tsx",
+      "lineRange": [322, 343],
+      "summary": "Bundles selected exported files into a zip archive and triggers a browser download.",
+      "tags": ["utility", "serialization"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/CompanyImport.tsx",
+      "type": "file",
+      "name": "CompanyImport.tsx",
+      "filePath": "ui/src/pages/CompanyImport.tsx",
+      "summary": "Page for importing a company configuration package (zip or cloud adapter), with conflict resolution, prefix handling, adapter selection, and import preview.",
+      "tags": ["component", "api-handler", "serialization"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/CompanyImport.tsx:CompanyImport",
+      "type": "function",
+      "name": "CompanyImport",
+      "filePath": "ui/src/pages/CompanyImport.tsx",
+      "lineRange": [647, 1356],
+      "summary": "Main import page component managing multi-step import flow: file selection, conflict resolution, adapter configuration, and final import execution.",
+      "tags": ["component", "api-handler", "serialization"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/CompanyImport.tsx:ConflictResolutionList",
+      "type": "function",
+      "name": "ConflictResolutionList",
+      "filePath": "ui/src/pages/CompanyImport.tsx",
+      "lineRange": [390, 512],
+      "summary": "UI component for reviewing and resolving import conflicts (skip, overwrite, rename) per file.",
+      "tags": ["component", "validation"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/CompanyImport.tsx:buildActionMap",
+      "type": "function",
+      "name": "buildActionMap",
+      "filePath": "ui/src/pages/CompanyImport.tsx",
+      "lineRange": [54, 100],
+      "summary": "Constructs a map of conflict resolution actions from the current conflict list and user selections.",
+      "tags": ["utility", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/pages/CompanyImport.tsx:buildConflictList",
+      "type": "function",
+      "name": "buildConflictList",
+      "filePath": "ui/src/pages/CompanyImport.tsx",
+      "lineRange": [277, 314],
+      "summary": "Derives the list of import conflicts by comparing incoming files against existing company resources.",
+      "tags": ["utility", "validation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/CompanyInvites.test.tsx",
+      "type": "file",
+      "name": "CompanyInvites.test.tsx",
+      "filePath": "ui/src/pages/CompanyInvites.test.tsx",
+      "summary": "Integration tests for the CompanyInvites page covering invite creation, history display, revocation, and resend flows.",
+      "tags": ["test", "api-handler", "validation"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/CompanyInvites.tsx",
+      "type": "file",
+      "name": "CompanyInvites.tsx",
+      "filePath": "ui/src/pages/CompanyInvites.tsx",
+      "summary": "Page for managing company invitations — creating new invites, viewing invite history, revoking, and resending invites to human or agent targets.",
+      "tags": ["component", "api-handler", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/CompanyInvites.tsx:CompanyInvites",
+      "type": "function",
+      "name": "CompanyInvites",
+      "filePath": "ui/src/pages/CompanyInvites.tsx",
+      "lineRange": [47, 421],
+      "summary": "Main invite management component handling invite creation form, history table, revocation, and resend mutations.",
+      "tags": ["component", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/CompanySettings.tsx",
+      "type": "file",
+      "name": "CompanySettings.tsx",
+      "filePath": "ui/src/pages/CompanySettings.tsx",
+      "summary": "Company settings page providing forms for updating company name, description, logo, visibility, and other company-level configuration.",
+      "tags": ["component", "config", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/CompanySettings.tsx:CompanySettings",
+      "type": "function",
+      "name": "CompanySettings",
+      "filePath": "ui/src/pages/CompanySettings.tsx",
+      "lineRange": [24, 457],
+      "summary": "Settings page component managing company profile fields with mutation-based persistence and validation.",
+      "tags": ["component", "config", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/CompanySettingsPluginPage.test.tsx",
+      "type": "file",
+      "name": "CompanySettingsPluginPage.test.tsx",
+      "filePath": "ui/src/pages/CompanySettingsPluginPage.test.tsx",
+      "summary": "Tests for CompanySettingsPluginPage verifying plugin slot rendering and page layout in company settings context.",
+      "tags": ["test", "component", "validation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/CompanySettingsPluginPage.tsx",
+      "type": "file",
+      "name": "CompanySettingsPluginPage.tsx",
+      "filePath": "ui/src/pages/CompanySettingsPluginPage.tsx",
+      "summary": "Company settings plugin page that renders plugin-provided settings UI sections via plugin slot injection.",
+      "tags": ["component", "middleware", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/pages/CompanySettingsPluginPage.tsx:CompanySettingsPluginPage",
+      "type": "function",
+      "name": "CompanySettingsPluginPage",
+      "filePath": "ui/src/pages/CompanySettingsPluginPage.tsx",
+      "lineRange": [8, 88],
+      "summary": "Page component that injects plugin slot content into the company settings layout.",
+      "tags": ["component", "middleware"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/DesignGuide.tsx",
+      "type": "file",
+      "name": "DesignGuide.tsx",
+      "filePath": "ui/src/pages/DesignGuide.tsx",
+      "summary": "Interactive design system reference page documenting UI component variants, color swatches, typography, and layout primitives used across the application.",
+      "tags": ["component", "documentation", "utility"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/DesignGuide.tsx:DesignGuide",
+      "type": "function",
+      "name": "DesignGuide",
+      "filePath": "ui/src/pages/DesignGuide.tsx",
+      "lineRange": [177, 1407],
+      "summary": "Main design guide page rendering all component categories, color palettes, and usage examples for the Paperclip design system.",
+      "tags": ["component", "documentation"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/ExecutionWorkspaceDetail.test.tsx",
+      "type": "file",
+      "name": "ExecutionWorkspaceDetail.test.tsx",
+      "filePath": "ui/src/pages/ExecutionWorkspaceDetail.test.tsx",
+      "summary": "Integration tests for the ExecutionWorkspaceDetail page covering workspace data display, editing, plugin tab rendering, and routine management.",
+      "tags": ["test", "component", "validation"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/ExecutionWorkspaceDetail.tsx",
+      "type": "file",
+      "name": "ExecutionWorkspaceDetail.tsx",
+      "filePath": "ui/src/pages/ExecutionWorkspaceDetail.tsx",
+      "summary": "Detail page for an execution workspace showing configuration, linked issues, routines, plugin tabs, and supporting workspace editing with form validation.",
+      "tags": ["component", "api-handler", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/ExecutionWorkspaceDetail.tsx:ExecutionWorkspaceDetail",
+      "type": "function",
+      "name": "ExecutionWorkspaceDetail",
+      "filePath": "ui/src/pages/ExecutionWorkspaceDetail.tsx",
+      "lineRange": [556, 1253],
+      "summary": "Primary workspace detail page component managing tabbed navigation, form editing, and plugin slot integration for execution workspace resources.",
+      "tags": ["component", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/ExecutionWorkspaceDetail.tsx:ExecutionWorkspaceIssuesList",
+      "type": "function",
+      "name": "ExecutionWorkspaceIssuesList",
+      "filePath": "ui/src/pages/ExecutionWorkspaceDetail.tsx",
+      "lineRange": [301, 372],
+      "summary": "Renders the list of issues linked to an execution workspace with status indicators and navigation links.",
+      "tags": ["component", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/pages/ExecutionWorkspaceDetail.tsx:ExecutionWorkspaceRoutinesList",
+      "type": "function",
+      "name": "ExecutionWorkspaceRoutinesList",
+      "filePath": "ui/src/pages/ExecutionWorkspaceDetail.tsx",
+      "lineRange": [425, 554],
+      "summary": "Renders the list of routines (recurring scheduled tasks) associated with an execution workspace including schedule, status, and management actions.",
+      "tags": ["component", "data-model", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/ExecutionWorkspaceDetail.tsx:buildWorkspacePatch",
+      "type": "function",
+      "name": "buildWorkspacePatch",
+      "filePath": "ui/src/pages/ExecutionWorkspaceDetail.tsx",
+      "lineRange": [181, 219],
+      "summary": "Constructs a partial workspace update payload by diff-ing the current form state against the original workspace data.",
+      "tags": ["utility", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/Inbox.test.tsx",
+      "type": "file",
+      "name": "Inbox.test.tsx",
+      "filePath": "ui/src/pages/Inbox.test.tsx",
+      "summary": "Integration tests for the Inbox page covering issue display, join-request rows, grouping, filtering, and approval interaction flows.",
+      "tags": ["test", "component", "validation"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/Inbox.tsx",
+      "type": "file",
+      "name": "Inbox.tsx",
+      "filePath": "ui/src/pages/Inbox.tsx",
+      "summary": "Central inbox page aggregating issues, failed agent runs, join requests, and approvals into a filterable, grouped feed with inline action support.",
+      "tags": ["component", "api-handler", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/Inbox.tsx:Inbox",
+      "type": "function",
+      "name": "Inbox",
+      "filePath": "ui/src/pages/Inbox.tsx",
+      "lineRange": [663, 2769],
+      "summary": "Massive inbox page component managing multi-source data queries, grouping, filtering, keyboard navigation, and row-level actions for all inbox item types.",
+      "tags": ["component", "api-handler", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/Inbox.tsx:FailedRunInboxRow",
+      "type": "function",
+      "name": "FailedRunInboxRow",
+      "filePath": "ui/src/pages/Inbox.tsx",
+      "lineRange": [238, 394],
+      "summary": "Inbox row component for displaying a failed agent run with error summary, retry action, and navigation to the issue detail.",
+      "tags": ["component", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/Inbox.tsx:formatJoinRequestInboxLabel",
+      "type": "function",
+      "name": "formatJoinRequestInboxLabel",
+      "filePath": "ui/src/pages/Inbox.tsx",
+      "lineRange": [207, 233],
+      "summary": "Formats a human-readable inbox label for a join request row based on the request type and requester identity.",
+      "tags": ["utility", "serialization"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/InstanceExperimentalSettings.tsx",
+      "type": "file",
+      "name": "InstanceExperimentalSettings.tsx",
+      "filePath": "ui/src/pages/InstanceExperimentalSettings.tsx",
+      "summary": "Admin settings page for instance-level experimental features such as recovery mode configuration and agent run recovery previews.",
+      "tags": ["component", "config", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/InstanceExperimentalSettings.tsx:InstanceExperimentalSettings",
+      "type": "function",
+      "name": "InstanceExperimentalSettings",
+      "filePath": "ui/src/pages/InstanceExperimentalSettings.tsx",
+      "lineRange": [121, 434],
+      "summary": "Main settings page component for experimental instance features, including recovery mode toggles and preview dialogs.",
+      "tags": ["component", "config"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/InstanceExperimentalSettings.tsx:RecoveryPreviewDialog",
+      "type": "function",
+      "name": "RecoveryPreviewDialog",
+      "filePath": "ui/src/pages/InstanceExperimentalSettings.tsx",
+      "lineRange": [33, 119],
+      "summary": "Dialog component previewing a recovery action for a specific agent run before committing the recovery.",
+      "tags": ["component", "validation"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/InviteLanding.test.tsx",
+      "type": "file",
+      "name": "InviteLanding.test.tsx",
+      "filePath": "ui/src/pages/InviteLanding.test.tsx",
+      "summary": "Integration tests for the InviteLandingPage covering invite acceptance, authentication states, agent join, and error handling scenarios.",
+      "tags": ["test", "component", "validation"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/InviteLanding.tsx",
+      "type": "file",
+      "name": "InviteLanding.tsx",
+      "filePath": "ui/src/pages/InviteLanding.tsx",
+      "summary": "Invite acceptance landing page handling auth flow, join request submission, bootstrap acceptance, and post-accept redirect for both human and agent invites.",
+      "tags": ["component", "api-handler", "middleware"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/InviteLanding.tsx:InviteLandingPage",
+      "type": "function",
+      "name": "InviteLandingPage",
+      "filePath": "ui/src/pages/InviteLanding.tsx",
+      "lineRange": [215, 833],
+      "summary": "Main invite landing page orchestrating auth checks, invite fetching, join request submission, and rendering confirmation or error states.",
+      "tags": ["component", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/InviteLanding.tsx:AwaitingJoinApprovalPanel",
+      "type": "function",
+      "name": "AwaitingJoinApprovalPanel",
+      "filePath": "ui/src/pages/InviteLanding.tsx",
+      "lineRange": [154, 213],
+      "summary": "Panel shown to a user after submitting a join request, polling for approval status and displaying company context.",
+      "tags": ["component", "event-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/pages/InviteLanding.tsx:mapInviteAuthFeedback",
+      "type": "function",
+      "name": "mapInviteAuthFeedback",
+      "filePath": "ui/src/pages/InviteLanding.tsx",
+      "lineRange": [63, 106],
+      "summary": "Maps auth error codes and invite states to user-facing feedback messages and UI configuration for the invite landing flow.",
+      "tags": ["utility", "validation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/InviteUxLab.tsx",
+      "type": "file",
+      "name": "InviteUxLab.tsx",
+      "filePath": "ui/src/pages/InviteUxLab.tsx",
+      "summary": "UX lab for the invite flow, rendering all invite page states (inline auth, agent request, accept, result, auth screens, company invites) as static fixtures for UI development.",
+      "tags": ["component", "utility", "test"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/InviteUxLab.tsx:InviteUxLab",
+      "type": "function",
+      "name": "InviteUxLab",
+      "filePath": "ui/src/pages/InviteUxLab.tsx",
+      "lineRange": [697, 927],
+      "summary": "Root UX lab component composing all invite state previews into a navigable lab interface.",
+      "tags": ["component", "utility"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/IssueDetail.tsx",
+      "type": "file",
+      "name": "IssueDetail.tsx",
+      "filePath": "ui/src/pages/IssueDetail.tsx",
+      "summary": "Comprehensive issue detail page displaying agent run history, chat/activity feed, file attachments, recovery actions, and issue metadata with real-time polling.",
+      "tags": ["component", "api-handler", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/IssueDetail.tsx:IssueDetail",
+      "type": "function",
+      "name": "IssueDetail",
+      "filePath": "ui/src/pages/IssueDetail.tsx",
+      "lineRange": [1226, 4203],
+      "summary": "Massive issue detail page component managing run polling, activity tabs, file previews, recovery flows, and board-side user interactions.",
+      "tags": ["component", "api-handler", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/IssueDetail.tsx:IssueDetailActivityTab",
+      "type": "function",
+      "name": "IssueDetailActivityTab",
+      "filePath": "ui/src/pages/IssueDetail.tsx",
+      "lineRange": [979, 1224],
+      "summary": "Renders the activity/chat tab for an issue detail page including message list, input, and file upload.",
+      "tags": ["component", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/IssueDetail.tsx:canBoardResolveRecoveryAction",
+      "type": "function",
+      "name": "canBoardResolveRecoveryAction",
+      "filePath": "ui/src/pages/IssueDetail.tsx",
+      "lineRange": [216, 231],
+      "summary": "Determines whether a human board member can resolve a given recovery action type on an issue.",
+      "tags": ["utility", "validation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/pages/IssueDetail.tsx:mergeOptimisticFeedbackVote",
+      "type": "function",
+      "name": "mergeOptimisticFeedbackVote",
+      "filePath": "ui/src/pages/IssueDetail.tsx",
+      "lineRange": [314, 369],
+      "summary": "Merges an optimistic feedback vote into the cached issue run data for immediate UI update before server confirmation.",
+      "tags": ["utility", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/pages/IssueDetail.tsx:IssueDetailLoadingState",
+      "type": "function",
+      "name": "IssueDetailLoadingState",
+      "filePath": "ui/src/pages/IssueDetail.tsx",
+      "lineRange": [435, 514],
+      "summary": "Skeleton loading state component for the issue detail page while data is being fetched.",
+      "tags": ["component", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/Issues.tsx",
+      "type": "file",
+      "name": "Issues.tsx",
+      "filePath": "ui/src/pages/Issues.tsx",
+      "summary": "Issues list page with infinite-scroll pagination, search, filtering, and stable merge of paginated results.",
+      "tags": ["component", "api-handler", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/pages/Issues.tsx:Issues",
+      "type": "function",
+      "name": "Issues",
+      "filePath": "ui/src/pages/Issues.tsx",
+      "lineRange": [58, 203],
+      "summary": "Main issues list page component with infinite scroll, search input, and URL-driven filter state.",
+      "tags": ["component", "api-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/pages/Issues.tsx:mergeIssuePagesStable",
+      "type": "function",
+      "name": "mergeIssuePagesStable",
+      "filePath": "ui/src/pages/Issues.tsx",
+      "lineRange": [29, 42],
+      "summary": "Merges paginated issue query result pages into a stable deduplicated list for infinite scroll rendering.",
+      "tags": ["utility", "data-model"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/pages/Issues.tsx:buildIssuesSearchUrl",
+      "type": "function",
+      "name": "buildIssuesSearchUrl",
+      "filePath": "ui/src/pages/Issues.tsx",
+      "lineRange": [44, 56],
+      "summary": "Constructs the URL query string for issues list filtering and search parameters.",
+      "tags": ["utility", "api-handler"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/pages/PluginManager.tsx",
+      "type": "file",
+      "name": "PluginManager.tsx",
+      "filePath": "ui/src/pages/PluginManager.tsx",
+      "summary": "Admin plugin manager page listing installed plugins with status, error summaries, enable/disable toggles, and uninstall actions.",
+      "tags": ["component", "api-handler", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/PluginManager.tsx:PluginManager",
+      "type": "function",
+      "name": "PluginManager",
+      "filePath": "ui/src/pages/PluginManager.tsx",
+      "lineRange": [63, 509],
+      "summary": "Plugin management page component fetching plugin list and providing enable/disable/uninstall mutations with error display.",
+      "tags": ["component", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/ProjectDetail.test.tsx",
+      "type": "file",
+      "name": "ProjectDetail.test.tsx",
+      "filePath": "ui/src/pages/ProjectDetail.test.tsx",
+      "summary": "Integration tests for the ProjectDetail page verifying project overview, settings editing, issue list, and plugin tab rendering.",
+      "tags": ["test", "component", "validation"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/ProjectDetail.tsx",
+      "type": "file",
+      "name": "ProjectDetail.tsx",
+      "filePath": "ui/src/pages/ProjectDetail.tsx",
+      "summary": "Project detail page with tabbed navigation covering overview, issues list, plugin operations, and settings including color picker and description editing.",
+      "tags": ["component", "api-handler", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/ProjectDetail.tsx:ProjectDetail",
+      "type": "function",
+      "name": "ProjectDetail",
+      "filePath": "ui/src/pages/ProjectDetail.tsx",
+      "lineRange": [281, 859],
+      "summary": "Main project detail page component managing tab routing, project mutation, and plugin slot injection across overview, issues, and settings tabs.",
+      "tags": ["component", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/ProjectDetail.tsx:ProjectIssuesList",
+      "type": "function",
+      "name": "ProjectIssuesList",
+      "filePath": "ui/src/pages/ProjectDetail.tsx",
+      "lineRange": [165, 216],
+      "summary": "Renders a filtered list of issues belonging to the current project with pagination and status indicators.",
+      "tags": ["component", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/pages/ProjectDetail.tsx:ColorPicker",
+      "type": "function",
+      "name": "ColorPicker",
+      "filePath": "ui/src/pages/ProjectDetail.tsx",
+      "lineRange": [108, 161],
+      "summary": "Color swatch picker component for selecting a project color from a predefined palette.",
+      "tags": ["component", "utility"],
+      "complexity": "moderate"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:ui/src/pages/CloudUpstream.tsx",
+      "target": "function:ui/src/pages/CloudUpstream.tsx:CloudUpstream",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CloudUpstream.tsx",
+      "target": "function:ui/src/pages/CloudUpstream.tsx:ActivationChecklist",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CloudUpstream.tsx",
+      "target": "function:ui/src/pages/CloudUpstream.tsx:buildActivationRows",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CloudUpstream.tsx",
+      "target": "function:ui/src/pages/CloudUpstream.tsx:CloudUpstream",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/CloudUpstream.tsx",
+      "target": "function:ui/src/pages/CloudUpstream.tsx:buildActivationRows",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/CloudUpstreamUxLab.tsx",
+      "target": "function:ui/src/pages/CloudUpstreamUxLab.tsx:CloudUpstreamUxLab",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CloudUpstreamUxLab.tsx",
+      "target": "function:ui/src/pages/CloudUpstreamUxLab.tsx:CloudUpstreamRender",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CloudUpstreamUxLab.tsx",
+      "target": "function:ui/src/pages/CloudUpstreamUxLab.tsx:buildFixture",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CloudUpstreamUxLab.tsx",
+      "target": "function:ui/src/pages/CloudUpstreamUxLab.tsx:CloudUpstreamUxLab",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/CloudUpstreamUxLab.tsx",
+      "target": "file:ui/src/pages/CloudUpstream.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/pages/CompanyAccess.test.tsx",
+      "target": "file:ui/src/pages/CompanyAccess.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/pages/CompanyAccess.tsx",
+      "target": "function:ui/src/pages/CompanyAccess.tsx:CompanyAccess",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CompanyAccess.tsx",
+      "target": "function:ui/src/pages/CompanyAccess.tsx:CompanyAccessLegacyRoute",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CompanyAccess.tsx",
+      "target": "function:ui/src/pages/CompanyAccess.tsx:PendingJoinRequestCard",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CompanyAccess.tsx",
+      "target": "function:ui/src/pages/CompanyAccess.tsx:CompanyAccess",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/CompanyAccess.tsx",
+      "target": "function:ui/src/pages/CompanyAccess.tsx:CompanyAccessLegacyRoute",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/CompanyExport.tsx",
+      "target": "function:ui/src/pages/CompanyExport.tsx:CompanyExport",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CompanyExport.tsx",
+      "target": "function:ui/src/pages/CompanyExport.tsx:filterPaperclipYaml",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CompanyExport.tsx",
+      "target": "function:ui/src/pages/CompanyExport.tsx:generateReadmeFromSelection",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CompanyExport.tsx",
+      "target": "function:ui/src/pages/CompanyExport.tsx:downloadZip",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CompanyExport.tsx",
+      "target": "function:ui/src/pages/CompanyExport.tsx:CompanyExport",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/CompanyImport.tsx",
+      "target": "function:ui/src/pages/CompanyImport.tsx:CompanyImport",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CompanyImport.tsx",
+      "target": "function:ui/src/pages/CompanyImport.tsx:ConflictResolutionList",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CompanyImport.tsx",
+      "target": "function:ui/src/pages/CompanyImport.tsx:buildActionMap",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CompanyImport.tsx",
+      "target": "function:ui/src/pages/CompanyImport.tsx:buildConflictList",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CompanyImport.tsx",
+      "target": "function:ui/src/pages/CompanyImport.tsx:CompanyImport",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/CompanyInvites.test.tsx",
+      "target": "file:ui/src/pages/CompanyInvites.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/pages/CompanyInvites.tsx",
+      "target": "function:ui/src/pages/CompanyInvites.tsx:CompanyInvites",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CompanyInvites.tsx",
+      "target": "function:ui/src/pages/CompanyInvites.tsx:CompanyInvites",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/CompanySettings.tsx",
+      "target": "function:ui/src/pages/CompanySettings.tsx:CompanySettings",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CompanySettings.tsx",
+      "target": "function:ui/src/pages/CompanySettings.tsx:CompanySettings",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/CompanySettingsPluginPage.test.tsx",
+      "target": "file:ui/src/pages/CompanySettingsPluginPage.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/pages/CompanySettingsPluginPage.tsx",
+      "target": "function:ui/src/pages/CompanySettingsPluginPage.tsx:CompanySettingsPluginPage",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CompanySettingsPluginPage.tsx",
+      "target": "function:ui/src/pages/CompanySettingsPluginPage.tsx:CompanySettingsPluginPage",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/DesignGuide.tsx",
+      "target": "function:ui/src/pages/DesignGuide.tsx:DesignGuide",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/DesignGuide.tsx",
+      "target": "function:ui/src/pages/DesignGuide.tsx:DesignGuide",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/ExecutionWorkspaceDetail.test.tsx",
+      "target": "file:ui/src/pages/ExecutionWorkspaceDetail.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/pages/ExecutionWorkspaceDetail.tsx",
+      "target": "function:ui/src/pages/ExecutionWorkspaceDetail.tsx:ExecutionWorkspaceDetail",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/ExecutionWorkspaceDetail.tsx",
+      "target": "function:ui/src/pages/ExecutionWorkspaceDetail.tsx:ExecutionWorkspaceIssuesList",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/ExecutionWorkspaceDetail.tsx",
+      "target": "function:ui/src/pages/ExecutionWorkspaceDetail.tsx:ExecutionWorkspaceRoutinesList",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/ExecutionWorkspaceDetail.tsx",
+      "target": "function:ui/src/pages/ExecutionWorkspaceDetail.tsx:buildWorkspacePatch",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/ExecutionWorkspaceDetail.tsx",
+      "target": "function:ui/src/pages/ExecutionWorkspaceDetail.tsx:ExecutionWorkspaceDetail",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/Inbox.test.tsx",
+      "target": "file:ui/src/pages/Inbox.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/pages/Inbox.tsx",
+      "target": "function:ui/src/pages/Inbox.tsx:Inbox",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/Inbox.tsx",
+      "target": "function:ui/src/pages/Inbox.tsx:FailedRunInboxRow",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/Inbox.tsx",
+      "target": "function:ui/src/pages/Inbox.tsx:formatJoinRequestInboxLabel",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/Inbox.tsx",
+      "target": "function:ui/src/pages/Inbox.tsx:Inbox",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/Inbox.tsx",
+      "target": "function:ui/src/pages/Inbox.tsx:FailedRunInboxRow",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/Inbox.tsx",
+      "target": "function:ui/src/pages/Inbox.tsx:formatJoinRequestInboxLabel",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/InstanceExperimentalSettings.tsx",
+      "target": "function:ui/src/pages/InstanceExperimentalSettings.tsx:InstanceExperimentalSettings",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/InstanceExperimentalSettings.tsx",
+      "target": "function:ui/src/pages/InstanceExperimentalSettings.tsx:RecoveryPreviewDialog",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/InstanceExperimentalSettings.tsx",
+      "target": "function:ui/src/pages/InstanceExperimentalSettings.tsx:InstanceExperimentalSettings",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/InviteLanding.test.tsx",
+      "target": "file:ui/src/pages/InviteLanding.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/pages/InviteLanding.tsx",
+      "target": "function:ui/src/pages/InviteLanding.tsx:InviteLandingPage",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/InviteLanding.tsx",
+      "target": "function:ui/src/pages/InviteLanding.tsx:AwaitingJoinApprovalPanel",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/InviteLanding.tsx",
+      "target": "function:ui/src/pages/InviteLanding.tsx:mapInviteAuthFeedback",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/InviteLanding.tsx",
+      "target": "function:ui/src/pages/InviteLanding.tsx:InviteLandingPage",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/InviteUxLab.tsx",
+      "target": "function:ui/src/pages/InviteUxLab.tsx:InviteUxLab",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/InviteUxLab.tsx",
+      "target": "function:ui/src/pages/InviteUxLab.tsx:InviteUxLab",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/InviteUxLab.tsx",
+      "target": "file:ui/src/pages/InviteLanding.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/pages/IssueDetail.tsx",
+      "target": "function:ui/src/pages/IssueDetail.tsx:IssueDetail",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/IssueDetail.tsx",
+      "target": "function:ui/src/pages/IssueDetail.tsx:IssueDetailActivityTab",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/IssueDetail.tsx",
+      "target": "function:ui/src/pages/IssueDetail.tsx:canBoardResolveRecoveryAction",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/IssueDetail.tsx",
+      "target": "function:ui/src/pages/IssueDetail.tsx:mergeOptimisticFeedbackVote",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/IssueDetail.tsx",
+      "target": "function:ui/src/pages/IssueDetail.tsx:IssueDetailLoadingState",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/IssueDetail.tsx",
+      "target": "function:ui/src/pages/IssueDetail.tsx:IssueDetail",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/IssueDetail.tsx",
+      "target": "function:ui/src/pages/IssueDetail.tsx:canBoardResolveRecoveryAction",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/Issues.tsx",
+      "target": "function:ui/src/pages/Issues.tsx:Issues",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/Issues.tsx",
+      "target": "function:ui/src/pages/Issues.tsx:mergeIssuePagesStable",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/Issues.tsx",
+      "target": "function:ui/src/pages/Issues.tsx:buildIssuesSearchUrl",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/Issues.tsx",
+      "target": "function:ui/src/pages/Issues.tsx:Issues",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/Issues.tsx",
+      "target": "function:ui/src/pages/Issues.tsx:mergeIssuePagesStable",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/Issues.tsx",
+      "target": "function:ui/src/pages/Issues.tsx:buildIssuesSearchUrl",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/PluginManager.tsx",
+      "target": "function:ui/src/pages/PluginManager.tsx:PluginManager",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/PluginManager.tsx",
+      "target": "function:ui/src/pages/PluginManager.tsx:PluginManager",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/ProjectDetail.test.tsx",
+      "target": "file:ui/src/pages/ProjectDetail.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/pages/ProjectDetail.tsx",
+      "target": "function:ui/src/pages/ProjectDetail.tsx:ProjectDetail",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/ProjectDetail.tsx",
+      "target": "function:ui/src/pages/ProjectDetail.tsx:ProjectIssuesList",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/ProjectDetail.tsx",
+      "target": "function:ui/src/pages/ProjectDetail.tsx:ColorPicker",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/ProjectDetail.tsx",
+      "target": "function:ui/src/pages/ProjectDetail.tsx:ProjectDetail",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    }
+  ]
+}

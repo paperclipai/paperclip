@@ -1,0 +1,423 @@
+{
+  "nodes": [
+    {
+      "id": "file:ui/src/components/SecretList.tsx",
+      "type": "file",
+      "name": "SecretList.tsx",
+      "filePath": "ui/src/components/SecretList.tsx",
+      "summary": "React component for displaying and managing a list of workspace or project secrets, likely providing CRUD interactions for secret entries.",
+      "tags": ["component", "security", "ui"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/SettingsModal.tsx",
+      "type": "file",
+      "name": "SettingsModal.tsx",
+      "filePath": "ui/src/components/SettingsModal.tsx",
+      "summary": "Modal dialog component for presenting settings panels, used to configure workspace, project, or company-level settings within a dialog overlay.",
+      "tags": ["component", "modal", "configuration", "ui"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/WorkspaceRuntimeControls.tsx",
+      "type": "file",
+      "name": "WorkspaceRuntimeControls.tsx",
+      "filePath": "ui/src/components/WorkspaceRuntimeControls.tsx",
+      "summary": "Exports reusable UI components and builder utilities for controlling workspace runtime services and jobs — start, stop, restart, and run actions with pending-state management.",
+      "tags": ["component", "service", "runtime", "workspace"],
+      "complexity": "complex",
+      "languageNotes": "Exports six symbols including helper builder functions and two React components (WorkspaceRuntimeControls and WorkspaceRuntimeQuickControls) for flexible composition."
+    },
+    {
+      "id": "function:ui/src/components/WorkspaceRuntimeControls.tsx:hasRunningRuntimeServices",
+      "type": "function",
+      "name": "hasRunningRuntimeServices",
+      "filePath": "ui/src/components/WorkspaceRuntimeControls.tsx",
+      "lineRange": [75, 79],
+      "summary": "Checks whether any runtime services in the list are in a running state.",
+      "tags": ["utility", "runtime", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/components/WorkspaceRuntimeControls.tsx:buildWorkspaceRuntimeControlSections",
+      "type": "function",
+      "name": "buildWorkspaceRuntimeControlSections",
+      "filePath": "ui/src/components/WorkspaceRuntimeControls.tsx",
+      "lineRange": [130, 181],
+      "summary": "Builds structured sections (services, jobs, otherServices) for the runtime controls UI by matching workspace command definitions to running runtime services.",
+      "tags": ["factory", "runtime", "workspace", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/components/WorkspaceRuntimeControls.tsx:buildWorkspaceRuntimeControlItems",
+      "type": "function",
+      "name": "buildWorkspaceRuntimeControlItems",
+      "filePath": "ui/src/components/WorkspaceRuntimeControls.tsx",
+      "lineRange": [183, 193],
+      "summary": "Flattens workspace runtime control sections into a single array of control items for rendering.",
+      "tags": ["utility", "runtime", "workspace"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/components/WorkspaceRuntimeControls.tsx:getRunningRuntimeServiceUrl",
+      "type": "function",
+      "name": "getRunningRuntimeServiceUrl",
+      "filePath": "ui/src/components/WorkspaceRuntimeControls.tsx",
+      "lineRange": [195, 202],
+      "summary": "Retrieves the URL of the first running runtime service from the sections data structure.",
+      "tags": ["utility", "runtime", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/components/WorkspaceRuntimeControls.tsx:WorkspaceRuntimeControls",
+      "type": "function",
+      "name": "WorkspaceRuntimeControls",
+      "filePath": "ui/src/components/WorkspaceRuntimeControls.tsx",
+      "lineRange": [370, 461],
+      "summary": "Main exported React component rendering runtime service and job control panels with start/stop/restart actions, empty states, and disabled hints.",
+      "tags": ["component", "runtime", "workspace", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/components/WorkspaceRuntimeControls.tsx:WorkspaceRuntimeQuickControls",
+      "type": "function",
+      "name": "WorkspaceRuntimeQuickControls",
+      "filePath": "ui/src/components/WorkspaceRuntimeControls.tsx",
+      "lineRange": [463, 514],
+      "summary": "Compact variant of the runtime controls component showing quick action buttons with optional service URL linking.",
+      "tags": ["component", "runtime", "workspace"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/hooks/useAgentMemberships.ts",
+      "type": "file",
+      "name": "useAgentMemberships.ts",
+      "filePath": "ui/src/hooks/useAgentMemberships.ts",
+      "summary": "Custom React hook for fetching and managing agent membership data within a company or project context.",
+      "tags": ["hook", "agent", "membership", "data-model"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/hooks/useIssueList.ts",
+      "type": "file",
+      "name": "useIssueList.ts",
+      "filePath": "ui/src/hooks/useIssueList.ts",
+      "summary": "Custom React hook that fetches and manages a paginated or filtered list of issues/tasks, providing state for issue browsing components.",
+      "tags": ["hook", "service", "api-handler", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/hooks/useProjectMemberships.ts",
+      "type": "file",
+      "name": "useProjectMemberships.ts",
+      "filePath": "ui/src/hooks/useProjectMemberships.ts",
+      "summary": "Custom React hook for querying project membership data, exposing member lists for project-level permission and display logic.",
+      "tags": ["hook", "membership", "data-model"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/hooks/useRoutines.ts",
+      "type": "file",
+      "name": "useRoutines.ts",
+      "filePath": "ui/src/hooks/useRoutines.ts",
+      "summary": "Custom React hook for fetching and managing routine (scheduled task) data, used by routine-related UI components.",
+      "tags": ["hook", "service", "data-model"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/pages/App.tsx",
+      "type": "file",
+      "name": "App.tsx",
+      "filePath": "ui/src/pages/App.tsx",
+      "summary": "Root application component that sets up routing structure, authentication guards, and the top-level page layout for the Paperclip UI.",
+      "tags": ["entry-point", "component", "routing"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/CliAuth.tsx",
+      "type": "file",
+      "name": "CliAuth.tsx",
+      "filePath": "ui/src/pages/CliAuth.tsx",
+      "summary": "Page component for CLI OAuth challenge approval — fetches the pending challenge via query params, allows users to approve or cancel CLI authentication from the browser.",
+      "tags": ["component", "api-handler", "security", "middleware"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/pages/CliAuth.tsx:CliAuthPage",
+      "type": "function",
+      "name": "CliAuthPage",
+      "filePath": "ui/src/pages/CliAuth.tsx",
+      "lineRange": [9, 184],
+      "summary": "Manages the full CLI auth challenge flow: fetches session and challenge state, handles approve/cancel mutations, and renders the appropriate UI for each auth state.",
+      "tags": ["component", "security", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/CompanyPage.tsx",
+      "type": "file",
+      "name": "CompanyPage.tsx",
+      "filePath": "ui/src/pages/CompanyPage.tsx",
+      "summary": "Primary page component for the company workspace, orchestrating navigation and rendering of company-level views including agents, projects, goals, issues, and settings.",
+      "tags": ["component", "entry-point", "routing"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/InvitePage.tsx",
+      "type": "file",
+      "name": "InvitePage.tsx",
+      "filePath": "ui/src/pages/InvitePage.tsx",
+      "summary": "Page component handling the company invitation flow, allowing invited users to accept an invitation and join a Paperclip company workspace.",
+      "tags": ["component", "security", "api-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/ProjectPage.tsx",
+      "type": "file",
+      "name": "ProjectPage.tsx",
+      "filePath": "ui/src/pages/ProjectPage.tsx",
+      "summary": "Project-scoped page component that renders project details, issues, workspaces, and settings within the company context.",
+      "tags": ["component", "routing", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/SignInPage.tsx",
+      "type": "file",
+      "name": "SignInPage.tsx",
+      "filePath": "ui/src/pages/SignInPage.tsx",
+      "summary": "Authentication page that handles user sign-in via email magic link or OAuth providers, coordinating with the auth API.",
+      "tags": ["component", "security", "api-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/VerifyPage.tsx",
+      "type": "file",
+      "name": "VerifyPage.tsx",
+      "filePath": "ui/src/pages/VerifyPage.tsx",
+      "summary": "Short page component for handling the email verification step after a sign-in magic link is clicked.",
+      "tags": ["component", "security", "middleware"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/store.ts",
+      "type": "file",
+      "name": "store.ts",
+      "filePath": "ui/src/store.ts",
+      "summary": "Global client-side state store for the UI, managing application-wide state such as selected company, navigation context, and UI preferences.",
+      "tags": ["singleton", "data-model", "configuration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/utils.ts",
+      "type": "file",
+      "name": "utils.ts",
+      "filePath": "ui/src/utils.ts",
+      "summary": "General-purpose utility functions for the UI layer, providing helpers for formatting, string manipulation, and common UI logic.",
+      "tags": ["utility", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:scripts/export-db.sh",
+      "type": "file",
+      "name": "export-db.sh",
+      "filePath": "scripts/export-db.sh",
+      "summary": "Shell script that exports the Paperclip PostgreSQL database to a dump file, used for backup and data migration workflows.",
+      "tags": ["database", "infrastructure", "script"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:scripts/paperclip-issue-update.sh",
+      "type": "file",
+      "name": "paperclip-issue-update.sh",
+      "filePath": "scripts/paperclip-issue-update.sh",
+      "summary": "CLI utility script that PATCHes a Paperclip issue status and/or comment via the REST API, accepting piped markdown content from stdin and supporting dry-run mode.",
+      "tags": ["api-handler", "script", "utility"],
+      "complexity": "moderate",
+      "languageNotes": "Uses jq for JSON construction and curl for API calls; reads multiline comment from stdin to preserve newlines."
+    },
+    {
+      "id": "file:scripts/run-docker-postgres.sh",
+      "type": "file",
+      "name": "run-docker-postgres.sh",
+      "filePath": "scripts/run-docker-postgres.sh",
+      "summary": "Shell script that spins up a local PostgreSQL Docker container with Paperclip-specific configuration for local development.",
+      "tags": ["infrastructure", "database", "script"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:scripts/send-slack-alert.sh",
+      "type": "file",
+      "name": "send-slack-alert.sh",
+      "filePath": "scripts/send-slack-alert.sh",
+      "summary": "Shell script that posts an alert message to a configured Slack webhook, used by CI/CD pipelines and automation scripts for notifications.",
+      "tags": ["script", "monitoring", "ci-cd"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:docker/docker-compose.yml",
+      "type": "config",
+      "name": "docker-compose.yml",
+      "filePath": "docker/docker-compose.yml",
+      "summary": "Docker Compose configuration defining a two-service stack: a PostgreSQL database and the Paperclip server built from the root Dockerfile, with persistent volumes and environment-based configuration.",
+      "tags": ["orchestration", "infrastructure", "containerization", "deployment"],
+      "complexity": "simple",
+      "languageNotes": "Uses a health-check dependency so the server only starts after postgres is ready."
+    },
+    {
+      "id": "config:docker/nginx.conf",
+      "type": "config",
+      "name": "nginx.conf",
+      "filePath": "docker/nginx.conf",
+      "summary": "Nginx reverse proxy configuration for routing HTTP traffic to the Paperclip server, likely handling static asset serving and API proxying.",
+      "tags": ["infrastructure", "deployment", "configuration"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:docker/paperclip-startup.sh",
+      "type": "file",
+      "name": "paperclip-startup.sh",
+      "filePath": "docker/paperclip-startup.sh",
+      "summary": "Container entrypoint startup script that runs database migrations and then starts the Paperclip server process inside the Docker container.",
+      "tags": ["infrastructure", "deployment", "script"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:pnpm-workspace.yaml",
+      "type": "config",
+      "name": "pnpm-workspace.yaml",
+      "filePath": "pnpm-workspace.yaml",
+      "summary": "pnpm monorepo workspace configuration listing all package directories including server, ui, cli, and plugin packages, with exclusions for standalone plugin examples.",
+      "tags": ["configuration", "build-system", "monorepo"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:vitest.workspace.ts",
+      "type": "file",
+      "name": "vitest.workspace.ts",
+      "filePath": "vitest.workspace.ts",
+      "summary": "Vitest workspace configuration that coordinates test suites across multiple monorepo packages, defining which packages participate in the workspace test run.",
+      "tags": ["test", "configuration", "build-system"],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:ui/src/components/WorkspaceRuntimeControls.tsx",
+      "target": "function:ui/src/components/WorkspaceRuntimeControls.tsx:hasRunningRuntimeServices",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/WorkspaceRuntimeControls.tsx",
+      "target": "function:ui/src/components/WorkspaceRuntimeControls.tsx:buildWorkspaceRuntimeControlSections",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/WorkspaceRuntimeControls.tsx",
+      "target": "function:ui/src/components/WorkspaceRuntimeControls.tsx:buildWorkspaceRuntimeControlItems",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/WorkspaceRuntimeControls.tsx",
+      "target": "function:ui/src/components/WorkspaceRuntimeControls.tsx:getRunningRuntimeServiceUrl",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/WorkspaceRuntimeControls.tsx",
+      "target": "function:ui/src/components/WorkspaceRuntimeControls.tsx:WorkspaceRuntimeControls",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/WorkspaceRuntimeControls.tsx",
+      "target": "function:ui/src/components/WorkspaceRuntimeControls.tsx:WorkspaceRuntimeQuickControls",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/WorkspaceRuntimeControls.tsx",
+      "target": "function:ui/src/components/WorkspaceRuntimeControls.tsx:hasRunningRuntimeServices",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/WorkspaceRuntimeControls.tsx",
+      "target": "function:ui/src/components/WorkspaceRuntimeControls.tsx:buildWorkspaceRuntimeControlSections",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/WorkspaceRuntimeControls.tsx",
+      "target": "function:ui/src/components/WorkspaceRuntimeControls.tsx:buildWorkspaceRuntimeControlItems",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/WorkspaceRuntimeControls.tsx",
+      "target": "function:ui/src/components/WorkspaceRuntimeControls.tsx:getRunningRuntimeServiceUrl",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/WorkspaceRuntimeControls.tsx",
+      "target": "function:ui/src/components/WorkspaceRuntimeControls.tsx:WorkspaceRuntimeControls",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/WorkspaceRuntimeControls.tsx",
+      "target": "function:ui/src/components/WorkspaceRuntimeControls.tsx:WorkspaceRuntimeQuickControls",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/CliAuth.tsx",
+      "target": "function:ui/src/pages/CliAuth.tsx:CliAuthPage",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/CliAuth.tsx",
+      "target": "function:ui/src/pages/CliAuth.tsx:CliAuthPage",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "config:docker/docker-compose.yml",
+      "target": "file:docker/paperclip-startup.sh",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:docker/nginx.conf",
+      "target": "config:docker/docker-compose.yml",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "config:pnpm-workspace.yaml",
+      "target": "file:ui/src/pages/App.tsx",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    }
+  ]
+}

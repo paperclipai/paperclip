@@ -1,0 +1,1106 @@
+{
+  "nodes": [
+    {
+      "id": "document:AGENTS.md",
+      "type": "document",
+      "name": "AGENTS.md",
+      "filePath": "AGENTS.md",
+      "summary": "Comprehensive agent engineering guide covering repo map, dev setup, core rules, database workflow, API and UI expectations, PR requirements, and fork-specific conventions including GitNexus code intelligence instructions.",
+      "tags": ["documentation", "development", "configuration", "ci-cd", "infrastructure"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "document:CLAUDE.md",
+      "type": "document",
+      "name": "CLAUDE.md",
+      "filePath": "CLAUDE.md",
+      "summary": "Project-level Claude Code instructions configuring GitNexus code intelligence tooling with mandatory impact analysis rules and resource references for the paperclip codebase.",
+      "tags": ["documentation", "configuration", "development"],
+      "complexity": "simple"
+    },
+    {
+      "id": "service:Dockerfile",
+      "type": "service",
+      "name": "Dockerfile",
+      "filePath": "Dockerfile",
+      "summary": "Multi-stage Docker build (base, deps, build, production) that installs the pnpm monorepo, compiles the server/UI/plugins, installs Claude Code globally, and exposes the Paperclip server on port 3100.",
+      "tags": ["containerization", "infrastructure", "deployment", "build-system"],
+      "complexity": "moderate",
+      "languageNotes": "Four named build stages: base sets up the Node.js base image, deps installs pnpm dependencies, build compiles all packages, and production is the minimal runtime image."
+    },
+    {
+      "id": "service:Dockerfile:base",
+      "type": "service",
+      "name": "base",
+      "filePath": "Dockerfile",
+      "summary": "Base Node.js LTS (trixie-slim) stage that installs system packages, git, PostgreSQL client tools, and adjusts UID/GID for the node user.",
+      "tags": ["containerization", "infrastructure"],
+      "complexity": "simple"
+    },
+    {
+      "id": "service:Dockerfile:deps",
+      "type": "service",
+      "name": "deps",
+      "filePath": "Dockerfile",
+      "summary": "Dependency installation stage that copies all package.json manifests and runs pnpm install with a frozen lockfile to produce a cached node_modules layer.",
+      "tags": ["containerization", "infrastructure", "build-system"],
+      "complexity": "simple"
+    },
+    {
+      "id": "service:Dockerfile:build",
+      "type": "service",
+      "name": "build",
+      "filePath": "Dockerfile",
+      "summary": "Compilation stage that copies the full source from the deps stage and builds the UI, plugin SDK, and server packages using pnpm filters.",
+      "tags": ["containerization", "build-system"],
+      "complexity": "simple"
+    },
+    {
+      "id": "service:Dockerfile:production",
+      "type": "service",
+      "name": "production",
+      "filePath": "Dockerfile",
+      "summary": "Production runtime stage that installs Claude Code globally, copies the built application, configures environment variables and volumes, and defines the entrypoint on port 3100.",
+      "tags": ["containerization", "deployment", "infrastructure"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "document:WIGANZ-MENTAL-MODEL.md",
+      "type": "document",
+      "name": "WIGANZ-MENTAL-MODEL.md",
+      "filePath": "WIGANZ-MENTAL-MODEL.md",
+      "summary": "Comprehensive mental model document (48 sections) explaining Paperclip's complete architecture in Vietnamese/English: companies, agents, issues, heartbeat dispatcher, execution pipeline, adapters, memory layers, signoff policy, routines, plugins, and orchestration semantics.",
+      "tags": ["documentation", "architecture", "overview"],
+      "complexity": "complex"
+    },
+    {
+      "id": "document:cli/README.md",
+      "type": "document",
+      "name": "README.md",
+      "filePath": "cli/README.md",
+      "summary": "Main project README covering Paperclip's value proposition, features, quickstart guide, cloud sync documentation, FAQ, roadmap, and community links for the CLI package.",
+      "tags": ["documentation", "entry-point", "overview"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "config:cli/package.json",
+      "type": "config",
+      "name": "package.json",
+      "filePath": "cli/package.json",
+      "summary": "CLI package manifest for @paperclipai/cli defining the paperclip binary entry point, ESM module type, publish configuration, runtime dependencies (commander, zod, picocolors, etc.), and dev dependencies.",
+      "tags": ["configuration", "build-system", "entry-point"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:cli/src/__tests__/cloud.test.ts",
+      "type": "file",
+      "name": "cloud.test.ts",
+      "filePath": "cli/src/__tests__/cloud.test.ts",
+      "summary": "Integration tests for cloud sync functionality covering bundle construction from local companies, upstream discovery, and portability export flows.",
+      "tags": ["test", "cloud-sync", "integration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/__tests__/cloud.test.ts:buildTestBundle",
+      "type": "function",
+      "name": "buildTestBundle",
+      "filePath": "cli/src/__tests__/cloud.test.ts",
+      "lineRange": [131, 166],
+      "summary": "Test helper that constructs a cloud upload bundle from a local company fixture with mocked discovery and portability export data.",
+      "tags": ["test", "utility", "factory"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/__tests__/cloud.test.ts:portabilityExport",
+      "type": "function",
+      "name": "portabilityExport",
+      "filePath": "cli/src/__tests__/cloud.test.ts",
+      "lineRange": [193, 236],
+      "summary": "Builds a complete portability export fixture object for use in cloud bundle tests, covering agents, companies, issues, goals, and file entries.",
+      "tags": ["test", "factory", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:cli/src/__tests__/network-bind.test.ts",
+      "type": "file",
+      "name": "network-bind.test.ts",
+      "filePath": "cli/src/__tests__/network-bind.test.ts",
+      "summary": "Tests for network port binding utilities verifying that available port detection and loopback binding work correctly.",
+      "tags": ["test", "utility", "networking"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:cli/src/__tests__/onboard.test.ts",
+      "type": "file",
+      "name": "onboard.test.ts",
+      "filePath": "cli/src/__tests__/onboard.test.ts",
+      "summary": "Tests for the CLI onboarding flow covering both fresh installs and existing config migration, using filesystem fixtures in temp directories.",
+      "tags": ["test", "configuration", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/__tests__/onboard.test.ts:createExistingConfigFixture",
+      "type": "function",
+      "name": "createExistingConfigFixture",
+      "filePath": "cli/src/__tests__/onboard.test.ts",
+      "lineRange": [12, 77],
+      "summary": "Creates a temporary directory with a pre-populated Paperclip config fixture including agent, company, and project config files for migration tests.",
+      "tags": ["test", "factory", "configuration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:cli/src/__tests__/worktree.test.ts",
+      "type": "file",
+      "name": "worktree.test.ts",
+      "filePath": "cli/src/__tests__/worktree.test.ts",
+      "summary": "Extensive test suite (1360 lines) for the worktree command covering init, make, merge, cleanup, reseed, repair flows and related git/storage/database utilities.",
+      "tags": ["test", "worktree", "integration"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:cli/src/__tests__/worktree.test.ts:buildSourceConfig",
+      "type": "function",
+      "name": "buildSourceConfig",
+      "filePath": "cli/src/__tests__/worktree.test.ts",
+      "lineRange": [75, 133],
+      "summary": "Builds a comprehensive source config fixture for worktree tests including embedded Postgres, S3, git, and project settings.",
+      "tags": ["test", "factory", "configuration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:cli/src/adapters/registry.ts",
+      "type": "file",
+      "name": "registry.ts",
+      "filePath": "cli/src/adapters/registry.ts",
+      "summary": "Adapter registry that maps AI adapter type strings (claude-local, codex-local, cursor-cloud, etc.) to their CLI adapter implementations, exposing a getCLIAdapter lookup function.",
+      "tags": ["service", "factory", "configuration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/adapters/registry.ts:getCLIAdapter",
+      "type": "function",
+      "name": "getCLIAdapter",
+      "filePath": "cli/src/adapters/registry.ts",
+      "lineRange": [82, 84],
+      "summary": "Looks up and returns the CLI adapter instance for a given adapter type string from the static registry map.",
+      "tags": ["factory", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:cli/src/commands/client/cloud-store.ts",
+      "type": "file",
+      "name": "cloud-store.ts",
+      "filePath": "cli/src/commands/client/cloud-store.ts",
+      "summary": "Manages persistent cloud connection credentials on disk, providing read/write/upsert/lookup operations for the JSON store that holds OAuth tokens and instance identities per remote origin.",
+      "tags": ["service", "utility", "configuration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/commands/client/cloud-store.ts:readCloudConnectionStore",
+      "type": "function",
+      "name": "readCloudConnectionStore",
+      "filePath": "cli/src/commands/client/cloud-store.ts",
+      "lineRange": [53, 72],
+      "summary": "Reads and normalizes the cloud connection store JSON file from disk, sorting connections by most recently updated.",
+      "tags": ["utility", "serialization"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/commands/client/cloud-store.ts:upsertCloudConnection",
+      "type": "function",
+      "name": "upsertCloudConnection",
+      "filePath": "cli/src/commands/client/cloud-store.ts",
+      "lineRange": [82, 98],
+      "summary": "Inserts or updates a cloud connection entry in the store by target origin, stamping an updatedAt timestamp before persisting.",
+      "tags": ["utility", "data-model"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:cli/src/commands/client/cloud-store.ts:getCloudConnection",
+      "type": "function",
+      "name": "getCloudConnection",
+      "filePath": "cli/src/commands/client/cloud-store.ts",
+      "lineRange": [100, 113],
+      "summary": "Retrieves a specific cloud connection from the store by matching normalized remote URL or origin, returning undefined when not found.",
+      "tags": ["utility", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:cli/src/commands/client/cloud-store.ts:normalizeConnection",
+      "type": "function",
+      "name": "normalizeConnection",
+      "filePath": "cli/src/commands/client/cloud-store.ts",
+      "lineRange": [124, 169],
+      "summary": "Validates and normalizes a raw connection object from the store JSON, coercing all string fields and handling both legacy and current schema shapes.",
+      "tags": ["validation", "serialization"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:cli/src/commands/client/cloud-transfer.ts",
+      "type": "file",
+      "name": "cloud-transfer.ts",
+      "filePath": "cli/src/commands/client/cloud-transfer.ts",
+      "summary": "Implements cloud data transfer logic: builds chunked upload bundles from local company exports, provides the LocalUpstreamPushCoordinator HTTP client, and defines content-hashing utilities for change detection.",
+      "tags": ["service", "api-handler", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "class:cli/src/commands/client/cloud-transfer.ts:LocalUpstreamPushCoordinator",
+      "type": "class",
+      "name": "LocalUpstreamPushCoordinator",
+      "filePath": "cli/src/commands/client/cloud-transfer.ts",
+      "lineRange": [131, 192],
+      "summary": "HTTP client that coordinates a local-to-upstream push operation by calling preview, apply, and events endpoints on the Paperclip Cloud server.",
+      "tags": ["service", "api-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/commands/client/cloud-transfer.ts:buildLocalUpstreamExportBundle",
+      "type": "function",
+      "name": "buildLocalUpstreamExportBundle",
+      "filePath": "cli/src/commands/client/cloud-transfer.ts",
+      "lineRange": [194, 231],
+      "summary": "Assembles the full chunked upload manifest from a list of entities, computing per-chunk and manifest-level content hashes for deduplication.",
+      "tags": ["data-model", "utility", "serialization"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:cli/src/commands/client/cloud.ts",
+      "type": "file",
+      "name": "cloud.ts",
+      "filePath": "cli/src/commands/client/cloud.ts",
+      "summary": "Main cloud command implementation providing connect (PKCE browser and device-code OAuth flows) and push (preview/apply upstream sync) commands against Paperclip Cloud with signed request authentication.",
+      "tags": ["api-handler", "service", "entry-point"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:cli/src/commands/client/cloud.ts:registerCloudCommands",
+      "type": "function",
+      "name": "registerCloudCommands",
+      "filePath": "cli/src/commands/client/cloud.ts",
+      "lineRange": [102, 141],
+      "summary": "Registers the 'cloud connect' and 'cloud push' sub-commands onto the commander program with all options and action handlers.",
+      "tags": ["entry-point", "api-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/commands/client/cloud.ts:connectCloud",
+      "type": "function",
+      "name": "connectCloud",
+      "filePath": "cli/src/commands/client/cloud.ts",
+      "lineRange": [143, 183],
+      "summary": "Executes the cloud connect flow: discovers the remote stack, creates a source identity, authorizes via browser or device code, and persists the connection token.",
+      "tags": ["api-handler", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/commands/client/cloud.ts:pushCloud",
+      "type": "function",
+      "name": "pushCloud",
+      "filePath": "cli/src/commands/client/cloud.ts",
+      "lineRange": [185, 235],
+      "summary": "Orchestrates a cloud push operation by building a local export bundle, coordinating a preview or apply with the upstream coordinator, and reporting results.",
+      "tags": ["api-handler", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/commands/client/cloud.ts:buildBundleFromLocalCompany",
+      "type": "function",
+      "name": "buildBundleFromLocalCompany",
+      "filePath": "cli/src/commands/client/cloud.ts",
+      "lineRange": [262, 326],
+      "summary": "Exports a local company's data via the local API, maps it to upstream entity format, and packages it into a signed upload bundle with content hash.",
+      "tags": ["data-model", "service", "serialization"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/commands/client/cloud.ts:authorizeWithBrowser",
+      "type": "function",
+      "name": "authorizeWithBrowser",
+      "filePath": "cli/src/commands/client/cloud.ts",
+      "lineRange": [346, 384],
+      "summary": "Implements the PKCE OAuth browser flow by starting a loopback callback server, opening the authorization URL, and exchanging the authorization code for an access token.",
+      "tags": ["api-handler", "service", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/commands/client/cloud.ts:authorizeWithDeviceCode",
+      "type": "function",
+      "name": "authorizeWithDeviceCode",
+      "filePath": "cli/src/commands/client/cloud.ts",
+      "lineRange": [386, 435],
+      "summary": "Implements the device authorization flow by displaying a user code and polling the token endpoint until the user completes authorization or the code expires.",
+      "tags": ["api-handler", "service", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/commands/client/cloud.ts:cloudProofHeaders",
+      "type": "function",
+      "name": "cloudProofHeaders",
+      "filePath": "cli/src/commands/client/cloud.ts",
+      "lineRange": [500, 523],
+      "summary": "Generates signed request proof headers using the instance's private key, including timestamp, nonce, and RSA signature for authenticating cloud API calls.",
+      "tags": ["security", "utility", "api-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:cli/src/commands/routines.ts",
+      "type": "file",
+      "name": "routines.ts",
+      "filePath": "cli/src/commands/routines.ts",
+      "summary": "Implements the 'routines disable-all' CLI command that connects to the configured Paperclip database and pauses all non-archived scheduled routines for a specified company.",
+      "tags": ["api-handler", "service", "entry-point"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:cli/src/commands/routines.ts:registerRoutineCommands",
+      "type": "function",
+      "name": "registerRoutineCommands",
+      "filePath": "cli/src/commands/routines.ts",
+      "lineRange": [336, 355],
+      "summary": "Registers the 'routines' command group with 'disable-all' sub-command onto the commander program with config, data-dir, company, and JSON output options.",
+      "tags": ["entry-point", "api-handler"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:cli/src/commands/routines.ts:disableAllRoutinesInConfig",
+      "type": "function",
+      "name": "disableAllRoutinesInConfig",
+      "filePath": "cli/src/commands/routines.ts",
+      "lineRange": [233, 315],
+      "summary": "Connects to the configured local Paperclip database and updates all active routine statuses to 'paused' for the given company, returning counts of paused and already-paused routines.",
+      "tags": ["service", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:cli/src/commands/routines.ts:openConfiguredDb",
+      "type": "function",
+      "name": "openConfiguredDb",
+      "filePath": "cli/src/commands/routines.ts",
+      "lineRange": [186, 231],
+      "summary": "Opens a database connection for the configured Paperclip instance, optionally starting an embedded Postgres if needed and applying pending migrations before returning the drizzle db handle.",
+      "tags": ["service", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:cli/src/commands/worktree.ts",
+      "type": "file",
+      "name": "worktree.ts",
+      "filePath": "cli/src/commands/worktree.ts",
+      "summary": "Largest CLI module (3350 lines) implementing all worktree commands: init, make, cleanup, env, list, merge-history, reseed, and repair — covering git worktree lifecycle, database seeding, storage bridging, and agent state quarantine.",
+      "tags": ["entry-point", "service", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:cli/src/commands/worktree.ts:registerWorktreeCommands",
+      "type": "function",
+      "name": "registerWorktreeCommands",
+      "filePath": "cli/src/commands/worktree.ts",
+      "lineRange": [3249, 3349],
+      "summary": "Registers all worktree sub-commands (init, make, cleanup, env, list, merge-history, reseed, repair) onto the commander program with their respective options.",
+      "tags": ["entry-point", "api-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/commands/worktree.ts:runWorktreeInit",
+      "type": "function",
+      "name": "runWorktreeInit",
+      "filePath": "cli/src/commands/worktree.ts",
+      "lineRange": [1360, 1498],
+      "summary": "Orchestrates worktree initialization by setting up git worktree structure, configuring embedded Postgres port, seeding the database from a source, and copying secrets and git hooks.",
+      "tags": ["service", "utility"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:cli/src/commands/worktree.ts:seedWorktreeDatabase",
+      "type": "function",
+      "name": "seedWorktreeDatabase",
+      "filePath": "cli/src/commands/worktree.ts",
+      "lineRange": [1276, 1358],
+      "summary": "Seeds a new worktree's database from a source connection, copying over company data, agent config, issues, and attachments while quarantining in-progress execution state.",
+      "tags": ["data-model", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:cli/src/commands/worktree.ts:applyMergePlan",
+      "type": "function",
+      "name": "applyMergePlan",
+      "filePath": "cli/src/commands/worktree.ts",
+      "lineRange": [2567, 2958],
+      "summary": "Applies a computed merge plan that transfers issues, attachments, and project mappings from a source worktree to the primary git worktree, resolving conflicts interactively.",
+      "tags": ["service", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:cli/src/commands/worktree.ts:collectMergePlan",
+      "type": "function",
+      "name": "collectMergePlan",
+      "filePath": "cli/src/commands/worktree.ts",
+      "lineRange": [2127, 2377],
+      "summary": "Queries both source and target worktree databases to build a merge plan listing issues to transfer, attachment diffs, and project mapping conflicts.",
+      "tags": ["data-model", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:cli/src/commands/worktree.ts:quarantineSeededWorktreeExecutionState",
+      "type": "function",
+      "name": "quarantineSeededWorktreeExecutionState",
+      "filePath": "cli/src/commands/worktree.ts",
+      "lineRange": [1186, 1274],
+      "summary": "Resets in-progress agent runs and pauses timer heartbeats in a freshly seeded worktree database to prevent duplicate execution after database copy.",
+      "tags": ["service", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:cli/src/commands/worktree.ts:worktreeMakeCommand",
+      "type": "function",
+      "name": "worktreeMakeCommand",
+      "filePath": "cli/src/commands/worktree.ts",
+      "lineRange": [1506, 1569],
+      "summary": "Implements the 'worktree make' command that creates a new git worktree branch, installs dependencies, and runs the init flow for the new worktree.",
+      "tags": ["entry-point", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/commands/worktree.ts:worktreeCleanupCommand",
+      "type": "function",
+      "name": "worktreeCleanupCommand",
+      "filePath": "cli/src/commands/worktree.ts",
+      "lineRange": [1719, 1853],
+      "summary": "Implements 'worktree cleanup' that optionally merges open issues back, stops the worktree's Postgres, removes the git worktree directory, and cleans up the branch.",
+      "tags": ["entry-point", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:cli/src/commands/worktree.ts:createConfiguredStorageFromPaperclipConfig",
+      "type": "function",
+      "name": "createConfiguredStorageFromPaperclipConfig",
+      "filePath": "cli/src/commands/worktree.ts",
+      "lineRange": [326, 388],
+      "summary": "Reads the Paperclip config and constructs the appropriate storage backend (local filesystem or S3-compatible) based on the configured storage type.",
+      "tags": ["factory", "service", "configuration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/commands/worktree.ts:ensureEmbeddedPostgres",
+      "type": "function",
+      "name": "ensureEmbeddedPostgres",
+      "filePath": "cli/src/commands/worktree.ts",
+      "lineRange": [1052, 1117],
+      "summary": "Starts or reattaches to an embedded Postgres instance for a worktree data directory, initializing and starting the cluster if it does not already exist.",
+      "tags": ["service", "infrastructure"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:cli/src/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "cli/src/index.ts",
+      "summary": "CLI entry point that assembles the commander program, registers all command groups (worktree, cloud, routines, onboard, etc.), and launches the main CLI loop.",
+      "tags": ["entry-point", "barrel"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:cli/src/index.ts:main",
+      "type": "function",
+      "name": "main",
+      "filePath": "cli/src/index.ts",
+      "lineRange": [172, 186],
+      "summary": "Bootstrap function that initializes the commander program with all sub-commands and calls program.parseAsync to handle CLI arguments.",
+      "tags": ["entry-point", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "document:doc/DATABASE.md",
+      "type": "document",
+      "name": "DATABASE.md",
+      "filePath": "doc/DATABASE.md",
+      "summary": "Database architecture documentation covering the schema design, key tables (companies, agents, issues, heartbeatRuns, routines), migration workflow, and embedded Postgres setup for local development.",
+      "tags": ["documentation", "database", "architecture"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "document:doc/DEVELOPING.md",
+      "type": "document",
+      "name": "DEVELOPING.md",
+      "filePath": "doc/DEVELOPING.md",
+      "summary": "Developer guide explaining local setup, environment configuration, running the server, testing workflow, plugin development, and contribution guidelines for the Paperclip monorepo.",
+      "tags": ["documentation", "development", "configuration"],
+      "complexity": "complex"
+    },
+    {
+      "id": "document:doc/PRODUCT.md",
+      "type": "document",
+      "name": "PRODUCT.md",
+      "filePath": "doc/PRODUCT.md",
+      "summary": "Product vision document defining Paperclip's positioning as a persistent AI agent orchestration platform, its target users, core value propositions, and differentiation from alternatives.",
+      "tags": ["documentation", "overview"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "document:doc/SPEC-implementation.md",
+      "type": "document",
+      "name": "SPEC-implementation.md",
+      "filePath": "doc/SPEC-implementation.md",
+      "summary": "Detailed implementation specification (1053 lines) describing the server-side execution model, heartbeat mechanics, issue state machine transitions, agent run lifecycle, and signoff policy implementation.",
+      "tags": ["documentation", "architecture", "api-schema"],
+      "complexity": "complex"
+    },
+    {
+      "id": "document:doc/SPEC.md",
+      "type": "document",
+      "name": "SPEC.md",
+      "filePath": "doc/SPEC.md",
+      "summary": "High-level product specification defining Paperclip's entities (companies, agents, issues, goals, routines), API contract, execution semantics, and plugin extension model.",
+      "tags": ["documentation", "architecture", "api-schema"],
+      "complexity": "complex"
+    },
+    {
+      "id": "document:doc/execution-semantics.md",
+      "type": "document",
+      "name": "execution-semantics.md",
+      "filePath": "doc/execution-semantics.md",
+      "summary": "Technical deep-dive into execution semantics covering the pull-based DB queue, heartbeat dispatcher, executeRun flow, context snapshots, recovery service, and blocking/signoff mechanisms.",
+      "tags": ["documentation", "architecture", "development"],
+      "complexity": "complex"
+    },
+    {
+      "id": "document:doc/plans/2026-05-05-scaled-kanban-board-design.md",
+      "type": "document",
+      "name": "2026-05-05-scaled-kanban-board-design.md",
+      "filePath": "doc/plans/2026-05-05-scaled-kanban-board-design.md",
+      "summary": "UI design plan for a scaled Kanban board feature proposing visual grouping, swimlane layouts, and column collapsing for the Paperclip issue board at scale.",
+      "tags": ["documentation", "development"],
+      "complexity": "simple"
+    },
+    {
+      "id": "document:doc/plans/2026-05-05-scaled-kanban-board.md",
+      "type": "document",
+      "name": "2026-05-05-scaled-kanban-board.md",
+      "filePath": "doc/plans/2026-05-05-scaled-kanban-board.md",
+      "summary": "Implementation plan for the scaled Kanban board covering backend pagination API changes, frontend virtual list rendering, and query optimization for large issue counts.",
+      "tags": ["documentation", "development", "api-schema"],
+      "complexity": "moderate"
+    }
+  ],
+  "edges": [
+    {
+      "source": "service:Dockerfile",
+      "target": "service:Dockerfile:base",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "service:Dockerfile",
+      "target": "service:Dockerfile:deps",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "service:Dockerfile",
+      "target": "service:Dockerfile:build",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "service:Dockerfile",
+      "target": "service:Dockerfile:production",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "service:Dockerfile",
+      "target": "file:cli/src/index.ts",
+      "type": "deploys",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "document:AGENTS.md",
+      "target": "file:cli/src/index.ts",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:AGENTS.md",
+      "target": "document:doc/DEVELOPING.md",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:CLAUDE.md",
+      "target": "file:cli/src/index.ts",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:WIGANZ-MENTAL-MODEL.md",
+      "target": "document:doc/SPEC.md",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:WIGANZ-MENTAL-MODEL.md",
+      "target": "document:doc/execution-semantics.md",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:cli/README.md",
+      "target": "file:cli/src/index.ts",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "config:cli/package.json",
+      "target": "file:cli/src/index.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:cli/src/__tests__/cloud.test.ts",
+      "target": "function:cli/src/__tests__/cloud.test.ts:buildTestBundle",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/__tests__/cloud.test.ts",
+      "target": "function:cli/src/__tests__/cloud.test.ts:portabilityExport",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/__tests__/cloud.test.ts",
+      "target": "file:cli/src/commands/client/cloud.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:cli/src/__tests__/onboard.test.ts",
+      "target": "function:cli/src/__tests__/onboard.test.ts:createExistingConfigFixture",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/__tests__/worktree.test.ts",
+      "target": "function:cli/src/__tests__/worktree.test.ts:buildSourceConfig",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/__tests__/worktree.test.ts",
+      "target": "file:cli/src/commands/worktree.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:cli/src/adapters/registry.ts",
+      "target": "function:cli/src/adapters/registry.ts:getCLIAdapter",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/adapters/registry.ts",
+      "target": "function:cli/src/adapters/registry.ts:getCLIAdapter",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud-store.ts",
+      "target": "function:cli/src/commands/client/cloud-store.ts:readCloudConnectionStore",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud-store.ts",
+      "target": "function:cli/src/commands/client/cloud-store.ts:upsertCloudConnection",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud-store.ts",
+      "target": "function:cli/src/commands/client/cloud-store.ts:getCloudConnection",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud-store.ts",
+      "target": "function:cli/src/commands/client/cloud-store.ts:normalizeConnection",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud-store.ts",
+      "target": "function:cli/src/commands/client/cloud-store.ts:readCloudConnectionStore",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud-store.ts",
+      "target": "function:cli/src/commands/client/cloud-store.ts:upsertCloudConnection",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud-store.ts",
+      "target": "function:cli/src/commands/client/cloud-store.ts:getCloudConnection",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud-transfer.ts",
+      "target": "class:cli/src/commands/client/cloud-transfer.ts:LocalUpstreamPushCoordinator",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud-transfer.ts",
+      "target": "function:cli/src/commands/client/cloud-transfer.ts:buildLocalUpstreamExportBundle",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud-transfer.ts",
+      "target": "class:cli/src/commands/client/cloud-transfer.ts:LocalUpstreamPushCoordinator",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud-transfer.ts",
+      "target": "function:cli/src/commands/client/cloud-transfer.ts:buildLocalUpstreamExportBundle",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud.ts",
+      "target": "function:cli/src/commands/client/cloud.ts:registerCloudCommands",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud.ts",
+      "target": "function:cli/src/commands/client/cloud.ts:connectCloud",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud.ts",
+      "target": "function:cli/src/commands/client/cloud.ts:pushCloud",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud.ts",
+      "target": "function:cli/src/commands/client/cloud.ts:buildBundleFromLocalCompany",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud.ts",
+      "target": "function:cli/src/commands/client/cloud.ts:authorizeWithBrowser",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud.ts",
+      "target": "function:cli/src/commands/client/cloud.ts:authorizeWithDeviceCode",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud.ts",
+      "target": "function:cli/src/commands/client/cloud.ts:cloudProofHeaders",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud.ts",
+      "target": "function:cli/src/commands/client/cloud.ts:registerCloudCommands",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud.ts",
+      "target": "function:cli/src/commands/client/cloud.ts:connectCloud",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud.ts",
+      "target": "function:cli/src/commands/client/cloud.ts:pushCloud",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud.ts",
+      "target": "function:cli/src/commands/client/cloud.ts:buildBundleFromLocalCompany",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud.ts",
+      "target": "file:cli/src/commands/client/cloud-store.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:cli/src/commands/client/cloud.ts",
+      "target": "file:cli/src/commands/client/cloud-transfer.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:cli/src/commands/routines.ts",
+      "target": "function:cli/src/commands/routines.ts:registerRoutineCommands",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/routines.ts",
+      "target": "function:cli/src/commands/routines.ts:disableAllRoutinesInConfig",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/routines.ts",
+      "target": "function:cli/src/commands/routines.ts:openConfiguredDb",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/routines.ts",
+      "target": "function:cli/src/commands/routines.ts:registerRoutineCommands",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/commands/routines.ts",
+      "target": "function:cli/src/commands/routines.ts:disableAllRoutinesInConfig",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/commands/worktree.ts",
+      "target": "function:cli/src/commands/worktree.ts:registerWorktreeCommands",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/worktree.ts",
+      "target": "function:cli/src/commands/worktree.ts:runWorktreeInit",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/worktree.ts",
+      "target": "function:cli/src/commands/worktree.ts:seedWorktreeDatabase",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/worktree.ts",
+      "target": "function:cli/src/commands/worktree.ts:applyMergePlan",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/worktree.ts",
+      "target": "function:cli/src/commands/worktree.ts:collectMergePlan",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/worktree.ts",
+      "target": "function:cli/src/commands/worktree.ts:quarantineSeededWorktreeExecutionState",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/worktree.ts",
+      "target": "function:cli/src/commands/worktree.ts:worktreeMakeCommand",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/worktree.ts",
+      "target": "function:cli/src/commands/worktree.ts:worktreeCleanupCommand",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/worktree.ts",
+      "target": "function:cli/src/commands/worktree.ts:createConfiguredStorageFromPaperclipConfig",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/worktree.ts",
+      "target": "function:cli/src/commands/worktree.ts:ensureEmbeddedPostgres",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/commands/worktree.ts",
+      "target": "function:cli/src/commands/worktree.ts:registerWorktreeCommands",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/commands/worktree.ts",
+      "target": "function:cli/src/commands/worktree.ts:worktreeMakeCommand",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/commands/worktree.ts",
+      "target": "function:cli/src/commands/worktree.ts:worktreeCleanupCommand",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/commands/worktree.ts",
+      "target": "function:cli/src/commands/worktree.ts:quarantineSeededWorktreeExecutionState",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/commands/worktree.ts",
+      "target": "function:cli/src/commands/worktree.ts:seedWorktreeDatabase",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:cli/src/index.ts",
+      "target": "function:cli/src/index.ts:main",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:cli/src/index.ts",
+      "target": "file:cli/src/commands/client/cloud.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:cli/src/index.ts",
+      "target": "file:cli/src/commands/worktree.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:cli/src/index.ts",
+      "target": "file:cli/src/commands/routines.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:cli/src/index.ts",
+      "target": "file:cli/src/adapters/registry.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "document:doc/DATABASE.md",
+      "target": "document:doc/DEVELOPING.md",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:doc/SPEC.md",
+      "target": "document:doc/SPEC-implementation.md",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:doc/execution-semantics.md",
+      "target": "document:doc/SPEC-implementation.md",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:doc/plans/2026-05-05-scaled-kanban-board.md",
+      "target": "document:doc/plans/2026-05-05-scaled-kanban-board-design.md",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:doc/DEVELOPING.md",
+      "target": "service:Dockerfile",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    }
+  ]
+}

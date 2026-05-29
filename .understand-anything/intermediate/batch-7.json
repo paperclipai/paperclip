@@ -1,0 +1,380 @@
+{
+  "nodes": [
+    {
+      "id": "file:server/src/services/issue.ts",
+      "type": "file",
+      "name": "issue.ts",
+      "filePath": "server/src/services/issue.ts",
+      "summary": "Core issue lifecycle service managing CRUD operations, status transitions, comments, labels, relations, and agent wakeup flows for the Paperclip issue-tracking domain. Handles complex business logic including child issue management, execution workspace settings, and run log derivation.",
+      "tags": ["service", "data-model", "api-handler", "validation"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/plugin.ts",
+      "type": "file",
+      "name": "plugin.ts",
+      "filePath": "server/src/services/plugin.ts",
+      "summary": "Plugin management service coordinating plugin lifecycle, registry operations, worker management, and capability validation within the Paperclip platform. Acts as the central orchestrator between plugin loader, job scheduler, and host services.",
+      "tags": ["service", "middleware", "factory", "singleton"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/resource-memberships.ts",
+      "type": "file",
+      "name": "resource-memberships.ts",
+      "filePath": "server/src/services/resource-memberships.ts",
+      "summary": "Service managing project and agent resource memberships, enforcing board-level access policies and authorization rules before persisting membership state changes to the database. Exposes a factory function that returns a typed service object.",
+      "tags": ["service", "authorization", "data-model", "validation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/services/routine.ts",
+      "type": "file",
+      "name": "routine.ts",
+      "filePath": "server/src/services/routine.ts",
+      "summary": "Routine scheduling service handling creation, triggering, revision management, webhook secrets, cron parsing, and catchup run logic for Paperclip's automated routine workflows. Integrates with heartbeat, issue assignment wakeup, and secret providers.",
+      "tags": ["service", "event-handler", "validation", "factory"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/workspace.ts",
+      "type": "file",
+      "name": "workspace.ts",
+      "filePath": "server/src/services/workspace.ts",
+      "summary": "Workspace service providing operations for creating, querying, and managing execution workspaces tied to issues and projects, bridging workspace realization and runtime configuration concerns.",
+      "tags": ["service", "data-model", "middleware"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/task-scheduler.ts",
+      "type": "file",
+      "name": "task-scheduler.ts",
+      "filePath": "server/src/task-scheduler.ts",
+      "summary": "Background task scheduler responsible for polling and dispatching periodic server-side tasks such as routine triggering, heartbeat maintenance, and other time-based operations across the Paperclip platform.",
+      "tags": ["service", "event-handler", "singleton"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/tests/agents.test.ts",
+      "type": "file",
+      "name": "agents.test.ts",
+      "filePath": "server/src/tests/agents.test.ts",
+      "summary": "Integration test suite covering agent creation, configuration, membership, permissions, and lifecycle operations including agent-to-issue assignment and wakeup behavior.",
+      "tags": ["test", "api-handler", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/tests/approvals.test.ts",
+      "type": "file",
+      "name": "approvals.test.ts",
+      "filePath": "server/src/tests/approvals.test.ts",
+      "summary": "Integration tests for the issue approval workflow, verifying approval creation, state transitions, and enforcement of approval gates before issue progression.",
+      "tags": ["test", "validation", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/tests/board-auth.test.ts",
+      "type": "file",
+      "name": "board-auth.test.ts",
+      "filePath": "server/src/tests/board-auth.test.ts",
+      "summary": "Integration tests for board-level authorization rules, ensuring that access controls are correctly enforced for board member operations and self-membership assertions.",
+      "tags": ["test", "authorization", "middleware"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:server/src/tests/cloud-upstream.test.ts",
+      "type": "file",
+      "name": "cloud-upstream.test.ts",
+      "filePath": "server/src/tests/cloud-upstream.test.ts",
+      "summary": "Integration test suite for the cloud upstream sync functionality, verifying data federation, push/pull workflows, and conflict resolution between local and upstream Paperclip instances.",
+      "tags": ["test", "service", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/tests/companies.test.ts",
+      "type": "file",
+      "name": "companies.test.ts",
+      "filePath": "server/src/tests/companies.test.ts",
+      "summary": "Integration tests for company management including creation, member roles, export, portability, and company-scoped access control within the Paperclip multi-tenant model.",
+      "tags": ["test", "data-model", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/tests/goals.test.ts",
+      "type": "file",
+      "name": "goals.test.ts",
+      "filePath": "server/src/tests/goals.test.ts",
+      "summary": "Integration tests for the goals feature, covering goal creation, assignment to issues, fallback resolution, and default company goal behavior.",
+      "tags": ["test", "data-model", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/tests/heartbeat.test.ts",
+      "type": "file",
+      "name": "heartbeat.test.ts",
+      "filePath": "server/src/tests/heartbeat.test.ts",
+      "summary": "Comprehensive integration test suite for the heartbeat system covering run scheduling, retry logic, stale queue invalidation, active run watchdog, context summarization, and process recovery across agent execution cycles.",
+      "tags": ["test", "service", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/tests/issues.test.ts",
+      "type": "file",
+      "name": "issues.test.ts",
+      "filePath": "server/src/tests/issues.test.ts",
+      "summary": "Largest integration test suite covering the full issue domain: CRUD operations, status transitions, comments, labels, relations, attachments, agent wakeups, child issues, blocking logic, and execution workspace settings.",
+      "tags": ["test", "data-model", "api-handler", "validation"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/tests/plugins.test.ts",
+      "type": "file",
+      "name": "plugins.test.ts",
+      "filePath": "server/src/tests/plugins.test.ts",
+      "summary": "Integration tests for plugin registration, lifecycle management, capability validation, managed agent/routine provisioning, and plugin-scoped secret handling.",
+      "tags": ["test", "service", "middleware"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/tests/projects.test.ts",
+      "type": "file",
+      "name": "projects.test.ts",
+      "filePath": "server/src/tests/projects.test.ts",
+      "summary": "Integration tests for project creation, workspace configuration, member management, and project-scoped issue and agent association within companies.",
+      "tags": ["test", "data-model", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/tests/resource-memberships.test.ts",
+      "type": "file",
+      "name": "resource-memberships.test.ts",
+      "filePath": "server/src/tests/resource-memberships.test.ts",
+      "summary": "Integration tests for resource membership management covering project and agent membership state transitions, policy enforcement, board self-membership access control, and listing operations.",
+      "tags": ["test", "authorization", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/tests/routines.test.ts",
+      "type": "file",
+      "name": "routines.test.ts",
+      "filePath": "server/src/tests/routines.test.ts",
+      "summary": "Integration tests for the routine scheduling system including trigger creation, cron execution, webhook trigger handling, revision management, and plugin-managed routine lifecycle.",
+      "tags": ["test", "service", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/tests/runs.test.ts",
+      "type": "file",
+      "name": "runs.test.ts",
+      "filePath": "server/src/tests/runs.test.ts",
+      "summary": "Integration tests for run (heartbeat execution) lifecycle including run creation, log association, status reporting, and run summary retrieval.",
+      "tags": ["test", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:server/src/tests/secrets.test.ts",
+      "type": "file",
+      "name": "secrets.test.ts",
+      "filePath": "server/src/tests/secrets.test.ts",
+      "summary": "Integration tests for the secrets management service covering secret creation, version binding to companies, access scoping, and secret provider resolution.",
+      "tags": ["test", "service", "security"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:server/src/tests/users.test.ts",
+      "type": "file",
+      "name": "users.test.ts",
+      "filePath": "server/src/tests/users.test.ts",
+      "summary": "Integration tests for user account management including profile retrieval, company membership, invite flows, and user-level access control checks.",
+      "tags": ["test", "service", "authorization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:server/src/tests/workspaces.test.ts",
+      "type": "file",
+      "name": "workspaces.test.ts",
+      "filePath": "server/src/tests/workspaces.test.ts",
+      "summary": "Comprehensive integration tests for execution workspace management covering workspace creation, session CWD tracking, realization, runtime configuration, and workspace-to-issue linkage across project environments.",
+      "tags": ["test", "service", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/workspace-adapter-bridge.ts",
+      "type": "file",
+      "name": "workspace-adapter-bridge.ts",
+      "filePath": "server/src/workspace-adapter-bridge.ts",
+      "summary": "Bridge layer connecting workspace operations to the underlying adapter system, translating workspace controller commands into adapter-specific actions and forwarding adapter events back to the workspace layer.",
+      "tags": ["middleware", "service", "event-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/workspace-controller.ts",
+      "type": "file",
+      "name": "workspace-controller.ts",
+      "filePath": "server/src/workspace-controller.ts",
+      "summary": "Workspace controller managing the lifecycle of active execution workspaces, coordinating session operations, CWD tracking, and state transitions between the workspace runtime and the application layer.",
+      "tags": ["service", "middleware", "singleton"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/workspace-plugin-bridge.ts",
+      "type": "file",
+      "name": "workspace-plugin-bridge.ts",
+      "filePath": "server/src/workspace-plugin-bridge.ts",
+      "summary": "Bridge enabling plugin-driven workspace operations, forwarding plugin tool calls and events into the workspace controller and surfacing workspace state changes back to the plugin execution environment.",
+      "tags": ["middleware", "service", "event-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:server/src/services/resource-memberships.ts:resourceMembershipService",
+      "type": "function",
+      "name": "resourceMembershipService",
+      "filePath": "server/src/services/resource-memberships.ts",
+      "lineRange": [109, 318],
+      "summary": "Factory function that creates and returns a service object with methods for listing, updating project memberships, and updating agent memberships — enforcing authorization policies throughout.",
+      "tags": ["service", "factory", "authorization"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/resource-memberships.ts:evaluatePolicy",
+      "type": "function",
+      "name": "evaluatePolicy",
+      "filePath": "server/src/services/resource-memberships.ts",
+      "lineRange": [88, 107],
+      "summary": "Evaluates a pluggable policy hook to determine if a membership mutation is permitted, logging warnings on hook failures and defaulting to deny.",
+      "tags": ["authorization", "validation", "middleware"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:server/src/services/resource-memberships.ts:assertBoardSelfMembershipAccess",
+      "type": "function",
+      "name": "assertBoardSelfMembershipAccess",
+      "filePath": "server/src/services/resource-memberships.ts",
+      "lineRange": [72, 86],
+      "summary": "Asserts that the requesting actor has valid board-level membership within the target company before allowing self-membership mutations, throwing forbidden errors on failure.",
+      "tags": ["authorization", "validation", "middleware"],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:server/src/services/resource-memberships.ts",
+      "target": "function:server/src/services/resource-memberships.ts:resourceMembershipService",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/resource-memberships.ts",
+      "target": "function:server/src/services/resource-memberships.ts:evaluatePolicy",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/resource-memberships.ts",
+      "target": "function:server/src/services/resource-memberships.ts:assertBoardSelfMembershipAccess",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/resource-memberships.ts",
+      "target": "function:server/src/services/resource-memberships.ts:resourceMembershipService",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/tests/resource-memberships.test.ts",
+      "target": "file:server/src/services/resource-memberships.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:server/src/services/resource-memberships.ts",
+      "target": "file:server/src/services/resource-memberships.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:server/src/tests/issues.test.ts",
+      "target": "file:server/src/services/issue.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:server/src/tests/plugins.test.ts",
+      "target": "file:server/src/services/plugin.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:server/src/tests/routines.test.ts",
+      "target": "file:server/src/services/routine.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:server/src/tests/workspaces.test.ts",
+      "target": "file:server/src/services/workspace.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:server/src/workspace-adapter-bridge.ts",
+      "target": "file:server/src/workspace-controller.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/workspace-plugin-bridge.ts",
+      "target": "file:server/src/workspace-controller.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/workspace-controller.ts",
+      "target": "file:server/src/services/workspace.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/task-scheduler.ts",
+      "target": "file:server/src/services/routine.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/services/routine.ts",
+      "target": "file:server/src/services/issue.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/tests/heartbeat.test.ts",
+      "target": "file:server/src/services/issue.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/tests/agents.test.ts",
+      "target": "file:server/src/services/issue.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    }
+  ]
+}

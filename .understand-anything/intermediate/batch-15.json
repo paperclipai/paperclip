@@ -1,0 +1,749 @@
+{
+  "nodes": [
+    {
+      "id": "file:ui/src/components/Layout.test.tsx",
+      "type": "file",
+      "name": "Layout.test.tsx",
+      "filePath": "ui/src/components/Layout.test.tsx",
+      "summary": "Test suite for the Layout component, covering navigation, sidebar behavior, and company routing logic.",
+      "tags": ["test", "component", "navigation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/Layout.tsx",
+      "type": "file",
+      "name": "Layout.tsx",
+      "filePath": "ui/src/components/Layout.tsx",
+      "summary": "Root application layout component that manages sidebar state, company selection, navigation, mobile responsiveness, keyboard shortcuts, and plugin slot resolution.",
+      "tags": ["component", "entry-point", "navigation", "middleware"],
+      "complexity": "complex",
+      "languageNotes": "Orchestrates a large number of hooks (useSidebar, useCompany, usePanel, usePluginSlots, useKeyboardShortcuts) and persists instance settings path to localStorage."
+    },
+    {
+      "id": "function:ui/src/components/Layout.tsx:Layout",
+      "type": "function",
+      "name": "Layout",
+      "filePath": "ui/src/components/Layout.tsx",
+      "lineRange": [65, 468],
+      "summary": "Main layout component that assembles the application shell including sidebar, main content area, mobile navigation, and dialog registration.",
+      "tags": ["component", "navigation", "middleware"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/MarkdownBody.interaction.test.tsx",
+      "type": "file",
+      "name": "MarkdownBody.interaction.test.tsx",
+      "filePath": "ui/src/components/MarkdownBody.interaction.test.tsx",
+      "summary": "Interaction-level tests for MarkdownBody focusing on DOM event dispatching and React root rendering behavior.",
+      "tags": ["test", "component", "interaction"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/MarkdownBody.test.tsx",
+      "type": "file",
+      "name": "MarkdownBody.test.tsx",
+      "filePath": "ui/src/components/MarkdownBody.test.tsx",
+      "summary": "Unit tests for MarkdownBody verifying HTML output of various markdown constructs including issue references, wiki links, and code blocks.",
+      "tags": ["test", "component", "serialization"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/MarkdownBody.tsx",
+      "type": "file",
+      "name": "MarkdownBody.tsx",
+      "filePath": "ui/src/components/MarkdownBody.tsx",
+      "summary": "Rich markdown renderer supporting Mermaid diagrams, wiki links, issue references, mention chips, code blocks with copy functionality, and custom image resolution.",
+      "tags": ["component", "utility", "serialization"],
+      "complexity": "complex",
+      "languageNotes": "Implements a custom remark plugin for wiki-link syntax and lazy-loads the Mermaid library to avoid bundling it unless needed."
+    },
+    {
+      "id": "function:ui/src/components/MarkdownBody.tsx:MarkdownBody",
+      "type": "function",
+      "name": "MarkdownBody",
+      "filePath": "ui/src/components/MarkdownBody.tsx",
+      "lineRange": [560, 736],
+      "summary": "Primary exported component that renders markdown content with configurable feature flags for issue linking, wiki links, and image handling.",
+      "tags": ["component", "serialization"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/components/MarkdownBody.tsx:CodeBlock",
+      "type": "function",
+      "name": "CodeBlock",
+      "filePath": "ui/src/components/MarkdownBody.tsx",
+      "lineRange": [391, 503],
+      "summary": "Internal code block renderer with clipboard copy support, syntax highlighting toggles, and scrollable container styling.",
+      "tags": ["component", "utility"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/components/MarkdownBody.tsx:MermaidDiagramBlock",
+      "type": "function",
+      "name": "MermaidDiagramBlock",
+      "filePath": "ui/src/components/MarkdownBody.tsx",
+      "lineRange": [505, 558],
+      "summary": "Renders a Mermaid diagram by lazily loading the Mermaid library and rendering the SVG into the DOM.",
+      "tags": ["component", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/MarkdownBody.wrap.test.tsx",
+      "type": "file",
+      "name": "MarkdownBody.wrap.test.tsx",
+      "filePath": "ui/src/components/MarkdownBody.wrap.test.tsx",
+      "summary": "Tests for MarkdownBody line-wrapping behavior in code blocks, verifying that wrap toggle state is preserved.",
+      "tags": ["test", "component"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/MarkdownEditor.test.tsx",
+      "type": "file",
+      "name": "MarkdownEditor.test.tsx",
+      "filePath": "ui/src/components/MarkdownEditor.test.tsx",
+      "summary": "Comprehensive tests for the MarkdownEditor including mention autocomplete, drag-and-drop, slash commands, and keyboard interactions.",
+      "tags": ["test", "component", "validation"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/MarkdownEditor.tsx",
+      "type": "file",
+      "name": "MarkdownEditor.tsx",
+      "filePath": "ui/src/components/MarkdownEditor.tsx",
+      "summary": "Rich contenteditable markdown editor component with mention autocomplete, slash commands, file drag-and-drop, and caret-position-aware mention menu positioning.",
+      "tags": ["component", "utility", "event-handler"],
+      "complexity": "complex",
+      "languageNotes": "Contains 26 functions including exported utilities (findMentionMatch, computeMentionMenuPosition, shouldAcceptAutocompleteKey, isSameAutocompleteSession, findClosestAutocompleteAnchor, placeCaretAfterMentionAnchor) consumed by tests and other components."
+    },
+    {
+      "id": "function:ui/src/components/MarkdownEditor.tsx:findMentionMatch",
+      "type": "function",
+      "name": "findMentionMatch",
+      "filePath": "ui/src/components/MarkdownEditor.tsx",
+      "lineRange": [247, 280],
+      "summary": "Scans a text string backward from an offset to find an active @-mention trigger pattern and extract the current query.",
+      "tags": ["utility", "validation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/components/MarkdownEditor.tsx:computeMentionMenuPosition",
+      "type": "function",
+      "name": "computeMentionMenuPosition",
+      "filePath": "ui/src/components/MarkdownEditor.tsx",
+      "lineRange": [365, 392],
+      "summary": "Calculates the screen position for the mention dropdown menu, clamping it within the viewport.",
+      "tags": ["utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/components/MarkdownEditor.tsx:MarkdownEditor",
+      "type": "function",
+      "name": "MarkdownEditor",
+      "filePath": "ui/src/components/MarkdownEditor.tsx",
+      "lineRange": [564, 1362],
+      "summary": "Main exported contenteditable editor component wiring together mention detection, autocomplete menus, file uploads, and markdown serialization.",
+      "tags": ["component", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/MembershipAction.test.tsx",
+      "type": "file",
+      "name": "MembershipAction.test.tsx",
+      "filePath": "ui/src/components/MembershipAction.test.tsx",
+      "summary": "Tests for the MembershipAction component covering join, leave, pending, and compact display states.",
+      "tags": ["test", "component"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/MembershipAction.tsx",
+      "type": "file",
+      "name": "MembershipAction.tsx",
+      "filePath": "ui/src/components/MembershipAction.tsx",
+      "summary": "Button component for joining or leaving a resource (agent, project, etc.), supporting pending and compact display variants.",
+      "tags": ["component", "event-handler"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/components/MembershipAction.tsx:MembershipAction",
+      "type": "function",
+      "name": "MembershipAction",
+      "filePath": "ui/src/components/MembershipAction.tsx",
+      "lineRange": [17, 65],
+      "summary": "Renders a join/leave toggle button that adapts its label and styling based on membership state, pending status, and compact mode.",
+      "tags": ["component", "event-handler"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/MissingPluginTabPlaceholder.tsx",
+      "type": "file",
+      "name": "MissingPluginTabPlaceholder.tsx",
+      "filePath": "ui/src/components/MissingPluginTabPlaceholder.tsx",
+      "summary": "Placeholder component shown when a plugin-provided tab is unavailable, linking back to a fallback tab.",
+      "tags": ["component", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:ui/src/components/MissingPluginTabPlaceholder.tsx:MissingPluginTabPlaceholder",
+      "type": "function",
+      "name": "MissingPluginTabPlaceholder",
+      "filePath": "ui/src/components/MissingPluginTabPlaceholder.tsx",
+      "lineRange": [9, 23],
+      "summary": "Renders a notice that a plugin tab is missing and provides a navigation link to the default tab.",
+      "tags": ["component", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/NewAgentDialog.test.tsx",
+      "type": "file",
+      "name": "NewAgentDialog.test.tsx",
+      "filePath": "ui/src/components/NewAgentDialog.test.tsx",
+      "summary": "Tests for the NewAgentDialog covering adapter selection, external agent invite flow, and onboarding prompt generation.",
+      "tags": ["test", "component"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/NewAgentDialog.tsx",
+      "type": "file",
+      "name": "NewAgentDialog.tsx",
+      "filePath": "ui/src/components/NewAgentDialog.tsx",
+      "summary": "Dialog for creating or inviting a new agent, handling adapter selection, external invite generation, and onboarding prompt copying.",
+      "tags": ["component", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/components/NewAgentDialog.tsx:NewAgentDialog",
+      "type": "function",
+      "name": "NewAgentDialog",
+      "filePath": "ui/src/components/NewAgentDialog.tsx",
+      "lineRange": [43, 418],
+      "summary": "Main dialog component that guides the user through choosing an adapter type, configuring external invites, and generating onboarding prompts for new agents.",
+      "tags": ["component", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/NewIssueDialog.test.tsx",
+      "type": "file",
+      "name": "NewIssueDialog.test.tsx",
+      "filePath": "ui/src/components/NewIssueDialog.test.tsx",
+      "summary": "Comprehensive tests for the NewIssueDialog covering title/description input, assignee selection, draft persistence, and file attachment staging.",
+      "tags": ["test", "component"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/NewIssueDialog.tsx",
+      "type": "file",
+      "name": "NewIssueDialog.tsx",
+      "filePath": "ui/src/components/NewIssueDialog.tsx",
+      "summary": "Feature-rich dialog for creating new issues with title, description, assignee (agent/user), project, execution workspace, reviewer, approver, file attachments, and draft persistence.",
+      "tags": ["component", "api-handler", "validation"],
+      "complexity": "complex",
+      "languageNotes": "The most complex component in the batch with 2072 source lines, 27 imports, and 25+ useState calls managing independent form state for all issue fields."
+    },
+    {
+      "id": "function:ui/src/components/NewIssueDialog.tsx:NewIssueDialog",
+      "type": "function",
+      "name": "NewIssueDialog",
+      "filePath": "ui/src/components/NewIssueDialog.tsx",
+      "lineRange": [404, 2072],
+      "summary": "Massive form dialog component that orchestrates issue creation with real-time draft saving, multi-company support, file staging, and execution workspace selection.",
+      "tags": ["component", "api-handler", "validation"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/RoutineHistoryTab.test.tsx",
+      "type": "file",
+      "name": "RoutineHistoryTab.test.tsx",
+      "filePath": "ui/src/components/RoutineHistoryTab.test.tsx",
+      "summary": "Tests for the RoutineHistoryTab covering revision listing, restore confirmation, conflict detection, and diff modal.",
+      "tags": ["test", "component"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/RoutineHistoryTab.tsx",
+      "type": "file",
+      "name": "RoutineHistoryTab.tsx",
+      "filePath": "ui/src/components/RoutineHistoryTab.tsx",
+      "summary": "Tab panel displaying a routine's revision history with side-by-side diff comparison, restore confirmation, conflict detection, and environment variable change summaries.",
+      "tags": ["component", "api-handler"],
+      "complexity": "complex",
+      "languageNotes": "Internally computes field-level diffs (compareEnv, compareTriggers, computeFieldChanges) without external diff libraries, summarizing all changes as human-readable descriptions."
+    },
+    {
+      "id": "function:ui/src/components/RoutineHistoryTab.tsx:RoutineHistoryTab",
+      "type": "function",
+      "name": "RoutineHistoryTab",
+      "filePath": "ui/src/components/RoutineHistoryTab.tsx",
+      "lineRange": [61, 319],
+      "summary": "Main exported tab component that fetches and displays routine revisions with selection, diff preview, and restore workflows.",
+      "tags": ["component", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/RoutineList.tsx",
+      "type": "file",
+      "name": "RoutineList.tsx",
+      "filePath": "ui/src/components/RoutineList.tsx",
+      "summary": "Reusable row component for displaying a routine in a list with run-now, enable/disable toggle, archive, and status formatting utilities.",
+      "tags": ["component", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/components/RoutineList.tsx:RoutineListRow",
+      "type": "function",
+      "name": "RoutineListRow",
+      "filePath": "ui/src/components/RoutineList.tsx",
+      "lineRange": [52, 196],
+      "summary": "Renders a single routine row with configurable action buttons for run-now, enable/disable toggle, and archive operations.",
+      "tags": ["component", "event-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/Sidebar.test.tsx",
+      "type": "file",
+      "name": "Sidebar.test.tsx",
+      "filePath": "ui/src/components/Sidebar.test.tsx",
+      "summary": "Tests for the Sidebar component verifying navigation item rendering, agent counts, and new-issue button behavior.",
+      "tags": ["test", "component", "navigation"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/Sidebar.tsx",
+      "type": "file",
+      "name": "Sidebar.tsx",
+      "filePath": "ui/src/components/Sidebar.tsx",
+      "summary": "Application sidebar component rendering navigation items, agents section, account menu, and a new-issue button, with live-run polling.",
+      "tags": ["component", "navigation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/components/Sidebar.tsx:Sidebar",
+      "type": "function",
+      "name": "Sidebar",
+      "filePath": "ui/src/components/Sidebar.tsx",
+      "lineRange": [33, 140],
+      "summary": "Sidebar shell that composes SidebarAgents, SidebarAccountMenu, nav links, and badges for inbox unread counts and live runs.",
+      "tags": ["component", "navigation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/SidebarAccountMenu.test.tsx",
+      "type": "file",
+      "name": "SidebarAccountMenu.test.tsx",
+      "filePath": "ui/src/components/SidebarAccountMenu.test.tsx",
+      "summary": "Tests for the SidebarAccountMenu verifying user info display, theme toggle, and sign-out action.",
+      "tags": ["test", "component"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/SidebarAccountMenu.tsx",
+      "type": "file",
+      "name": "SidebarAccountMenu.tsx",
+      "filePath": "ui/src/components/SidebarAccountMenu.tsx",
+      "summary": "Popover menu in the sidebar showing the current user's avatar, name, theme toggle, account settings link, and sign-out button.",
+      "tags": ["component", "navigation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/components/SidebarAccountMenu.tsx:SidebarAccountMenu",
+      "type": "function",
+      "name": "SidebarAccountMenu",
+      "filePath": "ui/src/components/SidebarAccountMenu.tsx",
+      "lineRange": [104, 256],
+      "summary": "Account popover rendering user avatar with initials, theme toggle, settings navigation, and sign-out mutation.",
+      "tags": ["component", "navigation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/SidebarAgents.test.tsx",
+      "type": "file",
+      "name": "SidebarAgents.test.tsx",
+      "filePath": "ui/src/components/SidebarAgents.test.tsx",
+      "summary": "Tests for SidebarAgents covering sort modes (alphabetical, recency, active-first), join/leave, and pause/resume agent interactions.",
+      "tags": ["test", "component", "navigation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/SidebarAgents.tsx",
+      "type": "file",
+      "name": "SidebarAgents.tsx",
+      "filePath": "ui/src/components/SidebarAgents.tsx",
+      "summary": "Sidebar section listing the user's agents with configurable sort modes, join/leave membership actions, pause/resume mutations, and live-run counts.",
+      "tags": ["component", "navigation", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/components/SidebarAgents.tsx:SidebarAgents",
+      "type": "function",
+      "name": "SidebarAgents",
+      "filePath": "ui/src/components/SidebarAgents.tsx",
+      "lineRange": [213, 429],
+      "summary": "Main exported agents sidebar section fetching agent list, handling sort preferences persisted to localStorage, and wiring pause/resume/membership mutations.",
+      "tags": ["component", "navigation"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/components/SidebarAgents.tsx:SidebarAgentItem",
+      "type": "function",
+      "name": "SidebarAgentItem",
+      "filePath": "ui/src/components/SidebarAgents.tsx",
+      "lineRange": [82, 211],
+      "summary": "Individual agent row in the sidebar with hover menu for pause/resume and leave actions, and run-count badge.",
+      "tags": ["component", "navigation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/SidebarNavItem.tsx",
+      "type": "file",
+      "name": "SidebarNavItem.tsx",
+      "filePath": "ui/src/components/SidebarNavItem.tsx",
+      "summary": "Reusable sidebar navigation link item supporting active state highlighting, badge counts, and optional icon.",
+      "tags": ["component", "navigation", "utility"],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:ui/src/components/Layout.tsx",
+      "target": "function:ui/src/components/Layout.tsx:Layout",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/Layout.tsx",
+      "target": "function:ui/src/components/Layout.tsx:Layout",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/MarkdownBody.tsx",
+      "target": "function:ui/src/components/MarkdownBody.tsx:MarkdownBody",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/MarkdownBody.tsx",
+      "target": "function:ui/src/components/MarkdownBody.tsx:MarkdownBody",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/MarkdownBody.tsx",
+      "target": "function:ui/src/components/MarkdownBody.tsx:CodeBlock",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/MarkdownBody.tsx",
+      "target": "function:ui/src/components/MarkdownBody.tsx:MermaidDiagramBlock",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/MarkdownEditor.tsx",
+      "target": "function:ui/src/components/MarkdownEditor.tsx:findMentionMatch",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/MarkdownEditor.tsx",
+      "target": "function:ui/src/components/MarkdownEditor.tsx:findMentionMatch",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/MarkdownEditor.tsx",
+      "target": "function:ui/src/components/MarkdownEditor.tsx:computeMentionMenuPosition",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/MarkdownEditor.tsx",
+      "target": "function:ui/src/components/MarkdownEditor.tsx:computeMentionMenuPosition",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/MarkdownEditor.tsx",
+      "target": "function:ui/src/components/MarkdownEditor.tsx:MarkdownEditor",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/MarkdownEditor.tsx",
+      "target": "function:ui/src/components/MarkdownEditor.tsx:MarkdownEditor",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/MembershipAction.tsx",
+      "target": "function:ui/src/components/MembershipAction.tsx:MembershipAction",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/MembershipAction.tsx",
+      "target": "function:ui/src/components/MembershipAction.tsx:MembershipAction",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/MissingPluginTabPlaceholder.tsx",
+      "target": "function:ui/src/components/MissingPluginTabPlaceholder.tsx:MissingPluginTabPlaceholder",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/MissingPluginTabPlaceholder.tsx",
+      "target": "function:ui/src/components/MissingPluginTabPlaceholder.tsx:MissingPluginTabPlaceholder",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/NewAgentDialog.tsx",
+      "target": "function:ui/src/components/NewAgentDialog.tsx:NewAgentDialog",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/NewAgentDialog.tsx",
+      "target": "function:ui/src/components/NewAgentDialog.tsx:NewAgentDialog",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/NewIssueDialog.tsx",
+      "target": "function:ui/src/components/NewIssueDialog.tsx:NewIssueDialog",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/NewIssueDialog.tsx",
+      "target": "function:ui/src/components/NewIssueDialog.tsx:NewIssueDialog",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/RoutineHistoryTab.tsx",
+      "target": "function:ui/src/components/RoutineHistoryTab.tsx:RoutineHistoryTab",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/RoutineHistoryTab.tsx",
+      "target": "function:ui/src/components/RoutineHistoryTab.tsx:RoutineHistoryTab",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/RoutineList.tsx",
+      "target": "function:ui/src/components/RoutineList.tsx:RoutineListRow",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/RoutineList.tsx",
+      "target": "function:ui/src/components/RoutineList.tsx:RoutineListRow",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/Sidebar.tsx",
+      "target": "function:ui/src/components/Sidebar.tsx:Sidebar",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/Sidebar.tsx",
+      "target": "function:ui/src/components/Sidebar.tsx:Sidebar",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/SidebarAccountMenu.tsx",
+      "target": "function:ui/src/components/SidebarAccountMenu.tsx:SidebarAccountMenu",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/SidebarAccountMenu.tsx",
+      "target": "function:ui/src/components/SidebarAccountMenu.tsx:SidebarAccountMenu",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/SidebarAgents.tsx",
+      "target": "function:ui/src/components/SidebarAgents.tsx:SidebarAgents",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/SidebarAgents.tsx",
+      "target": "function:ui/src/components/SidebarAgents.tsx:SidebarAgents",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/SidebarAgents.tsx",
+      "target": "function:ui/src/components/SidebarAgents.tsx:SidebarAgentItem",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/Layout.test.tsx",
+      "target": "file:ui/src/components/Layout.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/components/MarkdownBody.tsx",
+      "target": "file:ui/src/components/MarkdownBody.test.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/components/MarkdownBody.tsx",
+      "target": "file:ui/src/components/MarkdownBody.interaction.test.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/components/MarkdownBody.tsx",
+      "target": "file:ui/src/components/MarkdownBody.wrap.test.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/components/MarkdownEditor.tsx",
+      "target": "file:ui/src/components/MarkdownEditor.test.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/components/MembershipAction.tsx",
+      "target": "file:ui/src/components/MembershipAction.test.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/components/NewAgentDialog.tsx",
+      "target": "file:ui/src/components/NewAgentDialog.test.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/components/NewIssueDialog.tsx",
+      "target": "file:ui/src/components/NewIssueDialog.test.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/components/RoutineHistoryTab.tsx",
+      "target": "file:ui/src/components/RoutineHistoryTab.test.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/components/Sidebar.tsx",
+      "target": "file:ui/src/components/Sidebar.test.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/components/SidebarAccountMenu.tsx",
+      "target": "file:ui/src/components/SidebarAccountMenu.test.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/components/SidebarAgents.tsx",
+      "target": "file:ui/src/components/SidebarAgents.test.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/components/Sidebar.tsx",
+      "target": "file:ui/src/components/SidebarAgents.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/Sidebar.tsx",
+      "target": "file:ui/src/components/SidebarAccountMenu.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/Sidebar.tsx",
+      "target": "file:ui/src/components/SidebarNavItem.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/Layout.tsx",
+      "target": "file:ui/src/components/Sidebar.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/Layout.tsx",
+      "target": "file:ui/src/components/NewIssueDialog.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/Layout.tsx",
+      "target": "file:ui/src/components/NewAgentDialog.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    }
+  ]
+}

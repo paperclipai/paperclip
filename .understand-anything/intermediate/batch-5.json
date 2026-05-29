@@ -1,0 +1,774 @@
+{
+  "nodes": [
+    {
+      "id": "file:packages/plugins/sdk/src/protocol.ts",
+      "type": "file",
+      "name": "protocol.ts",
+      "filePath": "packages/plugins/sdk/src/protocol.ts",
+      "summary": "Defines the complete JSON-RPC 2.0 protocol layer for plugin SDK communication, including all method type definitions for host-to-worker and worker-to-host RPC calls, error codes, message serialization, and runtime type guards.",
+      "tags": ["type-definition", "serialization", "api-handler", "utility"],
+      "complexity": "complex",
+      "languageNotes": "Heavy use of discriminated union types and TypeScript literal types to model the full JSON-RPC message envelope without runtime overhead."
+    },
+    {
+      "id": "function:packages/plugins/sdk/src/protocol.ts:createRequest",
+      "type": "function",
+      "name": "createRequest",
+      "filePath": "packages/plugins/sdk/src/protocol.ts",
+      "lineRange": [1433, 1447],
+      "summary": "Constructs a typed JSON-RPC request message object with auto-incremented ID, method name, and parameters.",
+      "tags": ["utility", "serialization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:packages/plugins/sdk/src/protocol.ts:createErrorResponse",
+      "type": "function",
+      "name": "createErrorResponse",
+      "filePath": "packages/plugins/sdk/src/protocol.ts",
+      "lineRange": [1474, 1488],
+      "summary": "Builds a JSON-RPC error response envelope with a structured error code, message, and optional data payload.",
+      "tags": ["utility", "serialization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:packages/plugins/sdk/src/protocol.ts:parseMessage",
+      "type": "function",
+      "name": "parseMessage",
+      "filePath": "packages/plugins/sdk/src/protocol.ts",
+      "lineRange": [1609, 1637],
+      "summary": "Deserializes a newline-delimited JSON-RPC message string into a typed protocol message, throwing JsonRpcParseError on malformed input.",
+      "tags": ["serialization", "utility", "validation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "class:packages/plugins/sdk/src/protocol.ts:JsonRpcParseError",
+      "type": "class",
+      "name": "JsonRpcParseError",
+      "filePath": "packages/plugins/sdk/src/protocol.ts",
+      "lineRange": [1646, 1651],
+      "summary": "Custom error class thrown when a raw message string cannot be parsed as a valid JSON-RPC protocol message.",
+      "tags": ["validation", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "class:packages/plugins/sdk/src/protocol.ts:JsonRpcCallError",
+      "type": "class",
+      "name": "JsonRpcCallError",
+      "filePath": "packages/plugins/sdk/src/protocol.ts",
+      "lineRange": [1658, 1670],
+      "summary": "Error class representing a JSON-RPC call failure, carrying the server-side error code and optional structured data returned by the remote method.",
+      "tags": ["validation", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sdk/src/testing.ts",
+      "type": "file",
+      "name": "testing.ts",
+      "filePath": "packages/plugins/sdk/src/testing.ts",
+      "summary": "Provides a comprehensive in-process test harness for plugin SDK integrations, including fake environment drivers, assertion helpers for environment lifecycle events, and a full createTestHarness factory that simulates the host-worker RPC boundary.",
+      "tags": ["test", "utility", "factory", "service"],
+      "complexity": "complex",
+      "languageNotes": "The createTestHarness function spans nearly 2000 lines — it constructs an entire in-memory plugin host with full state management, making it the canonical integration test entry point."
+    },
+    {
+      "id": "function:packages/plugins/sdk/src/testing.ts:createTestHarness",
+      "type": "function",
+      "name": "createTestHarness",
+      "filePath": "packages/plugins/sdk/src/testing.ts",
+      "lineRange": [443, 2401],
+      "summary": "Factory that constructs a complete in-memory plugin host for integration testing, wiring together all host-side capabilities (access control, local folders, issues, routines, secrets) against a fake plugin worker.",
+      "tags": ["factory", "test", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/plugins/sdk/src/testing.ts:createEnvironmentTestHarness",
+      "type": "function",
+      "name": "createEnvironmentTestHarness",
+      "filePath": "packages/plugins/sdk/src/testing.ts",
+      "lineRange": [2410, 2487],
+      "summary": "Builds a test harness focused specifically on environment driver testing, providing lifecycle assertion helpers and a fake environment driver for unit tests.",
+      "tags": ["factory", "test"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/plugins/sdk/src/testing.ts:createFakeEnvironmentDriver",
+      "type": "function",
+      "name": "createFakeEnvironmentDriver",
+      "filePath": "packages/plugins/sdk/src/testing.ts",
+      "lineRange": [324, 390],
+      "summary": "Creates a minimal in-memory environment driver stub that records lease operations and simulates execution responses, used for isolating plugin environment driver logic in tests.",
+      "tags": ["factory", "test"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/sdk/src/types.ts",
+      "type": "file",
+      "name": "types.ts",
+      "filePath": "packages/plugins/sdk/src/types.ts",
+      "summary": "Defines the complete TypeScript type surface for the plugin SDK, covering plugin manifests, capability declarations (jobs, webhooks, tools, managed agents/projects/routines), and all host-to-worker and worker-to-host method parameter and result types.",
+      "tags": ["type-definition", "api-schema", "schema-definition"],
+      "complexity": "complex",
+      "languageNotes": "Exports 80 named types with no runtime functions — a pure type definition module that models every capability and data contract in the plugin system."
+    },
+    {
+      "id": "file:packages/plugins/sdk/src/ui/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/plugins/sdk/src/ui/index.ts",
+      "summary": "Barrel entry point for the plugin SDK's UI layer, re-exporting all hooks, components, and utilities that plugin UIs use to interact with the Paperclip host environment from within a sandboxed iframe.",
+      "tags": ["barrel", "entry-point", "component", "hook"],
+      "complexity": "moderate",
+      "languageNotes": "Exports 93 symbols from a single index — the canonical surface a plugin UI developer imports from."
+    },
+    {
+      "id": "file:packages/plugins/sdk/src/ui/types.ts",
+      "type": "file",
+      "name": "types.ts",
+      "filePath": "packages/plugins/sdk/src/ui/types.ts",
+      "summary": "Defines TypeScript types for the plugin launcher UI bridge, including render context snapshots, modal bounds, error codes, and close events used in host-iframe communication.",
+      "tags": ["type-definition", "api-schema"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/sdk/src/worker-rpc-host.ts",
+      "type": "file",
+      "name": "worker-rpc-host.ts",
+      "filePath": "packages/plugins/sdk/src/worker-rpc-host.ts",
+      "summary": "Implements the runtime RPC host that bridges a plugin worker process to the Paperclip host over stdio, handling JSON-RPC message dispatch, capability enforcement, state management, and the full lifecycle of host-to-worker and worker-to-host method calls.",
+      "tags": ["service", "middleware", "api-handler", "event-handler"],
+      "complexity": "complex",
+      "languageNotes": "startWorkerRpcHost spans the entire file and is the core runtime of the plugin SDK — it manages process lifecycle, capability negotiation, and bidirectional RPC over stdin/stdout streams."
+    },
+    {
+      "id": "function:packages/plugins/sdk/src/worker-rpc-host.ts:startWorkerRpcHost",
+      "type": "function",
+      "name": "startWorkerRpcHost",
+      "filePath": "packages/plugins/sdk/src/worker-rpc-host.ts",
+      "lineRange": [272, 1840],
+      "summary": "Bootstraps the complete plugin worker RPC host, establishing stdin/stdout transport, registering all method handlers, and managing plugin lifecycle from initialization through teardown.",
+      "tags": ["service", "middleware", "event-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/plugins/sdk/src/worker-rpc-host.ts:runWorker",
+      "type": "function",
+      "name": "runWorker",
+      "filePath": "packages/plugins/sdk/src/worker-rpc-host.ts",
+      "lineRange": [230, 250],
+      "summary": "Spawns a plugin worker as a child process with the correct entrypoint, environment variables, and IPC configuration for the RPC host to communicate with.",
+      "tags": ["service", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sdk/tests/host-client-factory.test.ts",
+      "type": "file",
+      "name": "host-client-factory.test.ts",
+      "filePath": "packages/plugins/sdk/tests/host-client-factory.test.ts",
+      "summary": "Integration tests for the plugin SDK host-client factory, verifying correct construction and wiring of host-side client objects that proxy calls to plugin workers.",
+      "tags": ["test"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/sdk/tests/testing-actions.test.ts",
+      "type": "file",
+      "name": "testing-actions.test.ts",
+      "filePath": "packages/plugins/sdk/tests/testing-actions.test.ts",
+      "summary": "Unit tests for plugin SDK testing action helpers, verifying that test harness action utilities behave correctly under expected inputs.",
+      "tags": ["test"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sdk/tests/worker-rpc-host.test.ts",
+      "type": "file",
+      "name": "worker-rpc-host.test.ts",
+      "filePath": "packages/plugins/sdk/tests/worker-rpc-host.test.ts",
+      "summary": "Integration tests for the worker RPC host, validating the full message round-trip between the host process and a plugin worker over stdio including error handling and capability enforcement.",
+      "tags": ["test"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/shared/src/api.ts",
+      "type": "file",
+      "name": "api.ts",
+      "filePath": "packages/shared/src/api.ts",
+      "summary": "Defines the shared API prefix constant and API route namespace constants used consistently across both server and client packages.",
+      "tags": ["configuration", "utility", "type-definition"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/shared/src/constants.ts",
+      "type": "file",
+      "name": "constants.ts",
+      "filePath": "packages/shared/src/constants.ts",
+      "summary": "Central repository of 136 named constants for the entire Paperclip platform, covering company, agent, issue, plugin, routine, secret, environment, and UI configuration values shared between server and client.",
+      "tags": ["configuration", "type-definition", "utility"],
+      "complexity": "complex",
+      "languageNotes": "Also exports 4 small utility functions (clampIssueRequestDepth, pluginOperationIssueOriginKind, isPluginOperationIssueOriginKind, isSystemIssueDocumentKey) that are tightly coupled to constant value logic."
+    },
+    {
+      "id": "function:packages/shared/src/constants.ts:clampIssueRequestDepth",
+      "type": "function",
+      "name": "clampIssueRequestDepth",
+      "filePath": "packages/shared/src/constants.ts",
+      "lineRange": [173, 176],
+      "summary": "Clamps an issue request depth value within the platform-defined min/max bounds, preventing overly deep or shallow issue graph traversals.",
+      "tags": ["utility", "validation"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:packages/shared/src/constants.ts:isPluginOperationIssueOriginKind",
+      "type": "function",
+      "name": "isPluginOperationIssueOriginKind",
+      "filePath": "packages/shared/src/constants.ts",
+      "lineRange": [256, 258],
+      "summary": "Type guard that checks whether a given issue origin kind string belongs to the plugin operation origin family.",
+      "tags": ["utility", "validation"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/shared/src/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/shared/src/index.ts",
+      "summary": "Primary barrel entry point for the shared package, re-exporting all 1121 symbols from constants, validators, types, project-mentions, and api sub-modules for unified consumption by server, client, and plugin packages.",
+      "tags": ["barrel", "entry-point"],
+      "complexity": "complex",
+      "languageNotes": "With 1121 exports and zero functions or classes, this is a pure aggregation barrel — the single import surface for all shared Paperclip platform contracts."
+    },
+    {
+      "id": "file:packages/shared/src/project-mentions.test.ts",
+      "type": "file",
+      "name": "project-mentions.test.ts",
+      "filePath": "packages/shared/src/project-mentions.test.ts",
+      "summary": "Unit tests for the project-mentions module, verifying href building and parsing round-trips for project, agent, user, skill, and routine mention types.",
+      "tags": ["test"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/shared/src/project-mentions.ts",
+      "type": "file",
+      "name": "project-mentions.ts",
+      "filePath": "packages/shared/src/project-mentions.ts",
+      "summary": "Implements URL-scheme-based mention href building and parsing for projects, agents, users, skills, and routines, plus ID extraction and normalization utilities used in rich-text editor mentions across the platform.",
+      "tags": ["utility", "serialization"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/shared/src/project-mentions.ts:buildProjectMentionHref",
+      "type": "function",
+      "name": "buildProjectMentionHref",
+      "filePath": "packages/shared/src/project-mentions.ts",
+      "lineRange": [64, 71],
+      "summary": "Constructs a custom URL-scheme href string for a project mention, encoding company and project identifiers.",
+      "tags": ["utility", "serialization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:packages/shared/src/project-mentions.ts:parseProjectMentionHref",
+      "type": "function",
+      "name": "parseProjectMentionHref",
+      "filePath": "packages/shared/src/project-mentions.ts",
+      "lineRange": [73, 94],
+      "summary": "Parses a project mention href back into structured company and project identifier components, returning null on invalid input.",
+      "tags": ["utility", "serialization", "validation"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:packages/shared/src/project-mentions.ts:extractProjectMentionIds",
+      "type": "function",
+      "name": "extractProjectMentionIds",
+      "filePath": "packages/shared/src/project-mentions.ts",
+      "lineRange": [200, 210],
+      "summary": "Scans a rich-text document for all project mention hrefs and extracts the referenced project IDs into an array.",
+      "tags": ["utility", "data-model"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/shared/src/types/agent.ts",
+      "type": "file",
+      "name": "agent.ts",
+      "filePath": "packages/shared/src/types/agent.ts",
+      "summary": "Defines TypeScript types for agent entities in the Paperclip platform, including agent configuration, permissions, status, and runtime properties.",
+      "tags": ["type-definition", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/shared/src/types/cloud-upstream.ts",
+      "type": "file",
+      "name": "cloud-upstream.ts",
+      "filePath": "packages/shared/src/types/cloud-upstream.ts",
+      "summary": "Defines types for cloud upstream integration, representing the data contracts for syncing local Paperclip instances with a hosted cloud backend.",
+      "tags": ["type-definition", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/shared/src/types/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/shared/src/types/index.ts",
+      "summary": "Barrel that re-exports all 409 type symbols from the shared types sub-modules (agent, issue, plugin, routine, secrets, workspace-runtime, etc.), providing the unified type namespace for the shared package.",
+      "tags": ["barrel", "entry-point", "type-definition"],
+      "complexity": "complex",
+      "languageNotes": "Pure re-export barrel with 409 named exports and no runtime code."
+    },
+    {
+      "id": "file:packages/shared/src/types/instance.ts",
+      "type": "file",
+      "name": "instance.ts",
+      "filePath": "packages/shared/src/types/instance.ts",
+      "summary": "Defines instance-level configuration constants for Paperclip deployments, including backup retention presets and issue graph liveness recovery lookback bounds.",
+      "tags": ["configuration", "type-definition"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/shared/src/types/issue.ts",
+      "type": "file",
+      "name": "issue.ts",
+      "filePath": "packages/shared/src/types/issue.ts",
+      "summary": "Comprehensive type definitions for the Paperclip issue/task domain, covering issue status, priority, work modes, relations, comments, attachments, and the full issue graph data model.",
+      "tags": ["type-definition", "data-model"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:packages/shared/src/types/plugin.ts",
+      "type": "file",
+      "name": "plugin.ts",
+      "filePath": "packages/shared/src/types/plugin.ts",
+      "summary": "Defines the shared type contracts for the plugin system, including plugin database schemas, migration status, namespace modes, and the plugin runtime data model.",
+      "tags": ["type-definition", "data-model", "schema-definition"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:packages/shared/src/types/resource-memberships.ts",
+      "type": "file",
+      "name": "resource-memberships.ts",
+      "filePath": "packages/shared/src/types/resource-memberships.ts",
+      "summary": "Defines the RESOURCE_MEMBERSHIP_STATES constant and associated types governing access control membership lifecycle states across Paperclip resources.",
+      "tags": ["type-definition", "configuration"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/shared/src/types/routine.ts",
+      "type": "file",
+      "name": "routine.ts",
+      "filePath": "packages/shared/src/types/routine.ts",
+      "summary": "Defines TypeScript types for the routine (recurring scheduled task) domain, including routine configuration, schedule, status, and execution result types.",
+      "tags": ["type-definition", "data-model"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/shared/src/types/secrets.ts",
+      "type": "file",
+      "name": "secrets.ts",
+      "filePath": "packages/shared/src/types/secrets.ts",
+      "summary": "Defines the shared type contracts for the secrets management domain, covering secret providers, binding targets, access outcomes, versioning, and health status across Paperclip's secret infrastructure.",
+      "tags": ["type-definition", "data-model", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/shared/src/types/workspace-runtime.ts",
+      "type": "file",
+      "name": "workspace-runtime.ts",
+      "filePath": "packages/shared/src/types/workspace-runtime.ts",
+      "summary": "Defines types for workspace runtime configuration and state, covering environment provisioning, sandbox modes, and the runtime data model shared between the server and agent execution infrastructure.",
+      "tags": ["type-definition", "data-model", "infrastructure"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/shared/src/validators/agent.ts",
+      "type": "file",
+      "name": "agent.ts",
+      "filePath": "packages/shared/src/validators/agent.ts",
+      "summary": "Exports Zod validation schemas for all agent-related API operations including create, update, permissions, instructions bundles, and runtime configuration, providing the shared request validation layer used by both server and client.",
+      "tags": ["validation", "api-handler", "data-model"],
+      "complexity": "moderate"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:packages/plugins/sdk/src/protocol.ts",
+      "target": "function:packages/plugins/sdk/src/protocol.ts:createRequest",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/protocol.ts",
+      "target": "function:packages/plugins/sdk/src/protocol.ts:createErrorResponse",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/protocol.ts",
+      "target": "function:packages/plugins/sdk/src/protocol.ts:parseMessage",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/protocol.ts",
+      "target": "class:packages/plugins/sdk/src/protocol.ts:JsonRpcParseError",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/protocol.ts",
+      "target": "class:packages/plugins/sdk/src/protocol.ts:JsonRpcCallError",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/protocol.ts",
+      "target": "function:packages/plugins/sdk/src/protocol.ts:createRequest",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/protocol.ts",
+      "target": "function:packages/plugins/sdk/src/protocol.ts:createErrorResponse",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/protocol.ts",
+      "target": "function:packages/plugins/sdk/src/protocol.ts:parseMessage",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/protocol.ts",
+      "target": "class:packages/plugins/sdk/src/protocol.ts:JsonRpcParseError",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/protocol.ts",
+      "target": "class:packages/plugins/sdk/src/protocol.ts:JsonRpcCallError",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/testing.ts",
+      "target": "function:packages/plugins/sdk/src/testing.ts:createTestHarness",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/testing.ts",
+      "target": "function:packages/plugins/sdk/src/testing.ts:createEnvironmentTestHarness",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/testing.ts",
+      "target": "function:packages/plugins/sdk/src/testing.ts:createFakeEnvironmentDriver",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/testing.ts",
+      "target": "function:packages/plugins/sdk/src/testing.ts:createTestHarness",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/testing.ts",
+      "target": "function:packages/plugins/sdk/src/testing.ts:createEnvironmentTestHarness",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/testing.ts",
+      "target": "function:packages/plugins/sdk/src/testing.ts:createFakeEnvironmentDriver",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/worker-rpc-host.ts",
+      "target": "function:packages/plugins/sdk/src/worker-rpc-host.ts:startWorkerRpcHost",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/worker-rpc-host.ts",
+      "target": "function:packages/plugins/sdk/src/worker-rpc-host.ts:runWorker",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/worker-rpc-host.ts",
+      "target": "function:packages/plugins/sdk/src/worker-rpc-host.ts:startWorkerRpcHost",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/worker-rpc-host.ts",
+      "target": "function:packages/plugins/sdk/src/worker-rpc-host.ts:runWorker",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/worker-rpc-host.ts",
+      "target": "file:packages/plugins/sdk/src/protocol.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/testing.ts",
+      "target": "file:packages/plugins/sdk/src/worker-rpc-host.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/testing.ts",
+      "target": "file:packages/plugins/sdk/src/protocol.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/sdk/tests/worker-rpc-host.test.ts",
+      "target": "file:packages/plugins/sdk/src/worker-rpc-host.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/worker-rpc-host.ts",
+      "target": "file:packages/plugins/sdk/tests/worker-rpc-host.test.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/testing.ts",
+      "target": "file:packages/plugins/sdk/tests/testing-actions.test.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/plugins/sdk/tests/host-client-factory.test.ts",
+      "target": "file:packages/plugins/sdk/src/testing.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/shared/src/constants.ts",
+      "target": "function:packages/shared/src/constants.ts:clampIssueRequestDepth",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/shared/src/constants.ts",
+      "target": "function:packages/shared/src/constants.ts:isPluginOperationIssueOriginKind",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/shared/src/constants.ts",
+      "target": "function:packages/shared/src/constants.ts:clampIssueRequestDepth",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/shared/src/constants.ts",
+      "target": "function:packages/shared/src/constants.ts:isPluginOperationIssueOriginKind",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/shared/src/index.ts",
+      "target": "file:packages/shared/src/constants.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/shared/src/index.ts",
+      "target": "file:packages/shared/src/project-mentions.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/shared/src/index.ts",
+      "target": "file:packages/shared/src/api.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/shared/src/index.ts",
+      "target": "file:packages/shared/src/types/index.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/shared/src/index.ts",
+      "target": "file:packages/shared/src/validators/agent.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/shared/src/types/index.ts",
+      "target": "file:packages/shared/src/types/agent.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/shared/src/types/index.ts",
+      "target": "file:packages/shared/src/types/issue.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/shared/src/types/index.ts",
+      "target": "file:packages/shared/src/types/plugin.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/shared/src/types/index.ts",
+      "target": "file:packages/shared/src/types/routine.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/shared/src/types/index.ts",
+      "target": "file:packages/shared/src/types/secrets.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/shared/src/types/index.ts",
+      "target": "file:packages/shared/src/types/workspace-runtime.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/shared/src/types/index.ts",
+      "target": "file:packages/shared/src/types/instance.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/shared/src/types/index.ts",
+      "target": "file:packages/shared/src/types/cloud-upstream.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/shared/src/types/index.ts",
+      "target": "file:packages/shared/src/types/resource-memberships.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/shared/src/project-mentions.ts",
+      "target": "function:packages/shared/src/project-mentions.ts:buildProjectMentionHref",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/shared/src/project-mentions.ts",
+      "target": "function:packages/shared/src/project-mentions.ts:parseProjectMentionHref",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/shared/src/project-mentions.ts",
+      "target": "function:packages/shared/src/project-mentions.ts:extractProjectMentionIds",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/shared/src/project-mentions.ts",
+      "target": "function:packages/shared/src/project-mentions.ts:buildProjectMentionHref",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/shared/src/project-mentions.ts",
+      "target": "function:packages/shared/src/project-mentions.ts:parseProjectMentionHref",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/shared/src/project-mentions.ts",
+      "target": "function:packages/shared/src/project-mentions.ts:extractProjectMentionIds",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/shared/src/project-mentions.test.ts",
+      "target": "file:packages/shared/src/project-mentions.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/shared/src/project-mentions.ts",
+      "target": "file:packages/shared/src/project-mentions.test.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/ui/index.ts",
+      "target": "file:packages/plugins/sdk/src/ui/types.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/types.ts",
+      "target": "file:packages/plugins/sdk/src/ui/types.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    }
+  ]
+}

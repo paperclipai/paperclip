@@ -1,0 +1,568 @@
+{
+  "nodes": [
+    {
+      "id": "config:packages/adapters/acpx-local/package.json",
+      "type": "config",
+      "name": "package.json",
+      "filePath": "packages/adapters/acpx-local/package.json",
+      "summary": "Package manifest for the acpx-local adapter, defining exports, dependencies, and build scripts for the Claude Code (acpx) local execution adapter.",
+      "tags": ["configuration", "build-system", "adapter", "package-manifest"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/adapters/acpx-local/src/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/adapters/acpx-local/src/index.ts",
+      "summary": "Main entry point for the acpx-local adapter, exporting constants, configuration options, model definitions, and agent configuration documentation used by the Paperclip platform to configure and launch local Claude Code agent sessions.",
+      "tags": ["entry-point", "barrel", "adapter", "configuration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/adapters/acpx-local/src/server/claude-home.test.ts",
+      "type": "file",
+      "name": "claude-home.test.ts",
+      "filePath": "packages/adapters/acpx-local/src/server/claude-home.test.ts",
+      "summary": "Test suite for the claude-home server module in the acpx-local adapter, covering Claude home directory resolution and configuration logic.",
+      "tags": ["test", "adapter", "server", "claude"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/adapters/acpx-local/src/server/claude-home.ts",
+      "type": "file",
+      "name": "claude-home.ts",
+      "filePath": "packages/adapters/acpx-local/src/server/claude-home.ts",
+      "summary": "Server-side module for resolving and managing the Claude home directory used by the acpx-local adapter during local agent execution.",
+      "tags": ["server", "adapter", "utility", "claude"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/adapters/acpx-local/src/server/worktree-pool.test.ts",
+      "type": "file",
+      "name": "worktree-pool.test.ts",
+      "filePath": "packages/adapters/acpx-local/src/server/worktree-pool.test.ts",
+      "summary": "Test suite for the worktree pool, verifying pooling behavior, lifecycle management, and warm handle reuse for git worktrees in local agent execution.",
+      "tags": ["test", "worktree", "pool", "adapter"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:packages/adapters/acpx-local/src/server/worktree-pool.ts",
+      "type": "file",
+      "name": "worktree-pool.ts",
+      "filePath": "packages/adapters/acpx-local/src/server/worktree-pool.ts",
+      "summary": "Implements a pool of git worktrees for the acpx-local adapter, enabling warm-handle reuse to reduce cold-start latency when spawning local Claude Code agent sessions.",
+      "tags": ["server", "worktree", "pool", "adapter"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:packages/adapters/acpx-local/src/ui/app.tsx",
+      "type": "file",
+      "name": "app.tsx",
+      "filePath": "packages/adapters/acpx-local/src/ui/app.tsx",
+      "summary": "Large UI component implementing the configuration and management interface for the acpx-local adapter, providing forms and controls for agent setup in the Paperclip dashboard.",
+      "tags": ["component", "ui", "adapter", "configuration"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:packages/adapters/acpx-local/src/ui/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/adapters/acpx-local/src/ui/index.ts",
+      "summary": "Barrel file for the acpx-local UI module, re-exporting the stdout parser and config builder utilities used by the adapter's user interface.",
+      "tags": ["barrel", "ui", "adapter", "entry-point"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:packages/adapters/acpx-local/tsconfig.json",
+      "type": "config",
+      "name": "tsconfig.json",
+      "filePath": "packages/adapters/acpx-local/tsconfig.json",
+      "summary": "TypeScript compiler configuration for the acpx-local adapter package, extending a shared base config and specifying source inclusion paths.",
+      "tags": ["configuration", "typescript", "build-system"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapter-utils/src/server-utils.ts",
+      "type": "file",
+      "name": "server-utils.ts",
+      "filePath": "packages/adapter-utils/src/server-utils.ts",
+      "summary": "Comprehensive shared utility library for all Paperclip adapter server implementations, providing process management, environment construction, skill installation and lifecycle, prompt rendering, workspace path rewriting, and child process spawning with SSH remote execution support.",
+      "tags": ["utility", "service", "adapter", "process-management"],
+      "complexity": "complex",
+      "languageNotes": "Exports 48 functions spanning process lifecycle, environment shaping, skill file system management, and cross-platform command resolution — the foundational infrastructure layer for all adapter implementations."
+    },
+    {
+      "id": "function:packages/adapter-utils/src/server-utils.ts:renderPaperclipWakePrompt",
+      "type": "function",
+      "name": "renderPaperclipWakePrompt",
+      "filePath": "packages/adapter-utils/src/server-utils.ts",
+      "lineRange": [635, 852],
+      "summary": "Renders the full agent wake-up prompt from a normalized wake payload, assembling issue context, execution stage, blocker details, comments, and continuation summaries into a structured text prompt for the AI agent.",
+      "tags": ["utility", "prompt-rendering", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/adapter-utils/src/server-utils.ts:normalizePaperclipWakePayload",
+      "type": "function",
+      "name": "normalizePaperclipWakePayload",
+      "filePath": "packages/adapter-utils/src/server-utils.ts",
+      "lineRange": [556, 618],
+      "summary": "Normalizes an incoming wake payload object into a validated, strongly-typed structure by parsing and sanitizing all fields including comments, execution stage, continuation summaries, blockers, and child issue summaries.",
+      "tags": ["validation", "serialization", "utility"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/adapter-utils/src/server-utils.ts:runChildProcess",
+      "type": "function",
+      "name": "runChildProcess",
+      "filePath": "packages/adapter-utils/src/server-utils.ts",
+      "lineRange": [1898, 2109],
+      "summary": "Spawns and manages a child process for adapter execution, handling stdin/stdout/stderr streaming, timeout enforcement, terminal result detection for early cleanup, and SSH remote execution routing.",
+      "tags": ["process-management", "service", "utility"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/adapter-utils/src/server-utils.ts:buildPersistentSkillSnapshot",
+      "type": "function",
+      "name": "buildPersistentSkillSnapshot",
+      "filePath": "packages/adapter-utils/src/server-utils.ts",
+      "lineRange": [1384, 1484],
+      "summary": "Builds a complete snapshot of installed and available skills, reconciling configured desired skills with installed symlinks and available skill entries to produce a canonical skill state for the adapter.",
+      "tags": ["service", "utility", "skill-management"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/adapter-utils/src/server-utils.ts:shapePaperclipWorkspaceEnvForExecution",
+      "type": "function",
+      "name": "shapePaperclipWorkspaceEnvForExecution",
+      "filePath": "packages/adapter-utils/src/server-utils.ts",
+      "lineRange": [951, 1022],
+      "summary": "Constructs the workspace environment variable map for a specific execution, resolving workspace and worktree paths and injecting them into the environment alongside workspace hint metadata.",
+      "tags": ["utility", "process-management", "adapter"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/adapter-utils/src/server-utils.ts:materializePaperclipSkillCopy",
+      "type": "function",
+      "name": "materializePaperclipSkillCopy",
+      "filePath": "packages/adapter-utils/src/server-utils.ts",
+      "lineRange": [1752, 1836],
+      "summary": "Performs an atomic copy of a skill directory to a target path using fingerprint-based deduplication and a file-lock mechanism to prevent concurrent copies.",
+      "tags": ["service", "utility", "skill-management"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/adapter-utils/src/server-utils.ts:resolveSpawnTarget",
+      "type": "function",
+      "name": "resolveSpawnTarget",
+      "filePath": "packages/adapter-utils/src/server-utils.ts",
+      "lineRange": [1215, 1266],
+      "summary": "Resolves the final spawn target (command, args, cwd) for a process, handling SSH remote execution routing, Windows CMD shell wrapping, and cross-platform path resolution.",
+      "tags": ["utility", "process-management", "adapter"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:packages/adapter-utils/src/test-server-utils.ts",
+      "type": "file",
+      "name": "test-server-utils.ts",
+      "filePath": "packages/adapter-utils/src/test-server-utils.ts",
+      "summary": "Test utilities for adapter server testing, providing helpers and fixtures to simulate server-utils behavior in unit and integration tests.",
+      "tags": ["test", "utility", "adapter"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/db/src/schema/resource_memberships.ts",
+      "type": "file",
+      "name": "resource_memberships.ts",
+      "filePath": "packages/db/src/schema/resource_memberships.ts",
+      "summary": "Drizzle ORM schema definition for the resource_memberships table, capturing the association between principals (agents, users) and Paperclip resources with role and permission context.",
+      "tags": ["data-model", "database", "schema-definition"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/db/src/schema/routine_runs.ts",
+      "type": "file",
+      "name": "routine_runs.ts",
+      "filePath": "packages/db/src/schema/routine_runs.ts",
+      "summary": "Drizzle ORM schema definition for the routine_runs table, recording execution history and metadata for scheduled routine invocations within Paperclip companies.",
+      "tags": ["data-model", "database", "schema-definition"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/cloudflare/src/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/plugins/sandbox-providers/cloudflare/src/index.ts",
+      "summary": "Barrel entry point for the Cloudflare sandbox provider plugin, re-exporting the plugin manifest and plugin implementation.",
+      "tags": ["barrel", "entry-point", "plugin", "infrastructure"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/cloudflare/src/plugin.ts",
+      "type": "file",
+      "name": "plugin.ts",
+      "filePath": "packages/plugins/sandbox-providers/cloudflare/src/plugin.ts",
+      "summary": "Core implementation of the Cloudflare sandbox provider plugin, handling lease acquisition, workspace realization, environment execution, and lost-lease error recovery via the Cloudflare bridge client.",
+      "tags": ["plugin", "service", "infrastructure", "sandbox"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/plugins/sandbox-providers/cloudflare/src/plugin.ts:resolveExecuteSession",
+      "type": "function",
+      "name": "resolveExecuteSession",
+      "filePath": "packages/plugins/sandbox-providers/cloudflare/src/plugin.ts",
+      "lineRange": [83, 99],
+      "summary": "Resolves the execution session configuration for a Cloudflare sandbox by validating config and environment variables against the expected session ID.",
+      "tags": ["utility", "plugin", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:packages/plugins/sandbox-providers/cloudflare/src/plugin.ts:logCloudflareExecChunk",
+      "type": "function",
+      "name": "logCloudflareExecChunk",
+      "filePath": "packages/plugins/sandbox-providers/cloudflare/src/plugin.ts",
+      "lineRange": [110, 127],
+      "summary": "Normalizes and logs a chunk of stdout/stderr output from a Cloudflare sandbox execution, splitting on newlines and routing warning-prefixed lines to the logger warn channel.",
+      "tags": ["utility", "plugin", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/cloudflare/src/worker.ts",
+      "type": "file",
+      "name": "worker.ts",
+      "filePath": "packages/plugins/sandbox-providers/cloudflare/src/worker.ts",
+      "summary": "Entry point for the Cloudflare Worker that serves as the remote execution bridge, delegating to the bridge implementation for sandbox lease and execution management.",
+      "tags": ["infrastructure", "plugin", "service", "deployment"],
+      "complexity": "simple",
+      "languageNotes": "Acts as the Cloudflare Worker fetch handler that powers the remote sandbox bridge, deployed as a separate Cloudflare edge function."
+    },
+    {
+      "id": "config:packages/plugins/sandbox-providers/cloudflare/tsconfig.json",
+      "type": "config",
+      "name": "tsconfig.json",
+      "filePath": "packages/plugins/sandbox-providers/cloudflare/tsconfig.json",
+      "summary": "TypeScript compiler configuration for the Cloudflare sandbox provider plugin, extending a shared base config with include and exclude paths.",
+      "tags": ["configuration", "typescript", "build-system"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/cloudflare/vitest.config.ts",
+      "type": "file",
+      "name": "vitest.config.ts",
+      "filePath": "packages/plugins/sandbox-providers/cloudflare/vitest.config.ts",
+      "summary": "Vitest configuration for the Cloudflare sandbox provider plugin test suite.",
+      "tags": ["configuration", "test", "build-system"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/e2b/src/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/plugins/sandbox-providers/e2b/src/index.ts",
+      "summary": "Barrel entry point for the e2b sandbox provider plugin, re-exporting the plugin manifest and plugin implementation.",
+      "tags": ["barrel", "entry-point", "plugin", "infrastructure"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/e2b/src/types.ts",
+      "type": "file",
+      "name": "types.ts",
+      "filePath": "packages/plugins/sandbox-providers/e2b/src/types.ts",
+      "summary": "Type definitions for the e2b sandbox provider plugin, declaring interfaces and types used across the e2b plugin implementation.",
+      "tags": ["type-definition", "plugin", "infrastructure"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:packages/plugins/sandbox-providers/e2b/tsconfig.json",
+      "type": "config",
+      "name": "tsconfig.json",
+      "filePath": "packages/plugins/sandbox-providers/e2b/tsconfig.json",
+      "summary": "TypeScript compiler configuration for the e2b sandbox provider plugin, extending a shared base config with include and exclude paths.",
+      "tags": ["configuration", "typescript", "build-system"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/e2b/vitest.config.ts",
+      "type": "file",
+      "name": "vitest.config.ts",
+      "filePath": "packages/plugins/sandbox-providers/e2b/vitest.config.ts",
+      "summary": "Vitest configuration for the e2b sandbox provider plugin test suite.",
+      "tags": ["configuration", "test", "build-system"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:packages/plugins/sdk/package.json",
+      "type": "config",
+      "name": "package.json",
+      "filePath": "packages/plugins/sdk/package.json",
+      "summary": "Package manifest for the Paperclip plugin SDK, defining the public API exports, CLI binary entry points, peer dependencies on sandbox providers, and build configuration for plugin authors.",
+      "tags": ["configuration", "build-system", "plugin", "sdk"],
+      "complexity": "complex"
+    },
+    {
+      "id": "config:packages/plugins/sdk/tsconfig.json",
+      "type": "config",
+      "name": "tsconfig.json",
+      "filePath": "packages/plugins/sdk/tsconfig.json",
+      "summary": "TypeScript compiler configuration for the Paperclip plugin SDK package, extending a shared base config.",
+      "tags": ["configuration", "typescript", "build-system"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sdk/vitest.config.ts",
+      "type": "file",
+      "name": "vitest.config.ts",
+      "filePath": "packages/plugins/sdk/vitest.config.ts",
+      "summary": "Vitest configuration for the Paperclip plugin SDK test suite.",
+      "tags": ["configuration", "test", "build-system"],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:packages/adapter-utils/src/server-utils.ts",
+      "target": "function:packages/adapter-utils/src/server-utils.ts:renderPaperclipWakePrompt",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapter-utils/src/server-utils.ts",
+      "target": "function:packages/adapter-utils/src/server-utils.ts:normalizePaperclipWakePayload",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapter-utils/src/server-utils.ts",
+      "target": "function:packages/adapter-utils/src/server-utils.ts:runChildProcess",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapter-utils/src/server-utils.ts",
+      "target": "function:packages/adapter-utils/src/server-utils.ts:buildPersistentSkillSnapshot",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapter-utils/src/server-utils.ts",
+      "target": "function:packages/adapter-utils/src/server-utils.ts:shapePaperclipWorkspaceEnvForExecution",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapter-utils/src/server-utils.ts",
+      "target": "function:packages/adapter-utils/src/server-utils.ts:materializePaperclipSkillCopy",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapter-utils/src/server-utils.ts",
+      "target": "function:packages/adapter-utils/src/server-utils.ts:resolveSpawnTarget",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapter-utils/src/server-utils.ts",
+      "target": "function:packages/adapter-utils/src/server-utils.ts:renderPaperclipWakePrompt",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapter-utils/src/server-utils.ts",
+      "target": "function:packages/adapter-utils/src/server-utils.ts:normalizePaperclipWakePayload",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapter-utils/src/server-utils.ts",
+      "target": "function:packages/adapter-utils/src/server-utils.ts:runChildProcess",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapter-utils/src/server-utils.ts",
+      "target": "function:packages/adapter-utils/src/server-utils.ts:buildPersistentSkillSnapshot",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapter-utils/src/server-utils.ts",
+      "target": "function:packages/adapter-utils/src/server-utils.ts:shapePaperclipWorkspaceEnvForExecution",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapter-utils/src/server-utils.ts",
+      "target": "function:packages/adapter-utils/src/server-utils.ts:materializePaperclipSkillCopy",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapter-utils/src/server-utils.ts",
+      "target": "function:packages/adapter-utils/src/server-utils.ts:resolveSpawnTarget",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapter-utils/src/test-server-utils.ts",
+      "target": "file:packages/adapter-utils/src/server-utils.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/cloudflare/src/plugin.ts",
+      "target": "function:packages/plugins/sandbox-providers/cloudflare/src/plugin.ts:resolveExecuteSession",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/cloudflare/src/plugin.ts",
+      "target": "function:packages/plugins/sandbox-providers/cloudflare/src/plugin.ts:logCloudflareExecChunk",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/cloudflare/src/index.ts",
+      "target": "file:packages/plugins/sandbox-providers/cloudflare/src/plugin.ts",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/cloudflare/src/worker.ts",
+      "target": "file:packages/plugins/sandbox-providers/cloudflare/src/plugin.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:packages/adapters/acpx-local/tsconfig.json",
+      "target": "file:packages/adapters/acpx-local/src/index.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:packages/adapters/acpx-local/tsconfig.json",
+      "target": "file:packages/adapters/acpx-local/src/ui/app.tsx",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:packages/plugins/sandbox-providers/cloudflare/tsconfig.json",
+      "target": "file:packages/plugins/sandbox-providers/cloudflare/src/plugin.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:packages/plugins/sandbox-providers/e2b/tsconfig.json",
+      "target": "file:packages/plugins/sandbox-providers/e2b/src/index.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:packages/plugins/sdk/tsconfig.json",
+      "target": "file:packages/plugins/sdk/vitest.config.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/adapters/acpx-local/src/ui/index.ts",
+      "target": "file:packages/adapters/acpx-local/src/ui/app.tsx",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:packages/adapters/acpx-local/src/server/claude-home.test.ts",
+      "target": "file:packages/adapters/acpx-local/src/server/claude-home.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/adapters/acpx-local/src/server/worktree-pool.test.ts",
+      "target": "file:packages/adapters/acpx-local/src/server/worktree-pool.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/adapters/acpx-local/src/server/worktree-pool.ts",
+      "target": "file:packages/adapter-utils/src/server-utils.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/adapters/acpx-local/src/server/claude-home.ts",
+      "target": "file:packages/adapter-utils/src/server-utils.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:packages/adapters/acpx-local/package.json",
+      "target": "file:packages/adapters/acpx-local/src/index.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:packages/plugins/sdk/package.json",
+      "target": "file:packages/plugins/sandbox-providers/cloudflare/src/index.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:packages/plugins/sdk/package.json",
+      "target": "file:packages/plugins/sandbox-providers/e2b/src/index.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/cloudflare/vitest.config.ts",
+      "target": "file:packages/plugins/sandbox-providers/cloudflare/src/plugin.ts",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/e2b/vitest.config.ts",
+      "target": "file:packages/plugins/sandbox-providers/e2b/src/index.ts",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/plugins/sdk/vitest.config.ts",
+      "target": "config:packages/plugins/sdk/package.json",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    }
+  ]
+}

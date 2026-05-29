@@ -1,0 +1,676 @@
+{
+  "nodes": [
+    {
+      "id": "file:ui/src/pages/ProjectWorkspaceDetail.test.tsx",
+      "type": "file",
+      "name": "ProjectWorkspaceDetail.test.tsx",
+      "filePath": "ui/src/pages/ProjectWorkspaceDetail.test.tsx",
+      "summary": "Integration test suite for the ProjectWorkspaceDetail page, using React DOM rendering with helper factories for project workspaces, plugin slots, and async flush utilities.",
+      "tags": ["test", "component", "integration"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/pages/ProjectWorkspaceDetail.tsx",
+      "type": "file",
+      "name": "ProjectWorkspaceDetail.tsx",
+      "filePath": "ui/src/pages/ProjectWorkspaceDetail.tsx",
+      "summary": "Full-featured page component for viewing and editing a project workspace's configuration, including tab navigation, form validation, plugin slot integration, and runtime controls such as start/stop commands.",
+      "tags": ["component", "api-handler", "validation", "service"],
+      "complexity": "complex",
+      "languageNotes": "Extremely large component (750 lines in source, ~2500 total with callgraph) with 15 functions; uses React Query mutations for workspace updates and control commands."
+    },
+    {
+      "id": "function:ui/src/pages/ProjectWorkspaceDetail.tsx:ProjectWorkspaceDetail",
+      "type": "function",
+      "name": "ProjectWorkspaceDetail",
+      "filePath": "ui/src/pages/ProjectWorkspaceDetail.tsx",
+      "lineRange": [246, 750],
+      "summary": "Main exported React component for the project workspace detail page; manages multi-tab UI, form state, plugin slots, and mutations for workspace configuration and runtime control.",
+      "tags": ["component", "api-handler", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/ProjectWorkspaceDetail.tsx:validateWorkspaceForm",
+      "type": "function",
+      "name": "validateWorkspaceForm",
+      "filePath": "ui/src/pages/ProjectWorkspaceDetail.tsx",
+      "lineRange": [184, 215],
+      "summary": "Validates the workspace configuration form fields including path, URL safety, and JSON runtime config, returning structured error messages.",
+      "tags": ["validation", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/pages/ProjectWorkspaceDetail.tsx:buildWorkspacePatch",
+      "type": "function",
+      "name": "buildWorkspacePatch",
+      "filePath": "ui/src/pages/ProjectWorkspaceDetail.tsx",
+      "lineRange": [152, 182],
+      "summary": "Diffs initial and next workspace form state to produce a minimal patch object for the API update mutation.",
+      "tags": ["utility", "serialization"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/Projects.test.tsx",
+      "type": "file",
+      "name": "Projects.test.tsx",
+      "filePath": "ui/src/pages/Projects.test.tsx",
+      "summary": "Integration test suite for the Projects listing page covering sort menu interaction, project grouping, and membership toggling using React DOM rendering helpers.",
+      "tags": ["test", "component", "integration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/Projects.tsx",
+      "type": "file",
+      "name": "Projects.tsx",
+      "filePath": "ui/src/pages/Projects.tsx",
+      "summary": "Projects listing page component that fetches all company projects, groups them into 'mine' and 'other', and supports multi-field sorting and membership toggling.",
+      "tags": ["component", "api-handler", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/pages/Projects.tsx:Projects",
+      "type": "function",
+      "name": "Projects",
+      "filePath": "ui/src/pages/Projects.tsx",
+      "lineRange": [75, 253],
+      "summary": "Exported React component for the projects list page; queries projects and resource memberships, groups and sorts results, and renders project cards with membership actions.",
+      "tags": ["component", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/Projects.tsx:sortProjects",
+      "type": "function",
+      "name": "sortProjects",
+      "filePath": "ui/src/pages/Projects.tsx",
+      "lineRange": [58, 73],
+      "summary": "Sorts an array of projects by the given sort field (name, createdAt, updatedAt, lastActivityAt) and direction.",
+      "tags": ["utility", "sorting"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/pages/RoutineDetail.tsx",
+      "type": "file",
+      "name": "RoutineDetail.tsx",
+      "filePath": "ui/src/pages/RoutineDetail.tsx",
+      "summary": "Comprehensive detail page for a scheduled routine, including description editing, trigger management (create/update/delete/rotate), run history, activity log, secrets management, and assignee/project selection.",
+      "tags": ["component", "api-handler", "service"],
+      "complexity": "complex",
+      "languageNotes": "Extremely large component (1358 lines in source, ~1307 non-empty) containing two exported React components: TriggerEditor and RoutineDetail."
+    },
+    {
+      "id": "function:ui/src/pages/RoutineDetail.tsx:RoutineDetail",
+      "type": "function",
+      "name": "RoutineDetail",
+      "filePath": "ui/src/pages/RoutineDetail.tsx",
+      "lineRange": [286, 1358],
+      "summary": "Exported main component for the routine detail page; manages full editing lifecycle for a scheduled routine including triggers, secrets, runs, and activity.",
+      "tags": ["component", "api-handler", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/RoutineDetail.tsx:TriggerEditor",
+      "type": "function",
+      "name": "TriggerEditor",
+      "filePath": "ui/src/pages/RoutineDetail.tsx",
+      "lineRange": [164, 284],
+      "summary": "Sub-component for editing a single routine trigger's cron expression, signing mode, and replay window, with save/rotate/delete actions.",
+      "tags": ["component", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/Routines.test.tsx",
+      "type": "file",
+      "name": "Routines.test.tsx",
+      "filePath": "ui/src/pages/Routines.test.tsx",
+      "summary": "Integration test suite for the Routines listing page verifying render behavior and interactions.",
+      "tags": ["test", "component", "integration"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/pages/Secrets.render.test.tsx",
+      "type": "file",
+      "name": "Secrets.render.test.tsx",
+      "filePath": "ui/src/pages/Secrets.render.test.tsx",
+      "summary": "Render-focused integration test suite for the Secrets page including helper functions to flush React, set input values, and interact with the AWS vault dialog.",
+      "tags": ["test", "component", "integration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/pages/Secrets.tsx",
+      "type": "file",
+      "name": "Secrets.tsx",
+      "filePath": "ui/src/pages/Secrets.tsx",
+      "summary": "Secrets management page and component library for creating, rotating, filtering, and managing secrets and provider vault configurations (AWS, GCP, Vault, etc.) with detailed usage, events, and health status tabs.",
+      "tags": ["component", "api-handler", "service", "security"],
+      "complexity": "complex",
+      "languageNotes": "The largest file in the batch at 2444 source lines; exports multiple top-level components including Secrets and ProviderVaultsTab, plus utility functions for provider config validation."
+    },
+    {
+      "id": "function:ui/src/pages/Secrets.tsx:Secrets",
+      "type": "function",
+      "name": "Secrets",
+      "filePath": "ui/src/pages/Secrets.tsx",
+      "lineRange": [354, 1635],
+      "summary": "Exported main React component for the secrets management page; handles full CRUD for secrets, provider vault configuration, import/rotate dialogs, and multi-tab detail views.",
+      "tags": ["component", "api-handler", "security"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/pages/Secrets.tsx:ProviderVaultsTab",
+      "type": "function",
+      "name": "ProviderVaultsTab",
+      "filePath": "ui/src/pages/Secrets.tsx",
+      "lineRange": [1860, 1975],
+      "summary": "Exported tab component displaying all configured provider vaults with health status, action menus, and add-vault affordances.",
+      "tags": ["component", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/pages/Secrets.tsx:getCreateProviderBlockReason",
+      "type": "function",
+      "name": "getCreateProviderBlockReason",
+      "filePath": "ui/src/pages/Secrets.tsx",
+      "lineRange": [225, 266],
+      "summary": "Exported utility that checks provider health entries to return a human-readable reason why creating a new provider config might be blocked.",
+      "tags": ["utility", "validation", "security"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/plugins/bridge-init.ts",
+      "type": "file",
+      "name": "bridge-init.ts",
+      "filePath": "ui/src/plugins/bridge-init.ts",
+      "summary": "Initializes the plugin bridge by calling initPluginBridge with React and ReactDOM, exposing the plugin SDK components (IssuesList, AssigneePicker, ProjectPicker, etc.) to plugin iframes.",
+      "tags": ["service", "component", "middleware"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/plugins/bridge.test.ts",
+      "type": "file",
+      "name": "bridge.test.ts",
+      "filePath": "ui/src/plugins/bridge.test.ts",
+      "summary": "Unit and integration tests for the plugin bridge initialization and SDK component registration, verifying that the bridge exposes the correct API surface to plugins.",
+      "tags": ["test", "service", "middleware"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/plugins/launchers.tsx",
+      "type": "file",
+      "name": "launchers.tsx",
+      "filePath": "ui/src/plugins/launchers.tsx",
+      "summary": "Plugin launcher system providing PluginLauncherProvider context, LauncherModalShell, PluginLauncherOutlet, and PluginLauncherButton components that manage a stack of open plugin panels with navigation, bounds, and close lifecycle.",
+      "tags": ["component", "service", "middleware"],
+      "complexity": "complex",
+      "languageNotes": "Implements a modal stack pattern with beforeClose handlers and focus restoration; 21 functions and 1 class across ~100 source lines (but ~735 effective lines by tree-sitter)."
+    },
+    {
+      "id": "function:ui/src/plugins/launchers.tsx:PluginLauncherProvider",
+      "type": "function",
+      "name": "PluginLauncherProvider",
+      "filePath": "ui/src/plugins/launchers.tsx",
+      "lineRange": [614, 735],
+      "summary": "Context provider that manages the plugin launcher stack, handles open/close lifecycle with beforeClose guards, navigation to plugin targets, and bridge action calls.",
+      "tags": ["component", "service", "middleware"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/plugins/slots.test.ts",
+      "type": "file",
+      "name": "slots.test.ts",
+      "filePath": "ui/src/plugins/slots.test.ts",
+      "summary": "Unit tests for the plugin slot registry, testing component registration, resolution, and subscription notification behavior.",
+      "tags": ["test", "service", "middleware"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/plugins/slots.tsx",
+      "type": "file",
+      "name": "slots.tsx",
+      "filePath": "ui/src/plugins/slots.tsx",
+      "summary": "Core plugin slot system: manages a registry of React and Web component exports from dynamically loaded plugin ESM modules, including module loading with bare-specifier rewriting, React shim injection via blob URLs, and slot/launcher resolution.",
+      "tags": ["service", "middleware", "component"],
+      "complexity": "complex",
+      "languageNotes": "Implements dynamic ESM module loading with fetch + blob URL pattern; creates React shim source code as a string and injects it as a blob URL so plugins share the host's React instance."
+    },
+    {
+      "id": "function:ui/src/plugins/slots.tsx:loadPluginModule",
+      "type": "function",
+      "name": "loadPluginModule",
+      "filePath": "ui/src/plugins/slots.tsx",
+      "lineRange": [465, 550],
+      "summary": "Loads and registers a plugin's ESM UI module, handling inflight deduplication, bare-specifier rewriting, and registration of React/web component exports.",
+      "tags": ["service", "middleware"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:ui/src/plugins/slots.tsx:importPluginModule",
+      "type": "function",
+      "name": "importPluginModule",
+      "filePath": "ui/src/plugins/slots.tsx",
+      "lineRange": [410, 450],
+      "summary": "Fetches a plugin's JS source, rewrites bare specifiers to blob URLs for host dependencies, and dynamically imports the resulting module.",
+      "tags": ["service", "middleware"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/plugins/slots.tsx:usePluginRegistrySubscription",
+      "type": "function",
+      "name": "usePluginRegistrySubscription",
+      "filePath": "ui/src/plugins/slots.tsx",
+      "lineRange": [139, 149],
+      "summary": "React hook that subscribes a component to registry change notifications, forcing a re-render when plugins are registered.",
+      "tags": ["hook", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/storybook/.storybook/preview.tsx",
+      "type": "file",
+      "name": "preview.tsx",
+      "filePath": "ui/storybook/.storybook/preview.tsx",
+      "summary": "Storybook global preview configuration that wraps all stories with the StorybookProviders component, installs API fixture mocks, and applies theme toggling via globals.",
+      "tags": ["configuration", "component", "middleware"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/storybook/fixtures/paperclipData.ts",
+      "type": "file",
+      "name": "paperclipData.ts",
+      "filePath": "ui/storybook/fixtures/paperclipData.ts",
+      "summary": "Comprehensive Storybook fixture data module exporting pre-built mock objects for companies, agents, issues, projects, goals, workspaces, secrets, approvals, activity events, and more for use in stories.",
+      "tags": ["data", "utility", "documentation"],
+      "complexity": "complex",
+      "languageNotes": "Exports 29 named data constants; factory functions createProject and createIssue allow override-based fixture generation."
+    },
+    {
+      "id": "function:ui/storybook/fixtures/paperclipData.ts:createIssue",
+      "type": "function",
+      "name": "createIssue",
+      "filePath": "ui/storybook/fixtures/paperclipData.ts",
+      "lineRange": [700, 753],
+      "summary": "Exported factory function for generating realistic Issue fixture objects with optional overrides for use in Storybook stories.",
+      "tags": ["utility", "data", "factory"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/storybook/fixtures/paperclipData.ts:createProject",
+      "type": "function",
+      "name": "createProject",
+      "filePath": "ui/storybook/fixtures/paperclipData.ts",
+      "lineRange": [576, 633],
+      "summary": "Factory function for generating Project fixture objects with workspaces, goals associations, and realistic timestamps.",
+      "tags": ["utility", "data", "factory"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/storybook/stories/dev-ops-surfaces.stories.tsx",
+      "type": "file",
+      "name": "dev-ops-surfaces.stories.tsx",
+      "filePath": "ui/storybook/stories/dev-ops-surfaces.stories.tsx",
+      "summary": "Storybook stories for DevOps surface components including project workspace and runtime service management UI, backed by fixture API data.",
+      "tags": ["documentation", "component", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/storybook/stories/dialogs-modals.stories.tsx",
+      "type": "file",
+      "name": "dialogs-modals.stories.tsx",
+      "filePath": "ui/storybook/stories/dialogs-modals.stories.tsx",
+      "summary": "Extensive Storybook stories covering 19 dialog and modal variants including new issue (empty, prefilled, validation error, cheap lane), new agent (recommendation, adapter selection, external invite), goal, project, execution workspace, document diff, image gallery, and path instructions modals.",
+      "tags": ["documentation", "component", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/storybook/stories/routine-secrets.stories.tsx",
+      "type": "file",
+      "name": "routine-secrets.stories.tsx",
+      "filePath": "ui/storybook/stories/routine-secrets.stories.tsx",
+      "summary": "Storybook stories for the routine secrets tab surface, showing secret snapshots and the RoutineDetail secrets integration in various states.",
+      "tags": ["documentation", "component", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/storybook/stories/secrets.stories.tsx",
+      "type": "file",
+      "name": "secrets.stories.tsx",
+      "filePath": "ui/storybook/stories/secrets.stories.tsx",
+      "summary": "Storybook stories for the secret binding picker and environment variable editor components demonstrating various data states.",
+      "tags": ["documentation", "component", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/storybook/stories/source-resolved-fold.stories.tsx",
+      "type": "file",
+      "name": "source-resolved-fold.stories.tsx",
+      "filePath": "ui/storybook/stories/source-resolved-fold.stories.tsx",
+      "summary": "Storybook stories for the source-resolved fold callout component, covering evidence display, evaluation issues, cleanup failures, cancelled sources, and run row badge context.",
+      "tags": ["documentation", "component", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:vitest.config.ts",
+      "type": "file",
+      "name": "vitest.config.ts",
+      "filePath": "vitest.config.ts",
+      "summary": "Vitest test runner configuration for the monorepo, defining test environment, globals, and any coverage or transform settings.",
+      "tags": ["configuration", "build-system", "ci-cd"],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:ui/src/pages/ProjectWorkspaceDetail.tsx",
+      "target": "function:ui/src/pages/ProjectWorkspaceDetail.tsx:ProjectWorkspaceDetail",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/ProjectWorkspaceDetail.tsx",
+      "target": "function:ui/src/pages/ProjectWorkspaceDetail.tsx:ProjectWorkspaceDetail",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/ProjectWorkspaceDetail.tsx",
+      "target": "function:ui/src/pages/ProjectWorkspaceDetail.tsx:validateWorkspaceForm",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/ProjectWorkspaceDetail.tsx",
+      "target": "function:ui/src/pages/ProjectWorkspaceDetail.tsx:buildWorkspacePatch",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/ProjectWorkspaceDetail.test.tsx",
+      "target": "file:ui/src/pages/ProjectWorkspaceDetail.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/pages/Projects.tsx",
+      "target": "function:ui/src/pages/Projects.tsx:Projects",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/Projects.tsx",
+      "target": "function:ui/src/pages/Projects.tsx:Projects",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/Projects.tsx",
+      "target": "function:ui/src/pages/Projects.tsx:sortProjects",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/Projects.test.tsx",
+      "target": "file:ui/src/pages/Projects.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/pages/RoutineDetail.tsx",
+      "target": "function:ui/src/pages/RoutineDetail.tsx:RoutineDetail",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/RoutineDetail.tsx",
+      "target": "function:ui/src/pages/RoutineDetail.tsx:RoutineDetail",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/RoutineDetail.tsx",
+      "target": "function:ui/src/pages/RoutineDetail.tsx:TriggerEditor",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/Secrets.tsx",
+      "target": "function:ui/src/pages/Secrets.tsx:Secrets",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/Secrets.tsx",
+      "target": "function:ui/src/pages/Secrets.tsx:Secrets",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/Secrets.tsx",
+      "target": "function:ui/src/pages/Secrets.tsx:ProviderVaultsTab",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/Secrets.tsx",
+      "target": "function:ui/src/pages/Secrets.tsx:ProviderVaultsTab",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/Secrets.tsx",
+      "target": "function:ui/src/pages/Secrets.tsx:getCreateProviderBlockReason",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/pages/Secrets.tsx",
+      "target": "function:ui/src/pages/Secrets.tsx:getCreateProviderBlockReason",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/pages/Secrets.render.test.tsx",
+      "target": "file:ui/src/pages/Secrets.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/plugins/launchers.tsx",
+      "target": "function:ui/src/plugins/launchers.tsx:PluginLauncherProvider",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/plugins/launchers.tsx",
+      "target": "function:ui/src/plugins/launchers.tsx:PluginLauncherProvider",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/plugins/slots.tsx",
+      "target": "function:ui/src/plugins/slots.tsx:loadPluginModule",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/plugins/slots.tsx",
+      "target": "function:ui/src/plugins/slots.tsx:importPluginModule",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/plugins/slots.tsx",
+      "target": "function:ui/src/plugins/slots.tsx:usePluginRegistrySubscription",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/plugins/bridge-init.ts",
+      "target": "file:ui/src/plugins/slots.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/plugins/bridge.test.ts",
+      "target": "file:ui/src/plugins/bridge-init.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/plugins/slots.test.ts",
+      "target": "file:ui/src/plugins/slots.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/src/plugins/launchers.tsx",
+      "target": "file:ui/src/plugins/slots.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/storybook/fixtures/paperclipData.ts",
+      "target": "function:ui/storybook/fixtures/paperclipData.ts:createIssue",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/storybook/fixtures/paperclipData.ts",
+      "target": "function:ui/storybook/fixtures/paperclipData.ts:createIssue",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/storybook/fixtures/paperclipData.ts",
+      "target": "function:ui/storybook/fixtures/paperclipData.ts:createProject",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/storybook/stories/dev-ops-surfaces.stories.tsx",
+      "target": "file:ui/storybook/fixtures/paperclipData.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/storybook/stories/dialogs-modals.stories.tsx",
+      "target": "file:ui/storybook/fixtures/paperclipData.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/storybook/stories/routine-secrets.stories.tsx",
+      "target": "file:ui/storybook/fixtures/paperclipData.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/storybook/stories/secrets.stories.tsx",
+      "target": "file:ui/storybook/fixtures/paperclipData.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/storybook/stories/dev-ops-surfaces.stories.tsx",
+      "target": "file:ui/src/pages/ProjectWorkspaceDetail.tsx",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/storybook/stories/routine-secrets.stories.tsx",
+      "target": "file:ui/src/pages/RoutineDetail.tsx",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/storybook/stories/secrets.stories.tsx",
+      "target": "file:ui/src/pages/Secrets.tsx",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:ui/storybook/.storybook/preview.tsx",
+      "target": "file:ui/storybook/fixtures/paperclipData.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:vitest.config.ts",
+      "target": "file:ui/src/pages/ProjectWorkspaceDetail.test.tsx",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:vitest.config.ts",
+      "target": "file:ui/src/pages/Projects.test.tsx",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:vitest.config.ts",
+      "target": "file:ui/src/pages/Routines.test.tsx",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:vitest.config.ts",
+      "target": "file:ui/src/pages/Secrets.render.test.tsx",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:vitest.config.ts",
+      "target": "file:ui/src/plugins/bridge.test.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:vitest.config.ts",
+      "target": "file:ui/src/plugins/slots.test.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    }
+  ]
+}

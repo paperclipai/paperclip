@@ -1,0 +1,606 @@
+{
+  "nodes": [
+    {
+      "id": "document:doc/plugins/LOCAL_PLUGIN_DEVELOPMENT.md",
+      "type": "document",
+      "name": "LOCAL_PLUGIN_DEVELOPMENT.md",
+      "filePath": "doc/plugins/LOCAL_PLUGIN_DEVELOPMENT.md",
+      "summary": "Step-by-step guide for developing Paperclip plugins locally, covering prerequisites, scaffolding, watch builds, local path installation, and troubleshooting reload semantics.",
+      "tags": ["documentation", "development", "plugin-system"],
+      "complexity": "simple"
+    },
+    {
+      "id": "document:doc/plugins/PLUGIN_AUTHORING_GUIDE.md",
+      "type": "document",
+      "name": "PLUGIN_AUTHORING_GUIDE.md",
+      "filePath": "doc/plugins/PLUGIN_AUTHORING_GUIDE.md",
+      "summary": "Comprehensive guide for plugin authors covering scaffolding, supported API surface (database declarations, scoped routes), managed resources, shared host components, file tree UI, company routes, and publishing guidance with 17 sections.",
+      "tags": ["documentation", "plugin-system", "api-schema", "development"],
+      "complexity": "complex"
+    },
+    {
+      "id": "document:doc/plugins/PLUGIN_SPEC.md",
+      "type": "document",
+      "name": "PLUGIN_SPEC.md",
+      "filePath": "doc/plugins/PLUGIN_SPEC.md",
+      "summary": "Authoritative technical specification for the Paperclip plugin system covering scope, assumptions, terminology, extension classes, runtime model, host-worker protocol, SDK surface, capability model, event system, scheduled jobs, webhooks, UI extension model, persistence, secrets, auditing, lifecycle management, and versioning across 128 sections.",
+      "tags": ["documentation", "plugin-system", "schema-definition", "api-schema"],
+      "complexity": "complex",
+      "languageNotes": "This is the canonical design document for the plugin architecture — it defines the host-worker binary protocol and capability permission model."
+    },
+    {
+      "id": "document:doc/spec/invite-flow.md",
+      "type": "document",
+      "name": "invite-flow.md",
+      "filePath": "doc/spec/invite-flow.md",
+      "summary": "State machine specification for the invite flow, detailing entity lifecycle states, board-side and landing screen states, and sequence diagrams for human invite creation, legacy reload paths, and agent invite approval and replay.",
+      "tags": ["documentation", "api-schema", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "config:package.json",
+      "type": "config",
+      "name": "package.json",
+      "filePath": "package.json",
+      "summary": "Root monorepo package.json configuring the pnpm workspace with build, test, typecheck, and lint scripts, dev dependencies including TypeScript and Vitest, and engine requirements (Node >= 20, pnpm >= 9).",
+      "tags": ["configuration", "build-system", "monorepo"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapter-utils/src/command-redaction.ts",
+      "type": "file",
+      "name": "command-redaction.ts",
+      "filePath": "packages/adapter-utils/src/command-redaction.ts",
+      "summary": "Provides utilities to detect and redact secret values from command strings, covering Authorization Bearer tokens, CLI secret flags, environment variable assignments, OpenAI keys, and GitHub tokens via regex patterns.",
+      "tags": ["utility", "security", "validation"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:packages/adapter-utils/src/command-redaction.ts:redactCommandText",
+      "type": "function",
+      "name": "redactCommandText",
+      "filePath": "packages/adapter-utils/src/command-redaction.ts",
+      "lineRange": [45, 58],
+      "summary": "Replaces secret patterns in a shell command string (bearer tokens, CLI flags, env var assignments, API keys) with a provided redacted placeholder value.",
+      "tags": ["security", "utility", "validation"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapter-utils/src/sandbox-managed-runtime.ts",
+      "type": "file",
+      "name": "sandbox-managed-runtime.ts",
+      "filePath": "packages/adapter-utils/src/sandbox-managed-runtime.ts",
+      "summary": "Provides utilities for preparing and synchronizing sandbox managed runtimes, including tarball creation/extraction, directory mirroring, remote file transfer, and session identity comparison for sandbox execution environments.",
+      "tags": ["utility", "service", "infrastructure"],
+      "complexity": "complex",
+      "languageNotes": "Uses atomic file operations and tarball-based workspace synchronization to transfer project state to remote sandboxes."
+    },
+    {
+      "id": "function:packages/adapter-utils/src/sandbox-managed-runtime.ts:prepareSandboxManagedRuntime",
+      "type": "function",
+      "name": "prepareSandboxManagedRuntime",
+      "filePath": "packages/adapter-utils/src/sandbox-managed-runtime.ts",
+      "lineRange": [247, 348],
+      "summary": "Orchestrates the full preparation of a remote sandbox runtime by uploading workspace tarballs, installing dependencies, and extracting results back to local disk.",
+      "tags": ["service", "infrastructure", "utility"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/adapter-utils/src/sandbox-managed-runtime.ts:mirrorDirectory",
+      "type": "function",
+      "name": "mirrorDirectory",
+      "filePath": "packages/adapter-utils/src/sandbox-managed-runtime.ts",
+      "lineRange": [184, 231],
+      "summary": "Synchronizes a source directory to a target directory by copying new/changed entries and removing entries absent from the source, with optional path preservation rules.",
+      "tags": ["utility", "infrastructure"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/adapter-utils/src/server-utils.test.ts",
+      "type": "file",
+      "name": "server-utils.test.ts",
+      "filePath": "packages/adapter-utils/src/server-utils.test.ts",
+      "summary": "Integration test suite for adapter server utilities, providing helper functions to check process liveness, wait for process exit, and match text patterns, used to test server lifecycle and behavior.",
+      "tags": ["test", "utility", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:packages/adapters/acpx-local/src/server/execute.test.ts",
+      "type": "file",
+      "name": "execute.test.ts",
+      "filePath": "packages/adapters/acpx-local/src/server/execute.test.ts",
+      "summary": "Integration test suite for the acpx-local adapter executor, testing runtime creation, skill provisioning, and execution flows with filesystem scaffolding helpers and mock runtime builders.",
+      "tags": ["test", "api-handler", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:packages/adapters/acpx-local/src/server/execute.ts",
+      "type": "file",
+      "name": "execute.ts",
+      "filePath": "packages/adapters/acpx-local/src/server/execute.ts",
+      "summary": "Core executor for the ACPX local adapter that manages Claude CLI session lifecycle including runtime preparation, skill materialization, prompt construction, warm handle pooling, timeout management, and structured event emission for Paperclip agent runs.",
+      "tags": ["service", "api-handler", "entry-point"],
+      "complexity": "complex",
+      "languageNotes": "Implements warm session handle reuse to avoid Claude CLI cold-start overhead on consecutive runs within the same agent context."
+    },
+    {
+      "id": "function:packages/adapters/acpx-local/src/server/execute.ts:createAcpxLocalExecutor",
+      "type": "function",
+      "name": "createAcpxLocalExecutor",
+      "filePath": "packages/adapters/acpx-local/src/server/execute.ts",
+      "lineRange": [1376, 1729],
+      "summary": "Factory that creates the main ACPX local executor, managing warm handle pool, session lifecycle (ensure, configure, turn), timeout handling, and structured result/failure emission.",
+      "tags": ["factory", "service", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/adapters/acpx-local/src/server/execute.ts:buildRuntime",
+      "type": "function",
+      "name": "buildRuntime",
+      "filePath": "packages/adapters/acpx-local/src/server/execute.ts",
+      "lineRange": [732, 956],
+      "summary": "Builds the full runtime configuration for a Claude agent execution including workspace env, skill runtime preparation, agent wrapper generation, and registry creation.",
+      "tags": ["service", "factory", "configuration"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/adapters/acpx-local/src/server/execute.ts:writePaperclipClaudeSettings",
+      "type": "function",
+      "name": "writePaperclipClaudeSettings",
+      "filePath": "packages/adapters/acpx-local/src/server/execute.ts",
+      "lineRange": [588, 660],
+      "summary": "Reads and merges existing Claude settings with Paperclip-managed permission allowlists and directory entries, then writes the result atomically to the settings file.",
+      "tags": ["configuration", "security", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/adapters/acpx-local/src/server/execute.ts:buildPrompt",
+      "type": "function",
+      "name": "buildPrompt",
+      "filePath": "packages/adapters/acpx-local/src/server/execute.ts",
+      "lineRange": [1008, 1082],
+      "summary": "Constructs the full agent prompt by composing instructions file content, wake prompt, session handoff markdown, task markdown, and skill command notes.",
+      "tags": ["service", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/adapters/codex-local/src/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/adapters/codex-local/src/index.ts",
+      "summary": "Entry point for the codex-local adapter package, exporting adapter type/label constants, model definitions, model profile configurations, and agent configuration documentation.",
+      "tags": ["entry-point", "barrel", "configuration"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapters/codex-local/src/server/codex-home.test.ts",
+      "type": "file",
+      "name": "codex-home.test.ts",
+      "filePath": "packages/adapters/codex-local/src/server/codex-home.test.ts",
+      "summary": "Test suite for the codex-home module that verifies Codex home directory resolution and managed home preparation logic.",
+      "tags": ["test", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapters/codex-local/src/server/codex-home.ts",
+      "type": "file",
+      "name": "codex-home.ts",
+      "filePath": "packages/adapters/codex-local/src/server/codex-home.ts",
+      "summary": "Manages the Codex home directory setup for local agent execution, handling symlink creation, API key auth JSON writing, shared and managed home resolution, and worktree mode detection.",
+      "tags": ["utility", "service", "configuration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/adapters/codex-local/src/server/codex-home.ts:prepareManagedCodexHome",
+      "type": "function",
+      "name": "prepareManagedCodexHome",
+      "filePath": "packages/adapters/codex-local/src/server/codex-home.ts",
+      "lineRange": [106, 160],
+      "summary": "Prepares a managed Codex home directory by resolving paths, creating symlinks for config/instructions, copying gitconfig, handling worktree mode, and writing API key auth JSON.",
+      "tags": ["service", "utility", "configuration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "config:packages/adapters/grok-local/package.json",
+      "type": "config",
+      "name": "package.json",
+      "filePath": "packages/adapters/grok-local/package.json",
+      "summary": "Package configuration for the grok-local adapter, defining dual CJS/ESM exports for server and CLI entry points, build scripts, and dependencies including Grok CLI integration.",
+      "tags": ["configuration", "build-system"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/cli/format-event.test.ts",
+      "type": "file",
+      "name": "format-event.test.ts",
+      "filePath": "packages/adapters/grok-local/src/cli/format-event.test.ts",
+      "summary": "Small test file validating the printGrokStreamEvent formatter for Grok stream output events.",
+      "tags": ["test", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/cli/format-event.ts",
+      "type": "file",
+      "name": "format-event.ts",
+      "filePath": "packages/adapters/grok-local/src/cli/format-event.ts",
+      "summary": "Formats raw Grok stream JSON events for CLI display, colorizing different event types (text, thought, done, error, unknown) using picocolors.",
+      "tags": ["utility", "component"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:packages/adapters/grok-local/src/cli/format-event.ts:printGrokStreamEvent",
+      "type": "function",
+      "name": "printGrokStreamEvent",
+      "filePath": "packages/adapters/grok-local/src/cli/format-event.ts",
+      "lineRange": [12, 59],
+      "summary": "Parses a raw Grok stream event JSON string and prints it to stdout with type-specific color coding using picocolors.",
+      "tags": ["utility", "event-handler"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/cli/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/adapters/grok-local/src/cli/index.ts",
+      "summary": "Barrel re-export for the grok-local CLI module, exporting printGrokStreamEvent.",
+      "tags": ["barrel", "entry-point"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/adapters/grok-local/src/index.ts",
+      "summary": "Entry point for the grok-local adapter package, exporting adapter type/label constants, default model, supported models list, and agent configuration documentation.",
+      "tags": ["entry-point", "barrel", "configuration"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/server/execute.test.ts",
+      "type": "file",
+      "name": "execute.test.ts",
+      "filePath": "packages/adapters/grok-local/src/server/execute.test.ts",
+      "summary": "Integration test suite for the grok-local adapter execute function, with filesystem scaffolding helpers and tests covering project asset staging and execution flows.",
+      "tags": ["test", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/server/execute.ts",
+      "type": "file",
+      "name": "execute.ts",
+      "filePath": "packages/adapters/grok-local/src/server/execute.ts",
+      "summary": "Core executor for the grok-local adapter that stages project assets (instructions, gitconfig, skills), constructs the Grok CLI invocation with environment and arguments, handles session resume with retry logic, and translates JSONL output to Paperclip run results.",
+      "tags": ["service", "api-handler", "entry-point"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/adapters/grok-local/src/server/execute.ts:execute",
+      "type": "function",
+      "name": "execute",
+      "filePath": "packages/adapters/grok-local/src/server/execute.ts",
+      "lineRange": [191, 583],
+      "summary": "Main Grok execution function that resolves configuration, stages project assets, builds environment and CLI args, runs the Grok process with session resume retry, and converts JSONL output to structured results.",
+      "tags": ["service", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/adapters/grok-local/src/server/execute.ts:stageGrokProjectAssets",
+      "type": "function",
+      "name": "stageGrokProjectAssets",
+      "filePath": "packages/adapters/grok-local/src/server/execute.ts",
+      "lineRange": [101, 185],
+      "summary": "Stages project assets (CLAUDE.md instructions, gitconfig, Paperclip skills) into the project directory for native Grok discovery, returning paths and a cleanup callback.",
+      "tags": ["utility", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/server/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/adapters/grok-local/src/server/index.ts",
+      "summary": "Server barrel for the grok-local adapter, exporting sessionCodec (with serialize/deserialize/getDisplayId), execute, listGrokSkills, syncGrokSkills, testEnvironment, parseGrokJsonl, and isGrokUnknownSessionError.",
+      "tags": ["barrel", "entry-point", "service"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/server/parse.test.ts",
+      "type": "file",
+      "name": "parse.test.ts",
+      "filePath": "packages/adapters/grok-local/src/server/parse.test.ts",
+      "summary": "Test suite for the grok-local JSONL parser, validating parseGrokJsonl and isGrokUnknownSessionError output across various event sequences.",
+      "tags": ["test", "serialization"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/server/parse.ts",
+      "type": "file",
+      "name": "parse.ts",
+      "filePath": "packages/adapters/grok-local/src/server/parse.ts",
+      "summary": "Parses Grok CLI JSONL output into structured result objects (text, thought, session, stop reason) and detects unknown session errors for retry logic.",
+      "tags": ["serialization", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/adapters/grok-local/src/server/parse.ts:parseGrokJsonl",
+      "type": "function",
+      "name": "parseGrokJsonl",
+      "filePath": "packages/adapters/grok-local/src/server/parse.ts",
+      "lineRange": [29, 79],
+      "summary": "Processes Grok JSONL stdout line-by-line, accumulating text/thought parts and session metadata to produce a structured parse result with turn boundary tracking.",
+      "tags": ["serialization", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/server/skills.ts",
+      "type": "file",
+      "name": "skills.ts",
+      "filePath": "packages/adapters/grok-local/src/server/skills.ts",
+      "summary": "Implements Grok skill management operations including snapshotting available and selected skills with their directory paths, and listing/syncing skills for the grok-local adapter.",
+      "tags": ["service", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/adapters/grok-local/src/server/test.test.ts",
+      "type": "file",
+      "name": "test.test.ts",
+      "filePath": "packages/adapters/grok-local/src/server/test.test.ts",
+      "summary": "Integration test suite that validates the grok-local testEnvironment function by verifying Grok CLI presence and execution capability in the test environment.",
+      "tags": ["test", "service"],
+      "complexity": "moderate"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:packages/adapter-utils/src/command-redaction.ts",
+      "target": "function:packages/adapter-utils/src/command-redaction.ts:redactCommandText",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapter-utils/src/command-redaction.ts",
+      "target": "function:packages/adapter-utils/src/command-redaction.ts:redactCommandText",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapter-utils/src/sandbox-managed-runtime.ts",
+      "target": "function:packages/adapter-utils/src/sandbox-managed-runtime.ts:prepareSandboxManagedRuntime",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapter-utils/src/sandbox-managed-runtime.ts",
+      "target": "function:packages/adapter-utils/src/sandbox-managed-runtime.ts:mirrorDirectory",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapter-utils/src/sandbox-managed-runtime.ts",
+      "target": "function:packages/adapter-utils/src/sandbox-managed-runtime.ts:prepareSandboxManagedRuntime",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapter-utils/src/sandbox-managed-runtime.ts",
+      "target": "function:packages/adapter-utils/src/sandbox-managed-runtime.ts:mirrorDirectory",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapters/acpx-local/src/server/execute.ts",
+      "target": "function:packages/adapters/acpx-local/src/server/execute.ts:createAcpxLocalExecutor",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapters/acpx-local/src/server/execute.ts",
+      "target": "function:packages/adapters/acpx-local/src/server/execute.ts:buildRuntime",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapters/acpx-local/src/server/execute.ts",
+      "target": "function:packages/adapters/acpx-local/src/server/execute.ts:writePaperclipClaudeSettings",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapters/acpx-local/src/server/execute.ts",
+      "target": "function:packages/adapters/acpx-local/src/server/execute.ts:buildPrompt",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapters/acpx-local/src/server/execute.ts",
+      "target": "function:packages/adapters/acpx-local/src/server/execute.ts:createAcpxLocalExecutor",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapters/acpx-local/src/server/execute.test.ts",
+      "target": "file:packages/adapters/acpx-local/src/server/execute.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/adapters/codex-local/src/server/codex-home.ts",
+      "target": "function:packages/adapters/codex-local/src/server/codex-home.ts:prepareManagedCodexHome",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapters/codex-local/src/server/codex-home.ts",
+      "target": "function:packages/adapters/codex-local/src/server/codex-home.ts:prepareManagedCodexHome",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapters/codex-local/src/server/codex-home.test.ts",
+      "target": "file:packages/adapters/codex-local/src/server/codex-home.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/cli/format-event.ts",
+      "target": "function:packages/adapters/grok-local/src/cli/format-event.ts:printGrokStreamEvent",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/cli/format-event.ts",
+      "target": "function:packages/adapters/grok-local/src/cli/format-event.ts:printGrokStreamEvent",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/cli/format-event.test.ts",
+      "target": "file:packages/adapters/grok-local/src/cli/format-event.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/cli/index.ts",
+      "target": "file:packages/adapters/grok-local/src/cli/format-event.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/server/execute.ts",
+      "target": "function:packages/adapters/grok-local/src/server/execute.ts:execute",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/server/execute.ts",
+      "target": "function:packages/adapters/grok-local/src/server/execute.ts:stageGrokProjectAssets",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/server/execute.ts",
+      "target": "function:packages/adapters/grok-local/src/server/execute.ts:execute",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/server/execute.test.ts",
+      "target": "file:packages/adapters/grok-local/src/server/execute.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/server/index.ts",
+      "target": "file:packages/adapters/grok-local/src/server/execute.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/server/index.ts",
+      "target": "file:packages/adapters/grok-local/src/server/parse.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/server/index.ts",
+      "target": "file:packages/adapters/grok-local/src/server/skills.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/server/parse.ts",
+      "target": "function:packages/adapters/grok-local/src/server/parse.ts:parseGrokJsonl",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/server/parse.ts",
+      "target": "function:packages/adapters/grok-local/src/server/parse.ts:parseGrokJsonl",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/server/parse.test.ts",
+      "target": "file:packages/adapters/grok-local/src/server/parse.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/adapters/grok-local/src/server/execute.ts",
+      "target": "file:packages/adapters/grok-local/src/server/parse.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:package.json",
+      "target": "file:packages/adapters/acpx-local/src/server/execute.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:packages/adapters/grok-local/package.json",
+      "target": "file:packages/adapters/grok-local/src/server/execute.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:packages/adapters/grok-local/package.json",
+      "target": "file:packages/adapters/grok-local/src/index.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "document:doc/plugins/PLUGIN_SPEC.md",
+      "target": "file:packages/adapters/acpx-local/src/server/execute.ts",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:doc/plugins/PLUGIN_AUTHORING_GUIDE.md",
+      "target": "document:doc/plugins/PLUGIN_SPEC.md",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:doc/plugins/LOCAL_PLUGIN_DEVELOPMENT.md",
+      "target": "document:doc/plugins/PLUGIN_AUTHORING_GUIDE.md",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    }
+  ]
+}

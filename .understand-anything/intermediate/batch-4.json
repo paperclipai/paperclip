@@ -1,0 +1,717 @@
+{
+  "nodes": [
+    {
+      "id": "file:packages/plugins/plugin-workspace-diff/tests/fixtures.ts",
+      "type": "file",
+      "name": "fixtures.ts",
+      "filePath": "packages/plugins/plugin-workspace-diff/tests/fixtures.ts",
+      "summary": "Provides test fixture factory functions for workspace diff tests, generating mock changed-file objects and full diff response payloads with configurable overrides.",
+      "tags": ["test", "utility", "factory", "workspace-diff"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/plugins/plugin-workspace-diff/tests/fixtures.ts:changedFile",
+      "type": "function",
+      "name": "changedFile",
+      "filePath": "packages/plugins/plugin-workspace-diff/tests/fixtures.ts",
+      "lineRange": [3, 41],
+      "summary": "Factory function that builds a mock changed-file object with a sample git diff patch, accepting partial overrides for test customization.",
+      "tags": ["test", "factory", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/plugins/plugin-workspace-diff/tests/fixtures.ts:diffResponse",
+      "type": "function",
+      "name": "diffResponse",
+      "filePath": "packages/plugins/plugin-workspace-diff/tests/fixtures.ts",
+      "lineRange": [43, 78],
+      "summary": "Factory function that assembles a complete diff response object from a list of changed files, computing patch, added, modified, removed, and renamed file sub-lists.",
+      "tags": ["test", "factory", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/plugin-workspace-diff/tests/plugin.spec.ts",
+      "type": "file",
+      "name": "plugin.spec.ts",
+      "filePath": "packages/plugins/plugin-workspace-diff/tests/plugin.spec.ts",
+      "summary": "Integration test suite for the workspace-diff plugin, spinning up real git repositories in temp directories and asserting plugin behavior against actual git state.",
+      "tags": ["test", "integration", "workspace-diff", "git"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:packages/plugins/plugin-workspace-diff/tests/ui-error-state.spec.ts",
+      "type": "file",
+      "name": "ui-error-state.spec.ts",
+      "filePath": "packages/plugins/plugin-workspace-diff/tests/ui-error-state.spec.ts",
+      "summary": "Minimal spec file testing the UI error state rendering for the workspace-diff plugin.",
+      "tags": ["test", "ui", "workspace-diff"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/plugin-workspace-diff/tests/workspace-diff.spec.ts",
+      "type": "file",
+      "name": "workspace-diff.spec.ts",
+      "filePath": "packages/plugins/plugin-workspace-diff/tests/workspace-diff.spec.ts",
+      "summary": "Unit and integration tests for core workspace diff logic, creating temporary git repos and workspaces to verify diff computation across multiple file change scenarios.",
+      "tags": ["test", "integration", "workspace-diff", "git"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/plugins/plugin-workspace-diff/tests/workspace-diff.spec.ts:createWorkspace",
+      "type": "function",
+      "name": "createWorkspace",
+      "filePath": "packages/plugins/plugin-workspace-diff/tests/workspace-diff.spec.ts",
+      "lineRange": [36, 51],
+      "summary": "Helper that constructs a workspace configuration object from a git repo directory and optional overrides, used to set up test scenarios.",
+      "tags": ["test", "utility", "factory"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:packages/plugins/plugin-workspace-diff/tsconfig.json",
+      "type": "config",
+      "name": "tsconfig.json",
+      "filePath": "packages/plugins/plugin-workspace-diff/tsconfig.json",
+      "summary": "TypeScript compiler configuration for the plugin-workspace-diff package, specifying compiler options, included source files, and excluding test files.",
+      "tags": ["configuration", "typescript", "build-system"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:packages/plugins/plugin-workspace-diff/tsconfig.test.json",
+      "type": "config",
+      "name": "tsconfig.test.json",
+      "filePath": "packages/plugins/plugin-workspace-diff/tsconfig.test.json",
+      "summary": "TypeScript test configuration that extends the base tsconfig and includes test files, used by vitest for type-checking during test runs.",
+      "tags": ["configuration", "typescript", "test"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/plugin-workspace-diff/vitest.config.ts",
+      "type": "file",
+      "name": "vitest.config.ts",
+      "filePath": "packages/plugins/plugin-workspace-diff/vitest.config.ts",
+      "summary": "Vitest configuration file for the plugin-workspace-diff package, defining the test runner setup.",
+      "tags": ["configuration", "test", "build-system"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/cloudflare/src/config.ts",
+      "type": "file",
+      "name": "config.ts",
+      "filePath": "packages/plugins/sandbox-providers/cloudflare/src/config.ts",
+      "summary": "Parses and validates Cloudflare sandbox driver configuration from raw plugin config, covering bridge host, session ID, auth tokens, ports, and routing settings.",
+      "tags": ["configuration", "validation", "service", "sandbox"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/plugins/sandbox-providers/cloudflare/src/config.ts:parseCloudflareDriverConfig",
+      "type": "function",
+      "name": "parseCloudflareDriverConfig",
+      "filePath": "packages/plugins/sandbox-providers/cloudflare/src/config.ts",
+      "lineRange": [26, 41],
+      "summary": "Parses raw plugin configuration into a typed Cloudflare driver config object, extracting and normalizing all relevant fields.",
+      "tags": ["configuration", "validation", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/plugins/sandbox-providers/cloudflare/src/config.ts:validateCloudflareDriverConfig",
+      "type": "function",
+      "name": "validateCloudflareDriverConfig",
+      "filePath": "packages/plugins/sandbox-providers/cloudflare/src/config.ts",
+      "lineRange": [43, 84],
+      "summary": "Validates a parsed Cloudflare driver config, collecting all constraint violations (missing fields, local bridge host detection, invalid paths) into an error list.",
+      "tags": ["validation", "configuration", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/cloudflare/src/manifest.ts",
+      "type": "file",
+      "name": "manifest.ts",
+      "filePath": "packages/plugins/sandbox-providers/cloudflare/src/manifest.ts",
+      "summary": "Defines the Paperclip plugin manifest for the Cloudflare sandbox provider, declaring plugin metadata, capabilities, and environment driver registration.",
+      "tags": ["configuration", "service", "sandbox", "schema-definition"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/cloudflare/src/plugin.test.ts",
+      "type": "file",
+      "name": "plugin.test.ts",
+      "filePath": "packages/plugins/sandbox-providers/cloudflare/src/plugin.test.ts",
+      "summary": "Test suite for the Cloudflare sandbox provider plugin, using mocked fetch calls to verify lifecycle handlers (validate, probe, acquire, resume, release, destroy, execute).",
+      "tags": ["test", "service", "sandbox", "cloudflare"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/e2b/src/manifest.ts",
+      "type": "file",
+      "name": "manifest.ts",
+      "filePath": "packages/plugins/sandbox-providers/e2b/src/manifest.ts",
+      "summary": "Defines the Paperclip plugin manifest for the E2B sandbox provider, declaring plugin metadata, capabilities, and environment driver schema.",
+      "tags": ["configuration", "service", "sandbox", "schema-definition"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/e2b/src/plugin.test.ts",
+      "type": "file",
+      "name": "plugin.test.ts",
+      "filePath": "packages/plugins/sandbox-providers/e2b/src/plugin.test.ts",
+      "summary": "Comprehensive test suite for the E2B sandbox plugin covering all environment lifecycle events — validate, probe, acquire, resume, release, destroy, realize, and execute — with mock E2B sandbox objects.",
+      "tags": ["test", "service", "sandbox", "e2b"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/plugins/sandbox-providers/e2b/src/plugin.test.ts:createMockSandbox",
+      "type": "function",
+      "name": "createMockSandbox",
+      "filePath": "packages/plugins/sandbox-providers/e2b/src/plugin.test.ts",
+      "lineRange": [46, 93],
+      "summary": "Factory function that creates a fully mocked E2B Sandbox object with vi.fn() stubs for all commands, files, and lifecycle methods used in tests.",
+      "tags": ["test", "factory", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/e2b/src/plugin.ts",
+      "type": "file",
+      "name": "plugin.ts",
+      "filePath": "packages/plugins/sandbox-providers/e2b/src/plugin.ts",
+      "summary": "Implements the Paperclip environment driver plugin for E2B sandboxes, handling the full lifecycle of sandbox creation, leasing, workspace realization, command execution with stdin staging, and cleanup.",
+      "tags": ["service", "sandbox", "e2b", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/plugins/sandbox-providers/e2b/src/plugin.ts:buildLoginShellScript",
+      "type": "function",
+      "name": "buildLoginShellScript",
+      "filePath": "packages/plugins/sandbox-providers/e2b/src/plugin.ts",
+      "lineRange": [162, 193],
+      "summary": "Builds a shell script that sources login profiles (profile, .profile, .bash_profile, .bashrc, nvm) and then executes the provided command with environment variables set.",
+      "tags": ["utility", "service", "sandbox"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/plugins/sandbox-providers/e2b/src/plugin.ts:releaseSandboxBestEffort",
+      "type": "function",
+      "name": "releaseSandboxBestEffort",
+      "filePath": "packages/plugins/sandbox-providers/e2b/src/plugin.ts",
+      "lineRange": [201, 215],
+      "summary": "Attempts to release an E2B sandbox by pausing it for reuse or killing it if no reuse lease is available, swallowing errors to avoid blocking cleanup.",
+      "tags": ["service", "sandbox", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "document:packages/plugins/sandbox-providers/modal/README.md",
+      "type": "document",
+      "name": "README.md",
+      "filePath": "packages/plugins/sandbox-providers/modal/README.md",
+      "summary": "Documentation for the Modal sandbox provider plugin covering installation, runtime support notes, configuration options, reuse semantics, local development setup, operator verification, and package layout.",
+      "tags": ["documentation", "sandbox", "modal", "configuration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "config:packages/plugins/sandbox-providers/modal/package.json",
+      "type": "config",
+      "name": "package.json",
+      "filePath": "packages/plugins/sandbox-providers/modal/package.json",
+      "summary": "Package manifest for @paperclipai/plugin-modal, defining exports, scripts, dependencies (modal-client, zod), and the paperclipPlugin entry pointing to the manifest.",
+      "tags": ["configuration", "build-system", "sandbox", "modal"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/modal/src/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/plugins/sandbox-providers/modal/src/index.ts",
+      "summary": "Barrel entry point for the Modal sandbox provider package, re-exporting the plugin manifest and plugin implementation.",
+      "tags": ["entry-point", "barrel"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/modal/src/manifest.ts",
+      "type": "file",
+      "name": "manifest.ts",
+      "filePath": "packages/plugins/sandbox-providers/modal/src/manifest.ts",
+      "summary": "Defines the Paperclip plugin manifest for the Modal sandbox provider, declaring metadata, capabilities, and the environment driver configuration schema.",
+      "tags": ["configuration", "service", "sandbox", "schema-definition"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/modal/src/plugin.test.ts",
+      "type": "file",
+      "name": "plugin.test.ts",
+      "filePath": "packages/plugins/sandbox-providers/modal/src/plugin.test.ts",
+      "summary": "Comprehensive test suite for the Modal sandbox provider plugin covering validate, probe, acquire, resume, release, destroy, realize, and execute lifecycle events with fake Modal client objects.",
+      "tags": ["test", "service", "sandbox", "modal"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/plugins/sandbox-providers/modal/src/plugin.test.ts:makeFakeProcess",
+      "type": "function",
+      "name": "makeFakeProcess",
+      "filePath": "packages/plugins/sandbox-providers/modal/src/plugin.test.ts",
+      "lineRange": [42, 56],
+      "summary": "Creates a fake Modal process object with mocked wait, stdout.readText, and stderr.readText methods for use in Modal plugin tests.",
+      "tags": ["test", "factory", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:packages/plugins/sandbox-providers/modal/src/plugin.test.ts:createFakeSandbox",
+      "type": "function",
+      "name": "createFakeSandbox",
+      "filePath": "packages/plugins/sandbox-providers/modal/src/plugin.test.ts",
+      "lineRange": [58, 93],
+      "summary": "Factory that builds a complete fake Modal sandbox object with vi.fn() mocks for exec, open, terminate, detach, setTags, and file operations, tracking exec and open call history.",
+      "tags": ["test", "factory", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "type": "file",
+      "name": "plugin.ts",
+      "filePath": "packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "summary": "Implements the Paperclip environment driver plugin for Modal sandboxes, handling full lifecycle including client creation, sandbox provisioning, workspace realization, stdin staging via file open/write, command execution, and graceful cleanup.",
+      "tags": ["service", "sandbox", "modal", "api-handler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/plugins/sandbox-providers/modal/src/plugin.ts:parseDriverConfig",
+      "type": "function",
+      "name": "parseDriverConfig",
+      "filePath": "packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "lineRange": [67, 87],
+      "summary": "Parses raw plugin configuration into a typed Modal driver config, extracting timeout values, auth credentials, app name, image, and GPU/container settings.",
+      "tags": ["configuration", "validation", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/plugins/sandbox-providers/modal/src/plugin.ts:createModalClient",
+      "type": "function",
+      "name": "createModalClient",
+      "filePath": "packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "lineRange": [107, 118],
+      "summary": "Instantiates a Modal API client by resolving authentication credentials from config or environment variables.",
+      "tags": ["service", "factory", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:packages/plugins/sandbox-providers/modal/src/plugin.ts:createSandboxFor",
+      "type": "function",
+      "name": "createSandboxFor",
+      "filePath": "packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "lineRange": [164, 180],
+      "summary": "Creates a new Modal sandbox container from a registry image using the provided client, app, config, and tags, setting sandbox tags after creation.",
+      "tags": ["service", "sandbox", "factory"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/plugins/sandbox-providers/modal/src/plugin.ts:buildLoginShellScript",
+      "type": "function",
+      "name": "buildLoginShellScript",
+      "filePath": "packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "lineRange": [221, 255],
+      "summary": "Builds a shell script that sources system and user login profiles, exports environment variables, and executes the target command inside the Modal sandbox.",
+      "tags": ["utility", "service", "sandbox"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:packages/plugins/sandbox-providers/modal/src/plugin.ts:stageStdin",
+      "type": "function",
+      "name": "stageStdin",
+      "filePath": "packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "lineRange": [270, 278],
+      "summary": "Writes stdin content to a temporary file in the Modal sandbox filesystem via the open/write/flush/close file API pattern.",
+      "tags": ["utility", "service", "sandbox"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/modal/src/worker.ts",
+      "type": "file",
+      "name": "worker.ts",
+      "filePath": "packages/plugins/sandbox-providers/modal/src/worker.ts",
+      "summary": "Minimal worker entry point for the Modal sandbox provider plugin that re-exports from the plugin module for worker runtime use.",
+      "tags": ["entry-point", "service", "sandbox"],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:packages/plugins/sandbox-providers/modal/tsconfig.json",
+      "type": "config",
+      "name": "tsconfig.json",
+      "filePath": "packages/plugins/sandbox-providers/modal/tsconfig.json",
+      "summary": "TypeScript compiler configuration for the Modal sandbox provider package, extending a shared base config with package-specific include and exclude patterns.",
+      "tags": ["configuration", "typescript", "build-system"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sandbox-providers/modal/vitest.config.ts",
+      "type": "file",
+      "name": "vitest.config.ts",
+      "filePath": "packages/plugins/sandbox-providers/modal/vitest.config.ts",
+      "summary": "Vitest configuration for the Modal sandbox provider package, defining test runner settings.",
+      "tags": ["configuration", "test", "build-system"],
+      "complexity": "simple"
+    },
+    {
+      "id": "document:packages/plugins/sdk/README.md",
+      "type": "document",
+      "name": "README.md",
+      "filePath": "packages/plugins/sdk/README.md",
+      "summary": "Comprehensive reference documentation for the @paperclipai/plugin-sdk covering plugin manifest authoring, worker lifecycle, events, scheduled jobs, UI slots and launchers, capabilities, database namespaces, issue orchestration APIs, real-time streaming, agent sessions, testing utilities, bundler presets, and local dev server.",
+      "tags": ["documentation", "sdk", "entry-point", "api-schema"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:packages/plugins/sdk/src/host-client-factory.ts",
+      "type": "file",
+      "name": "host-client-factory.ts",
+      "filePath": "packages/plugins/sdk/src/host-client-factory.ts",
+      "summary": "Factory module that creates capability-gated RPC handler mappings from host services, implementing authorization checks, company scope validation, and routing all worker-to-host method calls to the appropriate underlying service implementations.",
+      "tags": ["service", "api-handler", "factory", "middleware"],
+      "complexity": "complex",
+      "languageNotes": "Uses a capability-gating pattern where every handler is wrapped through a `gated()` higher-order function that enforces both capability presence and invocation company scope before delegating to the underlying service."
+    },
+    {
+      "id": "class:packages/plugins/sdk/src/host-client-factory.ts:CapabilityDeniedError",
+      "type": "class",
+      "name": "CapabilityDeniedError",
+      "filePath": "packages/plugins/sdk/src/host-client-factory.ts",
+      "lineRange": [65, 74],
+      "summary": "Error class thrown when a plugin invocation is rejected because the required capability is not declared in the plugin's manifest.",
+      "tags": ["service", "validation", "middleware"],
+      "complexity": "simple"
+    },
+    {
+      "id": "class:packages/plugins/sdk/src/host-client-factory.ts:InvocationScopeDeniedError",
+      "type": "class",
+      "name": "InvocationScopeDeniedError",
+      "filePath": "packages/plugins/sdk/src/host-client-factory.ts",
+      "lineRange": [80, 87],
+      "summary": "Error class thrown when a plugin invocation is denied because the caller's company scope does not match the required company context.",
+      "tags": ["service", "validation", "middleware"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:packages/plugins/sdk/src/host-client-factory.ts:createHostClientHandlers",
+      "type": "function",
+      "name": "createHostClientHandlers",
+      "filePath": "packages/plugins/sdk/src/host-client-factory.ts",
+      "lineRange": [512, 957],
+      "summary": "Creates the complete map of capability-gated RPC handlers for all worker-to-host methods, covering config, local folders, state, database, entities, events, HTTP, secrets, activity, metrics, telemetry, logging, companies, projects, routines, skills, issues, agents, goals, access, and authorization.",
+      "tags": ["service", "api-handler", "factory", "middleware"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:packages/plugins/sdk/src/host-client-factory.ts:getRequiredCapability",
+      "type": "function",
+      "name": "getRequiredCapability",
+      "filePath": "packages/plugins/sdk/src/host-client-factory.ts",
+      "lineRange": [972, 976],
+      "summary": "Returns the required plugin capability string for a given RPC method name, used to enforce capability-gating at the handler level.",
+      "tags": ["utility", "service", "validation"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:packages/plugins/sdk/src/index.ts",
+      "type": "file",
+      "name": "index.ts",
+      "filePath": "packages/plugins/sdk/src/index.ts",
+      "summary": "Main barrel entry point for the @paperclipai/plugin-sdk package, re-exporting all public types, constants, runtime utilities, testing helpers, bundler presets, dev server tools, and the host client factory.",
+      "tags": ["entry-point", "barrel", "sdk", "type-definition"],
+      "complexity": "complex",
+      "languageNotes": "With 284 named exports this is the widest barrel in the plugin system, aggregating types from manifest, protocol, context, and factory modules into a single import surface."
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:packages/plugins/plugin-workspace-diff/tests/fixtures.ts",
+      "target": "function:packages/plugins/plugin-workspace-diff/tests/fixtures.ts:changedFile",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/plugin-workspace-diff/tests/fixtures.ts",
+      "target": "function:packages/plugins/plugin-workspace-diff/tests/fixtures.ts:changedFile",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/plugin-workspace-diff/tests/fixtures.ts",
+      "target": "function:packages/plugins/plugin-workspace-diff/tests/fixtures.ts:diffResponse",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/plugin-workspace-diff/tests/fixtures.ts",
+      "target": "function:packages/plugins/plugin-workspace-diff/tests/fixtures.ts:diffResponse",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/plugin-workspace-diff/tests/workspace-diff.spec.ts",
+      "target": "function:packages/plugins/plugin-workspace-diff/tests/workspace-diff.spec.ts:createWorkspace",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "config:packages/plugins/plugin-workspace-diff/tsconfig.json",
+      "target": "file:packages/plugins/plugin-workspace-diff/vitest.config.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:packages/plugins/plugin-workspace-diff/tsconfig.test.json",
+      "target": "file:packages/plugins/plugin-workspace-diff/tests/plugin.spec.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:packages/plugins/plugin-workspace-diff/tsconfig.test.json",
+      "target": "file:packages/plugins/plugin-workspace-diff/tests/workspace-diff.spec.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/cloudflare/src/config.ts",
+      "target": "function:packages/plugins/sandbox-providers/cloudflare/src/config.ts:parseCloudflareDriverConfig",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/cloudflare/src/config.ts",
+      "target": "function:packages/plugins/sandbox-providers/cloudflare/src/config.ts:parseCloudflareDriverConfig",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/cloudflare/src/config.ts",
+      "target": "function:packages/plugins/sandbox-providers/cloudflare/src/config.ts:validateCloudflareDriverConfig",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/cloudflare/src/config.ts",
+      "target": "function:packages/plugins/sandbox-providers/cloudflare/src/config.ts:validateCloudflareDriverConfig",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/e2b/src/plugin.test.ts",
+      "target": "function:packages/plugins/sandbox-providers/e2b/src/plugin.test.ts:createMockSandbox",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/e2b/src/plugin.test.ts",
+      "target": "file:packages/plugins/sandbox-providers/e2b/src/plugin.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/e2b/src/plugin.ts",
+      "target": "function:packages/plugins/sandbox-providers/e2b/src/plugin.ts:buildLoginShellScript",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/e2b/src/plugin.ts",
+      "target": "function:packages/plugins/sandbox-providers/e2b/src/plugin.ts:releaseSandboxBestEffort",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/modal/src/index.ts",
+      "target": "file:packages/plugins/sandbox-providers/modal/src/manifest.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/modal/src/index.ts",
+      "target": "file:packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/modal/src/plugin.test.ts",
+      "target": "function:packages/plugins/sandbox-providers/modal/src/plugin.test.ts:makeFakeProcess",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/modal/src/plugin.test.ts",
+      "target": "function:packages/plugins/sandbox-providers/modal/src/plugin.test.ts:createFakeSandbox",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/modal/src/plugin.test.ts",
+      "target": "file:packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "target": "function:packages/plugins/sandbox-providers/modal/src/plugin.ts:parseDriverConfig",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "target": "function:packages/plugins/sandbox-providers/modal/src/plugin.ts:parseDriverConfig",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "target": "function:packages/plugins/sandbox-providers/modal/src/plugin.ts:createModalClient",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "target": "function:packages/plugins/sandbox-providers/modal/src/plugin.ts:createSandboxFor",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "target": "function:packages/plugins/sandbox-providers/modal/src/plugin.ts:buildLoginShellScript",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "target": "function:packages/plugins/sandbox-providers/modal/src/plugin.ts:stageStdin",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "config:packages/plugins/sandbox-providers/modal/tsconfig.json",
+      "target": "file:packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "config:packages/plugins/sandbox-providers/modal/package.json",
+      "target": "file:packages/plugins/sandbox-providers/modal/src/index.ts",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "document:packages/plugins/sandbox-providers/modal/README.md",
+      "target": "file:packages/plugins/sandbox-providers/modal/src/plugin.ts",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:packages/plugins/sandbox-providers/modal/README.md",
+      "target": "file:packages/plugins/sandbox-providers/modal/src/manifest.ts",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/host-client-factory.ts",
+      "target": "class:packages/plugins/sdk/src/host-client-factory.ts:CapabilityDeniedError",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/host-client-factory.ts",
+      "target": "class:packages/plugins/sdk/src/host-client-factory.ts:CapabilityDeniedError",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/host-client-factory.ts",
+      "target": "class:packages/plugins/sdk/src/host-client-factory.ts:InvocationScopeDeniedError",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/host-client-factory.ts",
+      "target": "class:packages/plugins/sdk/src/host-client-factory.ts:InvocationScopeDeniedError",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/host-client-factory.ts",
+      "target": "function:packages/plugins/sdk/src/host-client-factory.ts:createHostClientHandlers",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/host-client-factory.ts",
+      "target": "function:packages/plugins/sdk/src/host-client-factory.ts:createHostClientHandlers",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/host-client-factory.ts",
+      "target": "function:packages/plugins/sdk/src/host-client-factory.ts:getRequiredCapability",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/host-client-factory.ts",
+      "target": "function:packages/plugins/sdk/src/host-client-factory.ts:getRequiredCapability",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:packages/plugins/sdk/src/index.ts",
+      "target": "file:packages/plugins/sdk/src/host-client-factory.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "document:packages/plugins/sdk/README.md",
+      "target": "file:packages/plugins/sdk/src/index.ts",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "document:packages/plugins/sdk/README.md",
+      "target": "file:packages/plugins/sdk/src/host-client-factory.ts",
+      "type": "documents",
+      "direction": "forward",
+      "weight": 0.5
+    }
+  ]
+}

@@ -1,0 +1,634 @@
+{
+  "nodes": [
+    {
+      "id": "file:server/src/static-index-html.ts",
+      "type": "file",
+      "name": "static-index-html.ts",
+      "filePath": "server/src/static-index-html.ts",
+      "summary": "Provides a utility function to read and apply UI branding to the static index.html served by the server, replacing default placeholders with brand-specific values.",
+      "tags": ["utility", "service", "ui-serving"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:server/src/static-index-html.ts:readBrandedStaticIndexHtml",
+      "type": "function",
+      "name": "readBrandedStaticIndexHtml",
+      "filePath": "server/src/static-index-html.ts",
+      "lineRange": [5, 7],
+      "summary": "Reads the compiled UI index.html from the given distribution path and applies branding transformations before returning the content as a string.",
+      "tags": ["utility", "ui-serving"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:server/src/workspace-controller.ts",
+      "type": "file",
+      "name": "workspace-controller.ts",
+      "filePath": "server/src/workspace-controller.ts",
+      "summary": "Controller layer managing workspace lifecycle operations including creation, configuration, and runtime control for agent execution environments. (File not found in current repository state.)",
+      "tags": ["service", "workspace", "agent-execution"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/workspace-plugin-bridge.ts",
+      "type": "file",
+      "name": "workspace-plugin-bridge.ts",
+      "filePath": "server/src/workspace-plugin-bridge.ts",
+      "summary": "Bridge layer connecting workspace runtime infrastructure to the plugin system, enabling plugins to interact with execution workspaces. (File not found in current repository state.)",
+      "tags": ["service", "workspace", "plugin"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/task-scheduler.ts",
+      "type": "file",
+      "name": "task-scheduler.ts",
+      "filePath": "server/src/task-scheduler.ts",
+      "summary": "Handles scheduling and queuing of agent tasks and issue wakeups, coordinating timing and priority for background work. (File not found in current repository state.)",
+      "tags": ["service", "scheduler", "agent-execution"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/routine-runner.ts",
+      "type": "file",
+      "name": "routine-runner.ts",
+      "filePath": "server/src/routine-runner.ts",
+      "summary": "Executes scheduled routines and recurring tasks for agents, managing cron-based triggers and run lifecycle for routine automation. (File not found in current repository state.)",
+      "tags": ["service", "routine", "scheduler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/cloud-upstream.ts",
+      "type": "file",
+      "name": "cloud-upstream.ts",
+      "filePath": "server/src/cloud-upstream.ts",
+      "summary": "Manages cloud upstream integration, handling synchronization and communication between local Paperclip instances and remote cloud providers. (File not found in current repository state.)",
+      "tags": ["service", "cloud", "integration"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/auth-utils.ts",
+      "type": "file",
+      "name": "auth-utils.ts",
+      "filePath": "server/src/auth-utils.ts",
+      "summary": "Authentication utility functions shared across the server, providing token parsing, user identity resolution, and auth validation helpers. (File not found in current repository state.)",
+      "tags": ["utility", "authentication", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/routes/board-auth.ts",
+      "type": "file",
+      "name": "board-auth.ts",
+      "filePath": "server/src/routes/board-auth.ts",
+      "summary": "Express route handlers for board authentication endpoints, supporting API key generation, CLI auth challenges, and token validation for board access. (File not found in current repository state.)",
+      "tags": ["api-handler", "authentication", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/routes/runs.ts",
+      "type": "file",
+      "name": "runs.ts",
+      "filePath": "server/src/routes/runs.ts",
+      "summary": "Express route handlers exposing agent run management endpoints including listing, querying, and controlling execution runs. (File not found in current repository state.)",
+      "tags": ["api-handler", "agent-execution", "runs"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/routes/users.ts",
+      "type": "file",
+      "name": "users.ts",
+      "filePath": "server/src/routes/users.ts",
+      "summary": "Express route handlers for user management endpoints including profile reads, company membership, and user settings. (File not found in current repository state.)",
+      "tags": ["api-handler", "user-management"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/routes/workspaces.ts",
+      "type": "file",
+      "name": "workspaces.ts",
+      "filePath": "server/src/routes/workspaces.ts",
+      "summary": "Express route handlers for workspace CRUD and runtime control, exposing HTTP endpoints for creating, reading, updating, and managing execution workspaces. (File not found in current repository state.)",
+      "tags": ["api-handler", "workspace", "agent-execution"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/company-export.ts",
+      "type": "file",
+      "name": "company-export.ts",
+      "filePath": "server/src/services/company-export.ts",
+      "summary": "Service layer implementing company data export/portability, serializing agents, goals, routines, and settings into a portable archive format. (File not found in current repository state.)",
+      "tags": ["service", "data-export", "portability"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/company-import.ts",
+      "type": "file",
+      "name": "company-import.ts",
+      "filePath": "server/src/services/company-import.ts",
+      "summary": "Service layer handling company data import and restoration, deserializing portable archives and recreating agents, goals, routines, and settings. (File not found in current repository state.)",
+      "tags": ["service", "data-import", "portability"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/heartbeat.ts",
+      "type": "file",
+      "name": "heartbeat.ts",
+      "filePath": "server/src/services/heartbeat.ts",
+      "summary": "Core heartbeat service managing the entire agent run lifecycle — processing run events, resolving adapter configurations, handling transient retries, billing, model profiles, workspace management, and wake context enrichment for agent execution.",
+      "tags": ["service", "agent-execution", "heartbeat", "billing"],
+      "complexity": "complex",
+      "languageNotes": "Extremely large service (91 functions, 34 exports) acting as the central nervous system for agent run processing with extensive functional decomposition."
+    },
+    {
+      "id": "function:server/src/services/heartbeat.ts:heartbeatService",
+      "type": "function",
+      "name": "heartbeatService",
+      "filePath": "server/src/services/heartbeat.ts",
+      "lineRange": [2372, 9960],
+      "summary": "Main heartbeat service factory function encapsulating the full agent run orchestration logic: receiving run events from adapters, updating run state, managing retries, billing, workspace lifecycle, and issue wake coordination.",
+      "tags": ["service", "agent-execution", "heartbeat"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/heartbeat.ts:resolveExecutionRunAdapterConfig",
+      "type": "function",
+      "name": "resolveExecutionRunAdapterConfig",
+      "filePath": "server/src/services/heartbeat.ts",
+      "lineRange": [354, 442],
+      "summary": "Resolves the complete adapter configuration for an execution run, merging workspace settings, model profiles, skill keys, and runtime environment bindings.",
+      "tags": ["agent-execution", "configuration", "adapter"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/heartbeat.ts:resolveModelProfileApplication",
+      "type": "function",
+      "name": "resolveModelProfileApplication",
+      "filePath": "server/src/services/heartbeat.ts",
+      "lineRange": [1135, 1197],
+      "summary": "Determines which model profile to apply for an agent run based on agent runtime config, wake context, and available profiles, implementing profile selection logic.",
+      "tags": ["agent-execution", "model-profile", "configuration"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/heartbeat.ts:buildPaperclipWakePayload",
+      "type": "function",
+      "name": "buildPaperclipWakePayload",
+      "filePath": "server/src/services/heartbeat.ts",
+      "lineRange": [1942, 2122],
+      "summary": "Constructs the full wake payload passed to the agent adapter when an agent run is triggered, assembling context snapshots, task descriptions, permissions, and session parameters.",
+      "tags": ["agent-execution", "wake-payload", "context"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/heartbeat.ts:resolveRuntimeSessionParamsForWorkspace",
+      "type": "function",
+      "name": "resolveRuntimeSessionParamsForWorkspace",
+      "filePath": "server/src/services/heartbeat.ts",
+      "lineRange": [1507, 1573],
+      "summary": "Computes the runtime session parameters for an agent execution workspace, including compaction policy, model profile, and workspace-specific configuration overrides.",
+      "tags": ["workspace", "agent-execution", "configuration"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/heartbeat.ts:enrichWakeContextSnapshot",
+      "type": "function",
+      "name": "enrichWakeContextSnapshot",
+      "filePath": "server/src/services/heartbeat.ts",
+      "lineRange": [1830, 1886],
+      "summary": "Enriches a wake context snapshot with resolved blocker information, issue references, and agent configuration needed to construct a complete agent invocation context.",
+      "tags": ["context", "agent-execution", "wake-payload"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/heartbeat.ts:ensureManagedProjectWorkspace",
+      "type": "function",
+      "name": "ensureManagedProjectWorkspace",
+      "filePath": "server/src/services/heartbeat.ts",
+      "lineRange": [704, 753],
+      "summary": "Creates or retrieves a managed project workspace for a run, provisioning git-backed execution environments when they do not yet exist.",
+      "tags": ["workspace", "agent-execution", "provisioning"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/heartbeat.ts:computeBoundedTransientHeartbeatRetrySchedule",
+      "type": "function",
+      "name": "computeBoundedTransientHeartbeatRetrySchedule",
+      "filePath": "server/src/services/heartbeat.ts",
+      "lineRange": [477, 495],
+      "summary": "Calculates exponential backoff retry schedule for transient heartbeat failures, applying jitter and upper bounds to prevent thundering herd.",
+      "tags": ["retry", "scheduler", "resilience"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:server/src/services/heartbeat.ts:resolveLedgerScopeForRun",
+      "type": "function",
+      "name": "resolveLedgerScopeForRun",
+      "filePath": "server/src/services/heartbeat.ts",
+      "lineRange": [1364, 1393],
+      "summary": "Determines the billing ledger scope (company, goal, or agent) for a given run to associate costs with the correct budget entity.",
+      "tags": ["billing", "service", "agent-execution"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:server/src/services/heartbeat.ts:buildPaperclipTaskMarkdown",
+      "type": "function",
+      "name": "buildPaperclipTaskMarkdown",
+      "filePath": "server/src/services/heartbeat.ts",
+      "lineRange": [2144, 2212],
+      "summary": "Renders a structured Markdown representation of the current agent task including issue details, goals, blockers, and context for inclusion in the agent wake payload.",
+      "tags": ["agent-execution", "markdown", "context"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/board-auth.ts",
+      "type": "file",
+      "name": "board-auth.ts",
+      "filePath": "server/src/services/board-auth.ts",
+      "summary": "Service providing board authentication operations including API token hashing, CLI auth challenge management, token creation and expiry, and the central boardAuthService factory for managing board access credentials.",
+      "tags": ["service", "authentication", "security"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/board-auth.ts:boardAuthService",
+      "type": "function",
+      "name": "boardAuthService",
+      "filePath": "server/src/services/board-auth.ts",
+      "lineRange": [52, 359],
+      "summary": "Main board authentication service factory implementing token lifecycle management: creating, rotating, listing, and verifying board API keys and CLI auth challenge flows.",
+      "tags": ["service", "authentication", "security"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/resource-memberships.ts",
+      "type": "file",
+      "name": "resource-memberships.ts",
+      "filePath": "server/src/services/resource-memberships.ts",
+      "summary": "Service managing resource membership policies for companies, evaluating access control rules and maintaining membership records for board and workspace resources.",
+      "tags": ["service", "authorization", "membership"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/resource-memberships.ts:resourceMembershipService",
+      "type": "function",
+      "name": "resourceMembershipService",
+      "filePath": "server/src/services/resource-memberships.ts",
+      "lineRange": [109, 318],
+      "summary": "Main resource membership service factory that manages CRUD operations for resource memberships, evaluating policies and enforcing access rules for company resources.",
+      "tags": ["service", "authorization", "membership"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:server/src/services/resource-memberships.ts:evaluatePolicy",
+      "type": "function",
+      "name": "evaluatePolicy",
+      "filePath": "server/src/services/resource-memberships.ts",
+      "lineRange": [88, 107],
+      "summary": "Evaluates membership access policy rules for a given resource and user, determining allowed actions based on configured policy configuration.",
+      "tags": ["authorization", "policy", "validation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:server/src/services/workspace.ts",
+      "type": "file",
+      "name": "workspace.ts",
+      "filePath": "server/src/services/workspace.ts",
+      "summary": "Service layer for workspace management, handling creation, configuration, runtime state, and lifecycle operations for agent execution environments. (File not found in current repository state.)",
+      "tags": ["service", "workspace", "agent-execution"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/routine.ts",
+      "type": "file",
+      "name": "routine.ts",
+      "filePath": "server/src/services/routine.ts",
+      "summary": "Service implementing routine scheduling and management, providing CRUD operations and execution logic for recurring agent tasks. (File not found in current repository state.)",
+      "tags": ["service", "routine", "scheduler"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/issue.ts",
+      "type": "file",
+      "name": "issue.ts",
+      "filePath": "server/src/services/issue.ts",
+      "summary": "Core service managing the full issue/task lifecycle — creation, assignment, status transitions, comment threading, checkout, blocking relationships, and wakeup orchestration. (File not found in current repository state.)",
+      "tags": ["service", "issue-management", "agent-execution"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:server/src/services/plugin.ts",
+      "type": "file",
+      "name": "plugin.ts",
+      "filePath": "server/src/services/plugin.ts",
+      "summary": "Service providing plugin lifecycle management — loading, enabling, disabling, and configuring plugins within the Paperclip agent platform. (File not found in current repository state.)",
+      "tags": ["service", "plugin", "lifecycle"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/CompanySettingsModal.tsx",
+      "type": "file",
+      "name": "CompanySettingsModal.tsx",
+      "filePath": "ui/src/components/CompanySettingsModal.tsx",
+      "summary": "Modal component for company-level settings management, providing forms for configuring company name, member roles, billing, and other org-wide settings. (File not found in current repository state.)",
+      "tags": ["component", "settings", "modal"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:ui/src/components/CompanySettingsSidebar.tsx",
+      "type": "file",
+      "name": "CompanySettingsSidebar.tsx",
+      "filePath": "ui/src/components/CompanySettingsSidebar.tsx",
+      "summary": "Sidebar navigation component for the company settings section, rendering a navigation menu for available settings categories such as members, billing, and general.",
+      "tags": ["component", "navigation", "settings"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:ui/src/components/CompanySettingsSidebar.tsx:CompanySettingsSidebar",
+      "type": "function",
+      "name": "CompanySettingsSidebar",
+      "filePath": "ui/src/components/CompanySettingsSidebar.tsx",
+      "lineRange": [13, 107],
+      "summary": "React component rendering the sidebar navigation for company settings, listing available settings sections with active-state highlighting.",
+      "tags": ["component", "navigation", "settings"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:ui/src/components/CompanySettingsModal.test.tsx",
+      "type": "file",
+      "name": "CompanySettingsModal.test.tsx",
+      "filePath": "ui/src/components/CompanySettingsModal.test.tsx",
+      "summary": "Unit tests for the CompanySettingsModal component, verifying rendering and user interaction behaviors for company settings forms. (File not found in current repository state.)",
+      "tags": ["test", "component", "settings"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/BoardView.test.tsx",
+      "type": "file",
+      "name": "BoardView.test.tsx",
+      "filePath": "ui/src/components/BoardView.test.tsx",
+      "summary": "Unit tests for the BoardView component, covering board rendering, issue display, and interaction behaviors. (File not found in current repository state.)",
+      "tags": ["test", "component", "board"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:ui/src/components/AgentDetailModal.test.tsx",
+      "type": "file",
+      "name": "AgentDetailModal.test.tsx",
+      "filePath": "ui/src/components/AgentDetailModal.test.tsx",
+      "summary": "Unit tests for the AgentDetailModal component, validating agent configuration display and edit behaviors. (File not found in current repository state.)",
+      "tags": ["test", "component", "agent"],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:server/src/static-index-html.ts",
+      "target": "function:server/src/static-index-html.ts:readBrandedStaticIndexHtml",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/static-index-html.ts",
+      "target": "function:server/src/static-index-html.ts:readBrandedStaticIndexHtml",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:heartbeatService",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:heartbeatService",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:resolveExecutionRunAdapterConfig",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:resolveExecutionRunAdapterConfig",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:resolveModelProfileApplication",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:resolveModelProfileApplication",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:buildPaperclipWakePayload",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:buildPaperclipWakePayload",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:resolveRuntimeSessionParamsForWorkspace",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:resolveRuntimeSessionParamsForWorkspace",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:enrichWakeContextSnapshot",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:ensureManagedProjectWorkspace",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:computeBoundedTransientHeartbeatRetrySchedule",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:computeBoundedTransientHeartbeatRetrySchedule",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:resolveLedgerScopeForRun",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:buildPaperclipTaskMarkdown",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/heartbeat.ts",
+      "target": "function:server/src/services/heartbeat.ts:buildPaperclipTaskMarkdown",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/board-auth.ts",
+      "target": "function:server/src/services/board-auth.ts:boardAuthService",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/board-auth.ts",
+      "target": "function:server/src/services/board-auth.ts:boardAuthService",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/resource-memberships.ts",
+      "target": "function:server/src/services/resource-memberships.ts:resourceMembershipService",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:server/src/services/resource-memberships.ts",
+      "target": "function:server/src/services/resource-memberships.ts:resourceMembershipService",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:server/src/services/resource-memberships.ts",
+      "target": "function:server/src/services/resource-memberships.ts:evaluatePolicy",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/CompanySettingsSidebar.tsx",
+      "target": "function:ui/src/components/CompanySettingsSidebar.tsx:CompanySettingsSidebar",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:ui/src/components/CompanySettingsSidebar.tsx",
+      "target": "function:ui/src/components/CompanySettingsSidebar.tsx:CompanySettingsSidebar",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:ui/src/components/CompanySettingsModal.tsx",
+      "target": "file:ui/src/components/CompanySettingsSidebar.tsx",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:ui/src/components/CompanySettingsModal.test.tsx",
+      "target": "file:ui/src/components/CompanySettingsModal.tsx",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "file:server/src/routes/board-auth.ts",
+      "target": "file:server/src/services/board-auth.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/routes/workspaces.ts",
+      "target": "file:server/src/services/workspace.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/routine-runner.ts",
+      "target": "file:server/src/services/routine.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/routine-runner.ts",
+      "target": "file:server/src/services/heartbeat.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/workspace-controller.ts",
+      "target": "file:server/src/services/workspace.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/workspace-controller.ts",
+      "target": "file:server/src/services/heartbeat.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/workspace-plugin-bridge.ts",
+      "target": "file:server/src/services/workspace.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:server/src/workspace-plugin-bridge.ts",
+      "target": "file:server/src/services/plugin.ts",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    }
+  ]
+}
