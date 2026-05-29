@@ -2679,10 +2679,13 @@ export function agentRoutes(
     }
     if (requestedRuntimeConfig) {
       const baseAdapterConfig = asRecord(patchData.adapterConfig) ?? asRecord(existing.adapterConfig) ?? {};
+      // Merge submitted runtimeConfig with existing to avoid clobbering unsubmitted top-level keys.
+      const existingRuntimeConfig = asRecord(existing.runtimeConfig) ?? {};
+      const mergedRuntimeConfig = { ...existingRuntimeConfig, ...requestedRuntimeConfig };
       patchData.runtimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
         existing.companyId,
         requestedAdapterType,
-        requestedRuntimeConfig,
+        mergedRuntimeConfig,
         baseAdapterConfig,
       );
     }
