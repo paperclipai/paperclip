@@ -234,14 +234,11 @@ describe("SidebarCompanyMenu", () => {
 
     const strataRow = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
       .find((element) => element.textContent?.includes("Strata"));
+    expect(strataRow).toBeTruthy();
     expect(strataRow?.className ?? "").not.toContain("cursor-grab");
 
-    const strataItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-      .find((element) => element.textContent?.includes("Strata"));
-    expect(strataItem).toBeTruthy();
-
     await act(async () => {
-      strataItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      strataRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
