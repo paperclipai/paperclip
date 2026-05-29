@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import type { Db } from "@paperclipai/db";
+import type { QueryableDb } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
@@ -27,7 +27,7 @@ function currentUtcMonthWindow(now = new Date()) {
 }
 
 async function getMonthlySpendTotal(
-  db: Db,
+  db: QueryableDb,
   scope: { companyId: string; agentId?: string | null },
 ) {
   const { start, end } = currentUtcMonthWindow();
@@ -48,57 +48,60 @@ async function getMonthlySpendTotal(
   return Number(row?.total ?? 0);
 }
 
-export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
+export function costService(db: QueryableDb, budgetHooks: BudgetServiceHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
   return {
     createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
-      const agent = await db
-        .select()
-        .from(agents)
-        .where(eq(agents.id, data.agentId))
-        .then((rows) => rows[0] ?? null);
+      return db.transaction(async (tx) => {
+        const agent = await tx
+          .select()
+          .from(agents)
+          .where(eq(agents.id, data.agentId))
+          .then((rows) => rows[0] ?? null);
 
-      if (!agent) throw notFound("Agent not found");
-      if (agent.companyId !== companyId) {
-        throw unprocessable("Agent does not belong to company");
-      }
+        if (!agent) throw notFound("Agent not found");
+        if (agent.companyId !== companyId) {
+          throw unprocessable("Agent does not belong to company");
+        }
 
-      const event = await db
-        .insert(costEvents)
-        .values({
-          ...data,
-          companyId,
-          biller: data.biller ?? data.provider,
-          billingType: data.billingType ?? "unknown",
-          cachedInputTokens: data.cachedInputTokens ?? 0,
-        })
-        .returning()
-        .then((rows) => rows[0]);
+        const event = await tx
+          .insert(costEvents)
+          .values({
+            ...data,
+            companyId,
+            biller: data.biller ?? data.provider,
+            billingType: data.billingType ?? "unknown",
+            cachedInputTokens: data.cachedInputTokens ?? 0,
+          })
+          .returning()
+          .then((rows) => rows[0]);
 
-      const [agentMonthSpend, companyMonthSpend] = await Promise.all([
-        getMonthlySpendTotal(db, { companyId, agentId: event.agentId }),
-        getMonthlySpendTotal(db, { companyId }),
-      ]);
+        const [agentMonthSpend, companyMonthSpend] = await Promise.all([
+          getMonthlySpendTotal(tx, { companyId, agentId: event.agentId }),
+          getMonthlySpendTotal(tx, { companyId }),
+        ]);
 
-      await db
-        .update(agents)
-        .set({
-          spentMonthlyCents: agentMonthSpend,
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, event.agentId));
+        await tx
+          .update(agents)
+          .set({
+            spentMonthlyCents: agentMonthSpend,
+            updatedAt: new Date(),
+          })
+          .where(eq(agents.id, event.agentId));
 
-      await db
-        .update(companies)
-        .set({
-          spentMonthlyCents: companyMonthSpend,
-          updatedAt: new Date(),
-        })
-        .where(eq(companies.id, companyId));
+        await tx
+          .update(companies)
+          .set({
+            spentMonthlyCents: companyMonthSpend,
+            updatedAt: new Date(),
+          })
+          .where(eq(companies.id, companyId));
 
-      await budgets.evaluateCostEvent(event);
+        const txBudgets = budgetService(tx, budgetHooks);
+        await txBudgets.evaluateCostEvent(event);
 
-      return event;
+        return event;
+      });
     },
 
     summary: async (companyId: string, range?: CostDateRange) => {

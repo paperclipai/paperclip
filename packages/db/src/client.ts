@@ -777,3 +777,7 @@ export async function ensurePostgresDatabase(
 }
 
 export type Db = ReturnType<typeof createDb>;
+
+export type TxDb = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+export type QueryableDb = Db | TxDb;
