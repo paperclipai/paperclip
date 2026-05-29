@@ -1,7 +1,6 @@
 import { and, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { awaitingHumanNotificationOutbox } from "@paperclipai/db";
-import { resolveAwaitingHumanReviewFile } from "./awaiting-human-review-files.js";
 import { issueService } from "./issues.js";
 import { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
 import {
@@ -78,16 +77,7 @@ export async function enqueueAwaitingHumanNotification(
   db: Db,
   input: EnqueueAwaitingHumanNotificationInput,
 ): Promise<AwaitingHumanNotificationResult> {
-  const reviewFile = await resolveAwaitingHumanReviewFile(db, {
-    companyId: input.companyId,
-    issueId: input.issueId,
-    sourceLink: input.notification.link,
-  });
-  const notification = {
-    ...input.notification,
-    ...(reviewFile ? { reviewFile } : {}),
-  };
-  const storedReviewFile = reviewFile ? { ...reviewFile } : null;
+  const notification = { ...input.notification } satisfies AwaitingHumanNotificationPayload;
   const [row] = await db
     .insert(awaitingHumanNotificationOutbox)
     .values({
@@ -96,8 +86,8 @@ export async function enqueueAwaitingHumanNotification(
       dedupeKey: input.dedupeKey,
       handoffKind: input.handoffKind,
       status: "pending",
-      notification,
-      reviewFile: storedReviewFile,
+      notification: notification as Record<string, unknown>,
+      reviewFile: null,
     })
     .onConflictDoUpdate({
       target: [
@@ -107,8 +97,8 @@ export async function enqueueAwaitingHumanNotification(
       ],
       set: {
         handoffKind: input.handoffKind,
-        notification,
-        reviewFile: storedReviewFile,
+        notification: notification as Record<string, unknown>,
+        reviewFile: null,
         status: sql`
           case
             when ${awaitingHumanNotificationOutbox.status} in ('sent', 'processing', 'retrying', 'partial_failed')

@@ -129,45 +129,64 @@ describe("deleteClickUpChatMessageReaction", () => {
 });
 
 describe("uploadClickUpReviewFile", () => {
+  const reviewFile = {
+    source: "artifact" as const,
+    deliverableId: "deliverable-1",
+    title: "Review image",
+    filename: "review.png",
+    contentType: "image/png",
+    byteSize: 9,
+    contentPath: "artifacts/review.png",
+    deliverableUrl: "https://bizbox.example/deliverables/1",
+  };
+  const v3UploadResponse = {
+    date_updated: 1737065673712,
+    date_created: 1737065673712,
+    extension: "jpeg",
+    id: "51971815-ae25-49d5-b90c-4988f400a307.png",
+    mime_type: "image/jpeg",
+    parent_entity_type: "tasks",
+    parent_id: "task-42",
+    size: 14697,
+    signed: true,
+    thumbnail_small: "https://attachments.clickup.com/thumb/small/example.jpeg",
+    thumbnail_medium: "https://attachments.clickup.com/thumb/medium/example.jpeg",
+    thumbnail_large: "https://attachments.clickup.com/thumb/large/example.jpeg",
+    title: "example.jpeg",
+    url: "https://t90161423646.p.clickup-attachments.com/t90161423646/306827e9-d043-426d-8944-8cc537ba9213/example.jpeg?view=open",
+    user_id: 123456,
+  };
+
   it("posts multipart review files to task attachments endpoint", async () => {
     process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
     process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
 
-    const fetchMock = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify({
-        id: "attachment-1",
-        url: "https://app.clickup.com/attachment/1",
-        parent_entity_type: "tasks",
-        parent_id: "task-42",
-        title: "review.png",
-        mime_type: "image/png",
-      }),
-    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        text: async () => JSON.stringify({ status: 404, message: "Not Found" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: "task-42" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(v3UploadResponse),
+      });
     globalThis.fetch = fetchMock as typeof fetch;
 
-    const result = await uploadClickUpReviewFile(
-      {},
-      "task-42",
-      {
-        source: "artifact",
-        deliverableId: "deliverable-1",
-        title: "Review image",
-        filename: "review.png",
-        contentType: "image/png",
-        byteSize: 9,
-        contentPath: "artifacts/review.png",
-        deliverableUrl: "https://bizbox.example/deliverables/1",
-      },
-      Buffer.from("png-bytes"),
-    );
+    const result = await uploadClickUpReviewFile({}, "task-42", reviewFile, Buffer.from("png-bytes"));
 
     expect(result).toEqual({
-      attachmentId: "attachment-1",
-      attachmentUrl: "https://app.clickup.com/attachment/1",
+      attachmentId: "51971815-ae25-49d5-b90c-4988f400a307.png",
+      attachmentUrl: "https://t90161423646.p.clickup-attachments.com/t90161423646/306827e9-d043-426d-8944-8cc537ba9213/example.jpeg?view=open",
     });
-    expect(fetchMock).toHaveBeenCalledWith(
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
       "https://api.clickup.com/api/v3/workspaces/workspace-1/attachments/task-42/attachments",
       expect.objectContaining({
         method: "POST",
@@ -176,6 +195,64 @@ describe("uploadClickUpReviewFile", () => {
         }),
         body: expect.any(FormData),
       }),
+    );
+  });
+
+  it("resolves custom task ids and falls back to v2 upload when v3 returns 404", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "90161423646";
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: "internal-task-id" }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        text: async () => JSON.stringify({
+          status: 404,
+          message: "Not Found or Authorized",
+          trace_id: 1471351153931534568,
+          timestamp: 1780037995526,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          id: "51971815-ae25-49d5-b90c-4988f400a307.png",
+          url: "https://t90161423646.p.clickup-attachments.com/t90161423646/306827e9-d043-426d-8944-8cc537ba9213/example.jpeg?view=open",
+        }),
+      });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await uploadClickUpReviewFile(
+      {},
+      "86d35fwx8",
+      reviewFile,
+      Buffer.from("png-bytes"),
+    );
+
+    expect(result).toEqual({
+      attachmentId: "51971815-ae25-49d5-b90c-4988f400a307.png",
+      attachmentUrl: "https://t90161423646.p.clickup-attachments.com/t90161423646/306827e9-d043-426d-8944-8cc537ba9213/example.jpeg?view=open",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.clickup.com/api/v2/task/86d35fwx8?custom_task_ids=true&team_id=90161423646",
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: "token-123" }) }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://api.clickup.com/api/v3/workspaces/90161423646/attachments/internal-task-id/attachments",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "https://api.clickup.com/api/v2/task/86d35fwx8/attachment?custom_task_ids=true&team_id=90161423646",
+      expect.objectContaining({ method: "POST" }),
     );
   });
 });

@@ -3,6 +3,7 @@ export type AwaitingHumanProvider = "clickup";
 export interface ClickUpAwaitingHumanProviderConfig {
   workspaceId: string | null;
   channelId: string | null;
+  attachmentTaskId: string | null;
 }
 
 export type AwaitingHumanProviderConfig = ClickUpAwaitingHumanProviderConfig;

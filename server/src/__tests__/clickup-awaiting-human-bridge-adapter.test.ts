@@ -1,7 +1,10 @@
+import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 
 const mocks = vi.hoisted(() => ({
+  getAttachmentById: vi.fn(),
+  listAttachments: vi.fn(async () => []),
   detectClickUpAwaitingHumanBridgeEvents: vi.fn(),
   addClickUpChatMessageReaction: vi.fn(async () => ({
     status: "sent",
@@ -12,6 +15,7 @@ const mocks = vi.hoisted(() => ({
     detail: "deleted",
   })),
   sendAwaitingHumanNotification: vi.fn(),
+  uploadClickUpReviewFile: vi.fn(),
   logActivity: vi.fn(async () => {}),
 }));
 
@@ -20,6 +24,9 @@ vi.mock("../services/clickup-awaiting-human-transport.js", () => ({
   addClickUpChatMessageReaction: mocks.addClickUpChatMessageReaction,
   deleteClickUpChatMessageReaction: mocks.deleteClickUpChatMessageReaction,
   sendAwaitingHumanNotification: mocks.sendAwaitingHumanNotification,
+  uploadClickUpReviewFile: mocks.uploadClickUpReviewFile,
+  resolveClickUpAttachmentTaskId: (overrides?: { attachmentTaskId?: string | null }) =>
+    overrides?.attachmentTaskId?.trim() || null,
 }));
 
 vi.mock("../services/awaiting-human-settings.js", () => ({
@@ -30,7 +37,15 @@ vi.mock("../services/awaiting-human-settings.js", () => ({
       personalToken: "token-123",
       workspaceId: "workspace-1",
       channelId: "channel-1",
+      attachmentTaskId: "task-sink-1",
     }),
+  }),
+}));
+
+vi.mock("../services/issues.js", () => ({
+  issueService: () => ({
+    getAttachmentById: mocks.getAttachmentById,
+    listAttachments: mocks.listAttachments,
   }),
 }));
 
@@ -42,6 +57,9 @@ const { clickupAwaitingHumanBridgeAdapter } = await import("../services/clickup-
 
 afterEach(() => {
   vi.clearAllMocks();
+  mocks.getAttachmentById.mockReset();
+  mocks.listAttachments.mockReset();
+  mocks.listAttachments.mockResolvedValue([]);
 });
 
 function makeDb() {
@@ -58,6 +76,16 @@ function makeDb() {
       })),
     })),
   } as unknown as Db;
+}
+
+function makeStorage(body = Buffer.from("attachment-bytes")) {
+  return {
+    getObject: vi.fn(async () => ({
+      stream: Readable.from([body]),
+      contentType: "image/jpeg",
+      contentLength: body.length,
+    })),
+  };
 }
 
 describe("clickupAwaitingHumanBridgeAdapter", () => {
@@ -107,6 +135,103 @@ describe("clickupAwaitingHumanBridgeAdapter", () => {
     }));
   });
 
+  it("uploads the most recent issue attachment to ClickUp", async () => {
+    mocks.listAttachments.mockResolvedValueOnce([
+      {
+        id: "attachment-logo-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        originalFilename: "joincitro_logo (1).jpeg",
+        objectKey: "company-1/logo.jpeg",
+      },
+    ]);
+    mocks.getAttachmentById.mockResolvedValueOnce({
+      id: "attachment-logo-1",
+      companyId: "company-1",
+      objectKey: "company-1/logo.jpeg",
+      originalFilename: "joincitro_logo (1).jpeg",
+      contentType: "image/jpeg",
+      byteSize: 16,
+      sha256: "sha-logo",
+    });
+    mocks.uploadClickUpReviewFile.mockResolvedValueOnce({
+      attachmentId: "clickup-logo-1",
+      attachmentUrl: "https://t90161423646.p.clickup-attachments.com/t90161423646/logo.jpeg?view=open",
+    });
+    mocks.sendAwaitingHumanNotification.mockResolvedValueOnce({
+      status: "sent",
+      channel: "clickup-chat",
+      detail: "sent",
+      externalId: "message-logo-1",
+    });
+
+    const adapter = clickupAwaitingHumanBridgeAdapter(makeDb());
+    await adapter.send({
+      bridgeId: "bridge-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      interactionId: "interaction-1",
+      agentId: "agent-1",
+      handoffKind: "request_confirmation",
+      notification: {
+        title: "Confirm logo",
+        summary: "Please confirm",
+        link: "https://bizbox.example/issues/TES-14",
+        cta: "Respond",
+        labels: ["awaiting_human"],
+      },
+      storage: makeStorage() as never,
+    });
+
+    expect(mocks.listAttachments).toHaveBeenCalledWith("issue-1");
+    expect(mocks.getAttachmentById).toHaveBeenCalledWith("attachment-logo-1");
+    expect(mocks.uploadClickUpReviewFile).toHaveBeenCalledWith(
+      expect.objectContaining({ attachmentTaskId: "task-sink-1" }),
+      "task-sink-1",
+      expect.objectContaining({ deliverableId: "attachment-logo-1", filename: "joincitro_logo (1).jpeg" }),
+      Buffer.from("attachment-bytes"),
+    );
+    expect(mocks.sendAwaitingHumanNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notification: expect.objectContaining({
+          target: expect.objectContaining({
+            clickupAttachmentUrl: "https://t90161423646.p.clickup-attachments.com/t90161423646/logo.jpeg?view=open",
+          }),
+        }),
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("skips upload when the issue has no attachments", async () => {
+    mocks.sendAwaitingHumanNotification.mockResolvedValueOnce({
+      status: "sent",
+      channel: "clickup-chat",
+      detail: "sent",
+      externalId: "message-no-upload-1",
+    });
+
+    const adapter = clickupAwaitingHumanBridgeAdapter(makeDb());
+    await adapter.send({
+      bridgeId: "bridge-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      interactionId: "interaction-1",
+      agentId: "agent-1",
+      handoffKind: "request_confirmation",
+      notification: {
+        title: "Confirm logo",
+        summary: "Please confirm",
+        link: "https://bizbox.example/issues/TES-14",
+        cta: "Respond",
+        labels: ["awaiting_human"],
+      },
+      storage: makeStorage() as never,
+    });
+
+    expect(mocks.listAttachments).toHaveBeenCalledWith("issue-1");
+    expect(mocks.uploadClickUpReviewFile).not.toHaveBeenCalled();
+  });
   it("marks the main message as thinking on send and replaces it with a checkmark on close", async () => {
     mocks.sendAwaitingHumanNotification.mockResolvedValueOnce({
       status: "sent",

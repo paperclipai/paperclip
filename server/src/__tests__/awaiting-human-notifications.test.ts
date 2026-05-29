@@ -23,8 +23,6 @@ afterEach(() => {
   delete process.env.CLICKUP_WORKSPACE_ID;
   delete process.env.CLICKUP_AWAITING_HUMAN_CHANNEL_ID;
   delete process.env.CLICKUP_ENGINEERING_CHANNEL_ID;
-  delete process.env.CLICKUP_AWAITING_HUMAN_REVIEW_LIST_ID;
-  delete process.env.CLICKUP_APPROVAL_POSITIVE_REPLY_KEYWORDS;
 });
 
 describe.skip("sendAwaitingHumanNotification", () => {
@@ -165,6 +163,51 @@ describe.skip("sendAwaitingHumanNotification", () => {
     expect(body.content).toContain("ClickUp review task: https://app.clickup.com/t/task-123");
     expect(body.content).toContain("Review file attached on the ClickUp task.");
     expect(body.content).toContain("Open in Bizbox: https://bizbox.example/issues/BIZ-35");
+  });
+
+
+  it("posts attachment-only outbound message when ClickUp attachment url is present", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+    process.env.CLICKUP_AWAITING_HUMAN_CHANNEL_ID = "channel-9";
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        text: async () => JSON.stringify({ id: "message-42" }),
+      });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await sendAwaitingHumanNotification({
+      companyId: "company-1",
+      issueId: "issue-1",
+      handoffKind: "request_confirmation",
+      notification: {
+        title: "BIZ-35 is waiting on human input",
+        summary: "Please review the attached final report.",
+        link: "https://bizbox.example/issues/BIZ-35",
+        cta: "Open BIZ-35 in Bizbox and respond there.",
+        labels: ["awaiting_human", "request_confirmation"],
+        reviewFile: {
+          source: "artifact",
+          deliverableId: "33333333-3333-4333-8333-333333333333",
+          title: "Final report",
+          filename: "final-report.md",
+          contentType: "text/markdown",
+          byteSize: 42,
+          contentPath: "/api/attachments/33333333-3333-4333-8333-333333333333/content",
+          deliverableUrl: "https://bizbox.example/api/attachments/33333333-3333-4333-8333-333333333333/content",
+          clickupTaskUrl: "https://app.clickup.com/t/task-123",
+          clickupAttachmentId: "attachment-123",
+          clickupAttachmentUrl: "https://app.clickup.com/attachment/123",
+        },
+      },
+    });
+
+    expect(result.status).toBe("sent");
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.content).toBe("https://app.clickup.com/attachment/123");
   });
 
   it("skips delivery when ClickUp chat credentials are missing", async () => {

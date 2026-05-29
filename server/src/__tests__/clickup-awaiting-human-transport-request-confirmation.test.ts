@@ -98,8 +98,49 @@ describe("clickup awaiting human transport handoff messages", () => {
 
     expect(result.status).toBe("sent");
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.content).toContain("CIT-8 needs review");
     expect(body.content).toContain("Review file: review.png");
     expect(body.content).toContain("ClickUp attachment: https://app.clickup.com/attachment/1");
+  });
+
+
+  it("includes the target ClickUp attachment url in the full handoff message", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+    process.env.CLICKUP_AWAITING_HUMAN_CHANNEL_ID = "channel-1";
+
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      text: async () => JSON.stringify({ id: "message-45" }),
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await sendAwaitingHumanNotification({
+      companyId: "company-1",
+      issueId: "issue-1",
+      handoffKind: "request_confirmation",
+      notification: {
+        title: "CIT-9 needs review",
+        summary: "Should not appear in chat.",
+        link: "https://bizbox.example/issues/CIT-9",
+        cta: "",
+        labels: ["awaiting_human", "request_confirmation"],
+        body: "Proceed?",
+        target: {
+          label: "Spec",
+          href: "/api/attachments/target-1/content",
+          clickupAttachmentUrl: "https://app.clickup.com/attachment/2",
+        },
+      },
+    });
+
+    expect(result.status).toBe("sent");
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.content).toContain("CIT-9 needs review");
+    expect(body.content).toContain("Proceed?");
+    expect(body.content).toContain("ClickUp attachment: https://app.clickup.com/attachment/2");
+    expect(body.content).not.toContain("Should not appear in chat.");
   });
 
   it("renders ask_user_questions with body and bizbox open line", async () => {

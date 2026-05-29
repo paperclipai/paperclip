@@ -3,10 +3,31 @@ import { unprocessable } from "../errors.js";
 export interface ClickUpAwaitingHumanProviderConfigInput {
   workspaceId: string | null;
   channelId: string | null;
+  attachmentTaskId: string | null;
 }
 
 function trimNullable(value: string | null | undefined) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export function normalizeClickUpAttachmentTaskId(value: string | null | undefined): string | null {
+  const trimmed = trimNullable(value);
+  if (!trimmed) return null;
+  if (!trimmed.includes("clickup.com") && !trimmed.startsWith("http")) {
+    return trimmed;
+  }
+  try {
+    const url = new URL(trimmed.startsWith("http") ? trimmed : `https://${trimmed}`);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const taskMarkerIndex = parts.indexOf("t");
+    if (taskMarkerIndex >= 0) {
+      const taskId = parts.at(-1)?.trim();
+      if (taskId) return taskId;
+    }
+  } catch {
+    return trimmed;
+  }
+  return trimmed;
 }
 
 export function normalizeClickUpAwaitingHumanProviderConfig(
@@ -16,6 +37,7 @@ export function normalizeClickUpAwaitingHumanProviderConfig(
   return {
     workspaceId: trimNullable(input.workspaceId),
     channelId: trimNullable(input.channelId),
+    attachmentTaskId: normalizeClickUpAttachmentTaskId(input.attachmentTaskId),
   };
 }
 

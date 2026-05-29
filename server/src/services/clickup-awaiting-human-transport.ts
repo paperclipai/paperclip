@@ -8,6 +8,7 @@ import type {
 } from "./awaiting-human-notifications.js";
 import { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
 import type { AwaitingHumanBridgePollEvent } from "./awaiting-human-bridge-registry.js";
+import { normalizeClickUpAttachmentTaskId } from "./clickup-awaiting-human-settings-adapter.js";
 
 const CLICKUP_CHAT_MESSAGE_MAX_CHARS = 1_800;
 const MAX_TITLE_LENGTH = 120;
@@ -35,7 +36,14 @@ export type ClickUpAwaitingHumanConfigOverrides = {
   personalToken?: string | null;
   workspaceId?: string | null;
   channelId?: string | null;
+  attachmentTaskId?: string | null;
 };
+
+export function resolveClickUpAttachmentTaskId(
+  overrides?: ClickUpAwaitingHumanConfigOverrides,
+) {
+  return normalizeClickUpAttachmentTaskId(overrides?.attachmentTaskId);
+}
 
 type ClickUpApiStatus = "sent" | "skipped" | "failed";
 
@@ -102,6 +110,7 @@ async function readCompanyClickUpOverrides(
     personalToken: resolved.personalToken,
     workspaceId: resolved.workspaceId,
     channelId: resolved.channelId,
+    attachmentTaskId: resolved.attachmentTaskId,
   };
 }
 
@@ -213,6 +222,7 @@ function extractReplyRows(payload: ClickUpGetChatMessageRepliesResponse): ClickU
   }));
 }
 
+
 function renderClickUpMessage(notification: AwaitingHumanNotificationPayload) {
   const title = truncateText(notification.title, MAX_TITLE_LENGTH);
   const bodySection = formatBodySection(notification.body);
@@ -242,6 +252,12 @@ function renderClickUpMessage(notification: AwaitingHumanNotificationPayload) {
       if (notification.reviewFile.clickupAttachmentId) {
         lines.push("Review file attached on the ClickUp task.");
       }
+    }
+  } else {
+    const targetAttachmentUrl = readString(notification.target?.clickupAttachmentUrl);
+    if (targetAttachmentUrl) {
+      lines.push("");
+      lines.push(`ClickUp attachment: ${targetAttachmentUrl}`);
     }
   }
 
@@ -374,13 +390,22 @@ type ClickUpCreateChatMessageResponse = {
   id: string;
 };
 
-type ClickUpAttachmentResponse = {
+type ClickUpAttachmentsAttachment = {
+  date_updated: number;
+  date_created: number;
+  extension: string;
   id: string;
-  url: string;
+  mime_type: string;
   parent_entity_type: string;
   parent_id: string;
+  size: number;
+  signed: boolean;
+  thumbnail_small: string;
+  thumbnail_medium: string;
+  thumbnail_large: string;
   title: string;
-  mime_type: string;
+  url: string;
+  user_id: number;
 };
 
 type ClickUpApiErrorResponse = {
@@ -398,13 +423,137 @@ function parseClickUpCreateChatMessageResponse(rawText: string) {
 }
 
 function parseClickUpAttachmentResponse(rawText: string) {
-  const payload = JSON.parse(rawText) as ClickUpAttachmentResponse;
+  const payload = JSON.parse(rawText) as ClickUpAttachmentsAttachment;
+  const attachmentId = readString(payload.id);
+  const attachmentUrl = readString(payload.url);
+  if (!attachmentId) {
+    throw new Error(
+      `clickup review file upload response missing attachment id:${truncateText(rawText, 240)}`,
+    );
+  }
+  if (!attachmentUrl) {
+    throw new Error(
+      `clickup review file upload response missing attachment url:${truncateText(rawText, 240)}`,
+    );
+  }
   return {
-    attachmentId: payload.id,
-    attachmentUrl: payload.url,
-    parentEntityType: payload.parent_entity_type,
-    parentId: payload.parent_id,
+    attachmentId,
+    attachmentUrl,
+    parentEntityType: readString(payload.parent_entity_type),
+    parentId: readString(payload.parent_id),
   };
+}
+
+type ClickUpAttachmentUploadTarget = {
+  v3EntityId: string;
+  v2TaskId: string;
+  useCustomTaskIds: boolean;
+};
+
+async function resolveClickUpAttachmentUploadTarget(
+  config: ClickUpChatConfig,
+  configuredTaskId: string,
+): Promise<ClickUpAttachmentUploadTarget> {
+  const authHeaders = {
+    Accept: "application/json",
+    Authorization: config.personalToken,
+  };
+  const customTaskQuery = `?custom_task_ids=true&team_id=${encodeURIComponent(config.workspaceId)}`;
+  const customTaskResponse = await fetchText(
+    `https://api.clickup.com/api/v2/task/${encodeURIComponent(configuredTaskId)}${customTaskQuery}`,
+    { headers: authHeaders },
+  );
+  if (customTaskResponse.ok) {
+    const payload = JSON.parse(customTaskResponse.text) as { id?: string };
+    const internalId = readString(payload.id);
+    if (internalId) {
+      return {
+        v3EntityId: internalId,
+        v2TaskId: configuredTaskId,
+        useCustomTaskIds: true,
+      };
+    }
+  }
+
+  const directTaskResponse = await fetchText(
+    `https://api.clickup.com/api/v2/task/${encodeURIComponent(configuredTaskId)}`,
+    { headers: authHeaders },
+  );
+  if (directTaskResponse.ok) {
+    const payload = JSON.parse(directTaskResponse.text) as { id?: string };
+    const internalId = readString(payload.id) ?? configuredTaskId;
+    return {
+      v3EntityId: internalId,
+      v2TaskId: internalId,
+      useCustomTaskIds: false,
+    };
+  }
+
+  return {
+    v3EntityId: configuredTaskId,
+    v2TaskId: configuredTaskId,
+    useCustomTaskIds: true,
+  };
+}
+
+function buildClickUpReviewFileUploadForm(
+  reviewFile: AwaitingHumanNotificationReviewFile,
+  body: Buffer,
+  fileFieldName: string,
+) {
+  const form = new FormData();
+  form.append(
+    fileFieldName,
+    new Blob([new Uint8Array(body)], { type: reviewFile.contentType }),
+    reviewFile.filename,
+  );
+  form.append("filename", reviewFile.filename);
+  return form;
+}
+
+async function uploadClickUpReviewFileViaV3(
+  config: ClickUpChatConfig,
+  entityId: string,
+  reviewFile: AwaitingHumanNotificationReviewFile,
+  body: Buffer,
+) {
+  return fetchText(
+    `https://api.clickup.com/api/v3/workspaces/${encodeURIComponent(config.workspaceId)}/attachments/${encodeURIComponent(entityId)}/attachments`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: config.personalToken,
+      },
+      body: buildClickUpReviewFileUploadForm(
+        reviewFile,
+        body,
+        CLICKUP_ATTACHMENT_FILE_FIELD,
+      ),
+    },
+  );
+}
+
+async function uploadClickUpReviewFileViaV2(
+  config: ClickUpChatConfig,
+  target: ClickUpAttachmentUploadTarget,
+  reviewFile: AwaitingHumanNotificationReviewFile,
+  body: Buffer,
+) {
+  const query = target.useCustomTaskIds
+    ? `?custom_task_ids=true&team_id=${encodeURIComponent(config.workspaceId)}`
+    : "";
+  return fetchText(
+    `https://api.clickup.com/api/v2/task/${encodeURIComponent(target.v2TaskId)}/attachment${query}`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: config.personalToken,
+      },
+      body: buildClickUpReviewFileUploadForm(reviewFile, body, "attachment"),
+    },
+  );
 }
 
 function parseClickUpApiErrorMessage(rawText: string) {
@@ -423,24 +572,21 @@ export async function uploadClickUpReviewFile(
   body: Buffer,
 ) {
   const resolved = readClickUpChatConfig(config);
-  const form = new FormData();
-  form.append(
-    CLICKUP_ATTACHMENT_FILE_FIELD,
-    new Blob([new Uint8Array(body)], { type: reviewFile.contentType }),
-    reviewFile.filename,
+  const uploadTarget = await resolveClickUpAttachmentUploadTarget(resolved, entityId);
+  let response = await uploadClickUpReviewFileViaV3(
+    resolved,
+    uploadTarget.v3EntityId,
+    reviewFile,
+    body,
   );
-  form.append("filename", reviewFile.filename);
-  const response = await fetchText(
-    `https://api.clickup.com/api/v3/workspaces/${encodeURIComponent(resolved.workspaceId)}/attachments/${encodeURIComponent(entityId)}/attachments`,
-    {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        Authorization: resolved.personalToken,
-      },
-      body: form,
-    },
-  );
+  if (!response.ok && response.status === 404) {
+    response = await uploadClickUpReviewFileViaV2(
+      resolved,
+      uploadTarget,
+      reviewFile,
+      body,
+    );
+  }
   if (!response.ok) {
     throw new Error(
       `clickup review file upload failed:${response.status}:${truncateText(response.text, 240)}`,

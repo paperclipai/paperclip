@@ -32,6 +32,7 @@ export function CompanyAwaitingHumanSettings() {
   const [personalToken, setPersonalToken] = useState("");
   const [workspaceId, setWorkspaceId] = useState("");
   const [channelId, setChannelId] = useState("");
+  const [attachmentTaskId, setAttachmentTaskId] = useState("");
 
   useEffect(() => {
     setBreadcrumbs([
@@ -49,6 +50,7 @@ export function CompanyAwaitingHumanSettings() {
     setPersonalToken("");
     setWorkspaceId(settings.providerConfig?.workspaceId ?? "");
     setChannelId(settings.providerConfig?.channelId ?? "");
+    setAttachmentTaskId(settings.providerConfig?.attachmentTaskId ?? "");
   }, [settingsQuery.data]);
 
   const saveMutation = useMutation({
@@ -64,6 +66,7 @@ export function CompanyAwaitingHumanSettings() {
           ? {
             workspaceId: workspaceId.trim() || null,
             channelId: channelId.trim() || null,
+            attachmentTaskId: attachmentTaskId.trim() || null,
           }
           : null,
         clickupPersonalToken: provider === "clickup" ? (personalToken.trim() || null) : null,
@@ -88,6 +91,7 @@ export function CompanyAwaitingHumanSettings() {
           ? {
             workspaceId: workspaceId.trim() || null,
             channelId: channelId.trim() || null,
+            attachmentTaskId: attachmentTaskId.trim() || null,
           }
           : null,
         clickupPersonalToken: provider === "clickup" ? (personalToken.trim() || null) : null,
@@ -133,7 +137,8 @@ export function CompanyAwaitingHumanSettings() {
     || normalizedProvider !== (settings?.provider ?? null)
     || personalToken.trim().length > 0
     || workspaceId !== (settings?.providerConfig?.workspaceId ?? "")
-    || channelId !== (settings?.providerConfig?.channelId ?? "");
+    || channelId !== (settings?.providerConfig?.channelId ?? "")
+    || attachmentTaskId !== (settings?.providerConfig?.attachmentTaskId ?? "");
   const providerEnabled = provider !== "none";
   const hasStoredClickUpToken = settings?.hasStoredAuthToken ?? false;
 
@@ -243,6 +248,20 @@ export function CompanyAwaitingHumanSettings() {
                 onChange={(e) => setChannelId(e.target.value)}
                 disabled={!providerEnabled}
                 placeholder="chat-channel-id"
+                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-60"
+              />
+            </Field>
+
+            <Field
+              label="Attachment task ID"
+              hint="ClickUp task used as the file host for deliverable uploads. Required when handoffs include review files."
+            >
+              <input
+                type="text"
+                value={attachmentTaskId}
+                onChange={(e) => setAttachmentTaskId(e.target.value)}
+                disabled={!providerEnabled}
+                placeholder="86d35fwx8"
                 className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-60"
               />
             </Field>

@@ -3,6 +3,7 @@ import {
   deleteClickUpChatMessageReaction,
   type ClickUpAwaitingHumanConfigOverrides,
   detectClickUpAwaitingHumanBridgeEvents,
+  resolveClickUpAttachmentTaskId,
   sendAwaitingHumanNotification,
   uploadClickUpReviewFile,
 } from "./clickup-awaiting-human-transport.js";
@@ -13,24 +14,13 @@ import { Readable } from "node:stream";
 import { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
 import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
-import { normalizeReviewFile, readAwaitingHumanReviewFileBody } from "./awaiting-human-review-files.js";
 import { issueService } from "./issues.js";
+import type { StorageService } from "../storage/types.js";
+import { resolveMostRecentIssueAttachmentForUpload } from "./awaiting-human-issue-attachments.js";
 
-const CLICKUP_REVIEW_ATTACHMENT_ENTITY_ID = "86d35fwx8";
 
 function readString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function extractIssueAttachmentIdFromHref(href: string) {
-  try {
-    const url = new URL(href);
-    const match = url.pathname.match(/^\/api\/attachments\/([^/]+)\/content$/);
-    return match?.[1]?.trim() || null;
-  } catch {
-    const match = href.match(/^\/api\/attachments\/([^/]+)\/content$/);
-    return match?.[1]?.trim() || null;
-  }
 }
 
 async function readStreamToBuffer(stream: Readable) {
@@ -41,21 +31,63 @@ async function readStreamToBuffer(stream: Readable) {
   return Buffer.concat(chunks);
 }
 
-function insertClickUpAttachmentLine(body: string | null | undefined, url: string) {
-  if (!body?.trim()) return `ClickUp attachment: ${url}`;
-  const lines = body.split("\n");
-  const targetLinkIndex = lines.findIndex((line) => line.startsWith("Target link:"));
-  if (targetLinkIndex >= 0) {
-    lines.splice(targetLinkIndex + 1, 0, `ClickUp attachment: ${url}`);
-    return lines.join("\n");
-  }
-  const disclaimerIndex = lines.findIndex((line) => line.trim() === "Disclaimer:");
-  if (disclaimerIndex >= 0) {
-    lines.splice(disclaimerIndex, 0, `ClickUp attachment: ${url}`, "");
-    return lines.join("\n");
-  }
-  return `${body}\n\nClickUp attachment: ${url}`;
+async function loadIssueAttachmentUploadPayload(
+  db: Db,
+  storage: StorageService,
+  companyId: string,
+  attachmentId: string,
+  meta: { title: string; contentPath: string },
+) {
+  const attachment = await issueService(db).getAttachmentById(attachmentId);
+  if (!attachment || attachment.companyId !== companyId) return null;
+  const object = await storage.getObject(attachment.companyId, attachment.objectKey);
+  const body = await readStreamToBuffer(object.stream);
+  return {
+    body,
+    reviewFile: {
+      source: "artifact" as const,
+      deliverableId: attachment.id,
+      title: meta.title,
+      filename: attachment.originalFilename ?? "attachment",
+      contentType: attachment.contentType ?? object.contentType ?? "application/octet-stream",
+      byteSize: attachment.byteSize ?? object.contentLength ?? body.length,
+      contentPath: meta.contentPath,
+      deliverableUrl: meta.contentPath,
+      attachmentId: attachment.id,
+      objectKey: attachment.objectKey,
+      sha256: attachment.sha256,
+    },
+  };
 }
+
+async function resolveClickUpUploadPayload(
+  db: Db,
+  storage: StorageService | undefined,
+  companyId: string,
+  issueId: string,
+) {
+  if (!storage) return null;
+
+  const issueAttachment = await resolveMostRecentIssueAttachmentForUpload(db, {
+    companyId,
+    issueId,
+  });
+  if (!issueAttachment) return null;
+
+  const loaded = await loadIssueAttachmentUploadPayload(
+    db,
+    storage,
+    companyId,
+    issueAttachment.attachmentId,
+    {
+      title: issueAttachment.label,
+      contentPath: issueAttachment.href,
+    },
+  );
+  if (!loaded) return null;
+  return { ...loaded, attachTo: "target" as const };
+}
+
 
 async function loadCompanyOverrides(db: Db, companyId: string): Promise<ClickUpAwaitingHumanConfigOverrides> {
   const resolved = await awaitingHumanSettingsService(db).resolveClickUpRuntimeConfig(companyId);
@@ -63,7 +95,16 @@ async function loadCompanyOverrides(db: Db, companyId: string): Promise<ClickUpA
     personalToken: resolved.personalToken,
     workspaceId: resolved.workspaceId,
     channelId: resolved.channelId,
+    attachmentTaskId: resolved.attachmentTaskId,
   };
+}
+
+function requireClickUpAttachmentTaskId(overrides: ClickUpAwaitingHumanConfigOverrides) {
+  const taskId = resolveClickUpAttachmentTaskId(overrides);
+  if (!taskId) {
+    throw new Error("missing-target: attachmentTaskId");
+  }
+  return taskId;
 }
 
 async function loadBridgeOverrides(db: Db, bridgeId: string) {
@@ -221,63 +262,50 @@ export function clickupAwaitingHumanBridgeAdapter(db: Db): AwaitingHumanBridgeAd
   return {
     async send(input) {
       const overrides = await loadCompanyOverrides(db, input.companyId);
-      const reviewFile = normalizeReviewFile(input.notification.reviewFile);
-
       let clickupNotification = input.notification;
-      if (reviewFile && input.storage) {
-        const { body } = await readAwaitingHumanReviewFileBody(db, input.storage, input.companyId, reviewFile);
+
+      const uploadPayload = await resolveClickUpUploadPayload(
+        db,
+        input.storage,
+        input.companyId,
+        input.issueId,
+      );
+      if (uploadPayload) {
+        if (!input.storage) {
+          throw new Error("missing-storage: awaiting human ClickUp attachment upload requires storage");
+        }
+        const attachmentTaskId = requireClickUpAttachmentTaskId(overrides);
+        logger.info({
+          companyId: input.companyId,
+          issueId: input.issueId,
+          interactionId: input.interactionId,
+          attachmentTaskId,
+          attachTo: uploadPayload.attachTo,
+          filename: uploadPayload.reviewFile.filename,
+        }, "clickup awaiting human attachment upload starting");
+
         const uploaded = await uploadClickUpReviewFile(
           overrides,
-          CLICKUP_REVIEW_ATTACHMENT_ENTITY_ID,
-          reviewFile,
-          body,
+          attachmentTaskId,
+          uploadPayload.reviewFile,
+          uploadPayload.body,
         );
+
         clickupNotification = {
-          ...input.notification,
-          reviewFile: {
-            ...reviewFile,
-            clickupAttachmentId: uploaded.attachmentId,
+          ...clickupNotification,
+          target: {
+            ...clickupNotification.target,
             clickupAttachmentUrl: uploaded.attachmentUrl ?? null,
           },
         };
-      }
-
-      const targetHref = readString(clickupNotification.target?.href);
-      const targetAttachmentId = targetHref ? extractIssueAttachmentIdFromHref(targetHref) : null;
-      if (targetAttachmentId && targetHref && input.storage) {
-        const targetAttachment = await issueService(db).getAttachmentById(targetAttachmentId);
-        if (targetAttachment?.companyId === input.companyId) {
-          const object = await input.storage.getObject(targetAttachment.companyId, targetAttachment.objectKey);
-          const body = await readStreamToBuffer(object.stream);
-          const uploadedTarget = await uploadClickUpReviewFile(
-            overrides,
-            CLICKUP_REVIEW_ATTACHMENT_ENTITY_ID,
-            {
-              source: "artifact",
-              deliverableId: targetAttachment.id,
-              title: readString(clickupNotification.target?.label) ?? targetAttachment.originalFilename ?? "attachment",
-              filename: targetAttachment.originalFilename ?? "attachment",
-              contentType: targetAttachment.contentType ?? object.contentType ?? "application/octet-stream",
-              byteSize: targetAttachment.byteSize ?? object.contentLength ?? body.length,
-              contentPath: targetHref,
-              deliverableUrl: targetHref,
-              attachmentId: targetAttachment.id,
-              objectKey: targetAttachment.objectKey,
-              sha256: targetAttachment.sha256,
-            },
-            body,
-          );
-          if (uploadedTarget.attachmentUrl) {
-            clickupNotification = {
-              ...clickupNotification,
-              target: {
-                ...clickupNotification.target,
-                clickupAttachmentUrl: uploadedTarget.attachmentUrl,
-              },
-              body: insertClickUpAttachmentLine(clickupNotification.body, uploadedTarget.attachmentUrl),
-            };
-          }
-        }
+      } else if (resolveClickUpAttachmentTaskId(overrides)) {
+        logger.warn({
+          companyId: input.companyId,
+          issueId: input.issueId,
+          interactionId: input.interactionId,
+          targetHref: readString(input.notification.target?.href),
+          hasStorage: Boolean(input.storage),
+        }, "clickup awaiting human attachment upload skipped: no uploadable file resolved");
       }
 
       const result = await sendAwaitingHumanNotification({

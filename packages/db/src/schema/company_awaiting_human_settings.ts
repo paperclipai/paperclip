@@ -8,6 +8,7 @@ export interface ClickUpAwaitingHumanProviderConfigRecord {
   authTokenRef: EnvSecretRefBinding | null;
   workspaceId: string | null;
   channelId: string | null;
+  attachmentTaskId: string | null;
 }
 
 export type AwaitingHumanProviderConfigRecord = ClickUpAwaitingHumanProviderConfigRecord;

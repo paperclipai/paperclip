@@ -443,6 +443,7 @@ function buildBridgeNotification(input: {
         cta: "Reply with the needed answers, decisions, or corrections.",
         labels: ["awaiting_human", "ask_user_questions"],
         kind: interaction.kind,
+        interactionId: interaction.id,
         body: renderAskUserQuestionsBody(interaction, link),
       } satisfies AwaitingHumanNotificationPayload,
     };
@@ -463,6 +464,11 @@ function buildBridgeNotification(input: {
       cta: "Reply with Approve, Reject, or Change followed by feedback.",
       labels: ["awaiting_human", "request_confirmation"],
       kind: interaction.kind,
+      interactionId: interaction.id,
+      target: {
+        label: interaction.payload.target?.label ?? null,
+        href: interaction.payload.target?.href ?? null,
+      },
       body: renderRequestConfirmationBody(interaction, link),
     } satisfies AwaitingHumanNotificationPayload,
   };
@@ -470,6 +476,38 @@ function buildBridgeNotification(input: {
 
 export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps) {
   const interactionsSvc = issueThreadInteractionService(db);
+
+async function prepareBridgeDeliveryNotification(input: {
+  db: Db;
+  interactionsSvc: ReturnType<typeof issueThreadInteractionService>;
+  companyId: string;
+  issueId: string;
+  interactionId: string;
+  notification: AwaitingHumanNotificationPayload;
+}): Promise<AwaitingHumanNotificationPayload> {
+  let notification: AwaitingHumanNotificationPayload = {
+    ...input.notification,
+    interactionId: readNonEmptyString(input.notification.interactionId) ?? input.interactionId,
+  };
+
+  const interaction = await input.interactionsSvc.getById(input.interactionId);
+  if (interaction?.kind === "request_confirmation") {
+    const targetHref = readNonEmptyString(notification.target?.href);
+    const interactionTargetHref = readNonEmptyString(interaction.payload.target?.href);
+    if (!targetHref && interactionTargetHref) {
+      notification = {
+        ...notification,
+        target: {
+          label: readNonEmptyString(interaction.payload.target?.label) ?? notification.target?.label ?? null,
+          href: interactionTargetHref,
+        },
+      };
+    }
+  }
+
+  return notification;
+}
+
 
   async function insertWakeup(input: {
     companyId: string;
@@ -719,8 +757,16 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
     agentId: string;
     handoffKind: "request_confirmation" | "ask_user_questions";
     notification: AwaitingHumanNotificationPayload;
-  }) {
+    }) {
     const adapter = deps.resolveAdapter(input.row.provider);
+    const notification = await prepareBridgeDeliveryNotification({
+      db,
+      interactionsSvc,
+      companyId: input.companyId,
+      issueId: input.issueId,
+      interactionId: input.interactionId,
+      notification: input.notification,
+    });
     let delivered;
     try {
       delivered = await adapter.send({
@@ -730,7 +776,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
         interactionId: input.interactionId,
         agentId: input.agentId,
         handoffKind: input.handoffKind,
-        notification: input.notification,
+        notification,
         storage: deps.storage,
       });
     } catch (error) {
