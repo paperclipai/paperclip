@@ -8,3 +8,8 @@ coverage
 data
 tmp
 *.log
+*.pdf
+compose-build-local-error.txt
+.claude
+.understand-anything
+screenshots

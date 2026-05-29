@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1.20
-FROM node:lts-trixie-slim AS base
+# Ghim Node 24.15.0: bản 24.16.0+ dính regression yauzl làm treo khâu giải nén
+# browser của Playwright 1.58.2 (chromium-headless-shell). Gỡ ghim này được sau
+# khi project nâng Playwright >= 1.60. Xem playwright#34508, #40724.
+FROM node:24.15.0-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
 RUN apt-get update \
@@ -55,19 +58,53 @@ FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
 ARG DOCKER_GID=981
+ARG INSTALL_PLAYWRIGHT=false
+ARG PLAYWRIGHT_INSTALL_TIMEOUT=900
 WORKDIR /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
   && apt-get update \
-  && apt-get install -y --no-install-recommends openssh-client jq docker.io \
+  && apt-get install -y --no-install-recommends openssh-client jq docker-cli \
   && rm -rf /var/lib/apt/lists/* \
   && groupadd -g ${DOCKER_GID} --non-unique docker-host \
   && usermod -aG docker-host node \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
-RUN npx playwright install --with-deps chromium
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 COPY --chown=node:node --from=build /app /app
+
+# Playwright browsers are only needed for browser QA/screenshot scripts, not
+# normal server runtime. Keep production builds fast unless explicitly requested.
+#
+# Tách làm 2 phần để build không chết oan vì 1 component CDN hỏng:
+#   1. install-deps  -> chỉ cài thư viện hệ thống qua apt (nhanh, ổn định).
+#   2. install chromium -> tải browser. Lệnh này kéo cả Chromium đầy đủ LẪN
+#      chromium-headless-shell. headless-shell đôi khi bị 1 edge CDN throttle ->
+#      treo. Ta retry vài lần nhưng KHÔNG bắt buộc nó xong.
+#
+# Điều kiện THÀNH CÔNG = có Chromium đầy đủ (chrome-linux64). Cái này luôn tải ngon.
+# headless-shell chỉ là bản rút gọn tối ưu cho headless -> thiếu vẫn QA được bằng
+# Chromium đầy đủ (chế độ --headless=new). Thiếu headless-shell KHÔNG làm build fail.
+RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then \
+    cd /app \
+    && ./node_modules/.bin/playwright install-deps chromium \
+    && { for i in $(seq 1 3); do \
+         timeout "$PLAYWRIGHT_INSTALL_TIMEOUT" ./node_modules/.bin/playwright install chromium && break; \
+         ls -d /ms-playwright/chromium-*/chrome-linux64 >/dev/null 2>&1 && { echo "== da co Chromium day du -> bo qua headless-shell, dung som =="; break; }; \
+         echo "== playwright retry $i (chua co Chromium day du, thu lai) =="; \
+         sleep 3; \
+       done; } \
+    && if ls -d /ms-playwright/chromium-*/chrome-linux64 >/dev/null 2>&1; then \
+         echo "OK: Chromium day du da co (headless-shell la tuy chon)."; \
+         chmod -R a+rx /ms-playwright; \
+       else \
+         echo "LOI: thieu Chromium day du - build that bai."; exit 1; \
+       fi; \
+  else \
+    echo "Skipping Playwright browser install. Use --build-arg INSTALL_PLAYWRIGHT=true to include browser QA support."; \
+  fi \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
