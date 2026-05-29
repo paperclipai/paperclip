@@ -27,9 +27,10 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { Db } from "@valadrien-os/db";
 import type {
@@ -957,6 +958,14 @@ export function pluginLoader(
   /**
    * Attempt to load and validate a plugin manifest from a resolved path.
    * Returns the manifest on success or throws with a descriptive error.
+   *
+   * Uses `createRequire` (with require-cache invalidation for hot-reload)
+   * rather than dynamic `import()` because Vitest's underlying Vite loader
+   * intercepts dynamic imports and refuses to resolve files outside the
+   * project tree (e.g. plugin packages installed in `~/.valadrien-os/plugins/`
+   * or in /tmp during integration tests). Node 22.12+ supports requiring
+   * synchronous ESM modules, which is the only shape valid plugin manifests
+   * take (they must be pure data — no top-level await, no async side effects).
    */
   async function loadManifestFromPath(
     manifestPath: string,
@@ -964,13 +973,18 @@ export function pluginLoader(
     let raw: unknown;
 
     try {
-      // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests
-      const manifestUrl = pathToFileURL(manifestPath);
-      const manifestStat = await stat(manifestPath);
-      manifestUrl.searchParams.set("mtime", String(Math.trunc(manifestStat.mtimeMs)));
-      const mod = await import(manifestUrl.href) as Record<string, unknown>;
-      // The manifest may be the default export or the module itself
-      raw = mod["default"] ?? mod;
+      const requireFn = createRequire(import.meta.url);
+      const absolutePath = path.resolve(manifestPath);
+      // Bust the require cache so edits during plugin dev are reloaded.
+      delete requireFn.cache[absolutePath];
+      // Touch stat for an explicit existence check + parity with the previous
+      // mtime-based cache-busting heuristic. Throws ENOENT before require()
+      // produces a less actionable error.
+      await stat(absolutePath);
+      const mod = requireFn(absolutePath) as Record<string, unknown>;
+      // ESM modules surfaced via require() expose `default`; CJS modules
+      // surface their `module.exports` shape directly.
+      raw = (mod as Record<string, unknown>).default ?? mod;
     } catch (err) {
       throw new Error(
         `Failed to load manifest module at ${manifestPath}: ${String(err)}`,

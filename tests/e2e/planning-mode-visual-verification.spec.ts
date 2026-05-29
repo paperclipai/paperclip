@@ -14,6 +14,9 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   await expect(page.locator("h3", { hasText: "Name your company" })).toBeVisible({ timeout: 5_000 });
 
   await page.locator('input[placeholder="Acme Corp"]').fill(companyName);
+  await page
+    .locator('textarea[placeholder="What is this company trying to achieve?"]')
+    .fill("Capture planning-mode visual evidence.");
   await page.getByRole("button", { name: "Next" }).click();
 
   await expect(page.locator("h3", { hasText: "Create your first agent" })).toBeVisible({ timeout: 30_000 });

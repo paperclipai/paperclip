@@ -31,6 +31,11 @@ test.describe("Onboarding wizard", () => {
     const companyNameInput = page.locator('input[placeholder="Acme Corp"]');
     await companyNameInput.fill(COMPANY_NAME);
 
+    const companyGoalInput = page.locator(
+      'textarea[placeholder="What is this company trying to achieve?"]'
+    );
+    await companyGoalInput.fill("Ship the test suite.");
+
     const nextButton = page.getByRole("button", { name: "Next" });
     await nextButton.click();
 

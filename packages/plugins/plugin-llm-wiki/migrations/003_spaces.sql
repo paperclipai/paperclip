@@ -142,8 +142,17 @@ ALTER TABLE plugin_llm_wiki_3656981cf2.valadrien_os_page_bindings ALTER COLUMN s
 
 ALTER TABLE plugin_llm_wiki_3656981cf2.wiki_pages
   DROP CONSTRAINT IF EXISTS wiki_pages_company_id_wiki_id_path_key;
+-- Postgres truncates auto-generated unique constraint names to 63 chars (NAMEDATALEN-1).
+-- The rebrand from `paperclip_*` (9 chars) to `valadrien_os_*` (12 chars) changed
+-- where the truncation falls, so the names below differ from the pre-rebrand DROPs.
+-- See server/src/__tests__/plugin-database.test.ts "applies the bundled LLM Wiki
+-- migrations through the production validator" for the asserted shape.
+ALTER TABLE plugin_llm_wiki_3656981cf2.valadrien_os_distillation_cursors
+  DROP CONSTRAINT IF EXISTS valadrien_os_distillation_cur_company_id_wiki_id_source_sco_key;
 ALTER TABLE plugin_llm_wiki_3656981cf2.valadrien_os_distillation_cursors
   DROP CONSTRAINT IF EXISTS valadrien_os_distillation_cursor_company_id_wiki_id_source_sco_key;
+ALTER TABLE plugin_llm_wiki_3656981cf2.valadrien_os_distillation_work_items
+  DROP CONSTRAINT IF EXISTS valadrien_os_distillation_wor_company_id_wiki_id_idempotenc_key;
 ALTER TABLE plugin_llm_wiki_3656981cf2.valadrien_os_distillation_work_items
   DROP CONSTRAINT IF EXISTS valadrien_os_distillation_work_i_company_id_wiki_id_idempotenc_key;
 ALTER TABLE plugin_llm_wiki_3656981cf2.valadrien_os_page_bindings

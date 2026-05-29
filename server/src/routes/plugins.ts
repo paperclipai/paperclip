@@ -403,6 +403,10 @@ export function pluginRoutes(
       "content-type",
       "user-agent",
       "x-valadrien-os-run-id",
+      // Alternate spelling stamped by the rebrand codemod (e.g. MCP client,
+      // Cloudflare sandbox bridge). Forward it so downstream plugin services
+      // see the run id regardless of which spelling the caller used.
+      "x-valadrienos-run-id",
       "x-request-id",
     ]);
     const headers: Record<string, string> = {};

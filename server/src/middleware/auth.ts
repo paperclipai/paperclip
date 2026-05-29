@@ -33,7 +33,14 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-valadrien-os-run-id");
+    // The canonical header is "X-Valadrien-Os-Run-Id" (kebab-case), but the
+    // rebrand codemod also stamped an alternate spelling "X-ValadrienOs-Run-Id"
+    // (which lowercases to "x-valadrienos-run-id") into several adapter
+    // docstrings, the MCP client, the Cloudflare sandbox bridge, and e2e
+    // tests. Accept both for compatibility until those call sites converge.
+    const runIdHeader =
+      req.header("x-valadrien-os-run-id") ??
+      req.header("x-valadrienos-run-id");
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
