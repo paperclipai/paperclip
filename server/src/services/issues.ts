@@ -869,7 +869,7 @@ async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWith
 }
 
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
-const AGENT_ACTIVE_RUN_CAP_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const AGENT_ACTIVE_RUN_CAP_STATUSES = ["running", "scheduled_retry"] as const;
 const BLOCKER_ATTENTION_ACTIVE_RUN_STATUSES = ["queued", "running"];
 const BLOCKER_ATTENTION_ACTIVE_WAKE_STATUSES = ["queued", "deferred_issue_execution"];
 const BLOCKER_ATTENTION_PENDING_INTERACTION_STATUSES = ["pending"];
@@ -3440,7 +3440,7 @@ export function issueService(db: Db) {
     tx: any,
     input: { companyId: string; agentId: string; issueId: string; checkoutRunId: string | null },
   ) {
-    const conflicting = await tx
+    const [conflictingRow] = await tx
       .select({
         issueId: issues.id,
         issueIdentifier: issues.identifier,
@@ -3458,8 +3458,8 @@ export function issueService(db: Db) {
           inArray(heartbeatRuns.status, [...AGENT_ACTIVE_RUN_CAP_STATUSES]),
         ),
       )
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
+      .limit(1);
+    const conflicting = conflictingRow ?? null;
 
     if (!conflicting) return null;
     if (input.checkoutRunId && conflicting.executionRunId === input.checkoutRunId) return null;

@@ -3950,6 +3950,17 @@ export function issueRoutes(
       });
       return;
     }
+    // FUL-2635: block agent close when a pending request_confirmation interaction is awaiting human response
+    if (updateFields.status === "done") {
+      const pendingInteractions = await issueThreadInteractionsSvc.listForIssue(existing.id);
+      if (pendingInteractions.some((i) => i.status === "pending")) {
+        res.status(422).json({
+          error: "PENDING_INTERACTION_BLOCKS_CLOSE",
+          message: "Issue has pending interactions awaiting human response. Resolve or cancel them before closing.",
+        });
+        return;
+      }
+    }
     if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
     if (resumeRequested !== true && reopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
@@ -4098,7 +4109,17 @@ export function issueRoutes(
         ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
         : previousExecutionPolicy;
     if (normalizedAssigneeAgentId !== undefined) {
-      updateFields.assigneeAgentId = normalizedAssigneeAgentId;
+      // Board actors cannot reassign the accountable owner when transitioning to in_review;
+      // silently revert the requested reassignment to preserve the existing owner.
+      if (
+        req.actor.type !== "agent" &&
+        updateFields.status === "in_review" &&
+        normalizedAssigneeAgentId !== existing.assigneeAgentId
+      ) {
+        updateFields.assigneeAgentId = existing.assigneeAgentId;
+      } else {
+        updateFields.assigneeAgentId = normalizedAssigneeAgentId;
+      }
     }
     const monitorChanged = monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) === false;
     assertCanManageIssueMonitor(req, existing.assigneeAgentId, req.body.executionPolicy !== undefined && monitorChanged);

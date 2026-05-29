@@ -958,7 +958,7 @@ export function routineService(
           eq(issues.companyId, routine.companyId),
           eq(issues.originKind, originKind),
           eq(issues.originId, originId),
-          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          inArray(issues.status, ["in_review", "blocked"]),
           isNull(issues.hiddenAt),
           fingerprintCondition ?? undefined,
         ),

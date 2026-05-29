@@ -464,7 +464,7 @@ describe("issue execution policy routes", () => {
       .send({ status: "in_review", assigneeAgentId: "22222222-2222-4222-8222-222222222222" });
 
     expect(res.status).toBe(422);
-    expect(res.body.details).toMatchObject({ code: "invalid_issue_disposition", missing: "in_review_owner" });
+    expect(res.body.details).toMatchObject({ code: "invalid_issue_disposition", missing: "review_path" });
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
