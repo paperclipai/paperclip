@@ -644,6 +644,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row?.createdAt ?? null;
   }
 
+  // BLO-8050: shared gate for "operator just unblocked this issue, give the
+  // agent a fresh sweep window before re-escalating based on pre-unblock
+  // history." Returns true when the latest run predates (or coincides with)
+  // the most recent operator unblock — meaning the failure evidence the
+  // escalation branches would key off was already known when the operator
+  // chose to unblock. Without this gate, `reconcileStrandedAssignedIssues`
+  // re-flips the issue back to `blocked` on the next sweep using stale
+  // latestRun state, defeating the manual recovery path. BLO-7521 added the
+  // first instance of this gate for stranded-recovery-origin issues; BLO-8050
+  // generalizes it to all six escalation callsites (todo and in_progress
+  // arms × non-retryable / zero-token / recovery-failed predicates).
+  async function latestRunPredatesLatestUnblock(
+    companyId: string,
+    issueId: string,
+    latestRun: LatestIssueRun,
+  ): Promise<boolean> {
+    const unblockedAt = await getLatestUnblockedAt(companyId, issueId);
+    const latestRunCreatedAt = latestRun?.createdAt ?? null;
+    return Boolean(unblockedAt && latestRunCreatedAt && latestRunCreatedAt <= unblockedAt);
+  }
+
   async function countConsecutiveNonProductiveSuccessfulRuns(
     companyId: string,
     issueId: string,
@@ -3014,17 +3035,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
-        // 2026-05-25 BLO-7521: if the operator just manually unblocked this
-        // recovery-origin issue, give the agent a fresh run window before
-        // re-escalating. Without this gate the sweep flips the issue back
-        // to `blocked` within seconds of the operator flip, since the
-        // latest run still refers to the failure that originally stranded
-        // the issue.
-        const unblockedAt = await getLatestUnblockedAt(issue.companyId, issue.id);
-        const latestRunCreatedAt = latestRun?.createdAt ?? null;
-        const latestRunPredatesUnblock =
-          unblockedAt && latestRunCreatedAt && latestRunCreatedAt <= unblockedAt;
-        if (latestRunPredatesUnblock) {
+        // BLO-7521 (2026-05-25) / BLO-8050 (2026-05-28): if the operator just
+        // manually unblocked this recovery-origin issue, give the agent a
+        // fresh run window before re-escalating. See
+        // `latestRunPredatesLatestUnblock` for the full rationale.
+        if (await latestRunPredatesLatestUnblock(issue.companyId, issue.id, latestRun)) {
           result.skipped += 1;
           continue;
         }
@@ -3070,6 +3085,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (isNonRetryableTerminalRun(latestRun)) {
+          if (await latestRunPredatesLatestUnblock(issue.companyId, issue.id, latestRun)) {
+            // BLO-8050: operator just unblocked; skip re-escalation on stale evidence.
+            result.skipped += 1;
+            continue;
+          }
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "todo",
@@ -3086,6 +3106,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (isZeroTokenStartupFailureRun(latestRun)) {
+          if (await latestRunPredatesLatestUnblock(issue.companyId, issue.id, latestRun)) {
+            // BLO-8050: operator just unblocked; skip re-escalation on stale evidence.
+            result.skipped += 1;
+            continue;
+          }
           const updated = await escalateZeroTokenStartupFailureIssue({
             issue,
             previousStatus: "todo",
@@ -3102,6 +3127,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
+          if (await latestRunPredatesLatestUnblock(issue.companyId, issue.id, latestRun)) {
+            // BLO-8050: operator just unblocked; skip re-escalation on stale evidence.
+            result.skipped += 1;
+            continue;
+          }
           const failureSummary = summarizeRunFailureForIssueComment(latestRun);
           const updated = await escalateStrandedAssignedIssue({
             issue,
@@ -3224,6 +3254,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       if (isNonRetryableTerminalRun(latestRun)) {
+        if (await latestRunPredatesLatestUnblock(issue.companyId, issue.id, latestRun)) {
+          // BLO-8050: operator just unblocked; skip re-escalation on stale evidence.
+          result.skipped += 1;
+          continue;
+        }
         const updated = await escalateStrandedAssignedIssue({
           issue,
           previousStatus: "in_progress",
@@ -3239,6 +3274,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       if (isZeroTokenStartupFailureRun(latestRun)) {
+        if (await latestRunPredatesLatestUnblock(issue.companyId, issue.id, latestRun)) {
+          // BLO-8050: operator just unblocked; skip re-escalation on stale evidence.
+          result.skipped += 1;
+          continue;
+        }
         const updated = await escalateZeroTokenStartupFailureIssue({
           issue,
           previousStatus: "in_progress",
@@ -3254,6 +3294,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+        if (await latestRunPredatesLatestUnblock(issue.companyId, issue.id, latestRun)) {
+          // BLO-8050: operator just unblocked; skip re-escalation on stale evidence.
+          result.skipped += 1;
+          continue;
+        }
         const failureSummary = summarizeRunFailureForIssueComment(latestRun);
         const updated = await escalateStrandedAssignedIssue({
           issue,

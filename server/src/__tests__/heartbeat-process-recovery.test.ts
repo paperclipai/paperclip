@@ -3608,6 +3608,108 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.status).toBe("in_progress");
   });
 
+  // BLO-8050: generalize the BLO-7521 "operator-just-unblocked" gate to all
+  // six escalation callsites. Without these gates, an issue with a stale
+  // failing run gets re-flipped to `blocked` on the next sweep even though
+  // the operator's unblock was supposed to grant a fresh run window.
+  // Each row exercises one (status × escalation predicate) combination.
+  it.each([
+    {
+      label: "todo + non-retryable terminal run",
+      issueStatus: "todo" as const,
+      runStatus: "failed" as const,
+      runErrorCode: "workspace_import_conflict",
+      retryReason: null,
+      runUsageJson: null,
+    },
+    {
+      label: "todo + zero-token startup failure run",
+      issueStatus: "todo" as const,
+      runStatus: "failed" as const,
+      runErrorCode: "context_overflow",
+      retryReason: null,
+      runUsageJson: { inputTokens: 0, outputTokens: 0 },
+    },
+    {
+      label: "todo + automatic-recovery-failed run",
+      issueStatus: "todo" as const,
+      runStatus: "failed" as const,
+      runErrorCode: "process_lost",
+      retryReason: "assignment_recovery" as const,
+      runUsageJson: null,
+    },
+    {
+      label: "in_progress + non-retryable terminal run",
+      issueStatus: "in_progress" as const,
+      runStatus: "failed" as const,
+      runErrorCode: "workspace_import_conflict",
+      retryReason: null,
+      runUsageJson: null,
+    },
+    {
+      label: "in_progress + zero-token startup failure run",
+      issueStatus: "in_progress" as const,
+      runStatus: "failed" as const,
+      runErrorCode: "context_overflow",
+      retryReason: null,
+      runUsageJson: { inputTokens: 0, outputTokens: 0 },
+    },
+    {
+      label: "in_progress + automatic-recovery-failed run",
+      issueStatus: "in_progress" as const,
+      runStatus: "failed" as const,
+      runErrorCode: "process_lost",
+      retryReason: "issue_continuation_needed" as const,
+      runUsageJson: null,
+    },
+  ])(
+    "BLO-8050: $label — skips re-escalation when failed run predates the manual unblock",
+    async ({ issueStatus, runStatus, runErrorCode, retryReason, runUsageJson }) => {
+      const { companyId, issueId, runId } = await seedStrandedIssueFixture({
+        status: issueStatus,
+        runStatus,
+        runErrorCode,
+        retryReason: retryReason ?? undefined,
+        runUsageJson: runUsageJson ?? undefined,
+      });
+      // Pin failed run timestamp so the operator unblock can be placed strictly
+      // after it. Without this the fixture's defaultNow() would race the
+      // unblockedAt comparison and the gate wouldn't fire deterministically.
+      const failedRunCreatedAt = new Date("2026-03-19T00:00:00.000Z");
+      await db
+        .update(heartbeatRuns)
+        .set({ createdAt: failedRunCreatedAt })
+        .where(eq(heartbeatRuns.id, runId));
+      const unblockedAt = new Date("2026-03-19T01:00:00.000Z");
+      await db.insert(activityLog).values({
+        id: randomUUID(),
+        companyId,
+        actorType: "user",
+        actorId: "operator",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        details: { previousStatus: "blocked", status: issueStatus },
+        createdAt: unblockedAt,
+      });
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+      // Pre-fix: this branch would call escalateStrandedAssignedIssue (or
+      // escalateZeroTokenStartupFailureIssue) and flip the issue back to
+      // `blocked`, defeating the manual unblock. Post-fix: the gate sees
+      // latestRun.createdAt <= unblockedAt and skips.
+      expect(result.escalated).toBe(0);
+      expect(result.zeroTokenStartupFailureBlocked).toBe(0);
+      const issue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue?.status).toBe(issueStatus);
+    },
+  );
+
   it("does not treat a productive terminal run as healthy when in-progress work has no live path", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
