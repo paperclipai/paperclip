@@ -2370,6 +2370,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      // routine_execution issues have their own concurrency/lifecycle managed by
+      // the routine scheduler (skip_if_active / coalesce / always_enqueue). Stranded
+      // recovery must not interfere — it would duplicate work or fight the routine's
+      // own concurrency policy (GH#6600 / PAP-87).
+      if (issue.originKind === "routine_execution") {
+        result.skipped += 1;
+        continue;
+      }
+
       const agent = await getAgent(agentId);
       if (!agent || agent.companyId !== issue.companyId || !isAgentInvokable(agent)) {
         result.skipped += 1;
