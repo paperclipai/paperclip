@@ -12,13 +12,21 @@ function sendNestedHostRequest(originalRequest, invocationId) {
   const params = originalRequest.params?.params ?? {};
   const mode = params.mode;
   const requestedCompanyId = params.requestedCompanyId;
+  const nestedMethod = params.nestedMethod ?? "companies.get";
+  const nestedParams = nestedMethod === "state.get"
+    ? {
+        scopeKind: "company",
+        scopeId: requestedCompanyId,
+        stateKey: "probe",
+      }
+    : {
+        companyId: requestedCompanyId,
+      };
   const nestedRequest = {
     jsonrpc: "2.0",
     id: nestedId,
-    method: "companies.get",
-    params: {
-      companyId: requestedCompanyId,
-    },
+    method: nestedMethod,
+    params: nestedParams,
   };
 
   if (mode === "echo") {
