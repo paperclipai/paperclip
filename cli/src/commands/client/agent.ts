@@ -204,10 +204,12 @@ export function registerAgentCommands(program: Command): void {
       .command("get")
       .description("Get one agent")
       .argument("<agentId>", "Agent ID")
-      .action(async (agentId: string, opts: BaseClientOptions) => {
+      .option("--redact", "Redact plain-mode secrets from adapterConfig (recommended for inspection workflows)")
+      .action(async (agentId: string, opts: BaseClientOptions & { redact?: boolean }) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const row = await ctx.api.get<Agent>(`/api/agents/${agentId}`);
+          const query = opts.redact ? "?redact=true" : "";
+          const row = await ctx.api.get<Agent>(`/api/agents/${agentId}${query}`);
           printOutput(row, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
