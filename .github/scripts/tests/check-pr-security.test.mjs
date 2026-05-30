@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildAdvisoryPayload,
   findExistingDraftAdvisory,
   scanSecrets,
   scanCITampering,
@@ -8,6 +9,8 @@ import {
   scanSupplyChain,
   scanTestPatterns,
   scanSensitivePaths,
+  syncDraftAdvisory,
+  validateSensitivePaths,
 } from '../check-pr-security.mjs';
 
 // ── scanSecrets ──────────────────────────────────────────────────────────────
@@ -127,6 +130,95 @@ test('findExistingDraftAdvisory: returns null when no matching draft advisory ex
   const fakeFetch = async () => [{ summary: 'Completely different advisory' }];
   const advisory = await findExistingDraftAdvisory(fakeFetch, 'token', 'paperclipai/paperclip', 6469);
   assert.equal(advisory, null);
+});
+
+test('syncDraftAdvisory: patches an existing advisory with the latest flags', async () => {
+  const calls = [];
+  const flags = [
+    { check: 'ci-tampering', file: '.github/workflows/pr.yml' },
+    { check: 'secret-scan', file: 'src/config.ts', pattern: 'OpenAI API key' },
+  ];
+
+  await syncDraftAdvisory(async (path, token, options) => {
+    calls.push({ path, token, options });
+    if (path.includes('/security-advisories?state=draft')) {
+      return [{ ghsa_id: 'GHSA-test-1234', summary: '🚨 Security flag — PR #6469: ci-tampering' }];
+    }
+    return { ok: true };
+  }, 'token', 'paperclipai/paperclip', 6469, 'My PR', flags);
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].path, '/repos/paperclipai/paperclip/security-advisories/GHSA-test-1234');
+  assert.equal(calls[1].options.method, 'PATCH');
+  assert.deepEqual(JSON.parse(calls[1].options.body), buildAdvisoryPayload(6469, 'My PR', flags));
+});
+
+test('syncDraftAdvisory: creates a new advisory when none exists', async () => {
+  const calls = [];
+  const flags = [{ check: 'supply-chain', packages: ['evil-package'] }];
+
+  await syncDraftAdvisory(async (path, token, options) => {
+    calls.push({ path, token, options });
+    if (path.includes('/security-advisories?state=draft')) {
+      return [];
+    }
+    return { ok: true };
+  }, 'token', 'paperclipai/paperclip', 6469, 'My PR', flags);
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].path, '/repos/paperclipai/paperclip/security-advisories');
+  assert.equal(calls[1].options.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[1].options.body), buildAdvisoryPayload(6469, 'My PR', flags));
+});
+
+test('validateSensitivePaths: checks paths against the resolved base ref instead of master', async () => {
+  const seenPaths = [];
+  const stale = await validateSensitivePaths(
+    'token',
+    'paperclipai/paperclip',
+    6469,
+    'release/1.2',
+    async (path) => {
+      seenPaths.push(path);
+      return { ok: true };
+    },
+  );
+
+  assert.deepEqual(stale, []);
+  assert.ok(seenPaths.every(path => path.includes('ref=release%2F1.2')));
+  assert.ok(!seenPaths.some(path => path.includes('ref=master')));
+});
+
+test('validateSensitivePaths: returns only 404 paths and rethrows non-404 errors', async () => {
+  let seen404 = false;
+  const stale = await validateSensitivePaths(
+    'token',
+    'paperclipai/paperclip',
+    6469,
+    'main',
+    async (path) => {
+      if (!seen404) {
+        seen404 = true;
+        throw new Error('GitHub API GET /contents/foo → 404: missing');
+      }
+      return { ok: true };
+    },
+  );
+
+  assert.equal(stale.length, 1);
+
+  await assert.rejects(
+    validateSensitivePaths(
+      'token',
+      'paperclipai/paperclip',
+      6469,
+      'main',
+      async () => {
+        throw new Error('GitHub API GET /contents/foo → 500: boom');
+      },
+    ),
+    /500: boom/
+  );
 });
 
 // ── scanTestPatterns ─────────────────────────────────────────────────────────

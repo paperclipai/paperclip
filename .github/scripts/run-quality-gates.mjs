@@ -46,15 +46,21 @@ function buildComment(author, failures, informational) {
   return lines.join('\n');
 }
 
-async function findExistingComment(token, repo, prNumber) {
-  const comments = await ghFetch(
-    `/repos/${repo}/issues/${prNumber}/comments?per_page=100`,
-    token
-  );
-  return comments.find(
-    c => (c.user.login === 'commitperclip[bot]' || c.user.login === 'commitperclip') &&
-         c.body.includes(COMMENT_SIGNATURE)
-  );
+export async function findExistingComment(fetchFromGitHub, token, repo, prNumber) {
+  for (let page = 1; ; page += 1) {
+    const comments = await fetchFromGitHub(
+      `/repos/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`,
+      token
+    );
+
+    const existing = comments.find(
+      c => (c.user.login === 'commitperclip[bot]' || c.user.login === 'commitperclip') &&
+           c.body.includes(COMMENT_SIGNATURE)
+    );
+    if (existing) return existing;
+
+    if (comments.length < 100) return null;
+  }
 }
 
 async function upsertComment(token, repo, prNumber, body, existing) {
@@ -125,7 +131,7 @@ async function main() {
   const commentBody = buildComment(author, allFailures, informational);
 
   // Post comment if there are failures/informational, or update existing comment
-  const existing = await findExistingComment(GH_TOKEN, GH_REPO, prNumber);
+  const existing = await findExistingComment(ghFetch, GH_TOKEN, GH_REPO, prNumber);
   if (allFailures.length > 0 || informational.length > 0 || existing) {
     await upsertComment(GH_TOKEN, GH_REPO, prNumber, commentBody, existing);
   }

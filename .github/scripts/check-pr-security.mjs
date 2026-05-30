@@ -10,6 +10,7 @@
 import { fileURLToPath } from 'node:url';
 import { ghFetch } from './get-bot-token.mjs';
 import { fetchAllPullRequestFiles } from './fetch-pr-files.mjs';
+import { resolveBaseRef } from './check-pr-dependencies.mjs';
 
 // ── Pure check functions (exported for testing) ───────────────────────────────
 
@@ -150,11 +151,16 @@ export function scanSensitivePaths(files) {
     }));
 }
 
-async function validateSensitivePaths(token, repo) {
+function buildContentsPath(repo, filename, ref) {
+  return `/repos/${repo}/contents/${filename}?${new URLSearchParams({ ref }).toString()}`;
+}
+
+export async function validateSensitivePaths(token, repo, prNumber, baseRef, fetchFromGitHub = ghFetch) {
+  const resolvedBaseRef = await resolveBaseRef(fetchFromGitHub, token, repo, prNumber, baseRef);
   const stale = [];
   await Promise.all(SENSITIVE_PATHS.map(async (path) => {
     try {
-      await ghFetch(`/repos/${repo}/contents/${path}?ref=master`, token);
+      await fetchFromGitHub(buildContentsPath(repo, path, resolvedBaseRef), token);
     } catch (err) {
       // 404 means the file/directory no longer exists at this path
       if (String(err.message).includes('404')) stale.push(path);
@@ -185,14 +191,11 @@ function worstSeverity(flags) {
   }, 'low');
 }
 
-async function createAdvisory(token, repo, prNumber, prTitle, flags) {
-  const existing = await findExistingDraftAdvisory(ghFetch, token, repo, prNumber);
-  if (existing) return existing;
-
+export function buildAdvisoryPayload(prNumber, prTitle, flags) {
   const checkNames = [...new Set(flags.map(f => f.check))].join(', ');
-  const severity = worstSeverity(flags);
-
-  const description = [
+  return {
+    summary: `🚨 Security flag — PR #${prNumber}: ${checkNames}`,
+    description: [
     `**PR:** #${prNumber} — ${prTitle}`,
     `**Checks triggered:** ${checkNames}`,
     '',
@@ -205,17 +208,33 @@ async function createAdvisory(token, repo, prNumber, prTitle, flags) {
     ].join('')),
     '',
     '> This advisory was created automatically by commitperclip. Review and dismiss if not a real concern.',
-  ].join('\n');
+    ].join('\n'),
+    severity: worstSeverity(flags),
+    vulnerabilities: [],
+  };
+}
 
-  await ghFetch(`/repos/${repo}/security-advisories`, token, {
+export async function syncDraftAdvisory(fetchImpl, token, repo, prNumber, prTitle, flags) {
+  const existing = await findExistingDraftAdvisory(fetchImpl, token, repo, prNumber);
+  const payload = buildAdvisoryPayload(prNumber, prTitle, flags);
+
+  if (existing) {
+    const advisoryId = existing.ghsa_id ?? existing.id;
+    if (!advisoryId) {
+      throw new Error(`Existing advisory for PR #${prNumber} is missing both ghsa_id and id.`);
+    }
+
+    return fetchImpl(`/repos/${repo}/security-advisories/${advisoryId}`, token, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  return fetchImpl(`/repos/${repo}/security-advisories`, token, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      summary: `🚨 Security flag — PR #${prNumber}: ${checkNames}`,
-      description,
-      severity,
-      vulnerabilities: [],
-    }),
+    body: JSON.stringify(payload),
   });
 }
 
@@ -285,13 +304,13 @@ async function main() {
     process.exit(1);
   }
 
-  // Validate SENSITIVE_PATHS — fails loudly if any have been refactored away on master
-  const stalePaths = await validateSensitivePaths(GH_TOKEN, GH_REPO);
+  // Validate SENSITIVE_PATHS — fails loudly if any have been refactored away on the PR base branch
+  const stalePaths = await validateSensitivePaths(GH_TOKEN, GH_REPO, prNumber);
   if (stalePaths.length > 0) {
     console.error('ERROR: Stale sensitive paths in check-pr-security.mjs:');
     for (const p of stalePaths) console.error(`  - ${p}`);
     console.error('');
-    console.error('These paths no longer exist on master. The security gate will silently produce no signal for them.');
+    console.error('These paths no longer exist on the PR base branch. The security gate will silently produce no signal for them.');
     console.error('Update SENSITIVE_PATHS in check-pr-security.mjs to reflect the current code structure.');
     process.exit(1);
   }
@@ -313,7 +332,7 @@ async function main() {
   if (allFlags.length > 0) {
     console.error(`[security] ${allFlags.length} flag(s) detected — creating draft advisory and pending check run`);
     await Promise.all([
-      createAdvisory(GH_TOKEN, GH_REPO, prNumber, pr.title, allFlags),
+      syncDraftAdvisory(ghFetch, GH_TOKEN, GH_REPO, prNumber, pr.title, allFlags),
       postSecurityCheckRun(GH_TOKEN, GH_REPO, pr.head.sha, true),
     ]);
   } else {
