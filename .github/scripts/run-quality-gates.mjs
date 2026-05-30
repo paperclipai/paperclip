@@ -9,6 +9,7 @@
  */
 import { fileURLToPath } from 'node:url';
 import { ghFetch } from './get-bot-token.mjs';
+import { fetchAllPullRequestFiles } from './fetch-pr-files.mjs';
 import { checkTemplate } from './check-pr-template.mjs';
 import { checkLinkedIssue } from './check-pr-linked-issue.mjs';
 import { checkTestCoverage } from './check-pr-test-coverage.mjs';
@@ -94,7 +95,7 @@ async function main() {
   // Fetch PR data once — gates use this, no redundant API calls
   const [pr, files] = await Promise.all([
     ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}`, GH_TOKEN),
-    ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}/files?per_page=100`, GH_TOKEN),
+    fetchAllPullRequestFiles(ghFetch, GH_REPO, prNumber, GH_TOKEN),
   ]);
 
   const prBody = pr.body ?? '';
