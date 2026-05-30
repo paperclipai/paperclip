@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
+  isClaudeThinkingBlockMutationError,
   isClaudeTransientUpstreamError,
 } from "./parse.js";
 
@@ -91,6 +92,43 @@ describe("isClaudeTransientUpstreamError", () => {
     expect(
       isClaudeTransientUpstreamError({
         errorMessage: "Invalid request_error: Unknown parameter 'foo'.",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isClaudeThinkingBlockMutationError", () => {
+  it("classifies the 4.8 thinking-block 400 as a mutation error", () => {
+    expect(
+      isClaudeThinkingBlockMutationError({
+        errorMessage:
+          "thinking or redacted_thinking blocks in the latest assistant message cannot be modified. These blocks must remain as they were in the original response.",
+      }),
+    ).toBe(true);
+  });
+
+  it("matches via the result field in parsed JSON", () => {
+    expect(
+      isClaudeThinkingBlockMutationError({
+        parsed: {
+          is_error: true,
+          result:
+            "Claude run failed: thinking or redacted_thinking blocks in the latest assistant message cannot be modified.",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not match rate-limit or auth errors", () => {
+    expect(isClaudeThinkingBlockMutationError({ errorMessage: "Rate limit reached." })).toBe(false);
+    expect(isClaudeThinkingBlockMutationError({ errorMessage: "Please log in." })).toBe(false);
+  });
+
+  it("is NOT classified as a transient upstream error", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        errorMessage:
+          "thinking or redacted_thinking blocks in the latest assistant message cannot be modified.",
       }),
     ).toBe(false);
   });

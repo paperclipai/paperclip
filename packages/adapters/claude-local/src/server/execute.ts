@@ -54,6 +54,7 @@ import {
   isClaudeMaxTurnsResult,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
+  isClaudeThinkingBlockMutationError,
 } from "./parse.js";
 import { prepareClaudeConfigSeed } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
@@ -683,6 +684,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const buildClaudeArgs = (
     resumeSessionId: string | null,
     attemptInstructionsFilePath: string | undefined,
+    opts?: { overrideEffort?: string },
   ) => {
     const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
@@ -697,7 +699,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (model && (!isBedrockAuth(effectiveEnv) || isBedrockModelId(model))) {
       args.push("--model", model);
     }
-    if (effort) args.push("--effort", effort);
+    const effectiveEffort = opts?.overrideEffort ?? effort;
+    if (effectiveEffort) args.push("--effort", effectiveEffort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
     // On resumed sessions the instructions are already in the session cache;
     // re-injecting them via --append-system-prompt-file wastes 5-10K tokens
@@ -728,9 +731,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : `Claude exited with code ${proc.exitCode ?? -1}`;
   };
 
-  const runAttempt = async (resumeSessionId: string | null) => {
+  const runAttempt = async (resumeSessionId: string | null, opts?: { overrideEffort?: string }) => {
     const attemptInstructionsFilePath = resumeSessionId ? undefined : effectiveInstructionsFilePath;
-    const args = buildClaudeArgs(resumeSessionId, attemptInstructionsFilePath);
+    const args = buildClaudeArgs(resumeSessionId, attemptInstructionsFilePath, opts);
     const commandNotes: string[] = [];
     if (!resumeSessionId) {
       commandNotes.push(`Using stable Claude prompt bundle ${promptBundle.bundleKey}.`);
@@ -894,10 +897,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
+    const isThinkingBlockMutation =
+      failed &&
+      !loginMeta.requiresLogin &&
+      !clearSessionForMaxTurns &&
+      isClaudeThinkingBlockMutationError({
+        parsed,
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        errorMessage,
+      });
     const transientUpstream =
       failed &&
       !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
+      !isThinkingBlockMutation &&
       isClaudeTransientUpstreamError({
         parsed,
         stdout: proc.stdout,
@@ -916,6 +930,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? "claude_auth_required"
       : failed && clearSessionForMaxTurns
       ? "max_turns_exhausted"
+      : isThinkingBlockMutation
+      ? "claude_thinking_block_mutation"
       : transientUpstream
       ? "claude_transient_upstream"
       : null;
@@ -965,6 +981,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
       );
       const retry = await runAttempt(null);
+      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+    }
+
+    const initialFailed =
+      !initial.proc.timedOut &&
+      ((initial.proc.exitCode ?? 0) !== 0 || asBoolean(initial.parsed?.is_error, false));
+    if (
+      initialFailed &&
+      isClaudeThinkingBlockMutationError({
+        parsed: initial.parsed,
+        stdout: initial.proc.stdout,
+        stderr: initial.proc.stderr,
+        errorMessage: initial.parsed
+          ? describeClaudeFailure(initial.parsed) ?? parseFallbackErrorMessage(initial.proc)
+          : parseFallbackErrorMessage(initial.proc),
+      })
+    ) {
+      await onLog(
+        "stdout",
+        "[paperclip] Thinking-block mutation detected on claude-opus-4-8; retrying with --effort none to suppress extended thinking.\n",
+      );
+      const retry = await runAttempt(null, { overrideEffort: "none" });
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
 
