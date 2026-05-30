@@ -2,6 +2,7 @@ import type {
   Approval,
   DocumentRevision,
   Issue,
+  IssueSummary,
   IssueAttachment,
   IssueComment,
   IssueDocument,
@@ -12,6 +13,42 @@ import type {
 import { api } from "./client";
 
 export const issuesApi = {
+  listSummary: (
+    companyId: string,
+    filters?: {
+      status?: string;
+      projectId?: string;
+      assigneeAgentId?: string;
+      participantAgentId?: string;
+      assigneeUserId?: string;
+      touchedByUserId?: string;
+      inboxArchivedByUserId?: string;
+      unreadForUserId?: string;
+      labelId?: string;
+      originKind?: string;
+      originId?: string;
+      includeRoutineExecutions?: boolean;
+      q?: string;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    params.set("view", "summary");
+    if (filters?.status) params.set("status", filters.status);
+    if (filters?.projectId) params.set("projectId", filters.projectId);
+    if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
+    if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
+    if (filters?.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
+    if (filters?.touchedByUserId) params.set("touchedByUserId", filters.touchedByUserId);
+    if (filters?.inboxArchivedByUserId) params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
+    if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
+    if (filters?.labelId) params.set("labelId", filters.labelId);
+    if (filters?.originKind) params.set("originKind", filters.originKind);
+    if (filters?.originId) params.set("originId", filters.originId);
+    if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
+    if (filters?.q) params.set("q", filters.q);
+    const qs = params.toString();
+    return api.get<IssueSummary[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
+  },
   list: (
     companyId: string,
     filters?: {

@@ -30,12 +30,16 @@ function isWorktreeMode(env: NodeJS.ProcessEnv): boolean {
 export function resolveManagedCodexHomeDir(
   env: NodeJS.ProcessEnv,
   companyId?: string,
+  profile: "default" | "automation_compact" = "default",
 ): string {
   const paperclipHome = nonEmpty(env.PAPERCLIP_HOME) ?? path.resolve(os.homedir(), ".paperclip");
   const instanceId = nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? DEFAULT_PAPERCLIP_INSTANCE_ID;
-  return companyId
+  const root = companyId
     ? path.resolve(paperclipHome, "instances", instanceId, "companies", companyId, "codex-home")
     : path.resolve(paperclipHome, "instances", instanceId, "codex-home");
+  return profile === "automation_compact"
+    ? path.resolve(root, "profiles", "automation-compact")
+    : root;
 }
 
 async function ensureParentDir(target: string): Promise<void> {
@@ -75,8 +79,9 @@ export async function prepareManagedCodexHome(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
   companyId?: string,
+  profile: "default" | "automation_compact" = "default",
 ): Promise<string> {
-  const targetHome = resolveManagedCodexHomeDir(env, companyId);
+  const targetHome = resolveManagedCodexHomeDir(env, companyId, profile);
 
   const sourceHome = resolveSharedCodexHomeDir(env);
   if (path.resolve(sourceHome) === path.resolve(targetHome)) return targetHome;
@@ -97,7 +102,7 @@ export async function prepareManagedCodexHome(
 
   await onLog(
     "stdout",
-    `[paperclip] Using ${isWorktreeMode(env) ? "worktree-isolated" : "Paperclip-managed"} Codex home "${targetHome}" (seeded from "${sourceHome}").\n`,
+    `[paperclip] Using ${isWorktreeMode(env) ? "worktree-isolated" : "Paperclip-managed"} Codex home "${targetHome}"${profile === "automation_compact" ? " for automation-compact runs" : ""} (seeded from "${sourceHome}").\n`,
   );
   return targetHome;
 }

@@ -34,6 +34,10 @@ import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { secretService } from "./secrets.js";
 
+const REQUIRED_RUNTIME_SKILL_KEYS = new Set<string>([
+  "paperclipai/paperclip/paperclip",
+]);
+
 type CompanySkillRow = typeof companySkills.$inferSelect;
 
 type ImportedSkill = {
@@ -2054,14 +2058,14 @@ export function companySkillService(db: Db) {
       }
       if (!source) continue;
 
-      const required = sourceKind === "paperclip_bundled";
+      const required = sourceKind === "paperclip_bundled" && REQUIRED_RUNTIME_SKILL_KEYS.has(skill.key);
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
         source,
         required,
         requiredReason: required
-          ? "Bundled Paperclip skills are always available for local adapters."
+          ? "Core Paperclip coordination skills are always available for local adapters."
           : null,
       });
     }

@@ -442,10 +442,11 @@ export function IssueDetail() {
 
     return {
       input,
+      uncachedInput: Math.max(0, input - cached),
       output,
       cached,
       cost,
-      totalTokens: input + output,
+      rawTotalTokens: input + output,
       hasCost,
       hasTokens,
     };
@@ -1102,10 +1103,10 @@ export function IssueDetail() {
                   )}
                   {issueCostSummary.hasTokens && (
                     <span>
-                      Tokens {formatTokens(issueCostSummary.totalTokens)}
+                      Tokens {formatTokens(issueCostSummary.uncachedInput + issueCostSummary.output)}
                       {issueCostSummary.cached > 0
-                        ? ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)}, cached ${formatTokens(issueCostSummary.cached)})`
-                        : ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)})`}
+                        ? ` (uncached in ${formatTokens(issueCostSummary.uncachedInput)}, cached ${formatTokens(issueCostSummary.cached)}, out ${formatTokens(issueCostSummary.output)}, raw ${formatTokens(issueCostSummary.rawTotalTokens)})`
+                        : ` (uncached in ${formatTokens(issueCostSummary.uncachedInput)}, out ${formatTokens(issueCostSummary.output)}, raw ${formatTokens(issueCostSummary.rawTotalTokens)})`}
                     </span>
                   )}
                 </div>

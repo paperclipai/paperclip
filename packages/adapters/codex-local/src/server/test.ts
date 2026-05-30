@@ -14,7 +14,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import path from "node:path";
-import { parseCodexJsonl } from "./parse.js";
+import { isCodexToolRuntimeFailure, parseCodexJsonl } from "./parse.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -51,6 +51,11 @@ function summarizeProbeDetail(stdout: string, stderr: string, parsedError: strin
 
 const CODEX_AUTH_REQUIRED_RE =
   /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|openai[_\s-]?api[_\s-]?key|api[_\s-]?key.*required|please\s+run\s+`?codex\s+login`?)/i;
+const TOOL_PROBE_PROMPT = [
+  "Use the exec_command tool to run `pwd` in the current working directory.",
+  "If the tool works, reply with exactly `tool ok`.",
+  "If the tool is unavailable or infrastructure is broken, reply with exactly `tool probe failed`.",
+].join(" ");
 
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
@@ -155,31 +160,45 @@ export async function testEnvironment(
         if (fromExtraArgs.length > 0) return fromExtraArgs;
         return asStringArray(config.args);
       })();
+      const compactAutomationProfile =
+        typeof config.automationCompactEnabled === "boolean"
+          ? config.automationCompactEnabled
+          : true;
+      const effectiveSearch = compactAutomationProfile ? asBoolean(config.search, false) : search;
+      const effectiveReasoningEffort =
+        compactAutomationProfile && modelReasoningEffort.length === 0
+          ? "low"
+          : modelReasoningEffort;
 
       const args = ["exec", "--json"];
-      if (search) args.unshift("--search");
+      if (effectiveSearch) args.unshift("--search");
       if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
       if (model) args.push("--model", model);
-      if (modelReasoningEffort) {
-        args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
+      if (effectiveReasoningEffort) {
+        args.push("-c", `model_reasoning_effort=${JSON.stringify(effectiveReasoningEffort)}`);
       }
       if (extraArgs.length > 0) args.push(...extraArgs);
       args.push("-");
 
-      const probe = await runChildProcess(
-        `codex-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        command,
-        args,
-        {
-          cwd,
-          env,
-          timeoutSec: 45,
-          graceSec: 5,
-          stdin: "Respond with hello.",
-          onLog: async () => {},
-        },
-      );
-      const parsed = parseCodexJsonl(probe.stdout);
+      const runProbe = async (stdin: string) => {
+        const probe = await runChildProcess(
+          `codex-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          command,
+          args,
+          {
+            cwd,
+            env,
+            timeoutSec: 45,
+            graceSec: 5,
+            stdin,
+            onLog: async () => {},
+          },
+        );
+        const parsed = parseCodexJsonl(probe.stdout);
+        return { probe, parsed };
+      };
+
+      const { probe, parsed } = await runProbe("Respond with hello.");
       const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
       const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stdout}\n${probe.stderr}`.trim();
 
@@ -193,19 +212,67 @@ export async function testEnvironment(
       } else if ((probe.exitCode ?? 1) === 0) {
         const summary = parsed.summary.trim();
         const hasHello = /\bhello\b/i.test(summary);
-        checks.push({
-          code: hasHello ? "codex_hello_probe_passed" : "codex_hello_probe_unexpected_output",
-          level: hasHello ? "info" : "warn",
-          message: hasHello
-            ? "Codex hello probe succeeded."
-            : "Codex probe ran but did not return `hello` as expected.",
-          ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
-          ...(hasHello
-            ? {}
-            : {
-                hint: "Try the probe manually (`codex exec --json -` then prompt: Respond with hello) to inspect full output.",
-              }),
-        });
+        if (!hasHello) {
+          checks.push({
+            code: "codex_hello_probe_unexpected_output",
+            level: "warn",
+            message: "Codex probe ran but did not return `hello` as expected.",
+            ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
+            hint: "Try the probe manually (`codex exec --json -` then prompt: Respond with hello) to inspect full output.",
+          });
+        } else {
+          checks.push({
+            code: "codex_hello_probe_passed",
+            level: "info",
+            message: "Codex hello probe succeeded.",
+            ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
+          });
+
+          const toolProbe = await runProbe(TOOL_PROBE_PROMPT);
+          const toolDetail = summarizeProbeDetail(
+            toolProbe.probe.stdout,
+            toolProbe.probe.stderr,
+            toolProbe.parsed.errorMessage,
+          );
+          const toolSummary = toolProbe.parsed.summary.trim();
+          const toolRuntimeFailure = isCodexToolRuntimeFailure(
+            toolProbe.probe.stdout,
+            toolProbe.probe.stderr,
+            toolProbe.parsed.errorMessage,
+          );
+
+          if (toolRuntimeFailure) {
+            checks.push({
+              code: "codex_tool_probe_runtime_unavailable",
+              level: "error",
+              message: "Codex can start, but its exec tooling is unavailable.",
+              ...(toolDetail ? { detail: toolDetail } : {}),
+              hint: "Fix the local unified-exec/tool runtime before relying on automated runs.",
+            });
+          } else if (toolProbe.probe.timedOut) {
+            checks.push({
+              code: "codex_tool_probe_timed_out",
+              level: "warn",
+              message: "Codex tool probe timed out.",
+              hint: "Retry the probe. If this persists, inspect the local tool runtime.",
+            });
+          } else if ((toolProbe.probe.exitCode ?? 1) === 0 && /\btool ok\b/i.test(toolSummary)) {
+            checks.push({
+              code: "codex_tool_probe_passed",
+              level: "info",
+              message: "Codex tool probe succeeded.",
+              ...(toolSummary ? { detail: toolSummary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
+            });
+          } else {
+            checks.push({
+              code: "codex_tool_probe_failed",
+              level: "warn",
+              message: "Codex started, but the tool probe did not confirm working exec tools.",
+              ...(toolDetail ? { detail: toolDetail } : {}),
+              hint: "Run a Codex prompt that explicitly uses exec_command before trusting automation runs.",
+            });
+          }
+        }
       } else if (CODEX_AUTH_REQUIRED_RE.test(authEvidence)) {
         checks.push({
           code: "codex_hello_probe_auth_required",

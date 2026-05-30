@@ -118,6 +118,26 @@ type IssueUserCommentStats = {
   myLastCommentAt: Date | null;
   lastExternalCommentAt: Date | null;
 };
+type IssueSummaryRow = Pick<
+  IssueRow,
+  | "id"
+  | "companyId"
+  | "projectId"
+  | "goalId"
+  | "parentId"
+  | "title"
+  | "status"
+  | "priority"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "issueNumber"
+  | "identifier"
+  | "originKind"
+  | "originId"
+  | "requestDepth"
+  | "createdAt"
+  | "updatedAt"
+>;
 type IssueUserContextInput = {
   createdByUserId: string | null;
   assigneeUserId: string | null;
@@ -456,6 +476,19 @@ function withActiveRuns(
   }));
 }
 
+type IssueListQueryContext = {
+  conditions: any[];
+  hasSearch: boolean;
+  priorityOrder: ReturnType<typeof sql>;
+  searchOrder: ReturnType<typeof sql<number>>;
+  contextUserId: string | undefined;
+};
+type IssueUserContext = {
+  myLastTouchAt: Date | null;
+  lastExternalCommentAt: Date | null;
+  isUnreadForMe: boolean;
+};
+
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
 
@@ -654,93 +687,178 @@ export function issueService(db: Db) {
     return conflict("Issue checkout conflict", details);
   }
 
-  return {
-    list: async (companyId: string, filters?: IssueFilters) => {
-      const conditions = [eq(issues.companyId, companyId)];
-      const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
-      const inboxArchivedByUserId = filters?.inboxArchivedByUserId?.trim() || undefined;
-      const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
-      const contextUserId = unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
-      const rawSearch = filters?.q?.trim() ?? "";
-      const hasSearch = rawSearch.length > 0;
-      const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
-      const startsWithPattern = `${escapedSearch}%`;
-      const containsPattern = `%${escapedSearch}%`;
-      const titleStartsWithMatch = sql<boolean>`${issues.title} ILIKE ${startsWithPattern} ESCAPE '\\'`;
-      const titleContainsMatch = sql<boolean>`${issues.title} ILIKE ${containsPattern} ESCAPE '\\'`;
-      const identifierStartsWithMatch = sql<boolean>`${issues.identifier} ILIKE ${startsWithPattern} ESCAPE '\\'`;
-      const identifierContainsMatch = sql<boolean>`${issues.identifier} ILIKE ${containsPattern} ESCAPE '\\'`;
-      const descriptionContainsMatch = sql<boolean>`${issues.description} ILIKE ${containsPattern} ESCAPE '\\'`;
-      const commentContainsMatch = sql<boolean>`
-        EXISTS (
-          SELECT 1
-          FROM ${issueComments}
-          WHERE ${issueComments.issueId} = ${issues.id}
-            AND ${issueComments.companyId} = ${companyId}
-            AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
-        )
-      `;
-      if (filters?.status) {
-        const statuses = filters.status.split(",").map((s) => s.trim());
-        conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
+  async function buildIssueListQueryContext(companyId: string, filters?: IssueFilters): Promise<IssueListQueryContext> {
+    const conditions = [eq(issues.companyId, companyId)];
+    const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
+    const inboxArchivedByUserId = filters?.inboxArchivedByUserId?.trim() || undefined;
+    const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
+    const contextUserId = unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
+    const rawSearch = filters?.q?.trim() ?? "";
+    const hasSearch = rawSearch.length > 0;
+    const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
+    const startsWithPattern = `${escapedSearch}%`;
+    const containsPattern = `%${escapedSearch}%`;
+    const titleStartsWithMatch = sql<boolean>`${issues.title} ILIKE ${startsWithPattern} ESCAPE '\\'`;
+    const titleContainsMatch = sql<boolean>`${issues.title} ILIKE ${containsPattern} ESCAPE '\\'`;
+    const identifierStartsWithMatch = sql<boolean>`${issues.identifier} ILIKE ${startsWithPattern} ESCAPE '\\'`;
+    const identifierContainsMatch = sql<boolean>`${issues.identifier} ILIKE ${containsPattern} ESCAPE '\\'`;
+    const descriptionContainsMatch = sql<boolean>`${issues.description} ILIKE ${containsPattern} ESCAPE '\\'`;
+    const commentContainsMatch = sql<boolean>`
+      EXISTS (
+        SELECT 1
+        FROM ${issueComments}
+        WHERE ${issueComments.issueId} = ${issues.id}
+          AND ${issueComments.companyId} = ${companyId}
+          AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
+      )
+    `;
+
+    if (filters?.status) {
+      const statuses = filters.status.split(",").map((s) => s.trim()).filter(Boolean);
+      if (statuses.length === 1) {
+        conditions.push(eq(issues.status, statuses[0]));
+      } else if (statuses.length > 1) {
+        conditions.push(inArray(issues.status, statuses));
       }
-      if (filters?.assigneeAgentId) {
-        conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
-      }
-      if (filters?.participantAgentId) {
-        conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
-      }
-      if (filters?.assigneeUserId) {
-        conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
-      }
-      if (touchedByUserId) {
-        conditions.push(touchedByUserCondition(companyId, touchedByUserId));
-      }
-      if (inboxArchivedByUserId) {
-        conditions.push(inboxVisibleForUserCondition(companyId, inboxArchivedByUserId));
-      }
-      if (unreadForUserId) {
-        conditions.push(unreadForUserCondition(companyId, unreadForUserId));
-      }
-      if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
-      if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
-      if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
-      if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
-      if (filters?.labelId) {
-        const labeledIssueIds = await db
-          .select({ issueId: issueLabels.issueId })
-          .from(issueLabels)
-          .where(and(eq(issueLabels.companyId, companyId), eq(issueLabels.labelId, filters.labelId)));
-        if (labeledIssueIds.length === 0) return [];
+    }
+    if (filters?.assigneeAgentId) {
+      conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
+    }
+    if (filters?.participantAgentId) {
+      conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
+    }
+    if (filters?.assigneeUserId) {
+      conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
+    }
+    if (touchedByUserId) {
+      conditions.push(touchedByUserCondition(companyId, touchedByUserId));
+    }
+    if (inboxArchivedByUserId) {
+      conditions.push(inboxVisibleForUserCondition(companyId, inboxArchivedByUserId));
+    }
+    if (unreadForUserId) {
+      conditions.push(unreadForUserCondition(companyId, unreadForUserId));
+    }
+    if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
+    if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
+    if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
+    if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+    if (filters?.labelId) {
+      const labeledIssueIds = await db
+        .select({ issueId: issueLabels.issueId })
+        .from(issueLabels)
+        .where(and(eq(issueLabels.companyId, companyId), eq(issueLabels.labelId, filters.labelId)));
+      if (labeledIssueIds.length === 0) {
+        conditions.push(sql`1 = 0`);
+      } else {
         conditions.push(inArray(issues.id, labeledIssueIds.map((row) => row.issueId)));
       }
-      if (hasSearch) {
-        conditions.push(
-          or(
-            titleContainsMatch,
-            identifierContainsMatch,
-            descriptionContainsMatch,
-            commentContainsMatch,
-          )!,
-        );
-      }
-      if (!filters?.includeRoutineExecutions && !filters?.originKind && !filters?.originId && !filters?.assigneeAgentId) {
-        conditions.push(ne(issues.originKind, "routine_execution"));
-      }
-      conditions.push(isNull(issues.hiddenAt));
+    }
+    if (hasSearch) {
+      conditions.push(
+        or(
+          titleContainsMatch,
+          identifierContainsMatch,
+          descriptionContainsMatch,
+          commentContainsMatch,
+        )!,
+      );
+    }
+    if (!filters?.includeRoutineExecutions && !filters?.originKind && !filters?.originId && !filters?.assigneeAgentId) {
+      conditions.push(ne(issues.originKind, "routine_execution"));
+    }
+    conditions.push(isNull(issues.hiddenAt));
 
-      const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
-      const searchOrder = sql<number>`
-        CASE
-          WHEN ${titleStartsWithMatch} THEN 0
-          WHEN ${titleContainsMatch} THEN 1
-          WHEN ${identifierStartsWithMatch} THEN 2
-          WHEN ${identifierContainsMatch} THEN 3
-          WHEN ${descriptionContainsMatch} THEN 4
-          WHEN ${commentContainsMatch} THEN 5
-          ELSE 6
-        END
-      `;
+    const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
+    const searchOrder = sql<number>`
+      CASE
+        WHEN ${titleStartsWithMatch} THEN 0
+        WHEN ${titleContainsMatch} THEN 1
+        WHEN ${identifierStartsWithMatch} THEN 2
+        WHEN ${identifierContainsMatch} THEN 3
+        WHEN ${descriptionContainsMatch} THEN 4
+        WHEN ${commentContainsMatch} THEN 5
+        ELSE 6
+      END
+    `;
+
+    return {
+      conditions,
+      hasSearch,
+      priorityOrder,
+      searchOrder,
+      contextUserId,
+    };
+  }
+
+  async function withIssueUserContext<T extends { id: string } & IssueUserContextInput>(
+    companyId: string,
+    rows: T[],
+    contextUserId: string | undefined,
+  ): Promise<Array<T & IssueUserContext>> {
+    if (!contextUserId || rows.length === 0) {
+      return rows.map((row) => ({
+        ...row,
+        myLastTouchAt: null,
+        lastExternalCommentAt: null,
+        isUnreadForMe: false,
+      }));
+    }
+
+    const issueIds = rows.map((row) => row.id);
+    const statsRows = await db
+      .select({
+        issueId: issueComments.issueId,
+        myLastCommentAt: sql<Date | null>`
+          MAX(CASE WHEN ${issueComments.authorUserId} = ${contextUserId} THEN ${issueComments.createdAt} END)
+        `,
+        lastExternalCommentAt: sql<Date | null>`
+          MAX(
+            CASE
+              WHEN ${issueComments.authorUserId} IS NULL OR ${issueComments.authorUserId} <> ${contextUserId}
+              THEN ${issueComments.createdAt}
+            END
+          )
+        `,
+      })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          inArray(issueComments.issueId, issueIds),
+        ),
+      )
+      .groupBy(issueComments.issueId);
+    const readRows = await db
+      .select({
+        issueId: issueReadStates.issueId,
+        myLastReadAt: issueReadStates.lastReadAt,
+      })
+      .from(issueReadStates)
+      .where(
+        and(
+          eq(issueReadStates.companyId, companyId),
+          eq(issueReadStates.userId, contextUserId),
+          inArray(issueReadStates.issueId, issueIds),
+        ),
+      );
+    const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
+    const readByIssueId = new Map(readRows.map((row) => [row.issueId, row.myLastReadAt]));
+
+    return rows.map((row) => ({
+      ...row,
+      ...deriveIssueUserContext(row, contextUserId, {
+        myLastCommentAt: statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
+        myLastReadAt: readByIssueId.get(row.id) ?? null,
+        lastExternalCommentAt: statsByIssueId.get(row.id)?.lastExternalCommentAt ?? null,
+      }),
+    }));
+  }
+
+  return {
+    list: async (companyId: string, filters?: IssueFilters) => {
+      const { conditions, hasSearch, priorityOrder, searchOrder, contextUserId } =
+        await buildIssueListQueryContext(companyId, filters);
       const rows = await db
         .select()
         .from(issues)
@@ -749,58 +867,41 @@ export function issueService(db: Db) {
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);
-      if (!contextUserId || withRuns.length === 0) {
-        return withRuns;
-      }
+      return withIssueUserContext(companyId, withRuns, contextUserId);
+    },
 
-      const issueIds = withRuns.map((row) => row.id);
-      const statsRows = await db
+    listSummary: async (companyId: string, filters?: IssueFilters) => {
+      const { conditions, hasSearch, priorityOrder, searchOrder, contextUserId } =
+        await buildIssueListQueryContext(companyId, filters);
+      const rows = await db
         .select({
-          issueId: issueComments.issueId,
-          myLastCommentAt: sql<Date | null>`
-            MAX(CASE WHEN ${issueComments.authorUserId} = ${contextUserId} THEN ${issueComments.createdAt} END)
-          `,
-          lastExternalCommentAt: sql<Date | null>`
-            MAX(
-              CASE
-                WHEN ${issueComments.authorUserId} IS NULL OR ${issueComments.authorUserId} <> ${contextUserId}
-                THEN ${issueComments.createdAt}
-              END
-            )
-          `,
+          id: issues.id,
+          companyId: issues.companyId,
+          projectId: issues.projectId,
+          goalId: issues.goalId,
+          parentId: issues.parentId,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          issueNumber: issues.issueNumber,
+          identifier: issues.identifier,
+          originKind: issues.originKind,
+          originId: issues.originId,
+          requestDepth: issues.requestDepth,
+          createdByUserId: issues.createdByUserId,
+          createdAt: issues.createdAt,
+          updatedAt: issues.updatedAt,
         })
-        .from(issueComments)
-        .where(
-          and(
-            eq(issueComments.companyId, companyId),
-            inArray(issueComments.issueId, issueIds),
-          ),
-        )
-        .groupBy(issueComments.issueId);
-      const readRows = await db
-        .select({
-          issueId: issueReadStates.issueId,
-          myLastReadAt: issueReadStates.lastReadAt,
-        })
-        .from(issueReadStates)
-        .where(
-          and(
-            eq(issueReadStates.companyId, companyId),
-            eq(issueReadStates.userId, contextUserId),
-            inArray(issueReadStates.issueId, issueIds),
-          ),
-        );
-      const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
-      const readByIssueId = new Map(readRows.map((row) => [row.issueId, row.myLastReadAt]));
+        .from(issues)
+        .where(and(...conditions))
+        .orderBy(hasSearch ? asc(searchOrder) : asc(priorityOrder), asc(priorityOrder), desc(issues.updatedAt));
 
-      return withRuns.map((row) => ({
-        ...row,
-        ...deriveIssueUserContext(row, contextUserId, {
-          myLastCommentAt: statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
-          myLastReadAt: readByIssueId.get(row.id) ?? null,
-          lastExternalCommentAt: statsByIssueId.get(row.id)?.lastExternalCommentAt ?? null,
-        }),
-      }));
+      const summaries: Array<IssueSummaryRow & { createdByUserId: string | null }> = rows;
+      const withContext = await withIssueUserContext(companyId, summaries, contextUserId);
+
+      return withContext.map(({ createdByUserId, ...row }) => row);
     },
 
     countUnreadTouchedByUser: async (companyId: string, userId: string, status?: string) => {

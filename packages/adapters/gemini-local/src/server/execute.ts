@@ -22,6 +22,7 @@ import {
   redactEnvForLogs,
   redactSensitiveOutputText,
   redactSensitiveOutputValue,
+  renderAutomationCompactPromptGuard,
   renderTemplate,
   renderTaskBindingGuard,
   runChildProcess,
@@ -303,11 +304,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const taskBindingGuard = renderTaskBindingGuard(context);
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const apiAccessNote = renderApiAccessNote(env);
+  const automationCompactGuard = renderAutomationCompactPromptGuard(context);
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
     sessionHandoffNote,
     taskBindingGuard,
+    automationCompactGuard,
     paperclipEnvNote,
     apiAccessNote,
     renderedPrompt,
@@ -318,6 +321,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     taskBindingChars: taskBindingGuard.length,
+    automationCompactChars: automationCompactGuard.length,
     runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };

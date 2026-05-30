@@ -22,6 +22,7 @@ interface RunTranscriptViewProps {
   limit?: number;
   streaming?: boolean;
   collapseStdout?: boolean;
+  compactAutomationUpdates?: boolean;
   emptyMessage?: string;
   className?: string;
   thinkingClassName?: string;
@@ -117,6 +118,52 @@ function compactWhitespace(value: string): string {
 
 function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, Math.max(0, max - 1))}…` : value;
+}
+
+function shouldCompactAutomationBlock(block: TranscriptBlock, isLastBlock: boolean): boolean {
+  if (isLastBlock) return false;
+  if (block.type === "message" && block.role === "assistant") {
+    if (block.streaming || block.text.length > 220) return false;
+    return !/\b(blocked|error|failed|cannot|can't|done|fixed|complete|completed)\b/i.test(block.text);
+  }
+  if (block.type === "thinking") {
+    return !block.streaming && block.text.length <= 220;
+  }
+  return false;
+}
+
+function compactAutomationTranscriptBlocks(blocks: TranscriptBlock[]): TranscriptBlock[] {
+  if (blocks.length === 0) return blocks;
+
+  const compacted: TranscriptBlock[] = [];
+  let collapsedCount = 0;
+  let firstCollapsedTs: string | null = null;
+
+  const flushCollapsed = () => {
+    if (collapsedCount === 0 || !firstCollapsedTs) return;
+    compacted.push({
+      type: "event",
+      ts: firstCollapsedTs,
+      label: "Automation updates",
+      tone: "neutral",
+      text: `Collapsed ${collapsedCount} routine automation progress update${collapsedCount === 1 ? "" : "s"}. Switch to raw transcript to inspect every step.`,
+    });
+    collapsedCount = 0;
+    firstCollapsedTs = null;
+  };
+
+  blocks.forEach((block, index) => {
+    if (shouldCompactAutomationBlock(block, index === blocks.length - 1)) {
+      collapsedCount += 1;
+      firstCollapsedTs ??= block.ts;
+      return;
+    }
+    flushCollapsed();
+    compacted.push(block);
+  });
+
+  flushCollapsed();
+  return compacted;
 }
 
 function humanizeLabel(value: string): string {
@@ -1204,12 +1251,17 @@ export function RunTranscriptView({
   limit,
   streaming = false,
   collapseStdout = false,
+  compactAutomationUpdates = false,
   emptyMessage = "No transcript yet.",
   className,
   thinkingClassName,
 }: RunTranscriptViewProps) {
   const blocks = useMemo(() => normalizeTranscript(entries, streaming), [entries, streaming]);
-  const visibleBlocks = limit ? blocks.slice(-limit) : blocks;
+  const compactedBlocks = useMemo(
+    () => (compactAutomationUpdates ? compactAutomationTranscriptBlocks(blocks) : blocks),
+    [blocks, compactAutomationUpdates],
+  );
+  const visibleBlocks = limit ? compactedBlocks.slice(-limit) : compactedBlocks;
   const visibleEntries = limit ? entries.slice(-limit) : entries;
 
   if (entries.length === 0) {

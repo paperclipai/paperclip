@@ -34,7 +34,9 @@ export function Sidebar() {
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
-    refetchInterval: 10_000,
+    staleTime: 15_000,
+    refetchInterval: 20_000,
+    refetchOnWindowFocus: false,
   });
   const liveRunCount = countRunningLiveRuns(liveRuns);
 

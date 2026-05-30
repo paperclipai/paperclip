@@ -20,6 +20,8 @@ import {
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePathInEnv,
+  isAutomationCompactExecutionProfile,
+  renderAutomationCompactPromptGuard,
   renderTemplate,
   renderTaskBindingGuard,
   runChildProcess,
@@ -308,7 +310,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   );
   const model = asString(config.model, "");
-  const effort = asString(config.effort, "");
+  const compactAutomationProfile = isAutomationCompactExecutionProfile(context);
+  const configuredEffort = asString(config.effort, "");
+  const effort = compactAutomationProfile && configuredEffort.trim().length === 0 ? "low" : configuredEffort;
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, false);
@@ -397,10 +401,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const taskBindingGuard = renderTaskBindingGuard(context);
+  const automationCompactGuard = renderAutomationCompactPromptGuard(context);
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
     sessionHandoffNote,
     taskBindingGuard,
+    automationCompactGuard,
     renderedPrompt,
   ]);
   const promptMetrics = {
@@ -408,6 +414,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     taskBindingChars: taskBindingGuard.length,
+    automationCompactChars: automationCompactGuard.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
 

@@ -205,6 +205,7 @@ export type {
   IssueWorkProductProvider,
   IssueWorkProductStatus,
   IssueWorkProductReviewState,
+  IssueSummary,
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueExecutionOverrides,

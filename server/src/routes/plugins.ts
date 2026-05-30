@@ -22,7 +22,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
-import type { Request } from "express";
+import type { Request, Response } from "express";
 import { and, desc, eq, gte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, pluginLogs, pluginWebhookDeliveries } from "@paperclipai/db";
@@ -394,6 +394,26 @@ export function pluginRoutes(
     }
 
     return [];
+  }
+
+  function allowReadOnlyBridgeAccess(req: Request, res: Response, companyId?: string | null) {
+    if (req.actor.type === "board") {
+      return true;
+    }
+
+    const resolvedCompanyId = typeof companyId === "string" && companyId.trim().length > 0
+      ? companyId.trim()
+      : typeof req.actor.companyId === "string" && req.actor.companyId.trim().length > 0
+        ? req.actor.companyId.trim()
+        : null;
+
+    if (!resolvedCompanyId) {
+      res.status(403).json({ error: "Company access required" });
+      return false;
+    }
+
+    assertCompanyAccess(req, resolvedCompanyId);
+    return true;
   }
 
   async function logPluginMutationActivity(
@@ -1023,8 +1043,6 @@ export function pluginRoutes(
    * @see PLUGIN_SPEC.md §19.7 — Error Propagation Through The Bridge
    */
   router.post("/plugins/:pluginId/data/:key", async (req, res) => {
-    assertBoard(req);
-
     if (!bridgeDeps) {
       res.status(501).json({ error: "Plugin bridge is not enabled" });
       return;
@@ -1055,8 +1073,16 @@ export function pluginRoutes(
       renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
     } | undefined;
 
-    if (body?.companyId) {
-      assertCompanyAccess(req, body.companyId);
+    if (key === "dashboard") {
+      if (!allowReadOnlyBridgeAccess(req, res, body?.companyId)) {
+        return;
+      }
+    } else {
+      assertBoard(req);
+
+      if (body?.companyId) {
+        assertCompanyAccess(req, body.companyId);
+      }
     }
 
     try {
@@ -1102,8 +1128,6 @@ export function pluginRoutes(
    * @see PLUGIN_SPEC.md §19.7 — Error Propagation Through The Bridge
    */
   router.post("/plugins/:pluginId/actions/:key", async (req, res) => {
-    assertBoard(req);
-
     if (!bridgeDeps) {
       res.status(501).json({ error: "Plugin bridge is not enabled" });
       return;
@@ -1134,8 +1158,16 @@ export function pluginRoutes(
       renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
     } | undefined;
 
-    if (body?.companyId) {
-      assertCompanyAccess(req, body.companyId);
+    if (key === "manager-state") {
+      if (!allowReadOnlyBridgeAccess(req, res, body?.companyId)) {
+        return;
+      }
+    } else {
+      assertBoard(req);
+
+      if (body?.companyId) {
+        assertCompanyAccess(req, body.companyId);
+      }
     }
 
     try {

@@ -23,10 +23,10 @@ import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle }
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
-import type { Agent, Issue } from "@paperclipai/shared";
+import type { Agent, IssueSummary } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
-function getRecentIssues(issues: Issue[]): Issue[] {
+function getRecentIssues(issues: IssueSummary[]): IssueSummary[] {
   return [...issues]
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 }
@@ -54,18 +54,24 @@ export function Dashboard() {
     queryKey: queryKeys.dashboard(selectedCompanyId!),
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 
   const { data: activity } = useQuery({
     queryKey: queryKeys.activity(selectedCompanyId!),
     queryFn: () => activityApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
 
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryKey: queryKeys.issues.summary(selectedCompanyId!),
+    queryFn: () => issuesApi.listSummary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 
   const { data: projects } = useQuery({
@@ -78,9 +84,16 @@ export function Dashboard() {
     queryKey: queryKeys.heartbeats(selectedCompanyId!),
     queryFn: () => heartbeatsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
   });
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
+  const issueById = useMemo(() => {
+    const map = new Map<string, IssueSummary>();
+    for (const issue of issues ?? []) map.set(issue.id, issue);
+    return map;
+  }, [issues]);
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
 
   useEffect(() => {
@@ -206,7 +219,7 @@ export function Dashboard() {
         </div>
       )}
 
-      <ActiveAgentsPanel companyId={selectedCompanyId!} />
+      <ActiveAgentsPanel companyId={selectedCompanyId!} issueById={issueById} />
 
       {data && (
         <>

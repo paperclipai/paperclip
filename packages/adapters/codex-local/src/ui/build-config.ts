@@ -73,6 +73,9 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   if (typeof v.suppressWorkspaceProjectDocs === "boolean") {
     ac.suppressWorkspaceProjectDocs = v.suppressWorkspaceProjectDocs;
   }
+  if (typeof v.automationCompactEnabled === "boolean") {
+    ac.automationCompactEnabled = v.automationCompactEnabled;
+  }
   if (v.promptTemplate) ac.promptTemplate = v.promptTemplate;
   if (v.bootstrapPrompt) ac.bootstrapPromptTemplate = v.bootstrapPrompt;
   ac.model = v.model || DEFAULT_CODEX_LOCAL_MODEL;

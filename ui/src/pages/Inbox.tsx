@@ -41,7 +41,7 @@ import {
   UserPlus,
 } from "lucide-react";
 import { PageTabBar } from "../components/PageTabBar";
-import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
+import type { Approval, HeartbeatRun, IssueSummary, JoinRequest } from "@paperclipai/shared";
 import {
   ACTIONABLE_APPROVAL_STATUSES,
   getApprovalsForTab,
@@ -113,7 +113,7 @@ function FailedRunInboxRow({
   className,
 }: {
   run: HeartbeatRun;
-  issueById: Map<string, Issue>;
+  issueById: Map<string, IssueSummary>;
   agentName: string | null;
   issueLinkState: unknown;
   onDismiss: () => void;
@@ -575,43 +575,60 @@ export function Inbox() {
     queryKey: queryKeys.dashboard(selectedCompanyId!),
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 
   const { data: issues, isLoading: isIssuesLoading } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryKey: queryKeys.issues.summary(selectedCompanyId!),
+    queryFn: () => issuesApi.listSummary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
   const {
     data: mineIssuesRaw = [],
     isLoading: isMineIssuesLoading,
   } = useQuery({
-    queryKey: queryKeys.issues.listMineByMe(selectedCompanyId!),
+    queryKey: queryKeys.issues.summary(selectedCompanyId!, {
+      touchedByUserId: "me",
+      inboxArchivedByUserId: "me",
+      status: INBOX_ISSUE_STATUSES,
+    }),
     queryFn: () =>
-      issuesApi.list(selectedCompanyId!, {
+      issuesApi.listSummary(selectedCompanyId!, {
         touchedByUserId: "me",
         inboxArchivedByUserId: "me",
         status: INBOX_ISSUE_STATUSES,
       }),
     enabled: !!selectedCompanyId,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
   const {
     data: touchedIssuesRaw = [],
     isLoading: isTouchedIssuesLoading,
   } = useQuery({
-    queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId!),
+    queryKey: queryKeys.issues.summary(selectedCompanyId!, {
+      touchedByUserId: "me",
+      status: INBOX_ISSUE_STATUSES,
+    }),
     queryFn: () =>
-      issuesApi.list(selectedCompanyId!, {
+      issuesApi.listSummary(selectedCompanyId!, {
         touchedByUserId: "me",
         status: INBOX_ISSUE_STATUSES,
       }),
     enabled: !!selectedCompanyId,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
 
   const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
     queryKey: queryKeys.heartbeats(selectedCompanyId!),
     queryFn: () => heartbeatsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
   });
 
   const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
@@ -636,7 +653,7 @@ export function Inbox() {
   }, [agents]);
 
   const issueById = useMemo(() => {
-    const map = new Map<string, Issue>();
+    const map = new Map<string, IssueSummary>();
     for (const issue of issues ?? []) map.set(issue.id, issue);
     return map;
   }, [issues]);
@@ -796,6 +813,7 @@ export function Inbox() {
 
   const invalidateInboxIssueQueries = () => {
     if (!selectedCompanyId) return;
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(selectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });

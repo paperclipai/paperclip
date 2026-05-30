@@ -4,6 +4,7 @@ export const defaultCreateValues: CreateConfigValues = {
   adapterType: "claude_local",
   cwd: "",
   instructionsFilePath: "",
+  automationCompactEnabled: true,
   promptTemplate: "",
   model: "",
   thinkingEffort: "",

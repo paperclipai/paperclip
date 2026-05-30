@@ -18,6 +18,7 @@ import {
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
   renderAutomationCompactPromptGuard,
+  renderPaperclipGoalPrompt,
   renderTemplate,
   renderTaskBindingGuard,
   joinPromptSections,
@@ -505,12 +506,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const taskBindingGuard = renderTaskBindingGuard(context);
+  const paperclipGoalPrompt = renderPaperclipGoalPrompt(context);
   const automationCompactGuard = renderAutomationCompactPromptGuard(context);
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
     sessionHandoffNote,
     taskBindingGuard,
+    paperclipGoalPrompt,
     automationCompactGuard,
     renderedPrompt,
   ]);
@@ -520,6 +523,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     taskBindingChars: taskBindingGuard.length,
+    goalPromptChars: paperclipGoalPrompt.length,
     automationCompactChars: automationCompactGuard.length,
     heartbeatPromptChars: renderedPrompt.length,
   };

@@ -81,4 +81,35 @@ describe("RunTranscriptView", () => {
       text: "Working on the task.",
     });
   });
+
+  it("collapses short automation chatter when compact automation updates are enabled", () => {
+    const html = renderToStaticMarkup(
+      <ThemeProvider>
+        <RunTranscriptView
+          compactAutomationUpdates
+          entries={[
+            {
+              kind: "assistant",
+              ts: "2026-03-12T00:00:00.000Z",
+              text: "Checking the issue context.",
+            },
+            {
+              kind: "thinking",
+              ts: "2026-03-12T00:00:01.000Z",
+              text: "Looking at the exact files involved.",
+            },
+            {
+              kind: "assistant",
+              ts: "2026-03-12T00:00:02.000Z",
+              text: "Blocked on a missing environment variable.",
+            },
+          ]}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(html).toContain("Collapsed 2 routine automation progress updates");
+    expect(html).toContain("Blocked on a missing environment variable.");
+    expect(html).not.toContain("Checking the issue context.");
+  });
 });

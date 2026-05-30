@@ -1,9 +1,7 @@
-import { useMemo } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { IssueSummary } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
-import { issuesApi } from "../api/issues";
 import type { TranscriptEntry } from "../adapters";
 import { isOpenLiveRun, isRunningLiveRun } from "../lib/live-runs";
 import { queryKeys } from "../lib/queryKeys";
@@ -17,28 +15,18 @@ const MIN_DASHBOARD_RUNS = 4;
 
 interface ActiveAgentsPanelProps {
   companyId: string;
+  issueById: Map<string, IssueSummary>;
 }
 
-export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
+export function ActiveAgentsPanel({ companyId, issueById }: ActiveAgentsPanelProps) {
   const { data: liveRuns } = useQuery({
     queryKey: [...queryKeys.liveRuns(companyId), "dashboard"],
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, MIN_DASHBOARD_RUNS),
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
   });
 
   const runs = liveRuns ?? [];
-  const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(companyId),
-    queryFn: () => issuesApi.list(companyId),
-    enabled: runs.length > 0,
-  });
-
-  const issueById = useMemo(() => {
-    const map = new Map<string, Issue>();
-    for (const issue of issues ?? []) {
-      map.set(issue.id, issue);
-    }
-    return map;
-  }, [issues]);
 
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
     runs,
@@ -83,7 +71,7 @@ function AgentRunCard({
   isRunning,
 }: {
   run: LiveRunForIssue;
-  issue?: Issue;
+  issue?: IssueSummary;
   transcript: TranscriptEntry[];
   hasOutput: boolean;
   isOpen: boolean;

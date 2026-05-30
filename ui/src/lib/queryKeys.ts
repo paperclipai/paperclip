@@ -30,6 +30,8 @@ export const queryKeys = {
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
+    summary: (companyId: string, filters?: Record<string, string | boolean | undefined>) =>
+      ["issues", companyId, "summary", filters ?? {}] as const,
     search: (companyId: string, q: string, projectId?: string) =>
       ["issues", companyId, "search", q, projectId ?? "__all-projects__"] as const,
     listAssignedToMe: (companyId: string) => ["issues", companyId, "assigned-to-me"] as const,

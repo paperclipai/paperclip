@@ -522,6 +522,82 @@ describe("codex execute", () => {
     }
   });
 
+  it("includes Paperclip goal prompt context when provided by the run", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-goal-prompt-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-goal-prompt",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "WebApp Codex",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          taskId: "issue-123",
+          paperclipCodexGoal: {
+            issueId: "issue-123",
+            objective: "Map the issue objective into the Codex run.",
+            evidenceRequirements: ["Capture the rendered prompt.", "Run the adapter test."],
+            tokenBudget: "7000 tokens",
+            timeoutSec: 900,
+            issue: {
+              id: "issue-123",
+              identifier: "BLU-123",
+              title: "Goal-aware WebApp Codex runs",
+            },
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.prompt).toContain("Goal: Map the issue objective into the Codex run.");
+      expect(capture.prompt).toContain("Issue: BLU-123 (issue-123)");
+      expect(capture.prompt).toContain("Token budget: 7000 tokens");
+      expect(capture.prompt).toContain("Timeout: 900 seconds");
+      expect(capture.prompt).toContain("Capture the rendered prompt.");
+      expect(capture.prompt).toContain("State claimed: exactly one of `done`, `blocked`, or `awaiting_human_decision`.");
+      expect(capture.prompt).toContain("Proof paths and command outputs:");
+      expect(capture.prompt).toContain("Residual risk:");
+      expect(capture.prompt).toContain("update issue issue-123 to status done");
+      expect(capture.prompt).toContain("update issue issue-123 to status blocked");
+      expect(capture.prompt).toContain("Do not finish with only a chat final answer");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses the automation-compact managed CODEX_HOME profile and injects the compact run guard", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-compact-profile-"));
     const workspace = path.join(root, "workspace");

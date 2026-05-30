@@ -18,6 +18,10 @@ export interface IssueAssignmentWakeupDeps {
   ) => Promise<unknown>;
 }
 
+export function shouldWakeAssigneeForIssueStatus(status: string | null | undefined) {
+  return status === "todo" || status === "in_progress" || status === "in_review";
+}
+
 export function queueIssueAssignmentWakeup(input: {
   heartbeat: IssueAssignmentWakeupDeps;
   issue: { id: string; assigneeAgentId: string | null; status: string };
@@ -28,7 +32,7 @@ export function queueIssueAssignmentWakeup(input: {
   requestedByActorId?: string | null;
   rethrowOnError?: boolean;
 }) {
-  if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
+  if (!input.issue.assigneeAgentId || !shouldWakeAssigneeForIssueStatus(input.issue.status)) return;
 
   return input.heartbeat
     .wakeup(input.issue.assigneeAgentId, {

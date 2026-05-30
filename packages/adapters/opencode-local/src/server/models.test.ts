@@ -28,6 +28,6 @@ describe("openCode models", () => {
       ensureOpenCodeModelConfiguredAndAvailable({
         model: "openai/gpt-5",
       }),
-    ).rejects.toThrow("Failed to start command");
+    ).rejects.toThrow("Command not found in PATH");
   });
 });

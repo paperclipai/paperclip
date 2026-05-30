@@ -112,6 +112,10 @@ export interface AdapterInvocationMeta {
   context?: Record<string, unknown>;
 }
 
+export type AdapterExecutionProfile = "default" | "automation_compact";
+export type AdapterAutomationVerbosity = "default" | "quiet";
+export type AdapterTranscriptMode = "default" | "compact";
+
 export interface AdapterExecutionContext {
   runId: string;
   agent: AdapterAgent;
@@ -331,6 +335,7 @@ export interface CreateConfigValues {
   cwd: string;
   instructionsFilePath?: string;
   suppressWorkspaceProjectDocs?: boolean;
+  automationCompactEnabled?: boolean;
   promptTemplate: string;
   model: string;
   thinkingEffort: string;

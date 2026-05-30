@@ -4,6 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-codex-local/server";
 
+async function writeFakeCodexScript(commandPath: string, body: string): Promise<void> {
+  await fs.writeFile(commandPath, `#!/usr/bin/env node\n${body}\n`, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 const itWindows = process.platform === "win32" ? it : it.skip;
 
 describe("codex_local environment diagnostics", () => {
@@ -94,6 +99,89 @@ describe("codex_local environment diagnostics", () => {
 
       expect(result.checks.some((check) => check.code === "codex_openai_api_key_missing")).toBe(true);
       expect(result.checks.some((check) => check.code === "codex_native_auth_present")).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("verifies exec tooling with a dedicated tool probe", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-tool-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const cwd = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+
+    try {
+      await fs.mkdir(root, { recursive: true });
+      await writeFakeCodexScript(commandPath, `
+const fs = require("node:fs");
+const prompt = fs.readFileSync(0, "utf8");
+console.log(JSON.stringify({ type: "thread.started", thread_id: "tool-probe-thread" }));
+if (prompt.includes("exec_command tool")) {
+  console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "tool ok" } }));
+} else {
+  console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } }));
+}
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));
+`);
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          command: commandPath,
+          cwd,
+          env: {
+            OPENAI_API_KEY: "test-key",
+          },
+        },
+      });
+
+      expect(result.status).toBe("pass");
+      expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
+      expect(result.checks.some((check) => check.code === "codex_tool_probe_passed")).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces tool runtime failures from the dedicated tool probe", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-tool-runtime-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const cwd = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+
+    try {
+      await fs.mkdir(root, { recursive: true });
+      await writeFakeCodexScript(commandPath, `
+const fs = require("node:fs");
+const prompt = fs.readFileSync(0, "utf8");
+console.log(JSON.stringify({ type: "thread.started", thread_id: "tool-runtime-thread" }));
+if (prompt.includes("exec_command tool")) {
+  console.error("ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { message: \\"Rejected(\\\\\\"Failed to create unified exec process: No such file or directory (os error 2)\\\\\\")\\" }");
+  process.exit(1);
+}
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));
+`);
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          command: commandPath,
+          cwd,
+          env: {
+            OPENAI_API_KEY: "test-key",
+          },
+        },
+      });
+
+      expect(result.status).toBe("fail");
+      expect(result.checks.some((check) => check.code === "codex_tool_probe_runtime_unavailable")).toBe(true);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

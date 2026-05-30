@@ -195,6 +195,97 @@ describe("buildExecutionConfigForAdapter", () => {
     });
   });
 
+  it("drops Codex-style model ids instead of carrying them into Hermes execution", () => {
+    const config = buildExecutionConfigForAdapter({
+      agentAdapterType: "claude_local",
+      executionAdapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "claude-sonnet-4-6",
+      },
+      runtimeConfig: {
+        executionPolicy: {
+          preferredAdapterTypes: ["claude_local", "hermes_local", "codex_local"],
+          perAdapterConfig: {
+            hermes_local: {
+              model: "gpt-5.4-mini",
+              provider: "copilot",
+              timeoutSec: 1800,
+            },
+          },
+        },
+      },
+    });
+
+    expect(config).toEqual({
+      cwd: "/tmp/project",
+      provider: "copilot",
+      timeoutSec: 1800,
+    });
+  });
+
+  it("keeps direct DeepSeek model ids in Anthropic-compatible Hermes configs", () => {
+    const config = buildExecutionConfigForAdapter({
+      agentAdapterType: "hermes_local",
+      executionAdapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        provider: "anthropic",
+        model: "deepseek-v4-flash",
+        blueprintHermesModelLadder: [
+          "deepseek-v4-flash",
+          "deepseek-v4-pro[1m]",
+        ],
+        env: {
+          ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic",
+        },
+        timeoutSec: 1800,
+      },
+      runtimeConfig: {},
+    });
+
+    expect(config).toMatchObject({
+      cwd: "/tmp/project",
+      provider: "anthropic",
+      model: "deepseek-v4-flash",
+      blueprintHermesModelLadder: [
+        "deepseek-v4-flash",
+        "deepseek-v4-pro[1m]",
+      ],
+      env: {
+        ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic",
+      },
+      timeoutSec: 1800,
+    });
+  });
+
+  it("keeps generic provider/model ids for Hermes", () => {
+    const config = buildExecutionConfigForAdapter({
+      agentAdapterType: "claude_local",
+      executionAdapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+      },
+      runtimeConfig: {
+        executionPolicy: {
+          preferredAdapterTypes: ["hermes_local"],
+          perAdapterConfig: {
+            hermes_local: {
+              model: "z-ai/glm-5.1",
+              provider: "openrouter",
+            },
+          },
+        },
+      },
+    });
+
+    expect(config).toMatchObject({
+      cwd: "/tmp/project",
+      provider: "openrouter",
+      model: "z-ai/glm-5.1",
+    });
+  });
+
   it("does not leak a Claude issue-level model override into Codex or OpenCode fallbacks", () => {
     const codexConfig = buildExecutionConfigForAdapter({
       agentAdapterType: "claude_local",
@@ -398,6 +489,45 @@ describe("resolveHeartbeatAdapterExecution", () => {
       throw new Error("expected block action");
     }
     expect(result.reason).toContain("claude_local");
+  });
+
+  it("keeps environment failure details in block reasons", async () => {
+    const result = await resolveHeartbeatAdapterExecution({
+      companyId: "company-env-detail",
+      primaryAdapterType: "codex_local",
+      adapterConfig: { cwd: "/tmp/codex-usage-limit-project" },
+      runtimeConfig: {
+        executionPolicy: {
+          mode: "fixed",
+          preferredAdapterTypes: ["codex_local"],
+          compatibleAdapterTypes: ["codex_local"],
+        },
+      },
+      getQuotaWindows: vi.fn(async () => null),
+      testEnvironment: vi.fn(async () => ({
+        adapterType: "codex_local",
+        status: "fail",
+        checks: [
+          {
+            code: "codex_hello_probe_failed",
+            level: "error",
+            message: "Codex hello probe failed.",
+            detail:
+              "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at May 11th, 2026 10:34 PM.",
+          },
+        ],
+        testedAt: new Date().toISOString(),
+      })),
+      now: new Date("2026-05-10T16:00:00.000Z"),
+    });
+
+    expect(result.action).toBe("block");
+    if (result.action !== "block") {
+      throw new Error("expected block action");
+    }
+    expect(result.reason).toContain("codex_local:");
+    expect(result.reason).toContain("Codex hello probe failed.");
+    expect(result.reason).toContain("chatgpt.com/codex/settings/usage");
   });
 
   it("uses explicit Claude-lane policy to prefer Hermes before OpenCode and Codex", async () => {

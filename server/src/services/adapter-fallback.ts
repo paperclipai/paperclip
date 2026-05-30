@@ -110,12 +110,21 @@ function isModelCompatibleWithAdapter(adapterType: string, model: string): boole
         normalized.includes("codex")
       );
     case "hermes_local":
-      return /^[^/\s]+\/[^/\s]+$/.test(normalized);
+      return isHermesCompatibleModel(normalized);
     case "opencode_local":
       return /^[^/\s]+\/[^/\s]+$/.test(normalized);
     default:
       return true;
   }
+}
+
+function isHermesCompatibleModel(model: string | null): boolean {
+  if (!model) return false;
+  const normalized = model.trim().toLowerCase();
+  if (!normalized) return false;
+  if (/^deepseek-v4-(?:flash|pro)(?:\[[^\]]+\])?$/.test(normalized)) return true;
+  if (normalized === "deepseek-chat" || normalized === "deepseek-reasoner") return true;
+  return /^[^/\s]+\/[^/\s]+$/.test(normalized);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -269,6 +278,12 @@ function sanitizeExecutionConfigForAdapter(
       delete next.effort;
       delete next.search;
       delete next.variant;
+      {
+        const model = asString(next.model);
+        if (!isHermesCompatibleModel(model)) {
+          delete next.model;
+        }
+      }
       break;
     case "opencode_local": {
       delete next.dangerouslySkipPermissions;
@@ -406,16 +421,20 @@ function availabilityFromEnvironmentResult(
   if (result.status === "pass") {
     return { available: true, reason: "environment test passed" };
   }
+  const checkReason = (check: AdapterEnvironmentTestResult["checks"][number]) => {
+    const detail = asString(check.detail);
+    return detail ? `${check.message}: ${detail}` : check.message;
+  };
   const authCheck = result.checks.find((check) =>
     /auth_required|login_required|not_logged_in/i.test(check.code)
       || /login is required|not logged in/i.test(check.message),
   );
   if (authCheck) {
-    return { available: false, reason: authCheck.message };
+    return { available: false, reason: checkReason(authCheck) };
   }
   const hardFailure = result.checks.find((check) => check.level === "error");
   if (hardFailure) {
-    return { available: false, reason: hardFailure.message };
+    return { available: false, reason: checkReason(hardFailure) };
   }
   return { available: true, reason: "environment test returned warnings only" };
 }

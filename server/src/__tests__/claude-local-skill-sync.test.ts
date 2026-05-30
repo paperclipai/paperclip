@@ -57,7 +57,11 @@ describe("claude local skill sync", () => {
 
     expect(snapshot.desiredSkills).toContain(paperclipKey);
     expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("configured");
-    expect(snapshot.entries.find((entry) => entry.key === createAgentKey)?.state).toBe("configured");
+    expect(snapshot.entries.find((entry) => entry.key === createAgentKey)).toMatchObject({
+      desired: false,
+      state: "available",
+      required: false,
+    });
   });
 
   it("normalizes legacy flat Paperclip skill refs to canonical keys", async () => {

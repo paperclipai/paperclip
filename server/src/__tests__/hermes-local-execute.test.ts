@@ -16,6 +16,67 @@ ${source}
 }
 
 describe("hermes execute", () => {
+  it("does not fall through when a successful response mentions product quota blockers", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-quota-prose-"));
+    const commandPath = path.join(root, "hermes");
+    const modelsLogPath = path.join(root, "models.log");
+
+    await writeFakeHermesCommand(
+      commandPath,
+      `
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args.includes("--version")) {
+  console.log("hermes-test 0.0.0");
+  process.exit(0);
+}
+const modelIndex = args.indexOf("-m");
+const model = modelIndex >= 0 ? args[modelIndex + 1] : "missing-model";
+fs.appendFileSync(${JSON.stringify(modelsLogPath)}, model + "\\n");
+console.log("Marked issue blocked with proof.");
+console.log("Firestore quota exhausted: gRPC 8 RESOURCE_EXHAUSTED.");
+console.log("GCP quota exceeded is a product blocker, not a model provider error.");
+console.log("session_id: sess-quota-prose");
+process.exit(0);
+`,
+    );
+
+    const logs: string[] = [];
+    const result = await execute({
+      runId: "run-quota-prose",
+      agent: {
+        id: "agent-quota-prose",
+        companyId: "company-1",
+        name: "Hermes Quota Prose Agent",
+        adapterConfig: {
+          hermesCommand: commandPath,
+          cwd: root,
+          model: "deepseek/deepseek-v4-flash",
+          provider: "openrouter",
+          blueprintHermesModelLadder: [
+            "deepseek/deepseek-v4-flash",
+            "deepseek/deepseek-v4-pro",
+          ],
+          persistSession: false,
+        },
+      },
+      runtime: {},
+      config: {},
+      onLog: async (_stream: string, chunk: string) => {
+        logs.push(chunk);
+      },
+    } as never);
+
+    expect(result.errorMessage).toBeUndefined();
+    expect(result.model).toBe("deepseek/deepseek-v4-flash");
+    expect(result.summary).toContain("Firestore quota exhausted");
+    expect(result.resultJson).toMatchObject({
+      attempted_models: ["deepseek/deepseek-v4-flash"],
+    });
+    expect(logs.join("")).not.toContain("Falling through to deepseek/deepseek-v4-pro");
+    expect(await fs.readFile(modelsLogPath, "utf8")).toBe("deepseek/deepseek-v4-flash\n");
+  });
+
   it("falls through to the next configured model on generic retryable 429s", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-execute-"));
     const commandPath = path.join(root, "hermes");

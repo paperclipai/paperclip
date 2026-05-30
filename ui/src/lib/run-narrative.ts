@@ -20,6 +20,8 @@ type RunContext = Record<string, unknown> | null;
 
 const QUOTA_OR_RATE_LIMIT_RE =
   /(?:resource_exhausted|quota|rate[-\s]?limit|too many requests|\b429\b|billing details|you['’]ve hit your limit|hit your limit|limit[^.\n]*reset)/i;
+const TOOL_RUNTIME_FAILURE_RE =
+  /(?:CreateProcess .*No such file or directory|Failed to create unified exec process|exec_command failed|write_stdin failed: stdin is closed|rerun exec_command with tty=true to keep stdin open)/i;
 const LOG_TIMEOUT_CONFIG_RE = /\btimeout=\d+s\b/i;
 const LOG_TIMED_OUT_FALSE_RE = /\btimed out:\s*false\b/i;
 
@@ -229,6 +231,13 @@ export function detectRunDiagnostic(run: HeartbeatRun, combinedText?: string | n
 
   if (run.status === "timed_out") {
     return { tone: "error", text: "This run actually timed out." };
+  }
+
+  if (run.errorCode === "tool_runtime_unavailable" || TOOL_RUNTIME_FAILURE_RE.test(text)) {
+    return {
+      tone: "error",
+      text: "This failed because the local exec/tool runtime was unavailable, not because of model behavior.",
+    };
   }
 
   if (QUOTA_OR_RATE_LIMIT_RE.test(text)) {

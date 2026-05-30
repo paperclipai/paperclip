@@ -17,6 +17,7 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 | `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
 | `model` | string | No | Model to use |
 | `suppressWorkspaceProjectDocs` | boolean | No | Disable Codex workspace project-doc loading for the run by passing `-c project_doc_max_bytes=0` |
+| `automationCompactEnabled` | boolean | No | When true, automation-sourced wakes use the `automation_compact` profile |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `env` | object | No | Environment variables (supports secret refs) |
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
@@ -46,6 +47,17 @@ This installs any missing skills, creates an agent API key, and prints shell exp
 If `instructionsFilePath` is configured, Paperclip reads that file and prepends it to the stdin prompt sent to `codex exec` on every run.
 
 When Paperclip injects an explicit instructions file, it also passes `-c project_doc_max_bytes=0` to Codex. That disables workspace project-doc loading for the run so repo-scoped `AGENTS.md` files are not loaded a second time on top of the Paperclip-managed instructions.
+
+## Automation Compact Profile
+
+Automation-sourced wakes default to the `automation_compact` execution profile unless the agent opts out with `automationCompactEnabled: false`.
+
+That profile:
+
+- uses a smaller managed `CODEX_HOME`
+- keeps search off unless explicitly enabled
+- prefers lower reasoning effort when none is configured
+- injects a terse prompt guard that discourages repetitive progress chatter
 
 ## Environment Test
 

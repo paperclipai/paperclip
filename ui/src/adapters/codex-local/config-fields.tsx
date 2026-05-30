@@ -75,6 +75,20 @@ export function CodexLocalConfigFields({
         }
       />
       <ToggleField
+        label="Compact automation runs"
+        hint="Use the automation_compact execution profile for automation-sourced wakes. This keeps search off by default, prefers lower reasoning effort, reduces prompt adornments, and uses a smaller managed CODEX_HOME unless you opt out."
+        checked={
+          isCreate
+            ? values!.automationCompactEnabled ?? true
+            : eff("adapterConfig", "automationCompactEnabled", true)
+        }
+        onChange={(v) =>
+          isCreate
+            ? set!({ automationCompactEnabled: v })
+            : mark("adapterConfig", "automationCompactEnabled", v)
+        }
+      />
+      <ToggleField
         label="Bypass sandbox"
         hint={help.dangerouslyBypassSandbox}
         checked={

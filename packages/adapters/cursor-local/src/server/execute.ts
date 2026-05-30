@@ -19,6 +19,7 @@ import {
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
+  renderAutomationCompactPromptGuard,
   renderTemplate,
   renderTaskBindingGuard,
   joinPromptSections,
@@ -356,11 +357,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const taskBindingGuard = renderTaskBindingGuard(context);
+  const automationCompactGuard = renderAutomationCompactPromptGuard(context);
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
     sessionHandoffNote,
     taskBindingGuard,
+    automationCompactGuard,
     paperclipEnvNote,
     renderedPrompt,
   ]);
@@ -370,6 +373,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     taskBindingChars: taskBindingGuard.length,
+    automationCompactChars: automationCompactGuard.length,
     runtimeNoteChars: paperclipEnvNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueSummary } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { X } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -8,7 +8,7 @@ import { StatusIcon } from "./StatusIcon";
 type UnreadState = "hidden" | "visible" | "fading";
 
 interface IssueRowProps {
-  issue: Issue;
+  issue: Issue | IssueSummary;
   issueLinkState?: unknown;
   mobileLeading?: ReactNode;
   desktopMetaLeading?: ReactNode;

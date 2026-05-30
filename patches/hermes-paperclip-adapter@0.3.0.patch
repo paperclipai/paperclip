@@ -1,5 +1,5 @@
 diff --git a/dist/server/detect-model.js b/dist/server/detect-model.js
-index bf8e4e64eb000f9b4dd4c937ea0504b0115736cc..c723bf45f9bcf00dfb7d476aaf1a46879d7967e1 100644
+index bf8e4e64eb000f9b4dd4c937ea0504b0115736cc..df135bff46ef6f599071ea2f4357b9190de37f9f 100644
 --- a/dist/server/detect-model.js
 +++ b/dist/server/detect-model.js
 @@ -82,6 +82,12 @@ export function parseModelFromConfig(content) {
@@ -16,10 +16,10 @@ index bf8e4e64eb000f9b4dd4c937ea0504b0115736cc..c723bf45f9bcf00dfb7d476aaf1a4687
      const bareName = lower.includes("/") ? lower.split("/").pop() : lower;
      for (const [prefix, hint] of MODEL_PREFIX_PROVIDER_HINTS) {
 diff --git a/dist/server/execute.js b/dist/server/execute.js
-index e96d5c9c0d175a06c668406ba57ac8f5ba750901..94300b3793d5621b0c14a80f48bf8f5063793cf7 100644
+index e96d5c9c0d175a06c668406ba57ac8f5ba750901..d4be5753bb66afd59daef807663006935c166386 100644
 --- a/dist/server/execute.js
 +++ b/dist/server/execute.js
-@@ -37,63 +37,184 @@ function cfgStringArray(v) {
+@@ -37,63 +37,194 @@ function cfgStringArray(v) {
          ? v
          : undefined;
  }
@@ -76,6 +76,15 @@ index e96d5c9c0d175a06c668406ba57ac8f5ba750901..94300b3793d5621b0c14a80f48bf8f50
 +        return false;
 +    return /free-models-per-(?:min|day(?:-high-balance)?)|limit_rpm\/[^\s]+|high demand for [^.\n]+:free on openrouter|limited to \d+ requests per minute|temporarily rate-limited upstream|accumulate your rate limits/i.test(text);
 +}
++function extractStructuredProviderFailureText(stdout) {
++    const lines = stdout
++        .split("\n")
++        .map((line) => line.trim())
++        .filter(Boolean);
++    return lines
++        .filter((line) => /(?:api call failed|ratelimiterror|authenticationerror|notfounderror|internalservererror|provider returned error|non-retryable client error|final error:|http\s*(?:401|402|404|429|503)|no endpoints found for|free-models-per-|limit_rpm\/|(?:^|\s)provider:\s*\S+.*model:|🔌\s*provider:|📝\s*error:)/i.test(line))
++        .join("\n");
++}
 +function classifyAttemptFailure({ stdout, stderr, parsed, result, model, provider, }) {
 +    if (result.timedOut) {
 +        return {
@@ -86,9 +95,10 @@ index e96d5c9c0d175a06c668406ba57ac8f5ba750901..94300b3793d5621b0c14a80f48bf8f50
 +    }
 +    const combined = [
 +        parsed.errorMessage,
-+        parsed.response,
 +        stderr,
-+        stdout,
++        result.exitCode != null && result.exitCode !== 0
++            ? stdout
++            : extractStructuredProviderFailureText(stdout),
 +    ]
 +        .filter((value) => typeof value === "string" && value.trim().length > 0)
 +        .join("\n");
@@ -178,14 +188,12 @@ index e96d5c9c0d175a06c668406ba57ac8f5ba750901..94300b3793d5621b0c14a80f48bf8f50
  
  {{#taskId}}
 -## Assigned Task
--
--Issue ID: {{taskId}}
--Title: {{taskTitle}}
 +Assigned task:
 +- Issue ID: {{taskId}}
 +- Title: {{taskTitle}}
  
--{{taskBody}}
+-Issue ID: {{taskId}}
+-Title: {{taskTitle}}
 +Start with:
 +1. Read compact context:
 +   curl -fsS -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/{{taskId}}/heartbeat-context"
@@ -194,6 +202,8 @@ index e96d5c9c0d175a06c668406ba57ac8f5ba750901..94300b3793d5621b0c14a80f48bf8f50
 +3. Checkout before work:
 +   curl -fsS -X POST "{{paperclipApiUrl}}/issues/{{taskId}}/checkout" -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -H "Content-Type: application/json" -d "{\"agentId\":\"$PAPERCLIP_AGENT_ID\",\"expectedStatuses\":[\"todo\",\"backlog\",\"blocked\"]}"
  
+-{{taskBody}}
+-
 -## Workflow
 -
 -1. Work on the task using your tools
@@ -245,7 +255,7 @@ index e96d5c9c0d175a06c668406ba57ac8f5ba750901..94300b3793d5621b0c14a80f48bf8f50
  {{/noTask}}`;
  function buildPrompt(ctx, config) {
      const template = cfgString(config.promptTemplate) || DEFAULT_PROMPT_TEMPLATE;
-@@ -245,9 +366,7 @@ function parseHermesOutput(stdout, stderr) {
+@@ -245,9 +376,7 @@ function parseHermesOutput(stdout, stderr) {
  // ---------------------------------------------------------------------------
  export async function execute(ctx) {
      const config = (ctx.agent?.adapterConfig ?? {});
@@ -255,7 +265,7 @@ index e96d5c9c0d175a06c668406ba57ac8f5ba750901..94300b3793d5621b0c14a80f48bf8f50
      const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
      const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
      const maxTurns = cfgNumber(config.maxTurnsPerRun);
-@@ -256,18 +375,10 @@ export async function execute(ctx) {
+@@ -256,18 +385,10 @@ export async function execute(ctx) {
      const persistSession = cfgBoolean(config.persistSession) !== false;
      const worktreeMode = cfgBoolean(config.worktreeMode) === true;
      const checkpoints = cfgBoolean(config.checkpoints) === true;
@@ -277,7 +287,7 @@ index e96d5c9c0d175a06c668406ba57ac8f5ba750901..94300b3793d5621b0c14a80f48bf8f50
      if (!explicitProvider) {
          try {
              detectedConfig = await detectModel();
-@@ -276,58 +387,7 @@ export async function execute(ctx) {
+@@ -276,58 +397,7 @@ export async function execute(ctx) {
              // Non-fatal — detection failure shouldn't block execution
          }
      }
@@ -337,7 +347,7 @@ index e96d5c9c0d175a06c668406ba57ac8f5ba750901..94300b3793d5621b0c14a80f48bf8f50
      const env = {
          ...process.env,
          ...buildPaperclipEnv(ctx.agent),
-@@ -341,7 +401,6 @@ export async function execute(ctx) {
+@@ -341,7 +411,6 @@ export async function execute(ctx) {
      if (userEnv && typeof userEnv === "object") {
          Object.assign(env, userEnv);
      }
@@ -345,7 +355,7 @@ index e96d5c9c0d175a06c668406ba57ac8f5ba750901..94300b3793d5621b0c14a80f48bf8f50
      const cwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
      try {
          await ensureAbsoluteDirectory(cwd);
-@@ -349,22 +408,9 @@ export async function execute(ctx) {
+@@ -349,22 +418,9 @@ export async function execute(ctx) {
      catch {
          // Non-fatal
      }
@@ -368,7 +378,7 @@ index e96d5c9c0d175a06c668406ba57ac8f5ba750901..94300b3793d5621b0c14a80f48bf8f50
              const isBenign = /^\[?\d{4}[-/]\d{2}[-/]\d{2}T/.test(trimmed) || // structured timestamps
                  /^[A-Z]+:\s+(INFO|DEBUG|WARN|WARNING)\b/.test(trimmed) || // log levels
                  /Successfully registered all tools/.test(trimmed) ||
-@@ -377,52 +423,138 @@ export async function execute(ctx) {
+@@ -377,52 +433,138 @@ export async function execute(ctx) {
          }
          return ctx.onLog(stream, chunk);
      };
@@ -552,8 +562,9 @@ index e96d5c9c0d175a06c668406ba57ac8f5ba750901..94300b3793d5621b0c14a80f48bf8f50
 -    return executionResult;
  }
  //# sourceMappingURL=execute.js.map
+\ No newline at end of file
 diff --git a/dist/shared/constants.js b/dist/shared/constants.js
-index c8be1d158bee16f0f383d8300ae806f2d5d00e53..31783d2583b49517d4b2be5c845c454ef50109d5 100644
+index c8be1d158bee16f0f383d8300ae806f2d5d00e53..1f6c9a66548c45d49366982a708ab25fe665a0e0 100644
 --- a/dist/shared/constants.js
 +++ b/dist/shared/constants.js
 @@ -12,7 +12,7 @@ export const DEFAULT_TIMEOUT_SEC = 1800;

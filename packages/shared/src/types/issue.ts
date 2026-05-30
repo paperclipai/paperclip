@@ -96,6 +96,29 @@ export interface LegacyPlanDocument {
   source: "issue_description";
 }
 
+export interface IssueSummary {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  goalId: string | null;
+  parentId: string | null;
+  title: string;
+  status: IssueStatus;
+  priority: IssuePriority;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  issueNumber: number | null;
+  identifier: string | null;
+  originKind?: IssueOriginKind;
+  originId?: string | null;
+  requestDepth: number;
+  myLastTouchAt?: Date | null;
+  lastExternalCommentAt?: Date | null;
+  isUnreadForMe?: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface Issue {
   id: string;
   companyId: string;

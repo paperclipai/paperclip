@@ -102,4 +102,20 @@ describe("run narrative helpers", () => {
       text: "This looks like a quota or rate-limit problem, not a timeout.",
     });
   });
+
+  it("flags local exec runtime failures separately from model failures", () => {
+    const diagnostic = detectRunDiagnostic(
+      makeRun({
+        status: "failed",
+        errorCode: "tool_runtime_unavailable",
+        error: "CreateProcess failed for exec_command: No such file or directory",
+        exitCode: 1,
+      }),
+    );
+
+    expect(diagnostic).toEqual({
+      tone: "error",
+      text: "This failed because the local exec/tool runtime was unavailable, not because of model behavior.",
+    });
+  });
 });

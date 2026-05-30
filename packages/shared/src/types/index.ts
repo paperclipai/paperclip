@@ -78,6 +78,7 @@ export type {
   IssueWorkProductReviewState,
 } from "./work-product.js";
 export type {
+  IssueSummary,
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueComment,

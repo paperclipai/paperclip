@@ -565,6 +565,7 @@ export interface WorkerToHostMethods {
       projectId?: string;
       assigneeAgentId?: string;
       status?: string;
+      includeRoutineExecutions?: boolean;
       limit?: number;
       offset?: number;
     },

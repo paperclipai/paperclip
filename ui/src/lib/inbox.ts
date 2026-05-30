@@ -3,6 +3,7 @@ import type {
   DashboardSummary,
   HeartbeatRun,
   Issue,
+  IssueSummary,
   JoinRequest,
 } from "@paperclipai/shared";
 
@@ -14,11 +15,12 @@ export const READ_ITEMS_KEY = "paperclip:inbox:read-items";
 export const INBOX_LAST_TAB_KEY = "paperclip:inbox:last-tab";
 export type InboxTab = "mine" | "recent" | "unread" | "all";
 export type InboxApprovalFilter = "all" | "actionable" | "resolved";
+export type InboxIssue = Issue | IssueSummary;
 export type InboxWorkItem =
   | {
       kind: "issue";
       timestamp: number;
-      issue: Issue;
+      issue: InboxIssue;
     }
   | {
       kind: "approval";
@@ -119,7 +121,7 @@ export function normalizeTimestamp(value: string | Date | null | undefined): num
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
-export function issueLastActivityTimestamp(issue: Issue): number {
+export function issueLastActivityTimestamp(issue: InboxIssue): number {
   const lastExternalCommentAt = normalizeTimestamp(issue.lastExternalCommentAt);
   if (lastExternalCommentAt > 0) return lastExternalCommentAt;
 
@@ -130,17 +132,17 @@ export function issueLastActivityTimestamp(issue: Issue): number {
   return updatedAt;
 }
 
-export function sortIssuesByMostRecentActivity(a: Issue, b: Issue): number {
+export function sortIssuesByMostRecentActivity(a: InboxIssue, b: InboxIssue): number {
   const activityDiff = issueLastActivityTimestamp(b) - issueLastActivityTimestamp(a);
   if (activityDiff !== 0) return activityDiff;
   return normalizeTimestamp(b.updatedAt) - normalizeTimestamp(a.updatedAt);
 }
 
-export function getRecentTouchedIssues(issues: Issue[]): Issue[] {
+export function getRecentTouchedIssues(issues: InboxIssue[]): InboxIssue[] {
   return [...issues].sort(sortIssuesByMostRecentActivity).slice(0, RECENT_ISSUES_LIMIT);
 }
 
-export function getUnreadTouchedIssues(issues: Issue[]): Issue[] {
+export function getUnreadTouchedIssues(issues: InboxIssue[]): InboxIssue[] {
   return issues.filter((issue) => issue.isUnreadForMe);
 }
 
@@ -177,7 +179,7 @@ export function getInboxWorkItems({
   failedRuns = [],
   joinRequests = [],
 }: {
-  issues: Issue[];
+  issues: InboxIssue[];
   approvals: Approval[];
   failedRuns?: HeartbeatRun[];
   joinRequests?: JoinRequest[];
@@ -252,7 +254,7 @@ export function computeInboxBadgeData({
   joinRequests: JoinRequest[];
   dashboard: DashboardSummary | undefined;
   heartbeatRuns: HeartbeatRun[];
-  mineIssues: Issue[];
+  mineIssues: InboxIssue[];
   dismissed: Set<string>;
 }): InboxBadgeData {
   const actionableApprovals = approvals.filter(

@@ -67,6 +67,9 @@ const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const ISSUE_WAKE_COOLDOWN_KEY = "_paperclipWakeCooldownKey";
+const ISSUE_WAKE_COOLDOWN_MS =
+  Math.min(60 * 60 * 1000, Math.max(30 * 60 * 1000, Number(process.env.PAPERCLIP_ISSUE_WAKE_COOLDOWN_MS ?? "") || 45 * 60 * 1000));
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
@@ -81,11 +84,19 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+const GOAL_AWARE_TERMINAL_ISSUE_STATUSES = new Set(["done", "blocked", "cancelled"]);
+const ISSUE_WAKE_COOLDOWN_REASONS = new Set([
+  "issue.updated",
+  "issue_status_changed",
+  "issue_comment_mentioned",
+  "issue_commented",
+]);
+type HeartbeatOutcome = "succeeded" | "failed" | "cancelled" | "timed_out";
 
 export function deriveAgentStatusFromActiveRunCounts(input: {
   queuedCount: number;
   runningCount: number;
-  outcome?: "succeeded" | "failed" | "cancelled" | "timed_out";
+  outcome?: HeartbeatOutcome;
   fallbackStatus?: "idle" | "error" | "running";
 }) {
   if (input.runningCount > 0 || input.queuedCount > 0) {
@@ -437,6 +448,131 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function adapterUnavailableBlockerId(reason: string) {
+  if (/codex|chatgpt\.com\/codex\/settings\/usage|you['’]ve hit your usage limit/i.test(reason)) {
+    return "paperclip-codex-usage-limit";
+  }
+  if (/openrouter|user not found|invalid api key|authentication|unauthorized|forbidden/i.test(reason)) {
+    return "paperclip-provider-auth-openrouter";
+  }
+  return "paperclip-execution-adapter-unavailable";
+}
+
+function buildAdapterUnavailableIssueComment(input: {
+  blockerId: string;
+  runId: string;
+  agentName: string;
+  reason: string;
+}) {
+  return [
+    `Durable blocker id: ${input.blockerId}.`,
+    `Paperclip skipped run ${input.runId} before adapter execution because ${input.agentName} has no healthy execution adapter right now.`,
+    `Observed reason: ${input.reason}`,
+    "Automation did not queue a provider fallback or deferred issue wake, so this blocker will not churn until adapter health changes.",
+    "Retry condition: rerun after the referenced provider/auth/quota condition is repaired and the adapter environment probe passes.",
+  ].join("\n");
+}
+
+const PROVIDER_LOGICAL_FAILURE_RE =
+  /(?:http\s+(?:401|402|403|404|429)|invalid api key|invalid authentication credentials|authentication_error|missing api key|unauthorized|forbidden|no endpoints found(?:\s+for)?|rate limit exceeded|insufficient credits|spend limit exceeded|model[^.\n]*(?:not found|does not exist|unavailable))/i;
+const PROVIDER_LOGICAL_FAILURE_EXCERPT_RE =
+  /(?:api call failed after \d+ retries:\s*|final error:\s*)?(http\s+(?:401|402|403|404|429):[^\n]+)/i;
+
+function collectLogicalFailureText(value: unknown): string[] {
+  if (value == null) return [];
+  if (typeof value === "string") {
+    const trimmed = value.replace(/\s+/g, " ").trim();
+    return trimmed ? [trimmed] : [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => collectLogicalFailureText(entry));
+  }
+  return [];
+}
+
+function collectStructuredLogicalFailureText(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => collectStructuredLogicalFailureText(entry));
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const preferredKeys = ["summary", "message", "error", "errorMessage", "finalError", "failure"];
+    return [
+      ...preferredKeys.flatMap((key) => collectLogicalFailureText(record[key])),
+      ...collectStructuredLogicalFailureText(record._paperclipLogicalFailure),
+      ...collectStructuredLogicalFailureText(record.failed_attempts),
+      ...collectStructuredLogicalFailureText(record.failedAttempts),
+    ];
+  }
+  return collectLogicalFailureText(value);
+}
+
+function extractAdapterLogicalFailure(
+  result: Pick<AdapterExecutionResult, "errorMessage" | "errorCode" | "resultJson" | "summary">,
+): string | null {
+  const candidates = [
+    ...collectLogicalFailureText(result.errorMessage),
+    ...collectLogicalFailureText(result.errorCode),
+    ...collectLogicalFailureText(result.summary),
+    ...collectStructuredLogicalFailureText(result.resultJson),
+  ];
+  for (const candidate of candidates) {
+    if (!PROVIDER_LOGICAL_FAILURE_RE.test(candidate)) continue;
+    const excerpt = candidate.match(PROVIDER_LOGICAL_FAILURE_EXCERPT_RE)?.[1] ?? candidate;
+    return excerpt.replace(/\s+/g, " ").trim().slice(0, 500);
+  }
+  return null;
+}
+
+export function classifyAdapterHeartbeatOutcome(
+  adapterResult: AdapterExecutionResult,
+  options: { cancelled?: boolean } = {},
+): {
+  outcome: HeartbeatOutcome;
+  status: "succeeded" | "failed" | "cancelled" | "timed_out";
+  errorMessage: string | null;
+  errorCode: string | null;
+  logicalFailure: string | null;
+} {
+  if (options.cancelled) {
+    return {
+      outcome: "cancelled",
+      status: "cancelled",
+      errorMessage: adapterResult.errorMessage ?? "Cancelled",
+      errorCode: "cancelled",
+      logicalFailure: null,
+    };
+  }
+  if (adapterResult.timedOut) {
+    return {
+      outcome: "timed_out",
+      status: "timed_out",
+      errorMessage: adapterResult.errorMessage ?? "Timed out",
+      errorCode: "timeout",
+      logicalFailure: null,
+    };
+  }
+
+  const logicalFailure = extractAdapterLogicalFailure(adapterResult);
+  if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage && !logicalFailure) {
+    return {
+      outcome: "succeeded",
+      status: "succeeded",
+      errorMessage: null,
+      errorCode: null,
+      logicalFailure: null,
+    };
+  }
+
+  return {
+    outcome: "failed",
+    status: "failed",
+    errorMessage: adapterResult.errorMessage ?? logicalFailure ?? "Adapter failed",
+    errorCode: logicalFailure ? "provider_logical_failure" : (adapterResult.errorCode ?? "adapter_failed"),
+    logicalFailure,
+  };
+}
+
 function normalizeLedgerBillingType(value: unknown): BillingType {
   const raw = readNonEmptyString(value);
   switch (raw) {
@@ -743,6 +879,315 @@ function describeSessionResetReason(
   return null;
 }
 
+function resolveConfiguredAutomationExecutionProfile(
+  adapterConfig: Record<string, unknown> | null | undefined,
+): "default" | "automation_compact" {
+  if (!adapterConfig) return "automation_compact";
+  if (typeof adapterConfig.automationCompactEnabled === "boolean") {
+    return adapterConfig.automationCompactEnabled ? "automation_compact" : "default";
+  }
+  const explicitProfile = readNonEmptyString(adapterConfig.automationExecutionProfile);
+  if (explicitProfile === "default" || explicitProfile === "automation_compact") {
+    return explicitProfile;
+  }
+  return "automation_compact";
+}
+
+function applyExecutionProfileContext(
+  contextSnapshot: Record<string, unknown>,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "invocationSource">,
+  agent: Pick<typeof agents.$inferSelect, "adapterConfig">,
+) {
+  const explicitProfile = readNonEmptyString(contextSnapshot.executionProfile);
+  const executionProfile =
+    explicitProfile === "default" || explicitProfile === "automation_compact"
+      ? explicitProfile
+      : run.invocationSource === "automation"
+        ? resolveConfiguredAutomationExecutionProfile(parseObject(agent.adapterConfig))
+        : "default";
+
+  contextSnapshot.executionProfile = executionProfile;
+  contextSnapshot.automationVerbosity = executionProfile === "automation_compact" ? "quiet" : "default";
+  contextSnapshot.transcriptMode = executionProfile === "automation_compact" ? "compact" : "default";
+}
+
+function shouldInjectCodexGoalPrompt(
+  adapterType: string,
+  adapterConfig: Record<string, unknown> | null | undefined,
+) {
+  if (adapterType !== "codex_local") return false;
+  return adapterConfig?.paperclipGoalPromptEnabled === true;
+}
+
+function normalizeGoalPromptText(value: string, maxLength = 900): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function readGoalPromptString(value: unknown, maxLength?: number): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? normalizeGoalPromptText(trimmed, maxLength) : null;
+}
+
+function readGoalPromptTokenBudget(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return `${Math.floor(value)} tokens`;
+  }
+  return readGoalPromptString(value, 120);
+}
+
+function readGoalPromptTimeout(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return `${Math.floor(value)} seconds`;
+  }
+  return readGoalPromptString(value, 120);
+}
+
+function stripMarkdownBullet(line: string): string {
+  return line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").trim();
+}
+
+function normalizeMarkdownHeading(line: string): string | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  const atx = trimmed.match(/^#{1,6}\s+(.+?)\s*#*\s*$/);
+  const raw = (atx?.[1] ?? trimmed).replace(/:$/, "").trim();
+  if (!raw || raw.length > 80) return null;
+  if (/^[-*+]\s+/.test(trimmed)) return null;
+  if (!/^[A-Za-z][A-Za-z0-9 /&_-]+$/.test(raw)) return null;
+  return raw.toLowerCase();
+}
+
+function extractMarkdownSections(description: string | null | undefined, headings: Set<string>): string[] {
+  if (!description) return [];
+  const lines = description.split(/\r?\n/);
+  const extracted: string[] = [];
+  let capturing = false;
+
+  for (const rawLine of lines) {
+    const heading = normalizeMarkdownHeading(rawLine);
+    if (heading) {
+      if (capturing && !headings.has(heading)) break;
+      capturing = headings.has(heading);
+      continue;
+    }
+    if (!capturing) continue;
+    const cleaned = stripMarkdownBullet(rawLine);
+    if (cleaned) extracted.push(cleaned);
+    if (extracted.length >= 12) break;
+  }
+
+  return extracted
+    .map((item) => normalizeGoalPromptText(item, 360))
+    .filter((item, index, all) => item.length > 0 && all.indexOf(item) === index)
+    .slice(0, 8);
+}
+
+function extractIssueObjective(input: {
+  title: string;
+  description: string | null;
+  goalTitle?: string | null;
+}) {
+  const objectiveSection = extractMarkdownSections(
+    input.description,
+    new Set(["objective", "goal", "issue objective"]),
+  );
+  if (objectiveSection.length > 0) {
+    return objectiveSection.join(" ");
+  }
+
+  const firstParagraph = (input.description ?? "")
+    .split(/\n\s*\n/)
+    .map((part) => part.trim())
+    .find((part) => part && !normalizeMarkdownHeading(part.split(/\r?\n/)[0] ?? ""));
+  const suffix = firstParagraph ? `: ${normalizeGoalPromptText(firstParagraph, 500)}` : "";
+  const parent = input.goalTitle ? ` (${input.goalTitle})` : "";
+  return normalizeGoalPromptText(`${input.title}${parent}${suffix}`, 900);
+}
+
+function extractEvidenceRequirements(description: string | null | undefined): string[] {
+  return extractMarkdownSections(
+    description,
+    new Set([
+      "evidence",
+      "evidence requirement",
+      "evidence requirements",
+      "proof",
+      "proof requirements",
+      "completion proof",
+      "acceptance criteria",
+      "success criteria",
+      "verification",
+      "tests",
+      "done when",
+      "deliverables",
+    ]),
+  );
+}
+
+function extractTokenBudget(description: string | null | undefined): string | null {
+  if (!description) return null;
+  const match = description.match(/(?:token\s+budget|tokens?\s+budget|budget)\s*:\s*([^\n]+)/i);
+  if (!match?.[1]) return null;
+  return normalizeGoalPromptText(match[1], 120);
+}
+
+function buildPaperclipCodexGoalContext(input: {
+  adapterType: string;
+  adapterConfig: Record<string, unknown>;
+  context: Record<string, unknown>;
+  issue: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    description: string | null;
+    projectId: string | null;
+    goalId: string | null;
+  } | null;
+}) {
+  if (!input.issue || !shouldInjectCodexGoalPrompt(input.adapterType, input.adapterConfig)) {
+    return null;
+  }
+
+  const tokenBudget =
+    readGoalPromptTokenBudget(input.context.tokenBudget) ??
+    readGoalPromptTokenBudget(input.context.codexTokenBudget) ??
+    readGoalPromptTokenBudget(input.adapterConfig.paperclipGoalTokenBudget) ??
+    extractTokenBudget(input.issue.description);
+  const timeoutSec =
+    readGoalPromptTimeout(input.adapterConfig.paperclipGoalTimeoutSec) ??
+    readGoalPromptTimeout(input.adapterConfig.timeoutSec) ??
+    readGoalPromptTimeout(input.context.timeoutSec);
+
+  return {
+    issueId: input.issue.id,
+    objective: extractIssueObjective({
+      title: input.issue.title,
+      description: input.issue.description,
+    }),
+    evidenceRequirements: extractEvidenceRequirements(input.issue.description),
+    tokenBudget,
+    timeoutSec,
+    issue: {
+      id: input.issue.id,
+      identifier: input.issue.identifier,
+      title: input.issue.title,
+      description: input.issue.description,
+    },
+    goal: input.issue.goalId ? { id: input.issue.goalId } : null,
+    project: input.issue.projectId ? { id: input.issue.projectId } : null,
+  };
+}
+
+function readGoalPromptStringArray(value: unknown, maxItems = 8): string[] {
+  if (!Array.isArray(value)) return [];
+  const result: string[] = [];
+  for (const item of value) {
+    const text = readGoalPromptString(item, 360);
+    if (text && !result.includes(text)) result.push(text);
+    if (result.length >= maxItems) break;
+  }
+  return result;
+}
+
+export function buildGoalAwareIssueCloseoutProof(input: {
+  context: Record<string, unknown>;
+  issue: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    status: string;
+  };
+  runId: string;
+  outcome: HeartbeatOutcome;
+  exitCode?: number | null;
+  errorMessage?: string | null;
+  errorCode?: string | null;
+}): { status: "blocked"; comment: string } | null {
+  const goalContext = parseObject(input.context.paperclipCodexGoal);
+  if (!goalContext || GOAL_AWARE_TERMINAL_ISSUE_STATUSES.has(input.issue.status)) {
+    return null;
+  }
+
+  const objective =
+    readGoalPromptString(goalContext.objective, 700) ??
+    readGoalPromptString(input.issue.title, 700) ??
+    "Complete the assigned Paperclip issue.";
+  const tokenBudget =
+    readGoalPromptTokenBudget(goalContext.tokenBudget) ??
+    readGoalPromptTokenBudget(input.context.tokenBudget) ??
+    readGoalPromptTokenBudget(input.context.codexTokenBudget) ??
+    "not specified";
+  const timeout =
+    readGoalPromptTimeout(goalContext.timeoutSec) ??
+    readGoalPromptTimeout(goalContext.timeout) ??
+    readGoalPromptTimeout(input.context.timeoutSec) ??
+    readGoalPromptTimeout(input.context.timeout) ??
+    "not specified";
+  const evidenceRequirements = readGoalPromptStringArray(goalContext.evidenceRequirements, 5);
+  const issueLabel = input.issue.identifier ?? input.issue.id;
+  const exitLabel = input.exitCode == null ? "not reported" : String(input.exitCode);
+  const errorLabel = readGoalPromptString(input.errorMessage, 360);
+  const errorCodeLabel = readGoalPromptString(input.errorCode, 120);
+  const outcomeLabel =
+    input.outcome === "succeeded"
+      ? "the Codex adapter exited successfully, but it did not leave terminal issue proof"
+      : `the Codex adapter ${input.outcome}`;
+  const stageReached =
+    input.outcome === "succeeded"
+      ? "adapter_succeeded_without_terminal_issue_closeout"
+      : input.outcome === "timed_out"
+        ? "adapter_timed_out_without_terminal_issue_closeout"
+        : input.outcome === "cancelled"
+          ? "adapter_cancelled_without_terminal_issue_closeout"
+          : "adapter_failed_without_terminal_issue_closeout";
+
+  const lines = [
+    "Goal-aware Codex blocker proof",
+    "",
+    `Issue: ${issueLabel}`,
+    `Run: ${input.runId}`,
+    `Objective: ${objective}`,
+    `Token budget: ${tokenBudget}`,
+    `Timeout: ${timeout}`,
+    `Stage reached: ${stageReached}`,
+    "State claimed: blocked",
+    "",
+    "Earliest hard stop:",
+    `- ${outcomeLabel}; Paperclip is blocking this issue because durable completion proof was not written by the run.`,
+    "",
+    "Proof paths and command outputs:",
+    `- Heartbeat run ${input.runId} outcome: ${input.outcome}`,
+    `- Adapter exit code: ${exitLabel}`,
+    ...(errorCodeLabel ? [`- Error code: ${errorCodeLabel}`] : []),
+    ...(errorLabel ? [`- Error: ${errorLabel}`] : []),
+    "- Run transcript/log output is the command-output source for this closeout; inspect the heartbeat run before claiming done.",
+    ...(evidenceRequirements.length > 0
+      ? ["- Issue evidence requirements:", ...evidenceRequirements.map((item) => `  - ${item}`)]
+      : ["- Issue evidence requirements: not specified"]),
+    "",
+    "Shared state evidence checklist:",
+    "- A valid done closeout must include objective, stage reached, durable outputs, verification, requirement coverage, issue or graph update, remaining risk, and next action.",
+    "- If still blocked, the closeout must include earliest hard stop, stage reached, exact evidence, why no reversible work remains, next required input, owner, retry/resume condition, and linked follow-up when another lane owns the unblock.",
+    "- If awaiting_human_decision, the closeout must include gate category, decision requested, recommendation, evidence packet, blocker id, routing surface, watcher/owner, and resume condition; do not mark it done until the reply is recorded and execution resumes.",
+    "",
+    "Next action / retry condition:",
+    "- Inspect the run transcript/log for actual work evidence, then rerun or update the issue with a proof-bearing done/blocked closeout.",
+    "- Retry only after the next run can write terminal issue proof or the existing transcript has been mapped into a valid closeout comment.",
+    "",
+    "Residual risk:",
+    "- Work may have happened inside Codex, but Paperclip cannot treat it as complete until objective, stage, evidence, verification, next action, and risk are preserved on the issue.",
+    "- Native Codex /goal state is not claimed here unless Codex CLI state or run artifacts explicitly prove it.",
+  ];
+
+  return {
+    status: "blocked",
+    comment: lines.join("\n"),
+  };
+}
+
 function deriveCommentId(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
@@ -800,6 +1245,113 @@ function enrichWakeContextSnapshot(input: {
     taskKey,
     wakeCommentId,
   };
+}
+
+function normalizeIssueWakeCooldownKeyPart(value: string | null | undefined) {
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._:-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function readWakeSignal(
+  payload: Record<string, unknown> | null | undefined,
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  key: string,
+) {
+  return readNonEmptyString(payload?.[key]) ?? readNonEmptyString(contextSnapshot?.[key]);
+}
+
+function hasTruthyWakeSignal(
+  payload: Record<string, unknown> | null | undefined,
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  key: string,
+) {
+  return payload?.[key] === true || contextSnapshot?.[key] === true;
+}
+
+function isCredentialOrEnvWake(
+  payload: Record<string, unknown> | null | undefined,
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  if (
+    hasTruthyWakeSignal(payload, contextSnapshot, "credentialChanged") ||
+    hasTruthyWakeSignal(payload, contextSnapshot, "credentialsChanged") ||
+    hasTruthyWakeSignal(payload, contextSnapshot, "envChanged") ||
+    hasTruthyWakeSignal(payload, contextSnapshot, "secretChanged")
+  ) {
+    return true;
+  }
+
+  const evidence = [
+    readWakeSignal(payload, contextSnapshot, "mutation"),
+    readWakeSignal(payload, contextSnapshot, "source"),
+    readWakeSignal(payload, contextSnapshot, "wakeReason"),
+  ].filter(Boolean).join(" ");
+  return /(?:credential|secret|env(?:ironment)?)/i.test(evidence);
+}
+
+function shouldBypassIssueWakeCooldown(input: {
+  requestedByActorType: string | null | undefined;
+  source: WakeupOptions["source"];
+  triggerDetail: WakeupOptions["triggerDetail"] | null;
+  payload: Record<string, unknown> | null;
+  contextSnapshot: Record<string, unknown>;
+}) {
+  if (input.requestedByActorType === "user") return true;
+  if (input.source === "on_demand" && input.triggerDetail === "manual") return true;
+  if (
+    hasTruthyWakeSignal(input.payload, input.contextSnapshot, "explicitRetry") ||
+    hasTruthyWakeSignal(input.payload, input.contextSnapshot, "forceRetry") ||
+    hasTruthyWakeSignal(input.payload, input.contextSnapshot, "forceWake")
+  ) {
+    return true;
+  }
+  return isCredentialOrEnvWake(input.payload, input.contextSnapshot);
+}
+
+export function buildIssueWakeCooldownStateFingerprint(
+  payload: Record<string, unknown> | null | undefined,
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  const materialKeys = [
+    "status",
+    "previousStatus",
+    "priority",
+    "assigneeAgentId",
+    "assigneeUserId",
+    "projectId",
+    "mutation",
+    "source",
+    "wakeReason",
+    "reopenedFrom",
+    "interruptedRunId",
+  ];
+  const parts = materialKeys
+    .map((key) => {
+      const value = readWakeSignal(payload, contextSnapshot, key);
+      return value ? `${key}=${value}` : null;
+    })
+    .filter((value): value is string => Boolean(value));
+  return parts.length > 0 ? parts.join("|") : "no-material-state";
+}
+
+function buildIssueWakeCooldownKey(input: {
+  companyId: string;
+  agentId: string;
+  issueId: string;
+  reason: string | null | undefined;
+  stateFingerprint: string;
+}) {
+  return [
+    "issue-wake",
+    normalizeIssueWakeCooldownKeyPart(input.companyId),
+    normalizeIssueWakeCooldownKeyPart(input.agentId),
+    normalizeIssueWakeCooldownKeyPart(input.issueId),
+    normalizeIssueWakeCooldownKeyPart(input.reason) || "unknown-reason",
+    normalizeIssueWakeCooldownKeyPart(input.stateFingerprint) || "no-state",
+  ].join(":");
 }
 
 function mergeCoalescedContextSnapshot(
@@ -2206,7 +2758,10 @@ export function heartbeatService(db: Db) {
             id: issues.id,
             identifier: issues.identifier,
             title: issues.title,
+            status: issues.status,
+            description: issues.description,
             projectId: issues.projectId,
+            goalId: issues.goalId,
             projectWorkspaceId: issues.projectWorkspaceId,
             executionWorkspaceId: issues.executionWorkspaceId,
             executionWorkspacePreference: issues.executionWorkspacePreference,
@@ -2277,7 +2832,55 @@ export function heartbeatService(db: Db) {
       },
     });
     if (selectedExecution.action === "block") {
-      throw new Error(`No execution adapter available: ${selectedExecution.reason}`);
+      const message = `No execution adapter available: ${selectedExecution.reason}`;
+      const blockerId = adapterUnavailableBlockerId(selectedExecution.reason);
+      let cancelledRun = await setRunStatus(run.id, "cancelled", {
+        error: message,
+        errorCode: "adapter_unavailable",
+        finishedAt: new Date(),
+      });
+      await setWakeupStatus(run.wakeupRequestId, "skipped", {
+        finishedAt: new Date(),
+        error: message,
+      });
+      if (!cancelledRun) cancelledRun = await getRun(run.id);
+      if (cancelledRun) {
+        await appendRunEvent(cancelledRun, await nextRunEventSeq(cancelledRun.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message,
+          payload: {
+            blockerId,
+            diagnostics: selectedExecution.diagnostics,
+          },
+        });
+        if (issueId) {
+          await issuesSvc.update(issueId, { status: "blocked" }).catch((err) => {
+            logger.warn({ err, issueId, runId: run.id }, "failed to block issue after adapter availability preflight");
+          });
+          if (issueContext?.status !== "blocked") {
+            await issuesSvc.addComment(
+              issueId,
+              buildAdapterUnavailableIssueComment({
+                blockerId,
+                runId: run.id,
+                agentName: agent.name,
+                reason: selectedExecution.reason,
+              }),
+              { agentId: agent.id },
+            ).catch((err) => {
+              logger.warn({ err, issueId, runId: run.id }, "failed to comment on adapter availability blocker");
+            });
+          }
+        }
+        await releaseIssueExecutionAndPromote(cancelledRun, {
+          promoteDeferred: false,
+          deferredSkipReason: "issue_execution_adapter_unavailable",
+        });
+      }
+      await finalizeAgentStatus(agent.id, "cancelled");
+      return;
     }
     const executionAdapterType = selectedExecution.adapterType;
     const executionAdapterConfig = selectedExecution.config;
@@ -2545,6 +3148,27 @@ export function heartbeatService(db: Db) {
       })(),
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
+    applyExecutionProfileContext(context, run, agent);
+    const codexGoalContext = buildPaperclipCodexGoalContext({
+      adapterType: executionAdapterType,
+      adapterConfig: resolvedConfig,
+      context,
+      issue: issueContext
+        ? {
+            id: issueContext.id,
+            identifier: issueContext.identifier,
+            title: issueContext.title,
+            description: issueContext.description,
+            projectId: issueContext.projectId,
+            goalId: issueContext.goalId,
+          }
+        : null,
+    });
+    if (codexGoalContext) {
+      context.paperclipCodexGoal = codexGoalContext;
+    } else {
+      delete context.paperclipCodexGoal;
+    }
     const runtimeServiceIntents = (() => {
       const runtimeConfig = parseObject(resolvedConfig.workspaceRuntime);
       return Array.isArray(runtimeConfig.services)
@@ -2874,31 +3498,25 @@ export function heartbeatService(db: Db) {
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
 
-      let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
       const latestRun = await getRun(run.id);
-      if (latestRun?.status === "cancelled") {
-        outcome = "cancelled";
-      } else if (adapterResult.timedOut) {
-        outcome = "timed_out";
-      } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
-        outcome = "succeeded";
-      } else {
-        outcome = "failed";
-      }
+      const classification = classifyAdapterHeartbeatOutcome(adapterResult, {
+        cancelled: latestRun?.status === "cancelled",
+      });
+      const { outcome, status } = classification;
+      const resultJsonWithLogicalFailure = classification.logicalFailure
+        ? {
+            ...(adapterResult.resultJson ?? {}),
+            _paperclipLogicalFailure: {
+              errorCode: classification.errorCode,
+              message: classification.logicalFailure,
+            },
+          }
+        : adapterResult.resultJson;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
         logSummary = await runLogStore.finalize(handle);
       }
-
-      const status =
-        outcome === "succeeded"
-          ? "succeeded"
-          : outcome === "cancelled"
-            ? "cancelled"
-            : outcome === "timed_out"
-              ? "timed_out"
-              : "failed";
 
       const usageJson =
         normalizedUsage || adapterResult.costUsd != null
@@ -2932,24 +3550,17 @@ export function heartbeatService(db: Db) {
           outcome === "succeeded"
             ? null
             : redactCurrentUserText(
-                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                classification.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
                 currentUserRedactionOptions,
               ),
-        errorCode:
-          outcome === "timed_out"
-            ? "timeout"
-            : outcome === "cancelled"
-              ? "cancelled"
-              : outcome === "failed"
-                ? (adapterResult.errorCode ?? "adapter_failed")
-                : null,
+        errorCode: classification.errorCode,
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
         usageJson,
         resultJson:
-          adapterResult.resultJson == null
+          resultJsonWithLogicalFailure == null
             ? null
-            : redactCurrentUserValue(adapterResult.resultJson, currentUserRedactionOptions),
+            : redactCurrentUserValue(resultJsonWithLogicalFailure, currentUserRedactionOptions),
         sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
         stdoutExcerpt,
         stderrExcerpt,
@@ -2960,10 +3571,19 @@ export function heartbeatService(db: Db) {
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
-        error: adapterResult.errorMessage ?? null,
+        error: outcome === "succeeded" ? null : classification.errorMessage,
       });
 
       const finalizedRun = await getRun(run.id);
+      await ensureGoalAwareIssueCloseoutProof({
+        issueId,
+        agentId: agent.id,
+        runId: run.id,
+        context,
+        outcome,
+        adapterResult,
+        onLog,
+      });
       if (finalizedRun) {
         await appendRunEvent(finalizedRun, seq++, {
           eventType: "lifecycle",
@@ -3139,7 +3759,55 @@ export function heartbeatService(db: Db) {
         }
   }
 
-  async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect) {
+  async function ensureGoalAwareIssueCloseoutProof(input: {
+    issueId: string | null;
+    agentId: string;
+    runId: string;
+    context: Record<string, unknown>;
+    outcome: HeartbeatOutcome;
+    adapterResult: AdapterExecutionResult;
+    onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  }) {
+    if (!input.issueId || !parseObject(input.context.paperclipCodexGoal)) return;
+
+    try {
+      const issue = await issuesSvc.getById(input.issueId);
+      if (!issue) return;
+      const proof = buildGoalAwareIssueCloseoutProof({
+        context: input.context,
+        issue: {
+          id: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          status: issue.status,
+        },
+        runId: input.runId,
+        outcome: input.outcome,
+        exitCode: input.adapterResult.exitCode,
+        errorMessage: input.adapterResult.errorMessage ?? null,
+        errorCode: input.adapterResult.errorCode ?? null,
+      });
+      if (!proof) return;
+
+      await issuesSvc.update(input.issueId, { status: proof.status });
+      await issuesSvc.addComment(input.issueId, proof.comment, { agentId: input.agentId });
+      await input.onLog(
+        "stdout",
+        `[paperclip] Wrote goal-aware ${proof.status} closeout proof to issue ${input.issueId}.\n`,
+      );
+    } catch (err) {
+      await input.onLog(
+        "stderr",
+        `[paperclip] Failed to write goal-aware closeout proof: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
+  async function releaseIssueExecutionAndPromote(
+    run: typeof heartbeatRuns.$inferSelect,
+    options?: { promoteDeferred?: boolean; deferredSkipReason?: string | null },
+  ) {
+    const promoteDeferred = options?.promoteDeferred ?? true;
     const promotedRun = await db.transaction(async (tx) => {
       await tx.execute(
         sql`select id from issues where company_id = ${run.companyId} and execution_run_id = ${run.id} for update`,
@@ -3165,6 +3833,26 @@ export function heartbeatService(db: Db) {
           updatedAt: new Date(),
         })
         .where(eq(issues.id, issue.id));
+
+      if (!promoteDeferred) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "skipped",
+            reason: options?.deferredSkipReason ?? "issue_execution_adapter_unavailable",
+            error: options?.deferredSkipReason ?? "Issue execution adapter unavailable",
+            finishedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+            ),
+          );
+        return null;
+      }
 
       while (true) {
         const deferred = await tx
@@ -3298,7 +3986,7 @@ export function heartbeatService(db: Db) {
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = { ...(opts.contextSnapshot ?? {}) };
     const reason = opts.reason ?? null;
-    const payload = opts.payload ?? null;
+    let payload = opts.payload ?? null;
     const {
       contextSnapshot: enrichedContextSnapshot,
       issueIdFromPayload,
@@ -3359,6 +4047,53 @@ export function heartbeatService(db: Db) {
         .from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
         .then((rows) => rows[0]?.projectId ?? null);
+    }
+
+    const cooldownReason = reason ?? readNonEmptyString(enrichedContextSnapshot.wakeReason);
+    if (
+      issueId &&
+      cooldownReason &&
+      ISSUE_WAKE_COOLDOWN_REASONS.has(cooldownReason) &&
+      !shouldBypassIssueWakeCooldown({
+        requestedByActorType: opts.requestedByActorType ?? null,
+        source,
+        triggerDetail,
+        payload,
+        contextSnapshot: enrichedContextSnapshot,
+      })
+    ) {
+      const cooldownStateFingerprint = buildIssueWakeCooldownStateFingerprint(payload, enrichedContextSnapshot);
+      const cooldownKey = buildIssueWakeCooldownKey({
+        companyId: agent.companyId,
+        agentId,
+        issueId,
+        reason: cooldownReason,
+        stateFingerprint: cooldownStateFingerprint,
+      });
+      payload = {
+        ...(payload ?? {}),
+        issueId,
+        [ISSUE_WAKE_COOLDOWN_KEY]: cooldownKey,
+        issueWakeCooldownState: cooldownStateFingerprint,
+      };
+      const cooldownCutoff = new Date(Date.now() - ISSUE_WAKE_COOLDOWN_MS);
+      const priorWake = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, agent.companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          gt(agentWakeupRequests.requestedAt, cooldownCutoff),
+          sql`${agentWakeupRequests.payload} ->> ${ISSUE_WAKE_COOLDOWN_KEY} = ${cooldownKey}`,
+        ))
+        .orderBy(desc(agentWakeupRequests.requestedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      if (priorWake) {
+        await writeSkippedRequest("issue_wake_cooldown");
+        return null;
+      }
     }
 
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {

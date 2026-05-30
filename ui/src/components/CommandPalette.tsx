@@ -58,15 +58,19 @@ export function CommandPalette() {
   }, [open]);
 
   const { data: issues = [] } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryKey: queryKeys.issues.summary(selectedCompanyId!),
+    queryFn: () => issuesApi.listSummary(selectedCompanyId!),
     enabled: !!selectedCompanyId && open,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 
   const { data: searchedIssues = [] } = useQuery({
-    queryKey: queryKeys.issues.search(selectedCompanyId!, searchQuery),
-    queryFn: () => issuesApi.list(selectedCompanyId!, { q: searchQuery }),
+    queryKey: queryKeys.issues.summary(selectedCompanyId!, { q: searchQuery }),
+    queryFn: () => issuesApi.listSummary(selectedCompanyId!, { q: searchQuery }),
     enabled: !!selectedCompanyId && open && searchQuery.length > 0,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
 
   const { data: agents = [] } = useQuery({

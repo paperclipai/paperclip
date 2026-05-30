@@ -21,9 +21,11 @@ export function MyIssues() {
   }, [setBreadcrumbs]);
 
   const { data: issues, isLoading, error } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryKey: queryKeys.issues.summary(selectedCompanyId!),
+    queryFn: () => issuesApi.listSummary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 
   if (!selectedCompanyId) {

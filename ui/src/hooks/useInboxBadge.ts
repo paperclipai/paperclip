@@ -96,17 +96,25 @@ export function useInboxBadge(companyId: string | null | undefined) {
     queryKey: queryKeys.dashboard(companyId!),
     queryFn: () => dashboardApi.summary(companyId!),
     enabled: !!companyId,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 
   const { data: mineIssuesRaw = [] } = useQuery({
-    queryKey: queryKeys.issues.listMineByMe(companyId!),
+    queryKey: queryKeys.issues.summary(companyId!, {
+      touchedByUserId: "me",
+      inboxArchivedByUserId: "me",
+      status: INBOX_ISSUE_STATUSES,
+    }),
     queryFn: () =>
-      issuesApi.list(companyId!, {
+      issuesApi.listSummary(companyId!, {
         touchedByUserId: "me",
         inboxArchivedByUserId: "me",
         status: INBOX_ISSUE_STATUSES,
       }),
     enabled: !!companyId,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
 
   const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
@@ -115,6 +123,8 @@ export function useInboxBadge(companyId: string | null | undefined) {
     queryKey: queryKeys.heartbeats(companyId!),
     queryFn: () => heartbeatsApi.list(companyId!),
     enabled: !!companyId,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
   });
 
   return useMemo(

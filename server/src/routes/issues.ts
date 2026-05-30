@@ -35,7 +35,7 @@ import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
-import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { queueIssueAssignmentWakeup, shouldWakeAssigneeForIssueStatus } from "../services/issue-assignment-wakeup.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 
@@ -338,7 +338,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
 
-    const result = await svc.list(companyId, {
+    const filters = {
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
@@ -354,7 +354,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
       includeRoutineExecutions:
         req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
       q: req.query.q as string | undefined,
-    });
+    };
+    const result =
+      req.query.view === "summary"
+        ? await svc.listSummary(companyId, filters)
+        : await svc.list(companyId, filters);
     res.json(result);
   });
 
@@ -1112,7 +1116,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
 
-      if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      if (assigneeChanged && issue.assigneeAgentId && shouldWakeAssigneeForIssueStatus(issue.status)) {
         wakeups.set(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",
@@ -1124,15 +1128,26 @@ export function issueRoutes(db: Db, storage: StorageService) {
         });
       }
 
-      if (!assigneeChanged && statusChangedFromBacklog && issue.assigneeAgentId) {
+      if (!assigneeChanged && statusChangedFromBacklog && issue.assigneeAgentId && shouldWakeAssigneeForIssueStatus(issue.status)) {
         wakeups.set(issue.assigneeAgentId, {
           source: "automation",
           triggerDetail: "system",
           reason: "issue_status_changed",
-          payload: { issueId: issue.id, mutation: "update" },
+          payload: {
+            issueId: issue.id,
+            mutation: "update",
+            status: issue.status,
+            previousStatus: existing.status,
+            priority: issue.priority,
+          },
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
-          contextSnapshot: { issueId: issue.id, source: "issue.status_change" },
+          contextSnapshot: {
+            issueId: issue.id,
+            source: "issue.status_change",
+            status: issue.status,
+            previousStatus: existing.status,
+          },
         });
       }
 
@@ -1480,7 +1495,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
+      const skipWake = selfComment || isClosed || !shouldWakeAssigneeForIssueStatus(currentIssue.status);
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {

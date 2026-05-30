@@ -268,14 +268,17 @@ function runMetrics(run: HeartbeatRun) {
     "cached_input_tokens",
     "cache_read_input_tokens",
   );
+  const uncachedInput = Math.max(0, input - cached);
   const cost =
     visibleRunCostUsd(usage, result);
   return {
     input,
+    uncachedInput,
     output,
     cached,
     cost,
-    totalTokens: input + output,
+    headlineTokens: uncachedInput + output,
+    rawTotalTokens: input + output,
   };
 }
 
@@ -1257,9 +1260,13 @@ function CostsSection({
     <div className="space-y-4">
       {runtimeState && (
         <div className="border border-border rounded-lg p-4">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 tabular-nums">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4 tabular-nums">
             <div>
-              <span className="text-xs text-muted-foreground block">Input tokens</span>
+              <span className="text-xs text-muted-foreground block">Input (uncached)</span>
+              <span className="text-lg font-semibold">{formatTokens(Math.max(0, runtimeState.totalInputTokens - runtimeState.totalCachedInputTokens))}</span>
+            </div>
+            <div>
+              <span className="text-xs text-muted-foreground block">Raw input</span>
               <span className="text-lg font-semibold">{formatTokens(runtimeState.totalInputTokens)}</span>
             </div>
             <div>
@@ -1267,7 +1274,7 @@ function CostsSection({
               <span className="text-lg font-semibold">{formatTokens(runtimeState.totalOutputTokens)}</span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Cached tokens</span>
+              <span className="text-xs text-muted-foreground block">Cached input</span>
               <span className="text-lg font-semibold">{formatTokens(runtimeState.totalCachedInputTokens)}</span>
             </div>
             <div>
@@ -1284,7 +1291,8 @@ function CostsSection({
               <tr className="border-b border-border bg-accent/20">
                 <th className="text-left px-3 py-2 font-medium text-muted-foreground">Date</th>
                 <th className="text-left px-3 py-2 font-medium text-muted-foreground">Run</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Input</th>
+                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Input (uncached)</th>
+                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Cached</th>
                 <th className="text-right px-3 py-2 font-medium text-muted-foreground">Output</th>
                 <th className="text-right px-3 py-2 font-medium text-muted-foreground">Cost</th>
               </tr>
@@ -1296,7 +1304,8 @@ function CostsSection({
                   <tr key={run.id} className="border-b border-border last:border-b-0">
                     <td className="px-3 py-2">{formatDate(run.createdAt)}</td>
                     <td className="px-3 py-2 font-mono">{run.id.slice(0, 8)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.input)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.uncachedInput)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.cached)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.output)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">
                       {metrics.cost > 0
@@ -2808,9 +2817,11 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
           {summary.slice(0, 60)}
         </span>
       )}
-      {(metrics.totalTokens > 0 || metrics.cost > 0) && (
+      {(metrics.uncachedInput > 0 || metrics.output > 0 || metrics.cached > 0 || metrics.cost > 0) && (
         <div className="flex items-center gap-2 pl-5.5 text-[11px] text-muted-foreground tabular-nums">
-          {metrics.totalTokens > 0 && <span>{formatTokens(metrics.totalTokens)} tok</span>}
+          {metrics.uncachedInput > 0 && <span>{formatTokens(metrics.uncachedInput)} in</span>}
+          {metrics.cached > 0 && <span>{formatTokens(metrics.cached)} cached</span>}
+          {metrics.output > 0 && <span>{formatTokens(metrics.output)} out</span>}
           {metrics.cost > 0 && <span>${metrics.cost.toFixed(3)}</span>}
         </div>
       )}
@@ -3055,7 +3066,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
     ? Math.round((new Date(displayRun.finishedAt).getTime() - new Date(displayRun.startedAt).getTime()) / 1000)
     : null;
   const displayDurationSec = durationSec ?? (isRunning ? elapsedSec : null);
-  const hasMetrics = metrics.input > 0 || metrics.output > 0 || metrics.cached > 0 || metrics.cost > 0;
+  const hasMetrics = metrics.input > 0 || metrics.uncachedInput > 0 || metrics.output > 0 || metrics.cached > 0 || metrics.cost > 0;
   const hasSession = !!(displayRun.sessionIdBefore || displayRun.sessionIdAfter);
   const sessionChanged =
     displayRun.sessionIdBefore &&
@@ -3231,18 +3242,26 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
 
           {/* Right column: metrics */}
           {hasMetrics && (
-            <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 gap-x-4 sm:gap-x-8 gap-y-3 content-center tabular-nums">
+            <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 lg:grid-cols-3 gap-x-4 sm:gap-x-8 gap-y-3 content-center tabular-nums">
               <div>
-                <div className="text-xs text-muted-foreground">Input</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.input)}</div>
+                <div className="text-xs text-muted-foreground">Input (uncached)</div>
+                <div className="text-sm font-medium font-mono">{formatTokens(metrics.uncachedInput)}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Cached input</div>
+                <div className="text-sm font-medium font-mono">{formatTokens(metrics.cached)}</div>
               </div>
               <div>
                 <div className="text-xs text-muted-foreground">Output</div>
                 <div className="text-sm font-medium font-mono">{formatTokens(metrics.output)}</div>
               </div>
               <div>
-                <div className="text-xs text-muted-foreground">Cached</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.cached)}</div>
+                <div className="text-xs text-muted-foreground">Raw input</div>
+                <div className="text-sm font-medium font-mono">{formatTokens(metrics.input)}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Raw total</div>
+                <div className="text-sm font-medium font-mono">{formatTokens(metrics.rawTotalTokens)}</div>
               </div>
               <div>
                 <div className="text-xs text-muted-foreground">Cost</div>
@@ -3733,6 +3752,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     () => buildTranscript(logLines, adapter.parseStdoutLine, { censorUsernameInLogs }),
     [adapter, censorUsernameInLogs, logLines],
   );
+  const compactAutomationUpdates = useMemo(() => {
+    const context = asRecord(run.contextSnapshot);
+    return asNonEmptyString(context?.transcriptMode) === "compact";
+  }, [run.contextSnapshot]);
   const diagnosticText = useMemo(() => {
     const eventText = events
       .map((event) => event.message ?? (event.payload ? JSON.stringify(event.payload) : ""))
@@ -3911,6 +3934,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           entries={transcript}
           mode={transcriptMode}
           streaming={isLive}
+          compactAutomationUpdates={compactAutomationUpdates}
           emptyMessage={run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
         />
         {logError && (

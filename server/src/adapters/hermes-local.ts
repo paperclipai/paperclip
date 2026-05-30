@@ -1,4 +1,9 @@
-import { execute as hermesPackageExecute, testEnvironment as hermesPackageTestEnvironment, sessionCodec as hermesSessionCodec } from "hermes-paperclip-adapter/server";
+import { homedir } from "node:os";
+import {
+  execute as hermesPackageExecute,
+  sessionCodec as hermesSessionCodec,
+  testEnvironment as hermesPackageTestEnvironment,
+} from "hermes-paperclip-adapter/server";
 import { renderTaskBindingGuard } from "@paperclipai/adapter-utils/server-utils";
 import type {
   AdapterExecutionContext,
@@ -16,6 +21,45 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? { ...(value as Record<string, unknown>) }
     : {};
+}
+
+function usesDeepSeekAnthropicEndpoint(config: Record<string, unknown>, env: Record<string, unknown>): boolean {
+  const provider = readNonEmptyString(config.provider)?.toLowerCase();
+  const model = readNonEmptyString(config.model)?.toLowerCase();
+  const configuredBaseUrl =
+    readNonEmptyString(config.base_url) ??
+    readNonEmptyString(config.baseUrl) ??
+    readNonEmptyString(env.ANTHROPIC_BASE_URL) ??
+    readNonEmptyString(env.DEEPSEEK_BASE_URL) ??
+    readNonEmptyString(process.env.BLUEPRINT_PAPERCLIP_HERMES_BASE_URL) ??
+    readNonEmptyString(process.env.DEEPSEEK_BASE_URL);
+
+  return (
+    configuredBaseUrl?.toLowerCase().includes("api.deepseek.com") === true ||
+    model?.startsWith("deepseek-") === true ||
+    (provider === "anthropic" && model?.includes("deepseek") === true)
+  );
+}
+
+function mergeAdapterConfig(
+  adapterConfig: unknown,
+  hydratedConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  const base = asRecord(adapterConfig);
+  const env = {
+    ...asRecord(base.env),
+    ...asRecord(hydratedConfig.env),
+  };
+  const merged = {
+    ...base,
+    ...hydratedConfig,
+  };
+
+  if (Object.keys(env).length > 0) {
+    merged.env = env;
+  }
+
+  return merged;
 }
 
 export function hydrateHermesExecutionConfig(
@@ -73,6 +117,25 @@ export function hydrateHermesExecutionConfig(
   if (!readNonEmptyString(env.PAPERCLIP_API_KEY) && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+
+  if (!readNonEmptyString(env.HERMES_HOME)) {
+    env.HERMES_HOME = process.env.HERMES_HOME ?? `${homedir()}/.hermes`;
+  }
+
+  if (usesDeepSeekAnthropicEndpoint(next, env)) {
+    const deepseekApiKey =
+      readNonEmptyString(env.DEEPSEEK_API_KEY) ??
+      readNonEmptyString(process.env.DEEPSEEK_API_KEY);
+    if (deepseekApiKey) {
+      env.DEEPSEEK_API_KEY = deepseekApiKey;
+      env.ANTHROPIC_API_KEY = deepseekApiKey;
+      env.ANTHROPIC_TOKEN = deepseekApiKey;
+    }
+    if (!readNonEmptyString(env.ANTHROPIC_BASE_URL)) {
+      env.ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic";
+    }
+  }
+
   if (Object.keys(env).length > 0) {
     next.env = env;
   }
@@ -81,9 +144,18 @@ export function hydrateHermesExecutionConfig(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const hydratedConfig = hydrateHermesExecutionConfig(ctx.config, ctx.context, ctx.authToken);
+  const agent = ctx.agent
+    ? {
+        ...ctx.agent,
+        adapterConfig: mergeAdapterConfig(ctx.agent.adapterConfig, hydratedConfig),
+      }
+    : ctx.agent;
+
   return hermesPackageExecute({
     ...ctx,
-    config: hydrateHermesExecutionConfig(ctx.config, ctx.context, ctx.authToken),
+    agent,
+    config: hydratedConfig,
   } as AdapterExecutionContext);
 }
 

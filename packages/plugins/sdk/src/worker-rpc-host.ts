@@ -575,6 +575,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             projectId: input.projectId,
             assigneeAgentId: input.assigneeAgentId,
             status: input.status,
+            includeRoutineExecutions: input.includeRoutineExecutions,
             limit: input.limit,
             offset: input.offset,
           });

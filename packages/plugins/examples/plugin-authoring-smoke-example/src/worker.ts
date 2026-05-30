@@ -1,8 +1,8 @@
-import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import { definePlugin, runWorker, type PluginEvent } from "@paperclipai/plugin-sdk";
 
 const plugin = definePlugin({
   async setup(ctx) {
-    ctx.events.on("issue.created", async (event) => {
+    ctx.events.on("issue.created", async (event: PluginEvent) => {
       const issueId = event.entityId ?? "unknown";
       await ctx.state.set({ scopeKind: "issue", scopeId: issueId, stateKey: "seen" }, true);
       ctx.logger.info("Observed issue.created", { issueId });

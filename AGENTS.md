@@ -148,3 +148,4 @@ A change is done when all are true:
 2. Typecheck, tests, and build pass
 3. Contracts are synced across db/shared/server/ui
 4. Docs updated when behavior or commands change
+5. Issue or run closeout includes state-specific evidence: `done` names durable output and verification, `blocked` names the earliest hard stop and retry condition, and human-gated work is not called done until the human decision is recorded and resumed.

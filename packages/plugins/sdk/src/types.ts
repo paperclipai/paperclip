@@ -863,6 +863,7 @@ export interface PluginIssuesClient {
     projectId?: string;
     assigneeAgentId?: string;
     status?: Issue["status"];
+    includeRoutineExecutions?: boolean;
     limit?: number;
     offset?: number;
   }): Promise<Issue[]>;

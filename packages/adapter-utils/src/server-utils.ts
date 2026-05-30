@@ -2,6 +2,9 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import type {
+  AdapterAutomationVerbosity,
+  AdapterExecutionProfile,
+  AdapterTranscriptMode,
   AdapterSkillEntry,
   AdapterSkillSnapshot,
 } from "./types.js";
@@ -48,6 +51,9 @@ const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
 ];
+const REQUIRED_PAPERCLIP_SKILL_KEYS = new Set<string>([
+  "paperclipai/paperclip/paperclip",
+]);
 
 export interface PaperclipSkillEntry {
   key: string;
@@ -474,13 +480,19 @@ export async function listPaperclipSkillEntries(
     const entries = await fs.readdir(root, { withFileTypes: true });
     return entries
       .filter((entry) => entry.isDirectory())
-      .map((entry) => ({
-        key: `paperclipai/paperclip/${entry.name}`,
-        runtimeName: entry.name,
-        source: path.join(root, entry.name),
-        required: true,
-        requiredReason: "Bundled Paperclip skills are always available for local adapters.",
-      }));
+      .map((entry) => {
+        const key = `paperclipai/paperclip/${entry.name}`;
+        const required = REQUIRED_PAPERCLIP_SKILL_KEYS.has(key);
+        return {
+          key,
+          runtimeName: entry.name,
+          source: path.join(root, entry.name),
+          required,
+          requiredReason: required
+            ? "Core Paperclip coordination skills are always available for local adapters."
+            : null,
+        };
+      });
   } catch {
     return [];
   }
@@ -731,6 +743,181 @@ export function writePaperclipSkillSyncPreference(
   );
   next.paperclipSkillSync = current;
   return next;
+}
+
+function readNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function readPromptRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function normalizePromptLine(value: string, maxLength = 700): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function readPromptString(value: unknown, maxLength?: number): string | null {
+  const text = readNonEmptyString(value);
+  return text ? normalizePromptLine(text, maxLength) : null;
+}
+
+function readPromptStringArray(value: unknown, maxItems = 8): string[] {
+  if (!Array.isArray(value)) return [];
+  const result: string[] = [];
+  for (const item of value) {
+    const text = readPromptString(item, 360);
+    if (text && !result.includes(text)) result.push(text);
+    if (result.length >= maxItems) break;
+  }
+  return result;
+}
+
+function readTokenBudgetLabel(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return `${Math.floor(value)} tokens`;
+  }
+  return readPromptString(value, 120);
+}
+
+function readTimeoutLabel(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return `${Math.floor(value)} seconds`;
+  }
+  const text = readPromptString(value, 120);
+  return text ? text : null;
+}
+
+export function renderPaperclipGoalPrompt(
+  context: Record<string, unknown> | null | undefined,
+): string {
+  const goalContext = readPromptRecord(context?.paperclipCodexGoal);
+  if (!goalContext) return "";
+
+  const issue = readPromptRecord(goalContext.issue);
+  const goal = readPromptRecord(goalContext.goal);
+  const project = readPromptRecord(goalContext.project);
+  const issueId =
+    readPromptString(goalContext.issueId, 120) ??
+    readPromptString(issue?.id, 120) ??
+    (context ? resolveBoundIssueId(context) : null);
+  const issueLabel =
+    readPromptString(issue?.identifier, 80) ??
+    readPromptString(issue?.title, 160) ??
+    issueId;
+  const objective =
+    readPromptString(goalContext.objective, 900) ??
+    readPromptString(issue?.title, 700) ??
+    "Complete the assigned Paperclip issue.";
+  const evidenceRequirements = readPromptStringArray(goalContext.evidenceRequirements);
+  const tokenBudget =
+    readTokenBudgetLabel(goalContext.tokenBudget) ??
+    readTokenBudgetLabel(context?.tokenBudget) ??
+    "not specified; use the smallest viable context and stop once proof is written";
+  const timeout =
+    readTimeoutLabel(goalContext.timeoutSec) ??
+    readTimeoutLabel(goalContext.timeout) ??
+    readTimeoutLabel(context?.timeoutSec) ??
+    readTimeoutLabel(context?.timeout);
+  const goalTitle = readPromptString(goal?.title, 220);
+  const goalDescription = readPromptString(goal?.description, 360);
+  const projectName = readPromptString(project?.name, 180);
+
+  const lines = [
+    `Goal: ${objective}`,
+    "",
+    "Paperclip issue context:",
+    ...(issueLabel ? [`- Issue: ${issueLabel}${issueId && issueLabel !== issueId ? ` (${issueId})` : ""}`] : []),
+    ...(projectName ? [`- Project: ${projectName}`] : []),
+    ...(goalTitle ? [`- Parent goal: ${goalTitle}`] : []),
+    ...(goalDescription ? [`- Parent goal detail: ${goalDescription}`] : []),
+    `- Token budget: ${tokenBudget}`,
+    ...(timeout ? [`- Timeout: ${timeout}`] : []),
+    "",
+    "Evidence requirements:",
+    ...(evidenceRequirements.length > 0
+      ? evidenceRequirements.map((item) => `- ${item}`)
+      : [
+          "- No explicit issue evidence requirements were supplied; write concrete proof with changed files or artifacts, commands run, observed results, and any remaining risk.",
+        ]),
+    "",
+    "Shared state evidence checklist:",
+    "- Done proof must include objective, stage reached, durable outputs, verification, requirement coverage, issue or graph update, remaining risk, and next action.",
+    "- Blocked proof must include earliest hard stop, stage reached, exact evidence, why no reversible work remains, next required input, owner, retry/resume condition, and linked follow-up when another lane owns the unblock.",
+    "- Awaiting-human proof must include gate category, decision requested, recommendation, evidence packet, blocker id, routing surface, watcher/owner, and resume condition. Do not mark a human-gated branch done until the reply is recorded and execution resumes.",
+    "",
+    "Required closeout fields:",
+    "- State claimed: exactly one of `done`, `blocked`, or `awaiting_human_decision`.",
+    "- Stage reached:",
+    "- Proof paths and command outputs:",
+    "- Next action / retry condition:",
+    "- Residual risk:",
+    "",
+    "Issue closeout proof:",
+    issueId
+      ? `- On completion, update issue ${issueId} to status done with a proof-bearing comment.`
+      : "- On completion, update the bound issue to status done with a proof-bearing comment.",
+    "- Completion proof must say what changed, what was verified, and what risk remains.",
+    issueId
+      ? `- If blocked, update issue ${issueId} to status blocked with blocker proof before exiting.`
+      : "- If blocked, update the bound issue to status blocked with blocker proof before exiting.",
+    "- Blocker proof must name the earliest hard stop, exact evidence path or command output, and the next required input.",
+    "- Do not finish with only a chat final answer; Paperclip issue state is the durable completion surface.",
+  ];
+
+  return lines.join("\n");
+}
+
+export function normalizeExecutionProfile(value: unknown): AdapterExecutionProfile {
+  return value === "automation_compact" ? "automation_compact" : "default";
+}
+
+export function normalizeAutomationVerbosity(value: unknown): AdapterAutomationVerbosity {
+  return value === "quiet" ? "quiet" : "default";
+}
+
+export function normalizeTranscriptMode(value: unknown): AdapterTranscriptMode {
+  return value === "compact" ? "compact" : "default";
+}
+
+export function isAutomationCompactExecutionProfile(
+  context: Record<string, unknown> | null | undefined,
+): boolean {
+  return normalizeExecutionProfile(context?.executionProfile) === "automation_compact";
+}
+
+export function renderAutomationCompactPromptGuard(
+  context: Record<string, unknown> | null | undefined,
+): string {
+  if (!isAutomationCompactExecutionProfile(context)) return "";
+
+  const verbosity = normalizeAutomationVerbosity(context?.automationVerbosity);
+  const transcriptMode = normalizeTranscriptMode(context?.transcriptMode);
+  const lines = [
+    "Automation compact run policy:",
+    "- Keep progress updates sparse and high-signal.",
+    "- Do not narrate routine reads, searches, or command invocations.",
+    "- Only send commentary when blocked, when the plan materially changes, before substantive edits, or at final completion.",
+  ];
+
+  if (verbosity === "quiet") {
+    lines.push("- Prefer one concise update per substantial milestone.");
+  }
+  if (transcriptMode === "compact") {
+    lines.push("- Favor terse updates because the run UI will compact repetitive automation chatter.");
+  }
+
+  const issueId = readNonEmptyString(context?.issueId);
+  if (issueId) {
+    lines.push(`- Stay tightly scoped to issue ${issueId}.`);
+  }
+
+  return lines.join("\n");
 }
 
 export async function ensurePaperclipSkillSymlink(
