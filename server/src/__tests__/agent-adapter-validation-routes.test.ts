@@ -267,4 +267,176 @@ describe("agent routes adapter validation", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(String(res.body.error ?? res.body.message ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);
   });
+
+  describe("model compatibility guard", () => {
+    it("rejects claude_local with a google/gemini model", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Bad Claude Agent",
+            adapterType: "claude_local",
+            adapterConfig: { model: "google/gemini-2.5-flash-lite" },
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(String(res.body.error ?? res.body.message ?? "")).toContain("claude_local");
+    });
+
+    it("rejects claude_local with an openai model", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Bad Claude Agent",
+            adapterType: "claude_local",
+            adapterConfig: { model: "gpt-5.3-codex" },
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(String(res.body.error ?? res.body.message ?? "")).toContain("claude_local");
+    });
+
+    it("accepts claude_local with a valid claude- model", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Good Claude Agent",
+            adapterType: "claude_local",
+            adapterConfig: { model: "claude-sonnet-4-6" },
+          }),
+      );
+
+      // Guard must not reject a valid Claude model (422 = guard fired; other codes = unrelated path)
+      expect(res.status, JSON.stringify(res.body)).not.toBe(422);
+    });
+
+    it("accepts claude_local with no model set (uses CLI default)", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Default Claude Agent",
+            adapterType: "claude_local",
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).not.toBe(422);
+    });
+
+    it("accepts claude_local with a Bedrock model id", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Bedrock Claude Agent",
+            adapterType: "claude_local",
+            adapterConfig: { model: "us.anthropic.claude-sonnet-4-5-20250929-v2:0" },
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).not.toBe(422);
+    });
+
+    it("rejects gemini_local with a claude model", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Bad Gemini Agent",
+            adapterType: "gemini_local",
+            adapterConfig: { model: "claude-sonnet-4-6" },
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(String(res.body.error ?? res.body.message ?? "")).toContain("gemini_local");
+    });
+
+    it("accepts gemini_local with a valid gemini- model", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Good Gemini Agent",
+            adapterType: "gemini_local",
+            adapterConfig: { model: "gemini-2.5-flash" },
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).not.toBe(422);
+    });
+
+    it("accepts gemini_local with model auto", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Auto Gemini Agent",
+            adapterType: "gemini_local",
+            adapterConfig: { model: "auto" },
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).not.toBe(422);
+    });
+
+    it("rejects codex_local with a claude model", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Bad Codex Agent",
+            adapterType: "codex_local",
+            adapterConfig: { model: "claude-sonnet-4-6" },
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(String(res.body.error ?? res.body.message ?? "")).toContain("codex_local");
+    });
+
+    it("rejects codex_local with a provider/model format model", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Bad Codex Agent",
+            adapterType: "codex_local",
+            adapterConfig: { model: "google/gemini-2.5-flash-lite" },
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(String(res.body.error ?? res.body.message ?? "")).toContain("codex_local");
+    });
+
+    it("accepts codex_local with a valid gpt model", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Good Codex Agent",
+            adapterType: "codex_local",
+            adapterConfig: { model: "gpt-5.3-codex" },
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).not.toBe(422);
+    });
+  });
 });

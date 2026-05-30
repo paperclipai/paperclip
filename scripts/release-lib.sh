@@ -371,8 +371,12 @@ require_npm_publish_auth() {
   fi
 
   if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
-    release_info "  ✓ npm publish auth will be provided by GitHub Actions trusted publishing"
-    return
+    if [ "${GITHUB_REPOSITORY:-}" = "paperclipai/paperclip" ]; then
+      release_info "  ✓ npm publish auth: GitHub Actions OIDC (trusted publishing configured for this repo)"
+      return
+    else
+      release_fail "npm publish auth unavailable: OIDC trusted publishing is only configured for paperclipai/paperclip. Use npm login locally or configure an NPM_TOKEN for this repo."
+    fi
   fi
 
   release_fail "npm publish auth is not available. Use 'npm login' locally or run from GitHub Actions with trusted publishing."

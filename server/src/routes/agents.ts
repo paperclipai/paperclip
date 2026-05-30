@@ -105,6 +105,29 @@ import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+const LIVE_RUNS_CACHE_TTL_MS = 5_000;
+const LIVE_RUNS_CACHE_MAX_ENTRIES = 500;
+
+type LiveRunsCacheEntry = {
+  expiresAt: number;
+  value: unknown;
+};
+
+const liveRunsCache = new Map<string, LiveRunsCacheEntry>();
+
+function sweepLiveRunsCache(now: number) {
+  for (const [key, entry] of liveRunsCache) {
+    if (entry.expiresAt <= now) liveRunsCache.delete(key);
+  }
+  if (liveRunsCache.size <= LIVE_RUNS_CACHE_MAX_ENTRIES) return;
+  const excess = liveRunsCache.size - LIVE_RUNS_CACHE_MAX_ENTRIES;
+  let removed = 0;
+  for (const key of liveRunsCache.keys()) {
+    liveRunsCache.delete(key);
+    removed += 1;
+    if (removed >= excess) break;
+  }
+}
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -1176,10 +1199,60 @@ export function agentRoutes(
     return ensureGatewayDeviceKey(adapterType, next);
   }
 
+  function isValidClaudeLocalModel(model: unknown): boolean {
+    if (typeof model !== "string" || !model.trim()) return true;
+    const m = model.trim();
+    return (
+      m.startsWith("claude-") ||
+      /^\w+\.anthropic\./.test(m) ||
+      m.startsWith("arn:aws:bedrock:")
+    );
+  }
+
+  function isValidGeminiLocalModel(model: unknown): boolean {
+    if (typeof model !== "string" || !model.trim()) return true;
+    const m = model.trim();
+    return m === "auto" || m.startsWith("gemini-");
+  }
+
+  function isValidCodexLocalModel(model: unknown): boolean {
+    if (typeof model !== "string" || !model.trim()) return true;
+    const m = model.trim();
+    // Codex uses OpenAI model IDs (gpt-*, o*, codex-*) — reject Claude/Gemini patterns
+    return !m.startsWith("claude-") && !m.startsWith("gemini-") && !m.includes("/");
+  }
+
   async function assertAdapterConfigConstraints(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
+    if (adapterType === "claude_local") {
+      if (!isValidClaudeLocalModel(adapterConfig.model)) {
+        throw unprocessable(
+          `Invalid claude_local adapterConfig: model "${adapterConfig.model}" is not compatible with the Claude CLI. ` +
+          `Use a Claude model id (e.g. "claude-sonnet-4-6") or leave model unset to use the CLI default.`,
+        );
+      }
+      return;
+    }
+    if (adapterType === "gemini_local") {
+      if (!isValidGeminiLocalModel(adapterConfig.model)) {
+        throw unprocessable(
+          `Invalid gemini_local adapterConfig: model "${adapterConfig.model}" is not compatible with the Gemini CLI. ` +
+          `Use a Gemini model id (e.g. "gemini-2.5-flash") or "auto", or leave model unset.`,
+        );
+      }
+      return;
+    }
+    if (adapterType === "codex_local") {
+      if (!isValidCodexLocalModel(adapterConfig.model)) {
+        throw unprocessable(
+          `Invalid codex_local adapterConfig: model "${adapterConfig.model}" is not compatible with the Codex CLI. ` +
+          `Use an OpenAI model id (e.g. "gpt-5.3-codex") or leave model unset to use the default.`,
+        );
+      }
+      return;
+    }
     if (adapterType !== "opencode_local") return;
     try {
       requireOpenCodeModelId(adapterConfig.model);
@@ -3395,6 +3468,15 @@ export function agentRoutes(
     // padded in and renders bogus "live" counts.
     const minCount = readLiveRunsQueryInt(req.query.minCount, 50, 0);
     const limit = readLiveRunsQueryInt(req.query.limit, 50, 50);
+    const cacheKey = `${companyId}:${minCount}:${limit}`;
+    const now = Date.now();
+    const cached = liveRunsCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      res.json(cached.value);
+      return;
+    }
+    if (cached) liveRunsCache.delete(cacheKey);
+    sweepLiveRunsCache(now);
 
     const columns = {
       id: heartbeatRuns.id,
@@ -3456,17 +3538,31 @@ export function agentRoutes(
         .limit(targetRunCount - liveRuns.length);
 
       const rows = [...liveRuns, ...recentRuns];
-      res.json(await Promise.all(rows.map(async (run) => ({
+      const payload = await Promise.all(rows.map(async (run) => ({
         ...run,
         outputSilence: await heartbeat.buildRunOutputSilence(run),
-      }))));
+      })));
+      liveRunsCache.set(cacheKey, { expiresAt: now + LIVE_RUNS_CACHE_TTL_MS, value: payload });
+      sweepLiveRunsCache(now);
+      res.json(payload);
       return;
     }
 
-    res.json(await Promise.all(liveRuns.map(async (run) => ({
+    const payload = await Promise.all(liveRuns.map(async (run) => ({
       ...run,
       outputSilence: await heartbeat.buildRunOutputSilence(run),
-    }))));
+    })));
+    liveRunsCache.set(cacheKey, { expiresAt: now + LIVE_RUNS_CACHE_TTL_MS, value: payload });
+    sweepLiveRunsCache(now);
+    res.json(payload);
+  });
+
+  router.get("/companies/:companyId/execution-summary", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const summary = await heartbeat.getExecutionCapSummary();
+    res.json(summary);
   });
 
   router.get("/heartbeat-runs/:runId", async (req, res) => {
@@ -3584,7 +3680,7 @@ export function agentRoutes(
       limitBytes,
     });
 
-    res.set("Cache-Control", "no-cache, no-store");
+    res.set("Cache-Control", "private, max-age=1, must-revalidate");
     res.json(result);
   });
 
