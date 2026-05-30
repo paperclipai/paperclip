@@ -58,7 +58,10 @@ FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
 ARG DOCKER_GID=981
-ARG INSTALL_PLAYWRIGHT=false
+# Default TRUE: image này dùng cho QA agent (cần browser). Để true để dù build
+# kiểu gì (compose / docker build tay / quên truyền arg) cũng luôn có Chromium.
+# Đổi về false nếu cần build server-only nhẹ (không QA giao diện).
+ARG INSTALL_PLAYWRIGHT=true
 ARG PLAYWRIGHT_INSTALL_TIMEOUT=900
 WORKDIR /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
@@ -67,8 +70,21 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && rm -rf /var/lib/apt/lists/* \
   && groupadd -g ${DOCKER_GID} --non-unique docker-host \
   && usermod -aG docker-host node \
-  && mkdir -p /paperclip \
-  && chown node:node /paperclip
+  && mkdir -p /paperclip /opt/npm-cache \
+  && chown node:node /paperclip /opt/npm-cache
+
+# Docker Compose v2 plugin — QA e2e (vd DXS-77, DXS-88) cần `docker compose` để
+# dựng stack app qua DooD. docker-cli ở trên KHÔNG kèm subcommand compose.
+# Pin binary trực tiếp từ GitHub release: reproducible, KHÔNG phụ thuộc apt may rủi
+# (đoạn apt best-effort cũ có thể âm thầm fail -> image thiếu compose mà build vẫn xanh).
+# Bản hiện hành: v5.1.4 (2026-05-20). Bump version ở ARG khi cần nâng.
+# Server x86_64 -> docker-compose-linux-x86_64; đổi -aarch64 nếu host là ARM.
+ARG DOCKER_COMPOSE_VERSION=v5.1.4
+RUN mkdir -p /usr/libexec/docker/cli-plugins \
+  && curl -fSL "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+       -o /usr/libexec/docker/cli-plugins/docker-compose \
+  && chmod +x /usr/libexec/docker/cli-plugins/docker-compose \
+  && docker compose version
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
@@ -121,7 +137,8 @@ ENV NODE_ENV=production \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
-  OPENCODE_ALLOW_ALL_MODELS=true
+  OPENCODE_ALLOW_ALL_MODELS=true \
+  NPM_CONFIG_CACHE=/opt/npm-cache
 
 VOLUME ["/paperclip"]
 EXPOSE 3100
