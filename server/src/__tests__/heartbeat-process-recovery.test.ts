@@ -2742,7 +2742,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     expect(runs).toHaveLength(5);
-    const retryRun = runs.find((row) => row.id !== runId && row.errorCode !== "timeout" && row.createdAt > new Date("2026-03-18T23:55:00.000Z"));
+    const retryRun = runs.find((row) => {
+      const ctx = row.contextSnapshot as Record<string, unknown> | null;
+      return row.id !== runId &&
+        row.errorCode === null &&
+        ctx?.retryReason === "issue_continuation_needed" &&
+        ctx?.source === "issue.continuation_recovery";
+    });
     expect(retryRun?.contextSnapshot as Record<string, unknown> | undefined).toMatchObject({
       issueId,
       retryReason: "issue_continuation_needed",

@@ -531,7 +531,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       consecutive += 1;
       if (latestFinishedAt === null) latestFinishedAt = row.finishedAt ?? null;
     }
-    return { consecutive, latestFinishedAt, latestErrorCode: errorCodeToMatch };
+    return { consecutive, latestFinishedAt };
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
