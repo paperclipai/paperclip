@@ -18,6 +18,13 @@ export const issueComments = pgTable(
     body: text("body").notNull(),
     presentation: jsonb("presentation").$type<IssueCommentPresentation | null>(),
     metadata: jsonb("metadata").$type<IssueCommentMetadata | null>(),
+    // Immutability-preserving retraction: the row, timestamps and threading
+    // survive; only the hazardous payload (body/presentation/metadata) is
+    // blanked. These columns stamp who neutralized it and when.
+    redactedAt: timestamp("redacted_at", { withTimezone: true }),
+    redactedByAgentId: uuid("redacted_by_agent_id").references(() => agents.id),
+    redactedByUserId: text("redacted_by_user_id"),
+    redactionReason: text("redaction_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

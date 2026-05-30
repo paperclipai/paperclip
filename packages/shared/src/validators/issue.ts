@@ -544,6 +544,12 @@ export const addIssueCommentSchema = z.object({
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
+export const redactIssueCommentSchema = z.object({
+  reason: z.string().trim().max(500).nullable().optional(),
+});
+
+export type RedactIssueComment = z.infer<typeof redactIssueCommentSchema>;
+
 export const issueThreadInteractionStatusSchema = z.enum(ISSUE_THREAD_INTERACTION_STATUSES);
 export const issueThreadInteractionKindSchema = z.enum(ISSUE_THREAD_INTERACTION_KINDS);
 export const issueThreadInteractionContinuationPolicySchema = z.enum(

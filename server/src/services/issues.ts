@@ -5679,6 +5679,53 @@ export function issueService(db: Db) {
       });
     },
 
+    // Immutability-preserving retraction. Blanks the hazardous payload
+    // (body/presentation/metadata) of an already-committed comment and stamps
+    // a redaction marker, leaving the row, timestamps, threading and
+    // createdByRunId intact for the audit trail. Idempotent: a second call
+    // re-blanks the body but keeps the original redaction attribution.
+    redactComment: async (
+      commentId: string,
+      actor: { agentId?: string | null; userId?: string | null; reason?: string | null },
+    ) => {
+      const censorUsernameInLogs = (await instanceSettings.getGeneral()).censorUsernameInLogs;
+
+      return db.transaction(async (tx) => {
+        const existing = await tx
+          .select()
+          .from(issueComments)
+          .where(eq(issueComments.id, commentId))
+          .then((rows) => rows[0] ?? null);
+
+        if (!existing) return null;
+
+        const now = new Date();
+        const [comment] = await tx
+          .update(issueComments)
+          .set({
+            body: "[redacted by author]",
+            presentation: null,
+            metadata: null,
+            redactedAt: existing.redactedAt ?? now,
+            redactedByAgentId: existing.redactedByAgentId ?? actor.agentId ?? null,
+            redactedByUserId: existing.redactedByUserId ?? actor.userId ?? null,
+            redactionReason: existing.redactionReason ?? actor.reason ?? null,
+            updatedAt: now,
+          })
+          .where(eq(issueComments.id, commentId))
+          .returning();
+
+        if (!comment) return null;
+
+        await tx
+          .update(issues)
+          .set({ updatedAt: now })
+          .where(eq(issues.id, comment.issueId));
+
+        return redactIssueComment(comment, censorUsernameInLogs);
+      });
+    },
+
     addComment: async (
       issueId: string,
       body: string,

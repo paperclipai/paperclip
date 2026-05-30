@@ -15,6 +15,7 @@ import {
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  redactIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
   cancelIssueThreadInteractionSchema,
   companySearchQuerySchema,
@@ -5527,6 +5528,76 @@ export function issueRoutes(
 
     res.json(removed);
   });
+
+  // Immutability-preserving retraction for an already-committed comment.
+  // Unlike DELETE (which only cancels a still-queued comment for the active
+  // run), this neutralizes the body/presentation/metadata of a posted comment
+  // and stamps a redaction marker. Scoped to the comment author; board users
+  // may redact any comment in their company for moderation. This is the
+  // <60s self-remediation path for an accidental secret paste.
+  router.post(
+    "/issues/:id/comments/:commentId/redact",
+    validate(redactIssueCommentSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const commentId = req.params.commentId as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+
+      const comment = await svc.getComment(commentId);
+      if (!comment || comment.issueId !== id) {
+        res.status(404).json({ error: "Comment not found" });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const actorOwnsComment =
+        actor.actorType === "agent"
+          ? comment.authorAgentId === actor.agentId
+          : comment.authorUserId === actor.actorId;
+      if (!actorOwnsComment && req.actor.type !== "board") {
+        res
+          .status(403)
+          .json({ error: "Only the comment author or a board user can redact a comment" });
+        return;
+      }
+
+      const redacted = await svc.redactComment(commentId, {
+        agentId: actor.actorType === "agent" ? actor.agentId : null,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+        reason: req.body.reason ?? null,
+      });
+      if (!redacted) {
+        res.status(404).json({ error: "Comment not found" });
+        return;
+      }
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.comment_redacted",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          commentId: redacted.id,
+          identifier: issue.identifier,
+          issueTitle: issue.title,
+          reason: req.body.reason ?? null,
+          source: "author_redact",
+        },
+      });
+
+      res.json(redacted);
+    },
+  );
 
   router.get("/issues/:id/feedback-votes", async (req, res) => {
     const id = req.params.id as string;
