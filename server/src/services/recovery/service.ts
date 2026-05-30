@@ -486,7 +486,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
-  async function summarizeRecentContinuationRetries(companyId: string, issueId: string) {
+  async function summarizeRecentContinuationRetries(
+    companyId: string,
+    issueId: string,
+    errorCodeToMatch: string | null,
+  ) {
     const rows = await db
       .select({
         id: heartbeatRuns.id,
@@ -507,7 +511,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     let consecutive = 0;
     let latestFinishedAt: Date | null = null;
-    let latestErrorCode: string | null = null;
     for (const row of rows) {
       const ctx = parseObject(row.contextSnapshot);
       const retryReason = readNonEmptyString(ctx.retryReason);
@@ -519,11 +522,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       ) {
         break;
       }
+
+      const rowErrorCode = readNonEmptyString(row.errorCode);
+      if (errorCodeToMatch !== rowErrorCode) {
+        break;
+      }
+
       consecutive += 1;
       if (latestFinishedAt === null) latestFinishedAt = row.finishedAt ?? null;
-      if (latestErrorCode === null) latestErrorCode = readNonEmptyString(row.errorCode);
     }
-    return { consecutive, latestFinishedAt, latestErrorCode };
+    return { consecutive, latestFinishedAt, latestErrorCode: errorCodeToMatch };
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
@@ -2660,6 +2668,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           const { consecutive, latestFinishedAt } = await summarizeRecentContinuationRetries(
             issue.companyId,
             issue.id,
+            classification.errorCode,
           );
           if (consecutive >= classification.maxAttempts) {
             const failureSummary = summarizeRunFailureForIssueComment(latestRun);

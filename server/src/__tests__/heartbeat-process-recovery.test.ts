@@ -1981,7 +1981,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("re-enqueues assigned todo work when the last issue run died and no wake remains", async () => {
-    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "todo",
       runStatus: "failed",
     });
@@ -2315,7 +2315,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("re-enqueues continuation for stranded in-progress work with no active run", async () => {
-    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
     });
@@ -2653,6 +2653,104 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("retried continuation");
     expect(comments[0]?.body).toContain("3× attempts");
     expect(comments[0]?.body).toContain("Latest cause: `adapter_failed`");
+  });
+
+  it("does not count mixed-cause continuation failures toward the transient cap", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "adapter_failed",
+      runError: "ssh: connection reset",
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          source: "issue.continuation_recovery",
+        },
+        errorCode: "timeout",
+        error: "request timed out",
+        startedAt: new Date("2026-03-18T23:45:00.000Z"),
+        finishedAt: new Date("2026-03-18T23:45:00.000Z"),
+        createdAt: new Date("2026-03-18T23:45:00.000Z"),
+        updatedAt: new Date("2026-03-18T23:45:00.000Z"),
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          source: "issue.continuation_recovery",
+        },
+        errorCode: "timeout",
+        error: "request timed out",
+        startedAt: new Date("2026-03-18T23:50:00.000Z"),
+        finishedAt: new Date("2026-03-18T23:50:00.000Z"),
+        createdAt: new Date("2026-03-18T23:50:00.000Z"),
+        updatedAt: new Date("2026-03-18T23:50:00.000Z"),
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          source: "issue.continuation_recovery",
+        },
+        errorCode: "adapter_failed",
+        error: "ssh: connection reset",
+        startedAt: new Date("2026-03-18T23:55:00.000Z"),
+        finishedAt: new Date("2026-03-18T23:55:00.000Z"),
+        createdAt: new Date("2026-03-18T23:55:00.000Z"),
+        updatedAt: new Date("2026-03-18T23:55:00.000Z"),
+      },
+    ]);
+
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(5);
+    const retryRun = runs.find((row) => row.id !== runId && row.errorCode !== "timeout" && row.createdAt > new Date("2026-03-18T23:55:00.000Z"));
+    expect(retryRun?.contextSnapshot as Record<string, unknown> | undefined).toMatchObject({
+      issueId,
+      retryReason: "issue_continuation_needed",
+      source: "issue.continuation_recovery",
+    });
+    if (retryRun) {
+      await waitForRunToSettle(heartbeat, retryRun.id);
+    }
   });
 
   it("escalates non-retryable continuation failures immediately without enqueuing another retry", async () => {
