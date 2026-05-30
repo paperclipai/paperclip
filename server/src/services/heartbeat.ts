@@ -218,6 +218,11 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+// Concurrency caps (FUL-4341)
+const GLOBAL_MAX_CONCURRENT_RUNS = 6;
+const PREMIUM_MAX_CONCURRENT_RUNS = 1;
+const PER_AGENT_MAX_CONCURRENT_RUNS_HARD_CAP = 1;
+const PREMIUM_ADAPTER_TYPES: ReadonlyArray<string> = ["claude_local"];
 const PREMIUM_MANAGED_MAX_CONCURRENT_RUNS_DEFAULT = 3;
 const PREMIUM_MANAGED_MAX_CONCURRENT_RUNS_MIN = 1;
 const PREMIUM_MANAGED_MAX_CONCURRENT_RUNS_MAX = 20;
@@ -286,6 +291,18 @@ const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "running"] as const;
+// Checkout 409 exponential backoff (FUL-4342)
+const CHECKOUT_CONFLICT_RETRY_REASON = "checkout_conflict_backoff";
+const CHECKOUT_CONFLICT_WAKE_REASON = "checkout_conflict_retry";
+const CHECKOUT_CONFLICT_BASE_DELAY_MS = 2_000;
+const CHECKOUT_CONFLICT_MAX_DELAY_MS = 60_000;
+const CHECKOUT_CONFLICT_MAX_ATTEMPTS = 5;
+const CHECKOUT_CONFLICT_CIRCUIT_BREAKER_THRESHOLD = 3;
+const CHECKOUT_409_WINDOW_MS = 60_000;
+const PAUSED_AGENT_WAKE_BACKOFF_BASE_MS = 5 * 60 * 1000;
+const PAUSED_AGENT_WAKE_BACKOFF_MAX_MS = 60 * 60 * 1000;
+const PAUSED_AGENT_WAKE_BACKOFF_REASON = "agent_paused_wakeup_backoff";
+const PAUSED_AGENT_WAKE_BACKOFF_WAKE_REASON = "agent_paused_wakeup";
 type CodexTransientFallbackMode =
   | "same_session"
   | "safer_invocation"
@@ -314,6 +331,12 @@ function resolveCodexTransientFallbackMode(attempt: number): CodexTransientFallb
   if (attempt === 2) return "safer_invocation";
   if (attempt === 3) return "fresh_session";
   return "fresh_session_safer_invocation";
+}
+
+function pausedWakeBackoffDelayMs(attempt: number) {
+  const normalizedAttempt = Math.max(1, Math.trunc(attempt));
+  const exponential = PAUSED_AGENT_WAKE_BACKOFF_BASE_MS * (2 ** (normalizedAttempt - 1));
+  return Math.min(PAUSED_AGENT_WAKE_BACKOFF_MAX_MS, exponential);
 }
 
 function readHeartbeatRunErrorFamily(
@@ -595,6 +618,16 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
     dueAt: new Date(now.getTime() + delayMs),
     maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
   };
+}
+
+export function computeCheckoutConflictRetryDelayMs(
+  attempt: number,
+  random: () => number = Math.random,
+): number {
+  const raw = CHECKOUT_CONFLICT_BASE_DELAY_MS * Math.pow(2, Math.max(0, attempt - 1));
+  const capped = Math.min(raw, CHECKOUT_CONFLICT_MAX_DELAY_MS);
+  const jitter = capped * 0.25 * ((random() * 2) - 1);
+  return Math.max(CHECKOUT_CONFLICT_BASE_DELAY_MS, Math.round(capped + jitter));
 }
 
 async function resolveRunScopedMentionedSkillKeys(input: {
@@ -2292,6 +2325,7 @@ function shouldBypassWakeSuppression(input: {
 }) {
   if (input.issueStatus !== "blocked") return true;
   if (input.issuePriority === "critical") return true;
+  if (input.wakeReason === "source_scoped_recovery_action") return true;
   return Boolean(input.wakeReason && URGENT_WAKE_REASON_RE.test(input.wakeReason));
 }
 
@@ -3160,6 +3194,26 @@ export interface HeartbeatServiceOptions {
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
+  // Per-agent checkout 409 counters for circuit breaker (FUL-4342)
+  const checkout409CountByAgent = new Map<string, { count: number; windowStartMs: number }>();
+
+  function incrementCheckout409Count(agentId: string): void {
+    const now = Date.now();
+    const entry = checkout409CountByAgent.get(agentId);
+    if (!entry || now - entry.windowStartMs > CHECKOUT_409_WINDOW_MS) {
+      checkout409CountByAgent.set(agentId, { count: 1, windowStartMs: now });
+    } else {
+      entry.count += 1;
+    }
+  }
+
+  function isCheckout409CircuitOpen(agentId: string): boolean {
+    const now = Date.now();
+    const entry = checkout409CountByAgent.get(agentId);
+    if (!entry || now - entry.windowStartMs > CHECKOUT_409_WINDOW_MS) return false;
+    return entry.count >= CHECKOUT_CONFLICT_CIRCUIT_BREAKER_THRESHOLD;
+  }
+
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -5876,6 +5930,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }, "normal_model");
 
     const queued = await db.transaction(async (tx) => {
+      if (issueId) {
+        const sourceIssue = await tx.query.issues.findFirst({
+          where: and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)),
+          columns: { status: true },
+        });
+        if (sourceIssue && (sourceIssue.status === "done" || sourceIssue.status === "cancelled")) {
+          return null;
+        }
+      }
+
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -5937,6 +6001,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       return retryRun;
     });
+
+    if (!queued) {
+      return null;
+    }
 
     publishLiveEvent({
       companyId: queued.companyId,
@@ -7055,6 +7123,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function countGlobalRunningRuns() {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "running"));
+    return Number(count ?? 0);
+  }
+
+  async function countGlobalQueuedRuns() {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "queued"));
+    return Number(count ?? 0);
+  }
+
+  async function listPremiumRunningRuns() {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        processGroupId: heartbeatRuns.processGroupId,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(
+        and(
+          eq(heartbeatRuns.status, "running"),
+          inArray(agents.adapterType, [...PREMIUM_ADAPTER_TYPES]),
+          sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'modelProfile', '') != 'cheap'`,
+        ),
+      );
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -7078,6 +7180,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (budgetBlock) {
       await cancelRunInternal(run.id, budgetBlock.reason);
       return null;
+    }
+
+    // Premium cap: defer (leave queued) if premium slot is occupied (FUL-5144)
+    if (PREMIUM_ADAPTER_TYPES.includes(agent.adapterType ?? "")) {
+      const contextModelProfile = readContextModelProfile(context);
+      if (contextModelProfile !== "cheap") {
+        const premiumRunningRuns = await listPremiumRunningRuns();
+        let activePremiumRunningCount = 0;
+        for (const run of premiumRunningRuns) {
+          if (run.processGroupId && !isProcessGroupAlive(run.processGroupId)) {
+            // Orphaned-blocked premium run, record process loss to initiate recovery
+            logger.warn(
+              {
+                runId: run.id,
+                agentId: run.agentId,
+                processGroupId: run.processGroupId,
+              },
+              "Detected orphaned-blocked premium run, recording process loss.",
+            );
+            await recoveryService.recordProcessLoss(run.id, {
+              reason: "premium_adapter_orphaned_blocked",
+              processGroupId: run.processGroupId,
+            });
+            continue;
+          }
+          activePremiumRunningCount++;
+        }
+
+        if (activePremiumRunningCount >= PREMIUM_MAX_CONCURRENT_RUNS) {
+          return null; // Defer — do not cancel
+        }
+      }
     }
 
     const policy = parseHeartbeatPolicy(agent);
@@ -8018,9 +8152,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         return [];
       }
-      const policy = parseHeartbeatPolicy(agent);
+      const globalRunningCount = await countGlobalRunningRuns();
+      if (globalRunningCount >= GLOBAL_MAX_CONCURRENT_RUNS) return [];
+
       const runningCount = await countRunningRunsForAgent(agentId);
-      let availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      if (runningCount >= PER_AGENT_MAX_CONCURRENT_RUNS_HARD_CAP) return [];
+      const availableSlots = Math.min(
+        PER_AGENT_MAX_CONCURRENT_RUNS_HARD_CAP - runningCount,
+        GLOBAL_MAX_CONCURRENT_RUNS - globalRunningCount,
+      );
       if (availableSlots <= 0) return [];
 
       const queuedRuns = await db
@@ -8049,6 +8189,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : sql`false`,
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
+      // Circuit breaker: skip dispatch if agent has too many recent checkout 409s (FUL-4342)
+      if (isCheckout409CircuitOpen(agent.id)) {
+        logger.warn({ agentId }, "checkout 409 circuit breaker active: deferring run dispatch for agent");
+        return [];
+      }
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
       const prioritizedRuns = [...queuedRuns].sort((left, right) => {
         const leftIssueId = readNonEmptyString(parseObject(left.contextSnapshot).issueId);
@@ -8070,7 +8215,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
-        if (claimedRuns.length >= availableSlots) break;
+        if (claimedRuns.length >= availableSlots) {
+          // Slots full — still run claimQueuedRun for its cancellation side effects
+          // (dependency-blocked, stale, pause-hold) without dispatching the run.
+          // claimQueuedRun cancels and returns null for these cases, so we won't
+          // accidentally claim a run we can't execute.
+          const runCtx = parseObject(queuedRun.contextSnapshot);
+          const runIssueId = readNonEmptyString(runCtx.issueId);
+          if (!runIssueId) continue;
+          const runReadiness = dependencyReadiness.get(runIssueId);
+          if ((runReadiness?.unresolvedBlockerCount ?? 0) > 0) {
+            await claimQueuedRun(queuedRun, companyAgents); // cancels and returns null
+          }
+          continue;
+        }
         const claimed = await claimQueuedRun(queuedRun, companyAgents);
         if (claimed) claimedRuns.push(claimed);
       }
@@ -8203,7 +8361,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return;
         }
         if (!isCheckoutConflictError(error)) throw error;
-        context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
+        // Issue held by another agent — cancel and schedule exponential backoff retry (FUL-4342)
+        {
+          const now = new Date();
+          const attempt = (run.scheduledRetryAttempt ?? 0) + 1;
+          const delayMs = computeCheckoutConflictRetryDelayMs(attempt);
+          const conflictReason = `Checkout conflict (409): issue ${issueId ?? "unknown"} held by another agent; retrying after ${delayMs}ms (attempt ${attempt}/${CHECKOUT_CONFLICT_MAX_ATTEMPTS})`;
+          incrementCheckout409Count(agent.id);
+          const cancelledRun = await setRunStatus(run.id, "cancelled", {
+            error: conflictReason,
+            errorCode: "checkout_conflict",
+            finishedAt: now,
+            resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
+              errorCode: "checkout_conflict",
+              errorMessage: conflictReason,
+            }),
+          });
+          await setWakeupStatus(run.wakeupRequestId, "skipped", { finishedAt: now, error: conflictReason });
+          if (cancelledRun) {
+            if (attempt <= CHECKOUT_CONFLICT_MAX_ATTEMPTS) {
+              await scheduleBoundedRetryForRun(cancelledRun, agent, {
+                now,
+                retryReason: CHECKOUT_CONFLICT_RETRY_REASON,
+                wakeReason: CHECKOUT_CONFLICT_WAKE_REASON,
+                maxAttempts: CHECKOUT_CONFLICT_MAX_ATTEMPTS,
+                delayMs,
+              });
+            }
+            await appendRunEvent(cancelledRun, await nextRunEventSeq(cancelledRun.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: conflictReason,
+              payload: { issueId, delayMs, attempt, maxAttempts: CHECKOUT_CONFLICT_MAX_ATTEMPTS },
+            });
+            await releaseIssueExecutionAndPromote(cancelledRun);
+          }
+          await finalizeAgentStatus(agent.id, "cancelled");
+          return;
+        }
       }
       issueContext = await getIssueExecutionContext(agent.companyId, issueId);
     }
@@ -10678,6 +10874,133 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     }
 
+    if (agent.status === "paused") {
+      const now = new Date();
+      const scheduledRun = await db.transaction(async (tx) => {
+        const existing = await tx
+          .select({
+            run: heartbeatRuns,
+            wake: agentWakeupRequests,
+          })
+          .from(heartbeatRuns)
+          .innerJoin(
+            agentWakeupRequests,
+            and(
+              eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId),
+              eq(agentWakeupRequests.companyId, agent.companyId),
+              eq(agentWakeupRequests.agentId, agent.id),
+              eq(agentWakeupRequests.reason, PAUSED_AGENT_WAKE_BACKOFF_REASON),
+              inArray(agentWakeupRequests.status, ["queued", "claimed"]),
+            ),
+          )
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, agent.companyId),
+              eq(heartbeatRuns.agentId, agent.id),
+              eq(heartbeatRuns.status, "scheduled_retry"),
+              eq(heartbeatRuns.scheduledRetryReason, PAUSED_AGENT_WAKE_BACKOFF_REASON),
+            ),
+          )
+          .orderBy(desc(heartbeatRuns.createdAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+        const nextAttempt = Math.max(1, (existing?.run.scheduledRetryAttempt ?? 0) + 1);
+        const scheduledRetryAt = new Date(now.getTime() + pausedWakeBackoffDelayMs(nextAttempt));
+        const scheduledIso = scheduledRetryAt.toISOString();
+        const pausedContextSnapshot = {
+          ...enrichedContextSnapshot,
+          wakeReason: PAUSED_AGENT_WAKE_BACKOFF_WAKE_REASON,
+          pausedWakeAttempt: nextAttempt,
+          pausedWakeScheduledRetryAt: scheduledIso,
+        };
+
+        if (existing) {
+          const mergedPayload = {
+            ...(parseObject(existing.wake.payload) ?? {}),
+            ...(payload ?? {}),
+            pausedWakeAttempt: nextAttempt,
+            pausedWakeScheduledRetryAt: scheduledIso,
+          };
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              payload: mergedPayload,
+              coalescedCount: (existing.wake.coalescedCount ?? 0) + 1,
+              requestedAt: now,
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, existing.wake.id));
+
+          const mergedContext = mergeCoalescedContextSnapshot(existing.run.contextSnapshot, pausedContextSnapshot);
+          const [updatedRun] = await tx
+            .update(heartbeatRuns)
+            .set({
+              contextSnapshot: mergedContext,
+              scheduledRetryAt,
+              scheduledRetryAttempt: nextAttempt,
+              updatedAt: now,
+            })
+            .where(eq(heartbeatRuns.id, existing.run.id))
+            .returning();
+          return updatedRun ?? existing.run;
+        }
+
+        const [wakeupRequest] = await tx
+          .insert(agentWakeupRequests)
+          .values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: PAUSED_AGENT_WAKE_BACKOFF_REASON,
+            payload: {
+              ...(payload ?? {}),
+              pausedWakeAttempt: nextAttempt,
+              pausedWakeScheduledRetryAt: scheduledIso,
+            },
+            status: "queued",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            requestedAt: now,
+          })
+          .returning();
+        if (!wakeupRequest) throw new Error("Failed to create paused wakeup request");
+
+        const [createdRun] = await tx
+          .insert(heartbeatRuns)
+          .values({
+            companyId: agent.companyId,
+            agentId,
+            invocationSource: source,
+            triggerDetail,
+            status: "scheduled_retry",
+            wakeupRequestId: wakeupRequest.id,
+            contextSnapshot: pausedContextSnapshot,
+            sessionIdBefore: sessionBefore,
+            scheduledRetryAt,
+            scheduledRetryAttempt: nextAttempt,
+            scheduledRetryReason: PAUSED_AGENT_WAKE_BACKOFF_REASON,
+            continuationAttempt,
+          })
+          .returning();
+        if (!createdRun) throw new Error("Failed to create paused wakeup run");
+
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            runId: createdRun.id,
+            updatedAt: now,
+          })
+          .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+        return createdRun;
+      });
+      return scheduledRun;
+    }
+
+
     const invokability = await getAgentInvokability(agent);
     if (!invokability.invokable) {
       if (opts.requestedByActorType !== "user") {
@@ -12289,6 +12612,48 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .orderBy(desc(heartbeatRuns.startedAt))
         .limit(1);
       return run ?? null;
+    },
+
+    getExecutionCapSummary: async () => {
+      const [globalRunning, globalQueued, premiumRunning, pausedWakeBackoffRows] = await Promise.all([
+        countGlobalRunningRuns(),
+        countGlobalQueuedRuns(),
+        countPremiumRunningRuns(),
+        db
+          .select({
+            agentId: heartbeatRuns.agentId,
+            attemptCount: heartbeatRuns.scheduledRetryAttempt,
+            scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+          })
+          .from(heartbeatRuns)
+          .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+          .where(
+            and(
+              eq(heartbeatRuns.status, "scheduled_retry"),
+              eq(heartbeatRuns.scheduledRetryReason, PAUSED_AGENT_WAKE_BACKOFF_REASON),
+              eq(agents.status, "paused"),
+            ),
+          ),
+      ]);
+      return {
+        global: {
+          max: GLOBAL_MAX_CONCURRENT_RUNS,
+          running: globalRunning,
+          queued: globalQueued,
+        },
+        premium: {
+          max: PREMIUM_MAX_CONCURRENT_RUNS,
+          running: premiumRunning,
+        },
+        perAgent: {
+          hardCap: PER_AGENT_MAX_CONCURRENT_RUNS_HARD_CAP,
+        },
+        pausedWakeBackoff: pausedWakeBackoffRows.map((row) => ({
+          agentId: row.agentId,
+          pausedWakeAttemptCount: Number(row.attemptCount ?? 0),
+          lastScheduledRetryAt: row.scheduledRetryAt ? new Date(row.scheduledRetryAt).toISOString() : null,
+        })),
+      };
     },
   };
 }
