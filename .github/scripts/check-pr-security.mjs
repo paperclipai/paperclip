@@ -129,6 +129,21 @@ export function scanSensitivePaths(files) {
     }));
 }
 
+async function validateSensitivePaths(token, repo) {
+  const stale = [];
+  await Promise.all(SENSITIVE_PATHS.map(async (path) => {
+    try {
+      await ghFetch(`/repos/${repo}/contents/${path}?ref=master`, token);
+    } catch (err) {
+      // 404 means the file/directory no longer exists at this path
+      if (String(err.message).includes('404')) stale.push(path);
+      // Other errors (network, rate limit) — re-throw so we don't silently miss them
+      else throw err;
+    }
+  }));
+  return stale;
+}
+
 // ── Advisory creation ─────────────────────────────────────────────────────────
 
 const SEVERITY_MAP = {
@@ -223,6 +238,17 @@ async function main() {
   }
   if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(GH_REPO)) {
     console.error('ERROR: GH_REPO must be in owner/repo format');
+    process.exit(1);
+  }
+
+  // Validate SENSITIVE_PATHS — fails loudly if any have been refactored away on master
+  const stalePaths = await validateSensitivePaths(GH_TOKEN, GH_REPO);
+  if (stalePaths.length > 0) {
+    console.error('ERROR: Stale sensitive paths in check-pr-security.mjs:');
+    for (const p of stalePaths) console.error(`  - ${p}`);
+    console.error('');
+    console.error('These paths no longer exist on master. The security gate will silently produce no signal for them.');
+    console.error('Update SENSITIVE_PATHS in check-pr-security.mjs to reflect the current code structure.');
     process.exit(1);
   }
 
