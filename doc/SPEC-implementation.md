@@ -311,7 +311,32 @@ Invariant: each event must attach to agent and company; rollups are aggregation,
 - `details` jsonb null
 - `created_at` timestamptz not null default now()
 
-## 7.12 `company_secrets` + `company_secret_versions`
+## 7.12 `project_memberships` + `agent_memberships`
+
+Per-user project/agent membership is personal visibility state for board users. It only controls whether a resource appears in the current user's sidebar; it must not grant or revoke access to all-pages, detail pages, selectors, assignment flows, search, or existing permissions.
+
+`project_memberships`:
+
+- `id` uuid pk
+- `company_id` uuid fk `companies.id` not null
+- `project_id` uuid fk `projects.id` not null
+- `user_id` text not null
+- `state` enum-like text: `joined | left`
+- `created_at` timestamptz not null default now()
+- `updated_at` timestamptz not null default now()
+- unique `(company_id, user_id, project_id)`
+
+`agent_memberships` mirrors the same shape with `agent_id` instead of `project_id` and unique `(company_id, user_id, agent_id)`.
+
+Invariants:
+
+- Missing membership rows mean `joined` for backward compatibility.
+- Mutations are board-user-only `/me` operations; agent API keys are rejected.
+- Viewer-role board users may update only their own membership rows through the narrow self-service helper.
+- Target project/agent ownership is checked against the path company before mutation.
+- Successful state changes write `resource_membership.joined` or `resource_membership.left` activity entries.
+
+## 7.13 `company_secrets` + `company_secret_versions`
 
 - Secret values are not stored inline in `agents.adapter_config.env`.
 - Agent env entries should use secret refs for sensitive values.
@@ -325,7 +350,7 @@ Operational policy:
 - Activity and approval payloads must not persist raw sensitive values.
 - Config revisions may include redacted placeholders; such revisions are non-restorable for redacted fields.
 
-## 7.13 Required Indexes
+## 7.14 Required Indexes
 
 - `agents(company_id, status)`
 - `agents(company_id, reports_to)`
@@ -343,8 +368,12 @@ Operational policy:
 - `issue_attachments(company_id, issue_id)`
 - `company_secrets(company_id, name)` unique
 - `company_secret_versions(secret_id, version)` unique
+- `project_memberships(company_id, user_id)`
+- `project_memberships(company_id, user_id, project_id)` unique
+- `agent_memberships(company_id, user_id)`
+- `agent_memberships(company_id, user_id, agent_id)` unique
 
-## 7.14 `assets` + `issue_attachments`
+## 7.15 `assets` + `issue_attachments`
 
 - `assets` stores provider-backed object metadata (not inline bytes):
   - `id` uuid pk
@@ -623,14 +652,28 @@ Server behavior:
 - `GET /projects/:projectId`
 - `PATCH /projects/:projectId`
 
-## 10.6 Approvals
+## 10.6 Current-user Resource Memberships
+
+- `GET /companies/:companyId/resource-memberships/me`
+- `PUT /companies/:companyId/resource-memberships/me/projects/:projectId`
+- `PUT /companies/:companyId/resource-memberships/me/agents/:agentId`
+
+Request payload:
+
+```json
+{ "state": "joined" }
+```
+
+Allowed states are `joined` and `left`. Endpoints require a concrete board user and active company membership, reject agent API keys, and only mutate the caller's own sidebar visibility state. Joining/leaving is idempotent; missing rows read as `joined`.
+
+## 10.7 Approvals
 
 - `GET /companies/:companyId/approvals?status=pending`
 - `POST /companies/:companyId/approvals`
 - `POST /approvals/:approvalId/approve`
 - `POST /approvals/:approvalId/reject`
 
-## 10.7 Cost and Budgets
+## 10.8 Cost and Budgets
 
 - `POST /companies/:companyId/cost-events`
 - `GET /companies/:companyId/costs/summary`
@@ -639,7 +682,7 @@ Server behavior:
 - `PATCH /companies/:companyId/budgets`
 - `PATCH /agents/:agentId/budgets`
 
-## 10.8 Activity and Dashboard
+## 10.9 Activity and Dashboard
 
 - `GET /companies/:companyId/activity`
 - `GET /companies/:companyId/dashboard`
@@ -651,7 +694,7 @@ Dashboard payload must include:
 - month-to-date spend and budget utilization
 - pending approvals count
 
-## 10.9 Error Semantics
+## 10.10 Error Semantics
 
 - `400` validation error
 - `401` unauthenticated
@@ -661,7 +704,7 @@ Dashboard payload must include:
 - `422` semantic rule violation
 - `500` server error
 
-## 10.10 Current Implementation API Addenda
+## 10.11 Current Implementation API Addenda
 
 The current app also exposes V1-supporting surfaces for:
 

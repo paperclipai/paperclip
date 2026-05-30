@@ -44,6 +44,47 @@ describe("Better Auth cookie scoping", () => {
       cookiePrefix: "paperclip-pap-worktree",
       useSecureCookies: false,
     });
+    expect(getCookies({
+      advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies: true }),
+    } as BetterAuthOptions).sessionToken.name).toBe("paperclip-pap-worktree.session_token");
+  });
+
+  it("disables secure cookies for authenticated private auto-origin dev servers", () => {
+    expect(shouldDisableSecureAuthCookies({
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      authBaseUrlMode: "auto",
+      authPublicBaseUrl: undefined,
+      publicUrl: undefined,
+    })).toBe(true);
+  });
+
+  it("keeps secure cookies for authenticated public auto-origin servers", () => {
+    expect(shouldDisableSecureAuthCookies({
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+      authBaseUrlMode: "auto",
+      authPublicBaseUrl: undefined,
+      publicUrl: undefined,
+    })).toBe(false);
+  });
+
+  it("uses an explicit public URL when deciding whether secure cookies are required", () => {
+    expect(shouldDisableSecureAuthCookies({
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      authBaseUrlMode: "auto",
+      authPublicBaseUrl: undefined,
+      publicUrl: "https://paperclip.example.test",
+    })).toBe(false);
+
+    expect(shouldDisableSecureAuthCookies({
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "http://paperclip.local.test:3100",
+      publicUrl: undefined,
+    })).toBe(true);
   });
 
   it("disables secure cookies when no canonical public auth URL is configured", () => {
@@ -71,14 +112,42 @@ describe("Better Auth cookie scoping", () => {
     } as Parameters<typeof shouldDisableSecureAuthCookies>[0])).toBe(false);
   });
 
-  it("lets PAPERCLIP_PUBLIC_URL override the auth base URL for cookie security", () => {
-    process.env.PAPERCLIP_PUBLIC_URL = "http://paperclip-dev:46259";
+  it("uses the caller-resolved public URL for cookie security", () => {
+    process.env.PAPERCLIP_PUBLIC_URL = "https://ignored.example.test";
 
     expect(shouldDisableSecureAuthCookies({
       deploymentMode: "authenticated",
       authBaseUrlMode: "explicit",
       authPublicBaseUrl: "https://paperclip.example.test",
+      publicUrl: "http://paperclip-dev:46259",
     } as Parameters<typeof shouldDisableSecureAuthCookies>[0])).toBe(true);
+  });
+
+  it("disables secure cookies for private authenticated auto mode without a public URL", () => {
+    expect(shouldDisableSecureAuthCookies({
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      authBaseUrlMode: "auto",
+      authPublicBaseUrl: undefined,
+    })).toBe(true);
+  });
+
+  it("disables secure cookies for explicit HTTP public URLs", () => {
+    expect(shouldDisableSecureAuthCookies({
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "http://board.example.test:3101",
+    })).toBe(true);
+  });
+
+  it("keeps secure cookies for explicit HTTPS public URLs", () => {
+    expect(shouldDisableSecureAuthCookies({
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "https://board.example.test",
+    })).toBe(false);
   });
 
   it("adds hostname port variants for authenticated mode on non-default ports", () => {

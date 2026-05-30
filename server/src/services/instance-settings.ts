@@ -43,6 +43,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     return {
       enableEnvironments: parsed.data.enableEnvironments ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
+      enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
       enableCloudSync: parsed.data.enableCloudSync ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
@@ -54,6 +55,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   return {
     enableEnvironments: false,
     enableIsolatedWorkspaces: false,
+    enableIssuePlanDecompositions: false,
     enableCloudSync: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,

@@ -6,6 +6,7 @@ export { agentService, deduplicateAgentName } from "./agents.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
+export { documentAnnotationService } from "./document-annotations.js";
 export {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   buildContinuationSummaryMarkdown,
@@ -42,6 +43,7 @@ export { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recover
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferenceService } from "./sidebar-preferences.js";
+export { resourceMembershipService, type ResourceMembershipPolicyHook } from "./resource-memberships.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
 export { accessService } from "./access.js";
 export {

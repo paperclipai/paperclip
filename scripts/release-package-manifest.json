@@ -60,6 +60,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/skills-catalog",
+    "name": "@paperclipai/skills-catalog",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/db",
     "name": "@paperclipai/db",
     "publishFromCi": true

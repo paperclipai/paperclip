@@ -159,6 +159,54 @@ function didAutomaticRecoveryFail(
     );
 }
 
+const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
+  "adapter_failed",
+  "codex_transient_upstream",
+  "claude_transient_upstream",
+  "timeout",
+]);
+
+const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
+  "agent_not_invokable",
+  "agent_not_found",
+  "budget_blocked",
+  "budget_exhausted",
+  "issue_paused",
+  "issue_dependencies_blocked",
+]);
+
+const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
+const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
+const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+
+type ContinuationRetryClassification = {
+  kind: "transient_infra" | "non_retryable" | "default";
+  maxAttempts: number;
+  baseBackoffMs: number;
+  errorCode: string | null;
+};
+
+function classifyContinuationFailure(latestRun: LatestIssueRun): ContinuationRetryClassification {
+  const errorCode = readNonEmptyString(latestRun?.errorCode);
+  if (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode)) {
+    return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };
+  }
+  if (errorCode && TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) {
+    return {
+      kind: "transient_infra",
+      maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
+      baseBackoffMs: CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS,
+      errorCode,
+    };
+  }
+  return {
+    kind: "default",
+    maxAttempts: CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS,
+    baseBackoffMs: 0,
+    errorCode,
+  };
+}
+
 function successfulRunHandoffRecoveryEvidence(latestRun: LatestIssueRun): SuccessfulRunHandoffRecoveryEvidence | null {
   if (!latestRun) return null;
 
@@ -436,6 +484,54 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function summarizeRecentContinuationRetries(
+    companyId: string,
+    issueId: string,
+    errorCodeToMatch: string | null,
+  ) {
+    const rows = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        finishedAt: heartbeatRuns.finishedAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(10);
+
+    let consecutive = 0;
+    let latestFinishedAt: Date | null = null;
+    for (const row of rows) {
+      const ctx = parseObject(row.contextSnapshot);
+      const retryReason = readNonEmptyString(ctx.retryReason);
+      if (retryReason !== "issue_continuation_needed") break;
+      if (
+        !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+          row.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+        )
+      ) {
+        break;
+      }
+
+      const rowErrorCode = readNonEmptyString(row.errorCode);
+      if (errorCodeToMatch !== rowErrorCode) {
+        break;
+      }
+
+      consecutive += 1;
+      if (latestFinishedAt === null) latestFinishedAt = row.finishedAt ?? null;
+    }
+    return { consecutive, latestFinishedAt };
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
@@ -2545,24 +2641,69 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
         continue;
       }
-      if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
-        const failureSummary = summarizeRunFailureForIssueComment(latestRun);
-        const updated = await escalateStrandedAssignedIssue({
-          issue,
-          previousStatus: "in_progress",
-          latestRun,
-          comment:
-            "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
-            `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
-            "Moving it to `blocked` so it is visible for intervention.",
-        });
-        if (updated) {
-          result.escalated += 1;
-          result.issueIds.push(issue.id);
-        } else {
-          result.skipped += 1;
+      if (isUnsuccessfulTerminalIssueRun(latestRun)) {
+        const classification = classifyContinuationFailure(latestRun);
+
+        if (classification.kind === "non_retryable") {
+          const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun,
+            comment:
+              "Paperclip detected a non-retryable failure on this issue's continuation run " +
+              `(\`${classification.errorCode}\`). Skipping automatic retries and moving it to \`blocked\` ` +
+              `so it is visible for intervention.${failureSummary ?? ""}`,
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
         }
-        continue;
+
+        if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+          const { consecutive, latestFinishedAt } = await summarizeRecentContinuationRetries(
+            issue.companyId,
+            issue.id,
+            classification.errorCode,
+          );
+          if (consecutive >= classification.maxAttempts) {
+            const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+            const attemptCopy = consecutive <= 1 ? "" : ` (${consecutive}× attempts)`;
+            const causeCopy = classification.errorCode
+              ? ` Latest cause: \`${classification.errorCode}\`.`
+              : "";
+            const updated = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: "in_progress",
+              latestRun,
+              comment:
+                "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
+                `execution disappeared, but it still has no live execution path${attemptCopy}.${causeCopy}${failureSummary ?? ""} ` +
+                "Moving it to `blocked` so it is visible for intervention.",
+            });
+            if (updated) {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
+          }
+
+          if (classification.baseBackoffMs > 0 && latestFinishedAt) {
+            const elapsed = Date.now() - latestFinishedAt.getTime();
+            const requiredDelay = classification.baseBackoffMs *
+              Math.pow(2, Math.max(0, consecutive - 1));
+            if (elapsed < requiredDelay) {
+              result.skipped += 1;
+              continue;
+            }
+          }
+        }
       }
 
       if (await isInvocationBudgetBlocked(issue, agentId)) {
@@ -3248,7 +3389,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     let escalation: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
       escalation = await issuesSvc.create(issue.companyId, {
-        title: `Unblock liveness incident for ${recoveryIssue.identifier ?? recoveryIssue.title}`,
+        title: `Unblock liveness incident for ${issue.identifier ?? issue.id}`,
         description: buildLivenessEscalationDescription(input.finding),
         status: "todo",
         priority: "high",
