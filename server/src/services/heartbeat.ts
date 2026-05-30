@@ -8540,6 +8540,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           })
           .where(eq(agentWakeupRequests.id, deferred.id));
 
+        const isAssigneePromotion = issue.assigneeAgentId === deferredAgent.id;
+        const isTerminalIssue = issue.status === "done" || issue.status === "cancelled";
         await tx
           .update(issues)
           .set({
@@ -8547,6 +8549,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             executionAgentNameKey: normalizeAgentNameKey(deferredAgent.name),
             executionLockedAt: now,
             updatedAt: now,
+            // Assignee deferred wakes reopen terminal issues so the agent can handle
+            // the comment that arrived just before the run closed the issue.
+            ...(isAssigneePromotion && isTerminalIssue ? {
+              status: "in_progress" as const,
+              completedAt: null,
+            } : {}),
           })
           // Promoted mention wakes are issue-scoped, not issue ownership transfers.
           .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, deferredAgent.id)));
