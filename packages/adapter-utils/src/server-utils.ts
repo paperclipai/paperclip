@@ -135,8 +135,6 @@ export interface PaperclipSkillEntry {
   source: string;
   sourceStatus?: "available" | "missing";
   missingDetail?: string | null;
-  required?: boolean;
-  requiredReason?: string | null;
 }
 
 export interface InstalledSkillTarget {
@@ -193,17 +191,10 @@ function skillLocationLabel(value: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function buildManagedSkillOrigin(entry: { required?: boolean }): Pick<
+function buildManagedSkillOrigin(): Pick<
   AdapterSkillEntry,
   "origin" | "originLabel" | "readOnly"
 > {
-  if (entry.required) {
-    return {
-      origin: "paperclip_required",
-      originLabel: "Required by Paperclip",
-      readOnly: false,
-    };
-  }
   return {
     origin: "company_managed",
     originLabel: "Managed by Paperclip",
@@ -1366,20 +1357,6 @@ export async function resolvePaperclipSkillsDir(
   return null;
 }
 
-async function readSkillRequired(skillDir: string): Promise<boolean> {
-  try {
-    const content = await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8");
-    const normalized = content.replace(/\r\n/g, "\n");
-    if (!normalized.startsWith("---\n")) return true;
-    const closing = normalized.indexOf("\n---\n", 4);
-    if (closing < 0) return true;
-    const frontmatter = normalized.slice(4, closing);
-    return !/^\s*required\s*:\s*false\s*$/m.test(frontmatter);
-  } catch {
-    return true;
-  }
-}
-
 export async function listPaperclipSkillEntries(
   moduleDir: string,
   additionalCandidates: string[] = [],
@@ -1390,18 +1367,10 @@ export async function listPaperclipSkillEntries(
   try {
     const entries = await fs.readdir(root, { withFileTypes: true });
     const dirs = entries.filter((entry) => entry.isDirectory());
-    return Promise.all(dirs.map(async (entry) => {
-      const skillDir = path.join(root, entry.name);
-      const required = await readSkillRequired(skillDir);
-      return {
-        key: `paperclipai/paperclip/${entry.name}`,
-        runtimeName: entry.name,
-        source: skillDir,
-        required,
-        requiredReason: required
-          ? "Bundled Paperclip skills are always available for local adapters."
-          : null,
-      };
+    return dirs.map((entry) => ({
+      key: `paperclipai/paperclip/${entry.name}`,
+      runtimeName: entry.name,
+      source: path.join(root, entry.name),
     }));
   } catch {
     return [];
@@ -1452,9 +1421,7 @@ export function buildRuntimeMountedSkillSnapshot(
         sourcePath: null,
         targetPath: null,
         detail: resolvePaperclipSkillMissingDetail(available, missingDetail),
-        required: Boolean(available.required),
-        requiredReason: available.requiredReason ?? null,
-        ...buildManagedSkillOrigin(available),
+        ...buildManagedSkillOrigin(),
       });
       continue;
     }
@@ -1477,9 +1444,7 @@ export function buildRuntimeMountedSkillSnapshot(
               available,
             )
         : null,
-      required: Boolean(available.required),
-      requiredReason: available.requiredReason ?? null,
-      ...buildManagedSkillOrigin(available),
+      ...buildManagedSkillOrigin(),
     });
   }
 
@@ -1569,9 +1534,7 @@ export function buildPersistentSkillSnapshot(
           available,
           missingDetail,
         ),
-        required: Boolean(available.required),
-        requiredReason: available.requiredReason ?? null,
-        ...buildManagedSkillOrigin(available),
+        ...buildManagedSkillOrigin(),
       });
       continue;
     }
@@ -1601,9 +1564,7 @@ export function buildPersistentSkillSnapshot(
       sourcePath: available.source,
       targetPath: path.join(skillsHome, available.runtimeName),
       detail,
-      required: Boolean(available.required),
-      requiredReason: available.requiredReason ?? null,
-      ...buildManagedSkillOrigin(available),
+      ...buildManagedSkillOrigin(),
     });
   }
 
@@ -1672,11 +1633,6 @@ function normalizeConfiguredPaperclipRuntimeSkills(value: unknown): PaperclipSki
       missingDetail:
         typeof entry.missingDetail === "string" && entry.missingDetail.trim().length > 0
           ? entry.missingDetail.trim()
-          : null,
-      required: asBoolean(entry.required, false),
-      requiredReason:
-        typeof entry.requiredReason === "string" && entry.requiredReason.trim().length > 0
-          ? entry.requiredReason.trim()
           : null,
     });
   }
@@ -1758,19 +1714,14 @@ function canonicalizeDesiredPaperclipSkillReference(
 
 export function resolvePaperclipDesiredSkillNames(
   config: Record<string, unknown>,
-  availableEntries: Array<{ key: string; runtimeName?: string | null; required?: boolean }>,
+  availableEntries: Array<{ key: string; runtimeName?: string | null }>,
 ): string[] {
   const preference = readPaperclipSkillSyncPreference(config);
-  const requiredSkills = availableEntries
-    .filter((entry) => entry.required)
-    .map((entry) => entry.key);
-  if (!preference.explicit) {
-    return Array.from(new Set(requiredSkills));
-  }
+  if (!preference.explicit) return [];
   const desiredSkills = preference.desiredSkills
     .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
     .filter(Boolean);
-  return Array.from(new Set([...requiredSkills, ...desiredSkills]));
+  return Array.from(new Set(desiredSkills));
 }
 
 export function writePaperclipSkillSyncPreference(

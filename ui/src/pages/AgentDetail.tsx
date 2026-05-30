@@ -2746,42 +2746,19 @@ export function AgentSkillsTab({
   );
   const optionalSkillRows = useMemo<SkillRow[]>(
     () =>
-      (companySkills ?? [])
-        .filter((skill) => !adapterEntryByKey.get(skill.key)?.required)
-        .map((skill) => ({
-          id: skill.id,
-          key: skill.key,
-          name: skill.name,
-          description: skill.description,
-          detail: adapterEntryByKey.get(skill.key)?.detail ?? null,
-          locationLabel: adapterEntryByKey.get(skill.key)?.locationLabel ?? null,
-          originLabel: adapterEntryByKey.get(skill.key)?.originLabel ?? null,
-          linkTo: `/skills/${skill.id}`,
-          readOnly: false,
-          adapterEntry: adapterEntryByKey.get(skill.key) ?? null,
-        })),
+      (companySkills ?? []).map((skill) => ({
+        id: skill.id,
+        key: skill.key,
+        name: skill.name,
+        description: skill.description,
+        detail: adapterEntryByKey.get(skill.key)?.detail ?? null,
+        locationLabel: adapterEntryByKey.get(skill.key)?.locationLabel ?? null,
+        originLabel: adapterEntryByKey.get(skill.key)?.originLabel ?? null,
+        linkTo: `/skills/${skill.id}`,
+        readOnly: false,
+        adapterEntry: adapterEntryByKey.get(skill.key) ?? null,
+      })),
     [adapterEntryByKey, companySkills],
-  );
-  const requiredSkillRows = useMemo<SkillRow[]>(
-    () =>
-      (skillSnapshot?.entries ?? [])
-        .filter((entry) => entry.required)
-        .map((entry) => {
-          const companySkill = companySkillByKey.get(entry.key);
-          return {
-            id: companySkill?.id ?? `required:${entry.key}`,
-            key: entry.key,
-            name: companySkill?.name ?? entry.key,
-            description: companySkill?.description ?? null,
-            detail: entry.detail ?? null,
-            locationLabel: entry.locationLabel ?? null,
-            originLabel: entry.originLabel ?? null,
-            linkTo: companySkill ? `/skills/${companySkill.id}` : null,
-            readOnly: false,
-            adapterEntry: entry,
-          };
-        }),
-    [companySkillByKey, skillSnapshot],
   );
   const unmanagedSkillRows = useMemo<SkillRow[]>(
     () =>
@@ -2883,8 +2860,6 @@ export function AgentSkillsTab({
         <>
           {(() => {
             const renderSkillRow = (skill: SkillRow) => {
-              const adapterEntry = skill.adapterEntry ?? adapterEntryByKey.get(skill.key);
-              const required = Boolean(adapterEntry?.required);
               const rowClassName = cn(
                 "flex items-start gap-3 border-b border-border px-3 py-3 text-sm last:border-b-0",
                 skill.readOnly ? "bg-muted/20" : "hover:bg-accent/20",
@@ -2930,8 +2905,8 @@ export function AgentSkillsTab({
                 );
               }
 
-              const checked = required || skillDraft.includes(skill.key);
-              const disabled = required || skillSnapshot?.mode === "unsupported";
+              const checked = skillDraft.includes(skill.key);
+              const disabled = skillSnapshot?.mode === "unsupported";
               const checkbox = (
                 <input
                   type="checkbox"
@@ -2949,14 +2924,7 @@ export function AgentSkillsTab({
 
               return (
                 <label key={skill.id} className={rowClassName}>
-                  {required && adapterEntry?.requiredReason ? (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span>{checkbox}</span>
-                      </TooltipTrigger>
-                      <TooltipContent side="top">{adapterEntry.requiredReason}</TooltipContent>
-                    </Tooltip>
-                  ) : skillSnapshot?.mode === "unsupported" ? (
+                  {skillSnapshot?.mode === "unsupported" ? (
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <span>{checkbox}</span>
@@ -2997,7 +2965,7 @@ export function AgentSkillsTab({
               );
             };
 
-            if (optionalSkillRows.length === 0 && requiredSkillRows.length === 0 && unmanagedSkillRows.length === 0) {
+            if (optionalSkillRows.length === 0 && unmanagedSkillRows.length === 0) {
               return (
                 <section className="border-y border-border">
                   <div className="px-3 py-6 text-sm text-muted-foreground">
@@ -3019,7 +2987,6 @@ export function AgentSkillsTab({
 
                 {renderSkillSection("Other skills", otherSkillRows)}
 
-                {renderSkillSection("Required by Paperclip", requiredSkillRows)}
 
                 {unmanagedSkillRows.length > 0 && (
                   <section className="border-y border-border">

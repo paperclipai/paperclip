@@ -3139,21 +3139,15 @@ export function companySkillService(db: Db) {
 
     const out: PaperclipSkillEntry[] = [];
     for (const skill of skills) {
-      const sourceKind = asString(getSkillMeta(skill).sourceKind);
       const sourceResolution = await resolveRuntimeSkillSource(companyId, skill, options);
       if (!sourceResolution) continue;
 
-      const required = sourceKind === "paperclip_bundled";
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
         source: sourceResolution.source,
         sourceStatus: sourceResolution.status,
         missingDetail: sourceResolution.status === "missing" ? sourceResolution.detail : null,
-        required,
-        requiredReason: required
-          ? "Bundled Paperclip skills are always available for local adapters."
-          : null,
       });
     }
 
