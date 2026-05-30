@@ -61,6 +61,7 @@ import * as serviceIndex from "../services/index.js";
 import {
   accessService,
   agentService,
+  authorizationService,
   companyService,
   companySearchService,
   executionWorkspaceService,
@@ -877,6 +878,53 @@ export function issueRoutes(
   const documentAnnotationsSvc = documentAnnotationService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
+  const authorization = authorizationService(db);
+
+  async function assertCanResolveRequestConfirmation(args: {
+    req: Request;
+    res: Response;
+    issue: { id: string; companyId: string; assigneeAgentId: string | null };
+    interactionId: string;
+  }): Promise<boolean> {
+    if (args.req.actor.type === "board") {
+      assertBoard(args.req);
+      return true;
+    }
+    if (args.req.actor.type !== "agent") {
+      args.res.status(403).json({ error: "Board access required" });
+      return false;
+    }
+    const actorAgentId = args.req.actor.agentId ?? null;
+    if (!actorAgentId || args.req.actor.companyId !== args.issue.companyId) {
+      args.res.status(403).json({ error: "Board access required" });
+      return false;
+    }
+    const interaction = await issueThreadInteractionsSvc.getById(args.interactionId);
+    if (
+      !interaction
+      || interaction.issueId !== args.issue.id
+      || interaction.companyId !== args.issue.companyId
+    ) {
+      args.res.status(404).json({ error: "Interaction not found" });
+      return false;
+    }
+    if (interaction.kind !== "request_confirmation") {
+      args.res.status(403).json({ error: "Board access required" });
+      return false;
+    }
+    const candidateAssigneeIds = [
+      args.issue.assigneeAgentId,
+      interaction.createdByAgentId,
+    ].filter((value): value is string => typeof value === "string" && value.length > 0);
+    for (const candidateAssigneeId of candidateAssigneeIds) {
+      if (candidateAssigneeId === actorAgentId) continue;
+      if (await authorization.isManagerOf(args.issue.companyId, actorAgentId, candidateAssigneeId)) {
+        return true;
+      }
+    }
+    args.res.status(403).json({ error: "Board access required" });
+    return false;
+  }
   const routinesSvc = routineService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
@@ -5032,6 +5080,55 @@ export function issueRoutes(
     res.json(released);
   });
 
+  router.post(
+    "/admin/companies/:companyId/issue-thread-interactions/sweep-pending-on-terminal-issues",
+    async (req, res) => {
+      if (req.actor.type !== "board") {
+        res.status(403).json({ error: "Board access required" });
+        return;
+      }
+      if (!req.actor.userId) {
+        throw forbidden("Board user context required");
+      }
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      const actor = getActorInfo(req);
+      const { expired } = await issueThreadInteractionsSvc.sweepPendingRequestConfirmationsOnTerminalIssues(
+        { companyId },
+        { agentId: actor.agentId, userId: actor.actorType === "user" ? actor.actorId : null },
+      );
+
+      for (const interaction of expired) {
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.thread_interaction_expired",
+          entityType: "issue",
+          entityId: interaction.issueId,
+          details: {
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            source: "admin.sweep_pending_on_terminal_issues",
+            result: interaction.result ?? null,
+          },
+        });
+      }
+
+      res.json({
+        expiredCount: expired.length,
+        expired: expired.map((interaction) => ({
+          id: interaction.id,
+          issueId: interaction.issueId,
+        })),
+      });
+    },
+  );
+
   router.post("/issues/:id/admin/force-release", async (req, res) => {
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board access required" });
@@ -5192,7 +5289,7 @@ export function issueRoutes(
         return;
       }
       assertCompanyAccess(req, issue.companyId);
-      assertBoard(req);
+      if (!(await assertCanResolveRequestConfirmation({ req, res, issue, interactionId }))) return;
 
       const actor = getActorInfo(req);
       const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
@@ -5297,7 +5394,7 @@ export function issueRoutes(
         return;
       }
       assertCompanyAccess(req, issue.companyId);
-      assertBoard(req);
+      if (!(await assertCanResolveRequestConfirmation({ req, res, issue, interactionId }))) return;
 
       const actor = getActorInfo(req);
       const interaction = await issueThreadInteractionService(db).rejectInteraction(issue, interactionId, req.body, {

@@ -11,6 +11,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockInteractionService = vi.hoisted(() => ({
   listForIssue: vi.fn(),
+  getById: vi.fn(),
   create: vi.fn(),
   acceptInteraction: vi.fn(),
   acceptSuggestedTasks: vi.fn(),
@@ -19,6 +20,13 @@ const mockInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(),
   answerQuestions: vi.fn(),
   cancelQuestions: vi.fn(),
+  sweepPendingRequestConfirmationsOnTerminalIssues: vi.fn(),
+}));
+
+const mockAuthorizationService = vi.hoisted(() => ({
+  isManagerOf: vi.fn(async () => false),
+  decide: vi.fn(),
+  decidePrincipalGrant: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -58,6 +66,7 @@ function registerModuleMocks() {
         agent: { id: raw },
       })),
     }),
+    authorizationService: () => mockAuthorizationService,
     clampIssueListLimit: (value: number) => value,
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     ISSUE_LIST_MAX_LIMIT: 1000,
@@ -264,6 +273,9 @@ describe.sequential("issue thread interaction routes", () => {
       updatedAt: "2026-04-20T12:06:00.000Z",
       resolvedAt: "2026-04-20T12:06:00.000Z",
     });
+    mockInteractionService.sweepPendingRequestConfirmationsOnTerminalIssues.mockResolvedValue({ expired: [] });
+    mockInteractionService.getById.mockResolvedValue(null);
+    mockAuthorizationService.isManagerOf.mockResolvedValue(false);
     mockInteractionService.cancelQuestions.mockResolvedValue({
       id: "interaction-2",
       companyId: "company-1",
@@ -812,5 +824,224 @@ describe.sequential("issue thread interaction routes", () => {
         userId: null,
       },
     );
+  });
+
+  describe("chain-of-command reviewer accept gate (SPC-6815)", () => {
+    const REVIEWER_AGENT_ID = "33333333-3333-4333-8333-333333333333";
+    const STRANGER_AGENT_ID = "44444444-4444-4444-8444-444444444444";
+
+    function pendingRequestConfirmation(overrides: Record<string, unknown> = {}) {
+      return {
+        id: "interaction-confirmation",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee_on_accept",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-confirm",
+        createdByAgentId: ASSIGNEE_AGENT_ID,
+        createdByUserId: null,
+        resolvedByAgentId: null,
+        resolvedByUserId: null,
+        title: null,
+        summary: null,
+        payload: { version: 1, prompt: "Confirm the work delivered for SPC-6776." },
+        result: null,
+        createdAt: "2026-05-30T12:00:00.000Z",
+        updatedAt: "2026-05-30T12:00:00.000Z",
+        ...overrides,
+      };
+    }
+
+    it("permits a chain-of-command reviewer agent to accept their own request_confirmation", async () => {
+      mockInteractionService.getById.mockResolvedValueOnce(pendingRequestConfirmation());
+      mockAuthorizationService.isManagerOf.mockImplementation(
+        async (_companyId: string, manager: string, target: string) =>
+          manager === REVIEWER_AGENT_ID && target === ASSIGNEE_AGENT_ID,
+      );
+      mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+        interaction: { ...pendingRequestConfirmation(), status: "accepted", resolvedByAgentId: REVIEWER_AGENT_ID },
+        createdIssues: [],
+      });
+      const app = await createApp({
+        type: "agent",
+        agentId: REVIEWER_AGENT_ID,
+        companyId: "company-1",
+        runId: "run-cto",
+      });
+
+      const res = await request(app)
+        .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-confirmation/accept")
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(mockInteractionService.acceptInteraction).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+        "interaction-confirmation",
+        {},
+        expect.objectContaining({ agentId: REVIEWER_AGENT_ID, userId: null }),
+      );
+    });
+
+    it("permits a chain-of-command reviewer agent to reject their own request_confirmation", async () => {
+      mockInteractionService.getById.mockResolvedValueOnce(pendingRequestConfirmation());
+      mockAuthorizationService.isManagerOf.mockImplementation(
+        async (_companyId: string, manager: string, target: string) =>
+          manager === REVIEWER_AGENT_ID && target === ASSIGNEE_AGENT_ID,
+      );
+      mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+        ...pendingRequestConfirmation(),
+        status: "rejected",
+        resolvedByAgentId: REVIEWER_AGENT_ID,
+        result: { version: 1, outcome: "rejected", reason: "Needs follow-up" },
+      });
+      const app = await createApp({
+        type: "agent",
+        agentId: REVIEWER_AGENT_ID,
+        companyId: "company-1",
+        runId: "run-cto",
+      });
+
+      const res = await request(app)
+        .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-confirmation/reject")
+        .send({ reason: "Needs follow-up" });
+
+      expect(res.status).toBe(200);
+      expect(mockInteractionService.rejectInteraction).toHaveBeenCalled();
+    });
+
+    it("denies a non-reviewer agent accept on request_confirmation", async () => {
+      mockInteractionService.getById.mockResolvedValueOnce(pendingRequestConfirmation());
+      mockAuthorizationService.isManagerOf.mockResolvedValue(false);
+      const app = await createApp({
+        type: "agent",
+        agentId: STRANGER_AGENT_ID,
+        companyId: "company-1",
+        runId: "run-stranger",
+      });
+
+      const res = await request(app)
+        .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-confirmation/accept")
+        .send({});
+
+      expect(res.status).toBe(403);
+      expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+    });
+
+    it("denies an agent accept on suggest_tasks even when in chain-of-command", async () => {
+      mockInteractionService.getById.mockResolvedValueOnce({
+        ...pendingRequestConfirmation(),
+        id: "interaction-tasks",
+        kind: "suggest_tasks",
+        payload: { version: 1, tasks: [{ clientKey: "t", title: "T" }] },
+      });
+      mockAuthorizationService.isManagerOf.mockResolvedValue(true);
+      const app = await createApp({
+        type: "agent",
+        agentId: REVIEWER_AGENT_ID,
+        companyId: "company-1",
+        runId: "run-cto",
+      });
+
+      const res = await request(app)
+        .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-tasks/accept")
+        .send({ selectedClientKeys: ["t"] });
+
+      expect(res.status).toBe(403);
+      expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+    });
+
+    it("denies an agent respond on ask_user_questions (board only kind)", async () => {
+      mockAuthorizationService.isManagerOf.mockResolvedValue(true);
+      const app = await createApp({
+        type: "agent",
+        agentId: REVIEWER_AGENT_ID,
+        companyId: "company-1",
+        runId: "run-cto",
+      });
+
+      const res = await request(app)
+        .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-questions/respond")
+        .send({ answers: [{ questionId: "scope", optionIds: ["phase-1"] }] });
+
+      expect(res.status).toBe(403);
+      expect(mockInteractionService.answerQuestions).not.toHaveBeenCalled();
+    });
+
+    it("preserves board acceptance for request_confirmation without consulting the manager check", async () => {
+      mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+        interaction: { ...pendingRequestConfirmation(), status: "accepted" },
+        createdIssues: [],
+      });
+      const app = await createApp();
+
+      const res = await request(app)
+        .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-confirmation/accept")
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(mockAuthorizationService.isManagerOf).not.toHaveBeenCalled();
+      expect(mockInteractionService.getById).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("admin sweep of pending request_confirmation on terminal issues", () => {
+    it("expires pending request_confirmation rows on done/cancelled issues for the company", async () => {
+      mockInteractionService.sweepPendingRequestConfirmationsOnTerminalIssues.mockResolvedValueOnce({
+        expired: [
+          {
+            id: "73ae1223",
+            issueId: "spc-6776-issue",
+            companyId: "company-1",
+            kind: "request_confirmation",
+            status: "expired",
+            result: { version: 1, outcome: "superseded_by_terminal_issue", issueStatus: "done" },
+          },
+        ],
+      });
+      const app = await createApp();
+
+      const res = await request(app)
+        .post("/api/admin/companies/company-1/issue-thread-interactions/sweep-pending-on-terminal-issues")
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        expiredCount: 1,
+        expired: [{ id: "73ae1223", issueId: "spc-6776-issue" }],
+      });
+      expect(mockInteractionService.sweepPendingRequestConfirmationsOnTerminalIssues).toHaveBeenCalledWith(
+        { companyId: "company-1" },
+        expect.objectContaining({ userId: "local-board" }),
+      );
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.thread_interaction_expired",
+          details: expect.objectContaining({
+            interactionId: "73ae1223",
+            source: "admin.sweep_pending_on_terminal_issues",
+          }),
+        }),
+      );
+    });
+
+    it("rejects agents from invoking the sweep endpoint", async () => {
+      const app = await createApp({
+        type: "agent",
+        agentId: "44444444-4444-4444-8444-444444444444",
+        companyId: "company-1",
+        runId: "run-x",
+      });
+
+      const res = await request(app)
+        .post("/api/admin/companies/company-1/issue-thread-interactions/sweep-pending-on-terminal-issues")
+        .send({});
+
+      expect(res.status).toBe(403);
+      expect(mockInteractionService.sweepPendingRequestConfirmationsOnTerminalIssues).not.toHaveBeenCalled();
+    });
   });
 });

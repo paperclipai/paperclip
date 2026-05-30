@@ -1341,5 +1341,64 @@ export function issueThreadInteractionService(db: Db) {
       await touchIssue(db, issue.id);
       return hydrateInteraction(updated);
     },
+
+    sweepPendingRequestConfirmationsOnTerminalIssues: async (
+      args: { companyId: string },
+      actor: InteractionActor,
+    ) => {
+      const rows = await db
+        .select({
+          id: issueThreadInteractions.id,
+          issueId: issueThreadInteractions.issueId,
+          companyId: issueThreadInteractions.companyId,
+          issueStatus: issues.status,
+        })
+        .from(issueThreadInteractions)
+        .innerJoin(issues, eq(issueThreadInteractions.issueId, issues.id))
+        .where(and(
+          eq(issueThreadInteractions.companyId, args.companyId),
+          eq(issueThreadInteractions.kind, "request_confirmation"),
+          eq(issueThreadInteractions.status, "pending"),
+          inArray(issues.status, ["done", "cancelled"]),
+        ));
+
+      if (rows.length === 0) {
+        return { expired: [] as IssueThreadInteraction[] };
+      }
+
+      const now = new Date();
+      const expired: IssueThreadInteraction[] = [];
+      const touchedIssueIds = new Set<string>();
+      for (const row of rows) {
+        const [updated] = await db
+          .update(issueThreadInteractions)
+          .set({
+            status: "expired",
+            result: {
+              version: 1,
+              outcome: "superseded_by_terminal_issue",
+              issueStatus: row.issueStatus,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, row.id),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (updated) {
+          expired.push(hydrateInteraction(updated));
+          touchedIssueIds.add(row.issueId);
+        }
+      }
+
+      for (const issueId of touchedIssueIds) {
+        await touchIssue(db, issueId);
+      }
+      return { expired };
+    },
   };
 }

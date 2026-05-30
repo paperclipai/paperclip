@@ -725,9 +725,16 @@ export const requestConfirmationPayloadSchema = z.object({
 
 export const requestConfirmationResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target"]),
+  outcome: z.enum([
+    "accepted",
+    "rejected",
+    "superseded_by_comment",
+    "superseded_by_terminal_issue",
+    "stale_target",
+  ]),
   reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().uuid().nullable().optional(),
+  issueStatus: z.string().trim().max(40).nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
 });
 

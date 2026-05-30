@@ -772,9 +772,15 @@ export interface RequestConfirmationPayload {
 
 export interface RequestConfirmationResult {
   version: 1;
-  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target";
+  outcome:
+    | "accepted"
+    | "rejected"
+    | "superseded_by_comment"
+    | "superseded_by_terminal_issue"
+    | "stale_target";
   reason?: string | null;
   commentId?: string | null;
+  issueStatus?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
 }
 
