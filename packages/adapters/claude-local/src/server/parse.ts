@@ -14,7 +14,7 @@ const CLAUDE_TRANSIENT_UPSTREAM_RE =
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 const CLAUDE_THINKING_BLOCK_REUSE_RE =
-  /(?:redacted_)?thinking[\s\S]{0,200}?cannot\s+be\s+modified|cannot\s+be\s+modified[\s\S]{0,200}?(?:redacted_)?thinking/i;
+  /\b(?:redacted_)?thinking\b[\s\S]{0,200}?cannot\s+be\s+modified|cannot\s+be\s+modified[\s\S]{0,200}?\b(?:redacted_)?thinking\b/i;
 
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
