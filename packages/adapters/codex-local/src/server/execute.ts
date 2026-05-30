@@ -258,6 +258,13 @@ export async function ensureCodexSkillsInjected(
           );
           continue;
         }
+        if (
+          resolvedLinkedPath &&
+          resolvedLinkedPath !== entry.source &&
+          !(await isLikelyPaperclipRuntimeSkillPath(resolvedLinkedPath, entry.runtimeName))
+        ) {
+          continue;
+        }
       }
 
       const result = await ensurePaperclipSkillSymlink(entry.source, target, linkSkill);
