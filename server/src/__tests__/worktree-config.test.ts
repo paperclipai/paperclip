@@ -34,7 +34,7 @@ function buildLegacyConfig(sharedRoot: string, publicBaseUrl = "http://127.0.0.1
     database: {
       mode: "embedded-postgres" as const,
       embeddedPostgresDataDir: path.join(sharedRoot, "db"),
-      embeddedPostgresPort: 54329,
+      embeddedPostgresPort: 5433,
       backup: {
         enabled: true,
         intervalMinutes: 60,

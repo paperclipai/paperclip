@@ -48,7 +48,7 @@ describe("resolveDatabaseTarget", () => {
     process.chdir(projectDir);
     delete process.env.PAPERCLIP_CONFIG;
     writeJson(path.join(projectDir, ".paperclip", "config.json"), {
-      database: { mode: "embedded-postgres", embeddedPostgresPort: 54329 },
+      database: { mode: "embedded-postgres", embeddedPostgresPort: 5433 },
     });
     writeText(
       path.join(projectDir, ".paperclip", ".env"),
@@ -120,8 +120,8 @@ describe("resolveDatabaseTarget", () => {
     expect(target).toMatchObject({
       mode: "embedded-postgres",
       dataDir: path.join(home, "instances", "default", "db"),
-      port: 54329,
-      source: "embedded-postgres@54329",
+      port: 5433,
+      source: "embedded-postgres@5433",
       configPath: path.join(home, "instances", "default", "config.json"),
       envPath: path.join(home, "instances", "default", ".env"),
     });
