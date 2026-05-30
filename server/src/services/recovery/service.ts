@@ -2234,7 +2234,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   function buildRecoveryIssueInPlaceEscalationComment(input: {
     issue: typeof issues.$inferSelect;
-    previousStatus: "todo" | "in_progress";
+    previousStatus: StrandedAssignedPreviousStatus;
     latestRun: LatestIssueRun;
     prefix: string;
   }) {
@@ -2261,7 +2261,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function escalateStrandedRecoveryIssueInPlace(input: {
     issue: typeof issues.$inferSelect;
-    previousStatus: "todo" | "in_progress";
+    previousStatus: StrandedAssignedPreviousStatus;
     latestRun: LatestIssueRun;
   }) {
     const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
