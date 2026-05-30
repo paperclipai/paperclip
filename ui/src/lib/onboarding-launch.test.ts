@@ -1,9 +1,12 @@
+import { isSystemIssueDocumentKey } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
 import {
   buildOnboardingIssuePayload,
   buildOnboardingProjectPayload,
+  buildOnboardingUseCaseContextDocument,
   selectDefaultCompanyGoalId,
 } from "./onboarding-launch";
+import { getDefaultHltUseCase } from "./hlt-use-case-catalog";
 
 describe("selectDefaultCompanyGoalId", () => {
   it("prefers the earliest active root company goal", () => {
@@ -127,5 +130,20 @@ describe("onboarding launch payloads", () => {
       projectId: "project-1",
       status: "todo",
     });
+  });
+
+  it("builds a hidden starter context document with selected use-case metadata", () => {
+    const doc = buildOnboardingUseCaseContextDocument(getDefaultHltUseCase());
+
+    expect(doc.key).toBe("onboarding_starter_context");
+    expect(isSystemIssueDocumentKey(doc.key)).toBe(true);
+    expect(doc.payload).toEqual({
+      title: "Starter context",
+      format: "markdown",
+      changeSummary: "Attach selected onboarding starter context",
+      body: expect.stringContaining("draft-review-hlt-article"),
+    });
+    expect(doc.payload.body).toContain("playbook:make-article");
+    expect(doc.payload.body).toContain("Researcher, Writer, Media, Reviewer, Publisher, Metrics");
   });
 });

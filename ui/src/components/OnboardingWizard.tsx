@@ -34,6 +34,7 @@ import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import {
   buildOnboardingIssuePayload,
   buildOnboardingProjectPayload,
+  buildOnboardingUseCaseContextDocument,
   selectDefaultCompanyGoalId
 } from "../lib/onboarding-launch";
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
@@ -574,6 +575,17 @@ export function OnboardingWizard() {
         );
         issueRef = issue.identifier ?? issue.id;
         setCreatedIssueRef(issueRef);
+        const contextDocument = buildOnboardingUseCaseContextDocument(selectedUseCase);
+        try {
+          await issuesApi.upsertDocument(
+            issue.id,
+            contextDocument.key,
+            contextDocument.payload
+          );
+        } catch {
+          // The first issue is the primary onboarding artifact. Starter context
+          // can be re-attached later; do not create duplicate issues on retry.
+        }
         queryClient.invalidateQueries({
           queryKey: queryKeys.issues.list(createdCompanyId)
         });

@@ -1,4 +1,6 @@
-import type { Goal } from "@paperclipai/shared";
+import type { Goal, UpsertIssueDocument } from "@paperclipai/shared";
+import { ONBOARDING_STARTER_CONTEXT_DOCUMENT_KEY as SHARED_ONBOARDING_STARTER_CONTEXT_DOCUMENT_KEY } from "@paperclipai/shared";
+import type { HltUseCaseCatalogItem } from "./hlt-use-case-catalog";
 
 export const ONBOARDING_PROJECT_NAME = "Onboarding";
 
@@ -49,5 +51,43 @@ export function buildOnboardingIssuePayload(input: {
     projectId: input.projectId,
     ...(input.goalId ? { goalId: input.goalId } : {}),
     status: "todo" as const,
+  };
+}
+
+export function buildOnboardingUseCaseContextDocument(useCase: HltUseCaseCatalogItem): {
+  key: typeof SHARED_ONBOARDING_STARTER_CONTEXT_DOCUMENT_KEY;
+  payload: UpsertIssueDocument;
+} {
+  const metadata = {
+    useCaseId: useCase.id,
+    label: useCase.label,
+    teamRoles: useCase.teamRoles,
+    optionalRefs: useCase.optionalKatailystRefs,
+    approvalBoundary: useCase.approvalBoundary ?? null,
+    fallbackBehavior: useCase.fallbackBehavior,
+  };
+
+  return {
+    key: SHARED_ONBOARDING_STARTER_CONTEXT_DOCUMENT_KEY,
+    payload: {
+      title: "Starter context",
+      format: "markdown",
+      changeSummary: "Attach selected onboarding starter context",
+      body: [
+        "# Starter context",
+        "",
+        "This document stores the selected onboarding starter so future context providers can enrich the issue without changing the operator-facing task copy.",
+        "",
+        `- Use case: ${useCase.label}`,
+        `- Use case id: ${useCase.id}`,
+        `- Team roles: ${useCase.teamRoles.join(", ")}`,
+        useCase.approvalBoundary ? `- Approval boundary: ${useCase.approvalBoundary}` : null,
+        `- Fallback behavior: ${useCase.fallbackBehavior}`,
+        "",
+        "```json",
+        JSON.stringify(metadata, null, 2),
+        "```",
+      ].filter((line): line is string => line !== null).join("\n"),
+    },
   };
 }
