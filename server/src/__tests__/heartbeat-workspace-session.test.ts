@@ -22,6 +22,7 @@ import {
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
+  WorkspaceRoutingError,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
 
@@ -92,6 +93,17 @@ describe("assertGitBackedProjectWorkspace", () => {
       },
       cwd: path.join(os.tmpdir(), "paperclip-missing-workspace"),
     })).rejects.toThrow(/checkout path is not available/);
+    await expect(assertGitBackedProjectWorkspace({
+      workspace: {
+        id: "workspace-1",
+        sourceType: "git_repo",
+        repoUrl: "https://github.com/paperclipai/paperclip",
+      },
+      cwd: path.join(os.tmpdir(), "paperclip-missing-workspace"),
+    })).rejects.toMatchObject({
+      code: "workspace_routing_failed",
+      workspaceId: "workspace-1",
+    });
   });
 
   it("rejects a repoUrl-backed project workspace when cwd is not a git checkout", async () => {
@@ -105,6 +117,14 @@ describe("assertGitBackedProjectWorkspace", () => {
       },
       cwd: dir,
     })).rejects.toThrow(/not a git repository/);
+    await expect(assertGitBackedProjectWorkspace({
+      workspace: {
+        id: "workspace-1",
+        sourceType: "local_path",
+        repoUrl: "https://github.com/paperclipai/paperclip",
+      },
+      cwd: dir,
+    })).rejects.toBeInstanceOf(WorkspaceRoutingError);
   });
 
   it("allows non-git local_path project workspaces", async () => {

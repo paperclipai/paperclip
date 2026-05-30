@@ -32,6 +32,8 @@ import {
   issueTreeHolds,
   issueWorkProducts,
   issues,
+  projects,
+  projectWorkspaces,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -369,6 +371,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     await db.delete(agentWakeupRequests);
     await db.delete(budgetPolicies);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(agentRuntimeState);
       try {
@@ -923,6 +927,118 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
+
+  it("blocks git-backed project workspace routing failures without invoking the adapter", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "paperclip",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "primary",
+      sourceType: "git_repo",
+      cwd: null,
+      repoUrl: `file:///tmp/paperclip-missing-${randomUUID()}`,
+      repoRef: "master",
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Project-bound implementation",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(agentId, "assignment", {
+      issueId,
+      taskId: issueId,
+      wakeReason: "issue_assigned",
+    }, "system", { actorType: "system", actorId: "test" });
+    expect(run).toBeTruthy();
+
+    await waitForHeartbeatIdle(db, 10_000);
+
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    const failedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      errorCode: "workspace_routing_failed",
+    });
+
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(sourceIssue).toMatchObject({
+      status: "blocked",
+      executionRunId: null,
+      assigneeAgentId: agentId,
+    });
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(action).toMatchObject({
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerAgentId: agentId,
+      cause: "workspace_routing_failed",
+      attemptCount: 1,
+      wakePolicy: {
+        type: "manual_unblock",
+        reason: "workspace_routing_failed",
+      },
+    });
+    expect(action?.evidence).toMatchObject({
+      latestRunId: run!.id,
+      latestRunErrorCode: "workspace_routing_failed",
+      workspaceId: projectWorkspaceId,
+    });
+
+    const recoveryWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, "source_scoped_recovery_action"));
+    expect(recoveryWakeups).toHaveLength(0);
+  });
 
   it("keeps a local run active when the recorded pid is still alive", async () => {
     const child = spawnAliveProcess();
