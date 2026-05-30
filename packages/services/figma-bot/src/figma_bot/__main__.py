@@ -166,6 +166,20 @@ def main() -> None:
                     target, switched=False, login_performed=False,
                     error=f"launch_error:{type(e).__name__}",
                 )
+                # Tear down the partially-launched Camoufox so its subprocess
+                # tree is killed + reaped (BLO-8271). The pre-fix path set
+                # pm=None WITHOUT close(), leaking <defunct> Firefox children on
+                # every launch_error — and those are frequent (infra-side
+                # crashes). pm is None only if the ProfileManager ctor itself
+                # raised (no browser spawned), so this guard is correct.
+                if pm is not None:
+                    try:
+                        pm.close()
+                    except Exception as ce:
+                        state.log(
+                            f"main: close after launch_error failed: "
+                            f"{type(ce).__name__}: {ce}"
+                        )
                 # DO NOT clear active_target — the next iteration's
                 # backoff check will sleep until the cooldown clears,
                 # then retry. Pre-fix, set_active_target(None, False)
