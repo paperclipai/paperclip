@@ -25,6 +25,7 @@ export { projects } from "./projects.js";
 export { projectMemberships } from "./project_memberships.js";
 export { projectWorkspaces } from "./project_workspaces.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
+export { featureFlags } from "./feature_flags.js";
 export { environments } from "./environments.js";
 export { environmentLeases } from "./environment_leases.js";
 export { workspaceOperations } from "./workspace_operations.js";
