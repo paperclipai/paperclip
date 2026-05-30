@@ -60,6 +60,7 @@ export type EnvironmentErrorCode =
   | "lease_acquire_failed"
   | "workspace_realization_failed"
   | "workspace_import_conflict"
+  | "preferred_workspace_unrealizable"
   | "transport_resolution_failed"
   | "lease_release_failed"
   | "lease_cleanup_failed";
