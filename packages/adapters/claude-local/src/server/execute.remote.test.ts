@@ -328,4 +328,83 @@ describe("claude remote execution", () => {
     expect(call?.[2]).toContain("session-123");
   });
 
+  it("retries modified-thinking resume failures with a fresh Claude session", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-modified-thinking-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    const modifiedThinkingMessage =
+      "API Error: 400 messages.N.content.M: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified. These blocks must remain as they were in the original response.";
+
+    runChildProcess
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: JSON.stringify({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          result: modifiedThinkingMessage,
+          errors: [{ message: modifiedThinkingMessage }],
+        }),
+        stderr: modifiedThinkingMessage,
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "system", subtype: "init", session_id: "fresh-session", model: "claude-sonnet" }),
+          JSON.stringify({
+            type: "result",
+            session_id: "fresh-session",
+            result: "recovered",
+            usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 },
+          }),
+        ].join("\n"),
+        stderr: "",
+        pid: 124,
+        startedAt: new Date().toISOString(),
+      });
+
+    const result = await execute({
+      runId: "run-modified-thinking",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "poisoned-session",
+        sessionParams: null,
+        sessionDisplayId: "poisoned-session",
+        taskKey: null,
+      },
+      config: {
+        command: "claude",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(2);
+    const initialCall = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    const retryCall = runChildProcess.mock.calls[1] as unknown as [string, string, string[]] | undefined;
+    expect(initialCall?.[2]).toContain("--resume");
+    expect(initialCall?.[2]).toContain("poisoned-session");
+    expect(retryCall?.[2]).not.toContain("--resume");
+    expect(result.sessionId).toBe("fresh-session");
+    expect(result.clearSession).toBe(false);
+  });
+
 });

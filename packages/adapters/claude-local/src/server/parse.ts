@@ -196,6 +196,18 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
   );
 }
 
+const CLAUDE_MODIFIED_THINKING_REPLAY_PATTERN =
+  /[`'"]?(?:thinking|redacted_thinking)[`'"]?(?:\s+or\s+[`'"]?(?:thinking|redacted_thinking)[`'"]?)?\s+blocks?\s+in\s+the\s+latest\s+assistant\s+message\s+cannot\s+be\s+modified/i;
+
+export function isClaudeModifiedThinkingReplayError(parsed: Record<string, unknown>): boolean {
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  return allMessages.some((msg) => CLAUDE_MODIFIED_THINKING_REPLAY_PATTERN.test(msg));
+}
+
 function buildClaudeTransientHaystack(input: {
   parsed?: Record<string, unknown> | null;
   stdout?: string | null;
