@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent, Issue, IssueTreeControlPreview, IssueTreeHold } from "@paperclipai/shared";
+import type { Agent, Issue, IssueTreeControlPreview, IssueTreeHold, IssueWorkProduct } from "@paperclipai/shared";
 import { act, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   listAcceptedPlanDecompositions: vi.fn(),
   listComments: vi.fn(),
   listAttachments: vi.fn(),
+  listWorkProducts: vi.fn(),
   listFeedbackVotes: vi.fn(),
   markRead: vi.fn(),
   update: vi.fn(),
@@ -441,6 +442,35 @@ function createAgent(overrides: Partial<Agent> = {}): Agent {
   };
 }
 
+function createWorkProduct(overrides: Partial<IssueWorkProduct> = {}): IssueWorkProduct {
+  return {
+    id: "work-product-1",
+    companyId: "company-1",
+    projectId: null,
+    issueId: "issue-1",
+    executionWorkspaceId: null,
+    runtimeServiceId: null,
+    type: "artifact",
+    provider: "paperclip",
+    externalId: null,
+    title: "coder_plan_fe.md",
+    url: null,
+    status: "ready_for_review",
+    reviewState: "needs_board_review",
+    isPrimary: false,
+    healthStatus: "unknown",
+    summary: "# Coder Plan: fe",
+    metadata: {
+      path: "artifacts/runs/demo/coder_plan_fe.md",
+      source: "leo-office",
+    },
+    createdByRunId: null,
+    createdAt: new Date("2026-04-21T00:00:00.000Z"),
+    updatedAt: new Date("2026-04-21T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
 function createPauseHold(overrides: Partial<IssueTreeHold> = {}): IssueTreeHold {
   const now = new Date("2026-04-21T00:00:00.000Z");
   return {
@@ -801,6 +831,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listComments.mockResolvedValue([]);
     mockIssuesApi.listAttachments.mockResolvedValue([]);
+    mockIssuesApi.listWorkProducts.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
     mockIssuesApi.getTreeControlState.mockResolvedValue({ activePauseHold: null });
@@ -1045,6 +1076,37 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("Next");
     expect(container.textContent).toContain("First child");
     expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].footer).toBeTruthy();
+  });
+
+  it("renders issue work products returned by the API", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.listWorkProducts.mockResolvedValue([
+      createWorkProduct(),
+      createWorkProduct({
+        id: "work-product-2",
+        title: "pr_summary.md",
+        type: "document",
+        summary: "# PR Summary",
+        metadata: { path: "artifacts/runs/demo/pr_summary.md" },
+      }),
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Work products");
+    expect(container.textContent).toContain("coder_plan_fe.md");
+    expect(container.textContent).toContain("ready for review");
+    expect(container.textContent).toContain("needs board review");
+    expect(container.textContent).toContain("artifacts/runs/demo/pr_summary.md");
   });
 
   it("passes blocker attention to the issue detail header status icon", async () => {
