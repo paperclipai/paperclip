@@ -405,6 +405,98 @@ describe("evaluatePrReviewCompletionEvidence", () => {
       ),
     ).toEqual({ status: "not_applicable" });
   });
+
+  // BLO-8195: every entry below is a verbatim-shaped Ally completion summary
+  // from a run that DID post a review but was misclassified
+  // `pr_review_output_missing` by the old phrase allowlist. They must now be
+  // accepted because (a) a posted/landed-review verb is present and (b) the
+  // summary references the same PR target (number / head sha / repo) carried on
+  // the wake context. Run IDs are recorded so the regression is traceable.
+  it.each([
+    // run ee48a927 — Blockcast/paperclip#227
+    {
+      ctx: { reviewKind: "pr_review", prRole: "reviewer", githubPrNumber: 227, githubRepoFullName: "Blockcast/paperclip", githubHeadSha: "4e60b6b1" },
+      summary:
+        "The consolidated review landed as a `COMMENTED` review at head `4e60b6b1`. PR-review wake complete. Reviewed **Blockcast/paperclip#227** and posted one consolidated, comment-only review.",
+    },
+    // run 4c5fc555 — Blockcast/magma#1038
+    {
+      ctx: { reviewKind: "pr_review", prRole: "reviewer", githubPrNumber: 1038, githubRepoFullName: "Blockcast/magma", githubHeadSha: "e716f54b" },
+      summary:
+        "Posted successfully (exit 0). The PR-review wake is complete per the completion contract. **Blockcast/magma#1038** reviewed at head `e716f54b` and posted one comment-only consolidated review.",
+    },
+    // run 214fad1a — Blockcast/moqtail-private#117 (no explicit "posted" verb; landed-as-COMMENTED + head sha)
+    {
+      ctx: { reviewKind: "pr_review", prRole: "reviewer", githubPrNumber: 117, githubRepoFullName: "Blockcast/moqtail-private", githubHeadSha: "d5918c4d" },
+      summary:
+        "Confirmed landed as **COMMENTED** at head `d5918c4d`. Review complete. Reviewed **Blockcast/moqtail-private#117**.",
+    },
+    // run 1af81fab — Blockcast/linux-amt#68
+    {
+      ctx: { reviewKind: "pr_review", prRole: "reviewer", githubPrNumber: 68, githubRepoFullName: "Blockcast/linux-amt", githubHeadSha: "cbedd9a1" },
+      summary: "Review posted successfully on Blockcast/linux-amt#68 at head `cbedd9a1`.",
+    },
+    // run a7825ae3 — Blockcast/onprem-k8s#461 (verb before review noun; "Consolidated review posted")
+    {
+      ctx: { reviewKind: "pr_review", prRole: "reviewer", githubPrNumber: 461, githubRepoFullName: "Blockcast/onprem-k8s", githubHeadSha: "c08d2a6f" },
+      summary:
+        "Done. Consolidated review posted and confirmed. Posted a comment-only review (`state: COMMENTED`) at the correct head c08d2a6f, confirmed landed.",
+    },
+  ])("BLO-8195: accepts Ally's natural-language posted-review summary against the same target (%#)", ({ ctx, summary }) => {
+    expect(evaluatePrReviewCompletionEvidence(ctx, { summary })).toEqual({ status: "posted_review" });
+  });
+
+  // BLO-8195: runs 57ece70a (#365) and 99510598 (#366) posted an archive notice
+  // and skipped review on the retired NMP repo, but the old archived detector's
+  // exact "archive notice already present" / "skipped review" strings missed
+  // their actual phrasing, so they too were misclassified `pr_review_output_missing`.
+  it.each([
+    {
+      label: "#365 skipped + posted notice",
+      summary:
+        "This wake was for `Blockcast/Network-Management-Portal#365`, which my AGENTS.md flags as **archived/retired** for portal work. Skipped the review (per guardrail) and posted exactly one archive notice — no prior notice existed.",
+    },
+    {
+      label: "#366 archive notice posted, exiting without review",
+      summary:
+        "Archive notice posted, exiting without review. PR `Blockcast/Network-Management-Portal#366` is on the archived/retired NMP repo. Per the AGENTS.md guardrail, I did not run a review.",
+    },
+  ])("BLO-8195: classifies NMP archived-skip posts as archived_repo_skipped, not missing ($label)", ({ summary }) => {
+    expect(
+      evaluatePrReviewCompletionEvidence(
+        { ...reviewerContext, githubRepoFullName: "Blockcast/Network-Management-Portal" },
+        { summary },
+      ),
+    ).toEqual({ status: "archived_repo_skipped" });
+  });
+
+  // BLO-8195: the broadened acceptance must never mask a real posting failure.
+  it("BLO-8195: still fails a reviewer run that exited mid-fetch without posting", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(
+        { reviewKind: "pr_review", prRole: "reviewer", githubPrNumber: 227, githubRepoFullName: "Blockcast/paperclip", githubHeadSha: "4e60b6b1" },
+        { summary: "No prior Ally review exists for Blockcast/paperclip#227 at head 4e60b6b1; I am fetching metadata and diff now." },
+      ),
+    ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
+  });
+
+  it("BLO-8195: still fails when the posting is negated even though the target matches", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(
+        { reviewKind: "pr_review", prRole: "reviewer", githubPrNumber: 227, githubRepoFullName: "Blockcast/paperclip", githubHeadSha: "4e60b6b1" },
+        { summary: "Could not verify the review posted on Blockcast/paperclip#227 for head 4e60b6b1; no matching Ally review was found." },
+      ),
+    ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
+  });
+
+  it("BLO-8195: still fails when the output only states future intent to post", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(
+        { reviewKind: "pr_review", prRole: "reviewer", githubPrNumber: 227, githubRepoFullName: "Blockcast/paperclip", githubHeadSha: "4e60b6b1" },
+        { summary: "Diff fetched for Blockcast/paperclip#227 at head 4e60b6b1; I will post the consolidated review next." },
+      ),
+    ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
+  });
 });
 
 describe("mergeCoalescedContextSnapshot", () => {

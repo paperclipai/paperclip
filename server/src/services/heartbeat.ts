@@ -2568,6 +2568,51 @@ function buildPrReviewOutputEvidenceText(input: {
   return parts.join("\n");
 }
 
+// BLO-8195: a past-tense "the review was posted/landed/submitted" signal. Kept
+// deliberately past-tense (`posted`, not `post`) so future-intent phrasing
+// ("will post the review") does not match here; future intent is additionally
+// guarded by prReviewOutputHasPostedReviewNegation below.
+function prReviewOutputHasPostedReviewVerb(text: string) {
+  return (
+    /\breview\b[\s\S]{0,40}\b(?:posted|landed|submitted)\b/i.test(text) ||
+    /\b(?:posted|landed|submitted)\b[\s\S]{0,50}\breview\b/i.test(text) ||
+    /\blanded\s+as\b[\s\S]{0,20}\b(?:COMMENTED|APPROVED|CHANGES_REQUESTED)\b/i.test(text)
+  );
+}
+
+// BLO-8195: require the posted-review claim to reference the SAME PR target that
+// the wake was for — the PR number, the head sha, or the repo full name carried
+// on the run's context — so a stray mention of an unrelated PR can never satisfy
+// the marker. `derivePaperclipPrReview` guarantees a non-null `prNumber` here, so
+// at least the `#<number>` anchor is always available to check.
+function prReviewOutputReferencesSameTarget(
+  text: string,
+  prReview: { prNumber: number | null; repoFullName: string | null; headSha: string | null },
+) {
+  if (prReview.prNumber !== null && new RegExp(`#${prReview.prNumber}(?!\\d)`).test(text)) {
+    return true;
+  }
+  if (prReview.headSha) {
+    const hex = prReview.headSha.match(/^[0-9a-f]{7,40}/i)?.[0];
+    if (hex && new RegExp(`\\b${hex.slice(0, 7)}[0-9a-f]*\\b`, "i").test(text)) return true;
+  }
+  if (prReview.repoFullName && text.includes(prReview.repoFullName)) return true;
+  return false;
+}
+
+// BLO-8195: suppress the broadened marker when the output negates the posting
+// ("could not verify the review posted", "no matching review was found") or only
+// states future intent ("will post the review"). These must stay `missing` so a
+// real posting failure is never masked by a broadened acceptance.
+function prReviewOutputHasPostedReviewNegation(text: string) {
+  return (
+    /\b(?:couldn['’]?t|could\s+not|cannot|can['’]?t|unable\s+to|failed\s+to|did\s+not|didn['’]?t)\s+(?:verify|confirm|find|locate|post|leave)\b/i.test(text) ||
+    /\bno\s+matching\b[\s\S]{0,60}\breview\b[\s\S]{0,30}\b(?:was\s+)?(?:found|posted)\b/i.test(text) ||
+    /\breview\s+(?:was|is|has)\s+(?:not|never)\s+(?:been\s+)?(?:posted|submitted|left)\b/i.test(text) ||
+    /\b(?:will\s+(?:be\s+)?post|going\s+to\s+post|about\s+to\s+post|to\s+be\s+posted|yet\s+to\s+(?:be\s+)?post)/i.test(text)
+  );
+}
+
 export function evaluatePrReviewCompletionEvidence(
   contextSnapshot: Record<string, unknown> | null | undefined,
   output: {
@@ -2594,9 +2639,31 @@ export function evaluatePrReviewCompletionEvidence(
   }
   if (
     /\bNetwork-Management-Portal\b[\s\S]{0,240}\barchived\b[\s\S]{0,240}\bskipped\s+review\b/i.test(text) ||
-    /\barchive\s+notice\s+already\s+present\b/i.test(text)
+    /\barchive\s+notice\b[\s\S]{0,40}\b(?:already\s+present|posted|exist(?:s|ed)?)\b/i.test(text) ||
+    /\b(?:archived|retired)\b[\s\S]{0,200}\bskip(?:ped|s|ping)?\b[\s\S]{0,40}\breview\b/i.test(text)
   ) {
     return { status: "archived_repo_skipped" as const };
+  }
+
+  // BLO-8195: durable posted-review marker validated against the SAME PR target.
+  //
+  // The phrase allowlist above only recognizes a handful of exact strings
+  // ("posted the consolidated Ally review"). Ally's real completion summaries
+  // express a genuinely-posted review many other ways — "Review posted
+  // successfully on <repo>#<n>", "landed as COMMENTED at head <sha>",
+  // "Consolidated review posted and confirmed" — so reviewer runs that DID post
+  // were misclassified `pr_review_output_missing`, flipping Ally to `error` and
+  // generating sweep/budget noise (BLO-3202). Accept the run only when all three
+  // hold: (a) a past-tense posted/landed-review verb is present, (b) the text
+  // references the same PR target (number / head sha / repo) carried on the wake
+  // context — not some unrelated PR, and (c) no posting-negation or future-intent
+  // cue ("could not verify", "no matching review found", "will post") is present.
+  if (
+    prReviewOutputHasPostedReviewVerb(text) &&
+    prReviewOutputReferencesSameTarget(text, prReview) &&
+    !prReviewOutputHasPostedReviewNegation(text)
+  ) {
+    return { status: "posted_review" as const };
   }
 
   return {
