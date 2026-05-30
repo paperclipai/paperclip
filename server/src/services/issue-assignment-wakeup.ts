@@ -1,3 +1,4 @@
+import { hasPlaceholderAnchorMarker } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 
 type WakeupTriggerDetail = "manual" | "ping" | "callback" | "system";
@@ -20,7 +21,12 @@ export interface IssueAssignmentWakeupDeps {
 
 export function queueIssueAssignmentWakeup(input: {
   heartbeat: IssueAssignmentWakeupDeps;
-  issue: { id: string; assigneeAgentId: string | null; status: string };
+  issue: {
+    id: string;
+    assigneeAgentId: string | null;
+    status: string;
+    description?: string | null;
+  };
   reason: string;
   mutation: string;
   contextSource: string;
@@ -29,6 +35,18 @@ export function queueIssueAssignmentWakeup(input: {
   rethrowOnError?: boolean;
 }) {
   if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
+
+  if (hasPlaceholderAnchorMarker(input.issue.description ?? null)) {
+    logger.debug(
+      {
+        issueId: input.issue.id,
+        source: input.contextSource,
+        marker: "placeholder-anchor",
+      },
+      "issue_assignment_wake.skipped",
+    );
+    return;
+  }
 
   return input.heartbeat
     .wakeup(input.issue.assigneeAgentId, {

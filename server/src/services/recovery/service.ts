@@ -4,6 +4,7 @@ import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  hasPlaceholderAnchorMarker,
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
@@ -547,6 +548,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         identifier: issues.identifier,
         status: issues.status,
         createdByAgentId: issues.createdByAgentId,
+        description: issues.description,
       })
       .from(issueRelations)
       .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -575,6 +577,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     for (const candidate of candidates) {
       if (seen.has(candidate.id)) continue;
       seen.add(candidate.id);
+
+      if (hasPlaceholderAnchorMarker(candidate.description)) {
+        logger.debug(
+          {
+            issueId: candidate.id,
+            identifier: candidate.identifier,
+            marker: "placeholder-anchor",
+          },
+          "recovery.reconcile_unassigned_blocking_issue.skipped",
+        );
+        skipped += 1;
+        continue;
+      }
 
       const creatorAgentId = candidate.createdByAgentId;
       if (!creatorAgentId) {

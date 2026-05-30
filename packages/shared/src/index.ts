@@ -628,6 +628,11 @@ export {
 } from "./issue-references.js";
 
 export {
+  PLACEHOLDER_ANCHOR_SENTINEL,
+  hasPlaceholderAnchorMarker,
+} from "./issue-placeholder-anchor.js";
+
+export {
   sidebarOrderPreferenceSchema,
   upsertSidebarOrderPreferenceSchema,
   type UpsertSidebarOrderPreference,

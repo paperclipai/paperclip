@@ -1,7 +1,12 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
-import type { IssueCommentMetadata, IssueCommentPresentation, RunLivenessState } from "@paperclipai/shared";
+import {
+  hasPlaceholderAnchorMarker,
+  type IssueCommentMetadata,
+  type IssueCommentPresentation,
+  type RunLivenessState,
+} from "@paperclipai/shared";
 import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
 
 export const FINISH_SUCCESSFUL_RUN_HANDOFF_REASON = "finish_successful_run_handoff";
@@ -45,7 +50,15 @@ export function isIdempotentFinishSuccessfulRunHandoffWakeStatus(status: string)
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = Pick<
   typeof issues.$inferSelect,
-  "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId" | "executionState"
+  | "id"
+  | "companyId"
+  | "identifier"
+  | "title"
+  | "status"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "executionState"
+  | "description"
 >;
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
@@ -338,6 +351,9 @@ export function decideSuccessfulRunHandoff(input: {
     return { kind: "skip", reason: "missing issue comment retry owns the next action" };
   }
   if (!issue) return { kind: "skip", reason: "issue not found" };
+  if (hasPlaceholderAnchorMarker(issue.description)) {
+    return { kind: "skip", reason: "issue is a placeholder-anchor marker" };
+  }
   if (!agent) return { kind: "skip", reason: "agent not found" };
   if (issue.companyId !== run.companyId || agent.companyId !== run.companyId) {
     return { kind: "skip", reason: "company scope mismatch" };

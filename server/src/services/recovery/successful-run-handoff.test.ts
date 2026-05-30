@@ -86,6 +86,20 @@ describe("successful run handoff decision", () => {
     expect(decision.instruction).toContain("record an explicit continuation path");
   });
 
+  it("does not queue when the issue carries the placeholder-anchor marker", () => {
+    expect(
+      decide({
+        issue: {
+          ...issue,
+          description: "Placeholder anchor — DO NOT manually start.",
+        } as any,
+      }),
+    ).toEqual({
+      kind: "skip",
+      reason: "issue is a placeholder-anchor marker",
+    });
+  });
+
   it("does not queue when the issue already has a valid disposition", () => {
     expect(decide({ issue: { ...issue, status: "done" } as any })).toEqual({
       kind: "skip",
