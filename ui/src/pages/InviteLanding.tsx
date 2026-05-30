@@ -160,6 +160,7 @@ function AwaitingJoinApprovalPanel({
   claimApiKeyPath = null,
   onboardingTextUrl = null,
 }: AwaitingJoinApprovalPanelProps) {
+  const approvalUrl = `${window.location.origin}/company/settings/members`;
   const approverLabel = invitedByUserName ?? "A company admin";
 
   return (
@@ -180,12 +181,15 @@ function AwaitingJoinApprovalPanel({
           </p>
           <div className="border border-zinc-800 p-3">
             <p className="text-xs text-zinc-500 mb-1">Approval page</p>
-            <span className="text-sm text-zinc-200">
+            <a
+              href={approvalUrl}
+              className="text-sm text-zinc-200 underline underline-offset-2 hover:text-zinc-100"
+            >
               Company Settings → Members
-            </span>
+            </a>
           </div>
           <p className="text-sm text-zinc-400">
-            Ask them to visit <span className="text-zinc-200">Company Settings → Members</span> to approve your request.
+            Ask them to visit <a href={approvalUrl} className="text-zinc-200 underline underline-offset-2 hover:text-zinc-100">Company Settings → Members</a> to approve your request.
           </p>
           <p className="text-xs text-zinc-500">
             Refresh this page after you've been approved — you'll be redirected automatically.
