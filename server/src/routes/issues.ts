@@ -1340,12 +1340,12 @@ export function issueRoutes(
 
   async function assertAgentNotFrozen(res: Response, agentId: string): Promise<boolean> {
     const row = await db
-      .select({ frozenAt: agentRows.frozenAt })
+      .select({ pauseReason: agentRows.pauseReason })
       .from(agentRows)
       .where(eq(agentRows.id, agentId))
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    if (row?.frozenAt != null) {
+    if (row?.pauseReason === "freeze") {
       res.status(409).json({ error: "Cannot assign tasks to a frozen agent" });
       return false;
     }

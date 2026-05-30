@@ -480,10 +480,18 @@ export function agentService(db: Db) {
       const existing = await getById(id);
       if (!existing) return null;
       if (existing.status === "terminated") throw conflict("Cannot freeze terminated agent");
-      if (existing.frozenAt) return existing;
+      if (existing.pauseReason === "freeze") return existing;
+      const preFreezeStatus = existing.status;
       const updated = await db
         .update(agents)
-        .set({ frozenAt: new Date(), updatedAt: new Date() })
+        .set({
+          status: "paused",
+          pauseReason: "freeze",
+          preFreezeStatus,
+          frozenAt: new Date(),
+          pausedAt: new Date(),
+          updatedAt: new Date(),
+        })
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -493,9 +501,18 @@ export function agentService(db: Db) {
     unfreeze: async (id: string) => {
       const existing = await getById(id);
       if (!existing) return null;
+      if (existing.pauseReason !== "freeze") throw conflict("Agent is not frozen");
+      const preFreezeStatus = existing.preFreezeStatus ?? "idle";
       const updated = await db
         .update(agents)
-        .set({ frozenAt: null, updatedAt: new Date() })
+        .set({
+          status: preFreezeStatus,
+          pauseReason: null,
+          pausedAt: null,
+          frozenAt: null,
+          preFreezeStatus: null,
+          updatedAt: new Date(),
+        })
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
