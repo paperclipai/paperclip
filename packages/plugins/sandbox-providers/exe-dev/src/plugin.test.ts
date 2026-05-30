@@ -202,6 +202,26 @@ describe("exe.dev sandbox provider plugin", () => {
       expect(validateSshPrivateKey(VALID_RSA_PEM)).toBeNull();
     });
 
+    it("accepts UUID-like secret reference values from the save-time schema stage", async () => {
+      process.env.EXE_API_KEY = "host-key";
+
+      const result = await plugin.definition.onEnvironmentValidateConfig?.({
+        driverKey: "exe-dev",
+        config: {
+          apiKey: "api-key",
+          sshPrivateKey: "11111111-1111-4111-8111-111111111111",
+        },
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        normalizedConfig: {
+          sshPrivateKey: "11111111-1111-4111-8111-111111111111",
+        },
+      });
+      expect(result?.errors ?? []).toEqual([]);
+    });
+
     it("treats empty / whitespace-only input as valid (falls back to on-host key)", () => {
       expect(validateSshPrivateKey("")).toBeNull();
       expect(validateSshPrivateKey("   \n\n  ")).toBeNull();
