@@ -951,7 +951,7 @@ export function ChatInterface() {
         ) : (
           /* ── Message stream ── */
           <div className="flex-1 overflow-y-auto">
-            <div className="mx-auto max-w-[600px] space-y-8 px-4 md:px-6 py-14 pb-32 md:pb-14">
+            <div className="mx-auto max-w-[600px] space-y-8 px-4 md:px-6 py-14 pb-[calc(8rem+env(safe-area-inset-bottom))] md:pb-14">
               {messages.map((msg) => (
                 <MessageBubble
                   key={msg.id}
@@ -970,7 +970,7 @@ export function ChatInterface() {
       {/* ── Input area ──
            On mobile: sticky above MobileBottomNav (h-16 = 4rem); on desktop: sticky at bottom.
            The [&]:bottom-20 targets mobile viewport where MobileBottomNav lives. */}
-      <div className="sticky bottom-20 md:bottom-0 bg-gradient-to-t from-[#FAFAF9] via-[#FAFAF9] to-transparent pb-4 md:pb-8 pt-4">
+      <div className="sticky bottom-[calc(5rem+env(safe-area-inset-bottom))] md:bottom-0 bg-gradient-to-t from-[#FAFAF9] via-[#FAFAF9] to-transparent pb-4 md:pb-8 pt-4">
         <div className="mx-auto max-w-[600px] px-4">
           <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-[0_4px_24px_rgba(0,0,0,0.08)] input-warm-focus">
             <textarea
