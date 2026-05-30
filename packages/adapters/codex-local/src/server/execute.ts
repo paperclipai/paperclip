@@ -504,6 +504,52 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+
+  // Plugin tools MCP bridge (KSI-664/KSI-698). Codex reads MCP servers from
+  // ${CODEX_HOME}/config.toml under [mcp_servers.<name>]. We merge a
+  // [mcp_servers.paperclip] block into the host's effectiveCodexHome so the
+  // bridge becomes a child of the spawned codex process. Skipped on remote
+  // targets in this first cut.
+  const paperclipProjectId = asString(context.projectId, "").trim();
+  const paperclipApiKey = typeof env.PAPERCLIP_API_KEY === "string" ? env.PAPERCLIP_API_KEY : "";
+  const paperclipApiUrl = typeof env.PAPERCLIP_API_URL === "string" ? env.PAPERCLIP_API_URL : "";
+  if (
+    !executionTargetIsRemote &&
+    paperclipProjectId.length > 0 &&
+    paperclipApiKey.length > 0 &&
+    paperclipApiUrl.length > 0
+  ) {
+    try {
+      const { buildPluginToolsMcpServer, mergeCodexConfigMcpServers } = await import(
+        "@paperclipai/adapter-shared"
+      );
+      const spec = buildPluginToolsMcpServer({
+        runContext: {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId,
+          projectId: paperclipProjectId,
+        },
+        apiUrl: paperclipApiUrl,
+        apiKey: paperclipApiKey,
+      });
+      const codexConfigPath = path.join(effectiveCodexHome, "config.toml");
+      const existingToml = await fs.readFile(codexConfigPath, "utf-8").catch(() => "");
+      const nextToml = mergeCodexConfigMcpServers(existingToml, spec);
+      await fs.writeFile(codexConfigPath, nextToml, "utf-8");
+      await onLog(
+        "stdout",
+        `[paperclip] Wrote plugin-tools MCP config for Codex at ${codexConfigPath}.\n`,
+      );
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stderr",
+        `[paperclip] Warning: could not materialize plugin-tools MCP config for Codex: ${reason}\n`,
+      );
+    }
+  }
+
   const billingType = resolveCodexBillingType(effectiveEnv);
   const runtimeEnv = Object.fromEntries(
     Object.entries(ensurePathInEnv(effectiveEnv)).filter(

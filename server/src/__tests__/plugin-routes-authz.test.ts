@@ -623,6 +623,134 @@ describe.sequential("plugin tool and bridge authz", () => {
     );
   });
 
+  it("allows GET /api/plugins/tools when called with an agent run JWT", async () => {
+    // The MCP bridge spawned by adapter CLIs (KSI-664/KSI-698) authenticates
+    // with an agent run JWT and lists plugin tools through this route.
+    const listToolsForAgent = vi.fn().mockReturnValue([
+      { name: "paperclip.example:search", description: "Search example" },
+    ]);
+    const { app } = await createApp(agentActor(), {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent,
+          getTool: vi.fn(),
+          executeTool: vi.fn(),
+        },
+      },
+    });
+
+    const res = await request(app).get("/api/plugins/tools");
+
+    expect(res.status).toBe(200);
+    expect(listToolsForAgent).toHaveBeenCalledWith(undefined);
+    expect(res.body).toEqual([
+      { name: "paperclip.example:search", description: "Search example" },
+    ]);
+  });
+
+  it("rejects GET /api/plugins/tools when the request is unauthenticated", async () => {
+    const listToolsForAgent = vi.fn().mockReturnValue([]);
+    const { app } = await createApp({ type: "none" }, {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent,
+          getTool: vi.fn(),
+          executeTool: vi.fn(),
+        },
+      },
+    });
+
+    const res = await request(app).get("/api/plugins/tools");
+
+    expect(res.status).toBe(401);
+    expect(listToolsForAgent).not.toHaveBeenCalled();
+  });
+
+  it("allows POST /api/plugins/tools/execute when called with an agent run JWT scoped to the same company", async () => {
+    // End-to-end positive case for the MCP bridge auth path:
+    // agent run JWT for company A executes a plugin tool whose runContext
+    // also belongs to company A. The HTTP layer authenticates the agent
+    // actor (assertAuthenticated), enforces company match
+    // (assertCompanyAccess), and validates each runContext reference
+    // (validateToolRunContextScope).
+    const executeTool = vi.fn().mockResolvedValue({
+      pluginId: "paperclip.example",
+      toolName: "search",
+      result: { content: "ok" },
+    });
+    const { app } = await createApp(agentActor(), {}, {
+      db: createSelectQueueDb([
+        [{ companyId: companyA }],
+        [{ companyId: companyA, agentId: agentA }],
+        [{ companyId: companyA }],
+      ]),
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: { q: "test" },
+        runContext: {
+          agentId: agentA,
+          runId: runA,
+          companyId: companyA,
+          projectId: projectA,
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalledWith(
+      "paperclip.example:search",
+      { q: "test" },
+      {
+        agentId: agentA,
+        runId: runA,
+        companyId: companyA,
+        projectId: projectA,
+      },
+    );
+  });
+
+  it("rejects POST /api/plugins/tools/execute when the agent run JWT is for a different company than runContext", async () => {
+    // Defense in depth: even if the bridge spec is tampered with so that
+    // runContext.companyId points at another company, assertCompanyAccess
+    // for the agent actor enforces the agent's own JWT companyId match.
+    const executeTool = vi.fn();
+    const { app } = await createApp(agentActor(), {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: {
+          agentId: agentA,
+          runId: runA,
+          companyId: companyB,
+          projectId: projectA,
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["legacy data", "post", `/api/plugins/${pluginId}/bridge/data`, { key: "health" }],
     ["legacy action", "post", `/api/plugins/${pluginId}/bridge/action`, { key: "sync" }],

@@ -878,7 +878,13 @@ export function pluginRoutes(
    * Errors: 501 if tool dispatcher is not configured
    */
   router.get("/plugins/tools", async (req, res) => {
-    assertBoardOrgAccess(req);
+    // Allow either board users with company access OR agent run JWTs.
+    // The plugin tool registry is currently global (single-tenant), so any
+    // authenticated caller in this Paperclip instance gets the same list.
+    // The MCP bridge spawned by adapter CLIs (claude_local, gemini_local,
+    // codex_local, opencode_local) authenticates with an agent run JWT and
+    // calls this endpoint to discover plugin tools — see KSI-664/KSI-698.
+    assertAuthenticated(req);
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
@@ -912,7 +918,13 @@ export function pluginRoutes(
    * - 502 if the plugin worker is unavailable or the RPC call fails
    */
   router.post("/plugins/tools/execute", async (req, res) => {
-    assertBoardOrgAccess(req);
+    // Allow either board users with company access OR agent run JWTs.
+    // The downstream `assertCompanyAccess(req, runContext.companyId)` and
+    // `validateToolRunContextScope(runContext)` calls enforce that an agent
+    // can only execute tools scoped to its own company and run identity.
+    // The MCP bridge spawned by adapter CLIs (KSI-664/KSI-698) is the
+    // primary agent-actor caller of this endpoint.
+    assertAuthenticated(req);
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });

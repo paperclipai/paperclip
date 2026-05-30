@@ -672,6 +672,52 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
 
+  // Plugin tools MCP bridge (KSI-664/KSI-698). For local execution targets
+  // we materialize a small JSON config file that the Claude CLI loads via
+  // `--mcp-config <path>`. The bridge stays a child of the spawned `claude`
+  // process and exits with it. Skipped on remote/sandbox targets in this
+  // first cut: the file would not be visible to the remote CLI; the
+  // dedicated paperclip bridge already covers that case.
+  let paperclipMcpConfigPath: string | null = null;
+  const paperclipProjectId = asString(context.projectId, "").trim();
+  const paperclipApiKey = typeof env.PAPERCLIP_API_KEY === "string" ? env.PAPERCLIP_API_KEY : "";
+  const paperclipApiUrl = typeof env.PAPERCLIP_API_URL === "string" ? env.PAPERCLIP_API_URL : "";
+  if (
+    !executionTargetIsRemote &&
+    paperclipProjectId.length > 0 &&
+    paperclipApiKey.length > 0 &&
+    paperclipApiUrl.length > 0
+  ) {
+    try {
+      const { buildPluginToolsMcpServer, materializeClaudeMcpConfigFile } = await import(
+        "@paperclipai/adapter-shared"
+      );
+      const spec = buildPluginToolsMcpServer({
+        runContext: {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId,
+          projectId: paperclipProjectId,
+        },
+        apiUrl: paperclipApiUrl,
+        apiKey: paperclipApiKey,
+      });
+      const mcpConfigDir = path.join(cwd, ".paperclip-runtime", "claude");
+      paperclipMcpConfigPath = await materializeClaudeMcpConfigFile(spec, mcpConfigDir);
+      await onLog(
+        "stdout",
+        `[paperclip] Wrote plugin-tools MCP config for Claude at ${paperclipMcpConfigPath}.\n`,
+      );
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      // Non-fatal: the agent continues without plugin tools surfaced as MCP.
+      await onLog(
+        "stderr",
+        `[paperclip] Warning: could not materialize plugin-tools MCP config for Claude: ${reason}\n`,
+      );
+    }
+  }
+
   const buildClaudeArgs = (
     resumeSessionId: string | null,
     attemptInstructionsFilePath: string | undefined,
@@ -682,6 +728,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       dangerouslySkipPermissions,
       targetIsSandbox: executionTargetIsSandbox,
     }));
+    if (paperclipMcpConfigPath) args.push("--mcp-config", paperclipMcpConfigPath);
     if (chrome) args.push("--chrome");
     // For Bedrock: only pass --model when the ID is a Bedrock-native identifier
     // (e.g. "us.anthropic.*" or ARN). Anthropic-style IDs like "claude-opus-4-6" are invalid

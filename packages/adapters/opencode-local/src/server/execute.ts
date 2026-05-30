@@ -300,6 +300,67 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
+
+  // Plugin tools MCP bridge (KSI-664/KSI-698). OpenCode reads MCP servers
+  // from the `mcp` block in opencode.json. We merge a `mcp.paperclip` entry
+  // into the runtime config OpenCode is about to load, so the bridge becomes
+  // a child of the spawned opencode process. Skipped on remote targets.
+  const opencodeRuntimeConfigDir =
+    typeof preparedRuntimeConfig.env.XDG_CONFIG_HOME === "string" &&
+    preparedRuntimeConfig.env.XDG_CONFIG_HOME.length > 0
+      ? path.join(preparedRuntimeConfig.env.XDG_CONFIG_HOME, "opencode")
+      : null;
+  const paperclipProjectId = asString(context.projectId, "").trim();
+  const paperclipApiKey = typeof env.PAPERCLIP_API_KEY === "string" ? env.PAPERCLIP_API_KEY : "";
+  const paperclipApiUrl = typeof env.PAPERCLIP_API_URL === "string" ? env.PAPERCLIP_API_URL : "";
+  if (
+    !executionTargetIsRemote &&
+    opencodeRuntimeConfigDir &&
+    paperclipProjectId.length > 0 &&
+    paperclipApiKey.length > 0 &&
+    paperclipApiUrl.length > 0
+  ) {
+    try {
+      const { buildPluginToolsMcpServer, mergeOpencodeConfigMcpServers } = await import(
+        "@paperclipai/adapter-shared"
+      );
+      const spec = buildPluginToolsMcpServer({
+        runContext: {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId,
+          projectId: paperclipProjectId,
+        },
+        apiUrl: paperclipApiUrl,
+        apiKey: paperclipApiKey,
+      });
+      const opencodeConfigPath = path.join(opencodeRuntimeConfigDir, "opencode.json");
+      let existing: Record<string, unknown> | null = null;
+      try {
+        const raw = await fs.readFile(opencodeConfigPath, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          existing = parsed as Record<string, unknown>;
+        }
+      } catch {
+        existing = null;
+      }
+      const next = mergeOpencodeConfigMcpServers(existing, spec);
+      await fs.mkdir(opencodeRuntimeConfigDir, { recursive: true });
+      await fs.writeFile(opencodeConfigPath, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
+      await onLog(
+        "stdout",
+        `[paperclip] Wrote plugin-tools MCP config for OpenCode at ${opencodeConfigPath}.\n`,
+      );
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stderr",
+        `[paperclip] Warning: could not materialize plugin-tools MCP config for OpenCode: ${reason}\n`,
+      );
+    }
+  }
+
   try {
     const runtimeEnv = Object.fromEntries(
       Object.entries(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env })).filter(

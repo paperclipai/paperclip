@@ -503,6 +503,61 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
 
+  // Plugin tools MCP bridge (KSI-664/KSI-698). Gemini reads MCP servers from
+  // ${cwd}/.gemini/settings.json (project scope). We merge a `mcpServers`
+  // block in there so the bridge becomes a child of the spawned gemini
+  // process. Skipped on remote targets in this first cut.
+  const paperclipProjectId = asString(context.projectId, "").trim();
+  const paperclipApiKey = typeof env.PAPERCLIP_API_KEY === "string" ? env.PAPERCLIP_API_KEY : "";
+  const paperclipApiUrl = typeof env.PAPERCLIP_API_URL === "string" ? env.PAPERCLIP_API_URL : "";
+  if (
+    !executionTargetIsRemote &&
+    paperclipProjectId.length > 0 &&
+    paperclipApiKey.length > 0 &&
+    paperclipApiUrl.length > 0
+  ) {
+    try {
+      const { buildPluginToolsMcpServer, mergeGeminiSettingsMcpServer } = await import(
+        "@paperclipai/adapter-shared"
+      );
+      const spec = buildPluginToolsMcpServer({
+        runContext: {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId,
+          projectId: paperclipProjectId,
+        },
+        apiUrl: paperclipApiUrl,
+        apiKey: paperclipApiKey,
+      });
+      const settingsDir = path.join(cwd, ".gemini");
+      const settingsPath = path.join(settingsDir, "settings.json");
+      let existing: Record<string, unknown> | null = null;
+      try {
+        const raw = await fs.readFile(settingsPath, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          existing = parsed as Record<string, unknown>;
+        }
+      } catch {
+        existing = null;
+      }
+      const next = mergeGeminiSettingsMcpServer(existing, spec);
+      await fs.mkdir(settingsDir, { recursive: true });
+      await fs.writeFile(settingsPath, JSON.stringify(next, null, 2), "utf-8");
+      await onLog(
+        "stdout",
+        `[paperclip] Wrote plugin-tools MCP config for Gemini at ${settingsPath}.\n`,
+      );
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stderr",
+        `[paperclip] Warning: could not materialize plugin-tools MCP config for Gemini: ${reason}\n`,
+      );
+    }
+  }
+
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["--output-format", "stream-json"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
