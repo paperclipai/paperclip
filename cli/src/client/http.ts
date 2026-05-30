@@ -74,6 +74,20 @@ export class PaperclipApiClient {
     }, opts);
   }
 
+  put<T>(path: string, body?: unknown, opts?: RequestOptions): Promise<T | null> {
+    return this.request<T>(path, {
+      method: "PUT",
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }, opts);
+  }
+
+  postForm<T>(path: string, body: FormData, opts?: RequestOptions): Promise<T | null> {
+    return this.request<T>(path, {
+      method: "POST",
+      body,
+    }, opts);
+  }
+
   patch<T>(path: string, body?: unknown, opts?: RequestOptions): Promise<T | null> {
     return this.request<T>(path, {
       method: "PATCH",
