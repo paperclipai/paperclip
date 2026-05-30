@@ -68,6 +68,7 @@ import {
   KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
   KANBAN_COLUMN_PAGE_SIZE_OPTIONS,
   type KanbanColumnPageSize,
+  type KanbanGroupBy,
 } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
@@ -132,6 +133,7 @@ export type IssueViewState = IssueFilterState & {
   boardCardDensity: BoardCardDensity;
   boardColdLaneMode: BoardColdLaneMode;
   boardColumnPageSize: BoardColumnPageSize;
+  boardGroupBy: KanbanGroupBy;
 };
 
 const defaultViewState: IssueViewState = {
@@ -146,6 +148,7 @@ const defaultViewState: IssueViewState = {
   boardCardDensity: "auto",
   boardColdLaneMode: "auto",
   boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
+  boardGroupBy: "status",
 };
 
 function normalizeBoardCardDensity(value: unknown): BoardCardDensity {
@@ -162,6 +165,12 @@ function normalizeBoardColumnPageSize(value: unknown): BoardColumnPageSize {
     : KANBAN_COLUMN_DEFAULT_PAGE_SIZE;
 }
 
+function normalizeBoardGroupBy(value: unknown): KanbanGroupBy {
+  return value === "status" || value === "assignee" || value === "priority" || value === "project"
+    ? value
+    : "status";
+}
+
 function getViewState(key: string): IssueViewState {
   try {
     const raw = localStorage.getItem(key);
@@ -174,6 +183,7 @@ function getViewState(key: string): IssueViewState {
         boardCardDensity: normalizeBoardCardDensity(parsed.boardCardDensity),
         boardColdLaneMode: normalizeBoardColdLaneMode(parsed.boardColdLaneMode),
         boardColumnPageSize: normalizeBoardColumnPageSize(parsed.boardColumnPageSize),
+        boardGroupBy: normalizeBoardGroupBy(parsed.boardGroupBy),
       };
     }
   } catch { /* ignore */ }
@@ -1557,6 +1567,48 @@ export function IssuesList({
               </PopoverContent>
             </Popover>
           )}
+
+          {/* Group columns (board view only) */}
+          {viewState.viewMode === "board" && (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  title="Group board columns"
+                  data-testid="board-group-by-trigger"
+                >
+                  <Layers className="h-3.5 w-3.5" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-44 p-0">
+                <div className="p-2 space-y-0.5">
+                  <div className="px-2 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Group columns by
+                  </div>
+                  {([
+                    ["status", "Status"],
+                    ["assignee", "Assignee"],
+                    ["priority", "Priority"],
+                    ["project", "Project"],
+                  ] as const).map(([value, label]) => (
+                    <button
+                      key={value}
+                      data-testid={`board-group-by-${value}`}
+                      className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
+                        viewState.boardGroupBy === value ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
+                      }`}
+                      onClick={() => updateView({ boardGroupBy: value })}
+                    >
+                      <span>{label}</span>
+                      {viewState.boardGroupBy === value && <Check className="h-3.5 w-3.5" />}
+                    </button>
+                  ))}
+                </div>
+              </PopoverContent>
+            </Popover>
+          )}
         </div>
       </div>
 
@@ -1585,11 +1637,15 @@ export function IssuesList({
         <KanbanBoard
           issues={filtered}
           agents={agents}
+          projectsById={projectById}
+          currentUserId={currentUserId}
           liveIssueIds={liveIssueIds}
           compactCards={boardCompactCards}
           collapsedStatuses={boardCollapsedStatuses}
           initialVisibleCount={viewState.boardColumnPageSize}
           revealIncrement={viewState.boardColumnPageSize}
+          groupBy={viewState.boardGroupBy}
+          cardColumns={visibleIssueColumnSet}
           onUpdateIssue={onUpdateIssue}
         />
       ) : (

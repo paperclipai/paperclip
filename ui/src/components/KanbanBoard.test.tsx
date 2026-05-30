@@ -4,7 +4,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Issue, IssueStatus } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { KanbanBoard, resolveKanbanTargetStatus } from "./KanbanBoard";
+import { KanbanBoard, buildKanbanColumns, resolveKanbanTargetStatus } from "./KanbanBoard";
+import type { InboxIssueColumn } from "../lib/inbox";
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -194,5 +195,70 @@ describe("KanbanBoard", () => {
     expect(resolveKanbanTargetStatus("done", issues)).toBe("done");
     expect(resolveKanbanTargetStatus("issue-blocked-2", issues)).toBe("blocked");
     expect(resolveKanbanTargetStatus("missing", issues)).toBeNull();
+  });
+
+  it("renders priority columns when grouped by priority", () => {
+    const a = createIssue(1, "todo");
+    a.priority = "high";
+    const b = createIssue(2, "in_progress");
+    b.priority = "low";
+    const { container } = renderBoard({
+      issues: [a, b],
+      groupBy: "priority",
+    });
+
+    expect(container.textContent).toContain("High");
+    expect(container.textContent).toContain("Low");
+    // Status labels for non-status grouping should not render as column headers
+    expect(container.textContent).not.toMatch(/\bIn Progress\b/);
+  });
+
+  it("renders an Unassigned column when grouped by assignee with empty assignees", () => {
+    const issues = [createIssue(1, "todo"), createIssue(2, "todo")];
+    issues[0]!.assigneeAgentId = "agent-1";
+    issues[1]!.assigneeAgentId = null;
+
+    const { container } = renderBoard({
+      issues,
+      groupBy: "assignee",
+    });
+
+    expect(container.textContent).toContain("Codex");
+    expect(container.textContent).toContain("Unassigned");
+  });
+
+  it("renders project pill on cards when projectsById is provided", () => {
+    const a = createIssue(1, "todo");
+    a.projectId = "proj-1";
+    const projectsById = new Map([["proj-1", { name: "Arquitetura", color: "#ff8800" }]]);
+
+    const { container } = renderBoard({
+      issues: [a],
+      projectsById,
+      cardColumns: new Set<InboxIssueColumn>(["assignee", "project"]),
+    });
+
+    expect(container.textContent).toContain("Arquitetura");
+  });
+
+  it("hides project pill when cardColumns excludes project", () => {
+    const a = createIssue(1, "todo");
+    a.projectId = "proj-1";
+    const projectsById = new Map([["proj-1", { name: "ProjectXYZ", color: "#ff8800" }]]);
+
+    const { container } = renderBoard({
+      issues: [a],
+      projectsById,
+      cardColumns: new Set<InboxIssueColumn>(["assignee"]),
+    });
+
+    expect(container.textContent).not.toContain("ProjectXYZ");
+  });
+
+  it("buildKanbanColumns falls back to a (none) column when no values exist", () => {
+    const cols = buildKanbanColumns("project", []);
+    expect(cols).toHaveLength(1);
+    expect(cols[0]?.label).toBe("No project");
+    expect(cols[0]?.isNone).toBe(true);
   });
 });
