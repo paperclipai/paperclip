@@ -2506,6 +2506,10 @@ export function derivePaperclipPrReview(contextSnapshot: Record<string, unknown>
     wakeReason: wakeReason ?? "github_pull_request",
     prNumber,
     repoFullName: readNonEmptyString(contextSnapshot.githubRepoFullName),
+    prTitle: readNonEmptyString(contextSnapshot.githubPrTitle),
+    prUrl: readNonEmptyString(contextSnapshot.githubPrUrl),
+    eventUrl: readNonEmptyString(contextSnapshot.githubEventUrl),
+    headSha: readNonEmptyString(contextSnapshot.githubHeadSha),
     event: readNonEmptyString(contextSnapshot.githubEvent),
     deliveryId: readNonEmptyString(contextSnapshot.githubDeliveryId),
     reviewKind: reviewKind ?? null,
@@ -2632,6 +2636,10 @@ export function buildPaperclipTaskMarkdown(input: {
     wakeReason: string;
     prNumber: number;
     repoFullName: string | null;
+    prTitle?: string | null;
+    prUrl?: string | null;
+    eventUrl?: string | null;
+    headSha?: string | null;
     event?: string | null;
     deliveryId?: string | null;
     reviewKind?: string | null;
@@ -2671,6 +2679,12 @@ export function buildPaperclipTaskMarkdown(input: {
       `- PR: ${quoteTaskScalar(prRef)}`,
       `- Wake reason: ${quoteTaskScalar(prReview.wakeReason)}`,
     );
+    if (prReview.prTitle) lines.push(`- PR title: ${quoteTaskScalar(prReview.prTitle)}`);
+    if (prReview.prUrl) lines.push(`- PR URL: ${quoteTaskScalar(prReview.prUrl)}`);
+    if (prReview.eventUrl && prReview.eventUrl !== prReview.prUrl) {
+      lines.push(`- GitHub event URL: ${quoteTaskScalar(prReview.eventUrl)}`);
+    }
+    if (prReview.headSha) lines.push(`- Head SHA: ${quoteTaskScalar(prReview.headSha)}`);
     if (prReview.event) lines.push(`- GitHub event: ${quoteTaskScalar(prReview.event)}`);
     if (prReview.prRole === "author") {
       const reviewerLabel = prReview.reviewAuthorLogin ?? "A reviewer";
@@ -7600,7 +7614,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       status: finalizedRun.status,
       failureReason: finalizedRun.error ?? undefined,
     });
-    await releaseIssueExecutionAndPromote(finalizedRun);
+    await finalizeAgentStatus(input.run.agentId, terminalOutcome.status);
+    const promotedRunDispatched = await releaseIssueExecutionAndPromote(finalizedRun);
     await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
       eventType: "lifecycle",
       stream: "system",
@@ -7613,8 +7628,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         jobMessage: terminalOutcome.jobMessage,
       },
     });
-    await finalizeAgentStatus(input.run.agentId, terminalOutcome.status);
-    await startNextQueuedRunForAgent(input.run.agentId);
+    if (!promotedRunDispatched) {
+      await startNextQueuedRunForAgent(input.run.agentId);
+    }
     runningProcesses.delete(input.run.id);
     activeRunExecutions.delete(input.run.id);
     await environmentsSvc.releaseLeasesForRun(
@@ -7924,15 +7940,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         status: finalizedRun.status,
         failureReason: finalizedRun.error ?? undefined,
       });
+      await finalizeAgentStatus(run.agentId, "failed");
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
+      let promotedRunDispatched = false;
       if (shouldRetry) {
         const agent = await getAgent(run.agentId);
         if (agent) {
           retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
         }
       } else {
-        await releaseIssueExecutionAndPromote(finalizedRun);
+        promotedRunDispatched = await releaseIssueExecutionAndPromote(finalizedRun);
+      }
+      if (!opts?.suppressDispatchAfterReap && !promotedRunDispatched) {
+        await startNextQueuedRunForAgent(run.agentId);
       }
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
@@ -7951,10 +7972,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
-      await finalizeAgentStatus(run.agentId, "failed");
-      if (!opts?.suppressDispatchAfterReap) {
-        await startNextQueuedRunForAgent(run.agentId);
-      }
       runningProcesses.delete(run.id);
       // For external-lifecycle adapters, also clear the in-process await
       // tracking. If we just reaped a run that the local executor was still
@@ -9934,7 +9951,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
   }
 
-  async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect) {
+  async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(runContext, null);
@@ -10327,7 +10344,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         latestRun: run,
         comment: promotionResult.comment,
       });
-      return;
+      return false;
     }
 
     if (promotionResult?.kind === "blocked_recovery_in_place") {
@@ -10336,11 +10353,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         previousStatus: promotionResult.previousStatus as "todo" | "in_progress",
         latestRun: run,
       });
-      return;
+      return false;
     }
 
     const promotedRun = promotionResult?.run ?? null;
-    if (!promotedRun) return;
+    if (!promotedRun) return false;
 
     if (promotionResult?.kind === "promoted" && promotionResult.reopenedActivity) {
       await logActivity(db, promotionResult.reopenedActivity);
@@ -10359,6 +10376,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     await startNextQueuedRunForAgent(promotedRun.agentId);
+    return true;
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {

@@ -1,10 +1,12 @@
 import type { IssueRelatedWorkItem, IssueRelatedWorkSummary } from "@paperclipai/shared";
+import { Link } from "@/lib/router";
 import { IssueReferencePill } from "./IssueReferencePill";
 
 type GroupedSource = {
   label: string;
   count: number;
   sampleMatchedText: string | null;
+  href: string | null;
 };
 
 function groupSourcesByLabel(sources: IssueRelatedWorkItem["sources"]): GroupedSource[] {
@@ -13,15 +15,50 @@ function groupSourcesByLabel(sources: IssueRelatedWorkItem["sources"]): GroupedS
     const existing = groups.get(source.label);
     if (existing) {
       existing.count += 1;
+      if (!existing.href && source.href) existing.href = source.href;
     } else {
       groups.set(source.label, {
         label: source.label,
         count: 1,
         sampleMatchedText: source.matchedText ?? null,
+        href: source.href ?? null,
       });
     }
   }
   return Array.from(groups.values());
+}
+
+function SourceChip({ group }: { group: GroupedSource }) {
+  const className = "inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted";
+  const content = (
+    <>
+      <span>{group.label}</span>
+      {group.count > 1 ? (
+        <span className="tabular-nums text-[10px] font-medium opacity-80">×{group.count}</span>
+      ) : null}
+    </>
+  );
+
+  if (group.href) {
+    return (
+      <Link
+        className={className}
+        to={group.href}
+        title={group.sampleMatchedText ?? undefined}
+      >
+        {content}
+      </Link>
+    );
+  }
+
+  return (
+    <span
+      className={className}
+      title={group.sampleMatchedText ?? undefined}
+    >
+      {content}
+    </span>
+  );
 }
 
 function Section({
@@ -62,16 +99,10 @@ function Section({
                 ) : null}
                 <div className="flex flex-wrap items-center gap-1.5">
                   {groupedSources.map((group) => (
-                    <span
+                    <SourceChip
                       key={`${item.issue.id}:${group.label}`}
-                      className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground"
-                      title={group.sampleMatchedText ?? undefined}
-                    >
-                      <span>{group.label}</span>
-                      {group.count > 1 ? (
-                        <span className="tabular-nums text-[10px] font-medium opacity-80">×{group.count}</span>
-                      ) : null}
-                    </span>
+                      group={group}
+                    />
                   ))}
                 </div>
               </li>

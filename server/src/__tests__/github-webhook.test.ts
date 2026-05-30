@@ -49,6 +49,12 @@ describe("github-webhook pure helpers", () => {
     expect(__test_extractPaperclipIdentifiers(null, "Fix BLO-3182: missing handler", undefined)).toEqual(["BLO-3182"]);
     // Multiple in body, deduped.
     expect(__test_extractPaperclipIdentifiers("Closes BLO-3182 and PCL-44")).toEqual(["BLO-3182", "PCL-44"]);
+    expect(__test_extractPaperclipIdentifiers("Closes BLO-3182/3183 and PC1A2-7/8")).toEqual([
+      "BLO-3182",
+      "BLO-3183",
+      "PC1A2-7",
+      "PC1A2-8",
+    ]);
     // 4-letter prefixes match (XBLO is itself a valid identifier shape;
     // paperclip company prefixes can be 2-10 letters). The lookup
     // against issues.identifier disambiguates -- only real prefixes
@@ -76,6 +82,8 @@ describe("github-webhook pure helpers", () => {
       action: "completed",
       check_run: {
         head_branch: "fix/BLO-3182-webflow-blog",
+        head_sha: "abc123",
+        html_url: "https://github.com/Blockcast/paperclip/actions/runs/1/job/2",
         pull_requests: [{ number: 117, head: { ref: "fix/BLO-3182-webflow-blog" } }],
       },
       repository: { full_name: "Blockcast/paperclip" },
@@ -85,6 +93,9 @@ describe("github-webhook pure helpers", () => {
       wakeReason: "github_check_completed",
       prNumber: 117,
       repoFullName: "Blockcast/paperclip",
+      prUrl: "https://github.com/Blockcast/paperclip/pull/117",
+      eventUrl: "https://github.com/Blockcast/paperclip/actions/runs/1/job/2",
+      headSha: "abc123",
     });
   });
 
@@ -113,7 +124,8 @@ describe("github-webhook pure helpers", () => {
         number: 200,
         title: "Fix BLO-3182 webflow blog",
         body: null,
-        head: { ref: "feat/BLO-3182" },
+        html_url: "https://github.com/Blockcast/paperclip/pull/200",
+        head: { ref: "feat/BLO-3182", sha: "def456" },
       },
       repository: { full_name: "Blockcast/paperclip" },
     });
@@ -121,6 +133,10 @@ describe("github-webhook pure helpers", () => {
       identifiers: ["BLO-3182"],
       wakeReason: "github_pr_opened",
       prNumber: 200,
+      prTitle: "Fix BLO-3182 webflow blog",
+      prUrl: "https://github.com/Blockcast/paperclip/pull/200",
+      eventUrl: "https://github.com/Blockcast/paperclip/pull/200",
+      headSha: "def456",
     });
   });
 
@@ -163,11 +179,13 @@ describe("github-webhook pure helpers", () => {
         number: 47,
         title: "BLO-6000 migrate auth",
         body: null,
+        html_url: "https://github.com/Blockcast/Network-Operator-Portal/pull/47",
         pull_request: { url: "https://api.github.com/repos/Blockcast/Network-Operator-Portal/pulls/47" },
       },
       comment: {
         id: 123456,
         body: "@ally re-review requested. Auth branch is refreshed and Docker builder passed.",
+        html_url: "https://github.com/Blockcast/Network-Operator-Portal/pull/47#issuecomment-123456",
         user: { login: "kkroo" },
       },
       repository: { full_name: "Blockcast/Network-Operator-Portal" },
@@ -181,6 +199,9 @@ describe("github-webhook pure helpers", () => {
       commentId: 123456,
       commentAuthorLogin: "kkroo",
       commentBody: "@ally re-review requested. Auth branch is refreshed and Docker builder passed.",
+      prUrl: "https://github.com/Blockcast/Network-Operator-Portal/pull/47",
+      eventUrl: "https://github.com/Blockcast/Network-Operator-Portal/pull/47#issuecomment-123456",
+      commentUrl: "https://github.com/Blockcast/Network-Operator-Portal/pull/47#issuecomment-123456",
     });
     if (!__test_shouldFirePrReviewerWake(ctx)) {
       throw new Error("expected @ally PR comment to fire a reviewer wake");
@@ -223,11 +244,13 @@ describe("github-webhook pure helpers", () => {
         number: 953,
         title: "feat(cdn): BLO-5269 aggregator",
         body: null,
-        head: { ref: "feat/BLO-5269" },
+        html_url: "https://github.com/Blockcast/magma/pull/953",
+        head: { ref: "feat/BLO-5269", sha: "feedface" },
       },
       review: {
         body: "Critical: PushExtCDNCacheHitRates POSTs to a read-only serializer.",
         state: "commented",
+        html_url: "https://github.com/Blockcast/magma/pull/953#pullrequestreview-99",
         user: { login: "ally" },
       },
       repository: { full_name: "Blockcast/magma" },
@@ -240,6 +263,10 @@ describe("github-webhook pure helpers", () => {
       reviewBody: "Critical: PushExtCDNCacheHitRates POSTs to a read-only serializer.",
       reviewState: "commented",
       reviewAuthorLogin: "ally",
+      prUrl: "https://github.com/Blockcast/magma/pull/953",
+      eventUrl: "https://github.com/Blockcast/magma/pull/953#pullrequestreview-99",
+      reviewUrl: "https://github.com/Blockcast/magma/pull/953#pullrequestreview-99",
+      headSha: "feedface",
     });
     expect(__test_shouldFirePrReviewerWake(ctx)).toBe(true);
   });
@@ -727,6 +754,8 @@ describeEmbeddedPostgres("github-webhook route", () => {
       deliveryId: "delivery-abc-123",
       prNumber: 117,
       repoFullName: "Blockcast/paperclip",
+      prUrl: "https://github.com/Blockcast/paperclip/pull/117",
+      paperclipIdentifiers: ["BLO-3182"],
     });
     expect(wakes[0]!.reason).toBe("github_check_completed");
   });

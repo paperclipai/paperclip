@@ -162,9 +162,18 @@ describeEmbeddedPostgres("issueReferenceService", () => {
     expect(summary.outbound.map((item) => item.issue.identifier)).toEqual(["PAP-2", "PAP-3"]);
     expect(summary.outbound[0]?.mentionCount).toBe(2);
     expect(summary.outbound[0]?.sources.map((source) => source.label)).toEqual(["title", "comment"]);
+    expect(summary.outbound[0]?.sources.map((source) => source.href)).toEqual([
+      "/issues/PAP-1",
+      `/issues/PAP-1#comment-${commentId}`,
+    ]);
     expect(summary.outbound[1]?.mentionCount).toBe(2);
     expect(summary.outbound[1]?.sources.map((source) => source.label)).toEqual(["description", "plan"]);
+    expect(summary.outbound[1]?.sources.map((source) => source.href)).toEqual([
+      "/issues/PAP-1",
+      "/issues/PAP-1#document-plan",
+    ]);
     expect(summary.inbound.map((item) => item.issue.identifier)).toEqual(["PAP-4"]);
+    expect(summary.inbound[0]?.sources[0]?.href).toBe("/issues/PAP-4");
 
     await refs.deleteDocumentSource(documentId);
 

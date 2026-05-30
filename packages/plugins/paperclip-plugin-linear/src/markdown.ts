@@ -15,21 +15,23 @@
  */
 
 /**
- * Match either a bare `XXX-N` ref or an inline-code-wrapped one (`` `XXX-N` ``).
+ * Match either a bare `XXX-N` ref (plus compact `XXX-N/M` groups) or an
+ * inline-code-wrapped one (`` `XXX-N` `` / `` `XXX-N/M` ``).
  * The inline-code alternative is listed first so the regex engine prefers the
  * longer match, keeping the backticks attached to the bare ref so the wrapped
  * link renders as `` [`XXX-N`](url) `` (preserving the code styling) rather
  * than splitting into `` `[XXX-N](url)` `` (which would render as code, not a
  * link). The `\b` boundaries guard against mid-word matches like `xBLO-1y`.
  */
-const WRAP_ISSUE_RE = /`([A-Z][A-Z0-9]+-\d+)`|\b[A-Z][A-Z0-9]+-\d+\b/gi;
+const WRAP_ISSUE_RE = /`([A-Z][A-Z0-9]+-\d+(?:\/\d+)*)`|\b[A-Z][A-Z0-9]+-\d+(?:\/\d+)*\b/gi;
+const COMPACT_ISSUE_REFERENCE_RE = /^([A-Z][A-Z0-9]+)-(\d+)((?:\/\d+)*)$/i;
 
 /**
  * Whether `s` is exactly a bare issue ref with no surrounding chars. Used to
  * decide whether an inline-code span should be left alone for the wrap pass
  * (so its bare-ref content gets rewritten) or stashed as opaque content.
  */
-const ENTIRE_BARE_ISSUE_RE = /^[A-Z][A-Z0-9]+-\d+$/i;
+const ENTIRE_BARE_ISSUE_RE = /^[A-Z][A-Z0-9]+-\d+(?:\/\d+)*$/i;
 
 /**
  * Pull the workspace url-key (e.g. `blockcast`) from a Linear issue url.
@@ -62,12 +64,39 @@ function buildLinearIssueUrl(identifier: string, workspaceSlug: string | null): 
     : `https://linear.app/issue/${identifier}`;
 }
 
+function linkifyIssueReferenceText(
+  value: string,
+  workspaceSlug: string | null,
+  wrapTextAsInlineCode: boolean,
+): string {
+  const match = value.match(COMPACT_ISSUE_REFERENCE_RE);
+  if (!match) return value;
+
+  const prefixText = match[1]!;
+  const prefix = prefixText.toUpperCase();
+  const firstNumber = match[2]!;
+  const tailNumbers = (match[3] ?? "").split("/").filter(Boolean);
+  const firstValue = `${prefixText}-${firstNumber}`;
+
+  const link = (display: string, identifier: string) => {
+    const linkText = wrapTextAsInlineCode ? `\`${display}\`` : display;
+    return `[${linkText}](${buildLinearIssueUrl(identifier, workspaceSlug)})`;
+  };
+
+  const linked = [
+    link(firstValue, `${prefix}-${firstNumber}`),
+    ...tailNumbers.map((number) => link(number, `${prefix}-${number}`)),
+  ];
+  return linked.join("/");
+}
+
 /**
  * Wrap bare `XXX-N` identifiers in `body` with markdown links pointing back to
- * Linear. Whole-ref inline-code spans (`` `BLO-1488` ``) are also wrapped — as
- * `` [`BLO-1488`](url) `` — because the UI rewriter rewrites those too.
+ * Linear. Compact slash forms like `BLO-1488/1489` are expanded to links for
+ * each issue. Whole-ref inline-code spans (`` `BLO-1488` ``) are also wrapped
+ * — as `` [`BLO-1488`](url) `` — because the UI rewriter rewrites those too.
  * Multi-token inline code (`` `someFunc(BLO-1)` ``), fenced code blocks,
- * autolinks, and existing markdown links are left untouched.
+ * URLs, autolinks, and existing markdown links are left untouched.
  *
  * The `workspaceSlug` is best-effort. When null, links degrade to
  * `https://linear.app/issue/XXX-N` — that form does NOT resolve to a real
@@ -100,6 +129,7 @@ export function linkifyBareLinearIssueRefs(
     .replace(/```[\s\S]*?```/g, (m) => stash(m))
     .replace(/\[(?:\\.|[^\]\\])*\]\((?:\\.|[^)\\])*\)/g, (m) => stash(m))
     .replace(/<https?:\/\/[^>\s]+>/g, (m) => stash(m))
+    .replace(/https?:\/\/[^\s<>()]+/g, (m) => stash(m))
     .replace(/`([^`\n]+)`/g, (full, inner: string) =>
       ENTIRE_BARE_ISSUE_RE.test(inner) ? full : stash(full),
     );
@@ -108,11 +138,9 @@ export function linkifyBareLinearIssueRefs(
     if (codeInner) {
       // Inline-code form: wrap the backticks AS THE LINK TEXT so the rendered
       // markdown shows `BLO-1488` in code styling but routes to Linear.
-      const upper = codeInner.toUpperCase();
-      return `[\`${codeInner}\`](${buildLinearIssueUrl(upper, workspaceSlug)})`;
+      return linkifyIssueReferenceText(codeInner, workspaceSlug, true);
     }
-    const upper = match.toUpperCase();
-    return `[${match}](${buildLinearIssueUrl(upper, workspaceSlug)})`;
+    return linkifyIssueReferenceText(match, workspaceSlug, false);
   });
 
   // Unmask in reverse order so any nested placeholders (a link mask containing

@@ -730,7 +730,17 @@ describe("paperclip-plugin-linear", () => {
         issueId: "lin-iss-1",
         url: "https://paperclip.test/issues/LUC-1001",
         title: "Paperclip mirror: LUC-1001",
+        subtitle: "LUC-1001 - Test issue",
+        metadata: {
+          source: "paperclip",
+          paperclipIssueId: "pcp-iss-1",
+          paperclipIdentifier: "LUC-1001",
+          linearIdentifier: "LUC-1",
+          url: "https://paperclip.test/issues/LUC-1001",
+        },
       });
+      expect(callArg.metadata.attributes).toContainEqual({ name: "Paperclip issue", value: "LUC-1001" });
+      expect(callArg.metadata.attributes).toContainEqual({ name: "Linear issue", value: "LUC-1" });
     });
 
     it("skips the back-link when paperclipBaseUrl is not configured", async () => {
@@ -1486,7 +1496,17 @@ describe("paperclip-plugin-linear", () => {
         issueId: "lin-wh-1",
         url: "https://paperclip.test/issues/LUC-W100",
         title: "Paperclip mirror: LUC-W100",
+        subtitle: "LUC-W100 - Webhook create",
+        metadata: {
+          source: "paperclip",
+          paperclipIssueId: "pcp-iss-wh-1",
+          paperclipIdentifier: "LUC-W100",
+          linearIdentifier: "LUC-W1",
+          url: "https://paperclip.test/issues/LUC-W100",
+        },
       });
+      expect(callArg.metadata.attributes).toContainEqual({ name: "Paperclip issue", value: "LUC-W100" });
+      expect(callArg.metadata.attributes).toContainEqual({ name: "Linear issue", value: "LUC-W1" });
     });
 
     it("skips duplicate webhook for the same Linear issue ID", async () => {

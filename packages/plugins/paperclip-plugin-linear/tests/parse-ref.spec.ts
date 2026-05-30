@@ -10,6 +10,10 @@ describe("parseLinearIssueRef", () => {
     expect(parseLinearIssueRef("luc-42")).toEqual({ identifier: "LUC-42" });
   });
 
+  it("parses identifiers with digits in the team key", () => {
+    expect(parseLinearIssueRef("pc1a2-42")).toEqual({ identifier: "PC1A2-42" });
+  });
+
   it("parses mixed-case identifier", () => {
     expect(parseLinearIssueRef("Luc-99")).toEqual({ identifier: "LUC-99" });
   });
@@ -21,6 +25,11 @@ describe("parseLinearIssueRef", () => {
 
   it("parses Linear URL without slug", () => {
     const url = "https://linear.app/myteam/issue/PROJ-7";
+    expect(parseLinearIssueRef(url)).toEqual({ identifier: "PROJ-7" });
+  });
+
+  it("parses slugless Linear issue URL fallbacks", () => {
+    const url = "https://linear.app/issue/PROJ-7";
     expect(parseLinearIssueRef(url)).toEqual({ identifier: "PROJ-7" });
   });
 

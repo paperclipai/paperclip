@@ -105,6 +105,7 @@ async function writePaperclipBackLink(
   linearIdentifier: string | null,
   paperclipIdentifier: string | null,
   paperclipIssueId: string,
+  paperclipTitle?: string | null,
 ): Promise<void> {
   if (!paperclipIdentifier) {
     ctx.logger.warn("Skipped Paperclip back-link: created issue has null identifier", {
@@ -118,11 +119,25 @@ async function writePaperclipBackLink(
   if (!paperclipBaseUrl) return;
   const backLinkBestEffort = config.linearBacklinkBestEffort === true;
   const paperclipUrl = `${paperclipBaseUrl.replace(/\/$/, "")}/issues/${paperclipIdentifier}`;
+  const title = paperclipTitle?.trim() ?? "";
   try {
     await linear.attachmentLinkURL(ctx.http.fetch.bind(ctx.http), token, {
       issueId: linearIssueId,
       url: paperclipUrl,
       title: `Paperclip mirror: ${paperclipIdentifier}`,
+      subtitle: title ? `${paperclipIdentifier} - ${title}` : "Open in Paperclip",
+      metadata: {
+        source: "paperclip",
+        paperclipIssueId,
+        paperclipIdentifier,
+        linearIdentifier: linearIdentifier ?? "",
+        url: paperclipUrl,
+        attributes: [
+          { name: "Paperclip issue", value: paperclipIdentifier },
+          { name: "Linear issue", value: linearIdentifier ?? "" },
+          { name: "Paperclip issue ID", value: paperclipIssueId },
+        ],
+      },
     });
   } catch (err) {
     if (backLinkBestEffort) {
@@ -755,11 +770,15 @@ const plugin = definePlugin({
         linearIssue.project,
         linearIssue.identifier,
       );
+      const workspaceSlug = await resolveLinearWorkspaceSlug(ctx, linearIssue.url);
+      const description = linearIssue.description
+        ? linkifyBareLinearIssueRefs(linearIssue.description, workspaceSlug)
+        : undefined;
 
       const created = await ctx.issues.create({
         companyId,
         title: linearIssue.title,
-        description: linearIssue.description ?? undefined,
+        description,
         priority: priority as "critical" | "high" | "medium" | "low",
         originKind: ORIGIN_KIND_SELF,
         originId: linearIssue.id,
@@ -798,6 +817,7 @@ const plugin = definePlugin({
         linearIssue.identifier,
         created.identifier,
         created.id,
+        linearIssue.title,
       );
 
       return {
@@ -1592,6 +1612,7 @@ async function handleWebhookEvent(
             identifier ?? null,
             created.identifier ?? null,
             created.id,
+            (data.title as string | null | undefined) ?? null,
           );
         } catch (err) {
           ctx.logger.warn(
@@ -2172,7 +2193,10 @@ async function runImport(ctx: PluginContext): Promise<{
         (name) => projectMap.get(name),
       );
 
-      const description = linearIssue.description ?? undefined;
+      const workspaceSlug = await resolveLinearWorkspaceSlug(ctx, linearIssue.url);
+      const description = linearIssue.description
+        ? linkifyBareLinearIssueRefs(linearIssue.description, workspaceSlug)
+        : undefined;
 
       try {
         // Idempotency: the bulk-import path can rerun against the same Linear

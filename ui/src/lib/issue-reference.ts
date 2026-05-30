@@ -6,8 +6,9 @@ type MarkdownNode = {
 };
 
 const BARE_ISSUE_IDENTIFIER_RE = /^[A-Z][A-Z0-9]*-\d+$/i;
+const COMPACT_ISSUE_REFERENCE_RE = /^([A-Z][A-Z0-9]*)-(\d+)((?:\/\d+)*)$/i;
 const ISSUE_SCHEME_RE = /^issue:\/\/:?([^?#\s]+)(?:[?#].*)?$/i;
-const ISSUE_REFERENCE_TOKEN_RE = /issue:\/\/:?[^\s<>()]+|https?:\/\/[^\s<>()]+|\/(?:[^\s<>()/]+\/)*issues\/[A-Z][A-Z0-9]*-\d+(?=$|[\s<>)\],.;!?:])|\b[A-Z][A-Z0-9]*-\d+\b/gi;
+const ISSUE_REFERENCE_TOKEN_RE = /issue:\/\/:?[^\s<>()]+|https?:\/\/[^\s<>()]+|\/(?:[^\s<>()/]+\/)*issues\/[A-Z][A-Z0-9]*-\d+(?=$|[\s<>)\],.;!?:])|\b[A-Z][A-Z0-9]*-\d+(?:\/\d+)*\b/gi;
 
 export function parseIssuePathIdFromPath(pathOrUrl: string | null | undefined): string | null {
   if (!pathOrUrl) return null;
@@ -83,6 +84,39 @@ function createIssueLinkNode(value: string, href: string, childType: "text" | "i
   };
 }
 
+function compactIssueReferenceSpans(value: string) {
+  const match = value.match(COMPACT_ISSUE_REFERENCE_RE);
+  if (!match) return null;
+
+  const prefixText = match[1]!;
+  const prefix = prefixText.toUpperCase();
+  const firstNumber = match[2]!;
+  const tailNumbers = (match[3] ?? "").split("/").filter(Boolean);
+  const spans: Array<{ start: number; end: number; value: string; href: string }> = [];
+
+  const firstValue = `${prefixText}-${firstNumber}`;
+  spans.push({
+    start: 0,
+    end: firstValue.length,
+    value: firstValue,
+    href: `/issues/${encodeURIComponent(`${prefix}-${firstNumber}`)}`,
+  });
+
+  let cursor = firstValue.length;
+  for (const number of tailNumbers) {
+    cursor += 1; // slash separator
+    spans.push({
+      start: cursor,
+      end: cursor + number.length,
+      value: number,
+      href: `/issues/${encodeURIComponent(`${prefix}-${number}`)}`,
+    });
+    cursor += number.length;
+  }
+
+  return spans;
+}
+
 function linkifyIssueReferencesInText(value: string): MarkdownNode[] | null {
   const nodes: MarkdownNode[] = [];
   let cursor = 0;
@@ -95,6 +129,31 @@ function linkifyIssueReferencesInText(value: string): MarkdownNode[] | null {
     const start = match.index ?? 0;
     const end = start + raw.length;
     const { core, trailing } = splitTrailingPunctuation(raw);
+    const compactSpans = compactIssueReferenceSpans(core);
+    if (compactSpans) {
+      matched = true;
+      if (start > cursor) {
+        nodes.push({ type: "text", value: value.slice(cursor, start) });
+      }
+
+      let compactCursor = 0;
+      for (const span of compactSpans) {
+        if (span.start > compactCursor) {
+          nodes.push({ type: "text", value: core.slice(compactCursor, span.start) });
+        }
+        nodes.push(createIssueLinkNode(span.value, span.href));
+        compactCursor = span.end;
+      }
+      if (compactCursor < core.length) {
+        nodes.push({ type: "text", value: core.slice(compactCursor) });
+      }
+      if (trailing) {
+        nodes.push({ type: "text", value: trailing });
+      }
+      cursor = end;
+      continue;
+    }
+
     const issueRef = parseIssueReferenceFromHref(core);
     if (!issueRef) continue;
 

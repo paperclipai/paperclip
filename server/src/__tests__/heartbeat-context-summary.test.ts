@@ -117,6 +117,10 @@ describe("buildPaperclipTaskMarkdown", () => {
         wakeReason: "github_pr_review_submitted",
         prNumber: 953,
         repoFullName: "Blockcast/magma",
+        prTitle: "Aggregator",
+        prUrl: "https://github.com/Blockcast/magma/pull/953",
+        eventUrl: "https://github.com/Blockcast/magma/pull/953#pullrequestreview-123",
+        headSha: "abc123",
         event: "pull_request_review",
         prRole: "author",
         reviewBody: "Critical: PushExtCDNCacheHitRates POSTs to a read-only serializer.",
@@ -131,6 +135,9 @@ describe("buildPaperclipTaskMarkdown", () => {
     // Author directive header + reviewer attribution.
     expect(authorMarkdown).toContain("GitHub PR review feedback directive:");
     expect(authorMarkdown).toContain("ally just submitted a review on YOUR pull request (state: COMMENTED).");
+    expect(authorMarkdown).toContain('- PR URL: "https://github.com/Blockcast/magma/pull/953"');
+    expect(authorMarkdown).toContain('- GitHub event URL: "https://github.com/Blockcast/magma/pull/953#pullrequestreview-123"');
+    expect(authorMarkdown).toContain('- Head SHA: "abc123"');
     // Review body fence-block injected inline so the author doesn't need
     // to shell out to `gh pr view` just to read the findings.
     expect(authorMarkdown).toContain("Latest review body:");
@@ -186,6 +193,10 @@ describe("derivePaperclipPrReview", () => {
         wakeReason: "github_pr_opened",
         githubPrNumber: 35,
         githubRepoFullName: "Blockcast/paperclip",
+        githubPrTitle: "Add issue refs",
+        githubPrUrl: "https://github.com/Blockcast/paperclip/pull/35",
+        githubEventUrl: "https://github.com/Blockcast/paperclip/pull/35",
+        githubHeadSha: "abc123",
         githubEvent: "pull_request",
         githubDeliveryId: "abc-123",
         reviewKind: "pr_review",
@@ -194,6 +205,10 @@ describe("derivePaperclipPrReview", () => {
       wakeReason: "github_pr_opened",
       prNumber: 35,
       repoFullName: "Blockcast/paperclip",
+      prTitle: "Add issue refs",
+      prUrl: "https://github.com/Blockcast/paperclip/pull/35",
+      eventUrl: "https://github.com/Blockcast/paperclip/pull/35",
+      headSha: "abc123",
       event: "pull_request",
       deliveryId: "abc-123",
       reviewKind: "pr_review",

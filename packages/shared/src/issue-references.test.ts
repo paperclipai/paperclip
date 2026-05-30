@@ -40,6 +40,17 @@ describe("issue references", () => {
     ]);
   });
 
+  it("expands compact slash-separated issue references", () => {
+    expect(findIssueReferenceMatches("Related: PAP-10/11/12 and pc1a2-7/8.")).toEqual([
+      { index: 9, length: 6, identifier: "PAP-10", matchedText: "PAP-10" },
+      { index: 16, length: 2, identifier: "PAP-11", matchedText: "11" },
+      { index: 19, length: 2, identifier: "PAP-12", matchedText: "12" },
+      { index: 26, length: 7, identifier: "PC1A2-7", matchedText: "pc1a2-7" },
+      { index: 34, length: 1, identifier: "PC1A2-8", matchedText: "8" },
+    ]);
+    expect(extractIssueReferenceIdentifiers("PAP-10/11/12 PAP-11")).toEqual(["PAP-10", "PAP-11", "PAP-12"]);
+  });
+
   it("trims unmatched square brackets from issue path tokens", () => {
     expect(findIssueReferenceMatches("See /issues/PAP-123] for context.")).toEqual([
       { index: 4, length: 15, identifier: "PAP-123", matchedText: "/issues/PAP-123" },

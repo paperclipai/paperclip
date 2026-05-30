@@ -194,6 +194,21 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain('aria-label="Issue PAP-1271: PAP-1271"');
   });
 
+  it("linkifies compact slash-separated issue references", () => {
+    const html = renderMarkdown("Related: PAP-1271/1272/1273.", [
+      { identifier: "PAP-1271", status: "done" },
+      { identifier: "PAP-1272", status: "blocked" },
+      { identifier: "PAP-1273", status: "todo" },
+    ]);
+
+    expect(html).toContain('href="/issues/PAP-1271"');
+    expect(html).toContain('href="/issues/PAP-1272"');
+    expect(html).toContain('href="/issues/PAP-1273"');
+    expect(html).toContain(">PAP-1271</a>/");
+    expect(html).toContain(">1272</a>/");
+    expect(html).toContain(">1273</a>.");
+  });
+
   it("preserves absolute issue URLs as external links", () => {
     const url = "http://remote.example.test:3103/PAPA/issues/PAPA-115#comment-850083f3-24de-43e7-a8cd-bc01f7cc9f0d";
     const html = renderMarkdown(`See ${url}.`, [
