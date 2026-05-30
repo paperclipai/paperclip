@@ -3,9 +3,9 @@ import { isDatabaseConnectionUnavailableError } from "../app.js";
 
 describe("feedback export flush error classification", () => {
   it("recognizes wrapped database connection-refused errors", () => {
-    const error = new Error("Failed query: select ...: connect ECONNREFUSED 127.0.0.1:54329");
+    const error = new Error("Failed query: select ...: connect ECONNREFUSED 127.0.0.1:54000");
     (error as { cause?: unknown }).cause = Object.assign(
-      new Error("connect ECONNREFUSED 127.0.0.1:54329"),
+      new Error("connect ECONNREFUSED 127.0.0.1:54000"),
       { code: "ECONNREFUSED" },
     );
 

@@ -82,7 +82,7 @@ function buildSourceConfig(): PaperclipConfig {
     database: {
       mode: "embedded-postgres",
       embeddedPostgresDataDir: "/tmp/main/db",
-      embeddedPostgresPort: 54329,
+      embeddedPostgresPort: 54000,
       backup: {
         enabled: true,
         intervalMinutes: 60,
@@ -583,7 +583,7 @@ describe("worktree helpers", () => {
         sourceConfig.database = {
           mode: "postgres",
           embeddedPostgresDataDir: path.join(sourceConfigDir, "db"),
-          embeddedPostgresPort: 54329,
+          embeddedPostgresPort: 54000,
           backup: {
             enabled: true,
             intervalMinutes: 60,

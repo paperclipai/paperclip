@@ -20,7 +20,7 @@ function writeBaseConfig(configPath: string) {
     database: {
       mode: "embedded-postgres",
       embeddedPostgresDataDir: "/tmp/paperclip-db",
-      embeddedPostgresPort: 54329,
+      embeddedPostgresPort: 54000,
       backup: {
         enabled: true,
         intervalMinutes: 60,

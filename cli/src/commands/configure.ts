@@ -39,7 +39,7 @@ function defaultConfig(): PaperclipConfig {
     database: {
       mode: "embedded-postgres",
       embeddedPostgresDataDir: resolveDefaultEmbeddedPostgresDir(instanceId),
-      embeddedPostgresPort: 54329,
+      embeddedPostgresPort: 54000,
       backup: {
         enabled: true,
         intervalMinutes: 60,
