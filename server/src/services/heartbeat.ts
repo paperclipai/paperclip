@@ -2568,23 +2568,51 @@ function buildPrReviewOutputEvidenceText(input: {
   return parts.join("\n");
 }
 
-// BLO-8195: a past-tense "the review was posted/landed/submitted" signal. Kept
-// deliberately past-tense (`posted`, not `post`) so future-intent phrasing
-// ("will post the review") does not match here; future intent is additionally
-// guarded by prReviewOutputHasPostedReviewNegation below.
+// BLO-8195 (hardening, per Ally review of #228): negation tokens which, when they
+// fall in the span between a review noun and the posted/landed verb (either
+// order), mean the post did NOT actually happen — so a loose proximity match must
+// not be read as a completed post (e.g. "the review was not **yet** posted",
+// "the review **never** got posted").
+const PR_REVIEW_POSTED_SPAN_NEGATION =
+  /\b(?:not|never|no|without|unable|yet|fail(?:ed|s|ing)?|cannot|can['’]?t|couldn['’]?t|wouldn['’]?t|hasn['’]?t|haven['’]?t|hadn['’]?t|didn['’]?t|isn['’]?t|wasn['’]?t|won['’]?t)\b/i;
+
+// BLO-8195: a past-tense "the review was posted/landed" signal. Deliberately
+// past-tense (`posted`, not `post`) so future intent does not match, and span-
+// scoped so a negation token sitting between the review noun and the verb defeats
+// the match (the #228 review showed the contiguous-only negation guard was
+// bypassable by "not yet posted" / "no review has been posted"). Bare `submitted`
+// is intentionally excluded — it could not distinguish "submitted a review" from
+// "submitted the diff for review".
 function prReviewOutputHasPostedReviewVerb(text: string) {
-  return (
-    /\breview\b[\s\S]{0,40}\b(?:posted|landed|submitted)\b/i.test(text) ||
-    /\b(?:posted|landed|submitted)\b[\s\S]{0,50}\breview\b/i.test(text) ||
-    /\blanded\s+as\b[\s\S]{0,20}\b(?:COMMENTED|APPROVED|CHANGES_REQUESTED)\b/i.test(text)
-  );
+  // (c) a GitHub review object that landed in a concrete state.
+  if (/\blanded\s+as\b[\s\S]{0,20}\b(?:COMMENTED|APPROVED|CHANGES_REQUESTED)\b/i.test(text)) {
+    return true;
+  }
+  // (a) "<review> ... posted/landed" — reject "no/not/never/without review …" and
+  // any negation token sitting in the noun→verb span.
+  for (const m of text.matchAll(/(\b(?:no|not|never|without)\s+)?\breview\b([\s\S]{0,40}?)\b(?:posted|landed)\b/gi)) {
+    if (m[1]) continue;
+    if (PR_REVIEW_POSTED_SPAN_NEGATION.test(m[2] ?? "")) continue;
+    return true;
+  }
+  // (b) "posted/landed ... <review>" — reject a negation token or a "for" object
+  // ("posted a note for review") in the verb→noun span.
+  for (const m of text.matchAll(/\b(?:posted|landed)\b([\s\S]{0,50}?)\breview\b/gi)) {
+    const span = m[1] ?? "";
+    if (PR_REVIEW_POSTED_SPAN_NEGATION.test(span)) continue;
+    if (/\bfor\b/i.test(span)) continue;
+    return true;
+  }
+  return false;
 }
 
-// BLO-8195: require the posted-review claim to reference the SAME PR target that
-// the wake was for — the PR number, the head sha, or the repo full name carried
-// on the run's context — so a stray mention of an unrelated PR can never satisfy
-// the marker. `derivePaperclipPrReview` guarantees a non-null `prNumber` here, so
-// at least the `#<number>` anchor is always available to check.
+// BLO-8195 (hardening, per Ally review of #228): require the posted-review claim
+// to reference the SAME PR target the wake was for, via the PR number or the head
+// sha only. The bare repo-name branch was dropped: the repo full name appears in
+// essentially every reviewer summary, so OR-ing it in made any same-repo run (or a
+// failed run that merely quoted an unrelated PR's "review posted" line) satisfy
+// the anchor. `derivePaperclipPrReview` guarantees a non-null `prNumber` here, so
+// the `#<number>` anchor is always available; `headSha` covers number-less phrasings.
 function prReviewOutputReferencesSameTarget(
   text: string,
   prReview: { prNumber: number | null; repoFullName: string | null; headSha: string | null },
@@ -2596,20 +2624,22 @@ function prReviewOutputReferencesSameTarget(
     const hex = prReview.headSha.match(/^[0-9a-f]{7,40}/i)?.[0];
     if (hex && new RegExp(`\\b${hex.slice(0, 7)}[0-9a-f]*\\b`, "i").test(text)) return true;
   }
-  if (prReview.repoFullName && text.includes(prReview.repoFullName)) return true;
   return false;
 }
 
-// BLO-8195: suppress the broadened marker when the output negates the posting
-// ("could not verify the review posted", "no matching review was found") or only
-// states future intent ("will post the review"). These must stay `missing` so a
-// real posting failure is never masked by a broadened acceptance.
+// BLO-8195 (hardening, per Ally review of #228): suppress the broadened marker on
+// leading-clause negation, prior-run crediting, or future intent. The verify/
+// confirm veto is scoped to a *posted-review object* (a review coupled with a
+// posted/landed/submitted verb) rather than any bare "review" — so genuine posting
+// failures ("could not verify the review posted") still veto, while unrelated
+// hedges ("could not confirm CI is green", "could not find a prior Ally review")
+// no longer flip an otherwise-posted, target-matched run back to `missing`.
 function prReviewOutputHasPostedReviewNegation(text: string) {
   return (
-    /\b(?:couldn['’]?t|could\s+not|cannot|can['’]?t|unable\s+to|failed\s+to|did\s+not|didn['’]?t)\s+(?:verify|confirm|find|locate|post|leave)\b/i.test(text) ||
+    /\b(?:couldn['’]?t|could\s+not|cannot|can['’]?t|unable\s+to|failed\s+to|did\s+not|didn['’]?t|have\s+not|haven['’]?t|has\s+not|hasn['’]?t)\s+(?:(?:verify|confirm)[\s\S]{0,20}?(?:(?:posted|landed|submitted)\s+(?:\S+\s+){0,3}review|review\s+(?:\S+\s+){0,3}(?:posted|landed|submitted))|post(?:ed|ing)?\b|leave\b)/i.test(text) ||
     /\bno\s+matching\b[\s\S]{0,60}\breview\b[\s\S]{0,30}\b(?:was\s+)?(?:found|posted)\b/i.test(text) ||
-    /\breview\s+(?:was|is|has)\s+(?:not|never)\s+(?:been\s+)?(?:posted|submitted|left)\b/i.test(text) ||
-    /\b(?:will\s+(?:be\s+)?post|going\s+to\s+post|about\s+to\s+post|to\s+be\s+posted|yet\s+to\s+(?:be\s+)?post)/i.test(text)
+    /\bposted\b[\s\S]{0,25}\bby\s+(?:a\s+|an\s+|the\s+)?(?:prior|previous|earlier|another)\s+run\b/i.test(text) ||
+    /\b(?:will\s+(?:be\s+)?post|going\s+to\s+post|about\s+to\s+post|to\s+be\s+posted|yet\s+to\s+(?:be\s+)?post|await\s+feedback)\b/i.test(text)
   );
 }
 

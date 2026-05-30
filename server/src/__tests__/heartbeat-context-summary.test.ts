@@ -497,6 +497,58 @@ describe("evaluatePrReviewCompletionEvidence", () => {
       ),
     ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
   });
+
+  // BLO-8195 hardening (Ally review of #228) — masking direction: each phrasing
+  // below posted nothing, so it must stay `missing` even though it names the
+  // target and contains a posted/landed token. These pin the gaps the contiguous-
+  // only negation guard left open.
+  const hardeningCtx = {
+    reviewKind: "pr_review",
+    prRole: "reviewer",
+    githubPrNumber: 227,
+    githubRepoFullName: "Blockcast/paperclip",
+    githubHeadSha: "4e60b6b1",
+  };
+  it.each([
+    { label: "non-contiguous 'not yet posted'", summary: "Diff fetched for #227 at head 4e60b6b1; the review was not yet posted." },
+    { label: "'no review has been posted'", summary: "On #227 at head 4e60b6b1: no review has been posted." },
+    { label: "'review never got posted'", summary: "For #227 head 4e60b6b1, the review never got posted." },
+    { label: "'have not posted the review'", summary: "On #227 head 4e60b6b1 I have not posted the review." },
+    { label: "bare 'submitted … for review'", summary: "Submitted the diff for review on #227 head 4e60b6b1; will await feedback." },
+    { label: "credits a prior run", summary: "A review was already posted by a prior run on #227 at head 4e60b6b1." },
+  ])("BLO-8195: keeps a non-posted run missing despite a posted token ($label)", ({ summary }) => {
+    expect(evaluatePrReviewCompletionEvidence(hardeningCtx, { summary })).toMatchObject({
+      status: "missing",
+      errorCode: "pr_review_output_missing",
+    });
+  });
+
+  it("BLO-8195: a same-repo post for a DIFFERENT PR does not satisfy the target anchor", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(
+        { reviewKind: "pr_review", prRole: "reviewer", githubPrNumber: 228, githubRepoFullName: "Blockcast/paperclip", githubHeadSha: "aabbccdd1122" },
+        { summary: "Posted review on Blockcast/paperclip#227 at head deadbeef9988." },
+      ),
+    ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
+  });
+
+  // BLO-8195 hardening (Ally review of #228) — recall direction: these DID post and
+  // match the target; an unrelated hedge must not veto them back to `missing`.
+  it("BLO-8195: accepts a posted review anchored by head sha alone (no #number in text)", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(
+        { reviewKind: "pr_review", prRole: "reviewer", githubPrNumber: 69, githubRepoFullName: "Blockcast/linux-amt", githubHeadSha: "8be14a3" },
+        { summary: "Review posted successfully against head `8be14a3`." },
+      ),
+    ).toEqual({ status: "posted_review" });
+  });
+
+  it.each([
+    { label: "incidental CI hedge", summary: "Posted the comment-only review on Blockcast/paperclip#227 at head 4e60b6b1; could not confirm CI is green yet but that is out of review scope." },
+    { label: "idempotency 'no prior review' hedge", summary: "Could not find any prior Ally review for head 4e60b6b1, so I proceeded and posted the review on #227." },
+  ])("BLO-8195: an unrelated hedge does not veto a genuinely posted, target-matched run ($label)", ({ summary }) => {
+    expect(evaluatePrReviewCompletionEvidence(hardeningCtx, { summary })).toEqual({ status: "posted_review" });
+  });
 });
 
 describe("mergeCoalescedContextSnapshot", () => {
