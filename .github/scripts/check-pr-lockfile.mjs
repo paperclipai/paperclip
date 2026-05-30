@@ -16,9 +16,9 @@ export function checkLockfile(files, prAuthor, prBranch) {
   return {
     passed: isRefreshBot,
     failures: isRefreshBot ? [] : [
-      'Please remove the `pnpm-lock.yaml` changes — this file is managed automatically. ' +
-      'Run `pnpm install` locally and exclude the lockfile from your commit. ' +
-      'The lockfile will be refreshed automatically by the refresh bot.',
+      'You have changes to `pnpm-lock.yaml` — `pr.yml` will hard-fail this PR with a confusing message about lockfile edits. ' +
+      'To fix: run `pnpm install` locally, exclude the lockfile from your commit, push again. ' +
+      'The lockfile is regenerated automatically by the refresh bot on a schedule.',
     ],
   };
 }

@@ -112,17 +112,27 @@ test('scanTestPatterns: ignores suspicious patterns in non-test files', () => {
 
 // ── scanSensitivePaths ───────────────────────────────────────────────────────
 
-test('scanSensitivePaths: flags changes to agents routes', () => {
-  const files = [{ filename: 'server/src/routes/agents/index.ts', status: 'modified' }];
+test('scanSensitivePaths: flags changes to agents route (API key IDOR / cross-tenant)', () => {
+  const files = [{ filename: 'server/src/routes/agents.ts', status: 'modified' }];
   assert.ok(scanSensitivePaths(files).length > 0);
 });
 
-test('scanSensitivePaths: flags changes to skills', () => {
-  const files = [{ filename: 'server/src/skills/executor.ts', status: 'modified' }];
+test('scanSensitivePaths: flags changes to MarkdownBody (XSS via urlTransform)', () => {
+  const files = [{ filename: 'ui/src/components/MarkdownBody.tsx', status: 'modified' }];
+  assert.ok(scanSensitivePaths(files).length > 0);
+});
+
+test('scanSensitivePaths: flags changes to company-skills route (malicious skill exfil)', () => {
+  const files = [{ filename: 'server/src/routes/company-skills.ts', status: 'modified' }];
   assert.ok(scanSensitivePaths(files).length > 0);
 });
 
 test('scanSensitivePaths: ignores unrelated paths', () => {
   const files = [{ filename: 'server/src/utils/date.ts', status: 'modified' }];
+  assert.equal(scanSensitivePaths(files).length, 0);
+});
+
+test('scanSensitivePaths: ignores removed files even on sensitive paths', () => {
+  const files = [{ filename: 'server/src/routes/agents.ts', status: 'removed' }];
   assert.equal(scanSensitivePaths(files).length, 0);
 });

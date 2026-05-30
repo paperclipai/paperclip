@@ -97,15 +97,26 @@ export function scanTestPatterns(files) {
 }
 
 const SENSITIVE_PATHS = [
-  'server/src/routes/agents/',
-  'server/src/lib/assertCompanyAccess',
-  'server/src/execution/',
-  'server/src/adapters/',
-  'packages/markdown/',
-  'server/src/routes/imports/',
-  'server/src/routes/api/',
-  'server/src/skills/',
-  'server/src/approval/',
+  // Advisory 1: codex-local adapter (inherited ChatGPT/Gmail OAuth scopes)
+  'packages/adapters/codex-local/',
+  // Advisory 2 & 11: OS command injection / privilege escalation via provisionCommand / cleanupCommand
+  'server/src/services/workspace-realization.ts',
+  'server/src/routes/execution-workspaces.ts',
+  'server/src/routes/workspace-command-authz.ts',
+  // Advisory 3 & 6: Cross-tenant agent API key minting and IDOR on /agents/:id/keys
+  'server/src/routes/agents.ts',
+  // Advisory 4: Approval decision attribution spoofing via decidedByUserId
+  'server/src/routes/approvals.ts',
+  // Advisory 5: Stored XSS via javascript: URLs in MarkdownBody (urlTransform)
+  'ui/src/components/MarkdownBody.tsx',
+  // Advisory 7: Unauthenticated access to authenticated-mode endpoints
+  'server/src/routes/authz.ts',
+  // Advisory 8: Unauthenticated RCE via import authorization bypass
+  'server/src/routes/companies.ts',
+  // Advisory 9: Malicious skills able to exfiltrate / destroy user data
+  'server/src/routes/company-skills.ts',
+  // Advisory 10: Arbitrary file read via agent-controlled instructionsFilePath
+  'server/src/services/agent-instructions.ts',
 ];
 
 export function scanSensitivePaths(files) {
