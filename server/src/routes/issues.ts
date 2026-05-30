@@ -2286,6 +2286,66 @@ export function issueRoutes(
     });
   });
 
+  // GST-951 §7.6 / GST-1048: surface the active execution workspace for
+  // an issue along with any open workspace blockers, so clients can
+  // observe per-issue worktree provenance without needing to traverse
+  // the full issue payload.
+  router.get("/issues/:id/workspace", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const workspace = issue.executionWorkspaceId
+      ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
+      : null;
+    const recoveryActions = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+    const workspaceBlockers = Array.isArray(recoveryActions)
+      ? recoveryActions.filter((action: unknown) => {
+          if (!action || typeof action !== "object") return false;
+          const reason = (action as { reason?: unknown }).reason;
+          return reason === "workspace_dirty" || reason === "workspace_provision_failed";
+        })
+      : recoveryActions && typeof recoveryActions === "object"
+          && (((recoveryActions as { reason?: unknown }).reason === "workspace_dirty")
+            || ((recoveryActions as { reason?: unknown }).reason === "workspace_provision_failed"))
+        ? [recoveryActions]
+        : [];
+    if (!workspace) {
+      res.json({
+        issueId: issue.id,
+        executionWorkspaceId: null,
+        cwd: null,
+        branchName: null,
+        baseRef: null,
+        strategyType: null,
+        mode: null,
+        status: null,
+        derivedFromExecutionWorkspaceId: null,
+        cleanupEligibleAt: null,
+        cleanupReason: null,
+        blockers: workspaceBlockers,
+      });
+      return;
+    }
+    res.json({
+      issueId: issue.id,
+      executionWorkspaceId: workspace.id,
+      cwd: workspace.cwd,
+      branchName: workspace.branchName,
+      baseRef: workspace.baseRef,
+      strategyType: workspace.strategyType,
+      mode: workspace.mode,
+      status: workspace.status,
+      derivedFromExecutionWorkspaceId: workspace.derivedFromExecutionWorkspaceId ?? null,
+      cleanupEligibleAt: workspace.cleanupEligibleAt ?? null,
+      cleanupReason: workspace.cleanupReason ?? null,
+      blockers: workspaceBlockers,
+    });
+  });
+
   router.get("/issues/:id/recovery-actions", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);

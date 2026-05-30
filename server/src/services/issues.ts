@@ -5119,6 +5119,30 @@ export function issueService(db: Db) {
               .where(eq(executionWorkspaces.id, workspace.id));
           }
         }
+        // GST-951 §4.4 / GST-1048: when an issue transitions to a
+        // terminal status, mark its execution workspace cleanup-eligible
+        // so the existing janitor can `git worktree remove` after the
+        // grace window. We never tear down inline; the janitor still
+        // honours dirty-tree refusal.
+        if (
+          (issueData.status === "done" || issueData.status === "cancelled") &&
+          existing.status !== issueData.status &&
+          updated.executionWorkspaceId
+        ) {
+          await tx
+            .update(executionWorkspaces)
+            .set({
+              cleanupEligibleAt: new Date(),
+              cleanupReason: "issue_terminal",
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(executionWorkspaces.id, updated.executionWorkspaceId),
+                eq(executionWorkspaces.companyId, existing.companyId),
+              ),
+            );
+        }
         const [enriched] = await withIssueLabels(tx, [updated]);
         if (
           (issueData.status === "done" || issueData.status === "cancelled") &&

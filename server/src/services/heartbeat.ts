@@ -99,6 +99,7 @@ import {
   type RealizedExecutionWorkspace,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
+import { resolveWorkspace } from "./workspace-resolver.js";
 import { issueService } from "./issues.js";
 import {
   buildIssueMonitorClearedPatch,
@@ -7458,17 +7459,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           workspace: existingExecutionWorkspace,
         })
       : null;
-    const executionWorkspace = reusedExecutionWorkspace ?? await realizeExecutionWorkspace({
-          base: executionWorkspaceBase,
-          config: runtimeConfig,
-          issue: issueRef,
-          agent: {
-            id: agent.id,
-            name: agent.name,
-            companyId: agent.companyId,
-          },
-          recorder: workspaceOperationRecorder,
-        });
+    const executionWorkspace = reusedExecutionWorkspace
+      ?? (await resolveWorkspace({
+        db,
+        base: executionWorkspaceBase,
+        config: runtimeConfig,
+        issue: issueRef,
+        agent: {
+          id: agent.id,
+          name: agent.name,
+          companyId: agent.companyId,
+          role: agent.role,
+        },
+        recorder: workspaceOperationRecorder,
+      })).realized;
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace = null;
