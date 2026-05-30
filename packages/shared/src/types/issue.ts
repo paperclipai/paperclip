@@ -329,6 +329,9 @@ export interface IssueReferenceSource {
   sourceRecordId: string | null;
   label: string;
   matchedText: string | null;
+  href?: string | null;
+  sourceIssueId?: string | null;
+  sourceIssueIdentifier?: string | null;
 }
 
 export interface IssueRelatedWorkItem {

@@ -1039,10 +1039,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, reviewId));
     expect(review?.status).toBe("cancelled");
 
-    const [sourceIssue] = await db
-      .select()
-      .from(issues)
-      .where(eq(issues.id, issueId));
+    const sourceIssue = await waitForValue(async () => {
+      const [row] = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId));
+      return row?.status === "in_progress" && row.executionRunId !== runId ? row : null;
+    });
     expect(sourceIssue?.status).toBe("in_progress");
     expect(sourceIssue?.executionRunId).not.toBe(runId);
 

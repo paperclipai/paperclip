@@ -100,11 +100,29 @@ describe("linkifyBareLinearIssueRefs", () => {
       .toBe("xBLO-1488y");
   });
 
-  it("only linkifies the first segment of slash-joined refs", () => {
-    // Mirrors the actual UI linkifier — `1489` and `1492` are bare numbers, not
-    // valid identifiers, so only `BLO-1488` matches.
+  it("linkifies compact slash-joined refs with a link per issue", () => {
     expect(linkifyBareLinearIssueRefs("BLO-1488/1489/1492", "blockcast"))
-      .toBe("[BLO-1488](https://linear.app/blockcast/issue/BLO-1488)/1489/1492");
+      .toBe(
+        "[BLO-1488](https://linear.app/blockcast/issue/BLO-1488)/" +
+          "[1489](https://linear.app/blockcast/issue/BLO-1489)/" +
+          "[1492](https://linear.app/blockcast/issue/BLO-1492)",
+      );
+  });
+
+  it("linkifies compact whole-ref inline code spans", () => {
+    expect(linkifyBareLinearIssueRefs("run `BLO-1488/1489` next", "blockcast"))
+      .toBe(
+        "run [`BLO-1488`](https://linear.app/blockcast/issue/BLO-1488)/" +
+          "[`1489`](https://linear.app/blockcast/issue/BLO-1489) next",
+      );
+  });
+
+  it("leaves raw urls untouched", () => {
+    const input = "see https://linear.app/blockcast/issue/BLO-1488/title-slug and BLO-1489";
+    expect(linkifyBareLinearIssueRefs(input, "blockcast")).toBe(
+      "see https://linear.app/blockcast/issue/BLO-1488/title-slug and " +
+        "[BLO-1489](https://linear.app/blockcast/issue/BLO-1489)",
+    );
   });
 
   it("preserves non-Linear markdown links nearby", () => {

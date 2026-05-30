@@ -347,10 +347,10 @@ export async function createIssue(
 
 // Create a "link" attachment on a Linear issue.
 //
-// Dedup note: Linear's `attachmentLinkURL` is observed (not contractually
-// guaranteed) to return the existing attachment if (issueId, url) already
-// exists; we still expect callers to handle the duplicate-URL error class
-// rather than rely on silent no-op. See Linear docs:
+// Uses attachmentCreate rather than the older attachmentLinkURL shorthand so
+// callers can attach subtitle/icon/metadata. Linear treats duplicate
+// (issueId, url) link attachments as an update/upsert class, but callers still
+// handle duplicate-URL errors rather than relying on silent no-op. See docs:
 // https://developers.linear.app/docs/graphql/working-with-the-graphql-api/attachments
 export async function attachmentLinkURL(
   fetch: LinearFetch,
@@ -359,22 +359,33 @@ export async function attachmentLinkURL(
     issueId: string;
     url: string;
     title: string;
+    subtitle?: string;
+    iconUrl?: string;
+    metadata?: Record<string, unknown>;
   },
 ): Promise<{ success: boolean; attachmentId: string | null }> {
+  const attachmentInput = {
+    issueId: input.issueId,
+    url: input.url,
+    title: input.title,
+    ...(input.subtitle ? { subtitle: input.subtitle } : {}),
+    ...(input.iconUrl ? { iconUrl: input.iconUrl } : {}),
+    ...(input.metadata ? { metadata: input.metadata } : {}),
+  };
   const data = await gql<{
-    attachmentLinkURL: { success: boolean; attachment: { id: string } | null };
+    attachmentCreate: { success: boolean; attachment: { id: string } | null };
   }>(fetch, token, `
-    mutation AttachmentLinkURL($issueId: String!, $url: String!, $title: String!) {
-      attachmentLinkURL(issueId: $issueId, url: $url, title: $title) {
+    mutation AttachmentCreate($input: AttachmentCreateInput!) {
+      attachmentCreate(input: $input) {
         success
         attachment { id }
       }
     }
-  `, input);
+  `, { input: attachmentInput });
 
   return {
-    success: data.attachmentLinkURL.success,
-    attachmentId: data.attachmentLinkURL.attachment?.id ?? null,
+    success: data.attachmentCreate.success,
+    attachmentId: data.attachmentCreate.attachment?.id ?? null,
   };
 }
 
@@ -720,13 +731,13 @@ export function parseLinearIssueRef(
   ref: string,
 ): { identifier: string } | null {
   // URL format
-  const urlMatch = ref.match(/linear\.app\/[^/]+\/issue\/([A-Z]+-\d+)/i);
+  const urlMatch = ref.match(/linear\.app\/(?:[^/]+\/)?issue\/([A-Z][A-Z0-9]*-\d+)/i);
   if (urlMatch) {
     return { identifier: urlMatch[1].toUpperCase() };
   }
 
   // Identifier format (TEAM-123)
-  const idMatch = ref.match(/^([A-Z]+-\d+)$/i);
+  const idMatch = ref.match(/^([A-Z][A-Z0-9]*-\d+)$/i);
   if (idMatch) {
     return { identifier: idMatch[1].toUpperCase() };
   }

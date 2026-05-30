@@ -23,6 +23,28 @@ function sourceLabel(kind: IssueReferenceSourceKind, documentKey: string | null)
   return kind;
 }
 
+function issuePath(issue: { id: string; identifier: string | null }): string {
+  return `/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`;
+}
+
+function sourceHref(
+  sourceIssue: { id: string; identifier: string | null },
+  row: {
+    sourceKind: IssueReferenceSourceKind;
+    sourceRecordId: string | null;
+    documentKey: string | null;
+  },
+): string {
+  const base = issuePath(sourceIssue);
+  if (row.sourceKind === "comment" && row.sourceRecordId) {
+    return `${base}#comment-${encodeURIComponent(row.sourceRecordId)}`;
+  }
+  if (row.sourceKind === "document" && row.documentKey) {
+    return `${base}#document-${encodeURIComponent(row.documentKey)}`;
+  }
+  return base;
+}
+
 function sourceWhere(
   input: {
     companyId?: string;
@@ -172,12 +194,13 @@ export function issueReferenceService(db: Db) {
       .select({
         id: issues.id,
         companyId: issues.companyId,
+        identifier: issues.identifier,
         title: issues.title,
         description: issues.description,
       })
       .from(issues)
       .where(eq(issues.id, issueId))
-      .then((rows: Array<{ id: string; companyId: string; title: string; description: string | null }>) => rows[0] ?? null);
+      .then((rows: Array<{ id: string; companyId: string; identifier: string | null; title: string; description: string | null }>) => rows[0] ?? null);
   }
 
   async function syncIssue(issueId: string, dbOrTx: any = db) {
@@ -364,9 +387,12 @@ export function issueReferenceService(db: Db) {
         sourceRecordId: string | null;
         documentKey: string | null;
         matchedText: string | null;
-      }>) => {
+      }>, direction: "outbound" | "inbound") => {
         const grouped = new Map<string, IssueRelatedWorkItem>();
         for (const row of rows) {
+          const sourceIssue = direction === "outbound"
+            ? { id: issue.id, identifier: issue.identifier }
+            : { id: row.relatedIssueId, identifier: row.relatedIssueIdentifier };
           const existing = grouped.get(row.relatedIssueId) ?? {
             issue: toIssueSummary(row),
             mentionCount: 0,
@@ -378,6 +404,9 @@ export function issueReferenceService(db: Db) {
             sourceRecordId: row.sourceRecordId,
             label: sourceLabel(row.sourceKind, row.documentKey),
             matchedText: row.matchedText,
+            href: sourceHref(sourceIssue, row),
+            sourceIssueId: sourceIssue.id,
+            sourceIssueIdentifier: sourceIssue.identifier,
           });
           grouped.set(row.relatedIssueId, existing);
         }
@@ -388,8 +417,8 @@ export function issueReferenceService(db: Db) {
       };
 
       return {
-        outbound: mapRows(outboundRows),
-        inbound: mapRows(inboundRows),
+        outbound: mapRows(outboundRows, "outbound"),
+        inbound: mapRows(inboundRows, "inbound"),
       };
   }
 

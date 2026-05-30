@@ -25,8 +25,8 @@ describe("IssueRelatedWorkPanel", () => {
               },
               mentionCount: 2,
               sources: [
-                { kind: "title", sourceRecordId: null, label: "title", matchedText: "PAP-22" },
-                { kind: "document", sourceRecordId: "doc-1", label: "plan", matchedText: "/issues/PAP-22" },
+                { kind: "title", sourceRecordId: null, label: "title", matchedText: "PAP-22", href: "/issues/PAP-11" },
+                { kind: "document", sourceRecordId: "doc-1", label: "plan", matchedText: "/issues/PAP-22", href: "/issues/PAP-11#document-plan" },
               ],
             },
           ],
@@ -43,7 +43,7 @@ describe("IssueRelatedWorkPanel", () => {
               },
               mentionCount: 1,
               sources: [
-                { kind: "comment", sourceRecordId: "comment-1", label: "comment", matchedText: "PAP-1" },
+                { kind: "comment", sourceRecordId: "comment-1", label: "comment", matchedText: "PAP-1", href: "/issues/PAP-33#comment-comment-1" },
               ],
             },
           ],
@@ -59,6 +59,8 @@ describe("IssueRelatedWorkPanel", () => {
     expect(html).toContain('aria-label="Issue PAP-33: Upstream task"');
     expect(html).toContain("plan");
     expect(html).toContain("comment");
+    expect(html).toContain('href="/issues/PAP-11#document-plan"');
+    expect(html).toContain('href="/issues/PAP-33#comment-comment-1"');
   });
 
   it("collapses duplicate source labels into a single chip with a count", () => {

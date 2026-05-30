@@ -7,7 +7,8 @@ export interface IssueReferenceMatch {
   matchedText: string;
 }
 
-const ISSUE_REFERENCE_TOKEN_RE = /https?:\/\/[^\s<>()]+|\/[^\s<>()]+|[A-Z][A-Z0-9]*-\d+/gi;
+const ISSUE_REFERENCE_TOKEN_RE = /https?:\/\/[^\s<>()]+|\/[^\s<>()]+|[A-Z][A-Z0-9]*-\d+(?:\/\d+)*/gi;
+const COMPACT_ISSUE_REFERENCE_TOKEN_RE = /^([A-Z][A-Z0-9]*)-(\d+)((?:\/\d+)*)$/i;
 
 function preserveNewlinesAsWhitespace(value: string) {
   return value.replace(/[^\n]/g, " ");
@@ -128,6 +129,40 @@ export function parseIssueReferenceHref(href: string): { identifier: string } | 
   return null;
 }
 
+function expandCompactIssueReferenceToken(token: string, index: number): IssueReferenceMatch[] {
+  const match = token.match(COMPACT_ISSUE_REFERENCE_TOKEN_RE);
+  if (!match) return [];
+
+  const prefixText = match[1]!;
+  const prefix = prefixText.toUpperCase();
+  const firstNumber = match[2]!;
+  const tail = match[3] ?? "";
+  const parts = [firstNumber, ...tail.split("/").filter(Boolean)];
+  if (parts.length === 0) return [];
+
+  const firstText = `${prefixText}-${firstNumber}`;
+  const matches: IssueReferenceMatch[] = [{
+    index,
+    length: firstText.length,
+    identifier: `${prefix}-${firstNumber}`,
+    matchedText: firstText,
+  }];
+
+  let cursor = index + firstText.length;
+  for (const number of parts.slice(1)) {
+    cursor += 1; // slash separator
+    matches.push({
+      index: cursor,
+      length: number.length,
+      identifier: `${prefix}-${number}`,
+      matchedText: number,
+    });
+    cursor += number.length;
+  }
+
+  return matches;
+}
+
 export function findIssueReferenceMatches(text: string): IssueReferenceMatch[] {
   if (!text) return [];
 
@@ -139,6 +174,12 @@ export function findIssueReferenceMatches(text: string): IssueReferenceMatch[] {
     const rawToken = match[0];
     const cleanedToken = trimTrailingPunctuation(rawToken);
     if (!cleanedToken) continue;
+
+    const compactMatches = expandCompactIssueReferenceToken(cleanedToken, match.index);
+    if (compactMatches.length > 0) {
+      matches.push(...compactMatches);
+      continue;
+    }
 
     const identifier =
       normalizeIssueIdentifier(cleanedToken)

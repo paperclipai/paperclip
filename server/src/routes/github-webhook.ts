@@ -57,10 +57,12 @@ export interface GithubWebhookConfig {
   heartbeatOptions?: Pick<HeartbeatServiceOptions, "ccrotateGate" | "skipQueuedRunDispatch">;
 }
 
-// Conservative pattern: 2-10 uppercase letters, dash, 1-6 digits.
-// Anchored against word boundaries so `XBLO-3182` doesn't match,
+// Conservative pattern: 2-10 uppercase letters/digits, dash, 1-6 digits.
+// Anchored against word boundaries so mid-word `xBLO-3182y` doesn't match,
 // but `(BLO-3182)`, `BLO-3182:`, or `feat/BLO-3182-thing` all do.
-const PAPERCLIP_IDENTIFIER_PATTERN = /\b([A-Z]{2,10}-\d{1,6})\b/g;
+// Compact lists such as `BLO-3763/3764` are expanded to both identifiers.
+const PAPERCLIP_IDENTIFIER_PATTERN = /\b([A-Z][A-Z0-9]{1,9}-\d{1,6}(?:\/\d{1,6})*)\b/g;
+const PAPERCLIP_COMPACT_IDENTIFIER_PATTERN = /^([A-Z][A-Z0-9]{1,9})-(\d{1,6})((?:\/\d{1,6})*)$/;
 
 // GitHub event names that should drive a wake. Anything not in this
 // set is acked with 200 + "ignored" so retries don't pile up.
@@ -100,16 +102,40 @@ function verifyGithubSignature(
   return timingSafeStringEq(signatureHeader, expected);
 }
 
+function expandPaperclipIdentifierToken(token: string): string[] {
+  const match = token.match(PAPERCLIP_COMPACT_IDENTIFIER_PATTERN);
+  if (!match) return [token];
+  const prefix = match[1]!;
+  const firstNumber = match[2]!;
+  const tailNumbers = (match[3] ?? "").split("/").filter(Boolean);
+  return [firstNumber, ...tailNumbers].map((number) => `${prefix}-${number}`);
+}
+
 function extractPaperclipIdentifiers(...sources: Array<string | null | undefined>): string[] {
   const found = new Set<string>();
   for (const source of sources) {
     if (!source) continue;
     const matches = source.matchAll(PAPERCLIP_IDENTIFIER_PATTERN);
     for (const match of matches) {
-      if (match[1]) found.add(match[1]);
+      if (match[1]) {
+        for (const identifier of expandPaperclipIdentifierToken(match[1])) {
+          found.add(identifier);
+        }
+      }
     }
   }
   return Array.from(found);
+}
+
+function readStringField(record: Record<string, unknown> | undefined, key: string): string | null {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function githubPrUrl(repoFullName: string | null, prNumber: number | null, explicitUrl?: string | null): string | null {
+  if (explicitUrl) return explicitUrl;
+  if (!repoFullName || prNumber === null) return null;
+  return `https://github.com/${repoFullName}/pull/${prNumber}`;
 }
 
 interface ResolvedEventContext {
@@ -117,17 +143,23 @@ interface ResolvedEventContext {
   wakeReason: string;
   prNumber: number | null;
   repoFullName: string | null;
+  prTitle?: string | null;
+  prUrl?: string | null;
+  eventUrl?: string | null;
+  headSha?: string | null;
   // pull_request_review.submitted only — drives the author-facing directive
   // so the assignee wake's prompt carries the reviewer's findings without
   // needing a separate `gh pr view` shellout.
   reviewBody?: string | null;
   reviewState?: string | null;
   reviewAuthorLogin?: string | null;
+  reviewUrl?: string | null;
   // issue_comment.created only -- drives reviewer reruns requested by
   // an operator via "@ally" in a PR comment.
   commentId?: number | null;
   commentBody?: string | null;
   commentAuthorLogin?: string | null;
+  commentUrl?: string | null;
 }
 
 // Cap review body in contextSnapshot so the heartbeat-run row stays small.
@@ -157,13 +189,27 @@ function resolveEventContext(
   const repoFullName = (repository?.full_name as string | undefined) ?? null;
 
   const collectFromPullRequest = (pr: Record<string, unknown> | undefined) => {
-    if (!pr) return { ids: [] as string[], number: null as number | null };
+    if (!pr) {
+      return {
+        ids: [] as string[],
+        number: null as number | null,
+        title: null as string | null,
+        url: null as string | null,
+        headSha: null as string | null,
+      };
+    }
     const head = pr.head as Record<string, unknown> | undefined;
     const branch = head?.ref as string | undefined;
     const title = pr.title as string | undefined;
     const body = pr.body as string | undefined;
     const number = (pr.number as number | undefined) ?? null;
-    return { ids: extractPaperclipIdentifiers(branch, title, body), number };
+    return {
+      ids: extractPaperclipIdentifiers(branch, title, body),
+      number,
+      title: title ?? null,
+      url: githubPrUrl(repoFullName, number, readStringField(pr, "html_url")),
+      headSha: readStringField(head, "sha"),
+    };
   };
 
   switch (eventName) {
@@ -175,12 +221,14 @@ function resolveEventContext(
       const pullRequests = (checkRun.pull_requests as Record<string, unknown>[] | undefined) ?? [];
       const allIds = new Set<string>();
       let firstNumber: number | null = null;
+      let firstPrUrl: string | null = null;
       for (const pr of pullRequests) {
         const head = pr.head as Record<string, unknown> | undefined;
         const branch = head?.ref as string | undefined;
         for (const id of extractPaperclipIdentifiers(branch)) allIds.add(id);
         const num = pr.number as number | undefined;
         if (firstNumber === null && typeof num === "number") firstNumber = num;
+        if (!firstPrUrl) firstPrUrl = githubPrUrl(repoFullName, firstNumber, readStringField(pr, "html_url"));
       }
       const headBranch = checkRun.head_branch as string | undefined;
       for (const id of extractPaperclipIdentifiers(headBranch)) allIds.add(id);
@@ -189,6 +237,9 @@ function resolveEventContext(
         wakeReason: "github_check_completed",
         prNumber: firstNumber,
         repoFullName,
+        prUrl: githubPrUrl(repoFullName, firstNumber, firstPrUrl),
+        eventUrl: readStringField(checkRun, "html_url"),
+        headSha: readStringField(checkRun, "head_sha"),
       };
     }
     case "check_suite": {
@@ -198,12 +249,14 @@ function resolveEventContext(
       const pullRequests = (checkSuite.pull_requests as Record<string, unknown>[] | undefined) ?? [];
       const allIds = new Set<string>();
       let firstNumber: number | null = null;
+      let firstPrUrl: string | null = null;
       for (const pr of pullRequests) {
         const head = pr.head as Record<string, unknown> | undefined;
         const branch = head?.ref as string | undefined;
         for (const id of extractPaperclipIdentifiers(branch)) allIds.add(id);
         const num = pr.number as number | undefined;
         if (firstNumber === null && typeof num === "number") firstNumber = num;
+        if (!firstPrUrl) firstPrUrl = githubPrUrl(repoFullName, firstNumber, readStringField(pr, "html_url"));
       }
       const headBranch = checkSuite.head_branch as string | undefined;
       for (const id of extractPaperclipIdentifiers(headBranch)) allIds.add(id);
@@ -212,6 +265,9 @@ function resolveEventContext(
         wakeReason: "github_check_suite_completed",
         prNumber: firstNumber,
         repoFullName,
+        prUrl: githubPrUrl(repoFullName, firstNumber, firstPrUrl),
+        eventUrl: readStringField(checkSuite, "html_url") ?? readStringField(checkSuite, "url"),
+        headSha: readStringField(checkSuite, "head_sha"),
       };
     }
     case "workflow_run": {
@@ -221,12 +277,14 @@ function resolveEventContext(
       const pullRequests = (workflowRun.pull_requests as Record<string, unknown>[] | undefined) ?? [];
       const allIds = new Set<string>();
       let firstNumber: number | null = null;
+      let firstPrUrl: string | null = null;
       for (const pr of pullRequests) {
         const head = pr.head as Record<string, unknown> | undefined;
         const branch = head?.ref as string | undefined;
         for (const id of extractPaperclipIdentifiers(branch)) allIds.add(id);
         const num = pr.number as number | undefined;
         if (firstNumber === null && typeof num === "number") firstNumber = num;
+        if (!firstPrUrl) firstPrUrl = githubPrUrl(repoFullName, firstNumber, readStringField(pr, "html_url"));
       }
       const headBranch = workflowRun.head_branch as string | undefined;
       for (const id of extractPaperclipIdentifiers(headBranch)) allIds.add(id);
@@ -235,6 +293,10 @@ function resolveEventContext(
         wakeReason: "github_workflow_completed",
         prNumber: firstNumber,
         repoFullName,
+        prTitle: readStringField(workflowRun, "display_title"),
+        prUrl: githubPrUrl(repoFullName, firstNumber, firstPrUrl),
+        eventUrl: readStringField(workflowRun, "html_url"),
+        headSha: readStringField(workflowRun, "head_sha"),
       };
     }
     case "issue_comment": {
@@ -249,6 +311,9 @@ function resolveEventContext(
       const commentBody = comment?.body as string | undefined;
       if (!hasPrReviewerRequestMention(commentBody)) return null;
       const commentUser = comment?.user as Record<string, unknown> | undefined;
+      const prNumber = (issue.number as number | undefined) ?? null;
+      const prUrl = githubPrUrl(repoFullName, prNumber, readStringField(issue, "html_url"));
+      const commentUrl = readStringField(comment, "html_url");
       return {
         identifiers: extractPaperclipIdentifiers(
           issue.title as string | undefined,
@@ -256,11 +321,15 @@ function resolveEventContext(
           commentBody,
         ),
         wakeReason: "github_pr_review_requested",
-        prNumber: (issue.number as number | undefined) ?? null,
+        prNumber,
         repoFullName,
+        prTitle: (issue.title as string | undefined) ?? null,
+        prUrl,
+        eventUrl: commentUrl ?? prUrl,
         commentId: (comment?.id as number | undefined) ?? null,
         commentBody: clampReviewBody(commentBody),
         commentAuthorLogin: (commentUser?.login as string | undefined) ?? null,
+        commentUrl,
       };
     }
     case "pull_request_review": {
@@ -275,14 +344,20 @@ function resolveEventContext(
       const reviewState = (review?.state as string | undefined) ?? null;
       const reviewUser = review?.user as Record<string, unknown> | undefined;
       const reviewAuthorLogin = (reviewUser?.login as string | undefined) ?? null;
+      const reviewUrl = readStringField(review, "html_url");
       return {
         identifiers: collected.ids,
         wakeReason: "github_pr_review_submitted",
         prNumber: collected.number,
         repoFullName,
+        prTitle: collected.title,
+        prUrl: collected.url,
+        eventUrl: reviewUrl ?? collected.url,
+        headSha: collected.headSha,
         reviewBody,
         reviewState,
         reviewAuthorLogin,
+        reviewUrl,
       };
     }
     case "pull_request": {
@@ -311,6 +386,10 @@ function resolveEventContext(
         wakeReason: reasonByAction[action] ?? "github_pull_request",
         prNumber: collected.number,
         repoFullName,
+        prTitle: collected.title,
+        prUrl: collected.url,
+        eventUrl: collected.url,
+        headSha: collected.headSha,
       };
     }
     default:
@@ -344,6 +423,18 @@ function buildPrReviewerWakeIdempotencyKey(
 function buildPrReviewerTaskKey(context: ResolvedEventContext & { prNumber: number }) {
   const repo = context.repoFullName ?? "unknown";
   return `pr_review:${repo}:${context.prNumber}`;
+}
+
+function githubContextMetadata(context: ResolvedEventContext) {
+  return {
+    ...(context.prTitle ? { githubPrTitle: context.prTitle } : {}),
+    ...(context.prUrl ? { githubPrUrl: context.prUrl } : {}),
+    ...(context.eventUrl ? { githubEventUrl: context.eventUrl } : {}),
+    ...(context.headSha ? { githubHeadSha: context.headSha } : {}),
+    ...(context.commentUrl ? { githubCommentUrl: context.commentUrl } : {}),
+    ...(context.reviewUrl ? { githubReviewUrl: context.reviewUrl } : {}),
+    ...(context.identifiers.length > 0 ? { githubPaperclipIdentifiers: context.identifiers } : {}),
+  };
 }
 
 export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
@@ -417,6 +508,10 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
             deliveryId,
             prNumber: context.prNumber,
             repoFullName: context.repoFullName,
+            prUrl: context.prUrl,
+            eventUrl: context.eventUrl,
+            headSha: context.headSha,
+            paperclipIdentifiers: context.identifiers,
             commentId: context.commentId,
             commentAuthorLogin: context.commentAuthorLogin,
             reviewKind: "pr_review",
@@ -431,6 +526,7 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
             githubDeliveryId: deliveryId,
             githubPrNumber: context.prNumber,
             githubRepoFullName: context.repoFullName,
+            ...githubContextMetadata(context),
             ...(context.commentId ? { githubCommentId: context.commentId } : {}),
             ...(context.commentAuthorLogin
               ? { githubPrReviewRequestAuthorLogin: context.commentAuthorLogin }
@@ -533,6 +629,10 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
             deliveryId,
             prNumber: context.prNumber,
             repoFullName: context.repoFullName,
+            prUrl: context.prUrl,
+            eventUrl: context.eventUrl,
+            headSha: context.headSha,
+            paperclipIdentifiers: context.identifiers,
           },
           contextSnapshot: {
             issueId: issue.id,
@@ -545,6 +645,7 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
             githubDeliveryId: deliveryId,
             githubPrNumber: context.prNumber,
             githubRepoFullName: context.repoFullName,
+            ...githubContextMetadata(context),
             ...(isPrWake ? { prRole: "author" as const } : {}),
             ...(context.reviewBody ? { githubPrReviewBody: context.reviewBody } : {}),
             ...(context.reviewState ? { githubPrReviewState: context.reviewState } : {}),
