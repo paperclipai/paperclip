@@ -1112,6 +1112,69 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+export function isGitBackedProjectWorkspace(input: {
+  sourceType?: string | null;
+  repoUrl?: string | null;
+}): boolean {
+  return input.sourceType === "git_repo" || Boolean(readNonEmptyString(input.repoUrl));
+}
+
+function describeProjectWorkspaceForError(input: {
+  id: string;
+  name?: string | null;
+  cwd?: string | null;
+}): string {
+  const name = readNonEmptyString(input.name);
+  const cwd = readNonEmptyString(input.cwd);
+  const parts = [`"${input.id}"`];
+  if (name) parts.push(`(${name})`);
+  if (cwd) parts.push(`at "${cwd}"`);
+  return parts.join(" ");
+}
+
+export async function assertGitBackedProjectWorkspace(input: {
+  workspace: {
+    id: string;
+    name?: string | null;
+    sourceType?: string | null;
+    repoUrl?: string | null;
+  };
+  cwd: string | null;
+}): Promise<void> {
+  if (!isGitBackedProjectWorkspace(input.workspace)) return;
+
+  const cwd = readNonEmptyString(input.cwd);
+  const workspaceLabel = describeProjectWorkspaceForError({
+    id: input.workspace.id,
+    name: input.workspace.name,
+    cwd,
+  });
+
+  if (!cwd) {
+    throw new Error(
+      `Project workspace ${workspaceLabel} is git-backed but has no local checkout path. Restore or configure the project workspace checkout before running this issue.`,
+    );
+  }
+
+  const stats = await fs.stat(cwd).catch(() => null);
+  if (!stats?.isDirectory()) {
+    throw new Error(
+      `Project workspace ${workspaceLabel} is git-backed but its checkout path is not available. Restore or clone the project workspace before running this issue.`,
+    );
+  }
+
+  const gitCheck = await execFile("git", ["rev-parse", "--is-inside-work-tree"], {
+    cwd,
+    env: sanitizeRuntimeServiceBaseEnv(process.env),
+    timeout: 10_000,
+  }).catch(() => null);
+  if (gitCheck?.stdout.trim() !== "true") {
+    throw new Error(
+      `Project workspace ${workspaceLabel} is git-backed but its checkout path is not a git repository. Restore or clone the project workspace before running this issue.`,
+    );
+  }
+}
+
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
   return MODEL_PROFILE_KEYS.includes(value as ModelProfileKey)
     ? (value as ModelProfileKey)
@@ -3743,6 +3806,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
         hasConfiguredProjectCwd = true;
+        await assertGitBackedProjectWorkspace({
+          workspace,
+          cwd: projectCwd,
+        });
         const projectCwdExists = await fs
           .stat(projectCwd)
           .then((stats) => stats.isDirectory())
