@@ -1,5 +1,13 @@
 import type { PaperclipMcpConfig } from "./config.js";
 
+export interface PluginToolDescriptor {
+  name: string;
+  displayName: string;
+  description: string;
+  parametersSchema: Record<string, unknown>;
+  pluginId: string;
+}
+
 export class PaperclipApiError extends Error {
   readonly status: number;
   readonly method: string;
@@ -73,6 +81,30 @@ export class PaperclipApiClient {
       throw new Error("agentId is required because PAPERCLIP_AGENT_ID is not set");
     }
     return resolved;
+  }
+
+  async listPluginTools(): Promise<PluginToolDescriptor[]> {
+    return this.requestJson<PluginToolDescriptor[]>("GET", "/plugins/tools");
+  }
+
+  async executePluginTool(input: {
+    tool: string;
+    parameters?: unknown;
+    agentId: string;
+    runId: string;
+    companyId: string;
+  }): Promise<unknown> {
+    return this.requestJson<unknown>("POST", "/plugins/tools/execute", {
+      body: {
+        tool: input.tool,
+        parameters: input.parameters ?? {},
+        runContext: {
+          agentId: input.agentId,
+          runId: input.runId,
+          companyId: input.companyId,
+        },
+      },
+    });
   }
 
   async requestJson<T>(method: string, path: string, options: JsonRequestOptions = {}): Promise<T> {

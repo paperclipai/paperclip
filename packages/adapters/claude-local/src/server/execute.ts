@@ -359,6 +359,61 @@ export async function runClaudeLogin(input: {
   });
 }
 
+async function resolveMcpServerStdioPath(): Promise<string | null> {
+  try {
+    const resolved = import.meta.resolve("@paperclipai/mcp-server/stdio");
+    return fileURLToPath(resolved);
+  } catch {
+    return null;
+  }
+}
+
+async function injectPluginToolMcpSettings(input: {
+  cwd: string;
+  env: Record<string, string>;
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}): Promise<void> {
+  const stdioPath = await resolveMcpServerStdioPath();
+  if (!stdioPath) {
+    await input.onLog("stdout", "[paperclip] Plugin tool MCP bridge: @paperclipai/mcp-server not found, skipping plugin tool bridge.\n");
+    return;
+  }
+
+  const settingsDir = path.join(input.cwd, ".claude");
+  const settingsPath = path.join(settingsDir, "settings.local.json");
+
+  let existing: Record<string, unknown> = {};
+  try {
+    const raw = await fs.readFile(settingsPath, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      existing = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // File doesn't exist or is malformed — start fresh
+  }
+
+  const mcpServers = (existing.mcpServers && typeof existing.mcpServers === "object" && !Array.isArray(existing.mcpServers))
+    ? { ...(existing.mcpServers as Record<string, unknown>) }
+    : {};
+
+  const bridgeEnv: Record<string, string> = {};
+  for (const key of ["PAPERCLIP_API_URL", "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_ID", "PAPERCLIP_RUN_ID", "PAPERCLIP_COMPANY_ID"]) {
+    if (input.env[key]) bridgeEnv[key] = input.env[key];
+  }
+
+  mcpServers["paperclip-plugin-tools"] = {
+    command: process.execPath,
+    args: [stdioPath],
+    env: bridgeEnv,
+  };
+
+  const next: Record<string, unknown> = { ...existing, mcpServers };
+  await fs.mkdir(settingsDir, { recursive: true });
+  await fs.writeFile(settingsPath, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
+  await input.onLog("stdout", `[paperclip] Plugin tool MCP bridge: injected ${Object.keys(bridgeEnv).length > 0 ? "with credentials" : "without credentials"} into ${settingsPath}.\n`);
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
@@ -701,6 +756,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
+
+  if (!executionTargetIsRemote) {
+    await injectPluginToolMcpSettings({ cwd, env, onLog });
+  }
 
   const parseFallbackErrorMessage = (proc: RunProcessResult) => {
     const stderrLine =
