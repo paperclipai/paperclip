@@ -2986,8 +2986,8 @@ export function issueService(db: Db) {
                 and ${activityLog.runId} = ${heartbeatRuns.id}
             )`,
           ),
-          sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${new Date(minCommentCreatedAtMs)}`,
-          sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${new Date(maxCommentCreatedAtMs + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS)}`,
+          sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${new Date(minCommentCreatedAtMs).toISOString()}`,
+          sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${new Date(maxCommentCreatedAtMs + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS).toISOString()}`,
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt));
