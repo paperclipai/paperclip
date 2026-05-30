@@ -5769,7 +5769,7 @@ export function issueRoutes(
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? (oneTimeRunComment ? paperclipRunFromHeader?.agentId : undefined),
       userId: oneTimeRunComment ? undefined : actor.actorType === "user" ? actor.actorId : undefined,
-      runId: actor.runId ?? (oneTimeRunComment ? paperclipRunFromHeader?.id : undefined),
+      runId: actor.runId ?? (oneTimeRunComment ? paperclipRunFromHeader?.id : null),
     }, {
       authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
       presentation: req.body.presentation ?? null,

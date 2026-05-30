@@ -584,6 +584,11 @@ describe.sequential("issue comment reopen routes", () => {
         runId: "77777777-7777-4777-8777-777777777777",
         userId: undefined,
       }),
+      {
+        authorType: "user",
+        presentation: null,
+        metadata: null,
+      },
     );
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
