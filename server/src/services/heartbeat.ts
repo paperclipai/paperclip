@@ -7276,12 +7276,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     const existingExecutionWorkspace =
       issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
-    const shouldReuseExisting =
+    const requestedShouldReuseExisting =
       issueRef?.executionWorkspacePreference === "reuse_existing" &&
       existingExecutionWorkspace !== null &&
       existingExecutionWorkspace.status !== "archived";
-    const reusableExecutionWorkspaceConfig = shouldReuseExisting
+    const requestedReusableExecutionWorkspaceConfig = requestedShouldReuseExisting
       ? existingExecutionWorkspace?.config ?? null
+      : null;
+    const defaultEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
+    const environmentResolution = resolveExecutionWorkspaceEnvironmentId({
+      projectPolicy: projectExecutionWorkspacePolicy,
+      issueSettings: issueExecutionWorkspaceSettings,
+      workspaceConfig: requestedReusableExecutionWorkspaceConfig,
+      agentDefaultEnvironmentId: agent.defaultEnvironmentId,
+      defaultEnvironmentId: defaultEnvironment.id,
+    });
+    // PAPA-380 / PAPA-431: when the resolver refuses silent reuse of the
+    // persisted workspace environment, also force a fresh workspace
+    // realization on the assignee's intended env. Reusing the on-disk
+    // workspace while swapping the env underneath it would mismatch the cwd's
+    // runtime expectations (e.g. an SSH-targeted worktree running on the
+    // local default driver).
+    if (environmentResolution.conflict) {
+      logger.warn(
+        {
+          runId: run.id,
+          issueId,
+          agentId: agent.id,
+          adapterType: agent.adapterType,
+          existingExecutionWorkspaceId: existingExecutionWorkspace?.id ?? null,
+          workspaceEnvironmentId: environmentResolution.conflict.workspaceEnvironmentId,
+          assigneeIntendedEnvironmentId:
+            environmentResolution.conflict.assigneeIntendedEnvironmentId,
+          assigneeIntendedSource: environmentResolution.conflict.assigneeIntendedSource,
+        },
+        "Refusing silent reuse of execution workspace whose environment does not match the assignee's intended environment; forcing fresh realization",
+      );
+    }
+    const shouldReuseExisting = requestedShouldReuseExisting && !environmentResolution.conflict;
+    const reusableExecutionWorkspaceConfig = shouldReuseExisting
+      ? requestedReusableExecutionWorkspaceConfig
       : null;
     const persistedExecutionWorkspaceMode = shouldReuseExisting && existingExecutionWorkspace
       ? issueExecutionWorkspaceModeForPersistedWorkspace(existingExecutionWorkspace.mode)
@@ -7292,14 +7326,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       persistedExecutionWorkspaceMode === "agent_default"
         ? persistedExecutionWorkspaceMode
         : requestedExecutionWorkspaceMode;
-    const defaultEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
-    const selectedEnvironmentId = resolveExecutionWorkspaceEnvironmentId({
-      projectPolicy: projectExecutionWorkspacePolicy,
-      issueSettings: issueExecutionWorkspaceSettings,
-      workspaceConfig: reusableExecutionWorkspaceConfig,
-      agentDefaultEnvironmentId: agent.defaultEnvironmentId,
-      defaultEnvironmentId: defaultEnvironment.id,
-    });
+    const selectedEnvironmentId = environmentResolution.environmentId;
     const workspaceManagedConfig = shouldReuseExisting
       ? { ...config }
       : buildExecutionWorkspaceAdapterConfig({
@@ -7980,31 +8007,80 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
-      const adapterResult = await adapter.execute({
-        runId: run.id,
-        agent,
-        runtime: runtimeForAdapter,
-        config: runtimeConfig,
-        context,
-        runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
-        executionTarget,
-        executionTransport: remoteExecution
-          ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
-          : undefined,
-        onLog,
-        onMeta: onAdapterMeta,
-        onSpawn: async (meta) => {
-          await persistRunProcessMetadata(run.id, {
-            pid: meta.pid,
-            processGroupId:
-              "processGroupId" in meta && typeof meta.processGroupId === "number"
-                ? meta.processGroupId
-                : null,
-            startedAt: meta.startedAt,
+      let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
+      const recordWorkspaceFinalize = async (
+        status: "succeeded" | "failed",
+        metadata?: Record<string, unknown>,
+      ) => {
+        if (adapterFinalizeOutcome) return;
+        await workspaceOperationRecorder.recordOperation({
+          phase: "workspace_finalize",
+          cwd: executionWorkspace.cwd,
+          metadata: {
+            adapterType: agent.adapterType,
+            executionTargetKind: executionTarget?.kind ?? "local",
+            ...metadata,
+          },
+          run: async () => ({ status }),
+        });
+        // Only mark the outcome after the row landed, so a transient write
+        // failure on the succeeded path can still be recovered by recording
+        // finalize=failed from the catch path below.
+        adapterFinalizeOutcome = status;
+      };
+
+      let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
+      try {
+        adapterResult = await adapter.execute({
+          runId: run.id,
+          agent,
+          runtime: runtimeForAdapter,
+          config: runtimeConfig,
+          context,
+          runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
+          executionTarget,
+          executionTransport: remoteExecution
+            ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
+            : undefined,
+          onLog,
+          onMeta: onAdapterMeta,
+          onSpawn: async (meta) => {
+            await persistRunProcessMetadata(run.id, {
+              pid: meta.pid,
+              processGroupId:
+                "processGroupId" in meta && typeof meta.processGroupId === "number"
+                  ? meta.processGroupId
+                  : null,
+              startedAt: meta.startedAt,
+            });
+          },
+          authToken: authToken ?? undefined,
+        });
+        // Adapter returned cleanly, which means its workspace-restore finally
+        // block also ran without throwing. Record the workspace_finalize
+        // barrier so dependents that share this executionWorkspace can wake.
+        // If recording the barrier itself fails, propagate as a run failure
+        // rather than silently leaving dependents stranded behind a missing
+        // finalize row.
+        await recordWorkspaceFinalize("succeeded");
+      } catch (adapterErr) {
+        // Adapter (or its restore finally) threw — or the finalize record
+        // write itself threw. Either way the workspace may be in a partial
+        // state. Best-effort record finalize=failed so the dependent readiness
+        // check keeps the gate closed instead of waking on stale local state,
+        // and surface the original error to the caller.
+        try {
+          await recordWorkspaceFinalize("failed", {
+            errorMessage: adapterErr instanceof Error ? adapterErr.message : String(adapterErr),
           });
-        },
-        authToken: authToken ?? undefined,
-      });
+        } catch (recordErr) {
+          logger.warn(
+            { err: recordErr, runId: run.id, executionWorkspaceId: persistedExecutionWorkspace?.id ?? null },
+            "failed to record workspace_finalize=failed operation; dependents may remain gated",
+          );
+        }
+        throw adapterErr;
+      }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
@@ -8250,6 +8326,54 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : livenessRun,
           agent,
         );
+
+        // Workspace-finalize wake re-fire: if this run's issue was marked done
+        // mid-run (so the original `issue_blockers_resolved` wake was gated by
+        // the readiness check waiting for workspace_finalize), the finalize
+        // row we just recorded now lets dependents proceed. Fire wakes here.
+        if (issueId && adapterFinalizeOutcome === "succeeded") {
+          try {
+            const blockerIssueStatus = await db
+              .select({ status: issues.status })
+              .from(issues)
+              .where(eq(issues.id, issueId))
+              .then((rows) => rows[0]?.status ?? null);
+            if (blockerIssueStatus === "done") {
+              const dependents = await issuesSvc.listWakeableBlockedDependents(issueId);
+              for (const dependent of dependents) {
+                await enqueueWakeup(dependent.assigneeAgentId, {
+                  source: "automation",
+                  triggerDetail: "system",
+                  reason: "issue_blockers_resolved",
+                  payload: {
+                    issueId: dependent.id,
+                    resolvedBlockerIssueId: issueId,
+                    blockerIssueIds: dependent.blockerIssueIds,
+                    deferredFor: "workspace_finalize",
+                  },
+                  contextSnapshot: {
+                    issueId: dependent.id,
+                    taskId: dependent.id,
+                    wakeReason: "issue_blockers_resolved",
+                    source: "workspace.finalize",
+                    resolvedBlockerIssueId: issueId,
+                    blockerIssueIds: dependent.blockerIssueIds,
+                  },
+                }).catch((wakeErr) => {
+                  logger.warn(
+                    { err: wakeErr, issueId, dependentIssueId: dependent.id, agentId: dependent.assigneeAgentId },
+                    "failed to fire deferred dependent wake after workspace_finalize",
+                  );
+                });
+              }
+            }
+          } catch (finalizeWakeErr) {
+            logger.warn(
+              { err: finalizeWakeErr, runId: run.id, issueId },
+              "failed to evaluate dependent wakes after workspace_finalize",
+            );
+          }
+        }
       }
 
       if (finalizedRun) {
