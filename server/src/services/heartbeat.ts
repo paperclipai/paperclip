@@ -149,7 +149,7 @@ import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
-import { recoveryService } from "./recovery/service.js";
+import { asStrandedAssignedPreviousStatus, recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
@@ -8848,7 +8848,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return {
           kind: "blocked_recovery_in_place" as const,
           issue,
-          previousStatus: issue.status,
+          previousStatus: asStrandedAssignedPreviousStatus(issue.status),
         };
       }
 
@@ -8864,7 +8864,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return {
           kind: "blocked" as const,
           issue,
-          previousStatus: issue.status,
+          previousStatus: asStrandedAssignedPreviousStatus(issue.status),
           comment,
         };
       }

@@ -103,7 +103,12 @@ type LatestIssueRun = Pick<
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
 type StrandedRecoveryCause = "stranded_assigned_issue" | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
-type StrandedAssignedPreviousStatus = "todo" | "in_progress" | "blocked";
+export type StrandedAssignedPreviousStatus = "todo" | "in_progress" | "blocked";
+
+export function asStrandedAssignedPreviousStatus(status: string): StrandedAssignedPreviousStatus {
+  if (status === "todo" || status === "in_progress" || status === "blocked") return status;
+  return "in_progress";
+}
 
 type SuccessfulRunHandoffRecoveryEvidence = {
   sourceRunId: string | null;
