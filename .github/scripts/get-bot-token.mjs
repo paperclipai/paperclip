@@ -12,6 +12,8 @@ import { createSign } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const APP_ID = '3718661';
+const OWNER_PATTERN = /^[a-zA-Z0-9_.-]+$/;
+const REPO_PATTERN = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
 export function generateJWT(privateKey) {
   const now = Math.floor(Date.now() / 1000);
@@ -38,6 +40,46 @@ export async function ghFetch(path, token, options = {}) {
   return JSON.parse(text);
 }
 
+export async function resolveInstallationId(fetchInstallation, token, repo, owner) {
+  if (repo) {
+    if (!REPO_PATTERN.test(repo)) {
+      throw new Error('ERROR: GH_REPO/GITHUB_REPOSITORY must be in owner/repo format.');
+    }
+
+    const installation = await fetchInstallation(`/repos/${repo}/installation`, token);
+    return installation.id;
+  }
+
+  const installations = await fetchInstallation('/app/installations', token);
+  if (!installations.length) {
+    throw new Error(
+      'ERROR: No installations found for commitperclip. Install URL: https://github.com/apps/commitperclip/installations/new'
+    );
+  }
+
+  if (owner) {
+    if (!OWNER_PATTERN.test(owner)) {
+      throw new Error('ERROR: GITHUB_REPOSITORY_OWNER must be a valid GitHub owner name.');
+    }
+
+    const match = installations.find(
+      installation => installation.account?.login?.toLowerCase() === owner.toLowerCase()
+    );
+
+    if (match) {
+      return match.id;
+    }
+  }
+
+  if (installations.length === 1) {
+    return installations[0].id;
+  }
+
+  throw new Error(
+    'ERROR: Multiple commitperclip installations found. Set GH_REPO or GITHUB_REPOSITORY so the correct installation can be selected.'
+  );
+}
+
 async function main() {
   const privateKey = process.env.COMMITPERCLIP_KEY;
   if (!privateKey) {
@@ -47,16 +89,13 @@ async function main() {
   }
 
   const jwt = generateJWT(privateKey);
+  const repo = process.env.GH_REPO ?? process.env.GITHUB_REPOSITORY;
+  const owner = process.env.GITHUB_REPOSITORY_OWNER ?? repo?.split('/')[0];
 
-  const installations = await ghFetch('/app/installations', jwt);
-  if (!installations.length) {
-    console.error('ERROR: No installations found for commitperclip.');
-    console.error('Install URL: https://github.com/apps/commitperclip/installations/new');
-    process.exit(1);
-  }
+  const installationId = await resolveInstallationId(ghFetch, jwt, repo, owner);
 
   const { token } = await ghFetch(
-    `/app/installations/${installations[0].id}/access_tokens`,
+    `/app/installations/${installationId}/access_tokens`,
     jwt,
     { method: 'POST', headers: { 'Content-Type': 'application/json' } }
   );

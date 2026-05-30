@@ -110,7 +110,7 @@ async function main() {
       Promise.resolve(checkLinkedIssue(prBody, prTitle)),
       Promise.resolve(checkTestCoverage(files, prTitle)),
       Promise.resolve(checkLockfile(files, author, branch)),
-      checkDependencies(files, GH_TOKEN, GH_REPO, prNumber),
+      checkDependencies(files, GH_TOKEN, GH_REPO, prNumber, pr.base?.ref),
     ]);
 
   const allFailures = [

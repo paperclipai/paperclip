@@ -7,7 +7,29 @@
 import { fileURLToPath } from 'node:url';
 import { ghFetch } from './get-bot-token.mjs';
 
-export async function checkDependencies(files, token, repo, prNumber) {
+function buildContentsPath(repo, filename, ref) {
+  return `/repos/${repo}/contents/${filename}?${new URLSearchParams({ ref }).toString()}`;
+}
+
+export async function resolveBaseRef(fetchFromGitHub, token, repo, prNumber, baseRef) {
+  if (baseRef) {
+    return baseRef;
+  }
+
+  const pr = await fetchFromGitHub(`/repos/${repo}/pulls/${prNumber}`, token);
+  if (pr.base?.ref) {
+    return pr.base.ref;
+  }
+
+  const repository = await fetchFromGitHub(`/repos/${repo}`, token);
+  if (repository.default_branch) {
+    return repository.default_branch;
+  }
+
+  throw new Error(`Unable to resolve a base branch for ${repo}#${prNumber}.`);
+}
+
+export async function checkDependencies(files, token, repo, prNumber, baseRef, fetchFromGitHub = ghFetch) {
   const pkgFiles = files.filter(
     f => f.filename.endsWith('package.json') &&
          !f.filename.includes('node_modules') &&
@@ -16,13 +38,14 @@ export async function checkDependencies(files, token, repo, prNumber) {
 
   if (pkgFiles.length === 0) return { passed: true, informational: [] };
 
+  const resolvedBaseRef = await resolveBaseRef(fetchFromGitHub, token, repo, prNumber, baseRef);
   const newPackages = new Set();
 
   for (const file of pkgFiles) {
     try {
       const [baseRes, prRes] = await Promise.all([
-        ghFetch(`/repos/${repo}/contents/${file.filename}?ref=master`, token),
-        ghFetch(`/repos/${repo}/contents/${file.filename}?ref=refs/pull/${prNumber}/head`, token),
+        fetchFromGitHub(buildContentsPath(repo, file.filename, resolvedBaseRef), token),
+        fetchFromGitHub(buildContentsPath(repo, file.filename, `refs/pull/${prNumber}/head`), token),
       ]);
 
       const basePkg = JSON.parse(Buffer.from(baseRes.content, 'base64').toString());
@@ -59,8 +82,8 @@ export async function checkDependencies(files, token, repo, prNumber) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const { GH_TOKEN, GH_REPO, PR_NUMBER, PR_FILES } = process.env;
+  const { GH_TOKEN, GH_REPO, PR_NUMBER, PR_FILES, PR_BASE_REF } = process.env;
   const files = JSON.parse(PR_FILES ?? '[]');
-  const result = await checkDependencies(files, GH_TOKEN, GH_REPO, PR_NUMBER);
+  const result = await checkDependencies(files, GH_TOKEN, GH_REPO, PR_NUMBER, PR_BASE_REF);
   console.log(JSON.stringify(result));
 }
