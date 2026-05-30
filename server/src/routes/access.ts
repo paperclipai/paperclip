@@ -3130,7 +3130,9 @@ export function accessRoutes(
       res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
     }
     const filename = logoAsset.originalFilename ?? "company-logo";
-    res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
+    const asciiFallback = filename.replaceAll('"', '').replace(/[^\x20-\x7e]/g, "_");
+    const encodedFilename = encodeURIComponent(filename);
+    res.setHeader("Content-Disposition", `inline; filename="${asciiFallback}"; filename*=UTF-8''${encodedFilename}`);
 
     object.stream.on("error", (err) => {
       next(err);
