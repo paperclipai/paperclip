@@ -64,6 +64,31 @@ function mapIssueDocumentRow(
   };
 }
 
+type IssueDocumentForHeartbeatContext = ReturnType<typeof mapIssueDocumentRow>;
+
+export interface HeartbeatContextDocumentSummary {
+  key: string;
+  title: string | null;
+  body: string;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
+  updatedAt: Date;
+}
+
+export function summarizeIssueDocumentForHeartbeatContext(
+  doc: IssueDocumentForHeartbeatContext | null,
+): HeartbeatContextDocumentSummary | null {
+  if (!doc || typeof doc.body !== "string") return null;
+  return {
+    key: doc.key,
+    title: doc.title,
+    body: doc.body,
+    latestRevisionId: doc.latestRevisionId,
+    latestRevisionNumber: doc.latestRevisionNumber,
+    updatedAt: doc.updatedAt,
+  };
+}
+
 const issueDocumentSelect = {
   id: documents.id,
   companyId: documents.companyId,

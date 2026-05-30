@@ -33,6 +33,7 @@ import {
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  ONBOARDING_STARTER_CONTEXT_DOCUMENT_KEY,
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
@@ -75,6 +76,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import { summarizeIssueDocumentForHeartbeatContext } from "../services/documents.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -1885,6 +1887,7 @@ export function issueRoutes(
       scheduledRetry,
       attachments,
       continuationSummary,
+      onboardingStarterContext,
       currentExecutionWorkspace,
       activeRecoveryAction,
     ] =
@@ -1899,6 +1902,7 @@ export function issueRoutes(
         svc.getCurrentScheduledRetry(issue.id),
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
+        documentsSvc.getIssueDocumentByKey(issue.id, ONBOARDING_STARTER_CONTEXT_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
         recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
       ]);
@@ -1974,14 +1978,10 @@ export function issueRoutes(
         createdAt: a.createdAt,
       })),
       continuationSummary: continuationSummary
-        ? {
-            key: continuationSummary.key,
-            title: continuationSummary.title,
-            body: continuationSummary.body,
-            latestRevisionId: continuationSummary.latestRevisionId,
-            latestRevisionNumber: continuationSummary.latestRevisionNumber,
-            updatedAt: continuationSummary.updatedAt,
-          }
+        ? summarizeIssueDocumentForHeartbeatContext(continuationSummary)
+        : null,
+      onboardingStarterContext: onboardingStarterContext
+        ? summarizeIssueDocumentForHeartbeatContext(onboardingStarterContext)
         : null,
       currentExecutionWorkspace,
     });
