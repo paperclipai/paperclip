@@ -63,17 +63,37 @@ export function scanSupplyChain(files) {
 
   const added = new Set();
   const removed = new Set();
-  const PKG_RE = /^([+-])\s{2}'(@?[a-z][a-z0-9\-_./@]*)@[^']+'/;
 
   for (const line of lockfile.patch.split('\n')) {
-    const m = line.match(PKG_RE);
-    if (!m) continue;
-    if (m[1] === '+') added.add(m[2]);
-    if (m[1] === '-') removed.add(m[2]);
+    const entry = parseLockfilePackageDiffEntry(line);
+    if (!entry) continue;
+    if (entry.sign === '+') added.add(entry.packageName);
+    if (entry.sign === '-') removed.add(entry.packageName);
   }
 
   const netNew = [...added].filter(p => !removed.has(p));
   return netNew.length ? [{ check: 'supply-chain', packages: netNew }] : [];
+}
+
+function parseLockfilePackageDiffEntry(line) {
+  const match = line.match(/^([+-])\s*(.+?)\s*$/);
+  if (!match) return null;
+
+  let [, sign, rawEntry] = match;
+  if (!rawEntry.endsWith(':')) return null;
+
+  rawEntry = rawEntry.slice(0, -1).trim();
+  if ((rawEntry.startsWith("'") && rawEntry.endsWith("'")) || (rawEntry.startsWith('"') && rawEntry.endsWith('"'))) {
+    rawEntry = rawEntry.slice(1, -1);
+  }
+
+  const versionSep = rawEntry.lastIndexOf('@');
+  if (versionSep <= 0 || versionSep === rawEntry.length - 1) return null;
+
+  const packageName = rawEntry.slice(0, versionSep);
+  if (!/^(?:@[^/\s:]+\/)?[A-Za-z0-9._-][A-Za-z0-9._/-]*$/.test(packageName)) return null;
+
+  return { sign, packageName };
 }
 
 const TEST_FILE_RE = /\.(test|spec)\.(ts|js|tsx|jsx)$|\/tests?\//;
@@ -166,6 +186,9 @@ function worstSeverity(flags) {
 }
 
 async function createAdvisory(token, repo, prNumber, prTitle, flags) {
+  const existing = await findExistingDraftAdvisory(ghFetch, token, repo, prNumber);
+  if (existing) return existing;
+
   const checkNames = [...new Set(flags.map(f => f.check))].join(', ');
   const severity = worstSeverity(flags);
 
@@ -194,6 +217,26 @@ async function createAdvisory(token, repo, prNumber, prTitle, flags) {
       vulnerabilities: [],
     }),
   });
+}
+
+export async function findExistingDraftAdvisory(fetchImpl, token, repo, prNumber) {
+  const prMarker = `PR #${prNumber}`;
+
+  for (let page = 1; ; page += 1) {
+    const advisories = await fetchImpl(
+      `/repos/${repo}/security-advisories?state=draft&per_page=100&page=${page}`,
+      token,
+    );
+
+    if (!Array.isArray(advisories) || advisories.length === 0) return null;
+
+    const existing = advisories.find(advisory =>
+      typeof advisory?.summary === 'string' && advisory.summary.includes(prMarker)
+    );
+    if (existing) return existing;
+
+    if (advisories.length < 100) return null;
+  }
 }
 
 async function postSecurityCheckRun(token, repo, headSha, hasFlags) {

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  findExistingDraftAdvisory,
   scanSecrets,
   scanCITampering,
   scanBuildScripts,
@@ -82,6 +83,50 @@ test('scanSupplyChain: does not flag version-only bumps', () => {
 `;
   const files = [{ filename: 'pnpm-lock.yaml', patch }];
   assert.equal(scanSupplyChain(files).length, 0);
+});
+
+test('scanSupplyChain: flags pnpm v9-style unquoted package entries', () => {
+  const patch = `@@ -1,2 +1,3 @@
++evil-package@1.0.0:
+ existing-package@2.0.0:
+`;
+  const files = [{ filename: 'pnpm-lock.yaml', patch }];
+  const flags = scanSupplyChain(files);
+  assert.deepEqual(flags, [{ check: 'supply-chain', packages: ['evil-package'] }]);
+});
+
+test('scanSupplyChain: ignores peer suffixes when matching package names', () => {
+  const patch = `@@ -1,2 +1,2 @@
+-@scope/pkg@1.0.0(react@18.2.0):
++@scope/pkg@2.0.0(react@18.2.0):
+`;
+  const files = [{ filename: 'pnpm-lock.yaml', patch }];
+  assert.equal(scanSupplyChain(files).length, 0);
+});
+
+test('findExistingDraftAdvisory: returns matching draft advisory from paginated results', async () => {
+  const calls = [];
+  const fakeFetch = async (path) => {
+    calls.push(path);
+    if (/[?&]page=1(?:&|$)/.test(path)) {
+      return Array.from({ length: 100 }, (_, i) => ({ summary: `Unrelated advisory ${i}` }));
+    }
+    if (/[?&]page=2(?:&|$)/.test(path)) {
+      return [{ summary: '🚨 Security flag — PR #6469: ci-tampering' }];
+    }
+    return [];
+  };
+
+  const advisory = await findExistingDraftAdvisory(fakeFetch, 'token', 'paperclipai/paperclip', 6469);
+
+  assert.deepEqual(advisory, { summary: '🚨 Security flag — PR #6469: ci-tampering' });
+  assert.equal(calls.length, 2);
+});
+
+test('findExistingDraftAdvisory: returns null when no matching draft advisory exists', async () => {
+  const fakeFetch = async () => [{ summary: 'Completely different advisory' }];
+  const advisory = await findExistingDraftAdvisory(fakeFetch, 'token', 'paperclipai/paperclip', 6469);
+  assert.equal(advisory, null);
 });
 
 // ── scanTestPatterns ─────────────────────────────────────────────────────────
