@@ -186,7 +186,6 @@ export type AdapterSkillState =
 
 export type AdapterSkillOrigin =
   | "company_managed"
-  | "paperclip_required"
   | "user_installed"
   | "external_unknown";
 
@@ -195,8 +194,6 @@ export interface AdapterSkillEntry {
   runtimeName: string | null;
   desired: boolean;
   managed: boolean;
-  required?: boolean;
-  requiredReason?: string | null;
   state: AdapterSkillState;
   origin?: AdapterSkillOrigin;
   originLabel?: string | null;

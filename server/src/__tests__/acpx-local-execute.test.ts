@@ -128,12 +128,11 @@ async function createRuntimeSkill(root: string, input: {
   const key = input.key ?? `company/${runtimeName}`;
   const source = path.join(root, "skills", runtimeName);
   await fs.mkdir(source, { recursive: true });
-  await fs.writeFile(path.join(source, "SKILL.md"), input.body ?? "---\nrequired: false\n---\nUse the test skill.\n", "utf8");
+  await fs.writeFile(path.join(source, "SKILL.md"), input.body ?? "---\n---\nUse the test skill.\n", "utf8");
   return {
     key,
     runtimeName,
     source,
-    required: false,
   };
 }
 
@@ -634,7 +633,7 @@ describe("acpx_local execute", () => {
   it("includes skill content in the ACPX Claude session fingerprint", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-claude-fingerprint-"));
     try {
-      const skill = await createRuntimeSkill(root, { body: "---\nrequired: false\n---\nFirst version.\n" });
+      const skill = await createRuntimeSkill(root, { body: "---\n---\nFirst version.\n" });
       const runtimes: FakeRuntime[] = [];
       const execute = createAcpxLocalExecutor({
         createRuntime: (options) => {
@@ -657,7 +656,7 @@ describe("acpx_local execute", () => {
       });
 
       const first = await execute(context);
-      await fs.writeFile(path.join(skill.source, "SKILL.md"), "---\nrequired: false\n---\nSecond version.\n", "utf8");
+      await fs.writeFile(path.join(skill.source, "SKILL.md"), "---\n---\nSecond version.\n", "utf8");
       const second = await execute({
         ...context,
         runtime: {

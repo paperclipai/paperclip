@@ -11,7 +11,6 @@ export const agentSkillStateSchema = z.enum([
 
 export const agentSkillOriginSchema = z.enum([
   "company_managed",
-  "paperclip_required",
   "user_installed",
   "external_unknown",
 ]);
@@ -27,8 +26,6 @@ export const agentSkillEntrySchema = z.object({
   runtimeName: z.string().min(1).nullable(),
   desired: z.boolean(),
   managed: z.boolean(),
-  required: z.boolean().optional(),
-  requiredReason: z.string().nullable().optional(),
   state: agentSkillStateSchema,
   origin: agentSkillOriginSchema.optional(),
   originLabel: z.string().nullable().optional(),
