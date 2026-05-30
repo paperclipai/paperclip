@@ -18,6 +18,7 @@ export {
   clampIssueListLimit,
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
+  ISSUE_LIST_MAX_OFFSET,
   issueService,
   type IssueFilters,
 } from "./issues.js";
