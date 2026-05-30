@@ -3602,6 +3602,58 @@ export function issueService(db: Db) {
     );
   }
 
+  async function autoUnblockDependentIssues(
+    completedIssueId: string,
+    companyId: string,
+    dbOrTx: any = db,
+  ) {
+    // Find all issues blocked BY this completed issue
+    const dependentIssueRows = await dbOrTx
+      .select({
+        dependentId: issueRelations.relatedIssueId,
+      })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.issueId, completedIssueId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+
+    if (dependentIssueRows.length === 0) return;
+
+    const dependentIssueIds = dependentIssueRows.map((row) => row.dependentId);
+
+    // For each dependent issue, check if it still has unresolved blockers
+    const dependencyMap = await listIssueDependencyReadinessMap(dbOrTx, companyId, dependentIssueIds);
+
+    for (const [issueId, dependency] of dependencyMap.entries()) {
+      // Auto-unblock if: issue is in blocked status and now has no unresolved blockers
+      if (
+        dependency.unresolvedBlockerCount === 0 &&
+        dependency.blockerIssueIds.length > 0 // Only unblock if it HAD blockers (was intentionally blocked)
+      ) {
+        const blockedIssue = await dbOrTx
+          .select({ status: issues.status })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows: Array<{ status: string }>) => rows[0] ?? null);
+
+        if (blockedIssue?.status === "blocked") {
+          // Transition from blocked to todo
+          await dbOrTx
+            .update(issues)
+            .set({
+              status: "todo",
+              updatedAt: new Date(),
+            })
+            .where(eq(issues.id, issueId));
+        }
+      }
+    }
+  }
+
   async function isTerminalOrMissingHeartbeatRun(runId: string) {
     const run = await db
       .select({ status: heartbeatRuns.status })
@@ -5138,6 +5190,10 @@ export function issueService(db: Db) {
                 ),
               );
           }
+        }
+        // Auto-unblock dependent issues when this issue reaches "done" status
+        if (issueData.status === "done" && existing.status !== "done") {
+          await autoUnblockDependentIssues(updated.id, existing.companyId, tx);
         }
         return enriched;
       };
