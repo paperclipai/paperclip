@@ -1366,6 +1366,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(heartbeatRunEvents)
       .where(eq(heartbeatRunEvents.runId, runId));
     expect(events.some((event) => event.message?.includes("Skipped automatic retry"))).toBe(true);
+    expect(events.some((event) => event.message?.includes("Skipped automatic issue-comment follow-up"))).toBe(true);
   });
 
   it("queues one finish-handoff wake when a successful run leaves in-progress work without a next action", async () => {

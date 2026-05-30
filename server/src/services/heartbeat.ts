@@ -4840,6 +4840,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { outcome: "satisfied" as const, queuedRun: null };
     }
 
+    if (isOneTimeAuthorizedWakeContext(run.contextSnapshot)) {
+      await patchRunIssueCommentStatus(run.id, {
+        issueCommentStatus: "not_applicable",
+        issueCommentSatisfiedByCommentId: null,
+        issueCommentRetryQueuedAt: null,
+      });
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Skipped automatic issue-comment follow-up because this run was explicitly one-time authorized",
+        payload: { oneTimeAuthorization: true },
+      });
+      return { outcome: "not_applicable" as const, queuedRun: null };
+    }
+
     if (readNonEmptyString(contextSnapshot.retryReason) === "missing_issue_comment") {
       await patchRunIssueCommentStatus(run.id, {
         issueCommentStatus: "retry_exhausted",
