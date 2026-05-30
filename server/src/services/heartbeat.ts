@@ -431,6 +431,14 @@ const EXTERNAL_LIFECYCLE_ADAPTERS = new Set([
 // null. Kept generous so a slow probe + a healthy long-running Claude
 // session don't collide.
 const EXTERNAL_LIFECYCLE_STALE_MS = 15 * 60 * 1000;
+// External-lifecycle adapters create a DB run before the adapter.invoke event
+// is appended. Startup and periodic reapers can overlap that setup window;
+// give slow pre-run hooks and kube Job creation time to reach adapter.invoke.
+const EXTERNAL_LIFECYCLE_PRE_ADAPTER_STALE_MS = 5 * 60 * 1000;
+// If another process has just finalized a run while its k8s Job is still
+// visible, do not immediately delete that live Job. The adapter process may
+// still be awaiting/synchronizing the Job and should be allowed to finish.
+const EXTERNAL_LIFECYCLE_RECENT_RUN_GRACE_MS = 5 * 60 * 1000;
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
 type RuntimeConfigSecretResolver = Pick<
@@ -7641,8 +7649,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return true;
   }
 
+  function runTimestampMs(value: Date | string | null | undefined): number {
+    if (!value) return 0;
+    const timestamp = new Date(value).getTime();
+    return Number.isFinite(timestamp) ? timestamp : 0;
+  }
+
+  function externalLifecycleRecentRefTime(
+    run: Pick<
+      typeof heartbeatRuns.$inferSelect,
+      "lastOutputAt" | "updatedAt" | "startedAt" | "createdAt" | "finishedAt"
+    >,
+  ): number {
+    return Math.max(
+      runTimestampMs(run.lastOutputAt),
+      runTimestampMs(run.updatedAt),
+      runTimestampMs(run.finishedAt),
+      runTimestampMs(run.startedAt),
+      runTimestampMs(run.createdAt),
+    );
+  }
+
+  function isExternalLifecycleRunInRecentGrace(
+    run: Pick<
+      typeof heartbeatRuns.$inferSelect,
+      "lastOutputAt" | "updatedAt" | "startedAt" | "createdAt" | "finishedAt"
+    >,
+    now: Date,
+    graceMs = EXTERNAL_LIFECYCLE_RECENT_RUN_GRACE_MS,
+  ): boolean {
+    const refTime = externalLifecycleRecentRefTime(run);
+    return refTime > 0 && now.getTime() - refTime < graceMs;
+  }
+
   async function cleanupTerminalExternalLifecycleJobs(
     jobRunStatuses: Map<string, AgentJobRunStatus> | null,
+    now = new Date(),
   ): Promise<string[]> {
     if (!jobRunStatuses) return [];
     const activeJobRunIds = [...jobRunStatuses.entries()]
@@ -7668,6 +7710,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const cleanedRunIds: string[] = [];
     for (const { run, adapterType } of terminalRuns) {
       if (!hasExternalLifecycle(adapterType)) continue;
+      if (isExternalLifecycleRunInRecentGrace(run, now)) {
+        logger.debug(
+          { runId: run.id, status: run.status, adapterType },
+          "reapOrphanedRuns: preserving recent terminal external-lifecycle Job",
+        );
+        continue;
+      }
       try {
         const deleted = await deleteAgentJobsForRun(run.id);
         cleanedRunIds.push(run.id);
@@ -7723,7 +7772,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // when the API is unavailable (local dev, RBAC missing, transient failure).
     const hasExternalCandidates = activeRuns.some((row) => hasExternalLifecycle(row.adapterType));
     const jobRunStatuses = await listAgentJobRunStatuses();
-    const cleanedTerminalJobRunIds = await cleanupTerminalExternalLifecycleJobs(jobRunStatuses);
+    const cleanedTerminalJobRunIds = await cleanupTerminalExternalLifecycleJobs(jobRunStatuses, now);
     reaped.push(...cleanedTerminalJobRunIds);
     const liveJobRunIds =
       jobRunStatuses !== null
@@ -7759,6 +7808,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? await hasAdapterInvocationEvent(run.id)
         : false;
       const externalLifecyclePreAdapter = externalLifecycleRun && !externalLifecycleStarted;
+      if (
+        externalLifecyclePreAdapter &&
+        isExternalLifecycleRunInRecentGrace(run, now, EXTERNAL_LIFECYCLE_PRE_ADAPTER_STALE_MS)
+      ) {
+        continue;
+      }
       let cascadeDeleteLiveJob = false;
       if (externalLifecycleRun && externalLifecycleStarted) {
         const lastSignalRef = run.lastOutputAt
