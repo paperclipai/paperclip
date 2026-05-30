@@ -27,6 +27,13 @@ test('passes with full github.com URL', () => {
   );
 });
 
+test('passes with a full github.com URL followed by punctuation', () => {
+  assert.equal(
+    checkLinkedIssue('See (https://github.com/paperclipai/paperclip/issues/202).', 'fix: bug').passed,
+    true
+  );
+});
+
 test('fails with empty body when no skip prefix', () => {
   const result = checkLinkedIssue('', 'fix: bug');
   assert.equal(result.passed, false);
@@ -41,6 +48,22 @@ test('fails with no issue reference when no skip prefix', () => {
 
 test('fails with cross-repo issue reference', () => {
   const result = checkLinkedIssue('See https://github.com/other/repo/issues/123', 'fix: bug');
+  assert.equal(result.passed, false);
+});
+
+test('fails when the Paperclip issue URL is embedded inside another host', () => {
+  const result = checkLinkedIssue(
+    'See https://evil.example/https://github.com/paperclipai/paperclip/issues/123',
+    'fix: bug'
+  );
+  assert.equal(result.passed, false);
+});
+
+test('fails when the Paperclip issue URL continues into another host', () => {
+  const result = checkLinkedIssue(
+    'See https://github.com/paperclipai/paperclip/issues/123.evil.example',
+    'fix: bug'
+  );
   assert.equal(result.passed, false);
 });
 

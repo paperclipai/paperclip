@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const ISSUE_PATTERNS = [
   /(?:fixes|closes|resolves)\s+#\d+/i,
-  /\bhttps:\/\/github\.com\/paperclipai\/paperclip\/issues\/\d+/i,
+  /(?:^|[\s(])https:\/\/github\.com\/paperclipai\/paperclip\/issues\/\d+(?=$|[\s),:;!?]|[.](?![\w-]))/i,
   /(?<!\w)#\d+/,
 ];
 
