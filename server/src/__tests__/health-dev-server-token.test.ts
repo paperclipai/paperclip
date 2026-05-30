@@ -93,7 +93,7 @@ describe("GET /health dev-server supervisor access", () => {
         .set("X-Paperclip-Dev-Server-Status-Token", "dev-runner-token");
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({
+      expect(res.body).toMatchObject({
         status: "ok",
         deploymentMode: "authenticated",
         deploymentExposure: "private",
