@@ -2786,7 +2786,6 @@ export function agentRoutes(
   });
 
   router.post("/agents/:id/freeze", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
     if (!(await getAccessibleAgent(req, res, id))) {
       return;
@@ -2796,10 +2795,11 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
       action: "agent.frozen",
       entityType: "agent",
       entityId: agent.id,
@@ -2808,7 +2808,6 @@ export function agentRoutes(
   });
 
   router.post("/agents/:id/unfreeze", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
     if (!(await getAccessibleAgent(req, res, id))) {
       return;
@@ -2818,10 +2817,11 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
       action: "agent.unfrozen",
       entityType: "agent",
       entityId: agent.id,

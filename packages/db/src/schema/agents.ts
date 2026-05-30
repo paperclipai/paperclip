@@ -32,6 +32,7 @@ export const agents = pgTable(
     pauseReason: text("pause_reason"),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     frozenAt: timestamp("frozen_at", { withTimezone: true }),
+    preFreezeStatus: text("pre_freeze_status"),
     permissions: jsonb("permissions").$type<Record<string, unknown>>().notNull().default({}),
     lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
