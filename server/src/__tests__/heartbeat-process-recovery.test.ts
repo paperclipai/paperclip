@@ -360,6 +360,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
       startedAt: now,
+      createdAt: now,
       updatedAt: new Date("2026-03-19T00:00:00.000Z"),
       lastOutputAt,
     });
@@ -1129,6 +1130,44 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
   });
 
+  it("does not delete a recent terminal external-lifecycle run's live Job", async () => {
+    const { runId } = await seedRunFixture({
+      adapterType: "opencode_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+      runError: "Process lost before external adapter invocation -- server may have restarted",
+    });
+    mockListAgentJobRunStatuses.mockResolvedValueOnce(new Map([[runId, { phase: "active" }]]));
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+    expect(result.runIds).toEqual([]);
+    expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
+  });
+
+  it("deletes a stale terminal external-lifecycle run's live Job", async () => {
+    const stale = new Date(Date.now() - 6 * 60 * 1000);
+    const { runId } = await seedRunFixture({
+      adapterType: "opencode_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+      runError: "Process lost before external adapter invocation -- server may have restarted",
+      lastOutputAt: stale,
+    });
+    mockListAgentJobRunStatuses.mockResolvedValueOnce(new Map([[runId, { phase: "active" }]]));
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+    expect(mockDeleteAgentJobsForRun).toHaveBeenCalledWith(runId);
+  });
+
   it("finalizes a completed external-lifecycle Job as succeeded and starts the next queued same-agent run", async () => {
     const recent = new Date(Date.now() - 30 * 1000);
     const { companyId, agentId, runId } = await seedRunFixture({
@@ -1334,12 +1373,31 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(run?.status).toBe("running");
   });
 
-  it("retries external-lifecycle runs claimed before adapter invocation", async () => {
+  it("does not retry recent external-lifecycle runs claimed before adapter invocation", async () => {
+    const { runId } = await seedRunFixture({
+      adapterType: "opencode_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+    expect(result.runIds).toEqual([]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBeNull();
+  });
+
+  it("retries stale external-lifecycle runs claimed before adapter invocation", async () => {
+    const stale = new Date(Date.now() - 6 * 60 * 1000);
     const { agentId, runId } = await seedRunFixture({
       adapterType: "opencode_k8s",
       processPid: null,
       processGroupId: null,
       includeIssue: false,
+      lastOutputAt: stale,
       contextSnapshot: {
         reviewKind: "pr_review",
         taskKey: "pr_review:paperclipai/paperclip:122",
@@ -1818,7 +1876,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockDeleteAgentJobsForRun).toHaveBeenCalledWith(runId);
   });
 
-  it("reaper deletes live external-lifecycle Jobs whose heartbeat run is already terminal", async () => {
+  it("reaper deletes stale live external-lifecycle Jobs whose heartbeat run is already terminal", async () => {
+    const stale = new Date(Date.now() - 6 * 60 * 1000);
     const { runId } = await seedRunFixture({
       adapterType: "opencode_k8s",
       runStatus: "failed",
@@ -1827,6 +1886,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       includeIssue: false,
       runErrorCode: "process_lost",
       runError: "Historical terminal run still has a live Job",
+      lastOutputAt: stale,
     });
     mockListAgentJobRunStatuses.mockResolvedValueOnce(
       new Map([
