@@ -78,6 +78,7 @@ export async function resolveExistingRunId(
     .select({ id: heartbeatRuns.id })
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, runId))
+    .limit(1)
     .then((rows) => rows.length > 0);
   return exists ? runId : null;
 }
