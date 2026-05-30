@@ -87,6 +87,7 @@ function parseLockfilePackageDiffEntry(line) {
   if ((rawEntry.startsWith("'") && rawEntry.endsWith("'")) || (rawEntry.startsWith('"') && rawEntry.endsWith('"'))) {
     rawEntry = rawEntry.slice(1, -1);
   }
+  rawEntry = rawEntry.replace(/\(.*$/, '').trim();
 
   const versionSep = rawEntry.lastIndexOf('@');
   if (versionSep <= 0 || versionSep === rawEntry.length - 1) return null;
@@ -97,7 +98,7 @@ function parseLockfilePackageDiffEntry(line) {
   return { sign, packageName };
 }
 
-const TEST_FILE_RE = /\.(test|spec)\.(ts|js|tsx|jsx)$|\/tests?\//;
+const TEST_FILE_RE = /\.(test|spec)\.(ts|js|tsx|jsx)$|\/(?:__tests__|tests?)\//;
 const SUSPICIOUS_PATTERNS = [
   { name: 'outbound-network', re: /\+.*(fetch\(|axios\.|http\.request|https\.request)/ },
   { name: 'env-var-read', re: /\+.*process\.env\.(?!(?:NODE_ENV|CI|TEST|VITEST|npm_))([A-Z_]{4,})/ },
@@ -258,8 +259,8 @@ export async function findExistingDraftAdvisory(fetchImpl, token, repo, prNumber
   }
 }
 
-async function postSecurityCheckRun(token, repo, headSha, hasFlags) {
-  await ghFetch(`/repos/${repo}/check-runs`, token, {
+export async function postSecurityCheckRun(fetchImpl, token, repo, headSha, hasFlags) {
+  await fetchImpl(`/repos/${repo}/check-runs`, token, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(hasFlags ? {
@@ -333,11 +334,11 @@ async function main() {
     console.error(`[security] ${allFlags.length} flag(s) detected — creating draft advisory and pending check run`);
     await Promise.all([
       syncDraftAdvisory(ghFetch, GH_TOKEN, GH_REPO, prNumber, pr.title, allFlags),
-      postSecurityCheckRun(GH_TOKEN, GH_REPO, pr.head.sha, true),
+      postSecurityCheckRun(ghFetch, GH_TOKEN, GH_REPO, pr.head.sha, true),
     ]);
   } else {
     console.log('[security] all clear');
-    await postSecurityCheckRun(GH_TOKEN, GH_REPO, pr.head.sha, false);
+    await postSecurityCheckRun(ghFetch, GH_TOKEN, GH_REPO, pr.head.sha, false);
   }
 
   // Always exit 0 — security flags are silent, never block the PR publicly
