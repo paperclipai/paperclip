@@ -50,6 +50,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/openswarm-local",
+    "name": "@paperclipai/adapter-openswarm-local",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/shared",
     "name": "@paperclipai/shared",
     "publishFromCi": true

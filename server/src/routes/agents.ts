@@ -925,6 +925,27 @@ export function agentRoutes(
     }
   }
 
+  const SENSITIVE_HTTP_HEADER_RE = /^(authorization|cookie|proxy-authorization|x-api-key|x-auth-token|x-access-token)$/i;
+  const SENSITIVE_HTTP_HEADER_TEMPLATE_RE = /^(?:Bearer\s+)?\$\{env:[A-Za-z_][A-Za-z0-9_]*\}$/;
+
+  function assertPersistableHttpAdapterConfig(
+    adapterType: string | null | undefined,
+    adapterConfig: Record<string, unknown>,
+  ) {
+    if (adapterType !== "http") return;
+    const headers = asRecord(adapterConfig.headers);
+    if (!headers) return;
+
+    for (const [key, value] of Object.entries(headers)) {
+      if (typeof value !== "string") {
+        throw unprocessable(`HTTP header ${key} must be a string`);
+      }
+      if (SENSITIVE_HTTP_HEADER_RE.test(key) && !SENSITIVE_HTTP_HEADER_TEMPLATE_RE.test(value.trim())) {
+        throw unprocessable(`Sensitive HTTP header ${key} must use an env reference such as \${env:BRIDGE_TOKEN}`);
+      }
+    }
+  }
+
   async function normalizeMediatedAdapterConfigForPersistence(input: {
     companyId: string;
     adapterType: string | null | undefined;
@@ -936,6 +957,7 @@ export function agentRoutes(
       input.adapterConfig,
       { strictMode: strictSecretsMode },
     );
+    assertPersistableHttpAdapterConfig(input.adapterType, normalizedAdapterConfig);
     await assertAdapterConfigConstraints(
       input.adapterType,
       input.constraintAdapterConfig

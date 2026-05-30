@@ -10,11 +10,11 @@ Paperclip is the control plane for autonomous AI companies. One instance of Pape
 
 A company has:
 
-- A **goal** — the reason it exists ("Create the #1 AI note-taking app that does $1M MRR within 3 months")
+- **Company-level goals** — separate goal records that explain why it exists ("Create the #1 AI note-taking app that does $1M MRR within 3 months")
 - **Employees** — every employee is an AI agent
 - **Org structure** — who reports to whom
 - **Revenue & expenses** — tracked at the company level
-- **Task hierarchy** — all work traces back to the company goal
+- **Task hierarchy** — all work should trace back to a company-level goal
 
 ### Employees & Agents
 
@@ -43,7 +43,7 @@ Agent runs can use project and execution workspaces, managed runtime services su
 
 ### Task Management
 
-Task management is hierarchical. At any moment, every piece of work must trace back to the company's top-level goal through a chain of parent tasks:
+Task management is hierarchical. At any moment, every piece of work should trace back to a company-level goal through a chain of parent tasks, project-goal linkage, or direct `goal_id`:
 
 ```
 I am researching the Facebook ads Granola uses (current task)
@@ -54,7 +54,7 @@ I am researching the Facebook ads Granola uses (current task)
           because → We're building the #1 AI note-taking app to $1M MRR in 3 months
 ```
 
-Tasks have parentage. Every task exists in service of a parent task, all the way up to the company goal. This is what keeps autonomous agents aligned — they can always answer "why am I doing this?"
+Tasks have parentage. Every task exists in service of a parent task, project, or goal. This is what keeps autonomous agents aligned — they can always answer "why am I doing this?"
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
@@ -66,7 +66,7 @@ The current issue model includes stable issue identifiers, parent/sub-issues, bl
 
 3. **Adapter config defines the agent.** Every agent has an adapter type and configuration that controls its identity and behavior. The minimum contract is just "be callable."
 
-4. **All work traces to the goal.** Hierarchical task management means nothing exists in isolation. If you can't explain why a task matters to the company goal, it shouldn't exist.
+4. **All work traces to a goal.** Hierarchical task management means nothing exists in isolation. If you can't explain why a task matters to a company-level goal, it shouldn't exist.
 
 5. **Control plane, not execution plane.** Paperclip orchestrates. Agents run wherever they run and phone home.
 
@@ -95,7 +95,7 @@ Canonical mode design and command expectations live in `doc/DEPLOYMENT-MODES.md`
 
 ## Further Detail
 
-See [SPEC.md](./SPEC.md) for the full technical specification and [TASKS.md](./TASKS.md) for the task management data model.
+See [SPEC.md](./SPEC.md) for the full technical specification and [execution-semantics.md](./execution-semantics.md) for the current task execution model.
 
 ---
 

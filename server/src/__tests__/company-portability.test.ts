@@ -3162,4 +3162,53 @@ describe("company portability", () => {
     expect(preview.plan.projectPlans).toHaveLength(0);
     expect(preview.plan.issuePlans).toHaveLength(0);
   });
+
+  it("exports issue full description, not the list-truncated preview", async () => {
+    const portability = companyPortabilityService({} as any);
+    const truncatedDescription = "portable-data ".repeat(82).trim();
+    const fullDescription = "portable-data ".repeat(12_000).trim();
+
+    projectSvc.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Portability",
+        urlKey: "portability",
+        description: null,
+        status: "active",
+        leadAgentId: null,
+        metadata: null,
+        defaultProjectWorkspaceId: null,
+      },
+    ]);
+    projectSvc.listWorkspaces.mockResolvedValue([]);
+    issueSvc.list.mockResolvedValue([
+      {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Large description task",
+        description: truncatedDescription,
+        projectId: "project-1",
+        projectWorkspaceId: null,
+        assigneeAgentId: null,
+        status: "todo",
+        priority: "medium",
+        labelIds: [],
+        billingCode: null,
+        executionWorkspaceSettings: null,
+        assigneeAdapterOverrides: null,
+      },
+    ]);
+    issueSvc.getById.mockResolvedValue({
+      id: "issue-1",
+      description: fullDescription,
+    });
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: false, agents: false, projects: true, issues: true },
+    });
+
+    const taskMd = asTextFile(exported.files["tasks/pap-1/TASK.md"]);
+    expect(taskMd).toContain(fullDescription.slice(0, 100));
+    expect(taskMd.length).toBeGreaterThan(truncatedDescription.length);
+  });
 });

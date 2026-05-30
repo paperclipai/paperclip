@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
@@ -160,11 +161,13 @@ import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import { extractSkillMentionIds } from "@paperclipai/shared";
+import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
+import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { maybeDeliverKatailystLearnerRunComplete } from "./katailyst-learner-bridge.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -1777,7 +1780,7 @@ function enrichWakeContextSnapshot(input: {
   payload: Record<string, unknown> | null;
 }) {
   const { contextSnapshot, reason, source, triggerDetail, payload } = input;
-  const issueIdFromPayload = readNonEmptyString(payload?.["issueId"]);
+  const issueIdFromPayload = readNonEmptyString(payload?.["issueId"]) ?? readNonEmptyString(payload?.["taskId"]);
   const commentIdFromPayload = readNonEmptyString(payload?.["commentId"]);
   const taskKey = deriveTaskKey(contextSnapshot, payload);
   const wakeCommentId = deriveCommentId(contextSnapshot, payload);
@@ -3419,7 +3422,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     previousSessionParams: Record<string, unknown> | null,
     opts?: { useProjectWorkspace?: boolean | null },
   ): Promise<ResolvedWorkspaceForRun> {
-    const issueId = readNonEmptyString(context.issueId);
+    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const contextProjectId = readNonEmptyString(context.projectId);
     const contextProjectWorkspaceId = readNonEmptyString(context.projectWorkspaceId);
     const issueProjectRef = issueId
@@ -3569,7 +3572,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const sessionCwd = readNonEmptyString(previousSessionParams?.cwd);
-    if (sessionCwd) {
+    const sessionCwdLooksUnsafe = isUnsafeSessionWorkspaceCwd(sessionCwd);
+    if (sessionCwd && !sessionCwdLooksUnsafe) {
       const sessionCwdExists = await fs
         .stat(sessionCwd)
         .then((stats) => stats.isDirectory())
@@ -3591,7 +3595,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
     await fs.mkdir(cwd, { recursive: true });
     const warnings: string[] = [];
-    if (sessionCwd) {
+    if (sessionCwd && sessionCwdLooksUnsafe) {
+      warnings.push(
+        `Saved session workspace "${sessionCwd}" points at a system temp root and was rejected as untrusted. Using fallback workspace "${cwd}" for this run.`,
+      );
+    } else if (sessionCwd) {
       warnings.push(
         `Saved session workspace "${sessionCwd}" is not available. Using fallback workspace "${cwd}" for this run.`,
       );
@@ -3747,7 +3755,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
-    const eventType =
+    const eventType: PluginEvent["eventType"] | null =
       run.status === "running"
         ? "agent.run.started"
         : run.status === "succeeded"
@@ -3758,7 +3766,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? "agent.run.cancelled"
               : null;
     if (!eventType) return;
-    publishPluginDomainEvent({
+    const event: PluginEvent = {
       eventId: randomUUID(),
       eventType,
       occurredAt: new Date().toISOString(),
@@ -3780,8 +3788,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : null,
         startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
         finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
+        usage: run.usageJson ?? null,
       },
-    });
+    };
+    publishPluginDomainEvent(event);
+    void maybeDeliverKatailystLearnerRunComplete(event);
   }
 
   async function setWakeupStatus(
@@ -8612,11 +8623,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
     if (!projectId && issueId) {
-      projectId = await db
-        .select({ projectId: issues.projectId })
+      // Look up by either UUID or identifier (e.g. "ENV-13"), but always scope
+      // by companyId so a row from another tenant can never be returned even
+      // when identifiers collide across companies. Guard the UUID arm because
+      // issues.id is a Postgres uuid column — passing "ENV-13" into eq(issues.id, …)
+      // would fail with an invalid-input-syntax cast error before the OR is
+      // evaluated.
+      const lookupIsUuid = isUuidLike(issueId);
+      const idMatch = lookupIsUuid
+        ? or(eq(issues.id, issueId), eq(issues.identifier, issueId.toUpperCase()))
+        : eq(issues.identifier, issueId.toUpperCase());
+      const resolvedIssue = await db
+        .select({ id: issues.id, projectId: issues.projectId })
         .from(issues)
-        .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
-        .then((rows) => rows[0]?.projectId ?? null);
+        .where(and(eq(issues.companyId, agent.companyId), idMatch))
+        .then((rows) => rows[0] ?? null);
+      if (resolvedIssue) {
+        projectId = resolvedIssue.projectId ?? null;
+        // Canonicalize context to the UUID so downstream lookups always use UUID
+        if (resolvedIssue.id !== issueId) {
+          issueId = resolvedIssue.id;
+          enrichedContextSnapshot.issueId = issueId;
+          if (readNonEmptyString(enrichedContextSnapshot.taskId)) {
+            enrichedContextSnapshot.taskId = issueId;
+          }
+        }
+      }
+    }
+    // Propagate projectId into context so resolveWorkspaceForRun can bind the
+    // project workspace even when context.projectId wasn't set by the caller.
+    if (projectId && !readNonEmptyString(enrichedContextSnapshot.projectId)) {
+      enrichedContextSnapshot.projectId = projectId;
     }
 
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {

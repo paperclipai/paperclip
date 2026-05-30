@@ -6,6 +6,7 @@ import type { ServerAdapterModule } from "../adapters/index.js";
 const mockAgentService = vi.hoisted(() => ({
   create: vi.fn(),
   getById: vi.fn(),
+  update: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -220,6 +221,56 @@ describe("agent routes adapter validation", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     }));
+    mockAgentService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      name: "HTTP Agent",
+      urlKey: "http-agent",
+      role: "general",
+      title: null,
+      icon: null,
+      status: "idle",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "http",
+      adapterConfig: {},
+      runtimeConfig: {},
+      defaultEnvironmentId: null,
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      pauseReason: null,
+      pausedAt: null,
+      permissions: { canCreateAgents: false },
+      lastHeartbeatAt: null,
+      metadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    mockAgentService.update.mockImplementation(async (_id: string, input: Record<string, unknown>) => ({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      name: String(input.name ?? "HTTP Agent"),
+      urlKey: "http-agent",
+      role: String(input.role ?? "general"),
+      title: null,
+      icon: null,
+      status: "idle",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: String(input.adapterType ?? "http"),
+      adapterConfig: (input.adapterConfig as Record<string, unknown> | undefined) ?? {},
+      runtimeConfig: (input.runtimeConfig as Record<string, unknown> | undefined) ?? {},
+      defaultEnvironmentId: null,
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      pauseReason: null,
+      pausedAt: null,
+      permissions: { canCreateAgents: false },
+      lastHeartbeatAt: null,
+      metadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }));
     await unregisterTestAdapter("external_test");
     await unregisterTestAdapter(missingAdapterType);
   });
@@ -260,5 +311,28 @@ describe("agent routes adapter validation", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(String(res.body.error ?? res.body.message ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);
+  });
+
+  it("rejects persisted HTTP sensitive headers when raw values bypass the UI", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({
+          adapterType: "http",
+          replaceAdapterConfig: true,
+          adapterConfig: {
+            url: "https://example.test/webhook",
+            method: "POST",
+            headers: { Authorization: "Bearer raw-token" },
+          },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(
+      "Sensitive HTTP header Authorization must use an env reference",
+    );
+    expect(mockAgentService.update).not.toHaveBeenCalled();
   });
 });

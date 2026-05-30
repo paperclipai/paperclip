@@ -25,7 +25,7 @@ import {
   validatePluginRuntimeExecute,
   validatePluginRuntimeQuery,
 } from "../services/plugin-database.js";
-import { pluginLoader } from "../services/plugin-loader.js";
+import { buildPluginWorkerEnv, pluginLoader } from "../services/plugin-loader.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -81,6 +81,48 @@ describe("plugin database SQL validation", () => {
     expect(() =>
       validatePluginMigrationStatement("DO $$ BEGIN END $$;", "plugin_test")
     ).toThrow(/disallowed/i);
+  });
+});
+
+describe("buildPluginWorkerEnv", () => {
+  const instanceInfo = {
+    deploymentMode: "authenticated",
+    deploymentExposure: "public",
+  };
+
+  it("passes only model provider keys through to environment driver plugins", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: { capabilities: ["environment.drivers.register"] },
+      instanceInfo,
+      processEnv: {
+        ANTHROPIC_API_KEY: "anthropic-token",
+        OPENAI_API_KEY: "openai-token",
+        GEMINI_API_KEY: " ",
+        AWS_SECRET_ACCESS_KEY: "aws-secret",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      ANTHROPIC_API_KEY: "anthropic-token",
+      OPENAI_API_KEY: "openai-token",
+    });
+  });
+
+  it("does not pass provider keys to non-environment plugins", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: { capabilities: ["ui.slots.register"] },
+      instanceInfo,
+      processEnv: {
+        OPENAI_API_KEY: "openai-token",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+    });
   });
 });
 

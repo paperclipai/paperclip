@@ -121,10 +121,9 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     comingSoon: true,
   },
   http: {
-    label: "HTTP",
-    description: "Internal HTTP adapter",
+    label: "HTTP Webhook",
+    description: "Remote HTTP webhook adapter (bridges, external services)",
     icon: Cpu,
-    comingSoon: true,
   },
 };
 

@@ -147,6 +147,14 @@ export function NewAgent() {
         return;
       }
     }
+    let adapterConfig: Record<string, unknown>;
+    try {
+      adapterConfig = buildAdapterConfig();
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : "Invalid adapter configuration");
+      return;
+    }
+
     createAgent.mutate(
       buildNewAgentHirePayload({
         name,
@@ -155,7 +163,7 @@ export function NewAgent() {
         reportsTo,
         selectedSkillKeys,
         configValues,
-        adapterConfig: buildAdapterConfig(),
+        adapterConfig,
       }),
     );
   }

@@ -211,6 +211,7 @@ describe("cursor environment diagnostics", () => {
           cwd: remoteCwd,
           env: {
             CURSOR_API_KEY: "test-key",
+            PATH: process.env.PATH ?? "",
             PAPERCLIP_TEST_ARGS_PATH: argsCapturePath,
           },
         },

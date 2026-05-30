@@ -47,7 +47,8 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -1878,6 +1879,7 @@ export function issueService(db: Db) {
   }
 
   async function readRunLogText(run: {
+    runId?: string | null;
     logStore: string | null;
     logRef: string | null;
     logBytes: number | null;
@@ -1891,19 +1893,30 @@ export function issueService(db: Db) {
     let content = "";
     let nextOffset: number | undefined = 0;
 
-    while (nextOffset !== undefined) {
-      const remainingBytes = ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES - Buffer.byteLength(content, "utf8");
-      if (remainingBytes <= 0) break;
-      const chunk = await store.read(
-        { store: "local_file", logRef: run.logRef },
-        {
-          offset,
-          limitBytes: Math.min(ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES, remainingBytes),
-        },
-      );
-      content += chunk.content;
-      nextOffset = chunk.nextOffset;
-      offset = chunk.nextOffset ?? 0;
+    try {
+      while (nextOffset !== undefined) {
+        const remainingBytes = ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES - Buffer.byteLength(content, "utf8");
+        if (remainingBytes <= 0) break;
+        const chunk = await store.read(
+          { store: "local_file", logRef: run.logRef },
+          {
+            offset,
+            limitBytes: Math.min(ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES, remainingBytes),
+          },
+        );
+        content += chunk.content;
+        nextOffset = chunk.nextOffset;
+        offset = chunk.nextOffset ?? 0;
+      }
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 404) {
+        logger.warn(
+          { err, runId: run.runId ?? undefined, logRef: run.logRef },
+          "missing heartbeat run log while deriving issue comment metadata",
+        );
+        return content;
+      }
+      throw err;
     }
 
     return content;
@@ -1942,6 +1955,10 @@ export function issueService(db: Db) {
       return max === null ? timestamp : Math.max(max, timestamp);
     }, null);
     if (minCommentCreatedAtMs === null || maxCommentCreatedAtMs === null) return comments;
+    const windowStartIso = new Date(minCommentCreatedAtMs).toISOString();
+    const windowEndIso = new Date(
+      maxCommentCreatedAtMs + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS,
+    ).toISOString();
 
     const runs = await db
       .select({
@@ -1969,8 +1986,8 @@ export function issueService(db: Db) {
                 and ${activityLog.runId} = ${heartbeatRuns.id}
             )`,
           ),
-          sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${new Date(minCommentCreatedAtMs)}`,
-          sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${new Date(maxCommentCreatedAtMs + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS)}`,
+          sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${windowStartIso}`,
+          sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${windowEndIso}`,
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt));

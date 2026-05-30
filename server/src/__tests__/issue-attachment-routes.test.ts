@@ -329,6 +329,41 @@ describe("issue attachment routes", () => {
     ]).toContain(res.headers["content-disposition"]);
   });
 
+  it("resolves issue identifiers when reading chat attachments by issue", async () => {
+    const storage = createStorageService();
+    const textAttachment = makeAttachment("text/plain", "brief.txt");
+    const issue = {
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    };
+
+    mockIssueService.getByIdentifier.mockResolvedValue(issue);
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.listAttachments.mockResolvedValue([textAttachment]);
+
+    const app = await createApp(storage);
+    const res = await request(app).get("/api/chat/attachments/read?issueId=PAP-1&maxBytes=32");
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PAP-1");
+    expect(mockIssueService.getById).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111");
+    expect(res.body).toMatchObject({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      attachments: [
+        {
+          id: "attachment-1",
+          sources: ["issue_attachment"],
+          content: {
+            encoding: "utf-8",
+            text: "test",
+            textReadable: true,
+          },
+        },
+      ],
+    });
+  });
+
   it("reads attachment metadata and text content for the current chat run", async () => {
     const storage = createStorageService();
     const textAttachment = makeAttachment("text/plain", "brief.txt");

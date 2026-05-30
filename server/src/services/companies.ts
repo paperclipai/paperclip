@@ -125,16 +125,23 @@ export function companyService(db: Db) {
   }
 
   function isIssuePrefixConflict(error: unknown) {
-    const constraint = typeof error === "object" && error !== null && "constraint" in error
-      ? (error as { constraint?: string }).constraint
-      : typeof error === "object" && error !== null && "constraint_name" in error
-        ? (error as { constraint_name?: string }).constraint_name
-        : undefined;
-    return typeof error === "object"
-      && error !== null
-      && "code" in error
-      && (error as { code?: string }).code === "23505"
-      && constraint === "companies_issue_prefix_idx";
+    // DrizzleQueryError wraps the underlying PostgresError in .cause, so check both levels.
+    function extractPgConflict(err: unknown): boolean {
+      if (typeof err !== "object" || err === null) return false;
+      const e = err as Record<string, unknown>;
+      if (e["code"] !== "23505") return false;
+      const constraint =
+        typeof e["constraint"] === "string"
+          ? e["constraint"]
+          : typeof e["constraint_name"] === "string"
+            ? e["constraint_name"]
+            : undefined;
+      return constraint === "companies_issue_prefix_idx";
+    }
+    return (
+      extractPgConflict(error) ||
+      extractPgConflict((error as { cause?: unknown })?.cause)
+    );
   }
 
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {

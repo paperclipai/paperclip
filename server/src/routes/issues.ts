@@ -1535,7 +1535,7 @@ export function issueRoutes(
     }
 
     const explicitAttachmentId = query.attachmentId ?? null;
-    const explicitIssueId = query.issueId ? await normalizeIssueIdentifier(query.issueId) : null;
+    const explicitIssueId = query.issueId ? await resolveIssueRouteId(query.issueId) : null;
     const explicitCommentId = query.commentId ?? null;
     const contextCommentIds = readStringArray(runContext.wakeCommentIds);
     const fallbackCommentId = readNonEmptyString(runContext.wakeCommentId) ?? readNonEmptyString(runContext.commentId);

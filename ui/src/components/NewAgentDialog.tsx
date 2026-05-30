@@ -23,11 +23,14 @@ import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 
 /**
  * Adapter types that are suitable for agent creation (excludes internal
- * system adapters like "process" and "http").
+ * system adapters like "process"). HTTP is included so operators can wire
+ * remote-bridge agents (Thomas/Hermes bridge, OpenSwarm bridge, etc.) via
+ * the picker; the full HTTP advanced config UI is delivered by
+ * HttpConfigFields (see ui/src/adapters/http/config-fields.tsx).
  */
-const SYSTEM_ADAPTER_TYPES = new Set(["process", "http"]);
+const SYSTEM_ADAPTER_TYPES = new Set(["process"]);
 
-function isAgentAdapterType(type: string): boolean {
+export function isAgentAdapterType(type: string): boolean {
   return !SYSTEM_ADAPTER_TYPES.has(type);
 }
 

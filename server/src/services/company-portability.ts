@@ -3478,14 +3478,17 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           });
         }
       }
-      const comments = await issuesSvc.listComments(issue.id, { order: "asc" });
+      const [comments, fullIssue] = await Promise.all([
+        issuesSvc.listComments(issue.id, { order: "asc" }),
+        issuesSvc.getById(issue.id),
+      ]);
       files[taskPath] = buildMarkdown(
         {
           name: issue.title,
           project: projectSlug,
           assignee: assigneeSlug,
         },
-        issue.description ?? "",
+        fullIssue?.description ?? issue.description ?? "",
       );
       const extension = stripEmptyValues({
         identifier: issue.identifier,

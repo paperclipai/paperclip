@@ -70,6 +70,14 @@ services:
         value: https://us.cloud.langfuse.com
       - key: LANGFUSE_RECORD_IO
         value: "false"
+      - key: KATAILYST_LEARNER_BRIDGE_ENABLED
+        value: "true"
+      - key: KATAILYST_LEARNER_ENDPOINT_URL
+        sync: false
+      - key: HERMES_LEARNER_WEBHOOK_SECRET
+        sync: false
+      - key: KATAILYST_LEARNER_TIMEOUT_MS
+        value: "5000"
 
 databases:
   - name: paperclip-db

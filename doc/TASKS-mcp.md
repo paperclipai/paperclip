@@ -1,5 +1,12 @@
 # Task Management MCP Interface
 
+> Status: superseded design note. This file predates the current REST/plugin
+> issue contract and still contains initiative terminology. For current
+> implementation guidance, use [execution-semantics.md](./execution-semantics.md),
+> [docs/api/issues.md](../docs/api/issues.md), and
+> [docs/api/goals-and-projects.md](../docs/api/goals-and-projects.md). Do not
+> use the initiative sections below as current Paperclip runtime guidance.
+
 Function contracts for the Paperclip task management system. Defines the
 operations available to agents (and external tools) via MCP. Refer to
 [TASKS.md](./TASKS.md) for the underlying data model.

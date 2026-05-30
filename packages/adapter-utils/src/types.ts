@@ -488,7 +488,11 @@ export interface CreateConfigValues {
   extraArgs: string;
   envVars: string;
   envBindings: Record<string, unknown>;
+  envBindingsJson?: string;
   url: string;
+  httpMethod?: string;
+  httpHeadersJson?: string;
+  httpTimeoutMs?: number;
   bootstrapPrompt: string;
   payloadTemplateJson?: string;
   workspaceStrategyType?: string;

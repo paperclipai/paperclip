@@ -492,6 +492,14 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     expect(importedProjects.map((project) => project.name)).toContain(sourceProject.name);
     expect(importedMatchingIssues).toHaveLength(1);
 
+    // Verify the large description was exported and imported in full, not truncated.
+    const importedIssueDetail = await api<{ id: string; description: string | null }>(
+      apiBase,
+      `/api/issues/${importedMatchingIssues[0]!.id}`,
+    );
+    expect(importedIssueDetail.description).toContain("portable-data");
+    expect((importedIssueDetail.description ?? "").split("portable-data").length - 1).toBe(12_000);
+
     const previewExisting = await runCliJson<{
       errors: string[];
       plan: {
