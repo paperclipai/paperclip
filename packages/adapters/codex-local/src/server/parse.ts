@@ -8,6 +8,13 @@ import {
 const CODEX_TRANSIENT_UPSTREAM_RE =
   /(?:we(?:'|’)re\s+currently\s+experiencing\s+high\s+demand|temporary\s+errors|rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|server\s+overloaded|service\s+unavailable|try\s+again\s+later)/i;
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
+// Codex CLI internally spawns auxiliary turns on a fast model (currently
+// `gpt-5.3-codex-spark`) for compaction/title/summary work. On ChatGPT-
+// subscription auth that model is rejected by the backend with a 400, even
+// when --model is set to a supported model. The auxiliary attempt is
+// intermittent and not deterministic, so retrying the run usually succeeds.
+const CODEX_AUXILIARY_MODEL_UNSUPPORTED_RE =
+  /['"][\w.\-]*(?:spark|aux)[\w.\-]*['"][^.]*not\s+supported\s+when\s+using\s+codex\s+with\s+a\s+chatgpt\s+account/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 
@@ -253,6 +260,7 @@ export function isCodexTransientUpstreamError(input: {
   const haystack = buildCodexErrorHaystack(input);
 
   if (extractCodexRetryNotBefore(input) != null) return true;
+  if (CODEX_AUXILIARY_MODEL_UNSUPPORTED_RE.test(haystack)) return true;
   if (!CODEX_TRANSIENT_UPSTREAM_RE.test(haystack)) return false;
   // Keep automatic retries scoped to the observed remote-compaction/high-demand
   // failure shape, plus explicit usage-limit windows that tell us when retrying

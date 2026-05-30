@@ -137,4 +137,20 @@ describe("isCodexTransientUpstreamError", () => {
       }),
     ).toBe(false);
   });
+
+  it("classifies the spark auxiliary-model rejection on ChatGPT-subscription auth as transient upstream", () => {
+    const errorMessage =
+      "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-5.3-codex-spark' model is not supported when using Codex with a ChatGPT account.\"}}";
+    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(true);
+    expect(isCodexTransientUpstreamError({ stdout: errorMessage })).toBe(true);
+  });
+
+  it("does not classify generic invalid_request_error 400 payloads as transient", () => {
+    expect(
+      isCodexTransientUpstreamError({
+        errorMessage:
+          "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Missing required parameter: 'model'.\"}}",
+      }),
+    ).toBe(false);
+  });
 });
