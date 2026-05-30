@@ -128,6 +128,18 @@ interface EvidencePacketInput {
   workerLog?: string | null;
 }
 
+interface ValidateQaEvidencePacketInput {
+  prUrl: string;
+  commitSha: string;
+  changedFiles: string[];
+  checks: string[];
+  screenshotPaths: string[];
+  logPaths: string[];
+  residualRisks: string[];
+  diffSummary?: string | null;
+  workerLog?: string | null;
+}
+
 interface PublishedEvidencePacket {
   document: IssueDocument;
   workProduct: IssueWorkProduct | null;
@@ -346,6 +358,17 @@ export function registerIssueCommands(program: Command): void {
             ...normalizeList(opts.screenshot).map((filePath) => ({ kind: "screenshot" as const, path: filePath })),
             ...normalizeList(opts.log).map((filePath) => ({ kind: "log" as const, path: filePath })),
           ];
+          validateQaEvidencePacketInput({
+            prUrl: opts.prUrl,
+            commitSha,
+            changedFiles: effectiveChangedFiles,
+            checks,
+            screenshotPaths: attachmentInputs.filter((attachment) => attachment.kind === "screenshot").map((attachment) => attachment.path),
+            logPaths: attachmentInputs.filter((attachment) => attachment.kind === "log").map((attachment) => attachment.path),
+            residualRisks: risks,
+            diffSummary: opts.summary ?? null,
+            workerLog: opts.workerLog ?? null,
+          });
 
           const attachments: EvidenceAttachmentSummary[] = [];
           for (const attachment of attachmentInputs) {
@@ -616,6 +639,23 @@ export function renderQaEvidencePacketComment(
     `Attachments: ${attachmentSummary}.`,
     workProduct ? `PR work product: ${workProduct.id}.` : "PR work product: not created.",
   ].join("\n");
+}
+
+export function validateQaEvidencePacketInput(input: ValidateQaEvidencePacketInput): void {
+  const missing: string[] = [];
+  if (!input.prUrl.trim()) missing.push("PR URL");
+  if (!input.commitSha.trim()) missing.push("commit SHA");
+  if (input.changedFiles.length === 0 && !input.diffSummary?.trim()) {
+    missing.push("diff summary or changed-file list");
+  }
+  if (input.checks.length === 0) missing.push("exact checks/output");
+  if (input.screenshotPaths.length === 0) missing.push("screenshot artifacts");
+  if (input.logPaths.length === 0 && !input.workerLog?.trim()) missing.push("log excerpt or attachment");
+  if (input.residualRisks.length === 0) missing.push("residual risks");
+
+  if (missing.length > 0) {
+    throw new Error(`QA evidence packet is incomplete. Missing required evidence: ${missing.join(", ")}.`);
+  }
 }
 
 function parseCsv(value: string | undefined): string[] {

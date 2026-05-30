@@ -117,7 +117,7 @@ export class PaperclipApiClient {
       ...toStringRecord(init.headers),
     };
 
-    if (init.body !== undefined) {
+    if (init.body !== undefined && !(init.body instanceof FormData)) {
       headers["content-type"] = headers["content-type"] ?? "application/json";
     }
 

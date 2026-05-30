@@ -30,6 +30,28 @@ describe("PaperclipApiClient", () => {
     expect(headers["content-type"]).toBe("application/json");
   });
 
+  it("does not force a JSON content-type for multipart form uploads", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new PaperclipApiClient({
+      apiBase: "http://localhost:3100",
+      apiKey: "token-123",
+    });
+    const form = new FormData();
+    form.set("file", new Blob(["hello"], { type: "text/plain" }), "hello.txt");
+
+    await client.postForm("/api/upload", form);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const headers = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    expect(headers.authorization).toBe("Bearer token-123");
+    expect(headers.accept).toBe("application/json");
+    expect(headers["content-type"]).toBeUndefined();
+  });
+
   it("returns null on ignoreNotFound", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ error: "Not found" }), { status: 404 }),
