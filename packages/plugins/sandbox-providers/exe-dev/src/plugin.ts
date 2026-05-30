@@ -69,6 +69,7 @@ const MAX_VM_RECORD_DEPTH = 4;
 const EXE_DEV_SSH_ONBOARDING_MARKER = "Please complete registration by running: ssh exe.dev";
 const EXE_DEV_SSH_EMAIL_PROMPT = "Please enter your email address:";
 const EXE_DEV_SSH_INVALID_KEY_FORMAT = /Load key [^\n]*invalid format/i;
+const UUID_SECRET_REF_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // exe.dev's `--setup-script` runs at VM init as the unprivileged `exedev` user, which
 // has passwordless sudo. The Paperclip sandbox callback bridge is a Node script, so
@@ -138,6 +139,10 @@ function isValidUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isSecretRef(value: string): boolean {
+  return UUID_SECRET_REF_RE.test(value);
 }
 
 // Catch the SSH-key paste failure modes we've seen in the wild (wrong file,
@@ -758,7 +763,7 @@ const plugin = definePlugin({
     ) {
       errors.push("strictHostKeyChecking cannot be empty.");
     }
-    if (config.sshPrivateKey) {
+    if (config.sshPrivateKey && !isSecretRef(config.sshPrivateKey)) {
       const sshKeyError = validateSshPrivateKey(config.sshPrivateKey);
       if (sshKeyError) errors.push(sshKeyError);
     }
