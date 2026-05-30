@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type Ref } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type Ref } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
@@ -72,6 +72,8 @@ import { IssueReferenceActivitySummary } from "../components/IssueReferenceActiv
 import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
 import { IssueMonitorActivityCard } from "../components/IssueMonitorActivityCard";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
+import { IssueLineageStrip } from "../components/IssueLineageStrip";
+import { IssueOutcomeCard } from "../components/IssueOutcomeCard";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
@@ -117,6 +119,7 @@ import {
   Archive,
   ArrowLeft,
   Check,
+  ChevronDown,
   ChevronRight,
   Copy,
   Eye,
@@ -968,6 +971,50 @@ type IssueDetailActivityTabProps = {
   handoffFocusSignal?: number;
 };
 
+function IssueEvidenceDisclosure({
+  defaultOpen,
+  forceOpenSignal = 0,
+  children,
+}: {
+  defaultOpen: boolean;
+  forceOpenSignal?: number;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  useEffect(() => {
+    if (forceOpenSignal <= 0) {
+      setOpen(defaultOpen);
+    }
+  }, [defaultOpen, forceOpenSignal]);
+
+  useLayoutEffect(() => {
+    if (forceOpenSignal > 0) {
+      setOpen(true);
+    }
+  }, [forceOpenSignal]);
+
+  return (
+    <details
+      className="group rounded-xl border border-border bg-card/70 shadow-sm"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium [&::-webkit-details-marker]:hidden">
+        <span className="flex items-center gap-2">
+          <ActivityIcon className="h-4 w-4 text-muted-foreground" />
+          Evidence and runtime details
+        </span>
+        <span className="flex items-center gap-2 text-xs font-normal text-muted-foreground">
+          Run ledger, cost, approvals, handoffs, retry, and monitor history
+          <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+        </span>
+      </summary>
+      <div className="border-t border-border px-3 py-3">{children}</div>
+    </details>
+  );
+}
+
 function IssueDetailActivityTab({
   issue,
   issueId,
@@ -1086,13 +1133,14 @@ function IssueDetailActivityTab({
       || issueTreeCostSummary.issueCount > 1);
   const shouldShowCostSummary =
     (linkedRuns && linkedRuns.length > 0) || hasIssueTreeCost;
+  const evidenceOpenByDefault = issue.status !== "done" && issue.status !== "cancelled";
 
   if (initialLoading) {
     return <IssueSectionSkeleton titleWidth="w-20" rows={4} />;
   }
 
   return (
-    <>
+    <IssueEvidenceDisclosure defaultOpen={evidenceOpenByDefault} forceOpenSignal={handoffFocusSignal}>
       {shouldShowCostSummary && (
         <div className="mb-3 px-3 py-2 rounded-lg border border-border">
           <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
@@ -1211,7 +1259,7 @@ function IssueDetailActivityTab({
         onCheckNow={onCheckMonitorNow}
         checkingNow={checkingMonitorNow}
       />
-    </>
+    </IssueEvidenceDisclosure>
   );
 }
 
@@ -1337,6 +1385,12 @@ export function IssueDetail() {
     refetchInterval: 3000,
     select: (runs) => runs.length,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId ?? "pending"),
+  });
+  const { data: outcomeRuns } = useQuery({
+    queryKey: queryKeys.issues.runs(issueId!),
+    queryFn: () => activityApi.runsForIssue(issueId!),
+    enabled: !!issueId,
+    placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId ?? "pending"),
   });
 
   const { data: hasActiveRun = false } = useQuery<ActiveRunForIssue | null, Error, boolean>({
@@ -3607,6 +3661,10 @@ export function IssueDetail() {
           }}
         />
       </div>
+
+      <IssueLineageStrip issue={issue} childIssues={childIssues} />
+
+      <IssueOutcomeCard issue={issue} runs={outcomeRuns} />
 
       <PluginSlotOutlet
         slotTypes={["toolbarButton", "contextMenuItem"]}

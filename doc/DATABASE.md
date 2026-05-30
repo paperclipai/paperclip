@@ -43,6 +43,8 @@ This mode is ideal for local development and one-command installs.
 
 Docker note: the Docker quickstart image also uses embedded PostgreSQL by default. Persist `/paperclip` to keep DB state across container restarts (see `doc/DOCKER.md`).
 
+Root-only host note: PostgreSQL server processes cannot run as `root`. On root-only VPS/dev-container hosts, use the Local PostgreSQL Docker mode below (or another external `DATABASE_URL`) instead of embedded PostgreSQL.
+
 ## 2. Local PostgreSQL (Docker)
 
 For a full PostgreSQL server locally, use the included Docker Compose setup:

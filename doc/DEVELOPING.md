@@ -191,7 +191,27 @@ Override home or instance:
 PAPERCLIP_HOME=/custom/path PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
 ```
 
-No Docker or external database is required for this mode.
+No Docker or external database is required for this mode on normal developer machines.
+
+### Root-only VPS/dev containers
+
+PostgreSQL refuses to run its server process as `root`. If you are developing in a root-only VPS/container where embedded PostgreSQL cannot start, run an isolated local Postgres and point Paperclip at it explicitly:
+
+```sh
+docker run -d --name paperclip-dev-postgres \
+  -e POSTGRES_USER=paperclip \
+  -e POSTGRES_PASSWORD=paperclip \
+  -e POSTGRES_DB=paperclip \
+  -p 127.0.0.1:55432:5432 \
+  postgres:16
+
+DATABASE_URL=postgres://paperclip:paperclip@127.0.0.1:55432/paperclip \
+  PAPERCLIP_MIGRATION_AUTO_APPLY=true \
+  PAPERCLIP_UI_DEV_MIDDLEWARE=true \
+  pnpm dev:server
+```
+
+Keep this database per worktree or per throwaway smoke session. Do not aim a worktree at another instance's database or production data.
 
 ## Storage in Dev (Auto-Handled)
 
