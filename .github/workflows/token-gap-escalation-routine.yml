@@ -1,0 +1,86 @@
+name: Token-Gap Escalation Routine
+
+on:
+  schedule:
+    # Every 30 minutes
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (log results only — no escalations)'
+        required: false
+        default: 'false'
+
+permissions:
+  issues: write
+  contents: read
+
+concurrency:
+  group: token-gap-escalation-routine
+  cancel-in-progress: true
+
+jobs:
+  escalate:
+    name: Detect and escalate blocked issues with token gaps
+    runs-on: self-hosted
+
+    env:
+      PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+      PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+      PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+
+    steps:
+      - uses: actions/checkout@v4.2.0
+        with:
+          fetch-depth: 1
+          clean: true
+
+      - name: Set up Python
+        run: |
+          python3 --version
+          python3 -m pip install --upgrade pip
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install -r requirements.txt
+          python3 -m pip install requests python-dotenv
+
+      - name: Ensure data directory exists
+        run: mkdir -p data
+
+      - name: Run token-gap escalation routine
+        id: escalation
+        env:
+          PYTHONPATH: src
+        run: |
+          python3 scripts/token_gap_escalation_routine.py ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }} 2>&1 | tee /tmp/token-gap-output.log
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Upload routine output artifact
+        if: always()
+        uses: actions/upload-artifact@v4.4.0
+        with:
+          name: token-gap-escalation-output
+          path: /tmp/token-gap-output.log
+          retention-days: 30
+
+      - name: Write step summary
+        if: always()
+        run: |
+          echo "## Token-Gap Escalation Routine" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f /tmp/token-gap-output.log ]; then
+            echo "### Output" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            cat /tmp/token-gap-output.log >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Status:** Routine executed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Check routine exit code
+        if: steps.escalation.outputs.exit_code != '0'
+        run: |
+          echo "⚠️ Token-gap escalation routine failed"
+          cat /tmp/token-gap-output.log || echo "No output available"
+          exit 1
