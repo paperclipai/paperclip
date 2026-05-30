@@ -933,6 +933,21 @@ export function AgentDetail() {
     },
   });
 
+  const updateAgentConfig = useMutation({
+    mutationFn: (data: {
+      runtimeConfig?: Record<string, unknown>;
+      budgetMonthlyCents?: number;
+      adapterConfig?: Record<string, unknown>;
+    }) => agentsApi.update(agentLookupRef, data, resolvedCompanyId ?? undefined),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+      }
+    },
+  });
+
   const resetTaskSession = useMutation({
     mutationFn: (taskKey: string | null) =>
       agentsApi.resetSession(agentLookupRef, taskKey, resolvedCompanyId ?? undefined),
@@ -1266,6 +1281,8 @@ export function AgentDetail() {
           runtimeState={runtimeState}
           agentId={agent.id}
           agentRouteId={canonicalAgentRef}
+          onUpdateConfig={(payload) => updateAgentConfig.mutate(payload)}
+          isUpdatingConfig={updateAgentConfig.isPending}
         />
       )}
 
@@ -1433,6 +1450,8 @@ function AgentOverview({
   runtimeState,
   agentId,
   agentRouteId,
+  onUpdateConfig,
+  isUpdatingConfig,
 }: {
   agent: AgentDetailRecord;
   runs: HeartbeatRun[];
@@ -1440,6 +1459,8 @@ function AgentOverview({
   runtimeState?: AgentRuntimeState;
   agentId: string;
   agentRouteId: string;
+  onUpdateConfig: (payload: { runtimeConfig?: Record<string, unknown>; budgetMonthlyCents?: number; adapterConfig?: Record<string, unknown> }) => void;
+  isUpdatingConfig: boolean;
 }) {
   return (
     <div className="space-y-8">
@@ -1496,7 +1517,7 @@ function AgentOverview({
       </div>
 
       {/* Heartbeat Config */}
-      <HeartbeatConfigSection agent={agent} />
+      <HeartbeatConfigSection agent={agent} onUpdateConfig={onUpdateConfig} isUpdatingConfig={isUpdatingConfig} />
 
       {/* Costs */}
       <div className="space-y-3">
@@ -1509,13 +1530,21 @@ function AgentOverview({
 
 /* ---- Heartbeat Config Section ---- */
 
-function HeartbeatConfigSection({ agent }: { agent: AgentDetailRecord }) {
+function HeartbeatConfigSection({
+  agent,
+  onUpdateConfig,
+  isUpdatingConfig,
+}: {
+  agent: AgentDetailRecord;
+  onUpdateConfig: (payload: { runtimeConfig?: Record<string, unknown>; budgetMonthlyCents?: number; adapterConfig?: Record<string, unknown> }) => void;
+  isUpdatingConfig: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
   const heartbeat = (agent.runtimeConfig as Record<string, unknown>)?.heartbeat as Record<string, unknown> | undefined;
-  if (!heartbeat) return null;
 
-  const intervalSec = typeof heartbeat.intervalSec === "number" ? heartbeat.intervalSec : null;
-  const maxConcurrentRuns = typeof heartbeat.maxConcurrentRuns === "number" ? heartbeat.maxConcurrentRuns : null;
-  const enabled = heartbeat.enabled !== false;
+  const intervalSec = typeof heartbeat?.intervalSec === "number" ? heartbeat.intervalSec : null;
+  const maxConcurrentRuns = typeof heartbeat?.maxConcurrentRuns === "number" ? heartbeat.maxConcurrentRuns : null;
+  const enabled = heartbeat?.enabled !== false;
   const budgetMonthlyCents = agent.budgetMonthlyCents ?? 0;
 
   const modelProfiles = (agent.runtimeConfig as Record<string, unknown>)?.modelProfiles as Record<string, unknown> | undefined;
@@ -1525,6 +1554,64 @@ function HeartbeatConfigSection({ agent }: { agent: AgentDetailRecord }) {
     ? (agent.adapterConfig as Record<string, unknown>).model as string
     : null;
 
+  // Edit state
+  const [editInterval, setEditInterval] = useState(intervalSec ?? 30);
+  const [editMaxConcurrent, setEditMaxConcurrent] = useState(maxConcurrentRuns ?? 1);
+  const [editBudget, setEditBudget] = useState(budgetMonthlyCents);
+  const [editModel, setEditModel] = useState(defaultModel ?? "");
+
+  // Sync edit state when agent data changes
+  useEffect(() => {
+    setEditInterval(intervalSec ?? 30);
+    setEditMaxConcurrent(maxConcurrentRuns ?? 1);
+    setEditBudget(budgetMonthlyCents);
+    setEditModel(defaultModel ?? "");
+  }, [intervalSec, maxConcurrentRuns, budgetMonthlyCents, defaultModel]);
+
+  const handleSave = () => {
+    const payload: { runtimeConfig?: Record<string, unknown>; budgetMonthlyCents?: number; adapterConfig?: Record<string, unknown> } = {};
+
+    // Only send runtimeConfig if heartbeat interval or maxConcurrent changed
+    const intervalChanged = editInterval !== intervalSec;
+    const maxConcurrentChanged = editMaxConcurrent !== maxConcurrentRuns;
+    if (intervalChanged || maxConcurrentChanged) {
+      const currentRuntimeConfig = (agent.runtimeConfig as Record<string, unknown>) ?? {};
+      payload.runtimeConfig = {
+        ...currentRuntimeConfig,
+        heartbeat: {
+          ...(currentRuntimeConfig.heartbeat as Record<string, unknown>) ?? {},
+          intervalSec: editInterval,
+          maxConcurrentRuns: editMaxConcurrent,
+        },
+      };
+    }
+
+    if (editBudget !== budgetMonthlyCents) {
+      payload.budgetMonthlyCents = editBudget;
+    }
+
+    if (editModel !== defaultModel) {
+      const currentAdapterConfig = (agent.adapterConfig as Record<string, unknown>) ?? {};
+      payload.adapterConfig = {
+        ...currentAdapterConfig,
+        model: editModel || undefined,
+      };
+    }
+
+    if (Object.keys(payload).length > 0) {
+      onUpdateConfig(payload);
+      setEditing(false);
+    }
+  };
+
+  const handleCancel = () => {
+    setEditInterval(intervalSec ?? 30);
+    setEditMaxConcurrent(maxConcurrentRuns ?? 1);
+    setEditBudget(budgetMonthlyCents);
+    setEditModel(defaultModel ?? "");
+    setEditing(false);
+  };
+
   const rows: { label: string; value: string }[] = [];
   if (intervalSec !== null) rows.push({ label: "Heartbeat interval", value: `${intervalSec}s` });
   if (maxConcurrentRuns !== null) rows.push({ label: "Max concurrent runs", value: String(maxConcurrentRuns) });
@@ -1533,11 +1620,94 @@ function HeartbeatConfigSection({ agent }: { agent: AgentDetailRecord }) {
   if (defaultModel) rows.push({ label: "Model", value: defaultModel });
   if (cheapModelName) rows.push({ label: "Cheap model", value: cheapModelName });
 
-  if (rows.length === 0) return null;
+  if (rows.length === 0 && !editing) return null;
+
+  if (editing) {
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-medium">Configuration</h3>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleCancel}
+              disabled={isUpdatingConfig}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={isUpdatingConfig}
+            >
+              {isUpdatingConfig ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </div>
+        <div className="border border-border rounded-lg p-4 space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">Heartbeat interval (seconds)</label>
+              <input
+                type="number"
+                min={1}
+                value={editInterval}
+                onChange={(e) => setEditInterval(Math.max(1, parseInt(e.target.value) || 1))}
+                className="w-full px-3 py-2 text-sm border border-border rounded-md bg-background font-mono"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">Max concurrent runs</label>
+              <input
+                type="number"
+                min={1}
+                value={editMaxConcurrent}
+                onChange={(e) => setEditMaxConcurrent(Math.max(1, parseInt(e.target.value) || 1))}
+                className="w-full px-3 py-2 text-sm border border-border rounded-md bg-background font-mono"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">Monthly budget (cents)</label>
+              <input
+                type="number"
+                min={0}
+                value={editBudget}
+                onChange={(e) => setEditBudget(Math.max(0, parseInt(e.target.value) || 0))}
+                className="w-full px-3 py-2 text-sm border border-border rounded-md bg-background font-mono"
+              />
+              {editBudget > 0 && (
+                <span className="text-xs text-muted-foreground">{formatCents(editBudget)}</span>
+              )}
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">Model</label>
+              <input
+                type="text"
+                value={editModel}
+                onChange={(e) => setEditModel(e.target.value)}
+                placeholder="e.g. gpt-4o"
+                className="w-full px-3 py-2 text-sm border border-border rounded-md bg-background font-mono"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3">
-      <h3 className="text-sm font-medium">Configuration</h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium">Configuration</h3>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setEditing(true)}
+        >
+          Edit
+        </Button>
+      </div>
       <div className="border border-border rounded-lg p-4 grid grid-cols-2 md:grid-cols-3 gap-3">
         {rows.map(({ label, value }) => (
           <div key={label}>
