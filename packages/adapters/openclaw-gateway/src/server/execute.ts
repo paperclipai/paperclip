@@ -1139,10 +1139,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     idempotencyKey: ctx.runId,
   };
   delete agentParams.text;
-  // Remove the internal `paperclip` config key — it must not appear at the
-  // root of the outbound gateway payload (OpenClaw rejects unknown properties).
-  delete agentParams.paperclip;
-  void paperclipPayload;
+  agentParams.paperclip = paperclipPayload;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
