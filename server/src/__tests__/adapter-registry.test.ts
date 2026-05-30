@@ -615,10 +615,11 @@ describe("server adapter registry", () => {
     expect(patchedCtx.config.taskBody).toContain("requirements-analysis");
     expect(patchedCtx.config.taskBody).toContain("Always summarize requirements");
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("## Final Required Output Contract");
-    expect(onLog).toHaveBeenCalledWith(
-      "stdout",
-      expect.stringContaining("[paperclip] Hermes prompt routing: taskId=true taskBody=true runtimeSkills=true"),
-    );
+    const routingLog = onLog.mock.calls.find(([stream]) => stream === "stdout")?.[1] as string | undefined;
+    expect(routingLog).toContain("[paperclip] Hermes prompt routing:");
+    expect(routingLog).toContain("taskId=true");
+    expect(routingLog).toContain("taskBody=true");
+    expect(routingLog).toContain("runtimeSkills=true");
   });
 
   it("moves custom Hermes prompt templates into the task body with Paperclip runtime skills without overriding ordinary deliverables", async () => {

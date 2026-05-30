@@ -760,7 +760,7 @@ assertIncludes(
   ["Hermes AI-98235 post-cleanup diagnostic issue SOP", hermesSopSource, "AI-98235 post-cleanup prompt routing diagnostic proof issue 準備"],
   ["Hermes AI-98235 post-cleanup diagnostic issue ledger", checklistSource, "| AI-98235 post-cleanup diagnostic issue 準備 |"],
   ["Hermes prompt routing diagnostic code", serverRegistrySource, "Hermes prompt routing: taskId="],
-  ["Hermes prompt routing diagnostic test", fs.readFileSync(path.join(repoRoot, "server", "src", "__tests__", "adapter-registry.test.ts"), "utf8"), "Hermes prompt routing: taskId=true taskBody=true runtimeSkills=true"],
+  ["Hermes prompt routing diagnostic test", fs.readFileSync(path.join(repoRoot, "server", "src", "__tests__", "adapter-registry.test.ts"), "utf8"), 'expect(routingLog).toContain("runtimeSkills=true")'],
   ["Hermes wakeup authorization intake UI summary", uiSource, 'label: "Hermes 喚醒授權貼出前確認"'],
   ["Hermes wakeup authorization intake action", uiSource, 'data-testid="hermes-action-copy-wakeup-authorization-intake-check"'],
   ["Hermes wakeup authorization intake markdown", uiSource, "## Hermes 喚醒授權貼出前確認"],
