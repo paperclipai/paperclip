@@ -1,4 +1,6 @@
 import path from "node:path";
+import https from "node:https";
+import type { IncomingMessage } from "node:http";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
@@ -23,6 +25,83 @@ import {
 import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { detectGeminiAuthRequired, detectGeminiQuotaExhausted, parseGeminiJsonl } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
+
+// Models that require GEMINI_API_KEY and are verified via direct Gemini API v1beta.
+// The Gemini CLI may lag behind the direct API for these model IDs.
+const GEMINI_DIRECT_API_REQUIRED_MODELS = new Set([
+  "gemini-3.5-flash",
+  "gemini-3.1-pro-preview",
+  "gemini-3.1-flash-lite",
+  "gemini-3-flash-preview",
+]);
+
+export interface DirectApiProbeResult {
+  ok: boolean;
+  statusCode: number;
+  hasOkText: boolean;
+}
+
+export function parseGeminiDirectApiBody(body: string): { hasOkText: boolean } {
+  try {
+    const json = JSON.parse(body) as Record<string, unknown>;
+    const candidates = Array.isArray(json.candidates) ? json.candidates : [];
+    const first = parseObject(candidates[0]);
+    const content = parseObject(first.content);
+    const parts = Array.isArray(content.parts) ? content.parts : [];
+    const text = parts
+      .map((p) => asString(parseObject(p).text, ""))
+      .join("")
+      .trim();
+    return { hasOkText: /\bOK\b/i.test(text) };
+  } catch {
+    return { hasOkText: false };
+  }
+}
+
+export function probeGeminiDirectApi(
+  apiKey: string,
+  model: string,
+  timeoutMs = 15000,
+): Promise<DirectApiProbeResult> {
+  return new Promise((resolve) => {
+    const body = JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: "Reply exactly: OK" }] }],
+    });
+
+    const onResponse = (res: IncomingMessage) => {
+      let data = "";
+      res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
+      res.on("end", () => {
+        const { hasOkText } = parseGeminiDirectApiBody(data);
+        resolve({ ok: res.statusCode === 200, statusCode: res.statusCode ?? 0, hasOkText });
+      });
+    };
+
+    const req = https.request(
+      {
+        hostname: "generativelanguage.googleapis.com",
+        path: `/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+          // API key in header, never in URL or logs
+          "x-goog-api-key": apiKey,
+        },
+        timeout: timeoutMs,
+      },
+      onResponse,
+    );
+
+    req.on("error", () => resolve({ ok: false, statusCode: 0, hasOkText: false }));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve({ ok: false, statusCode: 0, hasOkText: false });
+    });
+    req.write(body);
+    req.end();
+  });
+}
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -152,6 +231,51 @@ export async function testEnvironment(
       level: "info",
       message: "No explicit API key detected. Gemini CLI may still authenticate via `gemini auth login` (OAuth).",
       hint: "If the hello probe fails with an auth error, set GEMINI_API_KEY or GOOGLE_API_KEY in adapter env, or run `gemini auth login`.",
+    });
+  }
+
+  // For Gemini 3.x models, probe the direct v1beta API since the CLI may lag behind.
+  // Only runs when an API key is present; never prints key values.
+  const configuredModel = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
+  const effectiveApiKey =
+    (isNonEmpty(configGeminiApiKey) ? configGeminiApiKey : null) ??
+    (isNonEmpty(hostGeminiApiKey) ? hostGeminiApiKey : null) ??
+    (isNonEmpty(configGoogleApiKey) ? configGoogleApiKey : null) ??
+    (isNonEmpty(hostGoogleApiKey) ? hostGoogleApiKey : null) ??
+    null;
+
+  if (GEMINI_DIRECT_API_REQUIRED_MODELS.has(configuredModel) && effectiveApiKey !== null) {
+    const directProbeTimeoutMs = Math.max(1, asNumber(config.directProbeTimeoutSec, 15)) * 1000;
+    const directProbe = await probeGeminiDirectApi(effectiveApiKey, configuredModel, directProbeTimeoutMs);
+
+    if (directProbe.ok && directProbe.hasOkText) {
+      checks.push({
+        code: "gemini_direct_api_probe_passed",
+        level: "info",
+        message: `Direct API probe passed for ${configuredModel}.`,
+        detail: `HTTP ${directProbe.statusCode} with expected OK response. Model accessible via Gemini API v1beta.`,
+      });
+    } else if (directProbe.ok) {
+      checks.push({
+        code: "gemini_direct_api_probe_unexpected_output",
+        level: "warn",
+        message: `Direct API probe for ${configuredModel} returned HTTP ${directProbe.statusCode} but unexpected response text.`,
+        hint: "Model may still work. Run a short test task to verify actual output.",
+      });
+    } else {
+      checks.push({
+        code: "gemini_direct_api_probe_failed",
+        level: "warn",
+        message: `Direct API probe failed for ${configuredModel} (HTTP ${directProbe.statusCode}).`,
+        hint: `${configuredModel} requires a valid GEMINI_API_KEY. Verify the key has access to this model at ai.google.dev.`,
+      });
+    }
+  } else if (GEMINI_DIRECT_API_REQUIRED_MODELS.has(configuredModel) && effectiveApiKey === null) {
+    checks.push({
+      code: "gemini_direct_api_key_required",
+      level: "warn",
+      message: `${configuredModel} requires GEMINI_API_KEY but no API key is configured.`,
+      hint: "Set GEMINI_API_KEY in adapter env or server environment. OAuth-only auth returns ModelNotFoundError for Gemini 3.x models.",
     });
   }
 
