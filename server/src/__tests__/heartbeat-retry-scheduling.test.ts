@@ -448,6 +448,36 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     ).toBe(true);
   });
 
+  it("BLO-8215: retries a pr_review_auth_expired run, including a taskKey-only persisted snapshot", () => {
+    // The persisted run snapshot is trimmed to taskKey (no reviewKind /
+    // githubPrNumber), so the gate must use the taskKey-aware pr-review check.
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "pr_review_auth_expired",
+        resultJson: {},
+        contextSnapshot: { taskKey: "pr_review:Blockcast/paperclip:230" },
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "pr_review_auth_expired",
+        resultJson: {},
+        contextSnapshot: { wakeReason: "github_pr_review_submitted", reviewKind: "pr_review", githubPrNumber: 230 },
+      }),
+    ).toBe(true);
+  });
+
+  it("BLO-8215: does not retry a pr_review_auth_expired code outside a PR-review context", () => {
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "pr_review_auth_expired",
+        resultJson: {},
+        contextSnapshot: { issueId: randomUUID(), wakeReason: "issue_assigned" },
+      }),
+    ).toBe(false);
+  });
+
   it("does not retry plain adapter failures when the wake is not an idempotent PR review", () => {
     expect(
       shouldScheduleAutomaticRunRetry({

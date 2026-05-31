@@ -569,6 +569,76 @@ describe("evaluatePrReviewCompletionEvidence", () => {
       }),
     ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
   });
+  // BLO-8215: a mid-run GitHub App token expiry on the publish path leaves a
+  // drafted-but-unpublished review. It must be flagged with the distinct,
+  // recoverable `pr_review_auth_expired` code — NOT conflated with the
+  // content-failure `pr_review_output_missing`, which is not auto-retried.
+  const authExpiryCtx = {
+    reviewKind: "pr_review",
+    prRole: "reviewer",
+    githubPrNumber: 230,
+    githubRepoFullName: "Blockcast/paperclip",
+    githubHeadSha: "1672bf45",
+  };
+
+  // Real misclassified run 04f96618-af56-4c27-97cc-d8781f4750f6 (Ally, PR #230,
+  // 2026-05-30T15:04Z): exited 0, drafted the review, hit `401 Bad credentials`
+  // at post time, and was recorded `pr_review_output_missing`. Note the summary
+  // also carries posting-negation ("could not post it") and future intent ("will
+  // be reposted") — so the auth-expiry branch must take precedence over both the
+  // posted-marker veto AND the final missing fallthrough.
+  it("BLO-8215: classifies a real mid-run 401 token-expiry as auth_expired, not missing", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(authExpiryCtx, {
+        summary:
+          "I completed a full review of Blockcast/paperclip#230 (head `1672bf45`) but could not post it — the GitHub App token returned `401 Bad credentials` on both REST and GraphQL at post time (the known ~1h mid-run token-expiry pattern). The finished review is saved verbatim to memory and will be reposted on a fresh wake once auth works and the head still matches.",
+      }),
+    ).toMatchObject({ status: "auth_expired", errorCode: "pr_review_auth_expired" });
+  });
+
+  it.each([
+    {
+      label: "explicit installation-token expiry",
+      summary:
+        "On Blockcast/paperclip#230 at head 1672bf45 the GitHub App installation token expired mid-run, so I could not publish the consolidated review.",
+    },
+    {
+      label: "gh CLI HTTP 401 at publish",
+      summary:
+        "Could not publish the review for #230 (head 1672bf45): `gh pr review` returned HTTP 401 Bad credentials.",
+    },
+    {
+      label: "GH_TOKEN expiry before push",
+      summary: "Drafted the #230 review at head 1672bf45 but GH_TOKEN expired before the push could complete.",
+    },
+  ])("BLO-8215: flags GitHub auth-expiry phrasings as auth_expired ($label)", ({ summary }) => {
+    expect(evaluatePrReviewCompletionEvidence(authExpiryCtx, { summary })).toMatchObject({
+      status: "auth_expired",
+      errorCode: "pr_review_auth_expired",
+    });
+  });
+
+  // Masking guard: a genuinely-absent review with no GitHub auth-expiry signature
+  // must stay `missing`. An unrelated "expired" token (a stale lockfile) without a
+  // GitHub/token/401 anchor must not be mistaken for an auth fault.
+  it("BLO-8215: a non-posted run with no auth signal stays missing", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(authExpiryCtx, {
+        summary:
+          "Diff fetched for Blockcast/paperclip#230 at head 1672bf45; the review was not yet posted (a stale build lockfile had expired and I am re-running lint).",
+      }),
+    ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
+  });
+
+  // Precedence guard: a genuinely posted review that merely mentions an earlier,
+  // recovered 401 must stay `posted_review` (the posted-marker checks run first).
+  it("BLO-8215: a posted review that recovered from an earlier 401 stays posted_review", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(authExpiryCtx, {
+        summary: "Review posted successfully against head `1672bf45` after an earlier 401 Bad credentials was retried.",
+      }),
+    ).toEqual({ status: "posted_review" });
+  });
 });
 
 describe("mergeCoalescedContextSnapshot", () => {

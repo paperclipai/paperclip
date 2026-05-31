@@ -163,4 +163,26 @@ class ProfileManager:
             self._ctx = None
             self._context = None
             self.page = None
+            # Reap any browser subprocesses the async Camoufox/Playwright
+            # teardown left behind. Camoufox SIGKILLs Firefox without always
+            # wait()ing on it, so <defunct> children accumulate under this
+            # long-lived process across launch/close churn (BLO-8271: ~1.5k
+            # zombies starved the node, co-incident with the paperclip-pg
+            # incident). Safe here: the bot runs exactly ONE browser at a time
+            # and this executes only after teardown, so there is no live
+            # Playwright driver whose own child bookkeeping we could disturb.
+            reaped = 0
+            while True:
+                try:
+                    pid, _ = os.waitpid(-1, os.WNOHANG)
+                except ChildProcessError:
+                    break
+                if pid == 0:
+                    break
+                reaped += 1
+            if reaped:
+                state.log(
+                    f"ProfileManager[{self.identity}]: reaped {reaped} "
+                    f"leftover subprocess(es)"
+                )
             state.log(f"ProfileManager[{self.identity}]: closed")

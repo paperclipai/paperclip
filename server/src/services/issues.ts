@@ -3596,6 +3596,20 @@ export function issueService(db: Db) {
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
   }
 
+  async function isSameAgentRetryOfRun(input: {
+    actorRunId: string;
+    expectedCheckoutRunId: string;
+    actorAgentId: string;
+  }) {
+    const run = await db
+      .select({ agentId: heartbeatRuns.agentId, retryOfRunId: heartbeatRuns.retryOfRunId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, input.actorRunId))
+      .then((rows) => rows[0] ?? null);
+
+    return run?.agentId === input.actorAgentId && run.retryOfRunId === input.expectedCheckoutRunId;
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
@@ -3603,7 +3617,7 @@ export function issueService(db: Db) {
     expectedCheckoutRunId: string;
   }) {
     const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
-    if (!stale) return null;
+    if (!stale && !(await isSameAgentRetryOfRun(input))) return null;
 
     const now = new Date();
     const adopted = await db

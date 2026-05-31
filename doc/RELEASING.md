@@ -243,6 +243,60 @@ Roll back the dist-tag:
 
 Then fix forward with a new stable release.
 
+## Runtime Source-of-Truth: image-baked artifacts vs override ConfigMaps
+
+This applies to the on-prem k8s deployment (the `sha-*-k8s-vendored` image driven by
+[`deploy/helm/paperclip/values.blockcast.yaml`](../deploy/helm/paperclip/values.blockcast.yaml)).
+It exists because of the BLO-8222 runtime outage, where a corrected classifier shipped in the
+image but the runtime kept executing the pre-fix code.
+
+### Precedence (what the container actually runs)
+
+A `subPath`-mounted ConfigMap file **shadows** the image-baked file at the same path. When a
+`ConfigMap` key is mounted over, say, `/app/server/dist/services/heartbeat.js`, the kubelet
+projects the ConfigMap content at that path and the container reads **the ConfigMap, not the
+compiled artifact baked into the image**. The image-baked artifact is the source-of-truth
+**only when no override is mounted over it.**
+
+Order of precedence at runtime, highest wins:
+
+1. `subPath` ConfigMap/Secret volume mount over a file path
+2. file baked into the published `sha-*-k8s-vendored` image
+3. (build-time) the compiled output of `master` at the image's source commit
+
+The deploy source-of-truth is **`master` → published `sha-<commit>-k8s-vendored` image**. A hand-
+applied override sits *above* that chain and is invisible to git, Helm, and image-tag provenance.
+
+### Lifecycle of an emergency override ConfigMap
+
+Override ConfigMaps (e.g. `paperclip-heartbeat-hotfix`) are a **temporary** break-glass tool for
+patching a single compiled file faster than an image rebuild. They are hand-applied, are **not**
+part of the Helm chart, and carry **no link to a git commit**. Treat them as strictly short-lived:
+
+- **Create** only as break-glass, and record the issue + the commit/diff the patch represents.
+- **Retire** as soon as the equivalent fix is merged to `master` and baked into a deployed
+  `sha-*-k8s-vendored` image. Remove the `volume` + `volumeMount` from **both** the
+  `paperclip-api` Deployment and the `paperclip` StatefulSet (or regenerate the ConfigMap from the
+  new image's compiled file), then roll both workloads.
+- **Never** leave an override in place after its fix lands in the image — a pre-fix override keeps
+  shadowing the corrected image and silently reverts the deploy to mainline-divergent behavior.
+
+### Detecting drift
+
+```bash
+# Does the running file carry the expected symbol from the merged fix?
+kubectl -n paperclip exec <api-pod> -- \
+  grep -c <symbol> /app/server/dist/services/<file>.js        # 0 == override is shadowing the image
+
+# Is an override still wired up?
+kubectl -n paperclip get deploy paperclip-api -o yaml | grep -A3 -iE 'hotfix|subPath'
+kubectl -n paperclip get sts   paperclip     -o yaml | grep -A3 -iE 'hotfix|subPath'
+```
+
+If the grep returns `0` while the deployed image is known to contain the symbol, an override
+ConfigMap is shadowing the image — that is the BLO-8222 failure mode (the k8s-write remediation
+is tracked on BLO-8222 / BLO-8223; this runbook note is the durable guardrail from BLO-8224).
+
 ## Related Files
 
 - [`scripts/release.sh`](../scripts/release.sh)

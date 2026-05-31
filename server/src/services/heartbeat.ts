@@ -377,6 +377,15 @@ export function shouldScheduleAutomaticRunRetry(
 ) {
   if (readTransientRecoveryContractFromRun(run)) return true;
 
+  // BLO-8215: a mid-run GitHub App token expiry on a PR-review publish is flagged
+  // `pr_review_auth_expired` and is recoverable — the next run gets a freshly
+  // minted installation token and completes the publish. Gate on the taskKey-
+  // aware pr-review check (same helper the process-loss retry path uses) so it
+  // fires even when the persisted contextSnapshot is trimmed of githubPrNumber.
+  if (run.errorCode === "pr_review_auth_expired") {
+    return isPrReviewRetryContext(parseObject(run.contextSnapshot));
+  }
+
   if (run.errorCode !== "adapter_failed" && run.errorCode !== "process_lost") return false;
 
   const prReview = derivePaperclipPrReview(parseObject(run.contextSnapshot));
@@ -2780,6 +2789,41 @@ function prReviewOutputHasPostedReviewNegation(text: string) {
   );
 }
 
+// BLO-8215: a mid-run GitHub App token expiry on the PR-review *publish* path.
+// The installation token injected at run start lives ~1h; a long review can
+// outlast it, so the publish step (gh / REST / GraphQL) gets `401 Bad
+// credentials` and the review is drafted but never posted. This is a recoverable
+// infra fault — the next run is handed a freshly-minted token — NOT a content
+// failure, so it must not be conflated with `pr_review_output_missing` (which
+// flags Ally `error` and, critically, is NOT on the auto-retry allowlist). We
+// reach this only after the posted-review / intentional-skip markers have all
+// failed, so the run genuinely did not publish; the auth signal then tells us
+// *why*. Kept narrow so it cannot mask a true missing-review (a run that simply
+// produced no posting attempt won't carry a GitHub auth-expiry signature).
+function prReviewOutputHasGithubAuthExpiry(text: string) {
+  // GitHub's literal response for an expired / invalid installation token.
+  // Anthropic cap 401s surface as "API Error: 401" / "authentication_error" and
+  // never say "Bad credentials", so this pairing cleanly discriminates a GitHub
+  // auth failure from an Anthropic 401 (and this fn only runs on succeeded,
+  // non-rate-limited reviewer runs in any case).
+  if (/\bbad\s+credentials\b/i.test(text) && /\b401\b/.test(text)) return true;
+  // Explicit GitHub-App / installation token-expiry phrasing, anchored to a
+  // GitHub or publish-path cue so an unrelated "session expired" / "cache
+  // expired" line in a quoted diff or review body cannot trip the classifier.
+  if (
+    /\b(?:github(?:\s+app)?|installation|gh|access)\b[\s\S]{0,40}\btoken\b[\s\S]{0,40}\bexpir\w*/i.test(text) ||
+    // env-var token names (GH_TOKEN / GITHUB_TOKEN); the underscore defeats a
+    // bare `\btoken\b`, so anchor on the whole identifier.
+    /\b(?:gh_token|github_token)\b[\s\S]{0,30}\bexpir\w*/i.test(text) ||
+    /\btoken\b[\s\S]{0,30}\bexpir\w*[\s\S]{0,60}\b(?:github|gh\b|graphql|rest\b|401|bad\s+credentials|post(?:ed|ing)?|publish|push)\b/i.test(text) ||
+    /\bmid-run\b[\s\S]{0,30}\btoken[-\s]?expir\w*/i.test(text) ||
+    /\btoken[-\s]expiry\b/i.test(text)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export function evaluatePrReviewCompletionEvidence(
   contextSnapshot: Record<string, unknown> | null | undefined,
   output: {
@@ -2831,6 +2875,19 @@ export function evaluatePrReviewCompletionEvidence(
     !prReviewOutputHasPostedReviewNegation(text)
   ) {
     return { status: "posted_review" as const };
+  }
+
+  // BLO-8215: the run left no posted-review / intentional-skip marker. Before
+  // calling it `missing` (which flags Ally broken and is not auto-retried),
+  // distinguish a mid-run GitHub App token expiry on the publish path — a
+  // recoverable auth fault that the next run resolves with a fresh token.
+  if (prReviewOutputHasGithubAuthExpiry(text)) {
+    return {
+      status: "auth_expired" as const,
+      errorCode: "pr_review_auth_expired",
+      errorMessage:
+        "PR reviewer run drafted a review but the GitHub App token expired (401) before the publish step completed; scheduling a retry to re-acquire auth and publish",
+    };
   }
 
   return {
@@ -9839,15 +9896,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           summary: adapterResult.summary ?? null,
         })
         : { status: "not_applicable" as const };
-      const prReviewOutputMissingOverride =
-        prReviewCompletionEvidence.status === "missing" ? prReviewCompletionEvidence : null;
-      if (prReviewOutputMissingOverride) {
+      // BLO-8195 (missing review) + BLO-8215 (mid-run GitHub App auth expiry):
+      // both flip a succeeded reviewer run to failed and carry a distinct,
+      // non-conflated errorCode. `auth_expired` additionally lands on the
+      // pr-review auto-retry allowlist (shouldScheduleAutomaticRunRetry) so the
+      // next run re-acquires auth and publishes.
+      const prReviewIncompleteOverride =
+        prReviewCompletionEvidence.status === "missing" ||
+        prReviewCompletionEvidence.status === "auth_expired"
+          ? prReviewCompletionEvidence
+          : null;
+      if (prReviewIncompleteOverride) {
         outcome = "failed";
       }
       const runErrorMessage = rateLimitExhaustedOverride
         ? "Run hit Anthropic rate limit (out of extra usage); scheduled for transient retry"
-        : prReviewOutputMissingOverride
-          ? prReviewOutputMissingOverride.errorMessage
+        : prReviewIncompleteOverride
+          ? prReviewIncompleteOverride.errorMessage
         : outcome === "cancelled"
           ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
           : outcome === "succeeded"
@@ -9858,8 +9923,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               );
       const runErrorCode = rateLimitExhaustedOverride
         ? "rate_limit_exhausted"
-        : prReviewOutputMissingOverride
-          ? prReviewOutputMissingOverride.errorCode
+        : prReviewIncompleteOverride
+          ? prReviewIncompleteOverride.errorCode
         : outcome === "timed_out"
           ? "timeout"
           : outcome === "cancelled"
@@ -9928,12 +9993,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         mergeRunStopMetadataForAgent(agent, outcome, {
           resultJson: mergeModelProfileRunMetadata(
             mergeAdapterRecoveryMetadata({
-              resultJson: prReviewOutputMissingOverride
+              resultJson: prReviewIncompleteOverride
                 ? {
                     ...parseObject(adapterResult.resultJson),
                     prReviewOutputGate: {
-                      status: prReviewOutputMissingOverride.status,
-                      errorCode: prReviewOutputMissingOverride.errorCode,
+                      status: prReviewIncompleteOverride.status,
+                      errorCode: prReviewIncompleteOverride.errorCode,
                     },
                   }
                 : adapterResult.resultJson ?? null,
