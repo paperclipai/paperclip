@@ -37,10 +37,13 @@ services:
       # entra em modo API-key e ignora o auth.json criado por `codex login`.
       # Ver: packages/adapters/codex-local/src/server/codex-home.ts:101
 
-    configs:
-      - source: opencode_zai_config
-        target: /paperclip/.config/opencode/opencode.json
-        mode: 0644
+    # OpenCode config para Z.AI provider vive em /opt/paperclip/.config/opencode/
+    # no host (dentro do volume bind). É escrito manualmente uma vez via
+    # `scripts/install-opencode-config.sh` — NÃO usar `configs:` aqui porque
+    # o Docker monta configs como root:root sem permissão de leitura pelo
+    # processo node (UID 1000) que o paperclip server roda, causando EACCES
+    # em prepareOpenCodeRuntimeConfig() quando ele tenta copiar o arquivo
+    # para o tmp dir antes de cada run.
 
     volumes:
       - /opt/paperclip:/paperclip
@@ -51,28 +54,6 @@ services:
     # acessíveis por DNS interno. Confirme com `docker network ls`.
     networks:
       - dokploy-network
-
-configs:
-  opencode_zai_config:
-    content: |
-      {
-        "$$schema": "https://opencode.ai/config.json",
-        "provider": {
-          "zai": {
-            "npm": "@ai-sdk/openai-compatible",
-            "name": "Z.AI (GLM)",
-            "options": {
-              "baseURL": "https://api.z.ai/api/coding/paas/v4",
-              "apiKey": "{env:ZAI_API_KEY}"
-            },
-            "models": {
-              "glm-4.6": { "name": "GLM-4.6" },
-              "glm-4.5": { "name": "GLM-4.5" },
-              "glm-4.5-air": { "name": "GLM-4.5 Air" }
-            }
-          }
-        }
-      }
 
 networks:
   dokploy-network:
