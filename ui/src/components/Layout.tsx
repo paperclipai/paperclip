@@ -137,10 +137,10 @@ export function Layout() {
     queryFn: () => healthApi.get(),
     retry: false,
     refetchInterval: (query) => {
+      if (document.visibilityState !== "visible") return false;
       const data = query.state.data as { devServer?: { enabled?: boolean } } | undefined;
       return data?.devServer?.enabled ? 2000 : false;
     },
-    refetchIntervalInBackground: true,
   });
   const keyboardShortcutsEnabled = useQuery({
     queryKey: queryKeys.instance.generalSettings,

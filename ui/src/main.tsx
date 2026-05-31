@@ -32,7 +32,10 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 60_000,
-      refetchOnWindowFocus: true,
+      // Disabled globally: WebSocket invalidation already marks background-tab
+      // queries stale and handles real-time updates. Re-fetching on every focus
+      // event across 5+ open tabs produces a multiplied request storm.
+      refetchOnWindowFocus: false,
     },
   },
 });
