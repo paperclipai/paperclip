@@ -14,6 +14,11 @@ spec:
   ingress:
     - from:
         {{- toYaml .Values.networkPolicy.allowFromNamespaces | nindent 8 }}
+        {{- if and .Values.serviceMonitor.enabled .Values.serviceMonitor.scrapeAllowFromNamespaces }}
+        {{- /* Open the scrape path for the Prometheus namespace(s) when a
+               ServiceMonitor is in play; /metrics shares the HTTP port. */}}
+        {{- toYaml .Values.serviceMonitor.scrapeAllowFromNamespaces | nindent 8 }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.env.port }}

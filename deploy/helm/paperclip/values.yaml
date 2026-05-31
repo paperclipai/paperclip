@@ -234,6 +234,30 @@ networkPolicy:
         matchLabels:
           kubernetes.io/metadata.name: cloudflare
 
+# -- Prometheus Operator ServiceMonitor for scraping the control-plane
+# `/metrics` endpoint (BLO-8328). Requires the `monitoring.coreos.com/v1` CRDs
+# (Prometheus Operator / kube-prometheus-stack). Disabled by default so the
+# chart still installs on clusters without the operator. Enabling this also
+# opens the NetworkPolicy scrape path when `scrapeAllowFromNamespaces` is set.
+serviceMonitor:
+  # -- Create a ServiceMonitor. Leave false on clusters without the Prometheus Operator CRDs.
+  enabled: false
+  # -- Namespace for the ServiceMonitor. Empty renders it into the release namespace.
+  namespace: ""
+  # -- Extra labels so a Prometheus `serviceMonitorSelector` can adopt it (e.g. `{release: kube-prometheus-stack}`).
+  labels: {}
+  # -- Scrape path. Matches the control-plane `/metrics` route.
+  path: /metrics
+  # -- Scrape interval.
+  interval: 30s
+  # -- Per-scrape timeout. Must be `<=` `interval`.
+  scrapeTimeout: 10s
+  # -- Namespaces of the Prometheus pods that scrape this Service. Appended to
+  # the NetworkPolicy ingress `from` (when `networkPolicy.enabled`) so scrapes
+  # are not blocked. Same shape as `networkPolicy.allowFromNamespaces`.
+  # Example: `[{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}}]`.
+  scrapeAllowFromNamespaces: []
+
 # -- Dedicated ServiceAccount for the pod.
 serviceAccount:
   # -- Create a dedicated ServiceAccount.
