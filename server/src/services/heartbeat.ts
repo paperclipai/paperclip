@@ -2723,24 +2723,27 @@ const PR_REVIEW_POSTED_SPAN_NEGATION =
 // past-tense (`posted`, not `post`) so future intent does not match, and span-
 // scoped so a negation token sitting between the review noun and the verb defeats
 // the match (the #228 review showed the contiguous-only negation guard was
-// bypassable by "not yet posted" / "no review has been posted"). Bare `submitted`
-// is intentionally excluded — it could not distinguish "submitted a review" from
-// "submitted the diff for review".
+// bypassable by "not yet posted" / "no review has been posted"). `submitted` is
+// allowed in branch (b) only (verb→noun order: "submitted my review"), where the
+// existing `for`-object guard rejects "submitted the diff for review"; it is NOT
+// allowed in branch (a) (per Ally review of #229).
 function prReviewOutputHasPostedReviewVerb(text: string) {
   // (c) a GitHub review object that landed in a concrete state.
   if (/\blanded\s+as\b[\s\S]{0,20}\b(?:COMMENTED|APPROVED|CHANGES_REQUESTED)\b/i.test(text)) {
     return true;
   }
   // (a) "<review> ... posted/landed" — reject "no/not/never/without review …" and
-  // any negation token sitting in the noun→verb span.
+  // any negation token sitting in the noun→verb span. (`submitted` deliberately
+  // omitted here — noun→"submitted" is too weak without a "for"-style guard.)
   for (const m of text.matchAll(/(\b(?:no|not|never|without)\s+)?\breview\b([\s\S]{0,40}?)\b(?:posted|landed)\b/gi)) {
     if (m[1]) continue;
     if (PR_REVIEW_POSTED_SPAN_NEGATION.test(m[2] ?? "")) continue;
     return true;
   }
-  // (b) "posted/landed ... <review>" — reject a negation token or a "for" object
-  // ("posted a note for review") in the verb→noun span.
-  for (const m of text.matchAll(/\b(?:posted|landed)\b([\s\S]{0,50}?)\breview\b/gi)) {
+  // (b) "posted/landed/submitted ... <review>" — reject a negation token or a "for"
+  // object ("posted a note for review" / "submitted the diff for review") in the
+  // verb→noun span.
+  for (const m of text.matchAll(/\b(?:posted|landed|submitted)\b([\s\S]{0,50}?)\breview\b/gi)) {
     const span = m[1] ?? "";
     if (PR_REVIEW_POSTED_SPAN_NEGATION.test(span)) continue;
     if (/\bfor\b/i.test(span)) continue;
@@ -2782,7 +2785,7 @@ function prReviewOutputHasPostedReviewNegation(text: string) {
     /\b(?:couldn['’]?t|could\s+not|cannot|can['’]?t|unable\s+to|failed\s+to|did\s+not|didn['’]?t|have\s+not|haven['’]?t|has\s+not|hasn['’]?t)\s+(?:(?:verify|confirm)[\s\S]{0,20}?(?:(?:posted|landed|submitted)\s+(?:\S+\s+){0,3}review|review\s+(?:\S+\s+){0,3}(?:posted|landed|submitted))|post(?:ed|ing)?\b|leave\b)/i.test(text) ||
     /\bno\s+matching\b[\s\S]{0,60}\breview\b[\s\S]{0,30}\b(?:was\s+)?(?:found|posted)\b/i.test(text) ||
     /\bposted\b[\s\S]{0,25}\bby\s+(?:a\s+|an\s+|the\s+)?(?:prior|previous|earlier|another)\s+run\b/i.test(text) ||
-    /\b(?:will\s+(?:be\s+)?post|going\s+to\s+post|about\s+to\s+post|to\s+be\s+posted|yet\s+to\s+(?:be\s+)?post|await\s+feedback)\b/i.test(text)
+    /\b(?:will\s+(?:be\s+)?post|going\s+to\s+post|about\s+to\s+post|to\s+be\s+posted|yet\s+to\s+(?:be\s+)?post)\b/i.test(text)
   );
 }
 

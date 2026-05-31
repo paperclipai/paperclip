@@ -550,6 +550,25 @@ describe("evaluatePrReviewCompletionEvidence", () => {
     expect(evaluatePrReviewCompletionEvidence(hardeningCtx, { summary })).toEqual({ status: "posted_review" });
   });
 
+  // BLO-8195 recall fixes (Ally review of #229) — lock the two tradeoffs:
+  // (1) "await feedback" is normal AFTER a successful post; the standalone veto was
+  //     dropped so it no longer flips a posted run to missing.
+  // (2) `submitted` reinstated in verb branch (b) (the `for`-guard still rejects
+  //     "submitted the diff for review", asserted below).
+  it.each([
+    { label: "'await feedback' after a real post", summary: "Posted the review on Blockcast/paperclip#227 at head 4e60b6b1; now I await feedback." },
+    { label: "'submitted my review' natural phrasing", summary: "Submitted my review on Blockcast/paperclip#227 at head 4e60b6b1." },
+  ])("BLO-8195: a genuinely posted run is not vetoed by await-feedback / submitted phrasing ($label)", ({ summary }) => {
+    expect(evaluatePrReviewCompletionEvidence(hardeningCtx, { summary })).toEqual({ status: "posted_review" });
+  });
+
+  it("BLO-8195: reinstating `submitted` does not accept 'submitted the diff for review'", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(hardeningCtx, {
+        summary: "Submitted the diff for review on #227 head 4e60b6b1; will await feedback.",
+      }),
+    ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
+  });
   // BLO-8215: a mid-run GitHub App token expiry on the publish path leaves a
   // drafted-but-unpublished review. It must be flagged with the distinct,
   // recoverable `pr_review_auth_expired` code — NOT conflated with the
