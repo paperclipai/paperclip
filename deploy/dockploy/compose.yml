@@ -45,14 +45,14 @@ services:
     volumes:
       - /opt/paperclip:/paperclip
 
-    networks:
-      - interna
+    # Sem `networks:` aqui — o serviço fica na rede default do Dockploy,
+    # que é onde o Postgres `databases-postgres-cypdtq` é resolvido por DNS.
 
 configs:
   opencode_zai_config:
     content: |
       {
-        "$schema": "https://opencode.ai/config.json",
+        "$$schema": "https://opencode.ai/config.json",
         "provider": {
           "zai": {
             "npm": "@ai-sdk/openai-compatible",
@@ -70,6 +70,7 @@ configs:
         }
       }
 
-networks:
-  interna:
-    external: true
+# Rede `interna` é externa do Dockploy. Não precisamos declarar nem atachar:
+# o Dockploy injeta a rede default automaticamente quando ele monta este
+# compose. Se um dia algum serviço PRECISAR de uma rede externa específica,
+# declare aqui com `external: true` e adicione `networks: [<nome>]` ao serviço.

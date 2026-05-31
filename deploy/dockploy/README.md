@@ -154,6 +154,18 @@ Se o arquivo estiver vazio, o `configs:` do compose não foi aplicado — checar
 
 `Dockploy → Rebuild`. O build é a partir de `#prod` no repo, então `git push origin prod` antes do rebuild.
 
+### `failed to set up container networking: Could not attach to network interna: NotFound`
+
+Causa: o compose tentou atachar o serviço numa rede externa que não existe no daemon. Solução adotada aqui: o serviço **não** declara `networks:` — fica na rede default que o Dockploy injeta automaticamente, que é onde o Postgres responde por DNS. Se precisar de uma rede específica criada por outro projeto, criar primeiro (`docker network create <nome>`) ou usar a rede default mesmo.
+
+### Warning `The "schema" variable is not set. Defaulting to a blank string.`
+
+Causa: o JSON inline em `configs.content` tem `"$schema": "..."` e o Docker Compose faz interpolação de `$VAR` em qualquer string do YAML, incluindo dentro de `content:`. A fix é escapar como `$$schema` — o compose substitui `$$` por `$` literal antes de gravar o arquivo. Já corrigido no `compose.yml` deste repo.
+
+### Warning `The "BETTER_AUTH_SECRET" variable is not set. Defaulting to a blank string.`
+
+Causa: a env não está definida na aba *Environment* do Dockploy. Gere com `openssl rand -base64 32` e cole lá. O paperclip não sobe sem isso (assinatura de sessão).
+
 ---
 
 ## Como manter este fork sincronizado com upstream
