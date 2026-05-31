@@ -156,7 +156,35 @@ Se o arquivo estiver vazio, o `configs:` do compose não foi aplicado — checar
 
 ### `failed to set up container networking: Could not attach to network interna: NotFound`
 
-Causa: o compose tentou atachar o serviço numa rede externa que não existe no daemon. Solução adotada aqui: o serviço **não** declara `networks:` — fica na rede default que o Dockploy injeta automaticamente, que é onde o Postgres responde por DNS. Se precisar de uma rede específica criada por outro projeto, criar primeiro (`docker network create <nome>`) ou usar a rede default mesmo.
+Causa: o serviço declara `networks: [interna]` com `external: true`, mas não existe nenhuma rede chamada literalmente `interna` no daemon Docker. A rede `interna` é uma rede compartilhada que liga o paperclip ao container Postgres `databases-postgres-cypdtq`, então **ela tem que existir** — não dá pra simplesmente remover a referência.
+
+Diagnóstico na VPS:
+```bash
+# 1) Liste todas as redes do daemon e procure por "interna"
+docker network ls | grep -i interna
+
+# 2) Veja em quais redes o container do Postgres está conectado
+docker inspect databases-postgres-cypdtq \
+  --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}'
+```
+
+Resultados possíveis e como agir:
+
+| Saída de (1) | Saída de (2) | Causa | Fix |
+|---|---|---|---|
+| (vazio) | (sem rede `interna`) | Rede nunca foi criada no daemon | `docker network create interna` na VPS, depois `docker network connect interna databases-postgres-cypdtq`. Re-deploy. |
+| `interna` | `interna` aparece | Rede existe e Postgres está nela — outra coisa quebrou (perm? compose v1?) | Conferir versão do compose (`docker compose version` ≥ v2.20) |
+| `databases-cypdtq_interna` | `databases-cypdtq_interna` | O Dockploy prefixou a rede com o nome do projeto Postgres | No compose, ajustar: `networks: interna: { external: true, name: databases-cypdtq_interna }` |
+| nenhuma `interna` mas tem `dokploy-network` | só `dokploy-network` | Você está usando a rede padrão do Dockploy, não uma custom | Trocar `networks: [interna]` por `networks: [dokploy-network]` em ambos lugares no compose |
+
+Se a saída de (2) tiver alguma rede e a de (1) confirmar o mesmo nome, **edite o `compose.yml` para usar `name:`** apontando pro nome literal. Exemplo:
+```yaml
+networks:
+  interna:
+    external: true
+    name: databases-cypdtq_interna   # ← nome real no daemon
+```
+O serviço continua dizendo `networks: [interna]` (alias local do compose), e o `name:` é a tradução para o daemon.
 
 ### Warning `The "schema" variable is not set. Defaulting to a blank string.`
 

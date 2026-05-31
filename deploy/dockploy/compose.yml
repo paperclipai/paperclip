@@ -45,8 +45,13 @@ services:
     volumes:
       - /opt/paperclip:/paperclip
 
-    # Sem `networks:` aqui — o serviço fica na rede default do Dockploy,
-    # que é onde o Postgres `databases-postgres-cypdtq` é resolvido por DNS.
+    # Rede compartilhada com o container do Postgres (databases-postgres-cypdtq).
+    # `interna` é uma rede DOCKER EXTERNA criada fora do compose. Se o deploy
+    # falhar com "Could not attach to network interna: NotFound", veja a seção
+    # "Solução de problemas" do README — provavelmente o nome real no daemon
+    # tem prefixo do projeto Dockploy (ex.: `databases-cypdtq_interna`).
+    networks:
+      - interna
 
 configs:
   opencode_zai_config:
@@ -70,7 +75,12 @@ configs:
         }
       }
 
-# Rede `interna` é externa do Dockploy. Não precisamos declarar nem atachar:
-# o Dockploy injeta a rede default automaticamente quando ele monta este
-# compose. Se um dia algum serviço PRECISAR de uma rede externa específica,
-# declare aqui com `external: true` e adicione `networks: [<nome>]` ao serviço.
+networks:
+  interna:
+    external: true
+    # Nome literal da rede no daemon. Confirme com:
+    #   docker network ls | grep interna
+    # Se o nome for diferente (ex.: prefixado pelo projeto que criou),
+    # ajuste para apontar para o nome real:
+    #   external: true
+    #   name: nome-real-da-rede-no-daemon
