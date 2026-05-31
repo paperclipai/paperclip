@@ -458,7 +458,7 @@ export async function resolveCredentialEnv(
     }
 
     case "deepseek_api_key": {
-      const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
+      const apiKey = typeof payload.apiKey === "string" ? payload.apiKey.trim() : "";
       if (!apiKey) {
         logger.warn({ agentId, credentialId }, "deepseek_api_key credential missing apiKey");
         return { env: {} };

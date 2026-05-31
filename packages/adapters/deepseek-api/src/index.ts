@@ -2,8 +2,10 @@ export const type = "deepseek_api";
 export const label = "DeepSeek API";
 
 export const models = [
-  { id: "deepseek-chat", label: "DeepSeek Chat (V3)" },
-  { id: "deepseek-reasoner", label: "DeepSeek Reasoner (R1)" },
+  { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
+  { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
+  { id: "deepseek-chat", label: "DeepSeek Chat (legacy alias)" },
+  { id: "deepseek-reasoner", label: "DeepSeek Reasoner (legacy)" },
 ];
 
 export const agentConfigurationDoc = `# deepseek_api agent configuration
@@ -16,8 +18,9 @@ completion turn. The adapter does not spawn a local process — it issues
 an HTTPS request to https://api.deepseek.com/v1.
 
 Core fields:
-- model (string, optional): DeepSeek model id. Defaults to deepseek-chat.
-  Use deepseek-reasoner for R1-style reasoning traces.
+- model (string, optional): DeepSeek model id. Defaults to deepseek-v4-flash.
+  deepseek-v4-pro is the strongest model; deepseek-v4-flash is faster/cheaper.
+  Legacy ids deepseek-chat / deepseek-reasoner still resolve.
 - baseUrl (string, optional): override the API base URL. Defaults to
   https://api.deepseek.com/v1.
 - systemPrompt (string, optional): system message prepended to every turn.

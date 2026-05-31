@@ -7,7 +7,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 
 const DEFAULT_BASE_URL = "https://api.deepseek.com/v1";
-const DEFAULT_MODEL = "deepseek-chat";
+const DEFAULT_MODEL = "deepseek-v4-flash";
 const DEFAULT_TIMEOUT_SEC = 600;
 
 function nonEmpty(value: unknown): string | null {

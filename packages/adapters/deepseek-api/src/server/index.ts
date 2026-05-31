@@ -10,12 +10,14 @@ export function getConfigSchema(): AdapterConfigSchema {
         key: "model",
         label: "Model",
         type: "select",
-        default: "deepseek-chat",
+        default: "deepseek-v4-flash",
         options: [
-          { value: "deepseek-chat", label: "DeepSeek Chat (V3)" },
-          { value: "deepseek-reasoner", label: "DeepSeek Reasoner (R1)" },
+          { value: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
+          { value: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
+          { value: "deepseek-chat", label: "DeepSeek Chat (legacy alias)" },
+          { value: "deepseek-reasoner", label: "DeepSeek Reasoner (legacy)" },
         ],
-        hint: "DeepSeek model id. deepseek-reasoner exposes chain-of-thought reasoning.",
+        hint: "DeepSeek model id. V4 Pro is the strongest; V4 Flash is faster/cheaper.",
       },
       {
         key: "baseUrl",
