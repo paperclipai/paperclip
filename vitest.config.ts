@@ -16,6 +16,7 @@ export default defineConfig({
       "packages/adapters/opencode-local",
       "packages/adapters/pi-local",
       "packages/plugins/sdk",
+      "packages/plugins/paperclip-plugin-ccrotate",
       "server",
       "ui",
       "cli",
