@@ -40,7 +40,7 @@ the same five checks; only step 4's expected base differs.
 | Task label | Worktree branched from | Step 4 expects |
 |---|---|---|
 | (normal) | `main` at task creation | `git log main..HEAD` non-empty (Worker/Reviewer commits) |
-| `ci-failure` | `origin/main` (current red HEAD; set up by Coordinator §Step 2) | `git log main..HEAD` may be empty — Architect's job IS to add the fix commits. Replace check 4 with: task body must contain a `## Compile errors` section. |
+| `ci-failure` | `origin/main` (current red HEAD; set up by Coordinator's CI-failure intake) | `git log main..HEAD` may be empty — Architect's job IS to add the fix commits. Replace check 4 with: task body must contain a `## Compile errors` section. |
 
 1. **Read worktree path from task.** Absent → comment `"No worktree
    path on task. Aborting per per-task-worktrees.md §6."` and exit.
@@ -53,7 +53,7 @@ the same five checks; only step 4's expected base differs.
      verify."` and exit.
    - `ci-failure`: task body must include `## Compile errors`. Missing
      → comment `"ci-failure task missing compile-error context. Needs
-     Coordinator §Step 2 to populate."` and exit.
+     Coordinator's CI-failure intake to populate."` and exit.
 5. **Scope check — refuse review work.** If the task title contains
    "review" or "audit" as a verb (e.g. "Verify+Review", "Review and
    verify"), or the body asks you to evaluate code quality, IP, or

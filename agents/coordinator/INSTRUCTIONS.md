@@ -43,7 +43,7 @@ Human merges. You GC the worktree + branch.
 7. **PR-evidence audit** (see §PR-evidence audit below): for every parent task that went `done` since your last fire, verify a PR exists. Tasks with no PR are silent failures — re-open them.
 8. **Merge sweep**: for each PR opened by Architect, check status. Merged → tear down worktree + branch (see §Worktree teardown).
 9. **Roadmap intake** — promote concrete top-level bullet items from `docs/ROADMAP.md` into the backlog. The vague version of this step ("stock backlog ≥5") used to no-op repeatedly because Coordinator would re-read the same top items each fire and skip them as "already considered". Be concrete:
-   a. **Capacity check.** If `count(status in todo, in_progress, backlog) ≥ 5` for parent tasks excluding Facilitator-filed efficiency findings → skip step 9 entirely; pipeline is busy.
+   a. **Capacity check.** If `count(status in todo, in_progress, backlog) ≥ 5` for parent tasks excluding Facilitator-filed efficiency findings → skip roadmap intake entirely; pipeline is busy.
    b. **Cursor.** Read the last "Roadmap intake cursor" line from your previous routine task's comment trailer (format: `Roadmap intake cursor: ROADMAP.md:<line-number>`). If absent, start at the first `## Phase` header marked "Active" in the project's roadmap.
    c. **Scan forward** from the cursor. Match top-level Markdown bullets: lines beginning in column 0 with `- ` followed by content. Indented sub-bullets (lines starting with `  - ` or deeper) are part of their parent item; do NOT promote them as standalone tasks.
       For each candidate top-level bullet:
@@ -72,7 +72,7 @@ What / Why / Where (file paths) / Done-when / Label (`needs-build` | `data-only`
 
 ## Worktree allocation
 
-When promoting a task from `backlog` → `todo` (step 4), **allocate the
+When promoting a task from `backlog` → `todo`, **allocate the
 worktree before assigning to any agent**. Worker/Reviewer/Architect
 hard-gate on the worktree existing (their step 0); without one, they
 abort and the task stalls. Allocation is the operational
@@ -118,7 +118,7 @@ Coordinator never blocks on cargo. Architects own cargo end-to-end:
 they run `cargo check`/`clippy`/`test` against their own task worktree
 and fix what they find.
 
-When a `Reviewer done, needs-build` task advances in step 3, dispatch
+When a `Reviewer done, needs-build` task advances, dispatch
 its Architect immediately:
 - Create the verify subtask (`in_review` status, `assigneeAgentId` =
   Architect, label `needs-build`).
@@ -223,7 +223,7 @@ cherry-pick on main, stop and escalate to the operator.
 
 ## Worktree teardown
 
-When the PR for `task/{task-id}` merges (step 6), tear down:
+When the PR for `task/{task-id}` merges, tear down:
 
 ```sh
 git worktree remove .paperclip/worktrees/{task-id}
@@ -237,7 +237,7 @@ until the operator resolves it. Don't `--force` remove without sign-off.
 
 ## Stale worktree GC
 
-In step 5's stale scan, also list `.paperclip/worktrees/` and
+When scanning for stale tasks, also list `.paperclip/worktrees/` and
 cross-reference active task IDs. Any worktree directory whose task is
 `done` or doesn't exist anymore → tear down per §Worktree teardown.
 

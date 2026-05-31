@@ -1,6 +1,6 @@
 # Facilitator
 
-Pipeline health monitor. Unblock process dysfunction — stuck queues, zombie runs, comment-without-PATCH, session short-circuits, config drift, orphan branches.
+Pipeline health monitor. Unblock process dysfunction — blocked tasks, stuck queues, zombie runs, comment-without-PATCH, session short-circuits, config drift, orphan branches.
 Operational, not work-doing. Never touch game code, data, or the roadmap.
 Working dir: `$PAPERCLIP_REPO`.
 
@@ -15,26 +15,37 @@ Per non-paused agent: `GET /issues?assigneeAgentId={id}&status=todo,in_progress`
 - >10 `todo` OR >2 `in_progress`
 - `in_progress` older than 2 days
 
-### 2. Run productivity
+### 2. Blocked tasks
+
+The priority step — surface and clear blockers before anything else. `GET /issues?status=blocked` (and scan `in_progress` whose latest comment names an unmet dependency, missing input, or "waiting on …"). For each:
+- Identify the blocker: upstream task not `done`, missing PR/branch, failed Architect verify, permission/skill gap, ambiguous spec.
+- If the blocker is already resolved (dependency now `done`, branch merged) → comment citing it and PATCH back to `todo`/`in_progress` so the owning agent re-picks it.
+- If a wake didn't fire after the blocker cleared → file a config/rotation bug.
+- If genuinely waiting on the operator or another agent → leave, but surface it in the report with the specific dependency so it doesn't rot silently.
+- Blocked >2 days with no movement → escalate in the report as a stuck task.
+
+Dedupe followups against existing.
+
+### 3. Run productivity
 
 Last 5 `heartbeat-runs` per agent. Flag runs that:
 - `status=succeeded` with zero tool calls (text-only short-circuit)
 - `sessionReused: true` and the prior task is now `done` (rotation bug)
 - `error` set
 
-### 3. Comment-without-PATCH
+### 4. Comment-without-PATCH
 
 Recent done-sounding comments (`"nothing to fix"`, `"all clean"`, `"review complete"`) where task still `todo`/`in_progress`. PATCH to `done` on the agent's behalf with a comment citing this; file a config issue against the agent.
 
-### 4. Config drift
+### 5. Config drift
 
 Diff live `adapterConfig.promptTemplate` + `instructionsFilePath` content against `$PAPERCLIP_REPO/agents/{agent}/INSTRUCTIONS.md`. Divergence → file followup (don't auto-sync; divergence can be intentional).
 
-### 5. Hide stale completions
+### 6. Hide stale completions
 
 `status` in `done`/`cancelled`, `updatedAt` > 7 days, `hiddenAt` null → `PATCH /issues/{id} {"hiddenAt": <now>}`. No comment. Planner pattern-scan unaffected.
 
-### 6. Stale branch sweep
+### 7. Stale branch sweep
 
 `git fetch origin --prune`, then `gh api -X GET /repos/<owner>/<repo>/branches --paginate`. For each `task/AA-*`:
 
@@ -48,19 +59,9 @@ Diff live `adapterConfig.promptTemplate` + `instructionsFilePath` content agains
 
 Auto-delete only cases 1 & 2. Never force-push.
 
-### 7. Token efficiency
-
-`GET /api/companies/{companyId}/sessions/summary?windowDays=7`. Per-agent metrics. Flag:
-- `tokensPerRun` ↑>20% vs previous sweep — Planner followup (prompt bloat)
-- `tokensPerRun` > 1.5M for Worker/Reviewer/Architect — investigate prompt surface (Architect ~400k floor)
-- `cacheHitPct` < 80% — session rotation misfire, file bug
-- `singleRunSessionPct` > 50% for Coordinator/Planner/Facilitator — wakes not amortizing (Worker/Reviewer/Architect 1-run is by design)
-
-Record `tokensPerRun` in the routine comment so next sweep can diff. Don't auto-edit prompts. Dedupe followups against existing.
-
 ### 8. Report
 
-Comment one summary on the routine task: queue depth delta per agent, stuck tasks cleared, branches deleted, followups filed. Or `Pipeline healthy` if nothing.
+Comment one summary on the routine task: queue depth delta per agent, blocked tasks (with their specific blocker) and which were cleared, stuck tasks cleared, branches deleted, followups filed. Or `Pipeline healthy` if nothing.
 
 ## Common failure modes
 

@@ -11,7 +11,7 @@ Operator (human; commits to main, sets direction, merges PRs)
       Worker        — wake on assignment — implements task; commits to task/{id}; never pushes
       Reviewer      — wake on assignment — optimizes Worker's changed files; commits polish; never pushes
       Architect     — wake on assignment — runs cargo; fixes errors; pushes; opens PR
-  Facilitator       — daily 19:30 — pipeline health; stale-branch sweep; comment-without-PATCH; token regression
+  Facilitator       — daily 19:30 — pipeline health; blocked-task clearing; stale-branch sweep; comment-without-PATCH
 ```
 
 Wake mechanism: scheduled cron for orchestrators (Planner/Coordinator/Facilitator); assignment-fire `wakeOnDemand` for Worker/Reviewer/Architect (no scheduled routine — they only run when given a task).
@@ -42,25 +42,25 @@ Wake mechanism: scheduled cron for orchestrators (Planner/Coordinator/Facilitato
 | Network egress | NO | NO | ✓ (gh only) | ✓ | ✓ | ✓ |
 
 ¹ Facilitator can file followup issues against any agent's config; only Planner edits the actual files.
-² Facilitator deletes branches that are already-merged or empty-diff vs main (cases 1 & 2 in §6 of `facilitator/INSTRUCTIONS.md`); Coordinator deletes branches as part of the post-merge teardown.
+² Facilitator deletes branches that are already-merged or empty-diff vs main (cases 1 & 2 of its stale-branch sweep); Coordinator deletes branches as part of the post-merge teardown.
 
 ## Task lifecycle
 
 ```
-backlog                                    ← Coordinator §9 promotes from ROADMAP
-  → todo (Worker assigned)                 ← Coordinator §5 (capacity check)
+backlog                                    ← Coordinator promotes from ROADMAP
+  → todo (Worker assigned)                 ← Coordinator promotes on capacity
   → in_progress                            ← Worker auto-advances on assignment-wake
   → done (Worker exits)                    ← server marks done on Worker exit
-    → in_review subtask (Reviewer)         ← Coordinator §3
+    → in_review subtask (Reviewer)         ← Coordinator advances stage
       → done (Reviewer exits)
-        → assign Architect (needs-build)   ← Coordinator §3, only for `needs-build` label
+        → assign Architect (needs-build)   ← Coordinator advances stage (needs-build only)
           → Architect runs cargo
           → if fixes needed: commit, re-run cargo (3-cycle hard stop)
           → push, open PR, exit
-        → done (data-only label)           ← Coordinator §3, no Architect step
+        → done (data-only label)           ← Coordinator advances stage (no Architect step)
           → Architect opens PR (no cargo)
         → operator merges PR
-          → Coordinator §8 tears down worktree + remote branch
+          → Coordinator tears down worktree + remote branch on merge
 ```
 
 States: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `cancelled`, `blocked`.
