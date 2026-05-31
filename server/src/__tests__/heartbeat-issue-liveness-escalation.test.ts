@@ -768,6 +768,8 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       identifier: "CLOSED-3",
       originKind: "harness_liveness_escalation",
       originId: incidentKey,
+      completedAt: new Date(Date.now() - 48 * 60 * 60 * 1000),
+      updatedAt: new Date(Date.now() - 48 * 60 * 60 * 1000),
     });
 
     const result = await heartbeat.reconcileIssueGraphLiveness();
