@@ -10,6 +10,7 @@ import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
+import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -43,6 +44,7 @@ import {
   getHltUseCaseStarterExamples,
   type HltUseCaseStarterExample,
 } from "../lib/hlt-use-case-catalog";
+import { resolveOnboardingContextReadiness } from "../lib/onboarding-context-readiness";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL
@@ -193,6 +195,19 @@ export function OnboardingWizard() {
   useEffect(() => {
     if (step === 3) autoResizeTextarea();
   }, [step, taskDescription, autoResizeTextarea]);
+
+  const contextReadinessQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: healthApi.get,
+    enabled: effectiveOnboardingOpen && step === 3,
+    staleTime: 30_000,
+    retry: 1,
+  });
+  const contextReadiness = resolveOnboardingContextReadiness({
+    health: contextReadinessQuery.data,
+    isLoading: contextReadinessQuery.isLoading || contextReadinessQuery.isFetching,
+    isError: contextReadinessQuery.isError,
+  });
 
   const { data: adapterModels } = useQuery({
     // The wizard doesn't expose an environment selector, so models always
@@ -1128,8 +1143,18 @@ export function OnboardingWizard() {
                           Pick an outcome. These are starting points, not rails.
                         </p>
                       </div>
-                      <div className="rounded-full border border-border bg-background px-2 py-0.5 text-[10px] text-muted-foreground">
-                        Extra context: optional
+                      <div
+                        className={cn(
+                          "rounded-full border px-2 py-0.5 text-[10px]",
+                          contextReadiness.status === "ready"
+                            ? "border-green-300 bg-green-50 text-green-700 dark:border-green-500/40 dark:bg-green-500/10 dark:text-green-300"
+                            : contextReadiness.status === "checking"
+                              ? "border-border bg-background text-muted-foreground"
+                              : "border-amber-300/60 bg-amber-50/40 text-amber-700 dark:text-amber-300"
+                        )}
+                        title={contextReadiness.description}
+                      >
+                        {contextReadiness.label}
                       </div>
                     </div>
                     <div className="grid gap-2 sm:grid-cols-2">

@@ -253,6 +253,7 @@ describe("GET /health", () => {
       bootstrapInviteActive: false,
       features: {
         companyDeletionEnabled: false,
+        onboardingStarterContextDocuments: true,
       },
       integrations: {
         katailystLearnerBridge: {

@@ -62,6 +62,7 @@ export function healthRoutes(
               status: "ok",
               version: serverVersion,
               observability: { langfuse: getLangfuseRuntimeStatus() },
+              features: { onboardingStarterContextDocuments: true },
               integrations: { katailystLearnerBridge: getKatailystLearnerBridgeRuntimeStatus() },
             }
           : { status: "ok", deploymentMode: opts.deploymentMode },
@@ -147,6 +148,7 @@ export function healthRoutes(
       bootstrapInviteActive,
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
+        onboardingStarterContextDocuments: true,
       },
       observability: {
         langfuse: getLangfuseRuntimeStatus(),
