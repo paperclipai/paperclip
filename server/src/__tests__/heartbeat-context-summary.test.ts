@@ -160,6 +160,8 @@ describe("buildPaperclipTaskMarkdown", () => {
     });
     expect(authorMarkdown).toContain("A reviewer just posted findings on YOUR pull request.");
     expect(authorMarkdown).not.toContain("Latest review body:");
+  });
+
   it("adds accepted-plan continuation guidance for standard-work issues when the wake is flagged as a plan continuation", () => {
     const acceptedConfirmation = buildPaperclipTaskMarkdown({
       issue: {
