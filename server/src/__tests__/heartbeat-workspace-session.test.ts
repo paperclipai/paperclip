@@ -496,6 +496,26 @@ describe("buildExplicitResumeSessionOverride", () => {
       },
     });
   });
+
+  it("uses full session params from run result metadata when display ids are truncated", () => {
+    const result = buildExplicitResumeSessionOverride({
+      resumeFromRunId: "run-1",
+      resumeRunSessionIdBefore: null,
+      resumeRunSessionIdAfter: "20260531_142025_",
+      resumeRunSessionParams: {
+        sessionId: "20260531_142025_718561",
+      },
+      taskSession: null,
+      sessionCodec: codexSessionCodec,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: "20260531_142025_",
+      sessionParams: {
+        sessionId: "20260531_142025_718561",
+      },
+    });
+  });
 });
 
 describe("formatRuntimeWorkspaceWarningLog", () => {
