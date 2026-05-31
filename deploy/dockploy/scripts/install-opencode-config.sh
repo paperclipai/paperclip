@@ -1,11 +1,11 @@
 #!/bin/bash
 # Instala o opencode.json no volume do paperclip.
 #
-# Rode UMA VEZ na VPS (como root) após o primeiro deploy do paperclip.
-# O arquivo persiste no bind mount /opt/paperclip e sobrevive a rebuilds.
+# Rode UMA VEZ na VPS após o primeiro deploy do paperclip — e novamente
+# sempre que o opencode.json no repo for atualizado.
 #
-# Uso:
-#   sudo bash deploy/dockploy/scripts/install-opencode-config.sh
+# Uso (curl one-liner, recomendado):
+#   curl -fsSL https://raw.githubusercontent.com/victorbvieira/paperclip/prod/deploy/dockploy/scripts/install-opencode-config.sh | sudo bash
 #
 # Por que não usar `configs:` do compose: o Docker monta configs como
 # root:root sem leitura pra "other". O paperclip server roda como node
@@ -16,19 +16,17 @@ set -euo pipefail
 
 CONFIG_DIR="/opt/paperclip/.config/opencode"
 CONFIG_FILE="$CONFIG_DIR/opencode.json"
-SOURCE_FILE="$(dirname "$0")/../opencode.json"
-
-if [[ ! -f "$SOURCE_FILE" ]]; then
-  echo "ERRO: $SOURCE_FILE não existe. Você está rodando este script da raiz do repo?" >&2
-  exit 1
-fi
+REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/victorbvieira/paperclip/prod/deploy/dockploy/opencode.json}"
 
 mkdir -p "$CONFIG_DIR"
-cp "$SOURCE_FILE" "$CONFIG_FILE"
+
+# Baixa direto do GitHub raw — fonte de verdade é deploy/dockploy/opencode.json
+curl -fsSL "$REPO_RAW_URL" -o "$CONFIG_FILE"
+
 chown -R 1000:1000 /opt/paperclip/.config
 chmod 0644 "$CONFIG_FILE"
 
-echo "OK — opencode.json instalado em $CONFIG_FILE (owner 1000:1000)"
+echo "OK — opencode.json instalado em $CONFIG_FILE (owner 1000:1000, 0644)"
 echo
 echo "Conteúdo:"
 cat "$CONFIG_FILE"

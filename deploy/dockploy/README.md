@@ -75,15 +75,17 @@ Logs esperados (sucesso):
 
 ### 4. Instalar o opencode.json no volume — uma vez só
 
-O paperclip-server (UID 1000) precisa **ler e copiar** o `opencode.json` antes de cada run. Tentar injetar via `configs:` do Docker Compose não funciona — o Docker monta configs como root:root sem leitura pra "other", causando `EACCES copyfile` em `prepareOpenCodeRuntimeConfig()`. A solução é gravar o arquivo direto no volume bind:
+O paperclip-server (UID 1000) precisa **ler e copiar** o `opencode.json` antes de cada run. Tentar injetar via `configs:` do Docker Compose não funciona — o Docker monta configs como root:root sem leitura pra "other", causando `EACCES copyfile` em `prepareOpenCodeRuntimeConfig()`. A solução é gravar o arquivo direto no volume bind.
+
+**One-liner** (na VPS, baixa do repo direto via curl — sem precisar clonar nada):
 
 ```bash
-sudo bash deploy/dockploy/scripts/install-opencode-config.sh
+curl -fsSL https://raw.githubusercontent.com/victorbvieira/paperclip/prod/deploy/dockploy/scripts/install-opencode-config.sh | sudo bash
 ```
 
 O script cria `/opt/paperclip/.config/opencode/opencode.json`, faz chown pra UID 1000 e seta `0644`. Como `/opt/paperclip` está bind-mountado em `/paperclip` no container, o paperclip vê em `/paperclip/.config/opencode/opencode.json` e consegue ler.
 
-Atualizou o `opencode.json` no repo? Rode o script de novo pra propagar.
+Atualizou o `opencode.json` no repo? Rode o one-liner de novo pra propagar.
 
 ### 5. Login ChatGPT (assinatura) — uma vez só
 
