@@ -846,17 +846,6 @@ function invalidateActivityQueries(
             coalescer.byKey({ queryKey: ["issues", "document-revisions", ref], refetchType });
           }
         }
-        if (action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action)) {
-          const documentKey = readString(details?.key);
-          queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(ref), ...invalidationOptions });
-          if (documentKey) {
-            queryClient.invalidateQueries({ queryKey: queryKeys.issues.document(ref, documentKey), ...invalidationOptions });
-            queryClient.invalidateQueries({ queryKey: queryKeys.issues.documentRevisions(ref, documentKey), ...invalidationOptions });
-          } else {
-            queryClient.invalidateQueries({ queryKey: ["issues", "document", ref], ...invalidationOptions });
-            queryClient.invalidateQueries({ queryKey: ["issues", "document-revisions", ref], ...invalidationOptions });
-          }
-        }
         if (action?.startsWith("issue.thread_interaction_")) {
           coalescer.byKey({ queryKey: queryKeys.issues.interactions(ref), refetchType });
         }

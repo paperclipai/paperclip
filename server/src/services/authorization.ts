@@ -26,6 +26,7 @@ export type AuthorizationActor =
       | "agent_key"
       | "agent_jwt"
       | "cloud_tenant"
+      | "run_id"
       | "none";
   };
 

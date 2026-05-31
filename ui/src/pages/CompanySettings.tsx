@@ -323,11 +323,6 @@ export function CompanySettings() {
   const [snippetCopied, setSnippetCopied] = useState(false);
   const [snippetCopyDelightId, setSnippetCopyDelightId] = useState(0);
 
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
-  });
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
   const cloudSyncEnabled = experimentalSettings?.enableCloudSync === true;
 

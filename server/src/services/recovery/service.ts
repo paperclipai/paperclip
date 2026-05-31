@@ -272,6 +272,8 @@ function isQuotaExhaustedTerminalRun(latestRun: LatestIssueRun) {
   }
   const errorCode = readNonEmptyString(latestRun.errorCode);
   return Boolean(errorCode && QUOTA_EXHAUSTED_RUN_ERROR_CODES.has(errorCode));
+}
+
 const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "adapter_failed",
   "codex_transient_upstream",
@@ -4347,7 +4349,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const obsoleteRecoveryCleanup = await retireObsoleteLivenessRecoveryIssues(findings);
     const activityByIssueKey = await loadLivenessRecoveryIssueLastActivityByKey(findings);
     const doneRecoveryBlockerCleanup = await retireDoneLivenessRecoveryBlockers();
-    const updatedAtByIssueKey = await loadLivenessDependencyUpdatedAtByIssue(findings);
     const result = {
       findings: findings.length,
       autoRecoveryEnabled,

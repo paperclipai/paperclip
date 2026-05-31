@@ -119,12 +119,6 @@ export function isDatabaseConnectionUnavailableError(err: unknown): boolean {
   return Boolean(error?.cause && isDatabaseConnectionUnavailableError(error.cause));
 }
 
-export function isDatabaseConnectionUnavailableError(err: unknown): boolean {
-  const error = err as { code?: unknown; message?: unknown; cause?: unknown };
-  if (error?.code === "ECONNREFUSED") return true;
-  return Boolean(error?.cause && isDatabaseConnectionUnavailableError(error.cause));
-}
-
 export function resolveViteHmrPort(serverPort: number): number {
   if (serverPort <= 55_535) {
     return serverPort + 10_000;

@@ -1711,6 +1711,8 @@ export interface PluginPluginsClient {
     status: string;
     addedCapabilities: string[];
   }>;
+}
+
 // Access and Authorization
 // ---------------------------------------------------------------------------
 
