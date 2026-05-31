@@ -387,6 +387,7 @@ export function IssueProperties({
   const companyId = issue.companyId ?? selectedCompanyId;
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
+  const [reviewerOpen, setReviewerOpen] = useState(false);
   const [projectOpen, setProjectOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
   const [blockedByOpen, setBlockedByOpen] = useState(false);
@@ -1286,6 +1287,23 @@ export function IssueProperties({
       <span className="text-sm text-muted-foreground">Unassigned</span>
     </>
   );
+  const reviewerTrigger = issue.reviewerAgentId ? (
+    <>
+      <AgentIcon className="h-3.5 w-3.5 text-muted-foreground" />
+      <span className="text-sm">{agentName(issue.reviewerAgentId) ?? issue.reviewerAgentId.slice(0, 8)}</span>
+    </>
+  ) : (
+    <>
+      <AgentIcon className="h-3.5 w-3.5 text-muted-foreground" />
+      <span className="text-sm text-muted-foreground">None</span>
+    </>
+  );
+  const reviewerPickerOptions: InlineEntityOption[] = sortedAgents.map((agent) => ({
+    id: agent.id,
+    label: agent.name,
+    searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
+    leading: <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />,
+  }));
 
   const assigneePickerOptions = orderItemsBySelectedAndRecent(
     [
@@ -1763,6 +1781,31 @@ export function IssueProperties({
             showLabel
           />
         </PropertyRow>
+        <PropertyPicker
+          inline={inline}
+          label="Reviewer"
+          open={reviewerOpen}
+          onOpenChange={setReviewerOpen}
+          triggerContent={reviewerTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName="w-56"
+        >
+          <div className="p-2">
+            <InlineEntitySelector
+              value={issue.reviewerAgentId ?? ""}
+              options={reviewerPickerOptions}
+              placeholder="No reviewer"
+              noneLabel="No reviewer"
+              searchPlaceholder="Search reviewers..."
+              emptyMessage="No reviewers found."
+              disablePortal
+              onChange={(nextReviewer) => {
+                onUpdate({ reviewerAgentId: nextReviewer || null });
+                setReviewerOpen(false);
+              }}
+            />
+          </div>
+        </PropertyPicker>
 
         <PropertyRow label="Priority">
           <PriorityIcon

@@ -6,7 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -23,6 +23,7 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
+  issues,
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
@@ -113,6 +114,29 @@ export async function startServer(): Promise<StartedServer> {
     return migrations.length > 3
       ? `${migrations.slice(0, 3).join(", ")} (+${migrations.length - 3} more)`
       : migrations.join(", ");
+  }
+
+  async function auditInReviewIssuesWithoutReviewer() {
+    const staleReviewIssues = await db
+      .select({ id: issues.id, identifier: issues.identifier })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.status, "in_review"),
+          isNull(issues.reviewerAgentId),
+          isNull(issues.reviewerUserId),
+        ),
+      )
+      .limit(200);
+    if (staleReviewIssues.length === 0) return;
+    logger.warn(
+      {
+        reason: "stale_in_review_no_reviewer",
+        issueCount: staleReviewIssues.length,
+        issueIdentifiers: staleReviewIssues.map((issue) => issue.identifier ?? issue.id),
+      },
+      "startup audit flagged in_review issues without reviewer",
+    );
   }
   
   async function promptApplyMigrations(migrations: string[]): Promise<boolean> {
@@ -288,7 +312,7 @@ export async function startServer(): Promise<StartedServer> {
     }
   }
   
-  let db;
+  let db!: ReturnType<typeof createDb>;
   let pluginMigrationDb;
   let embeddedPostgres: EmbeddedPostgresInstance | null = null;
   let embeddedPostgresStartedByThisProcess = false;
@@ -759,6 +783,9 @@ export async function startServer(): Promise<StartedServer> {
         if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
           logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
         }
+      })
+      .then(async () => {
+        await auditInReviewIssuesWithoutReviewer();
       })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");

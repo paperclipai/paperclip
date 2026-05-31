@@ -986,7 +986,7 @@ function nonPluginOperationIssueCondition() {
   return sql<boolean>`NOT (
     ${issues.originKind} LIKE 'plugin:%:operation'
     OR ${issues.originKind} LIKE 'plugin:%:operation:%'
-    OR ${inArray(issues.originKind, LEGACY_PLUGIN_OPERATION_ORIGIN_KINDS)}
+    OR ${inArray(issues.originKind, [...LEGACY_PLUGIN_OPERATION_ORIGIN_KINDS])}
   )`;
 }
 
@@ -1905,6 +1905,8 @@ const issueListSelect = {
   priority: issues.priority,
   assigneeAgentId: issues.assigneeAgentId,
   assigneeUserId: issues.assigneeUserId,
+  reviewerAgentId: issues.reviewerAgentId,
+  reviewerUserId: issues.reviewerUserId,
   checkoutRunId: issues.checkoutRunId,
   executionRunId: issues.executionRunId,
   executionAgentNameKey: issues.executionAgentNameKey,
