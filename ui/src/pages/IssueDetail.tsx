@@ -65,6 +65,7 @@ import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
+import { IssueDeliverablesCard } from "../components/IssueDeliverablesCard";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssuesList } from "../components/IssuesList";
 import { AgentIcon } from "../components/AgentIconPicker";
@@ -3684,6 +3685,7 @@ export function IssueDetail() {
       <IssueLineageStrip issue={issue} childIssues={childIssues} />
 
       <IssueOutcomeCard issue={issue} runs={outcomeRuns} />
+      <IssueDeliverablesCard issue={issue} childIssues={childIssues} runs={outcomeRuns} />
 
       <IssueOnboardingArticlePlanCard starterContext={onboardingStarterContext} />
 
