@@ -3063,6 +3063,54 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ).rejects.toMatchObject({ status: 422 });
   });
 
+  it("rejects checkout when a blocked parent still has non-terminal children", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const parentId = randomUUID();
+    const childId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Blocked parent",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId,
+      },
+      {
+        id: childId,
+        companyId,
+        title: "Observation child",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId,
+        parentId,
+      },
+    ]);
+
+    await expect(
+      svc.checkout(parentId, assigneeAgentId, ["todo", "blocked"], null),
+    ).rejects.toMatchObject({ status: 422 });
+  });
+
   it("wakes parents only when all direct children are terminal", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();

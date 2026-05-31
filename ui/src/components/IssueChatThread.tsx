@@ -645,9 +645,13 @@ function parseReassignment(target: string): PaperclipIssueRuntimeReassignment | 
   return null;
 }
 
-function shouldImplicitlyReopenComment(issueStatus: string | undefined, assigneeValue: string) {
+function shouldImplicitlyReopenComment(
+  issueStatus: string | undefined,
+  assigneeValue: string,
+  assigneeChanged: boolean,
+) {
   const resumesToTodo = issueStatus === "done" || issueStatus === "cancelled" || issueStatus === "blocked";
-  return resumesToTodo && assigneeValue.startsWith("agent:");
+  return resumesToTodo && assigneeChanged && assigneeValue.startsWith("agent:");
 }
 
 function isUnassignedReassignValue(value: string): boolean {
@@ -3386,6 +3390,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     const reopen = shouldImplicitlyReopenComment(
       issueStatus,
       hasReassignment ? reassignTarget : currentAssigneeValue,
+      hasReassignment,
     ) ? true : undefined;
     const submittedBody = trimmed;
     const viewportSnapshot = captureComposerViewportSnapshot(composerContainerRef.current);

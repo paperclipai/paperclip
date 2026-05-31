@@ -659,7 +659,12 @@ async function listIssueDependencyReadinessMap(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
   issueIds: string[],
+  options?: { includeChildBlockers?: boolean },
 ) {
+  // EVF patch #6 (non-terminal children block parent checkout) is on by default.
+  // Callers under v529 tree-control (active pause-hold) pass false so children
+  // defer to tree-control and don't block an authorised parent checkout.
+  const includeChildBlockers = options?.includeChildBlockers ?? true;
   const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
   const readinessMap = new Map<string, IssueDependencyReadiness>();
   for (const issueId of uniqueIssueIds) {
@@ -667,28 +672,47 @@ async function listIssueDependencyReadinessMap(
   }
   if (uniqueIssueIds.length === 0) return readinessMap;
 
-  const blockerRows = await dbOrTx
-    .select({
-      issueId: issueRelations.relatedIssueId,
-      blockerIssueId: issueRelations.issueId,
-      blockerStatus: issues.status,
-      blockerExecutionWorkspaceId: issues.executionWorkspaceId,
-    })
-    .from(issueRelations)
-    .innerJoin(issues, eq(issueRelations.issueId, issues.id))
-    .where(
-      and(
-        eq(issueRelations.companyId, companyId),
-        eq(issueRelations.type, "blocks"),
-        inArray(issueRelations.relatedIssueId, uniqueIssueIds),
+  const [blockerRows, childRows] = await Promise.all([
+    dbOrTx
+      .select({
+        issueId: issueRelations.relatedIssueId,
+        blockerIssueId: issueRelations.issueId,
+        blockerStatus: issues.status,
+        blockerExecutionWorkspaceId: issues.executionWorkspaceId,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.type, "blocks"),
+          inArray(issueRelations.relatedIssueId, uniqueIssueIds),
+        ),
       ),
-    );
+    dbOrTx
+      .select({
+        issueId: issues.parentId,
+        blockerIssueId: issues.id,
+        blockerStatus: issues.status,
+        // Children gate on terminal-status only (EVF patch #6); never the
+        // workspace-finalize barrier. Null workspace id => finalize branch skips them.
+        blockerExecutionWorkspaceId: sql<string | null>`null`,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          inArray(issues.parentId, uniqueIssueIds),
+        ),
+      ),
+  ]);
 
-  // Collect executionWorkspaceIds of "done" blockers — these are the only ones
-  // subject to the workspace-finalize barrier. Blockers that aren't done already
-  // mark the dependent as not-ready and don't need a finalize check.
+  // Collect executionWorkspaceIds of "done" blockers/children -- only these are
+  // subject to the workspace-finalize barrier. Dependencies that aren't done
+  // already mark the dependent as not-ready and need no finalize check.
+  const effectiveChildRows = includeChildBlockers ? childRows : [];
   const doneBlockerWorkspaceIds = new Set<string>();
-  for (const row of blockerRows) {
+  for (const row of [...blockerRows, ...effectiveChildRows]) {
     if (row.blockerStatus === "done" && row.blockerExecutionWorkspaceId) {
       doneBlockerWorkspaceIds.add(row.blockerExecutionWorkspaceId);
     }
@@ -699,26 +723,29 @@ async function listIssueDependencyReadinessMap(
     [...doneBlockerWorkspaceIds],
   );
 
-  for (const row of blockerRows) {
+  for (const row of [...blockerRows, ...effectiveChildRows]) {
+    if (!row.issueId) continue;
     const current = readinessMap.get(row.issueId) ?? createIssueDependencyReadiness(row.issueId);
-    current.blockerIssueIds.push(row.blockerIssueId);
-    // Only done blockers resolve dependents; cancelled blockers stay unresolved
-    // until an operator removes or replaces the blocker relationship explicitly.
-    if (row.blockerStatus !== "done") {
+    if (!current.blockerIssueIds.includes(row.blockerIssueId)) {
+      current.blockerIssueIds.push(row.blockerIssueId);
+    }
+    // Only done blockers/children resolve dependents; cancelled ones stay
+    // unresolved until an operator removes or replaces the relationship.
+    if (
+      row.blockerStatus !== "done" &&
+      !current.unresolvedBlockerIssueIds.includes(row.blockerIssueId)
+    ) {
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
-      current.unresolvedBlockerCount += 1;
+      current.unresolvedBlockerCount = current.unresolvedBlockerIssueIds.length;
       current.allBlockersDone = false;
       current.isDependencyReady = false;
     } else if (
       row.blockerExecutionWorkspaceId &&
       unfinalizedWorkspaceIds.has(row.blockerExecutionWorkspaceId)
     ) {
-      // Workspace-finalize barrier: the blocker's most recent run on its
-      // execution workspace hasn't recorded a successful workspace_finalize.
-      // Treat the dependent as not-ready until sync-back lands (or the run
-      // finalizes); a subsequent finalize wake will re-evaluate readiness.
-      // `allBlockersDone` is cleared too so that callers using it as a
-      // proxy for "this dependent can proceed" still see the gate.
+      // Workspace-finalize barrier: the dependency's most recent run on its
+      // execution workspace has no successful workspace_finalize yet. Hold the
+      // dependent not-ready until sync-back lands; a finalize wake re-evaluates.
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
       current.unresolvedBlockerCount += 1;
       current.pendingFinalizeBlockerIssueIds.push(row.blockerIssueId);
@@ -5347,7 +5374,11 @@ export function issueService(db: Db) {
 
       await clearExecutionRunIfTerminal(id);
 
-      const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
+      const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id], {
+        // EVF patch #6 defers to v529 tree-control: when an active pause-hold gate
+        // governs this checkout, non-terminal children do not block it.
+        includeChildBlockers: !activePauseHold,
+      });
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
       if (unresolvedBlockerIssueIds.length > 0) {
         throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });

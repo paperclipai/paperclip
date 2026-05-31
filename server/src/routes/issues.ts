@@ -83,6 +83,7 @@ import {
   clampIssueListLimit,
   documentService,
   documentAnnotationService,
+  filterIssueContinuationSummaryDocument,
   logActivity,
   projectService,
   routineService,
@@ -707,13 +708,17 @@ function isClosedIssueStatus(status: string | null | undefined): status is "done
 function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
+  assigneeChanged: boolean;
   actorType: "agent" | "user";
   actorId: string;
 }) {
-  // Only human comments should implicitly reopen finished work.
-  // Agent-authored comments remain communicative unless reopen was explicit.
+  // Only human comments that also reassign closed work to an agent should
+  // implicitly reopen it. Generic comments remain communicative unless
+  // reopen/resume was explicit, which prevents mirrored or attribution-noise
+  // comments from reactivating completed issues.
   if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  if (!isClosedIssueStatus(input.issueStatus)) return false;
+  if (!input.assigneeChanged) return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -2627,6 +2632,19 @@ export function issueRoutes(
         ? redactQuarantinedBodyForHigherTrust(continuationSummary)
         : continuationSummary;
 
+    const filteredContinuationSummary = safeContinuationSummary
+      ? filterIssueContinuationSummaryDocument(
+        {
+          id: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          status: issue.status,
+          priority: issue.priority,
+        },
+        safeContinuationSummary,
+      )
+      : null;
+
     res.json({
       issue: {
         id: issue.id,
@@ -2685,15 +2703,15 @@ export function issueRoutes(
         contentPath: withContentPath(a).contentPath,
         createdAt: a.createdAt,
       })),
-      continuationSummary: safeContinuationSummary
+      continuationSummary: filteredContinuationSummary
         ? {
-            key: safeContinuationSummary.key,
-            title: safeContinuationSummary.title,
-            body: safeContinuationSummary.body ?? "",
-            latestRevisionId: safeContinuationSummary.latestRevisionId,
-            latestRevisionNumber: safeContinuationSummary.latestRevisionNumber,
-            updatedAt: safeContinuationSummary.updatedAt,
-            sourceTrust: safeContinuationSummary.sourceTrust ?? null,
+            key: filteredContinuationSummary.key,
+            title: filteredContinuationSummary.title,
+            body: filteredContinuationSummary.body,
+            latestRevisionId: filteredContinuationSummary.latestRevisionId,
+            latestRevisionNumber: filteredContinuationSummary.latestRevisionNumber,
+            updatedAt: filteredContinuationSummary.updatedAt,
+            sourceTrust: filteredContinuationSummary.sourceTrust ?? null,
           }
         : null,
       currentExecutionWorkspace,
@@ -4683,6 +4701,11 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(existing.companyId, updateFields.executionWorkspaceSettings?.environmentId);
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
+    const requestedAssigneeUserId =
+      req.body.assigneeUserId === undefined ? existing.assigneeUserId : req.body.assigneeUserId;
+    const requestedAssigneeChanged =
+      requestedAssigneeAgentId !== existing.assigneeAgentId
+      || requestedAssigneeUserId !== existing.assigneeUserId;
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
     const recoveryRelevantSourceMutationRequested =
       req.body.status !== undefined ||
@@ -4724,6 +4747,7 @@ export function issueRoutes(
         shouldImplicitlyMoveCommentedIssueToTodo({
           issueStatus: existing.status,
           assigneeAgentId: requestedAssigneeAgentId,
+          assigneeChanged: requestedAssigneeChanged,
           actorType: actor.actorType,
           actorId: actor.actorId,
         })) ||
@@ -6476,6 +6500,7 @@ export function issueRoutes(
       shouldImplicitlyMoveCommentedIssueToTodo({
         issueStatus: issue.status,
         assigneeAgentId: issue.assigneeAgentId,
+        assigneeChanged: false,
         actorType: actor.actorType,
         actorId: actor.actorId,
       }) ||

@@ -1870,6 +1870,8 @@ export function agentRoutes(
         title: issue.title,
         status: issue.status,
         priority: issue.priority,
+        assigneeAgentId: issue.assigneeAgentId,
+        assigneeUserId: issue.assigneeUserId,
         projectId: issue.projectId,
         goalId: issue.goalId,
         parentId: issue.parentId,

@@ -4,6 +4,7 @@ import {
   buildContinuationSummaryMarkdown,
   continuationSummaryParksExecutor,
   extractContinuationSummaryNextAction,
+  filterIssueContinuationSummaryDocument,
 } from "../services/issue-continuation-summary.js";
 
 describe("issue continuation summaries", () => {
@@ -111,5 +112,55 @@ describe("issue continuation summaries", () => {
     ].join("\n");
 
     expect(continuationSummaryParksExecutor(body)).toBe(false);
+  });
+
+  it("suppresses stale summaries whose status no longer matches the issue", () => {
+    const summary = {
+      key: "continuation-summary" as const,
+      title: "Continuation Summary",
+      body: [
+        "# Continuation Summary",
+        "",
+        "- Issue: PAP-1579 — Add continuation summaries",
+        "- Status: done",
+        "- Priority: medium",
+      ].join("\n"),
+      latestRevisionId: "revision-1",
+      latestRevisionNumber: 1,
+      updatedAt: new Date("2026-04-19T12:00:00.000Z"),
+    };
+
+    expect(filterIssueContinuationSummaryDocument({
+      id: "issue-1",
+      identifier: "PAP-1579",
+      title: "Add continuation summaries",
+      status: "todo",
+      priority: "medium",
+    }, summary)).toBeNull();
+  });
+
+  it("keeps summaries whose issue header still matches the live issue", () => {
+    const summary = {
+      key: "continuation-summary" as const,
+      title: "Continuation Summary",
+      body: [
+        "# Continuation Summary",
+        "",
+        "- Issue: PAP-1579 — Add continuation summaries",
+        "- Status: in_progress",
+        "- Priority: medium",
+      ].join("\n"),
+      latestRevisionId: "revision-1",
+      latestRevisionNumber: 1,
+      updatedAt: new Date("2026-04-19T12:00:00.000Z"),
+    };
+
+    expect(filterIssueContinuationSummaryDocument({
+      id: "issue-1",
+      identifier: "PAP-1579",
+      title: "Add continuation summaries",
+      status: "in_progress",
+      priority: "medium",
+    }, summary)).toEqual(summary);
   });
 });

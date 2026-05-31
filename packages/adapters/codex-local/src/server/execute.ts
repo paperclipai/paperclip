@@ -82,6 +82,23 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
+function renderPaperclipApiAccessNote(env: Record<string, string>): string {
+  if (!hasNonEmptyEnvValue(env, "PAPERCLIP_API_URL") || !hasNonEmptyEnvValue(env, "PAPERCLIP_API_KEY")) {
+    return "";
+  }
+  return [
+    "Paperclip API access note:",
+    "Use Authorization: Bearer $PAPERCLIP_API_KEY on every Paperclip API request.",
+    "Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every Paperclip API request that writes or mutates data, including comments and issue updates.",
+    "GET example:",
+    `  curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_URL/api/agents/me"`,
+    "POST/PATCH example:",
+    `  curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H 'Content-Type: application/json' -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -d '{...}' "$PAPERCLIP_API_URL/api/issues/{id}/checkout"`,
+    "",
+    "",
+  ].join("\n");
+}
+
 function resolveCodexBillingType(env: Record<string, string>): "api" | "subscription" {
   // Codex uses API-key auth when OPENAI_API_KEY is present; otherwise rely on local login/session auth.
   return hasNonEmptyEnvValue(env, "OPENAI_API_KEY") ? "api" : "subscription";
@@ -592,6 +609,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
   instructionsChars = promptInstructionsPrefix.length;
+  const paperclipApiAccessNote = renderPaperclipApiAccessNote(env);
   const continuationSummary = parseObject(context.paperclipContinuationSummary);
   const continuationSummaryBody = asString(continuationSummary.body, "").trim() || null;
   const codexFallbackHandoffNote =
@@ -663,6 +681,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
+    paperclipApiAccessNote,
     wakePrompt,
     codexFallbackHandoffNote,
     sessionHandoffNote,

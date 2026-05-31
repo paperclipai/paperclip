@@ -796,6 +796,10 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assigned" })).toBe(true);
   });
 
+  it("resets session context on issue status change wakes", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "issue_status_changed" })).toBe(true);
+  });
+
   it("resets session context on execution review wakes", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "execution_review_requested" })).toBe(true);
   });

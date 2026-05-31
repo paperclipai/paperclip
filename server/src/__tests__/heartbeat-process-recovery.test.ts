@@ -1411,6 +1411,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments.some((comment) => comment.body.includes("workspace failed validation"))).toBe(true);
   });
 
+  it("preserves the original adapter failure for issue-bound runs instead of crashing liveness classification", async () => {
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "adapter_failed",
+      errorMessage: "Synthetic adapter failure for liveness regression",
+      provider: "test",
+      model: "test-model",
+      resultJson: null,
+    });
+
+    const { runId } = await seedQueuedIssueRunFixture();
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+
+    const settledRun = await waitForValue(async () => {
+      const run = await heartbeat.getRun(runId);
+      return run?.status === "failed" && run.livenessState === "failed" ? run : null;
+    }, 5_000);
+
+    expect(settledRun?.errorCode).toBe("adapter_failed");
+    expect(settledRun?.error).toBe("Synthetic adapter failure for liveness regression");
+    expect(settledRun?.livenessReason ?? "").not.toContain("contextIssue is not defined");
+  });
+
   it("queues one finish-handoff wake when a successful run leaves in-progress work without a next action", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {

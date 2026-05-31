@@ -48,6 +48,8 @@ export type IssueContinuationSummaryDocument = {
   updatedAt: Date;
 };
 
+type IssueContinuationSummaryIssueSnapshot = Pick<IssueSummaryInput, "id" | "identifier" | "title" | "status" | "priority">;
+
 function truncateText(value: string, maxChars: number) {
   const trimmed = value.trim();
   if (trimmed.length <= maxChars) return trimmed;
@@ -237,6 +239,34 @@ export async function getIssueContinuationSummaryDocument(
     sourceTrust: row.sourceTrust ?? null,
     updatedAt: row.updatedAt,
   };
+}
+
+function readSummaryField(body: string, label: string) {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`^- ${escaped}:\\s*(.+)$`, "m").exec(body);
+  return match?.[1]?.trim() ?? null;
+}
+
+export function filterIssueContinuationSummaryDocument<
+  TSummary extends { body?: string | null },
+>(
+  issue: IssueContinuationSummaryIssueSnapshot,
+  summary: TSummary | null,
+): TSummary | null {
+  if (!summary) return null;
+  const body = summary.body;
+  if (!body) return summary;
+
+  const summaryIssueLine = readSummaryField(body, "Issue");
+  const summaryStatus = readSummaryField(body, "Status");
+  const summaryPriority = readSummaryField(body, "Priority");
+  const expectedIssueLine = `${issue.identifier ?? issue.id} — ${issue.title}`;
+
+  if (summaryIssueLine && summaryIssueLine !== expectedIssueLine) return null;
+  if (summaryStatus && summaryStatus !== issue.status) return null;
+  if (summaryPriority && summaryPriority !== issue.priority) return null;
+
+  return summary;
 }
 
 export async function refreshIssueContinuationSummary(input: {

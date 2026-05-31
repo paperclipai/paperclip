@@ -13,6 +13,7 @@ vi.mock("acpx/runtime", () => ({
 
 const agentId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
+const orionAgentId = "33333333-3333-4333-8333-333333333333";
 
 const baseAgent = {
   id: agentId,
@@ -82,6 +83,7 @@ const mockIssueApprovalService = vi.hoisted(() => ({
 
 const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
+  listDependencyReadiness: vi.fn(),
 }));
 
 const mockSecretService = vi.hoisted(() => ({
@@ -196,6 +198,10 @@ function registerModuleMocks() {
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     issueApprovalService: () => mockIssueApprovalService,
     issueService: () => mockIssueService,
+    issueRecoveryActionService: () => ({
+      getActiveForIssue: vi.fn(async () => null),
+      listActiveForIssues: vi.fn(async () => new Map()),
+    }),
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
@@ -319,6 +325,7 @@ describe.sequential("agent permission routes", () => {
     mockHeartbeatService.cancelRun.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
+    mockIssueService.listDependencyReadiness.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
     mockSecretService.resolveAdapterConfigForRuntime.mockReset();
     mockAgentInstructionsService.materializeManagedBundle.mockReset();
@@ -370,6 +377,7 @@ describe.sequential("agent permission routes", () => {
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(async (_companyId, requested) => requested);
     mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
+    mockIssueService.listDependencyReadiness.mockResolvedValue(new Map());
     mockAgentInstructionsService.materializeManagedBundle.mockImplementation(
       async (agent: Record<string, unknown>, files: Record<string, string>) => ({
         bundle: null,
@@ -1490,6 +1498,77 @@ describe.sequential("agent permission routes", () => {
       status: "backlog,todo,in_progress,in_review,blocked,done",
       limit: 500,
     });
+  });
+
+  it("preserves assignee fields in inbox-lite responses for blocked issues", async () => {
+    const updatedAt = new Date("2026-05-17T04:00:00.000Z");
+    mockIssueService.list.mockResolvedValue([
+      {
+        id: "issue-1",
+        identifier: "EDG-2881",
+        title: "Blocked waiting for Orion",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: orionAgentId,
+        assigneeUserId: null,
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        updatedAt,
+        activeRun: null,
+      },
+    ]);
+    mockIssueService.listDependencyReadiness.mockResolvedValue(
+      new Map([
+        [
+          "issue-1",
+          {
+            isDependencyReady: false,
+            unresolvedBlockerCount: 1,
+            unresolvedBlockerIssueIds: ["blocker-1"],
+          },
+        ],
+      ]),
+    );
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/agents/me/inbox-lite"));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      {
+        id: "issue-1",
+        identifier: "EDG-2881",
+        title: "Blocked waiting for Orion",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: orionAgentId,
+        assigneeUserId: null,
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        updatedAt: updatedAt.toISOString(),
+        activeRun: null,
+        activeRecoveryAction: null,
+        dependencyReady: false,
+        unresolvedBlockerCount: 1,
+        unresolvedBlockerIssueIds: ["blocker-1"],
+      },
+    ]);
+    expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
+      assigneeAgentId: agentId,
+      status: "todo,in_progress,blocked",
+      includeRoutineExecutions: true,
+      limit: 500,
+    });
+    expect(mockIssueService.listDependencyReadiness).toHaveBeenCalledWith(companyId, ["issue-1"]);
   });
 
   it("rejects heartbeat cancellation outside the caller company scope", async () => {
