@@ -5247,6 +5247,52 @@ export function issueRoutes(
     res.json(result);
   });
 
+  // PAP-197: Clear stale execution lock for self-serve recovery
+  router.post("/issues/:id/clear-execution-lock", async (req, res) => {
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board access required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      throw forbidden("Board user context required");
+    }
+
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const result = await svc.clearStaleExecutionLock(id);
+    if (!result) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.clear_execution_lock",
+      entityType: "issue",
+      entityId: existing.id,
+      details: {
+        issueId: existing.id,
+        actorUserId: req.actor.userId,
+        previousExecutionRunId: result.previousExecutionRunId,
+        previousCheckoutRunId: result.previousCheckoutRunId,
+        clearedExecutionRunId: result.clearedExecutionRunId,
+      },
+    });
+
+    res.json(result);
+  });
+
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
