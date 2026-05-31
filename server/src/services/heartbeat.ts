@@ -7187,6 +7187,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
+    // Defer (not cancel) if adapter route is cooling down from a quota event.
+    if (providerCooldownService?.isCoolingDown(agent.adapterType ?? "")) {
+      logger.info(
+        { agentId: agent.id, adapterType: agent.adapterType },
+        "claimQueuedRun: deferred — adapter on cooldown",
+      );
+      return null; // null = defer; DO NOT cancel the run
+    }
+
     // Premium cap: defer (leave queued) if premium slot is occupied (FUL-5144)
     if (PREMIUM_ADAPTER_TYPES.includes(agent.adapterType ?? "")) {
       const contextModelProfile = readContextModelProfile(context);
