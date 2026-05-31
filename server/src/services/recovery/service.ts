@@ -2405,38 +2405,62 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
       }
 
-      const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
-      if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
+      // GH#6750: re-fetch live issue state before each retain/expire decision to
+      // avoid acting on a stale bulk-query snapshot (status or assignee may have
+      // changed while iterating earlier candidates in this reconcile pass).
+      const liveIssue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issue.id))
+        .then((rows) => rows[0] ?? null);
+      if (!liveIssue) {
+        result.skipped += 1;
+        continue;
+      }
+      if (liveIssue.status !== "todo" && liveIssue.status !== "in_progress") {
+        // Status changed since the bulk query — skip to avoid acting on stale data.
+        result.skipped += 1;
+        continue;
+      }
+      // Re-read agentId from live state; assignee may have changed since bulk query.
+      const liveAgentId = liveIssue.assigneeAgentId;
+      if (!liveAgentId || liveAgentId !== agentId) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const latestRun = await getLatestIssueRun(liveIssue.companyId, liveIssue.id);
+      if (isStrandedIssueRecoveryIssue(liveIssue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
-          issue,
-          previousStatus: issue.status as "todo" | "in_progress",
+          issue: liveIssue,
+          previousStatus: liveIssue.status as "todo" | "in_progress",
           latestRun,
         });
         if (updated) {
           result.escalated += 1;
-          result.issueIds.push(issue.id);
+          result.issueIds.push(liveIssue.id);
         } else {
           result.skipped += 1;
         }
         continue;
       }
 
-      if (issue.status === "todo") {
+      if (liveIssue.status === "todo") {
         if (!latestRun) {
-          if (await hasQueuedIssueWake(issue.companyId, issue.id)) {
+          if (await hasQueuedIssueWake(liveIssue.companyId, liveIssue.id)) {
             result.skipped += 1;
             continue;
           }
 
-          if (await isInvocationBudgetBlocked(issue, agentId)) {
+          if (await isInvocationBudgetBlocked(liveIssue, agentId)) {
             result.skipped += 1;
             continue;
           }
 
-          const queued = await enqueueInitialAssignedTodoDispatch(issue, agentId);
+          const queued = await enqueueInitialAssignedTodoDispatch(liveIssue, agentId);
           if (queued) {
             result.assignmentDispatched += 1;
-            result.issueIds.push(issue.id);
+            result.issueIds.push(liveIssue.id);
           } else {
             result.skipped += 1;
           }
@@ -2451,7 +2475,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
           const failureSummary = summarizeRunFailureForIssueComment(latestRun);
           const updated = await escalateStrandedAssignedIssue({
-            issue,
+            issue: liveIssue,
             previousStatus: "todo",
             latestRun,
             comment:
@@ -2461,20 +2485,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           });
           if (updated) {
             result.escalated += 1;
-            result.issueIds.push(issue.id);
+            result.issueIds.push(liveIssue.id);
           } else {
             result.skipped += 1;
           }
           continue;
         }
 
-        if (await isInvocationBudgetBlocked(issue, agentId)) {
+        if (await isInvocationBudgetBlocked(liveIssue, agentId)) {
           result.skipped += 1;
           continue;
         }
 
         const queued = await enqueueStrandedIssueRecovery({
-          issueId: issue.id,
+          issueId: liveIssue.id,
           agentId,
           reason: "issue_assignment_recovery",
           retryReason: "assignment_recovery",
@@ -2483,14 +2507,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
         if (queued) {
           result.dispatchRequeued += 1;
-          result.issueIds.push(issue.id);
+          result.issueIds.push(liveIssue.id);
         } else {
           result.skipped += 1;
         }
         continue;
       }
 
-      if (!latestRun && !issue.checkoutRunId && !issue.executionRunId) {
+      if (!latestRun && !liveIssue.checkoutRunId && !liveIssue.executionRunId) {
         result.skipped += 1;
         continue;
       }
@@ -2502,7 +2526,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         const updated = await escalateStrandedAssignedIssue({
-          issue,
+          issue: liveIssue,
           previousStatus: "in_progress",
           latestRun,
           recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
@@ -2510,7 +2534,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
         if (updated) {
           result.successfulRunHandoffEscalated += 1;
-          result.issueIds.push(issue.id);
+          result.issueIds.push(liveIssue.id);
         } else {
           result.skipped += 1;
         }
@@ -2527,7 +2551,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
         if (isRepeatedProductiveContinuationRecovery(successfulRun)) {
           const updated = await escalateStrandedAssignedIssue({
-            issue,
+            issue: liveIssue,
             previousStatus: "in_progress",
             latestRun: successfulRun,
             comment:
@@ -2536,20 +2560,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           });
           if (updated) {
             result.escalated += 1;
-            result.issueIds.push(issue.id);
+            result.issueIds.push(liveIssue.id);
           } else {
             result.skipped += 1;
           }
           continue;
         }
 
-        if (await isInvocationBudgetBlocked(issue, agentId)) {
+        if (await isInvocationBudgetBlocked(liveIssue, agentId)) {
           result.skipped += 1;
           continue;
         }
 
         const queued = await enqueueStrandedIssueRecovery({
-          issueId: issue.id,
+          issueId: liveIssue.id,
           agentId,
           reason: "issue_continuation_needed",
           retryReason: "issue_continuation_needed",
@@ -2558,7 +2582,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
         if (queued) {
           result.continuationRequeued += 1;
-          result.issueIds.push(issue.id);
+          result.issueIds.push(liveIssue.id);
         } else {
           result.skipped += 1;
         }
@@ -2567,7 +2591,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
         const failureSummary = summarizeRunFailureForIssueComment(latestRun);
         const updated = await escalateStrandedAssignedIssue({
-          issue,
+          issue: liveIssue,
           previousStatus: "in_progress",
           latestRun,
           comment:
@@ -2577,29 +2601,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
         if (updated) {
           result.escalated += 1;
-          result.issueIds.push(issue.id);
+          result.issueIds.push(liveIssue.id);
         } else {
           result.skipped += 1;
         }
         continue;
       }
 
-      if (await isInvocationBudgetBlocked(issue, agentId)) {
+      if (await isInvocationBudgetBlocked(liveIssue, agentId)) {
         result.skipped += 1;
         continue;
       }
 
       const queued = await enqueueStrandedIssueRecovery({
-        issueId: issue.id,
+        issueId: liveIssue.id,
         agentId,
         reason: "issue_continuation_needed",
         retryReason: "issue_continuation_needed",
         source: "issue.continuation_recovery",
-        retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
+        retryOfRunId: latestRun?.id ?? liveIssue.checkoutRunId ?? null,
       });
       if (queued) {
         result.continuationRequeued += 1;
-        result.issueIds.push(issue.id);
+        result.issueIds.push(liveIssue.id);
       } else {
         result.skipped += 1;
       }
