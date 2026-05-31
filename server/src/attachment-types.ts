@@ -42,6 +42,7 @@ export const INLINE_ATTACHMENT_TYPES: readonly string[] = [
   "text/markdown",
   "application/json",
   "text/csv",
+  "text/html",
 ];
 
 /**
@@ -77,6 +78,27 @@ export function matchesContentType(contentType: string, allowedPatterns: string[
 export function normalizeContentType(contentType: string | null | undefined): string {
   const normalized = (contentType ?? "").trim().toLowerCase();
   return normalized || DEFAULT_ATTACHMENT_CONTENT_TYPE;
+}
+
+export function inferContentTypeFromFilename(filename: string | null, fallbackContentType: string): string {
+  if (!filename) return fallbackContentType;
+  const lowerFilename = filename.toLowerCase();
+  if (lowerFilename.endsWith('.md') || lowerFilename.endsWith('.markdown')) {
+    return 'text/markdown';
+  }
+  if (lowerFilename.endsWith('.txt')) {
+    return 'text/plain';
+  }
+  if (lowerFilename.endsWith('.json')) {
+    return 'application/json';
+  }
+  if (lowerFilename.endsWith('.csv')) {
+    return 'text/csv';
+  }
+  if (lowerFilename.endsWith('.html') || lowerFilename.endsWith('.htm')) {
+    return 'text/html';
+  }
+  return fallbackContentType;
 }
 
 export function isInlineAttachmentContentType(contentType: string): boolean {

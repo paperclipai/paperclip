@@ -93,6 +93,7 @@ import {
   isInlineAttachmentContentType,
   normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
+  inferContentTypeFromFilename,
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
@@ -6076,7 +6077,7 @@ export function issueRoutes(
       res.status(400).json({ error: "Missing file field 'file'" });
       return;
     }
-    const contentType = normalizeContentType(file.mimetype);
+    const contentType = inferContentTypeFromFilename(file.originalname, normalizeContentType(file.mimetype));
     if (file.buffer.length <= 0) {
       res.status(422).json({ error: "Attachment is empty" });
       return;
