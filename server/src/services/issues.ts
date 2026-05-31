@@ -68,7 +68,7 @@ import {
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -86,10 +86,13 @@ import {
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
+import { getCompletion } from "./anthropic.js";
+import { documentService } from "./documents.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
+const THREAD_AUTO_COMPACTION_THRESHOLD = 50;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
@@ -2052,6 +2055,7 @@ const issueListSelect = {
   hiddenAt: issues.hiddenAt,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
+  commentCount: sql<number>`(SELECT count(*)::int FROM "issue_comments" WHERE "issue_comments"."issue_id" = "issues"."id")`,
 };
 
 function withActiveRuns(
@@ -6326,10 +6330,105 @@ export function issueService(db: Db) {
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));
 
+      void this.queueCompaction(issueId);
+
       return redactIssueComment(comment, currentUserRedactionOptions.enabled);
     },
 
-    createAttachment: async (input: {
+    queueCompaction: async (issueId: string) => {
+      const [{ count }] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, issueId));
+
+      if (count >= 50 && count % 25 === 0) {
+        void this.runAutoCompaction(issueId);
+      }
+    },
+
+    runAutoCompaction: async (issueId: string) => {
+      const dbOrTx = db; // Using base db
+
+      const issue = await dbOrTx
+        .select({ id: issues.id, executionState: issues.executionState })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!issue) return;
+
+      const state = parseIssueExecutionState(issue.executionState) ?? { status: "idle" };
+      if (state.compactionInProgress) return;
+
+      // Set compactionInProgress = true
+      await dbOrTx
+        .update(issues)
+        .set({
+          executionState: { ...state, compactionInProgress: true },
+        })
+        .where(eq(issues.id, issueId));
+
+      try {
+        const comments = await dbOrTx
+          .select({
+            id: issueComments.id,
+            authorAgentId: issueComments.authorAgentId,
+            body: issueComments.body,
+            createdAt: issueComments.createdAt,
+          })
+          .from(issueComments)
+          .where(eq(issueComments.issueId, issueId))
+          .orderBy(asc(issueComments.createdAt));
+
+        const threadContent = comments.map(c => `${c.authorAgentId ?? "unknown"}: ${c.body}`).join("\n\n");
+        const prompt = `You are summarizing an issue thread for future agents who will resume work.
+Extract and preserve verbatim:
+- Current status and stop condition
+- Key decisions made (include issue identifiers like FUL-XXXX)
+- Named blockers and their owners
+- Last verified good state and last verified bad state
+- Open risks
+Do NOT paraphrase decisions. Include exact quotes where decisions are stated.
+
+Thread:
+${threadContent}`;
+
+        const summary = await getCompletion(prompt, "claude-haiku-4-5-20251001");
+
+        const documentsSvc = documentService(dbOrTx);
+        await documentsSvc.upsertIssueDocument({
+          issueId,
+          key: "thread-summary",
+          title: "Thread Summary",
+          format: "markdown",
+          body: summary,
+        });
+
+        console.log(`Compaction completed for issue ${issueId}`);
+      } catch (e) {
+        logger.error({ e, issueId }, "Failed to run auto-compaction");
+      } finally {
+        // Reset compactionInProgress
+        const freshState = parseIssueExecutionState(
+          await dbOrTx.select({ executionState: issues.executionState })
+            .from(issues)
+            .where(eq(issues.id, issueId))
+            .then(rows => rows[0]?.executionState)
+        ) ?? { status: "idle" };
+
+        await dbOrTx
+          .update(issues)
+          .set({
+            executionState: { ...freshState, compactionInProgress: false },
+          })
+          .where(eq(issues.id, issueId));
+      }
+    },
+
+    
+    
+
+        createAttachment: async (input: {
       issueId: string;
       issueCommentId?: string | null;
       provider: string;
