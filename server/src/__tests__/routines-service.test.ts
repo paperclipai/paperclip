@@ -170,7 +170,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       },
     });
     const issueSvc = issueService(db);
-    const routine = await svc.create(
+    const { routine } = await svc.create(
       companyId,
       {
         projectId,
@@ -199,7 +199,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       name: "Other routines",
       status: "in_progress",
     });
-    const otherRoutine = await svc.create(
+    const { routine: otherRoutine } = await svc.create(
       companyId,
       {
         projectId: otherProjectId,
@@ -273,7 +273,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   it("creates draft routines without a project or default assignee", async () => {
     const { companyId, svc } = await seedFixture();
 
-    const routine = await svc.create(
+    const { routine } = await svc.create(
       companyId,
       {
         projectId: null,
@@ -345,7 +345,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       value: "secret-value",
     });
 
-    const routine = await svc.create(
+    const { routine } = await svc.create(
       companyId,
       {
         projectId,
@@ -868,7 +868,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   it("does not coalesce live routine runs with different resolved variables", async () => {
     const { companyId, agentId, projectId, svc } = await seedFixture();
-    const variableRoutine = await svc.create(
+    const { routine: variableRoutine } = await svc.create(
       companyId,
       {
         projectId,
@@ -922,7 +922,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   it("interpolates routine variables into the execution issue and stores resolved values", async () => {
     const { companyId, agentId, projectId, svc } = await seedFixture();
-    const variableRoutine = await svc.create(
+    const { routine: variableRoutine } = await svc.create(
       companyId,
       {
         projectId,
@@ -1069,7 +1069,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       branchName: "pap-1634-routine-branch",
     });
 
-    const branchRoutine = await svc.create(
+    const { routine: branchRoutine } = await svc.create(
       companyId,
       {
         projectId,
@@ -1118,7 +1118,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   it("runs draft routines with one-off agent and project overrides", async () => {
     const { companyId, agentId, projectId, svc } = await seedFixture();
-    const draftRoutine = await svc.create(
+    const { routine: draftRoutine } = await svc.create(
       companyId,
       {
         projectId: null,
@@ -1161,7 +1161,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   it("rejects enabling automation for routines without a default agent", async () => {
     const { companyId, svc } = await seedFixture();
-    const draftRoutine = await svc.create(
+    const { routine: draftRoutine } = await svc.create(
       companyId,
       {
         projectId: null,
@@ -1185,7 +1185,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   it("blocks schedule triggers when required variables do not have defaults", async () => {
     const { companyId, agentId, projectId, svc } = await seedFixture();
-    const variableRoutine = await svc.create(
+    const { routine: variableRoutine } = await svc.create(
       companyId,
       {
         projectId,
@@ -1217,7 +1217,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   it("treats malformed stored defaults as missing when validating schedule triggers", async () => {
     const { companyId, agentId, projectId, svc } = await seedFixture();
-    const variableRoutine = await svc.create(
+    const { routine: variableRoutine } = await svc.create(
       companyId,
       {
         projectId,
