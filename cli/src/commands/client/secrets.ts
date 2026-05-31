@@ -1,3 +1,4 @@
+import * as p from "@clack/prompts";
 import { Command } from "commander";
 import pc from "picocolors";
 import type {
@@ -57,6 +58,15 @@ interface SecretDoctorOptions extends BaseClientOptions {
 interface SecretMigrateInlineEnvOptions extends BaseClientOptions {
   companyId?: string;
   apply?: boolean;
+}
+
+interface SecretRotateOptions extends BaseClientOptions {
+  value?: string;
+  valueEnv?: string;
+}
+
+interface SecretDeleteOptions extends BaseClientOptions {
+  yes?: boolean;
 }
 
 interface SecretProviderHealth {
@@ -502,24 +512,31 @@ export function registerSecretCommands(program: Command): void {
   addCommonClientOptions(
     secrets
       .command("rotate <id>")
-      .description("Rotate a secret's value in-place (keeps same secret ID)")
-      .option("--value <value>", "New secret value (prompted if omitted)")
-      .action(async (id: string, opts: BaseClientOptions & { value?: string }) => {
+      .description("Rotate a secret by setting a new value")
+      .option("--value <value>", "New secret value")
+      .option("--value-env <name>", "Read new secret value from an environment variable")
+      .action(async (id: string, opts: SecretRotateOptions) => {
         try {
-          const ctx = resolveCommandContext(opts, { requireCompany: false });
-          let newValue = opts.value;
-          if (!newValue) {
-            const { createInterface } = await import("readline");
-            const rl = createInterface({ input: process.stdin, output: process.stdout });
-            newValue = await new Promise<string>((resolve) => {
-              rl.question("New secret value: ", (answer) => {
-                rl.close();
-                resolve(answer);
-              });
-            });
+          const ctx = resolveCommandContext(opts, {});
+          let value: string;
+          if (opts.value !== undefined && opts.valueEnv !== undefined) {
+            throw new Error("Use only one of --value or --value-env.");
+          } else if (opts.valueEnv !== undefined) {
+            const envVal = process.env[opts.valueEnv];
+            if (!envVal) throw new Error(`Environment variable ${opts.valueEnv} is empty or unset.`);
+            value = envVal;
+          } else if (opts.value !== undefined) {
+            value = opts.value;
+          } else {
+            const result = await p.password({ message: "New secret value" });
+            if (p.isCancel(result)) {
+              console.log(pc.dim("Cancelled."));
+              process.exit(0);
+            }
+            value = result as string;
           }
-          await ctx.api.post(`/api/secrets/${id}/rotate`, { value: newValue });
-          printOutput(pc.green(`Secret ${id} rotated successfully.`), { json: ctx.json });
+          const updated = await ctx.api.post<CompanySecret>(`/api/secrets/${id}/rotate`, { value });
+          printOutput(ctx.json ? updated : renderSecret(updated!), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
@@ -530,26 +547,23 @@ export function registerSecretCommands(program: Command): void {
     secrets
       .command("delete <id>")
       .description("Delete a secret by ID")
-      .option("--yes", "Skip confirmation prompt", false)
-      .action(async (id: string, opts: BaseClientOptions & { yes?: boolean }) => {
+      .option("-y, --yes", "Skip confirmation prompt")
+      .action(async (id: string, opts: SecretDeleteOptions) => {
         try {
-          const ctx = resolveCommandContext(opts, { requireCompany: false });
+          const ctx = resolveCommandContext(opts, {});
           if (!opts.yes) {
-            const { createInterface } = await import("readline");
-            const rl = createInterface({ input: process.stdin, output: process.stdout });
-            const confirmed = await new Promise<boolean>((resolve) => {
-              rl.question(`Delete secret ${id}? This cannot be undone. [y/N] `, (answer) => {
-                rl.close();
-                resolve(answer.toLowerCase() === "y");
-              });
-            });
-            if (!confirmed) {
-              printOutput(pc.yellow("Aborted."), { json: ctx.json });
-              return;
+            const confirmed = await p.confirm({ message: `Delete secret ${id}? This cannot be undone.` });
+            if (p.isCancel(confirmed) || !confirmed) {
+              console.log(pc.dim("Cancelled."));
+              process.exit(0);
             }
           }
           await ctx.api.delete(`/api/secrets/${id}`);
-          printOutput(pc.green(`Secret ${id} deleted successfully.`), { json: ctx.json });
+          if (!ctx.json) {
+            console.log(pc.green(`Secret ${id} deleted.`));
+          } else {
+            printOutput({ deleted: true, id }, { json: true });
+          }
         } catch (err) {
           handleCommandError(err);
         }
