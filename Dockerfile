@@ -90,16 +90,21 @@ WORKDIR /vendor
 # Each repo's build → `pnpm pack` (or `npm pack`) produces the .tgz the
 # production stage installs. We never commit the tgz; it's reproduced on
 # every image build.
-ARG CCROTATE_REF=4ce3b9834ab340041ee8136c9a9d4e4f2f00ab5e
-# Re-pinned 2026-05-22 to master tips after kkroo claude-k8s#3 / #4 and
-# opencode-k8s#16 / #17 merged. Brings in:
-#  - `--group=1000` on the DinD sidecar so uid-1000 main containers can
-#    use /var/run/docker.sock (closes BLO-5492).
-#  - Raised dind defaults: dockerCpuLimit 2 → 4, dockerMemoryLimit 2Gi → 8Gi.
-#    Heavy CIAB-class agents still override to 4/16Gi explicitly; this
-#    only changes the floor for agents that enable dind without setting
-#    explicit limits.
-ARG CLAUDE_K8S_REF=1aa45069d847a425dc910b6571bb732324faf103
+ARG CCROTATE_REF=5c11c8bacf1248dcbc0b98752b58c6aefd0afaf5
+# Re-pinned 2026-05-30 to current fork tips (was ccrotate de28154 /
+# claude-k8s 1aa4506, both 2026-05-25). Bumps:
+#  - ccrotate (kkroo/ccrotate#main, +21 commits): serve/codex hardening —
+#    sticky out_of_credits exhaustion, codex admission pacing mirroring
+#    anthropic, operator Codex + Anthropic usage cost reporting, and
+#    profile-targeted token writeback so codex-exec-rotated tokens don't
+#    self-revoke. Also the org-disabled-403 → stale+rotate path. Keeps the
+#    bundled rotator in sync with the live ccrotate-serve state schema
+#    (the prior de28154 pin predates all of #79–#93).
+#  - claude-k8s (kkroo/paperclip-adapter-claude-k8s#master, +2 commits):
+#    quarantine/clear Claude sessions rejected for immutable thinking
+#    blocks.
+#  - opencode-k8s unchanged — already at master tip.
+ARG CLAUDE_K8S_REF=1d6a08f7c814208caa3bf2333dd7c35ca50b95ae
 ARG OPENCODE_K8S_REF=7415df50682ff7308a330a156c7cc38996b3b840
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
