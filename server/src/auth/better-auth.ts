@@ -84,12 +84,16 @@ function headersFromExpressRequest(req: Request): Headers {
 }
 
 export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: number }): string[] {
-  const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const trustedOrigins = new Set<string>();
 
-  if (baseUrl) {
+  // Always trust the configured public base URL origin, regardless of
+  // authBaseUrlMode. This lets a reverse-proxied host (e.g.
+  // cortex.neoreef.com:8443) be accepted for CSRF even when baseUrlMode is
+  // "auto" — so Better Auth's baseURL derives per-request and login works on
+  // BOTH the public host and the direct localhost:port at the same time.
+  if (config.authPublicBaseUrl) {
     try {
-      trustedOrigins.add(new URL(baseUrl).origin);
+      trustedOrigins.add(new URL(config.authPublicBaseUrl).origin);
     } catch {
       // Better Auth will surface invalid base URL separately.
     }
