@@ -115,6 +115,12 @@ import {
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
+import {
+  buildAuditBlock as buildPreCommentHookAuditBlock,
+  evaluatePreCommentHooks,
+  parsePreCommentHooks,
+  type PreCommentHookContext,
+} from "../services/pre-comment-hook.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
@@ -1107,6 +1113,34 @@ export function issueRoutes(
       ...attachment,
       contentPath: `/api/attachments/${attachment.id}/content`,
     };
+  }
+
+  async function runPreCommentHooksForActor(
+    res: Response,
+    actor: ReturnType<typeof getActorInfo>,
+    ctx: Omit<PreCommentHookContext, "agentId">,
+  ): Promise<boolean> {
+    if (!actor.agentId) return true;
+    const agent = await agentsSvc.getById(actor.agentId);
+    if (!agent) return true;
+    const hooks = parsePreCommentHooks(agent.adapterConfig);
+    if (hooks.length === 0) return true;
+    const evalCtx: PreCommentHookContext = { ...ctx, agentId: actor.agentId };
+    const result = await evaluatePreCommentHooks(db, hooks, evalCtx);
+    if (result.blocked) {
+      res.status(422).json({
+        error: "Comment blocked by pre-comment hook",
+        auditBlock: buildPreCommentHookAuditBlock(result.matches, evalCtx),
+        matches: result.matches.map((m) => ({
+          hookIndex: m.hookIndex,
+          action: m.action,
+          message: m.message,
+          trigger: m.trigger,
+        })),
+      });
+      return false;
+    }
+    return true;
   }
 
   function parseBooleanQuery(value: unknown) {
@@ -4172,6 +4206,33 @@ export function issueRoutes(
       }
     }
 
+    // preCommentHooks pre-commit guard: when this PATCH carries a commentBody, evaluate
+    // the hook BEFORE svc.update commits the status change. Previously the hook ran AFTER
+    // svc.update, which (when a hook returned action:block) left the status transition
+    // persisted while the caller saw a 422. On retry the status would already match the
+    // proposed value, statusTransition would resolve to "none", and the hook would no
+    // longer fire — bypassing the guard. Now the proposed statusTransition is computed
+    // from updateFields against existing.status and the hook decides before any DB write.
+    if (commentBody) {
+      const proposedStatus =
+        typeof (updateFields as { status?: unknown }).status === "string"
+          ? ((updateFields as { status: string }).status)
+          : existing.status;
+      const proposedStatusTransition =
+        proposedStatus !== existing.status ? `to_${proposedStatus}` : "none";
+      if (
+        !(await runPreCommentHooksForActor(res, actor, {
+          companyId: existing.companyId,
+          issueId: existing.id,
+          body: commentBody,
+          source: "update",
+          statusTransition: proposedStatusTransition,
+        }))
+      ) {
+        return;
+      }
+    }
+
     let issue;
     try {
       if (transition.decision && decisionId) {
@@ -4571,6 +4632,8 @@ export function issueRoutes(
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      // preCommentHooks already evaluated above (pre-svc.update guard); proceed directly
+      // to addComment. See the pre-commit guard block earlier in this handler.
       comment = await svc.addComment(id, commentBody, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
@@ -5746,6 +5809,18 @@ export function issueRoutes(
           });
         }
       }
+    }
+
+    if (
+      !(await runPreCommentHooksForActor(res, actor, {
+        companyId: currentIssue.companyId,
+        issueId: currentIssue.id,
+        body: typeof req.body.body === "string" ? req.body.body : "",
+        source: "comment",
+        statusTransition: null,
+      }))
+    ) {
+      return;
     }
 
     const comment = await svc.addComment(id, req.body.body, {
