@@ -40,4 +40,37 @@ describe("HLT team templates", () => {
       expect(issue.description).toContain("Paperclip issue document");
     }
   });
+
+  it("includes Victoria as the quality review lane before publishing", () => {
+    const victoria = HLT_ARTICLE_FACTORY_TEMPLATE.agents.find((agent) => agent.name === "Victoria Review");
+    expect(victoria).toMatchObject({
+      title: "Victoria Quality Reviewer",
+      profile: "victoria",
+      reportsTo: "Article Lead",
+    });
+    expect(victoria?.capabilities).toContain("research-first");
+    expect(victoria?.capabilities).toContain("evidence-grounded");
+
+    const reviewTask = HLT_ARTICLE_FACTORY_TEMPLATE.issues.find((issue) => issue.assignee === "Victoria Review");
+    expect(reviewTask?.title).toBe("Run Victoria quality review before publishing");
+    expect(reviewTask?.description).toContain("before any publishing step");
+    expect(reviewTask?.description).toContain("strengths, risks, and exact revision requests");
+
+    const mediaIndex = HLT_ARTICLE_FACTORY_TEMPLATE.issues.findIndex((issue) => issue.assignee === "Media Producer");
+    const victoriaIndex = HLT_ARTICLE_FACTORY_TEMPLATE.issues.findIndex((issue) => issue.assignee === "Victoria Review");
+    expect(mediaIndex).toBeGreaterThanOrEqual(0);
+    expect(victoriaIndex).toBeGreaterThan(mediaIndex);
+  });
+
+  it("carries Hermes, Paperclip, and Katailyst source grounding into imports", () => {
+    expect(HLT_ARTICLE_FACTORY_TEMPLATE.sourceRefs).toEqual(expect.arrayContaining([
+      "agent:victoria@v1",
+      "kb:hlt-app-paperclip@v1",
+      "playbook:make-article@v1",
+      "rubric:article-quality-v1@v1",
+    ]));
+    expect(HLT_ARTICLE_FACTORY_TEMPLATE.bestPractices.join(" ")).toContain("Paperclip is the control plane");
+    expect(HLT_ARTICLE_FACTORY_TEMPLATE.bestPractices.join(" ")).toContain("Hermes works best");
+    expect(HLT_ARTICLE_FACTORY_TEMPLATE.bestPractices.join(" ")).toContain("Victoria provides the article-quality review lane");
+  });
 });

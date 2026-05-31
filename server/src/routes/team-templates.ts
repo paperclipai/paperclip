@@ -5,6 +5,20 @@ import { agentService, goalService, issueService, logActivity, projectService } 
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 const READABLE_DELIVERABLE_RULE = "If this task creates or reviews human-facing content, save the actual readable deliverable as a Paperclip issue document before asking for approval or marking done. A registry ref, run summary, or comment saying the work exists is not enough.";
+const VICTORIA_REVIEW_RULE = "Before publishing, sending, or marking the pilot article flow complete, route the visible brief, draft, review notes, and media checklist through Victoria-style quality review: research-first, evidence-grounded, registry-aware, and focused on top 1% student usefulness.";
+const TEMPLATE_SOURCE_REFS = [
+  "agent:victoria@v1",
+  "kb:hlt-app-paperclip@v1",
+  "playbook:make-article@v1",
+  "skill:hlt-product-article-creation-playbook@v1",
+  "rubric:article-quality-v1@v1",
+] as const;
+const TEMPLATE_BEST_PRACTICES = [
+  "Paperclip is the control plane: keep ownership, approvals, budgets, and visible artifacts here; durable execution stays in Hermes/Thomas.",
+  "Hermes works best with specific goals, context files, reusable skills, and tool-using execution rather than vague chat prompts.",
+  "Agent teams should coordinate through tasks and visible artifacts, not hidden agent-to-agent chatter or comments that say output exists elsewhere.",
+  "Victoria provides the article-quality review lane: research-first, evidence-based, registry-aware, proactive, and top-1% useful for HLT students.",
+] as const;
 const DEFAULT_HTTP_AGENT_CONFIG = {
   url: "${env:PAPERCLIP_THOMAS_BRIDGE_URL}",
   method: "POST",
@@ -54,6 +68,8 @@ type TeamTemplate = {
   };
   agents: AgentTemplate[];
   issues: IssueTemplate[];
+  sourceRefs: readonly string[];
+  bestPractices: readonly string[];
 };
 
 export const HLT_ARTICLE_FACTORY_TEMPLATE: TeamTemplate = {
@@ -68,6 +84,8 @@ export const HLT_ARTICLE_FACTORY_TEMPLATE: TeamTemplate = {
     name: "Article Factory Pilot",
     description: "Prove one complete article flow: choose a useful topic, show the topic brief, show the draft, review it, prepare media, and only then move toward publishing.",
   },
+  sourceRefs: TEMPLATE_SOURCE_REFS,
+  bestPractices: TEMPLATE_BEST_PRACTICES,
   agents: [
     {
       name: "Article Lead",
@@ -76,6 +94,15 @@ export const HLT_ARTICLE_FACTORY_TEMPLATE: TeamTemplate = {
       icon: "target",
       profile: "orchestrator",
       capabilities: "Turns an operator request into article tasks, assigns the right specialist, and checks that every deliverable is visible before asking for approval.",
+    },
+    {
+      name: "Victoria Review",
+      role: "qa",
+      title: "Victoria Quality Reviewer",
+      icon: "shield",
+      profile: "victoria",
+      reportsTo: "Article Lead",
+      capabilities: "Reviews visible briefs, drafts, review notes, and media checklists with Victoria standards: research-first, evidence-grounded, registry-aware, and top 1% useful for students.",
     },
     {
       name: "Topic Researcher",
@@ -159,6 +186,12 @@ export const HLT_ARTICLE_FACTORY_TEMPLATE: TeamTemplate = {
       priority: "medium",
       assignee: "Media Producer",
       description: `Create a simple media checklist for the pilot article: hero image idea, supporting visual idea, alt text direction, and MMM2 request notes. Attach it as a readable document. ${READABLE_DELIVERABLE_RULE}`,
+    },
+    {
+      title: "Run Victoria quality review before publishing",
+      priority: "high",
+      assignee: "Victoria Review",
+      description: `Review the pilot article package before any publishing step. Confirm the topic brief, article draft, exam review notes, and media checklist are visible in Paperclip; then attach a readable quality review with strengths, risks, and exact revision requests. ${VICTORIA_REVIEW_RULE} ${READABLE_DELIVERABLE_RULE}`,
     },
   ],
 };
@@ -257,6 +290,8 @@ export function teamTemplateRoutes(db: Db) {
         metadata: {
           teamTemplateId: template.id,
           humanPurpose: agentTemplate.capabilities,
+          sourceRefs: template.sourceRefs,
+          bestPractices: template.bestPractices,
         },
       });
       createdAgents.push({ id: agent.id, name: agent.name, role: agent.role });
@@ -311,6 +346,7 @@ export function teamTemplateRoutes(db: Db) {
         templateName: template.name,
         agentCount: createdAgents.length,
         issueCount: createdIssues.length,
+        sourceRefs: template.sourceRefs,
       },
     });
 
