@@ -886,7 +886,7 @@ describeEmbeddedPostgres("secretService", () => {
       providerVersionRef: "aws-version-1",
     };
     vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue(prepared);
-    vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockRejectedValue(
+    vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockRejectedValueOnce(
       new Error("cleanup failed"),
     );
     vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db activate failed"));
@@ -1030,7 +1030,7 @@ describeEmbeddedPostgres("secretService", () => {
       providerVersionRef: "aws-version-2",
     };
     vi.spyOn(awsSecretsManagerProvider, "createVersion").mockResolvedValue(prepared);
-    vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockRejectedValue(
+    vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockRejectedValueOnce(
       new Error("cleanup failed"),
     );
     vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db rotate failed"));
