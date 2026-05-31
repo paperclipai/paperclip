@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
+import { opsStatusApi } from "../api/ops-status";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
@@ -20,7 +21,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, FileText } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, FileText, ServerCog } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -47,6 +48,12 @@ export function Dashboard() {
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  const { data: opsStatus } = useQuery({
+    queryKey: queryKeys.opsStatus,
+    queryFn: opsStatusApi.get,
+    refetchInterval: 60_000,
   });
 
   useEffect(() => {
@@ -192,6 +199,19 @@ export function Dashboard() {
   }
 
   const hasNoAgents = agents !== undefined && agents.length === 0;
+  const opsNeedsAttention = opsStatus?.status === "error" || opsStatus?.status === "warning";
+  const opsTone = opsStatus?.status === "ok"
+    ? "border-emerald-200 bg-emerald-50 text-emerald-950 dark:border-emerald-500/25 dark:bg-emerald-950/35 dark:text-emerald-100"
+    : opsNeedsAttention
+      ? "border-amber-300 bg-amber-50 text-amber-950 dark:border-amber-500/25 dark:bg-amber-950/45 dark:text-amber-100"
+      : "border-border bg-card text-card-foreground";
+  const opsHeading = opsStatus?.status === "ok"
+    ? "Paperclip is serving the current version"
+    : opsNeedsAttention
+      ? "A system check needs attention"
+      : opsStatus?.status === "unknown"
+        ? "Some checks are not connected yet"
+        : "Checking Paperclip and Thomas";
 
   return (
     <div className="space-y-6">
@@ -231,6 +251,49 @@ export function Dashboard() {
             >
               Open article setup
             </button>
+          </div>
+        </div>
+      </div>
+
+      <div className={cn("rounded-2xl border p-4 shadow-sm", opsTone)}>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-background/80 text-foreground shadow-sm">
+              <ServerCog className="h-4 w-4" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide opacity-80">System status</p>
+              <h2 className="mt-1 text-base font-semibold">
+                {opsHeading}
+              </h2>
+              <p className="mt-1 max-w-2xl text-sm opacity-85">
+                Monitors the live app, Render deploy wiring, and Thomas bridge so stale deploys do not hide after a merge.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[520px]">
+            {(opsStatus?.checks ?? []).map((check) => (
+              <div key={check.id} className="rounded-xl border border-current/15 bg-background/70 p-3 text-foreground shadow-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-semibold">{check.label}</span>
+                  <span className={cn(
+                    "rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase",
+                    check.status === "ok" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-100" :
+                      check.status === "error" ? "bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-100" :
+                        "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-100",
+                  )}>{check.status}</span>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">{check.summary}</p>
+                {check.detail && (
+                  <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-muted-foreground/85">{check.detail}</p>
+                )}
+              </div>
+            ))}
+            {!opsStatus && (
+              <div className="rounded-xl border border-current/15 bg-background/70 p-3 text-sm text-muted-foreground shadow-sm sm:col-span-3">
+                Loading status checks…
+              </div>
+            )}
           </div>
         </div>
       </div>
