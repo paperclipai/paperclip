@@ -253,7 +253,7 @@ function isDocumentVisible() {
   return document.visibilityState === "visible";
 }
 const LIVE_RUNS_POLL_HIDDEN_PAUSE_MS = false;
-const LIVE_RUNS_POLL_ACTIVE_MS = 15_000;
+const LIVE_RUNS_POLL_ACTIVE_MS = 30_000;
 const LIVE_RUNS_POLL_RESUME_MS = 30_000;
 
 function useVisibilityAwarePollInterval() {
@@ -1416,6 +1416,7 @@ export function IssueDetail() {
         : ["issues", "parent", "pending"],
     queryFn: () => issuesApi.list(resolvedCompanyId!, { descendantOf: issue!.id, includeBlockedBy: true }),
     enabled: !!resolvedCompanyId && !!issue?.id,
+    staleTime: 60_000,
     placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(issue?.id ?? "pending"),
   });
   const {
@@ -1429,6 +1430,7 @@ export function IssueDetail() {
         : ["issues", "siblings", "pending"],
     queryFn: () => issuesApi.list(resolvedCompanyId!, { parentId: issue!.parentId!, includeBlockedBy: true }),
     enabled: !!resolvedCompanyId && !!issue?.parentId,
+    staleTime: 60_000,
   });
   const { data: companyLiveRuns } = useQuery({
     queryKey: resolvedCompanyId ? queryKeys.liveRuns(resolvedCompanyId) : ["live-runs", "pending"],

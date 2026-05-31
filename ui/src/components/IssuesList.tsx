@@ -658,6 +658,7 @@ export function IssuesList({
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(() => loadIssueColumns(scopedKey));
   const renderedIssueIdsRef = useRef("");
   const initialServerFillRequestedRef = useRef(false);
+  const initialServerFillIssueCountRef = useRef<number | null>(null);
   const deferredIssueSearch = useDeferredValue(issueSearch);
   const normalizedIssueSearch = deferredIssueSearch.trim().toLowerCase();
 
@@ -1041,9 +1042,11 @@ export function IssuesList({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
     queryFn: () => issuesApi.listLabels(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    staleTime: 5 * 60 * 1000,
   });
 
   const activeFilterCount = countActiveIssueFilters(viewState, enableRoutineVisibilityFilter);
+  const hasRefinedListQuery = normalizedIssueSearch.length > 0 || activeFilterCount > 0;
   const boardHighVolume = viewState.viewMode === "board" && filtered.length > KANBAN_BOARD_HIGH_VOLUME_THRESHOLD;
   const boardCompactCards =
     viewState.boardCardDensity === "compact"
@@ -1216,8 +1219,13 @@ export function IssuesList({
         const threshold = scrollHeight - ISSUE_SCROLL_LOAD_THRESHOLD_PX;
         if (scrollBottom >= threshold) {
           if (trigger === "initial" && !hasMoreRenderedRows && hasMoreIssues && !hasScrollableOverflow) {
-            if (initialServerFillRequestedRef.current) return;
-            initialServerFillRequestedRef.current = true;
+            if (hasRefinedListQuery) {
+              if (initialServerFillIssueCountRef.current === issues.length) return;
+              initialServerFillIssueCountRef.current = issues.length;
+            } else {
+              if (initialServerFillRequestedRef.current) return;
+              initialServerFillRequestedRef.current = true;
+            }
           }
           loadMoreIssueRows();
         }
@@ -1235,7 +1243,7 @@ export function IssuesList({
       window.removeEventListener("resize", handleResize);
       if (animationFrameId !== null) window.cancelAnimationFrame(animationFrameId);
     };
-  }, [canLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, loadMoreIssueRows]);
+  }, [canLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, hasRefinedListQuery, issues.length, loadMoreIssueRows]);
 
   const newIssueDefaults = useCallback((group?: { key: string; items: Issue[] }) => {
     const groupKey = group?.key;
