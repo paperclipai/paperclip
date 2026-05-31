@@ -45,13 +45,12 @@ services:
     volumes:
       - /opt/paperclip:/paperclip
 
-    # Rede compartilhada com o container do Postgres (databases-postgres-cypdtq).
-    # `interna` é uma rede DOCKER EXTERNA criada fora do compose. Se o deploy
-    # falhar com "Could not attach to network interna: NotFound", veja a seção
-    # "Solução de problemas" do README — provavelmente o nome real no daemon
-    # tem prefixo do projeto Dockploy (ex.: `databases-cypdtq_interna`).
+    # Dokploy roda em modo Docker Swarm. A rede overlay attachable criada
+    # pelo instalador do Dokploy se chama `dokploy-network` — é onde todos
+    # os services (incluindo o Postgres `databases-postgres-cypdtq`) ficam
+    # acessíveis por DNS interno. Confirme com `docker network ls`.
     networks:
-      - interna
+      - dokploy-network
 
 configs:
   opencode_zai_config:
@@ -76,11 +75,10 @@ configs:
       }
 
 networks:
-  interna:
+  dokploy-network:
     external: true
-    # Nome literal da rede no daemon. Confirme com:
-    #   docker network ls | grep interna
-    # Se o nome for diferente (ex.: prefixado pelo projeto que criou),
-    # ajuste para apontar para o nome real:
-    #   external: true
-    #   name: nome-real-da-rede-no-daemon
+    # Rede overlay attachable criada pelo instalador do Dokploy. Existe em
+    # qualquer host Dokploy. Se o nome for outro no seu daemon, descubra com:
+    #   docker network ls
+    # E adicione `name:` apontando pro nome real, mantendo o alias `dokploy-network`
+    # nas referências do serviço acima.
