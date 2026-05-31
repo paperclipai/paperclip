@@ -7206,6 +7206,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
+    // Source-scoped recovery wakes target the recovery owner, who is by design
+    // a different agent than the source issue's current assignee (the recovery
+    // owner is the chain-of-command parent of the failed assignee). The
+    // assignee-changed staleness branch below would otherwise cancel every
+    // such wake on arrival. Two later call sites in this file already exempt
+    // this wake reason for the same reason — see
+    // shouldAutoCheckoutIssueForWake (returns false for
+    // source_scoped_recovery_action) and the claimQueuedRun post-claim
+    // issue-lock block (skips lock stamping for source_scoped_recovery_action).
+    // Without this pre-claim exemption those later exemptions are unreachable.
+    const isRecoveryOwnerWake = wakeReason === "source_scoped_recovery_action";
 
     if (
       issue.status === "in_progress" &&
@@ -7236,7 +7247,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    if (issue.assigneeAgentId !== run.agentId && !isInteractionWake) {
+    if (issue.assigneeAgentId !== run.agentId && !isInteractionWake && !isRecoveryOwnerWake) {
       return {
         stale: true,
         errorCode: "issue_assignee_changed",
