@@ -203,7 +203,10 @@ describe("issue execution policy routes", () => {
       runId: "run-1",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ status: "in_review" });
+      .send({
+        status: "in_review",
+        reviewerAgentId: "44444444-4444-4444-8444-444444444444",
+      });
 
     expect(res.status).toBe(422);
     expect(res.body.error).toContain("invalid_issue_disposition");
@@ -245,7 +248,10 @@ describe("issue execution policy routes", () => {
       runId: "run-1",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ status: "in_review" });
+      .send({
+        status: "in_review",
+        reviewerAgentId: "44444444-4444-4444-8444-444444444444",
+      });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(
@@ -342,6 +348,7 @@ describe("issue execution policy routes", () => {
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({
         status: "in_review",
+        reviewerAgentId: "44444444-4444-4444-8444-444444444444",
         executionPolicy: {
           monitor: {
             nextCheckAt: "2026-12-01T12:00:00.000Z",
@@ -383,7 +390,10 @@ describe("issue execution policy routes", () => {
 
     const res = await request(await createApp())
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ status: "in_review" });
+      .send({
+        status: "in_review",
+        reviewerAgentId: "44444444-4444-4444-8444-444444444444",
+      });
 
     expect(res.status).toBe(200);
     expect(mockIssueThreadInteractionService.listForIssue).not.toHaveBeenCalled();
