@@ -7,6 +7,7 @@ import {
   type HostToWorkerMethods,
 } from "@paperclipai/plugin-sdk";
 import {
+  anthropicRoutingEnv,
   appendStderrExcerpt,
   createPluginWorkerHandle,
   formatWorkerFailureMessage,
@@ -201,5 +202,39 @@ describe("plugin-worker-manager stderr failure context", () => {
       process.off("unhandledRejection", unhandledRejection);
       await handle.stop().catch(() => undefined);
     }
+  });
+});
+
+describe("anthropicRoutingEnv", () => {
+  it("forwards the Anthropic routing vars that are set on the host", () => {
+    expect(
+      anthropicRoutingEnv({
+        ANTHROPIC_BASE_URL: "https://paperclip.example/ccrotate",
+        ANTHROPIC_AUTH_TOKEN: "pcp_board_token",
+        ANTHROPIC_API_KEY: "pcp_board_token",
+      }),
+    ).toEqual({
+      ANTHROPIC_BASE_URL: "https://paperclip.example/ccrotate",
+      ANTHROPIC_AUTH_TOKEN: "pcp_board_token",
+      ANTHROPIC_API_KEY: "pcp_board_token",
+    });
+  });
+
+  it("drops unset and empty vars so the SDK default base URL is never clobbered", () => {
+    expect(
+      anthropicRoutingEnv({
+        ANTHROPIC_BASE_URL: "",
+        ANTHROPIC_AUTH_TOKEN: "pcp_board_token",
+      }),
+    ).toEqual({ ANTHROPIC_AUTH_TOKEN: "pcp_board_token" });
+  });
+
+  it("never forwards unrelated host env vars", () => {
+    expect(
+      anthropicRoutingEnv({
+        DATABASE_URL: "postgres://secret",
+        BETTER_AUTH_SECRET: "shh",
+      }),
+    ).toEqual({});
   });
 });

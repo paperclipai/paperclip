@@ -195,6 +195,40 @@ export function formatWorkerFailureMessage(message: string, stderrExcerpt: strin
 }
 
 /**
+ * Host env vars that steer the `@anthropic-ai/sdk` client. The platform points
+ * these at ccrotate-serve so all Anthropic traffic flows through the pooled
+ * OAuth proxy instead of api.anthropic.com.
+ */
+const ANTHROPIC_ROUTING_ENV_KEYS = [
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+] as const;
+
+/**
+ * Build the Anthropic routing slice of a plugin worker's env, forwarding only
+ * the keys that are actually set on the host. Empty values are dropped so an
+ * unset `ANTHROPIC_BASE_URL` never clobbers the SDK's built-in default.
+ *
+ * This is an intentional, narrow widening of the worker env allowlist (see
+ * `spawnProcess`): plugins that talk to Anthropic must reach the same pooled
+ * endpoint the rest of the platform uses, or the pooled bearer is rejected
+ * with "401 invalid x-api-key".
+ */
+export function anthropicRoutingEnv(
+  source: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of ANTHROPIC_ROUTING_ENV_KEYS) {
+    const value = source[key];
+    if (typeof value === "string" && value.length > 0) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
+
+/**
  * Options for starting a worker process.
  */
 export interface WorkerStartOptions {
@@ -690,6 +724,16 @@ export function createPluginWorkerHandle(
       PAPERCLIP_PLUGIN_ID: pluginId,
       NODE_ENV: process.env.NODE_ENV ?? "production",
       TZ: process.env.TZ ?? "UTC",
+      // Anthropic routing passthrough. The platform routes all Anthropic
+      // traffic through ccrotate-serve via ANTHROPIC_BASE_URL plus a pooled
+      // bearer (see deploy/helm/paperclip/values.blockcast.yaml — the same
+      // vars the claude_k8s adapter copies onto agent Job pods). Plugin
+      // workers that use @anthropic-ai/sdk must inherit these or the SDK
+      // falls back to api.anthropic.com and the pooled token is rejected with
+      // "401 invalid x-api-key". Forwarded only when set on the host (an
+      // empty ANTHROPIC_BASE_URL would clobber the SDK default); this is a
+      // narrow, explicit allowlist — the rest of process.env is still withheld.
+      ...anthropicRoutingEnv(),
       // options.env is spread last so per-plugin overrides (like NODE_PATH
       // pointing to a local SDK build) take precedence over defaults.
       ...options.env,
