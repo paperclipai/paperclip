@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { compactRunLogChunk } from "../services/heartbeat.js";
+import type { Db } from "@paperclipai/db";
+import { compactRunLogChunk, heartbeatService } from "../services/heartbeat.js";
 
 describe("compactRunLogChunk", () => {
   it("redacts inline base64 image data from structured log chunks", () => {
@@ -37,5 +38,26 @@ describe("compactRunLogChunk", () => {
     expect(compacted).not.toContain("paperclip-shell-secret");
     expect(compacted).not.toContain("paperclip-json-secret");
     expect(compacted).not.toContain("paperclip-flag-secret");
+  });
+});
+
+describe("heartbeat run log reads", () => {
+  it("returns a pending empty payload when an existing run has no initialized log yet", async () => {
+    const service = heartbeatService({} as Db);
+
+    await expect(
+      service.readLog({
+        id: "run-pending-log",
+        companyId: "company-1",
+        logStore: null,
+        logRef: null,
+      }),
+    ).resolves.toEqual({
+      runId: "run-pending-log",
+      store: null,
+      logRef: null,
+      content: "",
+      pending: true,
+    });
   });
 });
