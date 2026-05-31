@@ -180,12 +180,12 @@ function AwaitingJoinApprovalPanel({
           </p>
           <div className="border border-zinc-800 p-3">
             <p className="text-xs text-zinc-500 mb-1">Approval page</p>
-            <span className="text-sm text-zinc-200">
+            <a className="text-sm text-zinc-200" href="/company/settings/members">
               Company Settings → Members
-            </span>
+            </a>
           </div>
           <p className="text-sm text-zinc-400">
-            Ask them to visit <span className="text-zinc-200">Company Settings → Members</span> to approve your request.
+            Ask them to visit <a className="text-zinc-200" href="/company/settings/members">Company Settings → Members</a> to approve your request.
           </p>
           <p className="text-xs text-zinc-500">
             Refresh this page after you've been approved — you'll be redirected automatically.
