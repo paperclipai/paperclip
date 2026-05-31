@@ -493,12 +493,14 @@ export function routineService(
   deps: {
     heartbeat?: IssueAssignmentWakeupDeps;
     pluginWorkerManager?: PluginWorkerManager;
+    providerCooldownService?: import("./provider-cooldown.js").ProviderCooldownService;
   } = {},
 ) {
   const issueSvc = issueService(db);
   const secretsSvc = secretService(db);
   const heartbeat = deps.heartbeat ?? heartbeatService(db, {
     pluginWorkerManager: deps.pluginWorkerManager,
+    providerCooldownService: deps.providerCooldownService,
   });
 
   async function getRoutineById(id: string) {
@@ -1012,6 +1014,36 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
   }
 
+  async function findSkipIfActiveIssue(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+    dispatchFingerprint?: string | null,
+    origin?: { kind: string; id: string | null },
+  ) {
+    const liveExecutionIssue = await findLiveExecutionIssue(routine, executor, dispatchFingerprint, origin);
+    if (liveExecutionIssue) return liveExecutionIssue;
+
+    const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint);
+    const originKind = origin?.kind ?? "routine_execution";
+    const originId = origin?.id ?? routine.id;
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, originKind),
+          eq(issues.originId, originId),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -1271,7 +1303,9 @@ export function routineService(
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+        const findActiveIssue =
+          input.routine.concurrencyPolicy === "skip_if_active" ? findSkipIfActiveIssue : findLiveExecutionIssue;
+        const activeIssue = await findActiveIssue(input.routine, txDb, dispatchFingerprint, {
           kind: issueOriginKind,
           id: issueOriginId,
         });
@@ -1335,7 +1369,9 @@ export function routineService(
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+          const findActiveIssue =
+            input.routine.concurrencyPolicy === "skip_if_active" ? findSkipIfActiveIssue : findLiveExecutionIssue;
+          const existingIssue = await findActiveIssue(input.routine, txDb, dispatchFingerprint, {
             kind: issueOriginKind,
             id: issueOriginId,
           });

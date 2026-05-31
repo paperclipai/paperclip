@@ -198,6 +198,8 @@ import {
 } from "./low-trust-runtime-containment.js";
 import { resolveCoreTrustPreset, type TrustPresetResolution } from "./trust-preset-resolver.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import type { ProviderCooldownService } from "./provider-cooldown.js";
+import { detectQuotaError } from "./quota-error-detector.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -3191,6 +3193,8 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  /** When provided, quota-exhausted run failures automatically quarantine the adapter route. */
+  providerCooldownService?: ProviderCooldownService;
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
@@ -3234,6 +3238,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     environmentRuntime,
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
+  const { providerCooldownService } = options;
   const activeRunExecutions = new Set<string>();
   const liveRunExecutions = {
     has(id: string) {
@@ -9976,6 +9981,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),
       );
+
+      // FUL-5634: Automatically quarantine this adapter/model route on quota exhaustion.
+      if (providerCooldownService) {
+        const quotaDetection = detectQuotaError(message);
+        if (quotaDetection.isQuotaExhausted) {
+          providerCooldownService.setCooldown(
+            agent.adapterType,
+            quotaDetection.cooldownMs,
+            quotaDetection.reason,
+          );
+          logger.warn(
+            { adapterType: agent.adapterType, cooldownMs: quotaDetection.cooldownMs },
+            "quota exhaustion detected in run failure — adapter route quarantined",
+          );
+        }
+      }
+
       const workspaceValidationFailure = isWorkspaceValidationFailure(err) ? err : null;
       const failureErrorCode = workspaceValidationFailure?.code ?? "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
