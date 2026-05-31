@@ -1,4 +1,5 @@
 /// <reference path="./types/express.d.ts" />
+import { runningProcesses } from "@paperclipai/adapter-utils/server-utils";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -927,6 +928,49 @@ export async function startServer(): Promise<StartedServer> {
 
       const appShutdown = (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown;
       appShutdown?.();
+
+      // Kill all orphaned agent adapter processes so they don't outlive the server.
+      const processEntries = Array.from(runningProcesses.entries());
+      if (processEntries.length > 0) {
+        logger.info({ count: processEntries.length }, "Killing orphaned agent processes on shutdown");
+        for (const [key, entry] of processEntries) {
+          try {
+            const { processGroupId } = entry;
+            if (processGroupId !== null && processGroupId > 0) {
+              process.kill(-processGroupId, "SIGTERM");
+            } else {
+              entry.child.kill("SIGTERM");
+            }
+          } catch {
+            // Process may have already exited; ignore.
+          }
+          runningProcesses.delete(key);
+        }
+        // Give processes a grace period to terminate cleanly.
+        await new Promise<void>((resolve) => {
+          const start = Date.now();
+          const interval = setInterval(() => {
+            if (runningProcesses.size === 0 || Date.now() - start > 5000) {
+              clearInterval(interval);
+              resolve();
+            }
+          }, 100);
+        });
+        // Force kill any that survived the grace period.
+        for (const [key, entry] of Array.from(runningProcesses.entries())) {
+          try {
+            const { processGroupId } = entry;
+            if (processGroupId !== null && processGroupId > 0) {
+              process.kill(-processGroupId, "SIGKILL");
+            } else {
+              entry.child.kill("SIGKILL");
+            }
+          } catch {
+            // Already dead.
+          }
+          runningProcesses.delete(key);
+        }
+      }
 
       if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
         logger.info({ signal }, "Stopping embedded PostgreSQL");
