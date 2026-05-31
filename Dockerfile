@@ -90,16 +90,17 @@ WORKDIR /vendor
 # Each repo's build → `pnpm pack` (or `npm pack`) produces the .tgz the
 # production stage installs. We never commit the tgz; it's reproduced on
 # every image build.
-ARG CCROTATE_REF=5c11c8bacf1248dcbc0b98752b58c6aefd0afaf5
-# Re-pinned 2026-05-30 to current fork tips (was ccrotate de28154 /
-# claude-k8s 1aa4506, both 2026-05-25). Bumps:
-#  - ccrotate (kkroo/ccrotate#main, +21 commits): serve/codex hardening —
+ARG CCROTATE_REF=7cf84fccd07dd3bc8b11845cb0630ae825a008f9
+# Re-pinned 2026-05-31 to kkroo/ccrotate main 7cf84fc (was 5c11c8b, #93).
+# Bumps #94 (stale usage %% self-heal) + #95 (operator pool usage billed as
+# metered_api at API-equivalent rates instead of subscription_included/0¢).
+# Prior bump (2026-05-30, 5c11c8b) was current fork tips after #79–#93:
+#  - ccrotate (kkroo/ccrotate#main): serve/codex hardening —
 #    sticky out_of_credits exhaustion, codex admission pacing mirroring
 #    anthropic, operator Codex + Anthropic usage cost reporting, and
 #    profile-targeted token writeback so codex-exec-rotated tokens don't
 #    self-revoke. Also the org-disabled-403 → stale+rotate path. Keeps the
-#    bundled rotator in sync with the live ccrotate-serve state schema
-#    (the prior de28154 pin predates all of #79–#93).
+#    bundled rotator in sync with the live ccrotate-serve state schema.
 #  - claude-k8s (kkroo/paperclip-adapter-claude-k8s#master, +2 commits):
 #    quarantine/clear Claude sessions rejected for immutable thinking
 #    blocks.
