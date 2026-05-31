@@ -37,7 +37,8 @@ process.exit(${exit});
   await fs.chmod(commandPath, 0o755);
 }
 
-async function writeFakeClaudeCommand(commandPath: string): Promise<void> {
+async function writeFakeClaudeCommand(commandPath: string, opts: { cachedInputTokens?: number } = {}): Promise<void> {
+  const cachedInputTokens = opts.cachedInputTokens ?? 0;
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
@@ -68,7 +69,7 @@ if (capturePath) {
 }
 console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }));
 console.log(JSON.stringify({ type: "assistant", session_id: "claude-session-1", message: { content: [{ type: "text", text: "hello" }] } }));
-console.log(JSON.stringify({ type: "result", session_id: "claude-session-1", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+console.log(JSON.stringify({ type: "result", session_id: "claude-session-1", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: ${cachedInputTokens}, output_tokens: 1 } }));
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -688,7 +689,7 @@ describe("claude execute", () => {
     const paperclipHome = path.join(root, "paperclip-home");
     await fs.mkdir(workspace, { recursive: true });
     await fs.writeFile(instructionsPath, "You are managed instructions.\n", "utf8");
-    await writeFakeClaudeCommand(commandPath);
+    await writeFakeClaudeCommand(commandPath, { cachedInputTokens: 7 });
 
     const previousHome = process.env.HOME;
     const previousPaperclipHome = process.env.PAPERCLIP_HOME;
@@ -697,6 +698,7 @@ describe("claude execute", () => {
     process.env.PAPERCLIP_HOME = paperclipHome;
     delete process.env.PAPERCLIP_INSTANCE_ID;
 
+    const metaEvents: Array<Record<string, unknown>> = [];
     try {
       const first = await execute({
         runId: "run-1",
@@ -725,6 +727,9 @@ describe("claude execute", () => {
         context: {},
         authToken: "run-jwt-token",
         onLog: async () => {},
+        onMeta: async (meta) => {
+          metaEvents.push(meta as unknown as Record<string, unknown>);
+        },
       });
 
       expect(first.exitCode).toBe(0);
@@ -796,10 +801,15 @@ describe("claude execute", () => {
         },
         authToken: "run-jwt-token",
         onLog: async () => {},
+        onMeta: async (meta) => {
+          metaEvents.push(meta as unknown as Record<string, unknown>);
+        },
       });
 
       expect(second.exitCode).toBe(0);
       expect(second.errorMessage).toBeNull();
+      expect(first.usage?.cachedInputTokens).toBe(7);
+      expect(second.usage?.cachedInputTokens).toBe(7);
 
       const capture1 = JSON.parse(await fs.readFile(capturePath1, "utf8")) as CapturePayload;
       const capture2 = JSON.parse(await fs.readFile(capturePath2, "utf8")) as CapturePayload;
@@ -825,6 +835,11 @@ describe("claude execute", () => {
       expect(capture2.argv).toContain("claude-session-1");
       expect(capture2.prompt).toContain("## Paperclip Resume Delta");
       expect(capture2.prompt).not.toContain("Follow the paperclip heartbeat.");
+
+      const latestPromptCache = metaEvents.at(-1)?.promptCache as Record<string, unknown> | undefined;
+      expect(latestPromptCache?.strategy).toBe("content-addressed-prompt-bundle");
+      expect(latestPromptCache?.telemetry).toBe("usage.cachedInputTokens");
+      expect(latestPromptCache?.addDir).toBe(capture2.addDir);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

@@ -53,4 +53,5 @@ Operational fields:
 
 Notes:
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
+- Repeated agent instructions and Paperclip skills are materialized into a company-scoped, content-addressed prompt bundle under the Paperclip instance. Claude usage telemetry exposes prompt-cache hits as usage.cachedInputTokens and cost ledger cached input tokens.
 `;

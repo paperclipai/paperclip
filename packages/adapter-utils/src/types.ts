@@ -114,6 +114,7 @@ export interface AdapterInvocationMeta {
   commandArgs?: string[];
   commandNotes?: string[];
   env?: Record<string, string>;
+  promptCache?: Record<string, unknown>;
   prompt?: string;
   promptMetrics?: Record<string, number>;
   context?: Record<string, unknown>;
