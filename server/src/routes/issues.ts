@@ -666,6 +666,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
     sourceCommentId?: string | null;
     sourceRunId?: string | null;
     rejectionReason?: string | null;
+    resolvedCommentId?: string | null;
   };
   actor: { actorType: "user" | "agent"; actorId: string };
   source: string;
@@ -685,6 +686,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
 
   const forceFreshSession = input.forceFreshSession === true;
   const workspaceRefreshReason = readNonEmptyString(input.workspaceRefreshReason);
+  const effectiveCommentId = input.interaction.resolvedCommentId ?? input.interaction.sourceCommentId ?? null;
   void input.heartbeat.wakeup(input.issue.assigneeAgentId, {
     source: "automation",
     triggerDetail: "system",
@@ -694,7 +696,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       interactionId: input.interaction.id,
       interactionKind: input.interaction.kind,
       interactionStatus: input.interaction.status,
-      sourceCommentId: input.interaction.sourceCommentId ?? null,
+      sourceCommentId: effectiveCommentId,
       sourceRunId: input.interaction.sourceRunId ?? null,
       interactionRejectionReason: input.interaction.rejectionReason ?? null,
       mutation: "interaction",
@@ -707,7 +709,8 @@ function queueResolvedInteractionContinuationWakeup(input: {
       interactionId: input.interaction.id,
       interactionKind: input.interaction.kind,
       interactionStatus: input.interaction.status,
-      sourceCommentId: input.interaction.sourceCommentId ?? null,
+      sourceCommentId: effectiveCommentId,
+      wakeCommentId: effectiveCommentId,
       sourceRunId: input.interaction.sourceRunId ?? null,
       interactionRejectionReason: input.interaction.rejectionReason ?? null,
       wakeReason: "issue_commented",
@@ -5509,10 +5512,15 @@ export function issueRoutes(
             ? (interaction.result?.rejectionReason ?? null)
             : null;
 
+      const resolvedCommentId =
+        interaction.kind === "request_confirmation"
+          ? (interaction.result?.commentId ?? null)
+          : null;
+
       queueResolvedInteractionContinuationWakeup({
         heartbeat,
         issue,
-        interaction: { ...interaction, rejectionReason },
+        interaction: { ...interaction, rejectionReason, resolvedCommentId },
         actor,
         source: "issue.interaction.reject",
       });
