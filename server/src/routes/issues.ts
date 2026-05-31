@@ -6148,9 +6148,21 @@ export function issueRoutes(
     if (responseContentType === SVG_CONTENT_TYPE) {
       res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
     }
-    const filename = attachment.originalFilename ?? "attachment";
+    const rawFilename = attachment.originalFilename ?? "attachment";
     const disposition = isInlineAttachmentContentType(responseContentType) ? "inline" : "attachment";
-    res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
+    // Normalize NFD → NFC so macOS-style filenames (e.g. "Captura de Tela às 12.00.png")
+    // don't produce bare continuation bytes (0x80–0xBF) inside the header value.
+    // Per RFC 8187 include both an ASCII fallback and a percent-encoded filename*.
+    const normalizedFilename = rawFilename.normalize("NFC").replace(/"/g, "");
+    const asciiFilename = normalizedFilename.replace(/[^\x20-\x7E]/g, "_");
+    // encodeURIComponent leaves !'()* unencoded; RFC 8187 ext-value requires
+    // these to be percent-encoded as well.
+    const encodedFilename = encodeURIComponent(normalizedFilename)
+      .replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+    res.setHeader(
+      "Content-Disposition",
+      `${disposition}; filename="${asciiFilename}"; filename*=UTF-8''${encodedFilename}`,
+    );
 
     object.stream.on("error", (err) => {
       next(err);
