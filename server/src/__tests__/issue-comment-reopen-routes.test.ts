@@ -511,6 +511,12 @@ describe.sequential("issue comment reopen routes", () => {
       authorAgentId: "33333333-3333-4333-8333-333333333333",
       authorUserId: null,
     });
+    // Deny all permission grants so cross_issue_comment doesn't bypass the non-assignee check.
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      reason: "deny_missing_grant",
+      explanation: "No permissions granted in test",
+    });
 
     const res = await request(await installActor(createApp(), {
       type: "agent",
@@ -1121,6 +1127,12 @@ describe.sequential("issue comment reopen routes", () => {
 
   it("rejects explicit agent resume intent from a non-assignee", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    // Deny all permission grants so cross_issue_comment doesn't bypass the non-assignee check.
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      reason: "deny_missing_grant",
+      explanation: "No permissions granted in test",
+    });
 
     const res = await request(await installActor(createApp(), agentActor("44444444-4444-4444-8444-444444444444")))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
