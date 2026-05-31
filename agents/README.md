@@ -104,3 +104,7 @@ Heartbeat timers are disabled across the board; `wakeOnDemand` fires assignment 
 - `cargo` (Architect-only)
 - Edit another agent's `INSTRUCTIONS.md` (Planner-only via files; everyone else files followups)
 - `curl` against the paperclip API (use the `paperclip` skill — it handles auth, retry, run-id headers)
+
+## Authoring these specs (Planner)
+
+When editing any `INSTRUCTIONS.md` or this file, **reference another section or step by name, never by number.** Write "Coordinator's roadmap-intake step", not "Coordinator §9"; "when the PR merges", not "(step 8)". Numeric pointers carry no instruction, force the reader to jump, and rot silently the moment a list is reordered — they have repeatedly drifted out of sync. A numbered list that *defines* a procedure keeps its numbers (the numbers are the ordering); a *pointer* at one of those numbers from elsewhere must use the self-describing condition instead. Exceptions: the stable `Step 0` precondition-gate convention and references into the external `docs/specs/*.md` (versioned, won't renumber under you).
