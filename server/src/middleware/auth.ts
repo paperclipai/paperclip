@@ -45,6 +45,16 @@ async function resolveRunAttribution(
   return { id: runId, agentId: run.agentId, companyId: run.companyId };
 }
 
+function isLockTimeoutError(error: unknown): boolean {
+  const cause = error instanceof Error ? (error as { cause?: unknown }).cause : undefined;
+  const candidates = [error, cause];
+  return candidates.some((candidate) => {
+    if (!candidate || typeof candidate !== "object") return false;
+    const err = candidate as { code?: unknown; message?: unknown };
+    return err.code === "55P03" || (typeof err.message === "string" && err.message.includes("lock timeout"));
+  });
+}
+
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
@@ -211,7 +221,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       const access = await boardAuth.resolveBoardAccess(boardKey.userId);
       if (access.user) {
         const runAttribution = await resolveRunAttribution(db, runIdHeader);
-        await boardAuth.touchBoardApiKey(boardKey.id);
+        try {
+          await boardAuth.touchBoardApiKey(boardKey.id);
+        } catch (error) {
+          if (!isLockTimeoutError(error)) throw error;
+          logger.warn({ err: error, boardKeyId: boardKey.id }, "board API key touch skipped after lock timeout");
+        }
         req.actor = {
           type: "board",
           userId: boardKey.userId,
@@ -276,10 +291,15 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    await db
-      .update(agentApiKeys)
-      .set({ lastUsedAt: new Date() })
-      .where(eq(agentApiKeys.id, key.id));
+    try {
+      await db
+        .update(agentApiKeys)
+        .set({ lastUsedAt: new Date() })
+        .where(eq(agentApiKeys.id, key.id));
+    } catch (error) {
+      if (!isLockTimeoutError(error)) throw error;
+      logger.warn({ err: error, agentKeyId: key.id }, "agent API key touch skipped after lock timeout");
+    }
 
     const agentRecord = await db
       .select()
