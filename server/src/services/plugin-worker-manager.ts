@@ -49,6 +49,8 @@ import type {
   InitializeParams,
 } from "@paperclipai/plugin-sdk";
 import { logger } from "../middleware/logger.js";
+import { ProviderLimitExceededError } from "../lib/provider-errors.js"; // New import
+import type { ProviderCooldownService } from "./provider-cooldown.js"; // New import
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -183,6 +185,8 @@ export interface WorkerStartOptions {
    * The host wires this to the PluginStreamBus to fan out events to SSE clients.
    */
   onStreamNotification?: (method: string, params: Record<string, unknown>) => void;
+  /** Service for managing provider cooldown states. */
+  providerCooldownService: ProviderCooldownService;
 }
 
 /**
@@ -360,6 +364,7 @@ export function createPluginWorkerHandle(
   pluginId: string,
   options: WorkerStartOptions,
 ): PluginWorkerHandle {
+  const { providerCooldownService } = options;
   const log = logger.child({ service: "plugin-worker", pluginId });
   const emitter = new EventEmitter();
   /**
@@ -1052,7 +1057,41 @@ export function createPluginWorkerHandle(
           if (isJsonRpcSuccessResponse(response)) {
             settle(resolve, response.result as HostToWorkerMethods[M][1]);
           } else if ("error" in response && response.error) {
-            settle(reject, new JsonRpcCallError(response.error));
+            // Check for provider limit exceeded error
+            // TODO: Define PLUGIN_RPC_ERROR_CODES.PROVIDER_LIMIT_EXCEEDED in @paperclipai/plugin-sdk
+            // For now, assuming a custom error code -32001.
+            // This is a temporary placeholder value that needs to be properly defined
+            // in the @paperclipai/plugin-sdk for consistent RPC error handling.
+            const PROVIDER_LIMIT_EXCEEDED_CODE = -32001; 
+
+            if (response.error.code === PROVIDER_LIMIT_EXCEEDED_CODE) {
+              const errorData = response.error.data as {
+                provider?: string;
+                routeId?: string;
+                retryAfterSeconds?: number;
+              } | undefined;
+              const provider = errorData?.provider || "unknown";
+              const retryAfterSeconds = errorData?.retryAfterSeconds;
+
+              // Key cooldown by the model-route identifier when available (e.g.
+              // "gemini_local:gemini-2.5-flash"), falling back to the plugin ID.
+              // This ensures a quota hit on one model does not block sibling
+              // models from the same provider (e.g. flash-lite stays available).
+              const routeId = errorData?.routeId ?? `${pluginId}:${provider}`;
+              const cooldownDurationMs = retryAfterSeconds ? retryAfterSeconds * 1000 : DEFAULT_RPC_TIMEOUT_MS;
+              providerCooldownService.setCooldown(
+                routeId,
+                cooldownDurationMs,
+                `Provider limit exceeded for method ${method} (provider: ${provider}, route: ${routeId})`,
+              );
+
+              settle(
+                reject,
+                new ProviderLimitExceededError(provider, response.error.message, retryAfterSeconds, routeId),
+              );
+            } else {
+              settle(reject, new JsonRpcCallError(response.error));
+            }
           } else {
             settle(reject, new Error(`Unexpected response format for "${method}"`));
           }
@@ -1200,6 +1239,9 @@ export interface PluginWorkerManagerOptions {
     signal?: string | null;
     willRestart?: boolean;
   }) => void;
+
+  /** Service for managing provider cooldown states. */
+  providerCooldownService: ProviderCooldownService;
 }
 
 /**
@@ -1229,8 +1271,9 @@ export interface PluginWorkerManagerOptions {
  * ```
  */
 export function createPluginWorkerManager(
-  managerOptions?: PluginWorkerManagerOptions,
+  managerOptions: PluginWorkerManagerOptions,
 ): PluginWorkerManager {
+  const { providerCooldownService } = managerOptions;
   const log = logger.child({ service: "plugin-worker-manager" });
   const workers = new Map<string, PluginWorkerHandle>();
   /** Per-plugin startup locks to prevent concurrent spawn races. */
@@ -1255,7 +1298,10 @@ export function createPluginWorkerManager(
         );
       }
 
-      const handle = createPluginWorkerHandle(pluginId, options);
+      const handle = createPluginWorkerHandle(pluginId, {
+        ...options,
+        providerCooldownService,
+      });
       workers.set(pluginId, handle);
 
       // Subscribe to crash/ready events for live event forwarding
