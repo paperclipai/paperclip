@@ -19,7 +19,6 @@ import {
   Pin,
   MessagesSquare,
 } from "lucide-react";
-import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
 import { SidebarSection } from "./SidebarSection";
@@ -50,20 +49,11 @@ export function Sidebar() {
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
-  const [liveRunsPollMs, setLiveRunsPollMs] = useState(15_000);
-  useEffect(() => {
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "hidden") return;
-      setLiveRunsPollMs(30_000);
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, []);
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
-    refetchInterval: () => (document.visibilityState === "visible" ? liveRunsPollMs : false),
+    refetchInterval: () => (document.visibilityState === "visible" ? 30_000 : false),
   });
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;

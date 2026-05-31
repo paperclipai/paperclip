@@ -105,6 +105,7 @@ import {
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_ISSUE_LIST_LIMIT = 500;
+const INBOX_ALL_ISSUES_PAGE_SIZE = 500;
 import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
 import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
@@ -202,6 +203,24 @@ function readIssueIdFromRun(run: HeartbeatRun): string | null {
 function nonEmptyLabel(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
+}
+
+async function listAllInboxIssues(companyId: string): Promise<Issue[]> {
+  const items: Issue[] = [];
+  let offset = 0;
+
+  while (true) {
+    const page = await issuesApi.list(companyId, {
+      includeRoutineExecutions: true,
+      limit: INBOX_ALL_ISSUES_PAGE_SIZE,
+      offset,
+    });
+    items.push(...page);
+    if (page.length < INBOX_ALL_ISSUES_PAGE_SIZE) break;
+    offset += page.length;
+  }
+
+  return items;
 }
 
 export function formatJoinRequestInboxLabel(
@@ -730,6 +749,7 @@ export function Inbox() {
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
     queryFn: () => issuesApi.listLabels(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    staleTime: 5 * 60 * 1000,
   });
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
   const { data: executionWorkspaces = [] } = useQuery({
@@ -796,11 +816,7 @@ export function Inbox() {
 
   const { data: issues, isLoading: isIssuesLoading } = useQuery({
     queryKey: [...queryKeys.issues.list(selectedCompanyId!), "with-routine-executions"],
-    queryFn: () =>
-      issuesApi.list(selectedCompanyId!, {
-        includeRoutineExecutions: true,
-        limit: INBOX_ISSUE_LIST_LIMIT,
-      }),
+    queryFn: () => listAllInboxIssues(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const {
@@ -842,7 +858,8 @@ export function Inbox() {
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
-    refetchInterval: 5000,
+    refetchInterval: () =>
+      document.visibilityState === "visible" ? 30_000 : false,
   });
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
   const { data: companyMembers } = useQuery({
@@ -870,6 +887,10 @@ export function Inbox() {
   const visibleTouchedIssues = useMemo(
     () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, true, liveIssueIds),
     [touchedIssues, issueFilters, currentUserId, liveIssueIds],
+  );
+  const visibleAllIssues = useMemo(
+    () => applyIssueFilters(issues ?? [], issueFilters, currentUserId, true, liveIssueIds),
+    [issues, issueFilters, currentUserId, liveIssueIds],
   );
   const unreadTouchedIssues = useMemo(
     () => visibleTouchedIssues.filter((issue) => issue.isUnreadForMe),
@@ -939,9 +960,10 @@ export function Inbox() {
     () => {
       if (tab === "mine") return visibleMineIssues;
       if (tab === "unread") return unreadTouchedIssues;
+      if (tab === "all") return visibleAllIssues;
       return visibleTouchedIssues;
     },
-    [tab, visibleMineIssues, visibleTouchedIssues, unreadTouchedIssues],
+    [tab, visibleAllIssues, visibleMineIssues, visibleTouchedIssues, unreadTouchedIssues],
   );
 
   const agentById = useMemo(() => {

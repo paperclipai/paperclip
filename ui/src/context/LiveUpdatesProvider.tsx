@@ -19,9 +19,11 @@ import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
 const RECONNECT_SUPPRESS_MS = 2000;
+const INVALIDATION_COALESCE_MS = 450;
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+const pendingInvalidations = new WeakMap<QueryClient, Map<string, ReturnType<typeof setTimeout>>>();
 
 type LiveUpdatesSocketLike = {
   readyState: number;
@@ -175,6 +177,28 @@ function isPageForegrounded(): boolean {
   if (document.visibilityState !== "visible") return false;
   if (typeof document.hasFocus === "function" && !document.hasFocus()) return false;
   return true;
+}
+
+function scheduleInvalidate(
+  queryClient: QueryClient,
+  queryKey: readonly unknown[],
+  options?: { refetchType?: "active" | "inactive" | "all" | "none" },
+) {
+  const key = JSON.stringify(queryKey);
+  const clientTimers = pendingInvalidations.get(queryClient) ?? new Map<string, ReturnType<typeof setTimeout>>();
+  const existing = clientTimers.get(key);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    // Background tabs: mark stale but don't immediately refetch — refetchOnWindowFocus
+    // will trigger a refresh when the user brings the tab to the foreground. This
+    // prevents hidden tabs from consuming backend resources on every WebSocket event.
+    const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+    const refetchType = options?.refetchType ?? (isVisible ? "active" : "none");
+    queryClient.invalidateQueries({ queryKey, refetchType });
+    clientTimers.delete(key);
+  }, INVALIDATION_COALESCE_MS);
+  clientTimers.set(key, timer);
+  pendingInvalidations.set(queryClient, clientTimers);
 }
 
 function resolveVisibleIssueRouteContext(
@@ -622,17 +646,17 @@ function invalidateHeartbeatQueries(
   companyId: string,
   payload: Record<string, unknown>,
 ) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  scheduleInvalidate(queryClient, queryKeys.liveRuns(companyId));
+  scheduleInvalidate(queryClient, queryKeys.heartbeats(companyId));
+  scheduleInvalidate(queryClient, queryKeys.agents.list(companyId));
+  scheduleInvalidate(queryClient, queryKeys.dashboard(companyId));
+  scheduleInvalidate(queryClient, queryKeys.costs(companyId));
+  scheduleInvalidate(queryClient, queryKeys.sidebarBadges(companyId));
 
   const agentId = readString(payload.agentId);
   if (agentId) {
-    queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agentId) });
+    scheduleInvalidate(queryClient, queryKeys.agents.detail(agentId));
+    scheduleInvalidate(queryClient, queryKeys.heartbeats(companyId, agentId));
   }
 }
 
@@ -643,9 +667,9 @@ function invalidateActivityQueries(
   currentActor: { userId: string | null; agentId: string | null },
   options?: { pathname?: string; isForegrounded?: boolean },
 ) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  scheduleInvalidate(queryClient, queryKeys.activity(companyId));
+  scheduleInvalidate(queryClient, queryKeys.dashboard(companyId));
+  scheduleInvalidate(queryClient, queryKeys.sidebarBadges(companyId));
 
   const entityType = readString(payload.entityType);
   const entityId = readString(payload.entityId);
@@ -662,10 +686,10 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+    scheduleInvalidate(queryClient, queryKeys.issues.list(companyId));
+    scheduleInvalidate(queryClient, queryKeys.issues.listMineByMe(companyId));
+    scheduleInvalidate(queryClient, queryKeys.issues.listTouchedByMe(companyId));
+    scheduleInvalidate(queryClient, queryKeys.issues.listUnreadTouchedByMe(companyId));
     if (entityId) {
       const selfCommentActivity =
         ((action === "issue.comment_added") ||
@@ -694,24 +718,24 @@ function invalidateActivityQueries(
           (selfCommentActivity || visibleIssueAgentActivity || visibleIssueCommentActivity)
             ? { refetchType: "inactive" as const }
             : undefined;
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), ...invalidationOptions });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
+        scheduleInvalidate(queryClient, queryKeys.issues.detail(ref), invalidationOptions);
+        scheduleInvalidate(queryClient, queryKeys.issues.activity(ref), invalidationOptions);
         if (action === "issue.comment_added") {
-          queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
+          scheduleInvalidate(queryClient, queryKeys.issues.comments(ref), invalidationOptions);
         }
         if (action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action)) {
           const documentKey = readString(details?.key);
-          queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(ref), ...invalidationOptions });
+          scheduleInvalidate(queryClient, queryKeys.issues.documents(ref), invalidationOptions);
           if (documentKey) {
-            queryClient.invalidateQueries({ queryKey: queryKeys.issues.document(ref, documentKey), ...invalidationOptions });
-            queryClient.invalidateQueries({ queryKey: queryKeys.issues.documentRevisions(ref, documentKey), ...invalidationOptions });
+            scheduleInvalidate(queryClient, queryKeys.issues.document(ref, documentKey), invalidationOptions);
+            scheduleInvalidate(queryClient, queryKeys.issues.documentRevisions(ref, documentKey), invalidationOptions);
           } else {
-            queryClient.invalidateQueries({ queryKey: ["issues", "document", ref], ...invalidationOptions });
-            queryClient.invalidateQueries({ queryKey: ["issues", "document-revisions", ref], ...invalidationOptions });
+            scheduleInvalidate(queryClient, ["issues", "document", ref], invalidationOptions);
+            scheduleInvalidate(queryClient, ["issues", "document-revisions", ref], invalidationOptions);
           }
         }
         if (action?.startsWith("issue.thread_interaction_")) {
-          queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref), ...invalidationOptions });
+          scheduleInvalidate(queryClient, queryKeys.issues.interactions(ref), invalidationOptions);
         }
       }
     }

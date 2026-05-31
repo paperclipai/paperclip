@@ -112,7 +112,7 @@ export function Issues() {
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
-    refetchInterval: () => (document.visibilityState === "visible" ? 15_000 : false),
+    refetchInterval: () => (document.visibilityState === "visible" ? 30_000 : false),
   });
 
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);

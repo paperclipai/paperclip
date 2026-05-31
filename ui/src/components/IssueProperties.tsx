@@ -461,6 +461,7 @@ export function IssueProperties({
     queryKey: queryKeys.issues.labels(companyId!),
     queryFn: () => issuesApi.listLabels(companyId!),
     enabled: !!companyId,
+    staleTime: 5 * 60 * 1000,
   });
 
   const { data: allIssues, isFetching: isFetchingIssuePickerIssues } = useQuery({
