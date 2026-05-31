@@ -120,11 +120,40 @@ def figma_cookie_count(page: Page) -> int:
 
 
 def is_logged_in(page: Page) -> tuple[bool, str]:
-    """Probe Figma session validity via in-page fetch to /api/user/profile.
+    """Probe Figma session validity.
 
-    Returns (logged_in, reason). reason is '' on success; on failure one
-    of: 'missing_authentication' (401), 'http_<status>', 'probe_error:<Exc>'.
+    Primary signal is Figma's own auth routing: an authenticated browser sits
+    on a www.figma.com app page, while an unauthenticated one is redirected to
+    /login. This mirrors the success signal auto_login already trusts.
+
+    We deliberately do NOT use /api/user/profile as a negative signal anymore.
+    As of 2026-05-31 Figma returns HTTP 400 to a bare same-origin fetch of that
+    endpoint — `{"error":true,"status":400,"message":"'user_id' must be a valid
+    number, received type String"}` — regardless of whether the session is
+    valid (confirmed live: the logged-in /files workspace renders while the
+    probe 400s, and passing ?user_id=<fuid> still 400s). The old code treated
+    any non-200/401 as logged-out, so the periodic refresh_status() heartbeat
+    flipped logged_in→False ~30s after every successful login and the bot was
+    stuck at ready:false for hours. The API probe is kept ONLY as a positive
+    corroboration when we're off a recognizable Figma page.
+
+    Returns (logged_in, reason). reason is '' on success; on failure one of:
+    'on_login_page', 'missing_authentication' (401), 'off_figma_http_<status>',
+    'probe_error:<Exc>'.
     """
+    try:
+        url = page.url or ""
+    except Exception as e:
+        return False, f"probe_error:{type(e).__name__}"
+
+    if "://www.figma.com" in url and "/login" not in url:
+        return True, ""
+    if "/login" in url:
+        return False, "on_login_page"
+
+    # Off a recognizable Figma page (about:blank, redirect in flight, error
+    # page). Don't guess from the URL — corroborate with the API probe, where
+    # a 200 still positively confirms a live session.
     try:
         result = page.evaluate(
             "(async()=>{const r=await fetch('https://www.figma.com/api/user/profile',"
@@ -132,13 +161,13 @@ def is_logged_in(page: Page) -> tuple[bool, str]:
             "return {status:r.status};})()"
         )
         status = int(result.get("status", 0))
-        if status == 200:
-            return True, ""
-        if status == 401:
-            return False, "missing_authentication"
-        return False, f"http_{status}"
     except Exception as e:
         return False, f"probe_error:{type(e).__name__}"
+    if status == 200:
+        return True, ""
+    if status == 401:
+        return False, "missing_authentication"
+    return False, f"off_figma_http_{status}"
 
 
 def refresh_status(page: Page) -> bool:

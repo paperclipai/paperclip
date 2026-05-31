@@ -106,7 +106,7 @@ class ControlHandler(http.server.BaseHTTPRequestHandler):
                 "cookie_count": snap.get("cookie_count"),
                 "last_check_at": snap.get("last_check_at"),
                 "last_probe_reason": snap.get("last_probe_reason", ""),
-                "version": "figma-bot/0.3.0",
+                "version": "figma-bot/0.3.2",
                 "lease": lease.lease_snapshot(),
                 "identities": render_identities_map(),
             })
