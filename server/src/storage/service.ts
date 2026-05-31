@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import type { StorageService, StorageProvider, PutFileInput, PutFileResult } from "./types.js";
+import type { StorageService, StorageProvider, PutFileInput, PutFileResult, PutObjectDirectInput } from "./types.js";
 import { badRequest, forbidden, unprocessable } from "../errors.js";
 
 const MAX_SEGMENT_LENGTH = 120;
@@ -111,6 +111,16 @@ export function createStorageService(provider: StorageProvider): StorageService 
         sha256: hashBuffer(input.body),
         originalFilename: input.originalFilename,
       };
+    },
+
+    async putObjectDirect(input: PutObjectDirectInput): Promise<void> {
+      ensureCompanyPrefix(input.companyId, input.objectKey);
+      await provider.putObject({
+        objectKey: input.objectKey,
+        body: input.body,
+        contentType: input.contentType,
+        contentLength: input.body.length,
+      });
     },
 
     async getObject(companyId: string, objectKey: string) {

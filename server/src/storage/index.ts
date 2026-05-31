@@ -32,4 +32,4 @@ export function getStorageService(): StorageService {
   return cachedStorageService;
 }
 
-export type { StorageService, PutFileResult } from "./types.js";
+export type { StorageService, PutFileResult, PutObjectDirectInput } from "./types.js";

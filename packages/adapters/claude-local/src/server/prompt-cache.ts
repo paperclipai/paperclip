@@ -1,11 +1,11 @@
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { createHash, type Hash } from "node:crypto";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import {
   ensurePaperclipSkillSymlink,
-  resolvePaperclipInstanceRootForAdapter,
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
 
@@ -18,25 +18,8 @@ export interface ClaudePromptBundle {
   instructionsFilePath: string | null;
 }
 
-function nonEmpty(value: string | undefined): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function resolveManagedClaudePromptCacheRoot(
-  env: NodeJS.ProcessEnv,
-  companyId: string,
-): string {
-  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
-    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
-    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
-    env,
-  });
-  return path.resolve(
-    instanceRoot,
-    "companies",
-    companyId,
-    "claude-prompt-cache",
-  );
+function resolveManagedClaudePromptCacheRoot(companyId: string): string {
+  return path.join(os.tmpdir(), "paperclip-prompt-cache", companyId);
 }
 
 async function hashPathContents(
@@ -142,7 +125,7 @@ export async function prepareClaudePromptBundle(input: {
     skills,
     instructionsContents,
   });
-  const rootDir = path.join(resolveManagedClaudePromptCacheRoot(process.env, companyId), bundleKey);
+  const rootDir = path.join(resolveManagedClaudePromptCacheRoot(companyId), bundleKey);
   const skillsHome = path.join(rootDir, ".claude", "skills");
   await fs.mkdir(skillsHome, { recursive: true });
 

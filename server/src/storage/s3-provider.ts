@@ -15,6 +15,8 @@ interface S3ProviderConfig {
   endpoint?: string;
   prefix?: string;
   forcePathStyle?: boolean;
+  accessKeyId?: string;
+  secretAccessKey?: string;
 }
 
 function normalizePrefix(prefix: string | undefined): string {
@@ -70,10 +72,16 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
   if (!region) throw unprocessable("S3 storage region is required");
 
   const prefix = normalizePrefix(config.prefix);
+  const credentials =
+    config.accessKeyId && config.secretAccessKey
+      ? { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey }
+      : undefined;
+
   const client = new S3Client({
     region,
     endpoint: config.endpoint,
     forcePathStyle: Boolean(config.forcePathStyle),
+    ...(credentials ? { credentials } : {}),
   });
 
   return {
