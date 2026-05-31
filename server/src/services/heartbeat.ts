@@ -9988,6 +9988,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
+        const activeRunCount = await countRunningRunsForAgent(agent.id);
+        if (activeRunCount >= policy.maxConcurrentRuns) {
+          skipped += 1;
+          if (elapsedMs > policy.intervalSec * 2000) {
+            logger.warn(
+              { agentId: agent.id, elapsedMs, intervalSec: policy.intervalSec, activeRunCount },
+              "heartbeat timer: agent heartbeat is running longer than 2x its interval — consider increasing intervalSec",
+            );
+          }
+          continue;
+        }
+
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
           triggerDetail: "system",
