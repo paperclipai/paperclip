@@ -10,12 +10,12 @@
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
-    "@cloudflare/sandbox": "^0.7.0"
+    "@cloudflare/sandbox": "0.7.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260501.0",
-    "typescript": "^5.7.3",
-    "vitest": "^3.2.4",
-    "wrangler": "^4.15.0"
+    "@cloudflare/workers-types": "4.20260501.0",
+    "typescript": "5.7.3",
+    "vitest": "3.2.4",
+    "wrangler": "4.15.0"
   }
 }

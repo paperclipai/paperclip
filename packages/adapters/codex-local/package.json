@@ -53,10 +53,10 @@
   },
   "dependencies": {
     "@paperclipai/adapter-utils": "workspace:*",
-    "picocolors": "^1.1.1"
+    "picocolors": "1.1.1"
   },
   "devDependencies": {
-    "@types/node": "^24.6.0",
-    "typescript": "^5.7.3"
+    "@types/node": "24.6.0",
+    "typescript": "5.7.3"
   }
 }

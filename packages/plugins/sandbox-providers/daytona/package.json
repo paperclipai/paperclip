@@ -51,11 +51,11 @@
     "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi"
   },
   "dependencies": {
-    "@daytonaio/sdk": "^0.171.0"
+    "@daytonaio/sdk": "0.171.0"
   },
   "devDependencies": {
-    "@types/node": "^24.6.0",
-    "typescript": "^5.7.3",
-    "vitest": "^3.2.4"
+    "@types/node": "24.6.0",
+    "typescript": "5.7.3",
+    "vitest": "3.2.4"
   }
 }
