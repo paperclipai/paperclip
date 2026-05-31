@@ -56,6 +56,7 @@ import {
   isClaudeSilentFailure,
   isClaudeUnknownSessionError,
   isClaudeQuotaExhausted,
+  isClaudeImmutableThinkingBlockError,
 } from "./parse.js";
 import { prepareClaudeConfigSeed } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
@@ -240,11 +241,18 @@ async function tryAdvanceCcrotateAccount(
     return { invoked: false, toEmail: null, switched: false, skipReason: "k8s_execution_target" };
   }
   try {
+    const commandEnv = Object.fromEntries(
+      Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    );
     const proc = await runAdapterExecutionTargetShellCommand(
       runId,
       executionTarget,
-      CCROTATE_NEXT_COMMAND,
-      { cwd, env, timeoutSec: 15, graceSec: 5, onLog: async () => {} },
+      commandEnv.PATH
+        ? `PATH=${shellQuote(commandEnv.PATH)} ${CCROTATE_NEXT_COMMAND}`
+        : CCROTATE_NEXT_COMMAND,
+      { cwd, env: commandEnv, timeoutSec: 15, graceSec: 5, onLog: async () => {} },
     );
     if (proc.timedOut) {
       return { invoked: false, toEmail: null, switched: false, skipReason: "ccrotate_timeout" };
@@ -1144,19 +1152,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       fallbackSessionId: runtimeSessionId || runtime.sessionId,
     };
 
-    if (
-      sessionId &&
-      !attempt.proc.timedOut &&
-      (attempt.proc.exitCode ?? 0) !== 0 &&
-      attempt.parsed &&
-      isClaudeUnknownSessionError(attempt.parsed)
-    ) {
-      await onLog(
-        "stdout",
-        `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-      );
-      attempt = await runAttempt(null);
-      resultOpts = { fallbackSessionId: null, clearSessionOnMissingSession: true };
+    if (sessionId && !attempt.proc.timedOut && (attempt.proc.exitCode ?? 0) !== 0) {
+      const fallbackErrorMessage = attempt.parsed ? null : parseFallbackErrorMessage(attempt.proc);
+      const resumeFailureReason = attempt.parsed && isClaudeUnknownSessionError(attempt.parsed)
+        ? "is unavailable"
+        : isClaudeImmutableThinkingBlockError({
+            parsed: attempt.parsed,
+            stdout: attempt.proc.stdout,
+            stderr: attempt.proc.stderr,
+            errorMessage: fallbackErrorMessage,
+          })
+        ? "contains immutable thinking blocks rejected by Claude"
+        : null;
+      if (resumeFailureReason) {
+        await onLog(
+          "stdout",
+          `[paperclip] Claude resume session "${sessionId}" ${resumeFailureReason}; retrying with a fresh session.\n`,
+        );
+        attempt = await runAttempt(null);
+        resultOpts = { fallbackSessionId: null, clearSessionOnMissingSession: true };
+      }
     }
 
     let result = toAdapterResult(attempt, resultOpts);
