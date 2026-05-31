@@ -18,6 +18,7 @@ vi.mock("../services/index.js", () => ({
   agentService: () => ({}),
   companyService: () => ({}),
   documentService: () => ({}),
+  documentAnnotationService: () => ({}),
   executionWorkspaceService: () => ({}),
   goalService: () => ({}),
   heartbeatService: () => ({
