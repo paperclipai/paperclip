@@ -34,7 +34,8 @@ POST /api/companies/{companyId}/routines
   "priority": "medium",
   "status": "active",
   "concurrencyPolicy": "coalesce_if_active",
-  "catchUpPolicy": "skip_missed"
+  "catchUpPolicy": "skip_missed",
+  "idempotencyKey": "eod-wake:{umbrella-id}"
 }
 ```
 
@@ -54,6 +55,7 @@ Fields:
 | `status` | no | `active` (default), `paused`, `archived` |
 | `concurrencyPolicy` | no | Behaviour when a run fires while a previous one is still active |
 | `catchUpPolicy` | no | Behaviour for missed scheduled runs |
+| `idempotencyKey` | no | Dedupe key (max 255 chars) scoped to `(companyId, assigneeAgentId)` — returns **200** with the existing routine if a non-archived match is found, **409** if archived |
 
 **Concurrency policies:**
 

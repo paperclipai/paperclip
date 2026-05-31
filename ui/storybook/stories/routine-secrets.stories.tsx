@@ -188,6 +188,7 @@ function makeRoutine(latestRevisionId: string, latestRevisionNumber: number): Ro
     createdByUserId: "user-board",
     updatedByAgentId: null,
     updatedByUserId: "user-board",
+    idempotencyKey: null,
     lastTriggeredAt: null,
     lastEnqueuedAt: null,
     createdAt: new Date("2026-05-01T11:00:00.000Z"),

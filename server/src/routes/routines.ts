@@ -97,36 +97,38 @@ export function routineRoutes(
     const companyId = req.params.companyId as string;
     await assertBoardCanAssignTasks(req, companyId);
     assertCanManageCompanyRoutine(req, companyId, req.body.assigneeAgentId);
-    const created = await svc.create(companyId, req.body, {
+    const { routine: created, idempotent } = await svc.create(companyId, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
       runId: req.actor.runId ?? null,
     });
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "routine.created",
-      entityType: "routine",
-      entityId: created.id,
-      details: { title: created.title, assigneeAgentId: created.assigneeAgentId },
-    });
-    const telemetryClient = getTelemetryClient();
-    if (telemetryClient) {
-      trackRoutineCreated(telemetryClient);
+    if (!idempotent) {
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "routine.created",
+        entityType: "routine",
+        entityId: created.id,
+        details: { title: created.title, assigneeAgentId: created.assigneeAgentId },
+      });
+      const telemetryClient = getTelemetryClient();
+      if (telemetryClient) {
+        trackRoutineCreated(telemetryClient);
+      }
+      await logRoutineRevisionCreated(req, {
+        companyId,
+        routineId: created.id,
+        revisionId: created.latestRevisionId,
+        revisionNumber: created.latestRevisionNumber,
+        changeSummary: "Created routine",
+        triggerCount: 0,
+      });
     }
-    await logRoutineRevisionCreated(req, {
-      companyId,
-      routineId: created.id,
-      revisionId: created.latestRevisionId,
-      revisionNumber: created.latestRevisionNumber,
-      changeSummary: "Created routine",
-      triggerCount: 0,
-    });
-    res.status(201).json(created);
+    res.status(idempotent ? 200 : 201).json(created);
   });
 
   router.get("/routines/:id", async (req, res) => {

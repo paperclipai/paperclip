@@ -360,7 +360,7 @@ export function pluginManagedRoutineService(
       return resolution(companyId, declaration, null, "missing_refs", refs.missingRefs);
     }
 
-    const created = await routinesSvc.create(companyId, {
+    const { routine: created } = await routinesSvc.create(companyId, {
       projectId: refs.projectId,
       goalId: declaration.goalId ?? null,
       title: declaration.title,

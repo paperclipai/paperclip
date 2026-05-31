@@ -37,7 +37,8 @@ POST /api/companies/{companyId}/routines
   "priority": "medium",
   "status": "active",
   "concurrencyPolicy": "coalesce_if_active",
-  "catchUpPolicy": "skip_missed"
+  "catchUpPolicy": "skip_missed",
+  "idempotencyKey": "eod-wake:{umbrella-identifier}"  // optional — prevents duplicate creation
 }
 ```
 
@@ -53,6 +54,17 @@ POST /api/companies/{companyId}/routines
 | `status` | no | `active` (default) `paused` `archived` |
 | `concurrencyPolicy` | no | See below |
 | `catchUpPolicy` | no | See below |
+| `idempotencyKey` | no | Max 255 chars. See below. |
+
+### Create idempotency
+
+Supply `idempotencyKey` to make routine creation idempotent within the scope of `(companyId, assigneeAgentId)`.
+
+- **200** — a non-archived routine with the same `(companyId, assigneeAgentId, idempotencyKey)` already exists; the existing routine is returned unchanged.
+- **201** — a new routine was created.
+- **409** — a routine with that key exists but is `archived`; unarchive or use a different key.
+
+Agents should use a stable, deterministic key that embeds the umbrella or context identifier, e.g. `eod-wake:{umbrella-issue-id}`. This prevents duplicate routines when a heartbeat retries after creating the routine but before recording the ID.
 
 ---
 

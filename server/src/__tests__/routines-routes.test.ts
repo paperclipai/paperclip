@@ -23,6 +23,7 @@ const routine = {
   concurrencyPolicy: "coalesce_if_active",
   catchUpPolicy: "skip_missed",
   variables: [],
+  idempotencyKey: null,
   latestRevisionId: revisionId,
   latestRevisionNumber: 1,
   createdByAgentId: null,
@@ -186,7 +187,7 @@ describe("routine routes", () => {
     vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockRoutineService.list.mockResolvedValue([routine]);
-    mockRoutineService.create.mockResolvedValue(routine);
+    mockRoutineService.create.mockResolvedValue({ routine, idempotent: false });
     mockRoutineService.get.mockResolvedValue(routine);
     mockRoutineService.getTrigger.mockResolvedValue(trigger);
     mockRoutineService.update.mockResolvedValue({ ...routine, assigneeAgentId: otherAgentId });
@@ -466,5 +467,51 @@ describe("routine routes", () => {
       runId: null,
     });
     expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
+  });
+
+  it("returns 200 and existing routine when create is idempotent", async () => {
+    mockRoutineService.create.mockResolvedValue({ routine, idempotent: true });
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Daily routine",
+        assigneeAgentId: agentId,
+        idempotencyKey: "eod-wake:test-umbrella",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: routineId });
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockTrackRoutineCreated).not.toHaveBeenCalled();
+  });
+
+  it("passes idempotencyKey to the create service", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+    });
+
+    await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Daily routine",
+        assigneeAgentId: agentId,
+        idempotencyKey: "eod-wake:test-umbrella",
+      });
+
+    expect(mockRoutineService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ idempotencyKey: "eod-wake:test-umbrella" }),
+      expect.any(Object),
+    );
   });
 });

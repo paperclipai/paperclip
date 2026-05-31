@@ -63,6 +63,7 @@ export interface Routine {
   catchUpPolicy: string;
   variables: RoutineVariable[];
   env?: RoutineEnvConfig | null;
+  idempotencyKey: string | null;
   latestRevisionId: string | null;
   latestRevisionNumber: number;
   createdByAgentId: string | null;

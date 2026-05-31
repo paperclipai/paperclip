@@ -138,6 +138,7 @@ function createRoutine(overrides: Partial<Routine> = {}): Routine {
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
     variables: [],
+    idempotencyKey: null,
     latestRevisionId: "revision-2",
     latestRevisionNumber: 2,
     createdByAgentId: null,
