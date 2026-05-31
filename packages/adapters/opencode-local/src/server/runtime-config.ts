@@ -9,6 +9,28 @@ type PreparedOpenCodeRuntimeConfig = {
   cleanup: () => Promise<void>;
 };
 
+/**
+ * Read the Ollama provider's baseURL from the user's opencode config, if
+ * present.  Returns null when the config file is missing or does not contain a
+ * valid string value at provider.ollama.options.baseURL.
+ */
+export async function readExistingOpencodeOllamaBaseUrl(
+  env: Record<string, string>,
+): Promise<string | null> {
+  const xdgConfigHome = resolveXdgConfigHome(env);
+  const configPath = path.join(xdgConfigHome, "opencode", "opencode.json");
+  const config = await readJsonObject(configPath);
+  if (!isPlainObject(config.provider)) return null;
+  const provider = config.provider as Record<string, unknown>;
+  if (!isPlainObject(provider.ollama)) return null;
+  const ollama = provider.ollama as Record<string, unknown>;
+  if (!isPlainObject(ollama.options)) return null;
+  const options = ollama.options as Record<string, unknown>;
+  return typeof options.baseURL === "string" && options.baseURL.trim()
+    ? options.baseURL.trim()
+    : null;
+}
+
 function resolveXdgConfigHome(env: Record<string, string>): string {
   return (
     (typeof env.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim()) ||
@@ -35,9 +57,16 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
+  /**
+   * When set, overrides provider.ollama.options.baseURL in the opencode
+   * runtime config so that opencode routes Ollama calls through the
+   * normalization proxy instead of the real Ollama endpoint.
+   */
+  ollamaProxyBaseUrl?: string;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
-  if (!skipPermissions) {
+  const needsProxyInjection = typeof input.ollamaProxyBaseUrl === "string" && input.ollamaProxyBaseUrl.trim().length > 0;
+  if (!skipPermissions && !needsProxyInjection) {
     return {
       env: input.env,
       notes: [],
@@ -81,23 +110,56 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   const existingPermission = isPlainObject(existingConfig.permission)
     ? existingConfig.permission
     : {};
-  const nextConfig = {
-    ...existingConfig,
-    permission: {
-      ...existingPermission,
+  const nextConfig: Record<string, unknown> = { ...existingConfig };
+
+  if (skipPermissions) {
+    nextConfig.permission = {
+      ...(existingPermission as Record<string, unknown>),
       external_directory: "allow",
-    },
-  };
+    };
+  }
+
+  // Redirect Ollama API calls through the normalization proxy when requested.
+  if (needsProxyInjection && isPlainObject(existingConfig.provider)) {
+    const existingProvider = existingConfig.provider as Record<string, unknown>;
+    const existingOllama = isPlainObject(existingProvider.ollama)
+      ? (existingProvider.ollama as Record<string, unknown>)
+      : {};
+    const existingOptions = isPlainObject(existingOllama.options)
+      ? (existingOllama.options as Record<string, unknown>)
+      : {};
+    nextConfig.provider = {
+      ...existingProvider,
+      ollama: {
+        ...existingOllama,
+        options: {
+          ...existingOptions,
+          baseURL: input.ollamaProxyBaseUrl,
+        },
+      },
+    };
+  }
+
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
+
+  const notes: string[] = [];
+  if (skipPermissions) {
+    notes.push(
+      "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
+    );
+  }
+  if (needsProxyInjection) {
+    notes.push(
+      `Redirected Ollama provider through bash-tool normalization proxy at ${input.ollamaProxyBaseUrl}.`,
+    );
+  }
 
   return {
     env: {
       ...input.env,
       XDG_CONFIG_HOME: runtimeConfigHome,
     },
-    notes: [
-      "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
-    ],
+    notes,
     cleanup: async () => {
       await fs.rm(runtimeConfigHome, { recursive: true, force: true });
     },

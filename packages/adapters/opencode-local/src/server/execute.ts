@@ -25,6 +25,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   asString,
+  asBoolean,
   asNumber,
   asStringArray,
   parseObject,
@@ -51,7 +52,11 @@ import {
   requireOpenCodeModelId,
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
-import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import {
+  prepareOpenCodeRuntimeConfig,
+  readExistingOpencodeOllamaBaseUrl,
+} from "./runtime-config.js";
+import { startBashToolNormalizationProxy } from "./proxy.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -297,7 +302,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  // When `bashToolNormalization` is enabled, start a local HTTP proxy that
+  // intercepts Ollama /chat/completions responses and injects a default
+  // `description: ""` into bash tool calls that omit it (e.g. qwen3 in
+  // thinking mode).  The proxy URL is injected into the opencode runtime config
+  // so opencode routes its Ollama calls through the proxy transparently.
+  // Scoped to local execution only — remote targets run their own binary stack.
+  const normalizeBashTool = asBoolean(config.bashToolNormalization, false);
+  let bashProxy: Awaited<ReturnType<typeof startBashToolNormalizationProxy>> | null = null;
+  if (normalizeBashTool && !executionTargetIsRemote) {
+    const ollamaBaseUrl =
+      (await readExistingOpencodeOllamaBaseUrl(env)) ?? "http://localhost:11434/v1";
+    bashProxy = await startBashToolNormalizationProxy(ollamaBaseUrl);
+  }
+  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
+    env,
+    config,
+    ollamaProxyBaseUrl: bashProxy?.url,
+  });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
   try {
@@ -688,6 +710,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ]);
     }
   } finally {
-    await preparedRuntimeConfig.cleanup();
+    await Promise.all([
+      preparedRuntimeConfig.cleanup(),
+      bashProxy?.stop() ?? Promise.resolve(),
+    ]);
   }
 }
