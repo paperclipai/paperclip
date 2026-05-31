@@ -70,6 +70,6 @@ describe("HLT use-case starter catalog", () => {
       label: "Article draft",
       title: "Draft and review an HLT article",
     });
-    expect(examples[0].description).toContain("ArticleV2-style draft");
+    expect(examples[0].description).toContain("clear, source-grounded draft");
   });
 });

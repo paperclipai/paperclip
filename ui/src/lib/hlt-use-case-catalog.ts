@@ -38,7 +38,7 @@ export const HLT_USE_CASE_CATALOG: HltUseCaseCatalogItem[] = [
       "Find the topic, draft the article, add media ideas, review it, and stop before anything publishes.",
     outcomeBullets: [
       "Topic and demand brief",
-      "ArticleV2-style draft",
+      "Reviewed article draft",
       "Media ideas and review notes",
     ],
     teamRoles: ["Researcher", "Writer", "Media", "Reviewer", "Publisher", "Metrics"],
@@ -59,7 +59,7 @@ export const HLT_USE_CASE_CATALOG: HltUseCaseCatalogItem[] = [
 
 - find the topic and demand angle
 - use QBank/product signal if available
-- create an ArticleV2-style draft
+- create a clear, source-grounded draft
 - add media ideas without overloading the article
 - run editorial/safety review
 - stop before publish and ask for approval`,
@@ -116,11 +116,11 @@ export const HLT_USE_CASE_CATALOG: HltUseCaseCatalogItem[] = [
   },
   {
     id: "improve-katailyst-skill",
-    chipLabel: "Improve skill",
-    label: "Add or improve a skill",
+    chipLabel: "Save workflow",
+    label: "Save a repeatable workflow",
     shortDescription:
-      "Turn notes, examples, or repeated wins into a reusable capability block.",
-    outcomeBullets: ["Dedupe check", "Drafted reusable block", "Tags, links, and readback"],
+      "Turn notes, examples, or repeated wins into a reusable workflow the team can run again.",
+    outcomeBullets: ["Duplicate check", "Drafted workflow", "Review notes and readback"],
     teamRoles: ["Researcher", "Writer", "Reviewer", "Metrics"],
     optionalKatailystRefs: [
       "hub:hub-skills",
@@ -132,13 +132,13 @@ export const HLT_USE_CASE_CATALOG: HltUseCaseCatalogItem[] = [
     approvalBoundary: "Canon writes require review and receipt.",
     fallbackBehavior:
       "If extra context is unavailable, draft the proposed block and defer the canonical write.",
-    defaultTaskTitle: "Add or improve a skill",
-    defaultTaskDescription: `Turn repeated work into a reusable capability.
+    defaultTaskTitle: "Save a repeatable workflow",
+    defaultTaskDescription: `Turn repeated work into a reusable workflow.
 
-- classify whether this should be a skill, KB, playbook, or schema
+- decide the simplest home for the workflow
 - search for duplicates before creating anything
-- draft the reusable block with examples
-- add review notes, tags, and links
+- draft the reusable workflow with examples
+- add review notes and readback
 - defer canon writes until review is complete`,
   },
   {
@@ -152,7 +152,7 @@ export const HLT_USE_CASE_CATALOG: HltUseCaseCatalogItem[] = [
     optionalKatailystRefs: ["skill:llm-as-judge-content", "rubric:article-quality-v1"],
     approvalBoundary: "Choosing records learning only; it must not publish, send, schedule, or spend.",
     fallbackBehavior:
-      "If extra context is unavailable, create a local comparison issue and attach the decision notes.",
+      "If extra context is unavailable, create a local comparison task and attach the decision notes.",
     defaultTaskTitle: "Choose the better version",
     defaultTaskDescription: `Compare two versions and keep the learning.
 
@@ -228,7 +228,7 @@ export const HLT_USE_CASE_CATALOG: HltUseCaseCatalogItem[] = [
     ],
     approvalBoundary: "Repairs that touch canon, publishing, billing, auth, or production require review.",
     fallbackBehavior:
-      "If extra context is unavailable, create a local inspection issue and defer canonical repairs.",
+      "If extra context is unavailable, create a local inspection task and defer canonical repairs.",
     defaultTaskTitle: "Find what needs fixing",
     defaultTaskDescription: `Create a safe repair queue for the HLT system.
 
@@ -236,7 +236,7 @@ export const HLT_USE_CASE_CATALOG: HltUseCaseCatalogItem[] = [
 - separate duplicates, dead refs, thin entries, and risky routes
 - propose the smallest safe repair for each item
 - label anything that needs review before action
-- create follow-up issues instead of making hidden changes`,
+- create follow-up tasks instead of making hidden changes`,
   },
 ];
 
