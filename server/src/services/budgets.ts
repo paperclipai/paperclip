@@ -627,7 +627,10 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
 
     overview: async (companyId: string): Promise<BudgetOverview> => {
       const rows = await listPolicyRows(companyId);
-      const policies = await Promise.all(rows.map((row) => buildPolicySummary(row)));
+      const policyResults = await Promise.allSettled(rows.map((row) => buildPolicySummary(row)));
+      const policies = policyResults
+        .filter((r): r is PromiseFulfilledResult<BudgetPolicySummary> => r.status === "fulfilled")
+        .map((r) => r.value);
       const activeIncidentRows = await db
         .select()
         .from(budgetIncidents)
