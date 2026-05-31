@@ -747,6 +747,53 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
   });
+
+  it("serializes rejection wake without comments as non-null", () => {
+    const payload = {
+      reason: "interaction_rejected",
+      interactionKind: "request_confirmation",
+      interactionStatus: "rejected",
+      interactionRejectionReason: "The approach needs rethinking.",
+    };
+    const serialized = stringifyPaperclipWakePayload(payload);
+    expect(serialized).not.toBeNull();
+    const parsed = JSON.parse(serialized ?? "{}");
+    expect(parsed).toMatchObject({
+      interactionKind: "request_confirmation",
+      interactionStatus: "rejected",
+      interactionRejectionReason: "The approach needs rethinking.",
+    });
+  });
+
+  it("renders decline reason in prompt for rejected request_confirmation", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "interaction_rejected",
+      interactionKind: "request_confirmation",
+      interactionStatus: "rejected",
+      interactionRejectionReason: "The approach needs rethinking.",
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+    expect(prompt).toContain("Request confirmation declined:");
+    expect(prompt).toContain("- decline reason: The approach needs rethinking.");
+    expect(prompt).toContain("address the reviewer's feedback");
+  });
+
+  it("renders decline reason when rejection reason is absent", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "interaction_rejected",
+      interactionKind: "request_confirmation",
+      interactionStatus: "rejected",
+      interactionRejectionReason: null,
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+    expect(prompt).toContain("Request confirmation declined:");
+    expect(prompt).toContain("address the reviewer's feedback");
+    expect(prompt).not.toContain("- decline reason:");
+  });
 });
 
 describe("applyPaperclipWorkspaceEnv", () => {
