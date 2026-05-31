@@ -268,6 +268,9 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
   );
 }
 
+const CLAUDE_IMMUTABLE_THINKING_BLOCK_RE =
+  /(?:`?(?:redacted_)?thinking`?\s+blocks?[\s\S]{0,200}(?:cannot\s+be\s+modified|must\s+remain\s+as\s+they\s+were)|(?:cannot\s+be\s+modified|must\s+remain\s+as\s+they\s+were)[\s\S]{0,200}`?(?:redacted_)?thinking`?\s+blocks?)/i;
+
 function buildClaudeTransientHaystack(input: {
   parsed?: Record<string, unknown> | null;
   stdout?: string | null;
@@ -289,6 +292,17 @@ function buildClaudeTransientHaystack(input: {
     .map((line) => line.trim())
     .filter(Boolean)
     .join("\n");
+}
+
+export function isClaudeImmutableThinkingBlockError(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const haystack = buildClaudeTransientHaystack(input);
+  if (!haystack) return false;
+  return CLAUDE_IMMUTABLE_THINKING_BLOCK_RE.test(haystack);
 }
 
 function readTimeZoneParts(date: Date, timeZone: string) {

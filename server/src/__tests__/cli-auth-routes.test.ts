@@ -461,4 +461,32 @@ describe.sequential("cli auth routes", () => {
     expect(res.status).toBe(400);
     expect(mockBoardAuthService.createServiceAccountBoardKey).not.toHaveBeenCalled();
   });
+
+  it.sequential("returns cli auth identity from the authenticated actor snapshot", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-7",
+      userName: "User Seven",
+      userEmail: "user7@example.com",
+      keyId: "board-key-7",
+      source: "board_key",
+      isInstanceAdmin: false,
+      companyIds: ["company-7"],
+      memberships: [{ companyId: "company-7", membershipRole: "owner", status: "active" }],
+    });
+
+    const res = await request(app).get("/api/cli-auth/me");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      user: { id: "user-7", name: "User Seven", email: "user7@example.com" },
+      userId: "user-7",
+      isInstanceAdmin: false,
+      companyIds: ["company-7"],
+      memberships: [{ companyId: "company-7", membershipRole: "owner", status: "active" }],
+      source: "board_key",
+      keyId: "board-key-7",
+    });
+    expect(mockBoardAuthService.resolveBoardAccess).not.toHaveBeenCalled();
+  });
 });

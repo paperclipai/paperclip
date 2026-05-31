@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -135,6 +136,39 @@ console.log(JSON.stringify({ type: "result", session_id: "claude-session-2", res
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeImmutableThinkingRetryClaudeCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const payload = {
+  argv: process.argv.slice(2),
+  prompt: fs.readFileSync(0, "utf8"),
+};
+if (capturePath) {
+  const entries = fs.existsSync(capturePath) ? JSON.parse(fs.readFileSync(capturePath, "utf8")) : [];
+  entries.push(payload);
+  fs.writeFileSync(capturePath, JSON.stringify(entries), "utf8");
+}
+if (process.argv.includes("--resume")) {
+  console.log(JSON.stringify({
+    type: "result",
+    subtype: "success",
+    session_id: "claude-session-1",
+    is_error: true,
+    result: "API Error: 400 messages.11.content.7: \`thinking\` or \`redacted_thinking\` blocks in the latest assistant message cannot be modified. These blocks must remain as they were in the original response.",
+    usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 },
+  }));
+  process.exit(1);
+}
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-2", model: "claude-sonnet" }));
+console.log(JSON.stringify({ type: "assistant", session_id: "claude-session-2", message: { content: [{ type: "text", text: "fresh ok" }] } }));
+console.log(JSON.stringify({ type: "result", session_id: "claude-session-2", result: "fresh ok", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 async function setupExecuteEnv(
   root: string,
   options?: { commandWriter?: (commandPath: string) => Promise<void> },
@@ -160,6 +194,13 @@ async function setupExecuteEnv(
       else process.env.PATH = previousPath;
     },
   };
+}
+
+function emptyClaudePromptBundleKey(): string {
+  return createHash("sha256")
+    .update("paperclip-claude-prompt-bundle:v1\n")
+    .update("instructions:none\n")
+    .digest("hex");
 }
 
 function createLocalSandboxRunner() {
@@ -400,6 +441,61 @@ describe("claude execute", () => {
       expect(metaEvents).toHaveLength(2);
       expect(metaEvents[0]?.commandNotes).toHaveLength(0);
       expect(metaEvents[1]?.commandNotes.some((note) => note.includes("--append-system-prompt-file"))).toBe(true);
+      expect(result.sessionId).toBe("claude-session-2");
+      expect(result.clearSession).toBe(false);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("clears a stale Claude resume session when immutable thinking blocks are rejected", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-thinking-resume-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writeImmutableThinkingRetryClaudeCommand,
+    });
+    const unusedSkillDir = path.join(root, "unused-skill");
+    await fs.mkdir(unusedSkillDir, { recursive: true });
+    const logs: string[] = [];
+    try {
+      const result = await execute({
+        runId: "run-thinking-resume",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: {
+          sessionId: "claude-session-1",
+          sessionParams: {
+            sessionId: "claude-session-1",
+            cwd: workspace,
+            promptBundleKey: emptyClaudePromptBundleKey(),
+          },
+          sessionDisplayId: "claude-session-1",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          paperclipRuntimeSkills: [{
+            key: "test/unused",
+            runtimeName: "unused",
+            source: unusedSkillDir,
+            required: false,
+          }],
+          paperclipSkillSync: { desiredSkills: [] },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async (_stream, chunk) => { logs.push(chunk); },
+        onMeta: async () => {},
+      });
+
+      const captured = JSON.parse(await fs.readFile(capturePath, "utf-8")) as Array<{ argv: string[] }>;
+      expect(captured).toHaveLength(2);
+      expect(captured[0]?.argv).toContain("--resume");
+      expect(captured[1]?.argv).not.toContain("--resume");
+      expect(logs.join("")).toContain("contains immutable thinking blocks rejected by Claude");
+      expect(result.errorMessage).toBeNull();
       expect(result.sessionId).toBe("claude-session-2");
       expect(result.clearSession).toBe(false);
     } finally {

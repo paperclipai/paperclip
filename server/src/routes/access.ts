@@ -2703,13 +2703,16 @@ export function accessRoutes(
     if (req.actor.type !== "board" || !req.actor.userId) {
       throw unauthorized("Board authentication required");
     }
-    const accessSnapshot = await boardAuth.resolveBoardAccess(req.actor.userId);
     res.json({
-      user: accessSnapshot.user,
+      user: {
+        id: req.actor.userId,
+        name: req.actor.userName ?? null,
+        email: req.actor.userEmail ?? null,
+      },
       userId: req.actor.userId,
-      isInstanceAdmin: accessSnapshot.isInstanceAdmin,
-      companyIds: accessSnapshot.companyIds,
-      memberships: accessSnapshot.memberships,
+      isInstanceAdmin: req.actor.isInstanceAdmin ?? false,
+      companyIds: req.actor.companyIds ?? [],
+      memberships: req.actor.memberships ?? [],
       source: req.actor.source ?? "none",
       keyId: req.actor.source === "board_key" ? req.actor.keyId ?? null : null,
     });
