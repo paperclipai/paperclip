@@ -710,6 +710,9 @@ function invalidateActivityQueries(
             queryClient.invalidateQueries({ queryKey: ["issues", "document-revisions", ref], ...invalidationOptions });
           }
         }
+        if (action?.startsWith("issue.work_product_")) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.workProducts(ref), ...invalidationOptions });
+        }
         if (action?.startsWith("issue.thread_interaction_")) {
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref), ...invalidationOptions });
         }

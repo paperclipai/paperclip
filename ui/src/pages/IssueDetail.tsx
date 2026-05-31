@@ -150,6 +150,7 @@ import {
   type Issue,
   type IssueAttachment,
   type IssueComment,
+  type IssueWorkProduct,
   type IssueWorkMode,
   type IssueThreadInteraction,
   type RequestConfirmationInteraction,
@@ -397,6 +398,77 @@ function IssueSectionSkeleton({
         {Array.from({ length: rows }).map((_, index) => (
           <Skeleton key={index} className="h-12 w-full rounded-md" />
         ))}
+      </div>
+    </div>
+  );
+}
+
+function formatWorkProductValue(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return value.replace(/_/g, " ");
+}
+
+function workProductMetadataPath(workProduct: IssueWorkProduct): string | null {
+  const path = workProduct.metadata?.path;
+  return typeof path === "string" && path.trim() ? path : null;
+}
+
+function IssueWorkProductsSection({
+  workProducts,
+}: {
+  workProducts: IssueWorkProduct[];
+}) {
+  if (workProducts.length === 0) return null;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-medium text-muted-foreground">Work products</h3>
+        <span className="text-xs text-muted-foreground">{workProducts.length}</span>
+      </div>
+      <div className="space-y-2">
+        {workProducts.map((workProduct) => {
+          const path = workProductMetadataPath(workProduct);
+          const reviewState = formatWorkProductValue(workProduct.reviewState);
+          const status = formatWorkProductValue(workProduct.status);
+          const type = formatWorkProductValue(workProduct.type);
+          const title = workProduct.url ? (
+            <a
+              href={workProduct.url}
+              target="_blank"
+              rel="noreferrer"
+              className="font-medium text-foreground underline-offset-4 hover:underline"
+            >
+              {workProduct.title}
+            </a>
+          ) : (
+            <span className="font-medium text-foreground">{workProduct.title}</span>
+          );
+
+          return (
+            <div key={workProduct.id} className="rounded-lg border border-border bg-card/40 p-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0 space-y-1">
+                  {title}
+                  {workProduct.summary ? (
+                    <p className="line-clamp-2 text-sm text-muted-foreground">{workProduct.summary}</p>
+                  ) : null}
+                </div>
+                <div className="flex flex-wrap justify-end gap-1 text-[11px] text-muted-foreground">
+                  {status ? <span className="rounded border border-border px-1.5 py-0.5">{status}</span> : null}
+                  {reviewState && reviewState !== "none" ? (
+                    <span className="rounded border border-border px-1.5 py-0.5">{reviewState}</span>
+                  ) : null}
+                </div>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                {type ? <span>{type}</span> : null}
+                <span>{workProduct.provider}</span>
+                {path ? <span className="break-all">{path}</span> : null}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -1337,6 +1409,13 @@ export function IssueDetail() {
     queryFn: () => issuesApi.listAttachments(issueId!),
     enabled: !!issueId,
     placeholderData: keepPreviousDataForSameQueryTail<IssueAttachment[]>(issueId ?? "pending"),
+  });
+
+  const { data: workProducts, isLoading: workProductsLoading } = useQuery({
+    queryKey: queryKeys.issues.workProducts(issueId!),
+    queryFn: () => issuesApi.listWorkProducts(issueId!),
+    enabled: !!issueId,
+    placeholderData: keepPreviousDataForSameQueryTail<IssueWorkProduct[]>(issueId ?? "pending"),
   });
 
   const { data: liveRunCount = 0 } = useQuery<LiveRunForIssue[], Error, number>({
@@ -2820,6 +2899,7 @@ export function IssueDetail() {
 
   const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
   const attachmentList = attachments ?? [];
+  const workProductList = workProducts ?? [];
   const imageAttachments = attachmentList.filter(isImageAttachment);
   const nonImageAttachments = attachmentList.filter((a) => !isImageAttachment(a));
 
@@ -2921,6 +3001,7 @@ export function IssueDetail() {
   }, [showInboxToolbar, backHref, issue?.id, issueHidden, archivePending, setMobileToolbar]);
 
   const attachmentsInitialLoading = attachmentsLoading && attachments === undefined;
+  const workProductsInitialLoading = workProductsLoading && workProducts === undefined;
   const loadOlderComments = useCallback(() => {
     void fetchOlderComments();
   }, [fetchOlderComments]);
@@ -3756,6 +3837,12 @@ export function IssueDetail() {
         agentMap={agentMap}
         userProfileMap={userProfileMap}
       />
+
+      {workProductsInitialLoading ? (
+        <IssueSectionSkeleton titleWidth="w-28" rows={2} />
+      ) : (
+        <IssueWorkProductsSection workProducts={workProductList} />
+      )}
 
       {attachmentsInitialLoading ? (
         <IssueSectionSkeleton titleWidth="w-24" rows={2} />
