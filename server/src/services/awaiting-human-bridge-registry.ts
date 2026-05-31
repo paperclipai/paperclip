@@ -1,4 +1,5 @@
 import type { Db } from "@paperclipai/db";
+import type { StorageService } from "../storage/types.js";
 import type { AwaitingHumanNotificationPayload } from "./awaiting-human-notifications.js";
 
 export type AwaitingHumanBridgePollEvent = {
@@ -20,6 +21,7 @@ export type AwaitingHumanBridgeAdapter = {
     agentId: string;
     handoffKind: "request_confirmation" | "ask_user_questions";
     notification: AwaitingHumanNotificationPayload;
+    storage?: StorageService;
     externalThreadId?: string | null;
   }): Promise<{
     externalThreadId: string | null;
@@ -29,6 +31,16 @@ export type AwaitingHumanBridgeAdapter = {
   poll(input: {
     bridgeId: string;
     externalThreadId?: string | null;
+    externalMessageId?: string | null;
+  }): Promise<{
+    status: "ok" | "skipped" | "failed";
+    detail: string;
+    events: AwaitingHumanBridgePollEvent[];
+  }>;
+  pollOutboxReplies?(input: {
+    companyId: string;
+    issueId: string;
+    interactionId: string;
     externalMessageId?: string | null;
   }): Promise<{
     status: "ok" | "skipped" | "failed";

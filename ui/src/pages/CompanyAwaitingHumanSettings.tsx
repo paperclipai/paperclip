@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { companyAwaitingHumanSettingsApi } from "@/api/companyAwaitingHumanSettings";
+import type { ClickUpAwaitingHumanConnectionTestResult } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Field, ToggleField } from "@/components/agent-config-primitives";
@@ -31,6 +32,7 @@ export function CompanyAwaitingHumanSettings() {
   const [personalToken, setPersonalToken] = useState("");
   const [workspaceId, setWorkspaceId] = useState("");
   const [channelId, setChannelId] = useState("");
+  const [attachmentTaskId, setAttachmentTaskId] = useState("");
 
   useEffect(() => {
     setBreadcrumbs([
@@ -48,6 +50,7 @@ export function CompanyAwaitingHumanSettings() {
     setPersonalToken("");
     setWorkspaceId(settings.providerConfig?.workspaceId ?? "");
     setChannelId(settings.providerConfig?.channelId ?? "");
+    setAttachmentTaskId(settings.providerConfig?.attachmentTaskId ?? "");
   }, [settingsQuery.data]);
 
   const saveMutation = useMutation({
@@ -63,6 +66,7 @@ export function CompanyAwaitingHumanSettings() {
           ? {
             workspaceId: workspaceId.trim() || null,
             channelId: channelId.trim() || null,
+            attachmentTaskId: attachmentTaskId.trim() || null,
           }
           : null,
         clickupPersonalToken: provider === "clickup" ? (personalToken.trim() || null) : null,
@@ -72,6 +76,26 @@ export function CompanyAwaitingHumanSettings() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.awaitingHumanSettings(selectedCompanyId!) });
       setPersonalToken("");
+    },
+  });
+
+  const connectionTestMutation = useMutation<ClickUpAwaitingHumanConnectionTestResult, Error>({
+    mutationFn: async () => {
+      if (!selectedCompany) {
+        throw new Error("No company selected");
+      }
+      return companyAwaitingHumanSettingsApi.testConnection(selectedCompanyId!, {
+        enabled: bridgeEnabled && provider !== "none",
+        provider: provider === "none" ? null : "clickup",
+        providerConfig: provider === "clickup"
+          ? {
+            workspaceId: workspaceId.trim() || null,
+            channelId: channelId.trim() || null,
+            attachmentTaskId: attachmentTaskId.trim() || null,
+          }
+          : null,
+        clickupPersonalToken: provider === "clickup" ? (personalToken.trim() || null) : null,
+      });
     },
   });
 
@@ -113,7 +137,8 @@ export function CompanyAwaitingHumanSettings() {
     || normalizedProvider !== (settings?.provider ?? null)
     || personalToken.trim().length > 0
     || workspaceId !== (settings?.providerConfig?.workspaceId ?? "")
-    || channelId !== (settings?.providerConfig?.channelId ?? "");
+    || channelId !== (settings?.providerConfig?.channelId ?? "")
+    || attachmentTaskId !== (settings?.providerConfig?.attachmentTaskId ?? "");
   const providerEnabled = provider !== "none";
   const hasStoredClickUpToken = settings?.hasStoredAuthToken ?? false;
 
@@ -226,6 +251,64 @@ export function CompanyAwaitingHumanSettings() {
                 className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-60"
               />
             </Field>
+
+            <Field
+              label="Attachment task ID"
+              hint="ClickUp task used as the file host for deliverable uploads. Required when handoffs include review files."
+            >
+              <input
+                type="text"
+                value={attachmentTaskId}
+                onChange={(e) => setAttachmentTaskId(e.target.value)}
+                disabled={!providerEnabled}
+                placeholder="86d35fwx8"
+                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-60"
+              />
+            </Field>
+
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-dashed border-border/70 bg-background/70 p-3">
+              <div className="space-y-0.5">
+                <p className="text-xs font-medium text-foreground">Connection test</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Sends a test message to the configured ClickUp channel using current fields.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => connectionTestMutation.mutate()}
+                disabled={!providerEnabled || connectionTestMutation.isPending}
+              >
+                {connectionTestMutation.isPending ? "Testing..." : "Test channel"}
+              </Button>
+            </div>
+
+            {connectionTestMutation.data ? (
+              <div
+                className={
+                  connectionTestMutation.data.status === "sent"
+                    ? "rounded-xl border border-green-300/60 bg-green-50 px-3 py-2 text-xs text-green-700 dark:border-green-500/40 dark:bg-green-500/10 dark:text-green-300"
+                    : connectionTestMutation.data.status === "skipped"
+                      ? "rounded-xl border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200"
+                      : "rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+                }
+              >
+                <p className="font-medium">
+                  {connectionTestMutation.data.status === "sent"
+                    ? "Connection test successful"
+                    : connectionTestMutation.data.status === "skipped"
+                      ? "Connection test skipped"
+                      : "Connection test failed"}
+                </p>
+                <p className="mt-1 leading-relaxed">{connectionTestMutation.data.detail}</p>
+              </div>
+            ) : null}
+
+            {connectionTestMutation.error ? (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {connectionTestMutation.error.message}
+              </div>
+            ) : null}
           </div>
         ) : null}
 

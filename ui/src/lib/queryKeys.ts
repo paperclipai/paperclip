@@ -55,6 +55,7 @@ export const queryKeys = {
     graph: (id: string) => ["issues", "graph", id] as const,
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
     interactions: (issueId: string) => ["issues", "interactions", issueId] as const,
+    interactionHandoffStatus: (issueId: string) => ["issues", "interaction-handoff-status", issueId] as const,
     feedbackVotes: (issueId: string) => ["issues", "feedback-votes", issueId] as const,
     attachments: (issueId: string) => ["issues", "attachments", issueId] as const,
     documents: (issueId: string) => ["issues", "documents", issueId] as const,

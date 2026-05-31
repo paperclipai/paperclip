@@ -47,6 +47,7 @@ const mockFeedbackService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockSendClickUpTransportTestMessage = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -57,6 +58,10 @@ vi.mock("../services/index.js", () => ({
   awaitingHumanSettingsService: () => mockAwaitingHumanSettingsService,
   feedbackService: () => mockFeedbackService,
   logActivity: mockLogActivity,
+}));
+
+vi.mock("../services/clickup-awaiting-human-transport.js", () => ({
+  sendClickUpTransportTestMessage: mockSendClickUpTransportTestMessage,
 }));
 
 async function createApp() {
@@ -107,5 +112,56 @@ describe("PATCH /api/companies/:companyId/awaiting-human-settings", () => {
     expect(mockCompanyService.getById).not.toHaveBeenCalled();
     expect(mockAwaitingHumanSettingsService.update).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("sends connection-test message to ClickUp channel", async () => {
+    mockCompanyService.getById.mockResolvedValueOnce({
+      id: "company-1",
+      name: "Bizbox",
+    });
+    mockAwaitingHumanSettingsService.resolveClickUpRuntimeConfig.mockRejectedValueOnce(new Error("awaiting-human-bridge-disabled"));
+    mockSendClickUpTransportTestMessage.mockResolvedValueOnce({
+      status: "sent",
+      channel: "clickup-chat",
+      detail: "sent",
+      externalId: "message-1",
+    });
+
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/companies/company-1/awaiting-human-settings/connection-test")
+      .send({
+        provider: "clickup",
+        providerConfig: {
+          workspaceId: "workspace-1",
+          channelId: "channel-1",
+        },
+        clickupPersonalToken: "token-123",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      status: "sent",
+      channel: "clickup-chat",
+      detail: "ClickUp bridge connection test succeeded. Message delivered to configured channel (message message-1).",
+      externalId: "message-1",
+    });
+    expect(mockSendClickUpTransportTestMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Bizbox ClickUp bridge connection test",
+        summary: "Bizbox completed a bridge transport test for ClickUp.",
+        body: "The configured bridge successfully delivered a test payload to the target ClickUp channel.",
+        cta: "No action is required.",
+      }),
+      {
+        personalToken: "token-123",
+        workspaceId: "workspace-1",
+        channelId: "channel-1",
+      },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.awaiting_human_settings.connection_tested",
+    }));
   });
 });

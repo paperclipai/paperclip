@@ -3,6 +3,7 @@ export type AwaitingHumanProvider = "clickup";
 export interface ClickUpAwaitingHumanProviderConfig {
   workspaceId: string | null;
   channelId: string | null;
+  attachmentTaskId: string | null;
 }
 
 export type AwaitingHumanProviderConfig = ClickUpAwaitingHumanProviderConfig;
@@ -22,4 +23,11 @@ export interface UpdateCompanyAwaitingHumanSettingsRequest {
   provider?: AwaitingHumanProvider | null;
   providerConfig?: AwaitingHumanProviderConfig | null;
   clickupPersonalToken?: string | null;
+}
+
+export interface ClickUpAwaitingHumanConnectionTestResult {
+  channel: "clickup-chat";
+  status: "sent" | "skipped" | "failed";
+  detail: string;
+  externalId?: string | null;
 }

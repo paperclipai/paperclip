@@ -301,34 +301,23 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
     });
   });
 
-  it("accepts a pending confirmation when a positive ClickUp reaction is detected", async () => {
+  it("does not approve from a positive reaction on the main handoff message", async () => {
     const seeded = await seedAwaitingHumanConfirmation();
-    globalThis.fetch = vi.fn()
-      .mockImplementationOnce(async () => ({
-        ok: true,
-        json: async () => ({ data: [] }),
-      }))
-      .mockImplementation(async () => ({
-        ok: true,
-        json: async () => ({ data: [{ reaction: "heavy_check_mark", count: 1 }] }),
-      })) as typeof fetch;
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ data: [] }),
+    }) as typeof fetch;
 
     const result = await heartbeat.reconcileAwaitingHumanApprovals();
 
-    expect(result.approved).toBe(1);
-    await waitForWakeup(seeded.agentId);
-    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
-    expect(comments).toHaveLength(0);
-    const acceptedActivity = await db
+    expect(result.approved).toBe(0);
+    expect(result.noApproval).toBe(1);
+    const interaction = await db
       .select()
-      .from(activityLog)
-      .where(eq(activityLog.action, "issue.thread_interaction_accepted"));
-    expect(acceptedActivity[0]?.details).toMatchObject({
-      interactionId: seeded.interactionId,
-      resolutionSource: "clickup_reaction",
-      clickupMessageId: "message-42",
-      clickupReaction: "heavy_check_mark",
-    });
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, seeded.interactionId))
+      .then((rows) => rows[0] ?? null);
+    expect(interaction?.status).toBe("pending");
   });
 
   it("imports non-approval ClickUp replies as comments and leaves the bridge open", async () => {
@@ -589,17 +578,12 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
     expect(wakes).toHaveLength(0);
   });
 
-  it("does not accept a pending confirmation for neutral or negative reactions", async () => {
+  it("leaves a pending confirmation open when there are no approval replies", async () => {
     const seeded = await seedAwaitingHumanConfirmation();
-    globalThis.fetch = vi.fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ data: [] }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ data: [{ reaction: "eyes", count: 2 }, { reaction: "thumbsdown", count: 1 }] }),
-      }) as typeof fetch;
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ data: [] }),
+    }) as typeof fetch;
 
     const result = await heartbeat.reconcileAwaitingHumanApprovals();
 

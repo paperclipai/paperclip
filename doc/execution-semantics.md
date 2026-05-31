@@ -102,13 +102,13 @@ translates it into acceptance of the matching pending
 `request_confirmation` interaction, then resumes work through the normal
 interaction-resolution wake path.
 
-If an `awaiting_human` handoff has a human-facing deliverable, Bizbox
-queues the ClickUp notification in an outbox. The worker creates/reuses a
-ClickUp review task, uploads the deliverable to that task when
-`CLICKUP_AWAITING_HUMAN_REVIEW_LIST_ID` is configured, and posts the chat
-handoff with both the Bizbox deliverable link and ClickUp review task link.
-ClickUp Chat is not treated as a durable file host because its public API
-does not provide a documented chat-message attachment upload field.
+If an `awaiting_human` handoff targets an issue with attachments, Bizbox
+queues the ClickUp notification in an outbox. The worker uploads the
+most recent issue attachment to the company-configured ClickUp attachment sink task
+(`attachmentTaskId`), then
+posts the chat handoff as the ClickUp attachment URL only. Interaction payload is not used for file selection. ClickUp Chat is not treated as a durable file
+host because its public API does not provide a documented chat-message
+attachment upload field.
 
 ### `in_review`
 

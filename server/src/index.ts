@@ -37,6 +37,8 @@ import {
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
+import { registerAwaitingHumanBridgeAdapter } from "./services/awaiting-human-bridge-registry.js";
+import { clickupAwaitingHumanBridgeAdapter } from "./services/clickup-awaiting-human-bridge-adapter.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -834,6 +836,8 @@ export async function startServer(): Promise<StartedServer> {
   // reject valid external adapter types during the startup loading window.
   const { waitForExternalAdapters } = await import("./adapters/registry.js");
   await waitForExternalAdapters();
+
+  registerAwaitingHumanBridgeAdapter("clickup", clickupAwaitingHumanBridgeAdapter);
 
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {

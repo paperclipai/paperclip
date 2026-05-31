@@ -30,6 +30,7 @@ import type {
   FeedbackDataSharingPreference,
   FeedbackVote,
   FeedbackVoteValue,
+  InteractionAwaitingHumanHandoffStatus,
   IssueRelationIssueSummary,
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
@@ -135,6 +136,7 @@ interface IssueChatMessageContext {
     interaction: AskUserQuestionsInteraction,
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void> | void;
+  interactionHandoffStatusByInteractionId?: Record<string, InteractionAwaitingHumanHandoffStatus>;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
@@ -290,6 +292,7 @@ interface IssueChatThreadProps {
     interaction: AskUserQuestionsInteraction,
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void> | void;
+  interactionHandoffStatusByInteractionId?: Record<string, InteractionAwaitingHumanHandoffStatus>;
   composerRef?: Ref<IssueChatComposerHandle>;
 }
 
@@ -1740,6 +1743,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     onAcceptInteraction,
     onRejectInteraction,
     onSubmitInteractionAnswers,
+    interactionHandoffStatusByInteractionId = {},
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1775,6 +1779,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+            handoffStatus={interactionHandoffStatusByInteractionId[interaction.id] ?? null}
           />
         </div>
       </div>
@@ -2185,6 +2190,7 @@ export function IssueChatThread({
   onAcceptInteraction,
   onRejectInteraction,
   onSubmitInteractionAnswers,
+  interactionHandoffStatusByInteractionId = {},
   composerRef,
 }: IssueChatThreadProps) {
   const location = useLocation();
@@ -2365,6 +2371,7 @@ export function IssueChatThread({
       onAcceptInteraction,
       onRejectInteraction,
       onSubmitInteractionAnswers,
+      interactionHandoffStatusByInteractionId,
     }),
     [
       feedbackVoteByTargetId,
@@ -2385,6 +2392,7 @@ export function IssueChatThread({
       onAcceptInteraction,
       onRejectInteraction,
       onSubmitInteractionAnswers,
+      interactionHandoffStatusByInteractionId,
     ],
   );
 

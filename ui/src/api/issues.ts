@@ -12,6 +12,7 @@ import type {
   IssueDocument,
   IssueLabel,
   IssueThreadInteraction,
+  IssueInteractionHandoffStatusResponse,
   PendingHumanInboxInteraction,
   IssueWorkProduct,
   UpsertIssueDocument,
@@ -110,6 +111,8 @@ export const issuesApi = {
   },
   listInteractions: (id: string) =>
     api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
+  listInteractionHandoffStatus: (id: string) =>
+    api.get<IssueInteractionHandoffStatusResponse>(`/issues/${id}/interaction-handoff-status`),
   createInteraction: (id: string, data: Record<string, unknown>) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions`, data),
   acceptInteraction: (

@@ -92,12 +92,53 @@ describe("maybeLogAwaitingHumanHandoff", () => {
         dedupeKey: "interaction:interaction-1",
         handoffKind: "request_confirmation",
         notification: expect.objectContaining({
+          title: "BIZ-35 needs confirmation",
           link: "https://bizbox.example/issues/BIZ-35",
           summary: "Approve the exact GitHub reply before posting.",
+          cta: "Reply with Approve, Reject, or Change followed by feedback.",
+          body: expect.stringMatching(/Reply with:[\s\S]*`Change` followed by feedback[\s\S]*Disclaimer:[\s\S]*Open in Bizbox: https:\/\/bizbox\.example\/issues\/BIZ-35/),
         }),
       }),
     );
     expect(logActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders absolute target links for relative request confirmation targets", async () => {
+    process.env.BIZBOX_PUBLIC_URL = "https://bizbox.example";
+
+    const created = await maybeLogAwaitingHumanHandoff(mockDbWithAwaitingHumanRows(), {
+      previousIssue: basePreviousIssue,
+      updatedIssue: baseUpdatedIssue,
+      source: "issue_thread_interactions.create",
+      handoffKind: "request_confirmation",
+      actor: baseActor,
+      interaction: {
+        id: "interaction-1b",
+        kind: "request_confirmation",
+        title: null,
+        summary: null,
+        payload: {
+          version: 1,
+          prompt: "Do you approve attached growth image for use?",
+          target: {
+            type: "custom",
+            key: "growth-image-attachment",
+            label: "Growth image attachment",
+            href: "/api/attachments/347bbaac-d44e-4c4e-9d76-63a2b9e495a8/content",
+          },
+        },
+      },
+    });
+
+    expect(created).toBe(true);
+    expect(enqueueAwaitingHumanNotification).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        notification: expect.objectContaining({
+          body: expect.stringContaining("Target link: https://bizbox.example/api/attachments/347bbaac-d44e-4c4e-9d76-63a2b9e495a8/content"),
+        }),
+      }),
+    );
   });
 
   it("sends a ClickUp notification for ask_user_questions handoffs", async () => {
@@ -128,8 +169,10 @@ describe("maybeLogAwaitingHumanHandoff", () => {
       expect.objectContaining({
         handoffKind: "ask_user_questions",
         notification: expect.objectContaining({
+          title: "BIZ-35 needs answers",
           summary: "Need answers to 2 question(s).",
           link: "/issues/BIZ-35",
+          body: expect.stringMatching(/Question 1: Which scope\?[\s\S]*Open in Bizbox: \/issues\/BIZ-35/),
         }),
       }),
     );

@@ -87,7 +87,7 @@ function SortableCompanyItem({
             {/* Selection indicator pill */}
             <div
               className={cn(
-                "absolute left-[-14px] w-1 rounded-r-full bg-foreground transition-[height] duration-150",
+                "absolute -left-3.5 w-1 rounded-r-full bg-foreground transition-[height] duration-150",
                 isSelected ? "h-5" : "h-0 group-hover:h-2",
               )}
             />
@@ -209,7 +209,7 @@ export function CompanyRail() {
   );
 
   return (
-    <div className="brand-shell flex h-full w-[84px] shrink-0 flex-col items-center border-r border-border/60 bg-background/95">
+    <div className="brand-shell flex h-full w-21 shrink-0 flex-col items-center border-r border-border/60 bg-background/95">
       <div className="flex w-full flex-1 flex-col items-center gap-3 overflow-y-auto overflow-x-hidden py-3 scrollbar-none">
         <DndContext
           sensors={sensors}

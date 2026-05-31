@@ -175,7 +175,7 @@ Supported `kind` values:
 - `ask_user_questions`: ask structured questions and store selected answers
 - `request_confirmation`: ask the board/user to accept or reject a proposal
 
-For `request_confirmation`, `continuationPolicy: "wake_assignee"` wakes the assignee only after acceptance. Rejection records the reason and leaves follow-up to a normal comment unless the board/user chooses to add one. In the ClickUp `awaiting_human` bridge, any non-approval reply is treated as a rejection and forwarded back into the issue as a comment, while explicit negative reactions such as `thumbsdown` reject without adding comment text.
+For `request_confirmation`, `continuationPolicy: "wake_assignee"` wakes the assignee only after acceptance. Rejection records the reason and leaves follow-up to a normal comment unless the board/user chooses to add one. In the ClickUp `awaiting_human` bridge, any non-approval reply is treated as a rejection and forwarded back into the issue as a comment, while explicit negative reactions such as `thumbsdown` reject without adding comment text. Main-message terminal reactions are acknowledgement-oriented: `white_check_mark` for approved/rejected/superseded, `x` for failed retry/failed bridge cleanup.
 
 ### Resolve Interaction
 

@@ -17,6 +17,7 @@ interface StoredClickUpProviderConfig {
   authTokenRef: { type: "secret_ref"; secretId: string; version?: number | "latest" } | null;
   workspaceId: string | null;
   channelId: string | null;
+  attachmentTaskId: string | null;
 }
 
 type StoredAwaitingHumanSettingsRow = {
@@ -48,6 +49,7 @@ function toPublicSettings(row: StoredAwaitingHumanSettingsRow): CompanyAwaitingH
       ? {
         workspaceId: row.providerConfigJson?.workspaceId ?? null,
         channelId: row.providerConfigJson?.channelId ?? null,
+        attachmentTaskId: row.providerConfigJson?.attachmentTaskId ?? null,
       }
       : null,
     hasStoredAuthToken: row.provider === "clickup" && !!row.providerConfigJson?.authTokenRef?.secretId,
@@ -97,6 +99,7 @@ export function awaitingHumanSettingsService(db: Db) {
       personalToken,
       workspaceId: config?.workspaceId ?? null,
       channelId: config?.channelId ?? null,
+      attachmentTaskId: config?.attachmentTaskId ?? null,
     };
   }
 
@@ -153,6 +156,7 @@ export function awaitingHumanSettingsService(db: Db) {
             authTokenRef: nextProviderConfig?.authTokenRef ?? null,
             workspaceId: normalizedConfig?.workspaceId ?? null,
             channelId: normalizedConfig?.channelId ?? null,
+            attachmentTaskId: normalizedConfig?.attachmentTaskId ?? null,
           }
           : null;
       }
@@ -165,7 +169,11 @@ export function awaitingHumanSettingsService(db: Db) {
         validateClickUpAwaitingHumanProviderConfig({
           enabled: nextEnabled,
           providerConfig: nextProviderConfig
-            ? { workspaceId: nextProviderConfig.workspaceId, channelId: nextProviderConfig.channelId }
+            ? {
+              workspaceId: nextProviderConfig.workspaceId,
+              channelId: nextProviderConfig.channelId,
+              attachmentTaskId: nextProviderConfig.attachmentTaskId,
+            }
             : null,
         });
       }
@@ -189,6 +197,7 @@ export function awaitingHumanSettingsService(db: Db) {
             authTokenRef: { type: "secret_ref", secretId: created.id, version: "latest" },
             workspaceId: nextProviderConfig?.workspaceId ?? null,
             channelId: nextProviderConfig?.channelId ?? null,
+            attachmentTaskId: nextProviderConfig?.attachmentTaskId ?? null,
           };
         }
       }

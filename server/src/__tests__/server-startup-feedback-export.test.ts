@@ -168,6 +168,11 @@ vi.mock("../board-claim.js", () => ({
   initializeBoardClaimChallenge: vi.fn(async () => undefined),
 }));
 
+
+vi.mock("../services/clickup-awaiting-human-bridge-adapter.js", () => ({
+  clickupAwaitingHumanBridgeAdapter: vi.fn(() => ({})),
+}));
+
 vi.mock("../auth/better-auth.js", () => ({
   createBetterAuthHandler: vi.fn(() => undefined),
   createBetterAuthInstance: vi.fn(() => ({})),
