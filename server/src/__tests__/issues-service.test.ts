@@ -3364,15 +3364,19 @@ describeEmbeddedPostgres("issueService.clearStaleExecutionLock", () => {
       adapterType: "codex_local",
     });
 
-    // Use raw SQL to insert an issue with a dangling executionRunId (simulates a missing run)
+    // Bypass FK constraint to insert an issue with a dangling executionRunId.
+    // session_replication_role = replica disables FK trigger checks for this connection,
+    // allowing us to simulate a stale executionRunId pointing to a non-existent run.
+    await db.execute(sql`SET session_replication_role = replica`);
     await db.execute(sql`
       INSERT INTO issues (
         id, company_id, title, status, priority,
         assignee_agent_id, assignee_user_id, checkout_run_id,
         execution_run_id, execution_agent_name_key, execution_locked_at
-      ) VALUES ($1, $2, 'Test issue', 'in_progress', 'medium',
-        $3, null, null, $4, 'codexcoder', NOW())
-    `, [issueId, companyId, agentId, staleRunId]);
+      ) VALUES (${issueId}, ${companyId}, 'Test issue', 'in_progress', 'medium',
+        ${agentId}, null, null, ${staleRunId}, 'codexcoder', NOW())
+    `);
+    await db.execute(sql`SET session_replication_role = DEFAULT`);
 
     const result = await svc.clearStaleExecutionLock(issueId);
     expect(result).not.toBeNull();
