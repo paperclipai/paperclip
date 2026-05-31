@@ -65,6 +65,40 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await expect(fs.access(prepared.env.XDG_CONFIG_HOME)).rejects.toThrow();
   });
 
+  it("preserves all fields when the user config is opencode.jsonc", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-"));
+    cleanupPaths.add(root);
+    const configDir = path.join(root, "opencode");
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(configDir, "opencode.jsonc"),
+      `${JSON.stringify({ plugin: [{ name: "my-plugin" }], mcp: { server: "http://localhost:9000" }, theme: "dark" }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: root },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.jsonc"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig).toMatchObject({
+      plugin: [{ name: "my-plugin" }],
+      mcp: { server: "http://localhost:9000" },
+      theme: "dark",
+      permission: { external_directory: "allow" },
+    });
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+  });
+
   it("respects explicit opt-out", async () => {
     const configHome = await makeConfigHome();
     const prepared = await prepareOpenCodeRuntimeConfig({
