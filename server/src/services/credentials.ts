@@ -270,10 +270,52 @@ export function credentialService(db: Db) {
  * - `openrouter_api_key`: sets OPENROUTER_API_KEY (covers opencode-local).
  * - `deepseek_api_key`: sets DEEPSEEK_API_KEY (covers deepseek-api).
  */
+/**
+ * Adapter types that drive the real Claude Code CLI. When one of these agents is
+ * bound to a `deepseek_api_key` credential, we don't set DEEPSEEK_API_KEY (the
+ * CLI wouldn't read it) — instead we point Claude Code at DeepSeek's
+ * Anthropic-compatible endpoint so the full agentic loop runs on DeepSeek.
+ */
+const CLAUDE_CODE_ADAPTER_TYPES = new Set(["claude_local", "claude_tui"]);
+
+const DEEPSEEK_ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic";
+const DEEPSEEK_PRO_MODEL = "deepseek-v4-pro";
+const DEEPSEEK_FLASH_MODEL = "deepseek-v4-flash";
+
+/**
+ * Env that makes Claude Code talk to DeepSeek's Anthropic-compatible endpoint.
+ * Mirrors DeepSeek's official Claude Code integration guide. Strong slots
+ * (opus/sonnet, primary model) map to V4 Pro; cheap slots (haiku, subagents)
+ * map to V4 Flash. The payload may override the two model ids.
+ */
+function buildDeepSeekClaudeCodeEnv(
+  apiKey: string,
+  payload: Record<string, unknown>,
+): Record<string, string> {
+  const pro = typeof payload.proModel === "string" && payload.proModel.trim()
+    ? payload.proModel.trim()
+    : DEEPSEEK_PRO_MODEL;
+  const flash = typeof payload.flashModel === "string" && payload.flashModel.trim()
+    ? payload.flashModel.trim()
+    : DEEPSEEK_FLASH_MODEL;
+  return {
+    ANTHROPIC_BASE_URL: DEEPSEEK_ANTHROPIC_BASE_URL,
+    // DeepSeek's guide uses ANTHROPIC_AUTH_TOKEN (sent as a Bearer token).
+    ANTHROPIC_AUTH_TOKEN: apiKey,
+    ANTHROPIC_MODEL: pro,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: pro,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: pro,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: flash,
+    CLAUDE_CODE_SUBAGENT_MODEL: flash,
+    CLAUDE_CODE_EFFORT_LEVEL: "max",
+  };
+}
+
 export async function resolveCredentialEnv(
   db: Db,
   agentId: string,
   credentialId: string,
+  adapterType?: string,
 ): Promise<{ env: Record<string, string>; home?: string }> {
   const [cred] = await db
     .select()
@@ -463,6 +505,13 @@ export async function resolveCredentialEnv(
         logger.warn({ agentId, credentialId }, "deepseek_api_key credential missing apiKey");
         return { env: {} };
       }
+      // Same key, two consumers: the deepseek_api chat adapter reads
+      // DEEPSEEK_API_KEY, while a Claude Code CLI agent (claude_local/claude_tui)
+      // needs the ANTHROPIC_* env that routes it through DeepSeek's
+      // Anthropic-compatible endpoint.
+      if (adapterType && CLAUDE_CODE_ADAPTER_TYPES.has(adapterType)) {
+        return { env: buildDeepSeekClaudeCodeEnv(apiKey, payload) };
+      }
       return { env: { DEEPSEEK_API_KEY: apiKey } };
     }
 
@@ -490,8 +539,8 @@ export const CREDENTIAL_DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
  * Mirrors the UI's credentialTypesForAdapterType in AgentConfigForm.
  */
 const ADAPTER_CREDENTIAL_TYPES: Record<string, readonly string[]> = {
-  claude_local: ["claude_oauth", "claude_api_key"],
-  claude_tui: ["claude_oauth", "claude_api_key"],
+  claude_local: ["claude_oauth", "claude_api_key", "deepseek_api_key"],
+  claude_tui: ["claude_oauth", "claude_api_key", "deepseek_api_key"],
   gemini_local: ["gemini_api_key"],
   codex_local: ["codex_oauth", "openai_api_key"],
   cursor: ["openai_api_key"],
@@ -591,25 +640,29 @@ export async function resolveAllCredentialEnv(
     .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
     .where(eq(agentCredentials.agentId, agentId));
 
+  // adapterType decides how some credentials resolve (e.g. a deepseek_api_key on
+  // a Claude Code agent routes the CLI through DeepSeek's Anthropic endpoint).
+  const [agentRow] = await db
+    .select({ credentialId: agents.credentialId, adapterType: agents.adapterType })
+    .from(agents)
+    .where(eq(agents.id, agentId))
+    .limit(1);
+  const adapterType = agentRow?.adapterType ?? undefined;
+
   if (joinRows.length === 0) {
-    const [agent] = await db
-      .select({ credentialId: agents.credentialId })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .limit(1);
-    if (!agent?.credentialId) return { env: {}, credentialIds: [], chosen: [] };
-    const res = await resolveCredentialEnv(db, agentId, agent.credentialId);
-    await touchCredentialLastUsed(db, agent.credentialId);
+    if (!agentRow?.credentialId) return { env: {}, credentialIds: [], chosen: [] };
+    const res = await resolveCredentialEnv(db, agentId, agentRow.credentialId, adapterType);
+    await touchCredentialLastUsed(db, agentRow.credentialId);
     const [row] = await db
       .select({ type: providerCredentials.type })
       .from(providerCredentials)
-      .where(eq(providerCredentials.id, agent.credentialId))
+      .where(eq(providerCredentials.id, agentRow.credentialId))
       .limit(1);
     return {
       env: res.env,
       home: res.home,
-      credentialIds: [agent.credentialId],
-      chosen: row ? [{ credentialId: agent.credentialId, type: row.type }] : [],
+      credentialIds: [agentRow.credentialId],
+      chosen: row ? [{ credentialId: agentRow.credentialId, type: row.type }] : [],
     };
   }
 
@@ -642,7 +695,7 @@ export async function resolveAllCredentialEnv(
   const chosen: Array<{ credentialId: string; type: string }> = [];
 
   for (const candidate of ordered) {
-    const res = await resolveCredentialEnv(db, agentId, candidate.credentialId);
+    const res = await resolveCredentialEnv(db, agentId, candidate.credentialId, adapterType);
     Object.assign(env, res.env);
     if (res.home) home = res.home;
     credentialIds.push(candidate.credentialId);
