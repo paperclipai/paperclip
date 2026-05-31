@@ -61,7 +61,6 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   const sourceConfigDir = path.join(resolveXdgConfigHome(input.env), "opencode");
   const runtimeConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-config-"));
   const runtimeConfigDir = path.join(runtimeConfigHome, "opencode");
-  const runtimeConfigPath = path.join(runtimeConfigDir, "opencode.json");
 
   await fs.mkdir(runtimeConfigDir, { recursive: true });
   try {
@@ -76,6 +75,12 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       throw err;
     }
   }
+
+  // Prefer opencode.jsonc (OpenCode's default) over opencode.json
+  const jsoncPath = path.join(runtimeConfigDir, "opencode.jsonc");
+  const jsonPath = path.join(runtimeConfigDir, "opencode.json");
+  const useJsonc = await fs.access(jsoncPath).then(() => true, () => false);
+  const runtimeConfigPath = useJsonc ? jsoncPath : jsonPath;
 
   const existingConfig = await readJsonObject(runtimeConfigPath);
   const existingPermission = isPlainObject(existingConfig.permission)
