@@ -159,6 +159,33 @@ async function createApp(storage: StorageService) {
   return app;
 }
 
+async function requestApp(
+  app: express.Express,
+  buildRequest: (baseUrl: string) => request.Test,
+) {
+  const { createServer } = await vi.importActual<typeof import("node:http")>("node:http");
+  const server = createServer(app);
+  try {
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected HTTP server to listen on a TCP port");
+    }
+    return await buildRequest(`http://127.0.0.1:${address.port}`);
+  } finally {
+    if (server.listening) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    }
+  }
+}
+
 function makeAttachment(contentType: string, originalFilename: string) {
   const now = new Date("2026-01-01T00:00:00.000Z");
   return {
@@ -221,7 +248,9 @@ describe("issue attachment routes", () => {
     });
   });
 
-  it("accepts zip uploads for issue attachments", async () => {
+  // Extended timeout: vi.importActual("../routes/issues.js") is slow on cold transform
+  // because issues.ts is large; subsequent tests are faster once the cache warms up.
+  it("accepts zip uploads for issue attachments", { timeout: 15000 }, async () => {
     const storage = createStorageService();
     mockIssueService.getById.mockResolvedValue({
       id: "11111111-1111-4111-8111-111111111111",
@@ -231,9 +260,11 @@ describe("issue attachment routes", () => {
     mockIssueService.createAttachment.mockResolvedValue(makeAttachment("application/zip", "bundle.zip"));
 
     const app = await createApp(storage);
-    const res = await request(app)
-      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
-      .attach("file", Buffer.from("zip"), { filename: "bundle.zip", contentType: "application/zip" });
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+        .attach("file", Buffer.from("zip"), { filename: "bundle.zip", contentType: "application/zip" }),
+    );
 
     expect([200, 201]).toContain(res.status);
     const putFileCall = storage.__calls.putFile;
@@ -308,7 +339,7 @@ describe("issue attachment routes", () => {
     expect(res.status).toBe(200);
     expect([
       undefined,
-      'attachment; filename="report.html"',
+      "attachment; filename=\"report.html\"; filename*=UTF-8''report.html",
     ]).toContain(res.headers["content-disposition"]);
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
   });
@@ -323,7 +354,55 @@ describe("issue attachment routes", () => {
     expect(res.status).toBe(200);
     expect([
       undefined,
-      'inline; filename="preview.png"',
+      "inline; filename=\"preview.png\"; filename*=UTF-8''preview.png",
     ]).toContain(res.headers["content-disposition"]);
+  });
+
+  it("serves non-ASCII filename attachments with RFC 6266 Content-Disposition", async () => {
+    const storage = createStorageService();
+    mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("application/zip", "한국어.zip"));
+
+    const app = await createApp(storage);
+    const res = await request(app).get("/api/attachments/attachment-1/content");
+
+    expect(res.status).toBe(200);
+    expect([
+      undefined,
+      "attachment; filename=\"___.zip\"; filename*=UTF-8''%ED%95%9C%EA%B5%AD%EC%96%B4.zip",
+    ]).toContain(res.headers["content-disposition"]);
+  });
+
+  it("stores non-ASCII upload filenames correctly after latin1 decode", { timeout: 15000 }, async () => {
+    const storage = createStorageService();
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+    mockIssueService.createAttachment.mockResolvedValue(makeAttachment("application/zip", "한국어.zip"));
+
+    const app = await createApp(storage);
+
+    // Construct a raw multipart body where the filename is encoded as UTF-8 bytes,
+    // exactly as a browser would transmit it. Multer/Busboy will misread those bytes
+    // as latin1 (its default); the route then re-decodes to recover the correct text.
+    const boundary = "----TestBoundaryNonASCII";
+    const partHeader = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="한국어.zip"\r\nContent-Type: application/zip\r\n\r\n`;
+    const partFooter = `\r\n--${boundary}--\r\n`;
+    const rawBody = Buffer.concat([
+      Buffer.from(partHeader, "utf8"),
+      Buffer.from("zip-content"),
+      Buffer.from(partFooter, "utf8"),
+    ]);
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+        .set("Content-Type", `multipart/form-data; boundary=${boundary}`)
+        .send(rawBody),
+    );
+
+    expect([200, 201]).toContain(res.status);
+    expect(storage.__calls.putFile?.originalFilename).toBe("한국어.zip");
   });
 });

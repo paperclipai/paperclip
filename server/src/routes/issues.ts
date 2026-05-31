@@ -6089,10 +6089,16 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    // Browsers send the filename as raw UTF-8 bytes; Busboy reads them as latin1 by
+    // default, producing a garbled string. Re-decoding recovers the correct text.
+    // Non-browser clients that send a non-UTF-8 encoding may see replacement chars.
+    const originalFilename = file.originalname
+      ? Buffer.from(file.originalname, "latin1").toString("utf8")
+      : null;
     const stored = await storage.putFile({
       companyId,
       namespace: `issues/${issueId}`,
-      originalFilename: file.originalname || null,
+      originalFilename,
       contentType,
       body: file.buffer,
     });
@@ -6150,7 +6156,9 @@ export function issueRoutes(
     }
     const filename = attachment.originalFilename ?? "attachment";
     const disposition = isInlineAttachmentContentType(responseContentType) ? "inline" : "attachment";
-    res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
+    const asciiFallback = filename.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+    const encodedFilename = encodeURIComponent(filename);
+    res.setHeader("Content-Disposition", `${disposition}; filename="${asciiFallback}"; filename*=UTF-8''${encodedFilename}`);
 
     object.stream.on("error", (err) => {
       next(err);
