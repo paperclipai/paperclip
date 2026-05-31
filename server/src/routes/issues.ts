@@ -2507,6 +2507,187 @@ export function issueRoutes(
     });
   });
 
+  // GH#6750: path-param variant so callers can resolve a specific action by id
+  // without relying on PATCH clearRecoveryAction or body-embedded actionId.
+  router.post(
+    "/issues/:id/recovery-actions/:recoveryActionId/resolve",
+    validate(resolveIssueRecoveryActionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const recoveryActionId = req.params.recoveryActionId as string;
+      const existing = await svc.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, existing.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+      const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id);
+      if (!activeRecoveryAction || activeRecoveryAction.id !== recoveryActionId) {
+        res.status(404).json({ error: "Active recovery action not found" });
+        return;
+      }
+      if (
+        !(await assertRecoveryActionAuthority(
+          req,
+          res,
+          existing,
+          activeRecoveryAction,
+          { source: "recovery_action_resolution" },
+        ))
+      ) {
+        return;
+      }
+
+      // Inject the path-param recoveryActionId into the body and forward to the
+      // shared handler by re-using the same resolution logic inline.
+      req.body.actionId = recoveryActionId;
+      const { actionId, outcome, sourceIssueStatus, resolutionNote } = req.body;
+      if (outcome === "false_positive" || outcome === "cancelled") {
+        assertBoard(req);
+      }
+
+      const actor = getActorInfo(req);
+      const updateFields = sourceIssueStatus ? { status: sourceIssueStatus } : {};
+      await assertAgentInReviewReviewPath({
+        existing,
+        updateFields,
+        actorType: req.actor.type,
+      });
+
+      const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
+      const result = await db.transaction(async (tx) => {
+        let issue = existing;
+        if (outcome === "blocked") {
+          const unresolvedBlockers = await tx
+            .select({ id: issueRows.id })
+            .from(issueRelations)
+            .innerJoin(issueRows, eq(issueRelations.issueId, issueRows.id))
+            .where(
+              and(
+                eq(issueRelations.companyId, existing.companyId),
+                eq(issueRelations.relatedIssueId, existing.id),
+                eq(issueRelations.type, "blocks"),
+                notInArray(issueRows.status, ["done", "cancelled"]),
+              ),
+            )
+            .limit(1);
+          if (unresolvedBlockers.length === 0) {
+            throw unprocessable("Blocked recovery resolution requires an unresolved first-class blocker on the source issue");
+          }
+        }
+
+        if (sourceIssueStatus) {
+          const updatedIssue = await svc.update(
+            id,
+            {
+              status: sourceIssueStatus,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            },
+            tx,
+          );
+          if (!updatedIssue) throw notFound("Issue not found");
+          issue = updatedIssue;
+        }
+
+        const recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
+          {
+            companyId: existing.companyId,
+            sourceIssueId: existing.id,
+            actionId: actionId ?? null,
+            status: actionStatus,
+            outcome,
+            resolutionNote: resolutionNote ?? null,
+          },
+          tx,
+        );
+        if (!recoveryAction) throw notFound("Active recovery action not found");
+
+        return { issue, recoveryAction };
+      });
+
+      await routinesSvc.syncRunStatusForIssue(result.issue.id);
+
+      if (sourceIssueStatus && existing.status !== result.issue.status) {
+        await logActivity(db, {
+          companyId: result.issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: result.issue.id,
+          details: {
+            identifier: result.issue.identifier,
+            status: result.issue.status,
+            source: "recovery_action_resolution",
+            recoveryActionId: result.recoveryAction.id,
+            _previous: { status: existing.status },
+          },
+        });
+      }
+
+      await logActivity(db, {
+        companyId: result.issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.recovery_action_resolved",
+        entityType: "issue",
+        entityId: result.issue.id,
+        details: {
+          identifier: result.issue.identifier,
+          recoveryActionId: result.recoveryAction.id,
+          recoveryActionStatus: result.recoveryAction.status,
+          outcome: result.recoveryAction.outcome,
+          sourceIssueStatus: sourceIssueStatus ?? null,
+          resolutionNote: result.recoveryAction.resolutionNote,
+        },
+      });
+
+      if (
+        sourceIssueStatus === "todo" &&
+        existing.status !== result.issue.status &&
+        result.issue.assigneeAgentId
+      ) {
+        void heartbeat.wakeup(result.issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_recovery_action_restored",
+          payload: {
+            issueId: result.issue.id,
+            recoveryActionId: result.recoveryAction.id,
+            mutation: "recovery_action_resolution",
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: result.issue.id,
+            taskId: result.issue.id,
+            wakeReason: "issue_recovery_action_restored",
+            source: "issue.recovery_action_resolution",
+            recoveryActionId: result.recoveryAction.id,
+          },
+        }).catch((err) =>
+          logger.warn(
+            { err, issueId: result.issue.id, agentId: result.issue.assigneeAgentId },
+            "failed to wake agent after recovery action restored issue",
+          ));
+      }
+
+      res.json({
+        issue: {
+          ...result.issue,
+          activeRecoveryAction: null,
+        },
+        recoveryAction: result.recoveryAction,
+      });
+    },
+  );
+
   router.get("/issues/:id/work-products", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -4265,6 +4446,37 @@ export function issueRoutes(
         ...issueResponse,
         activeRecoveryAction: null,
       };
+    }
+    // GH#6750: when an issue update advances updatedAt and the recovery action
+    // survives revalidation, wake the recovery owner so the evaluator can
+    // re-assess with the latest evidence rather than waiting for the next reconcile.
+    if (revalidatedRecoveryAction?.ownerAgentId && existing.updatedAt !== issue.updatedAt) {
+      void heartbeat.wakeup(revalidatedRecoveryAction.ownerAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "source_scoped_recovery_action",
+        idempotencyKey: `recovery_re_eval:${revalidatedRecoveryAction.id}:${issue.updatedAt.toISOString()}`,
+        payload: {
+          issueId: issue.id,
+          sourceIssueId: issue.id,
+          recoveryActionId: revalidatedRecoveryAction.id,
+          triggerReason: "source_issue_updated",
+        },
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          wakeReason: "source_scoped_recovery_action",
+          source: "issue_recovery_action",
+          recoveryActionId: revalidatedRecoveryAction.id,
+          sourceIssueId: issue.id,
+        },
+      }).catch((err) =>
+        logger.warn(
+          { err, issueId: issue.id, agentId: revalidatedRecoveryAction.ownerAgentId },
+          "failed to wake recovery owner after source issue update",
+        ));
     }
     await logActivity(db, {
       companyId: issue.companyId,
