@@ -73,6 +73,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Code,
     recommended: true,
   },
+  local: {
+    label: "Local LLM",
+    description: "OpenAI-compatible local model",
+    icon: Cpu,
+  },
   gemini_local: {
     label: "Gemini CLI",
     description: "Local Gemini agent",
