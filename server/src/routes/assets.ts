@@ -105,6 +105,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
         else resolve();
       });
     });
+  if (req.file && typeof req.file.originalname === "string") {
+    req.file.originalname = Buffer.from(req.file.originalname, "latin1").toString("utf8");
+  }
   }
 
   router.post("/companies/:companyId/assets/images", async (req, res) => {
@@ -328,7 +331,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
       res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
     }
     const filename = asset.originalFilename ?? "asset";
-    res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
+      const asciiFallback = filename.replaceAll('"', '').replace(/[^\x20-\x7e]/g, "_");
+      const encodedFilename = encodeURIComponent(filename);
+      res.setHeader("Content-Disposition", `inline; filename="${asciiFallback}"; filename*=UTF-8''${encodedFilename}`);
 
     object.stream.on("error", (err) => {
       next(err);
