@@ -3365,18 +3365,21 @@ describeEmbeddedPostgres("issueService.clearStaleExecutionLock", () => {
     });
 
     // Bypass FK constraint to insert an issue with a dangling executionRunId.
-    // session_replication_role = replica disables FK trigger checks for this connection,
-    // allowing us to simulate a stale executionRunId pointing to a non-existent run.
-    await db.execute(sql`SET session_replication_role = replica`);
-    await db.execute(sql`
-      INSERT INTO issues (
-        id, company_id, title, status, priority,
-        assignee_agent_id, assignee_user_id, checkout_run_id,
-        execution_run_id, execution_agent_name_key, execution_locked_at
-      ) VALUES (${issueId}, ${companyId}, 'Test issue', 'in_progress', 'medium',
-        ${agentId}, null, null, ${staleRunId}, 'codexcoder', NOW())
-    `);
-    await db.execute(sql`SET session_replication_role = DEFAULT`);
+    // SET LOCAL keeps the override scoped to this transaction, and wrapping both
+    // statements in a transaction guarantees they share the same pooled connection
+    // (session_replication_role is session-scoped, so separate db.execute() calls
+    // may land on different connections and the SET has no effect on the INSERT).
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx.execute(sql`
+        INSERT INTO issues (
+          id, company_id, title, status, priority,
+          assignee_agent_id, assignee_user_id, checkout_run_id,
+          execution_run_id, execution_agent_name_key, execution_locked_at
+        ) VALUES (${issueId}, ${companyId}, 'Test issue', 'in_progress', 'medium',
+          ${agentId}, null, null, ${staleRunId}, 'codexcoder', NOW())
+      `);
+    });
 
     const result = await svc.clearStaleExecutionLock(issueId);
     expect(result).not.toBeNull();
