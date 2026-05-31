@@ -81,8 +81,11 @@ import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recover
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
-export const ISSUE_LIST_DEFAULT_LIMIT = 500;
-export const ISSUE_LIST_MAX_LIMIT = 1000;
+export const ISSUE_LIST_DEFAULT_LIMIT = 100;
+export const ISSUE_LIST_MAX_LIMIT = 500;
+// Deep offset pagination forces Postgres to scan all skipped rows. Cap it to prevent
+// runaway queries from a misbehaving client (GH#6913).
+export const ISSUE_LIST_MAX_OFFSET = 5000;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
@@ -4888,20 +4891,28 @@ export function issueService(db: Db) {
         current.status === "in_progress" &&
         current.assigneeAgentId === actorAgentId &&
         current.checkoutRunId == null &&
-        (current.executionRunId == null || current.executionRunId === actorRunId) &&
         options?.allowUnownedAdoption !== false
       ) {
-        const adopted = await adoptUnownedCheckoutRun({
-          issueId: id,
-          actorAgentId,
-          actorRunId,
-        });
+        // Allow adoption when executionRunId is absent, matches actorRunId, or belongs to a stale run.
+        // Without the stale check, a dead process with executionRunId still "running" in the DB blocks
+        // all checkout attempts until the reaper clears it (GH#6798).
+        const executionRunIsAdoptable =
+          current.executionRunId == null ||
+          current.executionRunId === actorRunId ||
+          (await isTerminalOrMissingHeartbeatRun(current.executionRunId));
+        if (executionRunIsAdoptable) {
+          const adopted = await adoptUnownedCheckoutRun({
+            issueId: id,
+            actorAgentId,
+            actorRunId,
+          });
 
-        if (adopted) {
-          return {
-            ...adopted,
-            adoptedFromRunId: null as string | null,
-          };
+          if (adopted) {
+            return {
+              ...adopted,
+              adoptedFromRunId: null as string | null,
+            };
+          }
         }
       }
 
@@ -4968,11 +4979,13 @@ export function issueService(db: Db) {
         }
       }
 
+      // Routine execution issues retain their assignee so the routine can re-fire to the same agent.
+      const preserveAssignee = existing.originKind === "routine_execution";
       const updated = await db
         .update(issues)
         .set({
           status: "todo",
-          assigneeAgentId: null,
+          assigneeAgentId: preserveAssignee ? existing.assigneeAgentId : null,
           checkoutRunId: null,
           executionRunId: null,
           executionAgentNameKey: null,
