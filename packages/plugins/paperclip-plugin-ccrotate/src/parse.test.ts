@@ -35,6 +35,21 @@ describe("parseWhenRow availability glyphs", () => {
     expect(row!.marker).toBe("★");
     expect(row!.email).toBe("a@b.com");
   });
+
+  it("marks stale rows from the red availability glyph", () => {
+    const stdout = [
+      "Cache: 0min old",
+      "  ✓ 🔴 bot11@blockcast.net base·prem 5h:100% 7d:89% stale (needs /login + snap)  api: opus api ok",
+    ].join("\n");
+    const { accounts } = parseWhenOutput("claude", stdout);
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]).toMatchObject({
+      email: "bot11@blockcast.net",
+      availabilityMark: "🔴",
+      availability: "stale (needs /login + snap)",
+      isStale: true,
+    });
+  });
 });
 
 describe("parseWhenOutput", () => {

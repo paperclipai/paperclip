@@ -403,9 +403,9 @@ async function handleBulkClearTiers(input: PluginApiRequestInput): Promise<Plugi
 
 async function handleRefreshOne(input: PluginApiRequestInput): Promise<PluginApiResponse> {
   // Force a single-account re-probe via `ccrotate refresh-one <email>`. The
-  // freshness-loop already probes accounts on its own cadence, but per-token
-  // cooldowns can stretch wall-clock time to hours; this gives the operator
-  // a one-click override when they need an account re-classified now.
+  // freshness-loop already probes accounts on its own cadence; an explicit
+  // operator refresh asks ccrotate to make one live Usage API attempt for this
+  // account and report Anthropic cooldown/unavailable errors directly.
   //
   // 60s timeout: refresh-one can take 30-50s on slow accounts (Anthropic
   // Usage-API + Claude/Codex tokens) — covers worst-case without leaving the

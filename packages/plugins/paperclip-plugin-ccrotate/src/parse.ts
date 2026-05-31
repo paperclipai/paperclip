@@ -131,9 +131,11 @@ export function parseWhenOutput(target: CcrotateTarget, stdout: string): {
       utilization7dSonnet: parsed.util?.s7d ?? null,
       utilization7dOpus: parsed.util?.o7d ?? null,
       availability: parsed.availability,
+      availabilityMark: parsed.availMark,
       apiLimit: parsed.apiLimit,
       isActive: parsed.marker === "★",
       isHealthy: parsed.health === "✓",
+      isStale: parsed.availMark === "🔴" || /^stale\b/i.test(parsed.availability),
     });
   }
   return { cacheAge, accounts };

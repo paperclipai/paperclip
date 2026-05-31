@@ -351,8 +351,12 @@ function PoolTableSkeletonRows({ rows = 4 }: { rows?: number }) {
   );
 }
 
+function accountIsStale(row: AccountRow): boolean {
+  return row.isStale === true || row.availabilityMark === "🔴" || /^stale\b/i.test(row.availability || "");
+}
+
 function tierDot(row: AccountRow): { color: string; label: string } {
-  if (!row.isHealthy) return { color: "#ef4444", label: "stale" };
+  if (accountIsStale(row) || !row.isHealthy) return { color: "#ef4444", label: "stale" };
   const tier = (row.tier || "").toLowerCase();
   if (tier.includes("extra")) return { color: "#22c55e", label: row.tier };
   if (tier.includes("exhausted")) return { color: "#71717a", label: row.tier };
@@ -527,6 +531,7 @@ function PoolTable({
           const isBusy = busyEmail === row.email;
           const isRefreshing = refreshingEmail === row.email;
           const isSessionFormOpen = sessionFormEmail === row.email;
+          const rowIsStale = accountIsStale(row);
           return (
             <>
               <tr key={row.email}>
@@ -563,7 +568,9 @@ function PoolTable({
                     style={{ ...smallBtnStyle, marginLeft: "4px" }}
                     disabled={isRefreshing || !companyId}
                     onClick={() => doRefreshOne(row.email)}
-                    title="Force a re-probe of this account now (bypasses freshness-loop cadence)"
+                    title={rowIsStale
+                      ? "Try a live Usage API re-probe; paste sessionKey if the profile remains stale"
+                      : "Force a live Usage API re-probe of this account now"}
                   >
                     {isRefreshing ? "↻…" : "↻"}
                   </button>
