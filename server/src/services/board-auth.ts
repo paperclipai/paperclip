@@ -13,11 +13,12 @@ import { conflict, forbidden, notFound } from "../errors.js";
 
 const DEFAULT_BOARD_API_KEY_TTL_DAYS = 30;
 const envTtlDays = Number(process.env.PAPERCLIP_BOARD_API_KEY_TTL_DAYS);
+// 0 means never expire; positive values set the TTL in days; anything else uses the default.
 const resolvedTtlDays =
-  Number.isFinite(envTtlDays) && envTtlDays > 0
+  Number.isFinite(envTtlDays) && envTtlDays >= 0
     ? envTtlDays
     : DEFAULT_BOARD_API_KEY_TTL_DAYS;
-export const BOARD_API_KEY_TTL_MS = resolvedTtlDays * 24 * 60 * 60 * 1000;
+export const BOARD_API_KEY_TTL_MS = resolvedTtlDays === 0 ? null : resolvedTtlDays * 24 * 60 * 60 * 1000;
 export const CLI_AUTH_CHALLENGE_TTL_MS = 10 * 60 * 1000;
 
 export type CliAuthChallengeStatus = "pending" | "approved" | "cancelled" | "expired";
@@ -40,7 +41,8 @@ export function createCliAuthSecret() {
   return `pcp_cli_auth_${randomBytes(24).toString("hex")}`;
 }
 
-export function boardApiKeyExpiresAt(nowMs: number = Date.now()) {
+export function boardApiKeyExpiresAt(nowMs: number = Date.now()): Date | null {
+  if (BOARD_API_KEY_TTL_MS === null) return null;
   return new Date(nowMs + BOARD_API_KEY_TTL_MS);
 }
 
