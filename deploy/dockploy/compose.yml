@@ -1,0 +1,75 @@
+services:
+  paperclip:
+    build:
+      context: https://github.com/victorbvieira/paperclip.git#prod
+      dockerfile: Dockerfile
+    container_name: paperclip
+    restart: unless-stopped
+    user: "0:0"
+
+    ports:
+      - "3100:3100"
+
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3100"
+      SERVE_UI: "true"
+
+      DATABASE_URL: "${DATABASE_URL}"
+
+      PAPERCLIP_HOME: "/paperclip"
+
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public"
+
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL}"
+      BETTER_AUTH_TRUSTED_ORIGINS: "${PAPERCLIP_PUBLIC_URL}"
+
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET}"
+
+      # Z.AI via OpenCode (rota 1 — provider OpenAI-compatible).
+      # Lido pelo arquivo /paperclip/.config/opencode/opencode.json injetado
+      # via `configs:` abaixo. NÃO existe adapter zai nativo nesta branch.
+      ZAI_API_KEY: "${ZAI_API_KEY}"
+
+      # ChatGPT (Codex CLI) — billing por assinatura.
+      # NÃO setar OPENAI_API_KEY nem CODEX_API_KEY aqui. Se setar, o paperclip
+      # entra em modo API-key e ignora o auth.json criado por `codex login`.
+      # Ver: packages/adapters/codex-local/src/server/codex-home.ts:101
+
+    configs:
+      - source: opencode_zai_config
+        target: /paperclip/.config/opencode/opencode.json
+        mode: 0644
+
+    volumes:
+      - /opt/paperclip:/paperclip
+
+    networks:
+      - interna
+
+configs:
+  opencode_zai_config:
+    content: |
+      {
+        "$schema": "https://opencode.ai/config.json",
+        "provider": {
+          "zai": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "Z.AI (GLM)",
+            "options": {
+              "baseURL": "https://api.z.ai/api/coding/paas/v4",
+              "apiKey": "{env:ZAI_API_KEY}"
+            },
+            "models": {
+              "glm-4.6": { "name": "GLM-4.6" },
+              "glm-4.5": { "name": "GLM-4.5" },
+              "glm-4.5-air": { "name": "GLM-4.5 Air" }
+            }
+          }
+        }
+      }
+
+networks:
+  interna:
+    external: true
