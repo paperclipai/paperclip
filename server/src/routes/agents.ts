@@ -1281,7 +1281,9 @@ export function agentRoutes(
     if (!env || typeof env !== "object" || Array.isArray(env)) return config;
     const redactedEnv: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
-      if (value !== null && typeof value === "object" && !Array.isArray(value) && (value as Record<string, unknown>).type === "plain") {
+      if (typeof value === "string") {
+        redactedEnv[key] = { type: "plain", value: REDACTED_EVENT_VALUE };
+      } else if (value !== null && typeof value === "object" && !Array.isArray(value) && (value as Record<string, unknown>).type === "plain") {
         redactedEnv[key] = { type: "plain", value: REDACTED_EVENT_VALUE };
       } else {
         redactedEnv[key] = value;
