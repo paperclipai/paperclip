@@ -6,8 +6,11 @@ import {
   agentWakeupRequests,
   companies,
   createDb,
+  documentRevisions,
+  documents,
   heartbeatRuns,
   issueComments,
+  issueDocuments,
   issues,
 } from "@paperclipai/db";
 import {

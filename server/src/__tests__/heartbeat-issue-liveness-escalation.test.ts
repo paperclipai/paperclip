@@ -967,11 +967,11 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
     await db
       .update(issues)
-      .set({ status: "done" })
+      .set({ status: "done", blockedByIssueIds: [] })
       .where(eq(issues.id, escalations[0]!.id));
     await db
       .update(issues)
-      .set({ status: "done" })
+      .set({ status: "done", blockedByIssueIds: [] })
       .where(eq(issues.id, blockerIssueId));
 
     const second = await heartbeat.reconcileIssueGraphLiveness();

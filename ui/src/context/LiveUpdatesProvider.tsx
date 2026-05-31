@@ -14,6 +14,7 @@ import { clearIssueExecutionRun, removeLiveRunById } from "../lib/optimistic-iss
 import { queryKeys } from "../lib/queryKeys";
 import { toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
+import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
 
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
@@ -758,6 +759,14 @@ function invalidateActivityQueries(
   const action = readString(payload.action);
   const actorType = readString(payload.actorType);
   const actorId = readString(payload.actorId);
+  const details = readRecord(payload.details);
+
+  if (action?.startsWith("resource_membership.")) {
+    const targetUserId = readString(details?.userId);
+    if (!targetUserId || targetUserId === currentActor.userId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.resourceMemberships.mine(companyId) });
+    }
+  }
 
   if (entityType === "issue") {
     // Earlier this fired `invalidateQueries({ queryKey: queryKeys.issues.list(companyId) })`
@@ -795,7 +804,6 @@ function invalidateActivityQueries(
     coalescer.byKey({ queryKey: queryKeys.issues.listTouchedByMe(companyId), refetchType: "none" });
     coalescer.byKey({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId), refetchType: "none" });
     if (entityId) {
-      const details = readRecord(payload.details);
       const selfCommentActivity =
         ((action === "issue.comment_added") ||
           (action === "issue.updated" && readString(details?.source) === "comment")) &&
@@ -836,6 +844,17 @@ function invalidateActivityQueries(
           } else {
             coalescer.byKey({ queryKey: ["issues", "document", ref], refetchType });
             coalescer.byKey({ queryKey: ["issues", "document-revisions", ref], refetchType });
+          }
+        }
+        if (action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action)) {
+          const documentKey = readString(details?.key);
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(ref), ...invalidationOptions });
+          if (documentKey) {
+            queryClient.invalidateQueries({ queryKey: queryKeys.issues.document(ref, documentKey), ...invalidationOptions });
+            queryClient.invalidateQueries({ queryKey: queryKeys.issues.documentRevisions(ref, documentKey), ...invalidationOptions });
+          } else {
+            queryClient.invalidateQueries({ queryKey: ["issues", "document", ref], ...invalidationOptions });
+            queryClient.invalidateQueries({ queryKey: ["issues", "document-revisions", ref], ...invalidationOptions });
           }
         }
         if (action?.startsWith("issue.thread_interaction_")) {
@@ -1138,8 +1157,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
     const connect = () => {
       if (closed) return;
-      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-      const url = `${protocol}://${window.location.host}/api/companies/${encodeURIComponent(liveCompanyId)}/events/ws`;
+      const url = buildSameOriginWebSocketUrl(
+        `/api/companies/${encodeURIComponent(liveCompanyId)}/events/ws`,
+      );
       const nextSocket = new WebSocket(url);
       socket = nextSocket;
 

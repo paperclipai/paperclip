@@ -4,6 +4,7 @@ import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "
 import { Sidebar } from "./Sidebar";
 import { InstanceSidebar } from "./InstanceSidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
+import { CompanySettingsNav } from "./access/CompanySettingsNav";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
@@ -73,7 +74,10 @@ export function Layout() {
     selectionSource,
     setSelectedCompanyId,
   } = useCompany();
-  const { companyPrefix } = useParams<{ companyPrefix: string }>();
+  const {
+    companyPrefix,
+    pluginRoutePath: matchedPluginRoutePath,
+  } = useParams<{ companyPrefix: string; pluginRoutePath?: string }>();
   const navigate = useNavigate();
   const location = useLocation();
   const navigationType = useNavigationType();
@@ -94,8 +98,8 @@ export function Layout() {
   const hasUnknownCompanyPrefix =
     Boolean(companyPrefix) && !companiesLoading && companies.length > 0 && !matchedCompany;
   const pluginRoutePath = useMemo(
-    () => getCompanyRouteSegment(location.pathname, companyPrefix),
-    [companyPrefix, location.pathname],
+    () => matchedPluginRoutePath?.toLowerCase() ?? getCompanyRouteSegment(location.pathname, companyPrefix),
+    [companyPrefix, location.pathname, matchedPluginRoutePath],
   );
   const routeSidebarCompanyId = matchedCompany?.id ?? null;
   const routeSidebarCompanyPrefix = matchedCompany?.issuePrefix ?? null;
@@ -421,6 +425,11 @@ export function Layout() {
             )}
           >
             <BreadcrumbBar />
+            {isMobile && isCompanySettingsRoute ? (
+              <div className="border-b border-border px-4 pb-3">
+                <CompanySettingsNav />
+              </div>
+            ) : null}
           </div>
           <div className={cn(isMobile ? "block" : "flex flex-1 min-h-0")}>
             <main

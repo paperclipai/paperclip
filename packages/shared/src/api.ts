@@ -18,6 +18,7 @@ export const API = {
   dashboard: `${API_PREFIX}/dashboard`,
   sidebarBadges: `${API_PREFIX}/sidebar-badges`,
   sidebarPreferences: `${API_PREFIX}/sidebar-preferences`,
+  resourceMemberships: `${API_PREFIX}/resource-memberships`,
   invites: `${API_PREFIX}/invites`,
   joinRequests: `${API_PREFIX}/join-requests`,
   members: `${API_PREFIX}/members`,

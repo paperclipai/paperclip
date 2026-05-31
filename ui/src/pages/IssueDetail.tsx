@@ -66,6 +66,7 @@ import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
+import { IssuePlanDecompositionsSection } from "../components/IssuePlanDecompositionsSection";
 import { IssueSiblingNavigation } from "../components/IssueSiblingNavigation";
 import { IssuesList } from "../components/IssuesList";
 import { AgentIcon } from "../components/AgentIconPicker";
@@ -619,6 +620,7 @@ type IssueDetailChatTabProps = {
   blockedBy: Issue["blockedBy"];
   blockerAttention: Issue["blockerAttention"] | null;
   successfulRunHandoff: Issue["successfulRunHandoff"] | null;
+  scheduledRetry: Issue["scheduledRetry"] | null;
   recoveryAction: Issue["activeRecoveryAction"];
   onResolveRecoveryAction?: (outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome) => void;
   canFalsePositiveRecoveryAction?: boolean;
@@ -691,6 +693,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   blockedBy,
   blockerAttention,
   successfulRunHandoff,
+  scheduledRetry,
   recoveryAction,
   onResolveRecoveryAction,
   canFalsePositiveRecoveryAction,
@@ -899,9 +902,11 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         timelineEvents={timelineEvents}
         liveRuns={resolvedLiveRuns}
         activeRun={resolvedActiveRun}
+        issueId={issueId}
         blockedBy={blockedBy ?? []}
         blockerAttention={blockerAttention}
         successfulRunHandoff={successfulRunHandoff}
+        scheduledRetry={scheduledRetry}
         recoveryAction={recoveryAction ?? null}
         onResolveRecoveryAction={onResolveRecoveryAction}
         canFalsePositiveRecoveryAction={canFalsePositiveRecoveryAction}
@@ -1438,8 +1443,16 @@ export function IssueDetail() {
     enabled: !!issueId,
     retry: false,
   });
+  const { data: instanceExperimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    enabled: !!issueId,
+    retry: false,
+  });
   const keyboardShortcutsEnabled = instanceGeneralSettings?.keyboardShortcuts === true;
   const feedbackDataSharingPreference = instanceGeneralSettings?.feedbackDataSharingPreference ?? "prompt";
+  const showPlanDecompositionsSection =
+    instanceExperimentalSettings?.enableIssuePlanDecompositions === true;
   const { orderedProjects } = useProjectOrder({
     projects: projects ?? [],
     companyId: selectedCompanyId,
@@ -3714,6 +3727,14 @@ export function IssueDetail() {
         </div>
       )}
 
+      {showPlanDecompositionsSection ? (
+        <IssuePlanDecompositionsSection
+          issueId={issue.id}
+          issueIdentifier={issue.identifier}
+          agentMap={agentMap}
+        />
+      ) : null}
+
       <IssueDocumentsSection
         issue={issue}
         canDeleteDocuments={Boolean(session?.user?.id)}
@@ -3737,6 +3758,8 @@ export function IssueDetail() {
           });
         }}
         extraActions={!hasAttachments ? attachmentUploadButton : null}
+        agentMap={agentMap}
+        userProfileMap={userProfileMap}
       />
 
       {attachmentsInitialLoading ? (
@@ -3919,6 +3942,7 @@ export function IssueDetail() {
               blockedBy={issue.blockedBy ?? []}
               blockerAttention={issue.blockerAttention ?? null}
               successfulRunHandoff={issue.successfulRunHandoff ?? null}
+              scheduledRetry={issue.scheduledRetry ?? null}
               recoveryAction={issue.activeRecoveryAction ?? null}
               onResolveRecoveryAction={handleResolveRecoveryAction}
               canFalsePositiveRecoveryAction={canResolveBoardRecoveryAction}

@@ -16,6 +16,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(),
   hasPermission: vi.fn(),
 }));
 
@@ -122,6 +123,7 @@ vi.mock("../services/index.js", () => ({
   }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
   feedbackService: () => mockFeedbackService,
@@ -229,6 +231,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueService.listWakeableBlockedDependents.mockReset();
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
     mockAccessService.canUser.mockReset();
+    mockAccessService.decide.mockReset();
     mockAccessService.hasPermission.mockReset();
     mockHeartbeatService.wakeup.mockReset();
     mockHeartbeatService.reportRunActivity.mockReset();
@@ -307,6 +310,15 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockAccessService.canUser.mockResolvedValue(false);
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
+      const allowed = input.action !== "tasks:manage_active_checkouts";
+      return {
+        allowed,
+        action: input.action,
+        reason: allowed ? "allow_explicit_grant" : "deny_missing_grant",
+        explanation: allowed ? "Allowed by test grant." : "Missing active checkout override.",
+      };
+    });
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockAgentService.getById.mockResolvedValue(null);
     mockAgentService.list.mockResolvedValue([

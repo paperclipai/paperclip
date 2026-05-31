@@ -144,6 +144,10 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  backfillPrincipalAccessCompatibility: vi.fn(async () => ({
+    agentMembershipsInserted: 0,
+    humanGrantsInserted: 0,
+  })),
   feedbackService: feedbackServiceFactoryMock,
   heartbeatService: vi.fn(() => ({
     reapOrphanedRuns: vi.fn(async () => undefined),
@@ -168,6 +172,7 @@ vi.mock("../services/index.js", () => ({
       },
     })),
   })),
+  reconcileCloudUpstreamRunsOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   routineService: vi.fn(() => ({
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),

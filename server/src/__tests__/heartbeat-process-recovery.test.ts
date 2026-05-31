@@ -9,17 +9,27 @@ import {
   budgetPolicies,
   companies,
   costEvents,
+  documentAnnotationAnchorSnapshots,
+  documentAnnotationComments,
+  documentAnnotationThreads,
   createDb,
   documentRevisions,
   documents,
+  environmentLeases,
+  environments,
+  executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
+  issueThreadInteractions,
+  issueTreeHoldMembers,
   issueTreeHolds,
   issues,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -2361,7 +2371,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("re-enqueues assigned todo work when the last issue run died and no wake remains", async () => {
-    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "todo",
       runStatus: "failed",
     });
@@ -2621,7 +2631,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("re-enqueues continuation for stranded in-progress work with no active run", async () => {
-    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
     });
@@ -3165,6 +3175,37 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // Reminder line nudges the recovery agent to compare capabilities
     // before reassigning.
     expect(recovery.nextAction).toContain("Restore a live execution path");
+  });
+
+  it("keeps retrying transient adapter_failed continuation runs before the cap", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "adapter_failed",
+      runError: "ssh: connection reset",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(retryRun?.contextSnapshot as Record<string, unknown> | undefined).toMatchObject({
+      issueId,
+      retryReason: "issue_continuation_needed",
+      source: "issue.continuation_recovery",
+    });
+    if (retryRun) {
+      await waitForRunToSettle(heartbeat, retryRun.id);
+    }
   });
 
   it("reuses the raced stranded recovery action when duplicate active recovery creation conflicts", async () => {

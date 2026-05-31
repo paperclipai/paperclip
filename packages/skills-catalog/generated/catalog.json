@@ -1,0 +1,285 @@
+{
+  "schemaVersion": 1,
+  "packageName": "@paperclipai/skills-catalog",
+  "packageVersion": "0.3.1",
+  "generatedAt": "2026-05-28T03:02:49.579Z",
+  "skills": [
+    {
+      "id": "paperclipai:bundled:docs:doc-maintenance",
+      "key": "paperclipai/bundled/docs/doc-maintenance",
+      "kind": "bundled",
+      "category": "docs",
+      "slug": "doc-maintenance",
+      "name": "doc-maintenance",
+      "description": "Keep project docs aligned with recent code and feature changes — detect drift, update affected pages, and add release-relevant notes without rewriting unchanged sections.",
+      "path": "catalog/bundled/docs/doc-maintenance",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "product",
+        "devrel"
+      ],
+      "requires": [],
+      "tags": [
+        "docs",
+        "documentation",
+        "release-notes"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 4478,
+          "sha256": "fb0353386c5e5e5e13bcbb3233f044e3dccecf371f429d6328f26c26d7cb6169"
+        }
+      ],
+      "contentHash": "sha256:2e02299210fd17c1fe1867b4ee8c144a11b6fe1fe481f83b8268cfbaaf10f9aa"
+    },
+    {
+      "id": "paperclipai:bundled:paperclip-operations:issue-triage",
+      "key": "paperclipai/bundled/paperclip-operations/issue-triage",
+      "kind": "bundled",
+      "category": "paperclip-operations",
+      "slug": "issue-triage",
+      "name": "issue-triage",
+      "description": "Triage Paperclip inbox issues that are stale, blocked, in-review, or assigned-but-not-progressing, and decide a single next action per issue (resume, reassign, unblock, escalate, or close).",
+      "path": "catalog/bundled/paperclip-operations/issue-triage",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "manager",
+        "ceo",
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "paperclip",
+        "triage",
+        "inbox",
+        "workflow"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 4042,
+          "sha256": "df5bdc8bf5e017b7ba5f70a4b5323fad51d0c323278f386580f26cf43ad09160"
+        }
+      ],
+      "contentHash": "sha256:88dc13560371fb364963782cb4f6eeb4090fcde92ee3774479428ed6b90e11c1"
+    },
+    {
+      "id": "paperclipai:bundled:paperclip-operations:task-planning",
+      "key": "paperclipai/bundled/paperclip-operations/task-planning",
+      "kind": "bundled",
+      "category": "paperclip-operations",
+      "slug": "task-planning",
+      "name": "task-planning",
+      "description": "Turn a Paperclip issue or request into a structured implementation plan with child task graph, blockers, owners, and acceptance criteria, then save it as the issue `plan` document.",
+      "path": "catalog/bundled/paperclip-operations/task-planning",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "manager",
+        "engineer",
+        "product"
+      ],
+      "requires": [],
+      "tags": [
+        "paperclip",
+        "planning",
+        "issues",
+        "delegation"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 4649,
+          "sha256": "2ff61e12dfaa4cf8cc548529fd176f55f1b1f5292ff9dd3eb2cb331417ab5e4e"
+        }
+      ],
+      "contentHash": "sha256:4fb46a4bcefad4fd46fae48c433ee497112509a8e19fb8a7745ead44d219b498"
+    },
+    {
+      "id": "paperclipai:bundled:quality:qa-acceptance",
+      "key": "paperclipai/bundled/quality/qa-acceptance",
+      "kind": "bundled",
+      "category": "quality",
+      "slug": "qa-acceptance",
+      "name": "qa-acceptance",
+      "description": "Produce QA acceptance criteria and a manual validation plan for a feature change — golden path, edge cases, error states, performance limits, and explicit pass/fail evidence.",
+      "path": "catalog/bundled/quality/qa-acceptance",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "qa",
+        "engineer",
+        "product"
+      ],
+      "requires": [],
+      "tags": [
+        "qa",
+        "acceptance",
+        "validation",
+        "testing"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 3861,
+          "sha256": "c631b437ab26d104af6cdb963d8f679a9341439041b3cb3ec8835f4ff551b378"
+        }
+      ],
+      "contentHash": "sha256:32372dacaf62e93454b9855968c4eec96456ba78b509f450b3dfaa48e31ef356"
+    },
+    {
+      "id": "paperclipai:bundled:software-development:github-pr-workflow",
+      "key": "paperclipai/bundled/software-development/github-pr-workflow",
+      "kind": "bundled",
+      "category": "software-development",
+      "slug": "github-pr-workflow",
+      "name": "github-pr-workflow",
+      "description": "Prepare a GitHub pull request from a feature branch — branch hygiene, commit shape, title/body, verification notes, screenshots for UI work, and replies to review comments.",
+      "path": "catalog/bundled/software-development/github-pr-workflow",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "github",
+        "pull-requests",
+        "code-review",
+        "release"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 3970,
+          "sha256": "f498ec4ebb1779dea37adeb1db8a8b22316282798e35ee02e2fc5ff627d7e261"
+        }
+      ],
+      "contentHash": "sha256:90f278c89aa0711be150c1cd2456ca25620d02f36995b113ca9837d756a37f6c"
+    },
+    {
+      "id": "paperclipai:optional:browser:agent-browser",
+      "key": "paperclipai/optional/browser/agent-browser",
+      "kind": "optional",
+      "category": "browser",
+      "slug": "agent-browser",
+      "name": "agent-browser",
+      "description": "Drive a real browser to inspect or interact with a web page or app — navigate, take screenshots, read console and network, fill simple forms — for verification tasks, not unattended automation.",
+      "path": "catalog/optional/browser/agent-browser",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "qa",
+        "engineer",
+        "researcher"
+      ],
+      "requires": [],
+      "tags": [
+        "browser",
+        "puppeteer",
+        "playwright",
+        "verification"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 5133,
+          "sha256": "362f7b9d02297782bc6f0c093f495b8a0304a75bcf4b42e5c280a42b1f757b7d"
+        }
+      ],
+      "contentHash": "sha256:eabb2c9f7b5e1a27ebb1e05a711d61433a266478154cd671a685e99e67aadea2"
+    },
+    {
+      "id": "paperclipai:optional:content:release-announcement",
+      "key": "paperclipai/optional/content/release-announcement",
+      "kind": "optional",
+      "category": "content",
+      "slug": "release-announcement",
+      "name": "release-announcement",
+      "description": "Write a release announcement — changelog, blog post, in-app note, or social post — that leads with user impact, names the audience, and includes upgrade/migration steps without filler.",
+      "path": "catalog/optional/content/release-announcement",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "devrel",
+        "product",
+        "writer"
+      ],
+      "requires": [],
+      "tags": [
+        "release",
+        "changelog",
+        "announcement",
+        "communication"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 4416,
+          "sha256": "062810ac34e9edc89efa701fec2eee60f16949d1944cc2cae49803cb91e8cbf4"
+        }
+      ],
+      "contentHash": "sha256:f22a9ed696e6614c6db2757a149f48b3295e81f78c27d065d9cb164cf4f8a9bd"
+    },
+    {
+      "id": "paperclipai:optional:product:design-critique",
+      "key": "paperclipai/optional/product/design-critique",
+      "kind": "optional",
+      "category": "product",
+      "slug": "design-critique",
+      "name": "design-critique",
+      "description": "Give a structured product design critique — user job clarity, hierarchy, affordance, error states, accessibility, and consistency — focused on what to change, in what order, and why.",
+      "path": "catalog/optional/product/design-critique",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "designer",
+        "product",
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "design",
+        "product",
+        "ux",
+        "review"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 4851,
+          "sha256": "022e619baf6cc25725946279cb8052d22af090dd6cd6dc8c20f17867f71a5d8e"
+        }
+      ],
+      "contentHash": "sha256:429f94df398a0697042b5bbe4755b1ff1a230aa5f41d99118ad37493ac65d21c"
+    }
+  ]
+}

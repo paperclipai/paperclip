@@ -343,6 +343,83 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(readExecutionWorkspaceConfig(byId.get(untouchedWorkspaceId) ?? null)).toBeNull();
   });
 
+  it("limits reusable summaries to open non-shared execution workspaces", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const openWorkspaceId = randomUUID();
+    const sharedWorkspaceId = randomUUID();
+    const closedWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Reusable workspaces",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(executionWorkspaces).values([
+      {
+        id: openWorkspaceId,
+        companyId,
+        projectId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Open isolated workspace",
+        status: "idle",
+        providerType: "git_worktree",
+        cwd: "/tmp/open-workspace",
+        branchName: "paperclip/open",
+      },
+      {
+        id: sharedWorkspaceId,
+        companyId,
+        projectId,
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        name: "Shared session",
+        status: "active",
+        providerType: "local_fs",
+        cwd: "/tmp/project-primary",
+      },
+      {
+        id: closedWorkspaceId,
+        companyId,
+        projectId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Closed isolated workspace",
+        status: "active",
+        providerType: "git_worktree",
+        cwd: "/tmp/closed-workspace",
+        closedAt: new Date("2026-05-23T20:00:00.000Z"),
+      },
+    ]);
+
+    const summaries = await svc.listSummaries(companyId, {
+      projectId,
+      reuseEligible: true,
+    });
+
+    expect(summaries).toEqual([
+      expect.objectContaining({
+        id: openWorkspaceId,
+        name: "Open isolated workspace",
+        mode: "isolated_workspace",
+        status: "idle",
+        cwd: "/tmp/open-workspace",
+        branchName: "paperclip/open",
+      }),
+    ]);
+  });
+
   it("warns about dirty and unmerged git worktrees and reports cleanup actions", async () => {
     const repoRoot = await createTempRepo();
     tempDirs.add(repoRoot);
