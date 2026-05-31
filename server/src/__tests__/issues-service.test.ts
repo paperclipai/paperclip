@@ -3236,3 +3236,211 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
   });
 });
+
+describeEmbeddedPostgres("issueService.clearStaleExecutionLock", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-clear-stale-lock-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedIssueWithStaleExecutionLock(runStatus: string | null) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = runStatus ? randomUUID() : null;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+    });
+
+    // Insert heartbeat run BEFORE the issue (FK constraint requires this order)
+    if (runStatus) {
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        status: runStatus,
+        contextSnapshot: { issueId: String(issueId) },
+        createdAt: new Date(),
+      });
+    }
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      checkoutRunId: null,
+      executionRunId: runId,
+      executionAgentNameKey: runStatus ? "codexcoder" : null,
+      executionLockedAt: runId ? new Date() : null,
+    });
+
+    return { issueId, runId, companyId, agentId };
+  }
+
+  it("clears executionRunId when it points to a terminal run", async () => {
+    const { issueId, runId } = await seedIssueWithStaleExecutionLock("failed");
+
+    const result = await svc.clearStaleExecutionLock(issueId);
+    expect(result).not.toBeNull();
+    expect(result!.cleared).toBe(true);
+    expect(result!.clearedExecutionRunId).toBe(true);
+    expect(result!.previousExecutionRunId).toBe(runId);
+
+    const row = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+  });
+
+  it("clears executionRunId when the referenced run is missing", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const staleRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+    });
+
+    // Use raw SQL to insert an issue with a dangling executionRunId (simulates a missing run)
+    await db.execute(sql`
+      INSERT INTO issues (
+        id, company_id, title, status, priority,
+        assignee_agent_id, assignee_user_id, checkout_run_id,
+        execution_run_id, execution_agent_name_key, execution_locked_at
+      ) VALUES ($1, $2, 'Test issue', 'in_progress', 'medium',
+        $3, null, null, $4, 'codexcoder', NOW())
+    `, [issueId, companyId, agentId, staleRunId]);
+
+    const result = await svc.clearStaleExecutionLock(issueId);
+    expect(result).not.toBeNull();
+    expect(result!.cleared).toBe(true);
+    expect(result!.clearedExecutionRunId).toBe(true);
+    expect(result!.previousExecutionRunId).toBe(staleRunId);
+
+    const row = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row!.executionRunId).toBeNull();
+  });
+
+  it("does not clear executionRunId when the run is live", async () => {
+    const { issueId, runId } = await seedIssueWithStaleExecutionLock("running");
+
+    const result = await svc.clearStaleExecutionLock(issueId);
+    expect(result).not.toBeNull();
+    expect(result!.cleared).toBe(true);
+    expect(result!.clearedExecutionRunId).toBe(false);
+
+    const row = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row!.executionRunId).toBe(runId);
+  });
+
+  it("returns null for a non-existent issue", async () => {
+    const nonExistentId = randomUUID();
+    const result = await svc.clearStaleExecutionLock(nonExistentId);
+    expect(result).toBeNull();
+  });
+
+  it("handles PAP-197 case: executionRunId stale + checkoutRunId null", async () => {
+    // This is the exact scenario from PAP-197:
+    // executionRunId IS NOT NULL AND checkoutRunId IS NULL AND run.status IN (failed, cancelled, timed_out)
+    const { issueId, runId } = await seedIssueWithStaleExecutionLock("cancelled");
+
+    // Verify the stuck state
+    const before = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        checkoutRunId: issues.checkoutRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(before!.executionRunId).toBe(runId);
+    expect(before!.checkoutRunId).toBeNull();
+
+    const result = await svc.clearStaleExecutionLock(issueId);
+    expect(result).not.toBeNull();
+    expect(result!.clearedExecutionRunId).toBe(true);
+
+    // After clearing, the issue should be checkable again
+    const after = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        checkoutRunId: issues.checkoutRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(after!.executionRunId).toBeNull();
+    expect(after!.checkoutRunId).toBeNull();
+  });
+});
