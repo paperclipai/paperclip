@@ -2092,6 +2092,13 @@ export async function runChildProcess(
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
+          if (processGroupId && processGroupId > 0) {
+            try {
+              process.kill(-processGroupId, "SIGTERM");
+            } catch {
+              // Group already empty or process already exited.
+            }
+          }
           void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
@@ -2110,6 +2117,13 @@ export async function runChildProcess(
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
+          if (processGroupId && processGroupId > 0) {
+            try {
+              process.kill(-processGroupId, "SIGTERM");
+            } catch {
+              // Group already empty or process already exited.
+            }
+          }
           void logChain.finally(() => {
             void Promise.resolve()
               .then(() => target.cleanup?.())

@@ -290,6 +290,35 @@ describe("runChildProcess", () => {
     expect(await waitForPidExit(descendantPid!, 2_000)).toBe(true);
   });
 
+  it.skipIf(process.platform === "win32")("kills orphaned descendants on normal exit when they do not inherit stdio", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        [
+          "const { spawn } = require('node:child_process');",
+          "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+          "process.stdout.write(`descendant:${child.pid}\\n`);",
+          "setTimeout(() => process.exit(0), 25);",
+        ].join(" "),
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    const descendantPid = Number.parseInt(result.stdout.match(/descendant:(\d+)/)?.[1] ?? "", 10);
+    expect(result.exitCode).toBe(0);
+    expect(result.timedOut).toBe(false);
+    expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
+    expect(await waitForPidExit(descendantPid, 2_000)).toBe(true);
+  });
+
   it.skipIf(process.platform === "win32")("cleans up a lingering process group after terminal output and child exit", async () => {
     const result = await runChildProcess(
       randomUUID(),
