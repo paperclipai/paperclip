@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
+import * as os from "node:os";
 import path from "node:path";
+import { execSync } from "node:child_process";
 import { ensurePostgresDatabase, getPostgresDataDirectory } from "./client.js";
 import { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError } from "./embedded-postgres-error.js";
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
@@ -29,12 +31,47 @@ export type MigrationConnection = {
   stop: () => Promise<void>;
 };
 
+/**
+ * Verify that a PID actually corresponds to a PostgreSQL process.
+ * Prevents false positives from PID reuse after reboot.
+ */
+export function isPostgresProcess(pid: number): boolean {
+  try {
+    const platform = os.platform();
+
+    // Linux: check /proc/{pid}/comm
+    if (platform === "linux") {
+      const commPath = `/proc/${pid}/comm`;
+      if (existsSync(commPath)) {
+        const comm = readFileSync(commPath, "utf8").trim();
+        return comm === "postgres" || comm.startsWith("postgres");
+      }
+      return false;
+    }
+
+    // macOS: use ps to check the process command
+    if (platform === "darwin") {
+      const output = execSync(`ps -p ${pid} -o comm=`, {
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "ignore"], // suppress stderr
+      }).trim();
+      return output.includes("postgres");
+    }
+
+    // Fallback: can't verify on other platforms, assume true if process exists
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function readRunningPostmasterPid(postmasterPidFile: string): number | null {
   if (!existsSync(postmasterPidFile)) return null;
   try {
     const pid = Number(readFileSync(postmasterPidFile, "utf8").split("\n")[0]?.trim());
     if (!Number.isInteger(pid) || pid <= 0) return null;
     process.kill(pid, 0);
+    if (!isPostgresProcess(pid)) return null;
     return pid;
   } catch {
     return null;
