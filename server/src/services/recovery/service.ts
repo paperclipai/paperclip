@@ -214,6 +214,7 @@ function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
 // BLO-1498 (recovery loop spun 5+ cycles on a single tar conflict).
 const NON_RETRYABLE_RUN_ERROR_CODES = new Set<string>([
   "workspace_import_conflict",
+  "workspace_repo_mismatch",
 ]);
 
 function isNonRetryableTerminalRun(latestRun: LatestIssueRun) {

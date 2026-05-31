@@ -112,6 +112,7 @@ import {
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
   sanitizeRuntimeServiceBaseEnv,
+  WorkspaceRepoMismatchError,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
 import {
@@ -10258,7 +10259,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // non-retryable failures and escalate to `blocked` instead of
           // re-dispatching another doomed continuation. See BLO-1498.
           const setupErrorCode =
-            outerErr instanceof EnvironmentRunError ? outerErr.code : "adapter_failed";
+            outerErr instanceof EnvironmentRunError
+              ? outerErr.code
+              : outerErr instanceof WorkspaceRepoMismatchError
+                ? outerErr.code
+                : "adapter_failed";
           await setRunStatus(runId, "failed", {
             error: message,
             errorCode: setupErrorCode,

@@ -36,6 +36,7 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
+  WorkspaceRepoMismatchError,
 } from "../services/workspace-runtime.ts";
 import { writeLocalServiceRegistryRecord } from "../services/local-service-supervisor.ts";
 import { resolvePaperclipConfigPath } from "../paths.ts";
@@ -1862,6 +1863,76 @@ describe("realizeExecutionWorkspace", () => {
 
     expect(realized?.cwd).toBe(repoRoot);
     expect(realized?.warnings).toEqual([]);
+  });
+
+  it("rejects a reused shared project_primary cwd when its git origin is for a different repo", async () => {
+    const repoRoot = await createTempRepo();
+    await runGit(repoRoot, ["remote", "add", "origin", "https://example.test/Blockcast/Network-Operator-Portal.git"]);
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-repo-mismatch",
+        workspaceId: "workspace-repo-mismatch",
+        repoUrl: "https://example.test/Blockcast/paperclip.git",
+        repoRef: "master",
+      },
+      workspace: {
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        cwd: repoRoot,
+        providerRef: null,
+        projectId: "project-repo-mismatch",
+        projectWorkspaceId: "workspace-repo-mismatch",
+        repoUrl: "https://example.test/Blockcast/paperclip.git",
+        baseRef: "master",
+        branchName: null,
+      },
+      issue: {
+        id: "issue-repo-mismatch",
+        identifier: "PAP-REPO-MISMATCH",
+        title: "Wrong repo workspace",
+      },
+      agent: {
+        id: "agent-repo-mismatch",
+        name: "Codex Coder",
+        companyId: "company-repo-mismatch",
+      },
+    })).rejects.toMatchObject({
+      code: "workspace_repo_mismatch",
+      name: WorkspaceRepoMismatchError.name,
+    });
+  });
+
+  it("rejects a freshly realized project_primary cwd when its git origin is for a different repo", async () => {
+    const repoRoot = await createTempRepo();
+    await runGit(repoRoot, ["remote", "add", "origin", "https://example.test/Blockcast/Network-Operator-Portal.git"]);
+
+    await expect(realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-fresh-repo-mismatch",
+        workspaceId: "workspace-fresh-repo-mismatch",
+        repoUrl: "https://example.test/Blockcast/paperclip.git",
+        repoRef: "master",
+      },
+      config: {},
+      issue: {
+        id: "issue-fresh-repo-mismatch",
+        identifier: "PAP-FRESH-REPO-MISMATCH",
+        title: "Wrong fresh repo workspace",
+      },
+      agent: {
+        id: "agent-fresh-repo-mismatch",
+        name: "Codex Coder",
+        companyId: "company-fresh-repo-mismatch",
+      },
+    })).rejects.toMatchObject({
+      code: "workspace_repo_mismatch",
+      name: WorkspaceRepoMismatchError.name,
+    });
   });
 
   it("auto-detects the default branch when baseRef is not configured", async () => {
