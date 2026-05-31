@@ -5,6 +5,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import * as schema from "./schema/index.js";
+import { registerTrackedClient } from "./embedded-test-client-registry.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
@@ -47,6 +48,9 @@ export type MigrationState =
 
 export function createDb(url: string) {
   const sql = postgres(url);
+  // Inert in production; only embedded test databases register their URL so
+  // their pools can be closed before the server stops (see registry module).
+  registerTrackedClient(url, sql);
   return drizzlePg(sql, { schema });
 }
 
