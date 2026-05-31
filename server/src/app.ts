@@ -48,6 +48,8 @@ import { workspaceScanRoutes } from "./routes/workspace-scan.js";
 import { loadConfig } from "./config.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
+import { metricsIngestRoutes } from "./routes/metrics-ingest.js";
+import { renderMetrics } from "./services/metrics.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -263,6 +265,20 @@ export async function createApp(
     limit: DEFAULT_JSON_BODY_LIMIT,
     verify: captureRawBody,
   }));
+
+  // Prometheus exposition (BLO-8328). Mounted ahead of httpLogger and
+  // actorMiddleware: scrapes are unauthenticated (access is gated at the
+  // network layer by the ServiceMonitor scrape-allow NetworkPolicy) and would
+  // otherwise spam request logs every scrape interval.
+  app.get("/metrics", async (_req, res, next) => {
+    try {
+      const { contentType, body } = await renderMetrics();
+      res.status(200).set("Content-Type", contentType).send(body);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
@@ -575,6 +591,10 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
     ),
   );
   api.use(adapterRoutes());
+  // Adapter-originated metric ingestion (BLO-8328): the claude_k8s adapter
+  // reports dispatch refusals here; the handler applies the cardinality
+  // guardrail and increments the counter exposed on /metrics.
+  api.use(metricsIngestRoutes(db));
   api.use(workspaceScanRoutes());
   // ccrotate pool status — used by in-cluster health-check CronJob and any
   // agent that wants to query pool depth without `kubectl exec`. Mounts at
