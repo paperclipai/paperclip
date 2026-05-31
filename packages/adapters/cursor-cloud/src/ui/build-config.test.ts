@@ -28,6 +28,8 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
     workspaceBranchTemplate: "",
     worktreeParentDir: "",
     runtimeServicesJson: "",
+    timeoutSec: 1800,
+    graceSec: 20,
     maxTurnsPerRun: 1000,
     heartbeatEnabled: false,
     intervalSec: 300,

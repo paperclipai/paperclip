@@ -56,6 +56,19 @@ function candidateSandboxPathEntries(homeDir: string): string[] {
   return CURSOR_SANDBOX_BIN_DIRS.map((relativeDir) => path.posix.join(homeDir, relativeDir));
 }
 
+function removeManagedHomeCursorPathEntries(pathValue: string, managedHomeDir: string | null | undefined, remoteSystemHomeDir: string): string {
+  const managedHome = managedHomeDir?.trim();
+  if (!managedHome || managedHome === remoteSystemHomeDir) return pathValue;
+
+  const managedCursorBinEntries = new Set(
+    CURSOR_SANDBOX_BIN_DIRS.map((relativeDir) => path.posix.join(managedHome, relativeDir)),
+  );
+  return pathValue
+    .split(":")
+    .filter((entry) => !managedCursorBinEntries.has(entry))
+    .join(":");
+}
+
 type SandboxCursorRuntimeInfo = {
   remoteSystemHomeDir: string | null;
   preferredCommandPath: string | null;
@@ -213,10 +226,15 @@ export async function prepareCursorSandboxCommand(input: {
 
   const sandboxPathEntries = candidateSandboxPathEntries(remoteSystemHomeDir);
   const runtimeEnv = ensurePathInEnv(input.env);
-  const currentPath = runtimeEnv.PATH ?? runtimeEnv.Path ?? "";
+  const rawPath = runtimeEnv.PATH ?? runtimeEnv.Path ?? "";
+  const currentPath = removeManagedHomeCursorPathEntries(rawPath, input.env.HOME, remoteSystemHomeDir);
   const nextPath = prependPosixPathEntries(currentPath, sandboxPathEntries);
-  const env = nextPath === currentPath ? input.env : { ...input.env, PATH: nextPath };
-  const addedPathEntry = nextPath === currentPath ? null : sandboxPathEntries[0];
+  const callerPath = typeof input.env.PATH === "string" ? input.env.PATH : input.env.Path;
+  const hadPathInInput = typeof callerPath === "string";
+  const baseEnv = hadPathInInput ? input.env : { ...input.env, PATH: currentPath };
+  const pathUnchangedForCaller = hadPathInInput && nextPath === callerPath;
+  const env = pathUnchangedForCaller ? baseEnv : { ...baseEnv, PATH: nextPath };
+  const addedPathEntry = pathUnchangedForCaller ? null : sandboxPathEntries[0];
 
   if (!runtimeInfo.preferredCommandPath) {
     return {

@@ -28,6 +28,8 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
     workspaceBranchTemplate: "",
     worktreeParentDir: "",
     runtimeServicesJson: "",
+    timeoutSec: 1800,
+    graceSec: 20,
     maxTurnsPerRun: 1000,
     heartbeatEnabled: false,
     intervalSec: 300,
@@ -49,6 +51,20 @@ describe("buildCodexLocalConfig", () => {
       search: true,
       fastMode: true,
       dangerouslyBypassApprovalsAndSandbox: true,
+    });
+  });
+
+  it("persists explicit timeout settings into adapter config", () => {
+    const config = buildCodexLocalConfig(
+      makeValues({
+        timeoutSec: 900,
+        graceSec: 30,
+      }),
+    );
+
+    expect(config).toMatchObject({
+      timeoutSec: 900,
+      graceSec: 30,
     });
   });
 });
