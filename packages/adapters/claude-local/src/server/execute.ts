@@ -118,6 +118,11 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
+function parseFinitePositive(value: unknown): number {
+  const n = typeof value === "string" ? parseFloat(value) : typeof value === "number" ? value : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 function isBedrockAuth(env: Record<string, string>): boolean {
   return (
     env.CLAUDE_CODE_USE_BEDROCK === "1" ||
@@ -1067,7 +1072,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
       model: parsedStream.model || asString(parsed.model, model),
       billingType,
-      costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
+      costUsd: parsedStream.costUsd ?? parseFinitePositive(parsed.total_cost_usd),
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),

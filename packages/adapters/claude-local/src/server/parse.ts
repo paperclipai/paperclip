@@ -75,7 +75,10 @@ export function parseClaudeStreamJson(stdout: string) {
     outputTokens: asNumber(usageObj.output_tokens, 0),
   };
   const costRaw = finalResult.total_cost_usd;
-  const costUsd = typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;
+  const costUsdParsed = typeof costRaw === "string" ? parseFloat(costRaw) : costRaw;
+  const costUsd = typeof costUsdParsed === "number" && Number.isFinite(costUsdParsed) && costUsdParsed > 0
+    ? costUsdParsed
+    : null;
   const summary = asString(finalResult.result, assistantTexts.join("\n\n")).trim();
 
   return {
