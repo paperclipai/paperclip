@@ -274,7 +274,7 @@ function PluginSdkIssuesList({
     queryKey: queryKeys.liveRuns(companyId ?? "__no-company__"),
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId!),
     enabled: !!companyId,
-    refetchInterval: 5000,
+    refetchInterval: () => (document.visibilityState === "visible" ? 5_000 : false),
   });
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
 
