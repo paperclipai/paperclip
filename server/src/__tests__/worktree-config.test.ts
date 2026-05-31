@@ -207,7 +207,7 @@ describe("worktree config repair", () => {
 
     expect(result.repairedConfig).toBe(true);
     expect(repairedConfig.server.port).toBe(3102);
-    expect(repairedConfig.database.embeddedPostgresPort).toBe(54331);
+    expect(repairedConfig.database.embeddedPostgresPort).toBe(5434);
   });
 
   it("ignores stale migrated env paths when the dev runner resolved the local config", async () => {
