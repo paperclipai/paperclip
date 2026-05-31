@@ -132,11 +132,11 @@ import {
   listSkills as hermesListSkills,
   syncSkills as hermesSyncSkills,
   detectModel as detectModelFromHermes,
-} from "hermes-paperclip-adapter/server";
+} from "@paperclipai/adapter-hermes-local/server";
 import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
-} from "hermes-paperclip-adapter";
+} from "@paperclipai/adapter-hermes-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -433,9 +433,9 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
-// hermes-paperclip-adapter v0.2.0 predates the authToken field; cast is
-// intentional until hermes ships a matching AdapterExecutionContext type.
-const executeHermesLocal = hermesExecute as unknown as ServerAdapterModule["execute"];
+// In-tree @paperclipai/adapter-hermes-local shares the workspace adapter-utils,
+// so its AdapterExecutionContext type matches — no cast needed.
+const executeHermesLocal: ServerAdapterModule["execute"] = hermesExecute;
 
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
