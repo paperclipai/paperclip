@@ -641,11 +641,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       biller: "google",
       model,
       billingType,
-      costUsd: attempt.parsed.costUsd != null
-        ? attempt.parsed.costUsd
-        : (attempt.parsed.usage.inputTokens > 0 || attempt.parsed.usage.outputTokens > 0)
-          ? (attempt.parsed.usage.inputTokens * 0.00025 + attempt.parsed.usage.outputTokens * 0.0005) / 1000
-          : null,
+      costUsd: (() => {
+        // Use the CLI-reported cost when it is a positive number.
+        // A zero from the CLI may mean fully-cached (no charge) or a missing
+        // price lookup — fall through to token-based estimate in both cases.
+        if (attempt.parsed.costUsd != null && attempt.parsed.costUsd > 0) {
+          return attempt.parsed.costUsd;
+        }
+        const { inputTokens, outputTokens, cachedInputTokens } = attempt.parsed.usage;
+        if (inputTokens === 0 && outputTokens === 0) return null;
+        // Per-million-token pricing for common Gemini models (best-effort fallback).
+        // Cached tokens are billed at 25% of the full input rate.
+        let inputPerM = 0.075, outputPerM = 0.30;
+        if (/gemini-2\.5-pro/i.test(model)) { inputPerM = 1.25; outputPerM = 10.0; }
+        else if (/gemini-2\.5/i.test(model)) { inputPerM = 0.30; outputPerM = 2.50; }
+        else if (/gemini-2\.0/i.test(model)) { inputPerM = 0.10; outputPerM = 0.40; }
+        const billableInput = inputTokens - (cachedInputTokens ?? 0);
+        return (billableInput * inputPerM + (cachedInputTokens ?? 0) * inputPerM * 0.25 + outputTokens * outputPerM) / 1_000_000;
+      })(),
       resultJson,
       summary: attempt.parsed.summary,
       question: attempt.parsed.question,
