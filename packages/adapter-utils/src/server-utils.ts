@@ -587,7 +587,8 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : [];
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
+  const interactionKind = asString(payload.interactionKind, "").trim();
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue) && !interactionKind) {
     return null;
   }
 
@@ -603,7 +604,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     executionStage,
     continuationSummary,
     livenessContinuation,
-    interactionKind: asString(payload.interactionKind, "").trim() || null,
+    interactionKind: interactionKind || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
     interactionRejectionReason: asString(payload.interactionRejectionReason, "").trim() || null,
     childIssueSummaries,
