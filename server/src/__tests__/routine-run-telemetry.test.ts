@@ -129,7 +129,7 @@ describeEmbeddedPostgres("routine run telemetry", () => {
       },
     });
 
-    const routine = await svc.create(
+    const { routine } = await svc.create(
       companyId,
       {
         projectId,

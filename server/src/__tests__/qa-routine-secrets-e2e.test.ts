@@ -117,7 +117,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
       value: ROUTINE_VALUE,
     });
 
-    const routine = await routines.create(
+    const { routine } = await routines.create(
       companyId,
       {
         projectId: null,
@@ -238,7 +238,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
       value: "doomed-secret-value",
     });
 
-    const routine = await routines.create(
+    const { routine } = await routines.create(
       companyId,
       {
         projectId: null,
@@ -300,7 +300,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
       value: "val-b",
     });
 
-    const routine = await routines.create(
+    const { routine } = await routines.create(
       companyId,
       {
         projectId: null,
@@ -359,7 +359,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
       value: "legacy-value",
     });
 
-    const routine = await routines.create(
+    const { routine } = await routines.create(
       companyId,
       {
         projectId: null,
@@ -415,7 +415,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
     const secrets = secretService(db);
     const routines = routineService(db, { heartbeat: { wakeup: async () => null } });
 
-    const routine = await routines.create(
+    const { routine } = await routines.create(
       companyId,
       {
         projectId: null,
