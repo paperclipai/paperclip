@@ -78,7 +78,11 @@ Logs esperados (sucesso):
 Depois que o container subir e a migração rodar:
 
 ```bash
-docker exec -it paperclip bash
+# IMPORTANTE: use `-u node` — o container roda o server como UID 1000 (node)
+# por causa do `gosu node` do entrypoint. Sem `-u node`, o docker exec entra
+# como root (UID 0) e os arquivos criados ficam root:root 0600, que o server
+# (UID 1000) NÃO consegue ler depois.
+docker exec -u node -it paperclip bash
 codex login
 # escolha "Sign in with ChatGPT"
 # abra a URL impressa NO SEU NAVEGADOR (não no servidor)
@@ -90,8 +94,13 @@ O `auth.json` fica persistido em `/opt/paperclip/.codex/auth.json` na VPS. Sobre
 
 Para revalidar:
 ```bash
-docker exec paperclip codex whoami     # mostra a conta ChatGPT logada
+docker exec -u node paperclip codex whoami     # mostra a conta ChatGPT logada
 ```
+
+> **Se já fez `codex login` sem `-u node`:** os arquivos ficaram root:root e o paperclip não consegue ler. Conserte com:
+> ```bash
+> docker exec paperclip chown -R node:node /paperclip/.codex /paperclip/.local /paperclip/.config /paperclip/.cache /paperclip/.claude /paperclip/.claude.json
+> ```
 
 ### 5. Criar agentes no Paperclip UI
 
@@ -132,12 +141,21 @@ docker exec -it databases-postgres-cypdtq psql -U postgres \
   -c "ALTER USER paperclip WITH PASSWORD 'NOVA_SENHA_AQUI';"
 ```
 
-### `codex login` falha com "permission denied" em `/paperclip/.codex/`
+### Codex adapter test falha com "Codex hello probe failed" / "Permission denied (os error 13)"
 
-Causa: o container está rodando como `user: "0:0"` (root) e gravou arquivos, depois um deploy mudou para uid 1000. Corrija:
+Causa quase sempre: você rodou `docker exec -it paperclip codex login` **sem `-u node`**, o que criou `/paperclip/.codex/auth.json` como root:root 0600. O server (UID 1000) não consegue ler. Conserte:
 ```bash
-docker exec paperclip chown -R 1000:1000 /paperclip/.codex
+docker exec paperclip chown -R node:node /paperclip/.codex /paperclip/.local /paperclip/.config /paperclip/.cache /paperclip/.claude /paperclip/.claude.json
 ```
+
+Se persistir após o chown, o erro pode ser **Codex git-repo check**: o probe roda em cwd `/app` que não é um git repo trusted. No adapter config do agente, em "Extra args" cole:
+```json
+["--skip-git-repo-check"]
+```
+
+### OpenCode adapter test falha com "PermissionDenied: FileSystem.readFile (/tmp/paperclip-opencode-config-…)"
+
+Mesma causa: algum arquivo em `/paperclip/.local/share/opencode/` ou `/paperclip/.config/opencode/` ficou root:root depois de comando interativo sem `-u node`. Mesmo fix do chown acima.
 
 ### `OpenCode (local)` não encontra o provider `zai`
 
