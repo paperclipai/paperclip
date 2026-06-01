@@ -1604,17 +1604,21 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: "issue_continuation_needed",
       retryOfRunId: runId,
     });
+    if (!continuationRun?.id) throw new Error("Expected continuation recovery run to exist");
 
-    const blockedIssue = await waitForValue(async () =>
-      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+    const settledContinuationRun = await waitForRunToSettle(heartbeat, continuationRun.id, 10_000);
+    expect(settledContinuationRun?.status).toBe("failed");
+
+    const blockedIssue = await waitForValue(
+      async () => db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
         const issue = rows[0] ?? null;
         return issue?.status === "blocked" ? issue : null;
-      })
+      }),
+      10_000,
     );
     expect(blockedIssue?.status).toBe("blocked");
     expect(blockedIssue?.executionRunId).toBeNull();
     expect(blockedIssue?.checkoutRunId).toBeNull();
-    if (!continuationRun?.id) throw new Error("Expected continuation recovery run to exist");
 
     const recovery = await expectStrandedRecoveryArtifacts({
       companyId,
