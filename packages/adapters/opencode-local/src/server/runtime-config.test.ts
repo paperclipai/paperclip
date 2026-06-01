@@ -77,15 +77,16 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await expect(fs.access(prepared.env.XDG_CONFIG_HOME)).rejects.toThrow();
   });
 
-  it("preserves fields from an opencode.jsonc config", async () => {
+  it("preserves fields from an opencode.jsonc config with comments and trailing commas", async () => {
     const configHome = await makeConfigHome(undefined, {
       filename: "opencode.jsonc",
       raw: [
         "{",
         '  // user plugins',
         '  "plugin": ["my-plugin"],',
+        "  /* model context protocol servers */",
         '  "mcp": { "context7": { "type": "local" } },',
-        '  "permission": { "read": "allow" }',
+        '  "permission": { "read": "allow" },',
         "}",
         "",
       ].join("\n"),

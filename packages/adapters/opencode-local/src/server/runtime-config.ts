@@ -28,8 +28,7 @@ const RUNTIME_CONFIG_FILENAMES = ["opencode.json", "opencode.jsonc"] as const;
 
 // Strip `//` and `/* */` comments from a JSONC document so it can be parsed with
 // the built-in JSON parser. String literals are tracked so comment-like
-// sequences inside values are preserved. Trailing commas are intentionally left
-// untouched — they are not part of the JSONC spec.
+// sequences inside values are preserved.
 function stripJsonComments(input: string): string {
   let result = "";
   let inString = false;
@@ -87,6 +86,55 @@ function stripJsonComments(input: string): string {
   return result;
 }
 
+// Remove trailing commas before `}`/`]`. VS Code-style JSONC (which OpenCode's
+// config parser follows) accepts them, but the built-in JSON parser rejects
+// them. Run after comment stripping so only whitespace can sit between a comma
+// and the closing bracket. String literals are tracked so commas inside values
+// are left intact.
+function stripTrailingCommas(input: string): string {
+  let result = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const char = input[i];
+
+    if (inString) {
+      result += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      result += char;
+      continue;
+    }
+    if (char === ",") {
+      let j = i + 1;
+      while (j < input.length && /\s/.test(input[j])) {
+        j += 1;
+      }
+      if (input[j] === "}" || input[j] === "]") {
+        continue;
+      }
+    }
+    result += char;
+  }
+
+  return result;
+}
+
+// Parse a JSON/JSONC document, tolerating comments and trailing commas.
+function parseJsonc(raw: string): unknown {
+  return JSON.parse(stripTrailingCommas(stripJsonComments(raw)));
+}
+
 // Locate the existing OpenCode config inside `configDir`, returning the parsed
 // object alongside the filename it came from so the merged runtime config is
 // written back to the same file (and never shadows a user's `.jsonc` with a
@@ -105,7 +153,7 @@ async function readRuntimeConfig(
       throw err;
     }
     try {
-      const parsed = JSON.parse(stripJsonComments(raw));
+      const parsed = parseJsonc(raw);
       return { config: isPlainObject(parsed) ? parsed : {}, filename };
     } catch {
       // Malformed config — preserve the original behaviour of still injecting
