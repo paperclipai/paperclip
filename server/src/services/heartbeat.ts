@@ -320,6 +320,7 @@ function mergeAdapterRecoveryMetadata(input: {
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set(["approval_approved"]);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
+  "claude_tui",
   "codex_local",
   "cursor",
   "gemini_local",

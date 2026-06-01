@@ -39,6 +39,7 @@ const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
   "acpx_local",
   "claude_local",
+  "claude_tui",
   "codex_local",
   "cursor_cloud",
   "cursor",
@@ -55,6 +56,13 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
     defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
   },
   claude_local: {
+    supportsSessionResume: true,
+    nativeContextManagement: "confirmed",
+    defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
+  },
+  // claude_tui drives Claude Code via claude-p (supports --resume); same
+  // child-process, native-context, session-resuming profile as claude_local.
+  claude_tui: {
     supportsSessionResume: true,
     nativeContextManagement: "confirmed",
     defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
