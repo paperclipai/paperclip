@@ -100,6 +100,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/plugins/sandbox-providers/blaxel",
+    "name": "@paperclipai/plugin-blaxel",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/plugins/sandbox-providers/cloudflare",
     "name": "@paperclipai/plugin-cloudflare-sandbox",
     "publishFromCi": true

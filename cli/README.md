@@ -275,7 +275,7 @@ See [doc/DEVELOPING.md](https://github.com/paperclipai/paperclip/blob/master/doc
 - ⚪ CEO Chat
 - ⚪ MAXIMIZER MODE
 - ✅ Multiple Human Users
-- ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
+- ⚪ Cloud / Sandbox agents (e.g. Blaxel / Cursor / e2b agents)
 - ⚪ Cloud deployments
 - ⚪ Desktop App
 

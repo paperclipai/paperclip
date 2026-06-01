@@ -769,7 +769,7 @@ Examples:
 - local CLI adapters such as `codex_local` and `claude_local`
 - cloud-hosted coding agents such as Cursor cloud agents
 - future hosted Codex or Claude agent modes
-- custom sandbox adapters built on E2B, Cloudflare, or similar environments
+- custom sandbox adapters built on Blaxel, E2B, Cloudflare, or similar environments
 
 These adapters do not all share the same capabilities:
 
