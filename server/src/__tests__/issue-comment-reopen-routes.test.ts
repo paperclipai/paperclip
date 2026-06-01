@@ -70,6 +70,7 @@ const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  listForIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
@@ -80,83 +81,85 @@ const mockIssueTreeControlService = vi.hoisted(() => ({
   getActivePauseHoldGate: vi.fn(async () => null),
 }));
 
-vi.mock("@paperclipai/shared/telemetry", () => ({
-  trackAgentTaskCompleted: vi.fn(),
-  trackErrorHandlerCrash: vi.fn(),
-}));
+function registerModuleMocks() {
+  vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackAgentTaskCompleted: vi.fn(),
+    trackErrorHandlerCrash: vi.fn(),
+  }));
 
-vi.mock("../telemetry.js", () => ({
-  getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
-}));
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  }));
 
-vi.mock("../services/access.js", () => ({
-  accessService: () => mockAccessService,
-}));
+  vi.doMock("../services/access.js", () => ({
+    accessService: () => mockAccessService,
+  }));
 
-vi.mock("../services/activity-log.js", () => ({
-  logActivity: mockLogActivity,
-}));
+  vi.doMock("../services/activity-log.js", () => ({
+    logActivity: mockLogActivity,
+  }));
 
-vi.mock("../services/agents.js", () => ({
-  agentService: () => mockAgentService,
-}));
+  vi.doMock("../services/agents.js", () => ({
+    agentService: () => mockAgentService,
+  }));
 
-vi.mock("../services/feedback.js", () => ({
-  feedbackService: () => mockFeedbackService,
-}));
+  vi.doMock("../services/feedback.js", () => ({
+    feedbackService: () => mockFeedbackService,
+  }));
 
-vi.mock("../services/heartbeat.js", () => ({
-  heartbeatService: () => mockHeartbeatService,
-}));
+  vi.doMock("../services/heartbeat.js", () => ({
+    heartbeatService: () => mockHeartbeatService,
+  }));
 
-vi.mock("../services/instance-settings.js", () => ({
-  instanceSettingsService: () => mockInstanceSettingsService,
-}));
+  vi.doMock("../services/instance-settings.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
+  }));
 
-vi.mock("../services/issues.js", () => ({
-  issueService: () => mockIssueService,
-}));
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueService,
+  }));
 
-vi.mock("../services/routines.js", () => ({
-  routineService: () => mockRoutineService,
-}));
+  vi.doMock("../services/routines.js", () => ({
+    routineService: () => mockRoutineService,
+  }));
 
-vi.mock("../services/index.js", () => ({
-  companyService: () => ({
-    getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
-  }),
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
-  documentService: () => ({}),
-  executionWorkspaceService: () => ({}),
-  feedbackService: () => mockFeedbackService,
-  goalService: () => ({}),
-  heartbeatService: () => mockHeartbeatService,
-  instanceSettingsService: () => mockInstanceSettingsService,
-  issueApprovalService: () => ({}),
-  issueRecoveryActionService: () => mockIssueRecoveryActionService,
-  issueReferenceService: () => ({
-    deleteDocumentSource: async () => undefined,
-    diffIssueReferenceSummary: () => ({
-      addedReferencedIssues: [],
-      removedReferencedIssues: [],
-      currentReferencedIssues: [],
+  vi.doMock("../services/index.js", () => ({
+    companyService: () => ({
+      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
     }),
-    emptySummary: () => ({ outbound: [], inbound: [] }),
-    listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-    syncComment: async () => undefined,
-    syncDocument: async () => undefined,
-    syncIssue: async () => undefined,
-  }),
-  issueService: () => mockIssueService,
-  issueThreadInteractionService: () => mockIssueThreadInteractionService,
-  issueTreeControlService: () => mockIssueTreeControlService,
-  logActivity: mockLogActivity,
-  projectService: () => ({}),
-  routineService: () => mockRoutineService,
-  workProductService: () => ({}),
-}));
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
+    documentService: () => ({}),
+    executionWorkspaceService: () => ({}),
+    feedbackService: () => mockFeedbackService,
+    goalService: () => ({}),
+    heartbeatService: () => mockHeartbeatService,
+    instanceSettingsService: () => mockInstanceSettingsService,
+    issueApprovalService: () => ({}),
+    issueRecoveryActionService: () => mockIssueRecoveryActionService,
+    issueReferenceService: () => ({
+      deleteDocumentSource: async () => undefined,
+      diffIssueReferenceSummary: () => ({
+        addedReferencedIssues: [],
+        removedReferencedIssues: [],
+        currentReferencedIssues: [],
+      }),
+      emptySummary: () => ({ outbound: [], inbound: [] }),
+      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+      syncComment: async () => undefined,
+      syncDocument: async () => undefined,
+      syncIssue: async () => undefined,
+    }),
+    issueService: () => mockIssueService,
+    issueThreadInteractionService: () => mockIssueThreadInteractionService,
+    issueTreeControlService: () => mockIssueTreeControlService,
+    logActivity: mockLogActivity,
+    projectService: () => ({}),
+    routineService: () => mockRoutineService,
+    workProductService: () => ({}),
+  }));
+}
 
 function createApp() {
   const app = express();
@@ -224,6 +227,8 @@ async function waitForWakeup(assertion: () => void) {
 
 describe.sequential("issue comment reopen routes", () => {
   beforeEach(() => {
+    vi.resetModules();
+    registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.getById.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
@@ -251,6 +256,8 @@ describe.sequential("issue comment reopen routes", () => {
     mockInstanceSettingsService.get.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockRoutineService.syncRunStatusForIssue.mockReset();
+    mockIssueThreadInteractionService.listForIssue.mockReset();
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueRecoveryActionService.getActiveForIssue.mockReset();
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset();
     mockTxInsertValues.mockReset();
@@ -328,7 +335,12 @@ describe.sequential("issue comment reopen routes", () => {
       };
     });
     mockAccessService.hasPermission.mockResolvedValue(false);
-    mockAgentService.getById.mockResolvedValue(null);
+    mockAgentService.getById.mockImplementation(async (agentId: string) => ({
+      id: agentId,
+      companyId: "company-1",
+      reportsTo: null,
+      permissions: { canCreateAgents: false },
+    }));
     mockAgentService.list.mockResolvedValue([
       {
         id: "22222222-2222-4222-8222-222222222222",
@@ -402,6 +414,7 @@ describe.sequential("issue comment reopen routes", () => {
         actorAgentId: null,
         actorUserId: "local-board",
       }),
+      expect.anything(),
     );
     expect(mockIssueService.update).not.toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
@@ -427,6 +440,7 @@ describe.sequential("issue comment reopen routes", () => {
       expect.objectContaining({
         assigneeAgentId: "33333333-3333-4333-8333-333333333333",
       }),
+      expect.anything(),
     );
   });
 
@@ -473,6 +487,7 @@ describe.sequential("issue comment reopen routes", () => {
         actorAgentId: null,
         actorUserId: "local-board",
       }),
+      expect.anything(),
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -1128,6 +1143,7 @@ describe.sequential("issue comment reopen routes", () => {
         actorAgentId: null,
         actorUserId: "local-board",
       }),
+      expect.anything(),
     );
     await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       "22222222-2222-4222-8222-222222222222",
@@ -1184,6 +1200,7 @@ describe.sequential("issue comment reopen routes", () => {
         actorAgentId: null,
         actorUserId: "local-board",
       }),
+      expect.anything(),
     );
     expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
     await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
@@ -1292,6 +1309,7 @@ describe.sequential("issue comment reopen routes", () => {
         actorAgentId: null,
         actorUserId: "local-board",
       }),
+      expect.anything(),
     );
     expect(mockIssueService.update).not.toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
@@ -1388,6 +1406,7 @@ describe.sequential("issue comment reopen routes", () => {
         actorAgentId: "22222222-2222-4222-8222-222222222222",
         actorUserId: null,
       }),
+      expect.anything(),
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),

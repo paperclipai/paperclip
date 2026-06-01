@@ -5061,12 +5061,6 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertBoardTriageAuthorityForIssueAssigneeUserPatch(
-      req,
-      res,
-      existing,
-      req.body.assigneeUserId,
-    ))) return;
     const triageAuthorityPatch = await assertBoardTriageAuthorityForIssuePatch(
       req,
       res,
@@ -5332,6 +5326,12 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+    if (!(await assertBoardTriageAuthorityForIssueAssigneeUserPatch(
+      req,
+      res,
+      existing,
+      updateFields.assigneeUserId,
+    ))) return;
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {

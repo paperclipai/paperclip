@@ -63,7 +63,8 @@ function registerModuleMocks() {
       getById: vi.fn(async (agentId: string) => ({
         id: agentId,
         companyId: "company-1",
-        permissions: null,
+        reportsTo: null,
+        permissions: {},
       })),
       resolveByReference: vi.fn(async (_companyId: string, reference: string) => ({
         ambiguous: false,

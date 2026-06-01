@@ -1463,6 +1463,7 @@ export function IssueDetail() {
     placeholderData: keepPreviousDataForSameQueryTail<IssueWorkProduct[]>(issueId ?? "pending"),
   });
 
+  const liveRunsPollMs = useVisibilityAwarePollInterval();
   const { data: liveRunCount = 0 } = useQuery<LiveRunForIssue[], Error, number>({
     queryKey: queryKeys.issues.liveRuns(issueId!),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
@@ -4527,4 +4528,3 @@ function IssueFileViewer({
     />
   );
 }
-  const liveRunsPollMs = useVisibilityAwarePollInterval();
