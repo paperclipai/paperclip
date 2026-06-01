@@ -64,9 +64,12 @@ import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import {
   CREDENTIAL_DEFAULT_COOLDOWN_MS,
+  CREDENTIAL_FAILURE_COOLDOWN_MS,
   credentialTypesForAdapterType,
+  isCredentialFailure,
+  recordCredentialFailure,
+  recordCredentialSuccess,
   resolveAllCredentialEnv,
-  setCredentialCooldown,
 } from "./credentials.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
@@ -7907,33 +7910,49 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
       }
 
-      // Reactive credential rotation: if this run hit an upstream rate/quota
-      // limit, cool down the credential it used so the next run rotates to
-      // another bound credential of the same provider type (see
-      // resolveAllCredentialEnv / pickPoolCredential). Honor the provider's
-      // retry-after when present, else fall back to the default cooldown.
-      if (
-        runActiveCredentialId &&
-        outcome === "failed" &&
-        adapterResult.errorFamily === "transient_upstream"
-      ) {
-        const retryAt = readNonEmptyString(adapterResult.retryNotBefore);
-        const parsed = retryAt ? new Date(retryAt) : null;
-        const cooldownUntil =
-          parsed && Number.isFinite(parsed.getTime()) && parsed.getTime() > Date.now()
-            ? parsed
-            : new Date(Date.now() + CREDENTIAL_DEFAULT_COOLDOWN_MS);
+      // Reactive credential failover. On a CREDENTIAL-related failure (rate/quota
+      // limit, auth failure, or provider rejection — not agent-logic errors or
+      // timeouts) cool down the credential the run used so the next run rotates
+      // to another bound credential of the SAME provider type (rotation is always
+      // same-type: Claude keys rotate among Claude keys, MiMo among MiMo, etc.),
+      // and increment its consecutive-failure counter — after a few in a row the
+      // credential is auto-disabled and flagged for attention. A successful run
+      // resets the counter so a transient blip doesn't accumulate.
+      if (runActiveCredentialId) {
         try {
-          await setCredentialCooldown(
-            db,
-            runActiveCredentialId,
-            cooldownUntil,
-            adapterResult.errorCode ?? "transient_upstream",
-          );
-          await onLog(
-            "stderr",
-            `[paperclip] credential ${runActiveCredentialId} cooling down until ${cooldownUntil.toISOString()} after upstream limit\n`,
-          );
+          if (
+            outcome === "failed" &&
+            isCredentialFailure({
+              errorFamily: adapterResult.errorFamily ?? null,
+              errorCode: adapterResult.errorCode ?? null,
+              errorMessage: adapterResult.errorMessage ?? null,
+            })
+          ) {
+            const isRateLimit = adapterResult.errorFamily === "transient_upstream";
+            const retryAt = readNonEmptyString(adapterResult.retryNotBefore);
+            const parsed = retryAt ? new Date(retryAt) : null;
+            const cooldownUntil =
+              parsed && Number.isFinite(parsed.getTime()) && parsed.getTime() > Date.now()
+                ? parsed
+                : new Date(
+                    Date.now() +
+                      (isRateLimit ? CREDENTIAL_DEFAULT_COOLDOWN_MS : CREDENTIAL_FAILURE_COOLDOWN_MS),
+                  );
+            const result = await recordCredentialFailure(db, runActiveCredentialId, {
+              reason: adapterResult.errorCode ?? adapterResult.errorFamily ?? "credential_error",
+              cooldownUntil,
+            });
+            await onLog(
+              "stderr",
+              result.disabled
+                ? `[paperclip] credential ${runActiveCredentialId} auto-disabled after ${result.failureCount} consecutive failures — rotating to another credential and flagging for attention\n`
+                : `[paperclip] credential ${runActiveCredentialId} cooling down until ${cooldownUntil.toISOString()} (failure ${result.failureCount}) — next run rotates to another credential\n`,
+            );
+          } else if (outcome === "succeeded") {
+            // Reset the failure streak on a clean run so a one-off blip never
+            // accumulates toward auto-disable.
+            await recordCredentialSuccess(db, runActiveCredentialId);
+          }
         } catch (err) {
           logger.warn(
             {
@@ -7941,7 +7960,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               credentialId: runActiveCredentialId,
               err: err instanceof Error ? err.message : String(err),
             },
-            "failed to set credential cooldown after upstream limit",
+            "failed to update credential failover state after run",
           );
         }
       }

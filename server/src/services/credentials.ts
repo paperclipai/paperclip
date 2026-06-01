@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentCredentials, agents, costEvents, providerCredentials } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -113,6 +113,16 @@ export function credentialService(db: Db) {
       if (data.name !== undefined) updates.name = data.name;
       if (data.credential !== undefined) updates.credential = encryptCredential(data.credential);
       if (data.isDefault !== undefined) updates.isDefault = data.isDefault;
+      // Pasting a fresh secret is the natural "I fixed it" signal — clear the
+      // failover state so a previously-disabled/cooling credential rejoins the
+      // rotation pool immediately.
+      if (data.credential !== undefined) {
+        updates.disabledAt = null;
+        updates.disabledReason = null;
+        updates.cooldownUntil = null;
+        updates.cooldownReason = null;
+        updates.consecutiveFailureCount = 0;
+      }
 
       const [updated] = await db
         .update(providerCredentials)
@@ -120,6 +130,27 @@ export function credentialService(db: Db) {
         .where(eq(providerCredentials.id, id))
         .returning();
 
+      return updated ? stripCredential(updated) : null;
+    },
+
+    /**
+     * Re-enable a credential the user disabled or that was auto-disabled after
+     * repeated failures: clears the disabled flag, any active cooldown, and the
+     * consecutive-failure counter so it rejoins the rotation pool.
+     */
+    async reenable(id: string): Promise<SafeCredential | null> {
+      const [updated] = await db
+        .update(providerCredentials)
+        .set({
+          disabledAt: null,
+          disabledReason: null,
+          cooldownUntil: null,
+          cooldownReason: null,
+          consecutiveFailureCount: 0,
+          updatedAt: new Date(),
+        })
+        .where(eq(providerCredentials.id, id))
+        .returning();
       return updated ? stripCredential(updated) : null;
     },
 
@@ -601,6 +632,63 @@ const HOME_OWNER_CREDENTIAL_TYPES = new Set(["claude_oauth", "codex_oauth"]);
 export const CREDENTIAL_DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
 
 /**
+ * Shorter cooldown for a non-rate-limit credential failure (bad/expired key,
+ * provider rejection). These aren't time-windowed like a 429, but we still park
+ * the credential briefly so the next run rotates to a different one instead of
+ * immediately retrying the same bad key.
+ */
+export const CREDENTIAL_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
+
+/**
+ * After this many CONSECUTIVE credential-related failures, the credential is
+ * disabled (parked long-term) and flagged for attention, so the picker stops
+ * wasting runs on a permanently-dead key. A success resets the counter.
+ */
+export const CREDENTIAL_DISABLE_THRESHOLD = 3;
+
+/**
+ * Adapter error codes / families that indicate the CREDENTIAL is at fault (so
+ * rotating to another credential of the same type may help): rate/quota limits,
+ * auth failures (bad/expired/invalid key), and provider rejections. Deliberately
+ * does NOT include agent-logic errors, timeouts, or max-turns — another key
+ * won't fix those.
+ */
+const CREDENTIAL_FAILURE_ERROR_CODES = new Set<string>([
+  // auth / bad key
+  "claude_auth_required",
+  "codex_auth_required",
+  "deepseek_api_key_missing",
+  "mimo_api_key_missing",
+  // provider rejection (e.g. MiMo rejecting a model id, 400 param errors)
+  "deepseek_api_request_failed",
+]);
+
+/**
+ * Classify whether a finished run's failure is credential-related (→ rotate to
+ * another credential of the same type) vs not (→ stay; another key won't help).
+ * `transient_upstream` (rate/quota/overload) always counts; otherwise we match
+ * known auth/rejection error codes, or HTTP-style 401/403/400 signatures in the
+ * error message as a fallback.
+ */
+export function isCredentialFailure(input: {
+  errorFamily?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  if (input.errorFamily === "transient_upstream") return true;
+  const code = typeof input.errorCode === "string" ? input.errorCode : "";
+  if (code && CREDENTIAL_FAILURE_ERROR_CODES.has(code)) return true;
+  const msg = (input.errorMessage ?? "").toLowerCase();
+  if (!msg) return false;
+  return (
+    /\b401\b|\b403\b|\b400\b/.test(msg) ||
+    /unauthorized|forbidden|invalid api key|invalid_api_key|invalid key|authentication|expired|param incorrect|not supported model|invalid_request_error/.test(
+      msg,
+    )
+  );
+}
+
+/**
  * Provider credential types each adapter authenticates with. Used to map a
  * failed run (known by its adapterType) back to the specific credential the run
  * consumed, so a reactive cooldown lands on the right rotation-pool member.
@@ -671,6 +759,57 @@ export async function setCredentialCooldown(
 }
 
 /**
+ * Record a credential-related run FAILURE: cool the credential down (so the next
+ * run rotates to another of the same type) and increment its consecutive-failure
+ * counter. Once the counter crosses CREDENTIAL_DISABLE_THRESHOLD the credential
+ * is disabled (parked long-term) and flagged for attention, so the picker stops
+ * burning runs on a dead key. `cooldownUntil` honors a provider Retry-After when
+ * supplied, else uses the rate-limit or generic failure default.
+ */
+export async function recordCredentialFailure(
+  db: Db,
+  credentialId: string,
+  opts: { reason: string | null; cooldownUntil: Date },
+): Promise<{ disabled: boolean; failureCount: number }> {
+  const [current] = await db
+    .select({ count: providerCredentials.consecutiveFailureCount })
+    .from(providerCredentials)
+    .where(eq(providerCredentials.id, credentialId))
+    .limit(1);
+  const nextCount = (current?.count ?? 0) + 1;
+  const shouldDisable = nextCount >= CREDENTIAL_DISABLE_THRESHOLD;
+  const now = new Date();
+  await db
+    .update(providerCredentials)
+    .set({
+      cooldownUntil: opts.cooldownUntil,
+      cooldownReason: opts.reason,
+      consecutiveFailureCount: nextCount,
+      ...(shouldDisable
+        ? {
+            disabledAt: now,
+            disabledReason: `Auto-disabled after ${nextCount} consecutive failures: ${opts.reason ?? "credential error"}`,
+          }
+        : {}),
+      updatedAt: now,
+    })
+    .where(eq(providerCredentials.id, credentialId));
+  return { disabled: shouldDisable, failureCount: nextCount };
+}
+
+/**
+ * Record a SUCCESSFUL run for a credential: reset the consecutive-failure
+ * counter so a transient blip doesn't accumulate toward auto-disable. (Does not
+ * clear an active cooldown — that expires on its own.)
+ */
+export async function recordCredentialSuccess(db: Db, credentialId: string): Promise<void> {
+  await db
+    .update(providerCredentials)
+    .set({ consecutiveFailureCount: 0, updatedAt: new Date() })
+    .where(and(eq(providerCredentials.id, credentialId), gt(providerCredentials.consecutiveFailureCount, 0)));
+}
+
+/**
  * Resolve env for an agent's bound credentials, ONE per provider type. When an
  * agent binds several credentials of the same type they form a rotation pool;
  * the least-recently-used non-cooling member is selected (see pickPoolCredential)
@@ -697,6 +836,9 @@ export async function resolveAllCredentialEnv(
   credentialIds: string[];
   chosen: Array<{ credentialId: string; type: string }>;
 }> {
+  // Disabled credentials (auto-disabled after repeated failures, or manually)
+  // are excluded from the rotation pool entirely — the picker never selects
+  // them until the user re-enables them from the Credentials UI.
   const joinRows = await db
     .select({
       credentialId: agentCredentials.credentialId,
@@ -706,7 +848,7 @@ export async function resolveAllCredentialEnv(
     })
     .from(agentCredentials)
     .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
-    .where(eq(agentCredentials.agentId, agentId));
+    .where(and(eq(agentCredentials.agentId, agentId), isNull(providerCredentials.disabledAt)));
 
   // adapterType decides how some credentials resolve (e.g. a deepseek_api_key on
   // a Claude Code agent routes the CLI through DeepSeek's Anthropic endpoint).

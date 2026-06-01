@@ -1104,6 +1104,11 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     },
   });
 
+  const reenableMutation = useMutation({
+    mutationFn: (id: string) => credentialsApi.reenable(id),
+    onSuccess: () => invalidate(),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: (id: string) => credentialsApi.remove(id, true),
     onSuccess: () => {
@@ -1359,10 +1364,19 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                           default
                         </span>
                       )}
-                      {formatCredentialCooldown(cred.cooldownUntil) && (
+                      {cred.disabledAt && (
+                        <span
+                          className="shrink-0 flex items-center gap-0.5 rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive"
+                          title={cred.disabledReason ?? "Disabled after repeated failures. Agents skip it until you re-enable it (or save a fresh key)."}
+                        >
+                          <XCircle className="h-2.5 w-2.5" />
+                          needs attention
+                        </span>
+                      )}
+                      {!cred.disabledAt && formatCredentialCooldown(cred.cooldownUntil) && (
                         <span
                           className="shrink-0 flex items-center gap-0.5 rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-600"
-                          title={`Cooling down after an upstream rate/quota limit${cred.cooldownReason ? ` (${cred.cooldownReason})` : ""}. Runs rotate to another bound credential of this type until the window elapses.`}
+                          title={`Cooling down after a failure${cred.cooldownReason ? ` (${cred.cooldownReason})` : ""}${cred.consecutiveFailureCount > 0 ? ` · ${cred.consecutiveFailureCount} consecutive` : ""}. Runs rotate to another bound credential of this type until the window elapses.`}
                         >
                           <Clock className="h-2.5 w-2.5" />
                           cooling {formatCredentialCooldown(cred.cooldownUntil)}
@@ -1387,6 +1401,18 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                       })()}
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
+                      {cred.disabledAt && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-[11px] text-destructive"
+                          onClick={() => reenableMutation.mutate(cred.id)}
+                          disabled={reenableMutation.isPending}
+                          title="Re-enable this credential so agents use it again"
+                        >
+                          Re-enable
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="ghost"
