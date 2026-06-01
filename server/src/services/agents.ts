@@ -15,11 +15,14 @@ import {
   issueExecutionDecisions,
   issues,
   issueComments,
+  routines,
 } from "@paperclipai/db";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
+import { logActivity } from "./activity-log.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -494,6 +497,47 @@ export function agentService(db: Db) {
         .update(agentApiKeys)
         .set({ revokedAt: new Date() })
         .where(eq(agentApiKeys.agentId, id));
+
+      // Pause any active routines this agent owns so they stop firing into a
+      // dead address. Cross-owner routine reassignment is board-only, so
+      // without this sweep the routines would silently fail every scheduled
+      // fire until a board operator intervened.
+      const sweptRoutines = await db
+        .update(routines)
+        .set({
+          status: "paused",
+          updatedAt: new Date(),
+        })
+        .where(and(eq(routines.assigneeAgentId, id), eq(routines.status, "active")))
+        .returning({
+          id: routines.id,
+          companyId: routines.companyId,
+          title: routines.title,
+        });
+
+      if (sweptRoutines.length > 0) {
+        try {
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: "system",
+            actorId: "agent-terminate-sweep",
+            action: "routine.auto_paused",
+            entityType: "agent",
+            entityId: id,
+            details: {
+              cause: "agent_terminated",
+              routineIds: sweptRoutines.map((row) => row.id),
+              routineTitles: sweptRoutines.map((row) => row.title),
+              count: sweptRoutines.length,
+            },
+          });
+        } catch (err) {
+          logger.warn(
+            { err, agentId: id, routineIds: sweptRoutines.map((row) => row.id) },
+            "failed to log routine auto-pause sweep on agent termination",
+          );
+        }
+      }
 
       return getById(id);
     },

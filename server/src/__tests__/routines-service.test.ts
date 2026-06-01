@@ -26,6 +26,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { agentService } from "../services/agents.ts";
 import { issueService } from "../services/issues.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import * as providerRegistry from "../secrets/provider-registry.ts";
@@ -1509,5 +1510,109 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
+  });
+
+  // ZERA-548: when an agent is terminated, routines they own must stop firing.
+  it("pauses active routines owned by an agent when that agent is terminated", async () => {
+    const { companyId, agentId, routine, svc } = await seedFixture();
+    const agents_svc = agentService(db);
+
+    const before = await svc.get(routine.id);
+    expect(before?.status).toBe("active");
+
+    const terminated = await agents_svc.terminate(agentId);
+    expect(terminated?.status).toBe("terminated");
+
+    const after = await svc.get(routine.id);
+    expect(after?.status).toBe("paused");
+    expect(after?.assigneeAgentId).toBe(agentId);
+
+    const logged = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId));
+    const sweepEntry = logged.find(
+      (row) =>
+        row.action === "routine.auto_paused" &&
+        (row.details as Record<string, unknown> | null)?.cause === "agent_terminated",
+    );
+    expect(sweepEntry).toBeTruthy();
+    expect((sweepEntry?.details as Record<string, unknown>).routineIds).toEqual([routine.id]);
+    expect((sweepEntry?.details as Record<string, unknown>).count).toBe(1);
+  });
+
+  it("leaves paused/archived routines untouched on agent termination (only sweeps active)", async () => {
+    const { agentId, routine, svc } = await seedFixture();
+    const agents_svc = agentService(db);
+
+    // Manually move the routine to paused before termination — the sweep must
+    // not regress its updatedAt or otherwise touch it.
+    const pausedAtBefore = new Date("2026-01-01T00:00:00.000Z");
+    await db
+      .update(routines)
+      .set({ status: "paused", updatedAt: pausedAtBefore })
+      .where(eq(routines.id, routine.id));
+
+    await agents_svc.terminate(agentId);
+
+    const after = await db
+      .select({ status: routines.status, updatedAt: routines.updatedAt })
+      .from(routines)
+      .where(eq(routines.id, routine.id))
+      .then((rows) => rows[0]);
+    expect(after?.status).toBe("paused");
+    expect(after?.updatedAt.getTime()).toBe(pausedAtBefore.getTime());
+  });
+
+  it("pauses routines at fire time when the assignee was terminated before the sweep landed", async () => {
+    const { companyId, agentId, routine, svc } = await seedFixture();
+
+    // Simulate a routine that survived from before the per-agent sweep
+    // shipped: assignee is already terminated, but the routine is still
+    // active and has a due schedule trigger.
+    const dueAt = new Date(Date.now() - 60_000);
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        label: "MWF",
+        cronExpression: "0 9 * * 1,3,5",
+        timezone: "UTC",
+      },
+      {},
+    );
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: dueAt })
+      .where(eq(routineTriggers.id, trigger.id));
+    // Bypass the termination sweep so the routine stays "active" with a
+    // terminated assignee — this models the pre-existing dogfood state.
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, agentId));
+
+    const result = await svc.tickScheduledTriggers(new Date());
+    expect(result.triggered).toBe(0);
+    expect(result.pausedTerminated).toBe(1);
+
+    const paused = await svc.get(routine.id);
+    expect(paused?.status).toBe("paused");
+
+    const runs = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(0);
+
+    const logged = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId));
+    const fireEntry = logged.find(
+      (row) =>
+        row.action === "routine.auto_paused" &&
+        (row.details as Record<string, unknown> | null)?.cause ===
+          "scheduler_detected_terminated_assignee",
+    );
+    expect(fireEntry).toBeTruthy();
+    expect(fireEntry?.entityId).toBe(routine.id);
   });
 });

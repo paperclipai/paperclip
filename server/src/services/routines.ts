@@ -491,6 +491,38 @@ export function routineService(
       .then((rows) => rows[0] ?? null);
   }
 
+  async function pauseRoutineForTerminatedAssignee(
+    routine: typeof routines.$inferSelect,
+  ): Promise<boolean> {
+    const updated = await db
+      .update(routines)
+      .set({ status: "paused", updatedAt: new Date() })
+      .where(and(eq(routines.id, routine.id), eq(routines.status, "active")))
+      .returning({ id: routines.id });
+    if (updated.length === 0) return false;
+    try {
+      await logActivity(db, {
+        companyId: routine.companyId,
+        actorType: "system",
+        actorId: "routine-scheduler",
+        action: "routine.auto_paused",
+        entityType: "routine",
+        entityId: routine.id,
+        details: {
+          cause: "scheduler_detected_terminated_assignee",
+          assigneeAgentId: routine.assigneeAgentId,
+          routineTitle: routine.title,
+        },
+      });
+    } catch (err) {
+      logger.warn(
+        { err, routineId: routine.id },
+        "failed to log routine auto-pause for terminated assignee",
+      );
+    }
+    return true;
+  }
+
   async function getManagedRoutineBinding(routine: typeof routines.$inferSelect) {
     return db
       .select({
@@ -2305,9 +2337,11 @@ export function routineService(
         .select({
           trigger: routineTriggers,
           routine: routines,
+          assigneeStatus: agents.status,
         })
         .from(routineTriggers)
         .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+        .leftJoin(agents, eq(routines.assigneeAgentId, agents.id))
         .where(
           and(
             eq(routineTriggers.kind, "schedule"),
@@ -2320,8 +2354,19 @@ export function routineService(
         .orderBy(asc(routineTriggers.nextRunAt), asc(routineTriggers.createdAt));
 
       let triggered = 0;
+      let pausedTerminated = 0;
       for (const row of due) {
         if (!row.trigger.nextRunAt || !row.trigger.cronExpression || !row.trigger.timezone) continue;
+
+        // Defense in depth: if the routine's assignee was terminated between
+        // create/update and this tick (e.g. the agent was terminated before
+        // the per-agent sweep landed, or the row was created during a race),
+        // pause the routine instead of letting dispatch fail and keep firing.
+        if (row.routine.assigneeAgentId && row.assigneeStatus === "terminated") {
+          const paused = await pauseRoutineForTerminatedAssignee(row.routine);
+          if (paused) pausedTerminated += 1;
+          continue;
+        }
 
         let runCount = 1;
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
@@ -2363,7 +2408,7 @@ export function routineService(
         }
       }
 
-      return { triggered };
+      return { triggered, pausedTerminated };
     },
 
     syncRunStatusForIssue: async (issueId: string) => {
