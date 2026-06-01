@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -18,6 +19,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { activityService } from "../services/activity.ts";
+import { logActivity } from "../services/activity-log.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -115,6 +117,34 @@ describeEmbeddedPostgres("activity service", () => {
     const result = await activityService(db).list({ companyId, limit: 2 });
 
     expect(result.map((event) => event.action)).toEqual(["test.newest", "test.middle"]);
+  });
+
+  it("stores null runId for non-UUID activity run ids", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await logActivity(db, {
+      companyId,
+      actorType: "agent",
+      actorId: "agent-1",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: "issue-1",
+      runId: "test-run",
+    });
+
+    const [stored] = await db
+      .select({ runId: activityLog.runId })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId));
+
+    expect(stored?.runId).toBeNull();
   });
 
   it("returns compact usage and result summaries for issue runs", async () => {

@@ -419,6 +419,12 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   return checkoutRunId == null;
 }
 
+function normalizeHeartbeatRunId(runId: string | null | undefined) {
+  const trimmed = runId?.trim();
+  if (!trimmed) return null;
+  return isUuidLike(trimmed) ? trimmed : null;
+}
+
 export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
@@ -6315,7 +6321,7 @@ export function issueService(db: Db) {
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
           authorType,
-          createdByRunId: actor.runId ?? null,
+          createdByRunId: normalizeHeartbeatRunId(actor.runId),
           body: redactedBody,
           presentation,
           metadata,

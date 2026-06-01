@@ -33,6 +33,33 @@ describe("actorMiddleware authenticated session profile", () => {
     else process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = originalCloudTenantToken;
   });
 
+  it("drops non-UUID run id headers before they reach request actors", async () => {
+    const app = express();
+    app.use(actorMiddleware({} as any, { deploymentMode: "local_trusted" }));
+    app.get("/actor", (req, res) => {
+      res.json(req.actor);
+    });
+
+    const res = await request(app).get("/actor").set("X-Paperclip-Run-Id", "test-run");
+
+    expect(res.status).toBe(200);
+    expect(res.body).not.toHaveProperty("runId");
+  });
+
+  it("keeps UUID run id headers on request actors", async () => {
+    const runId = "11111111-1111-4111-8111-111111111111";
+    const app = express();
+    app.use(actorMiddleware({} as any, { deploymentMode: "local_trusted" }));
+    app.get("/actor", (req, res) => {
+      res.json(req.actor);
+    });
+
+    const res = await request(app).get("/actor").set("X-Paperclip-Run-Id", runId);
+
+    expect(res.status).toBe(200);
+    expect(res.body.runId).toBe(runId);
+  });
+
   it("preserves the signed-in user name and email on the board actor", async () => {
     const app = express();
     app.use(

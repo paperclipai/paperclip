@@ -1936,6 +1936,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(run?.error).toBeNull();
   });
 
+  it("ignores non-UUID run ids when clearing detached warnings", async () => {
+    const heartbeat = heartbeatService(db);
+
+    await expect(heartbeat.reportRunActivity("test-run")).resolves.toBeNull();
+  });
+
   it("tracks the first heartbeat with the agent role instead of adapter type", async () => {
     const { agentId, runId } = await seedRunFixture({
       agentStatus: "running",
