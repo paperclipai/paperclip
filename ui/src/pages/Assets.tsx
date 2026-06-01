@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cn, relativeTime } from "../lib/utils";
+import { AgnbSubnav } from "../components/AgnbSubnav";
 
 const STAGES: Array<{ key: AssetStage | "all"; label: string }> = [
   { key: "all", label: "All" },
@@ -62,6 +63,7 @@ export function Assets() {
 
   return (
     <div className="space-y-4">
+      <AgnbSubnav group="assets" />
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-semibold">Assets</h1>

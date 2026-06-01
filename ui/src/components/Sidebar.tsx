@@ -95,6 +95,11 @@ export function Sidebar() {
           />
         </div>
 
+        <SidebarSection label="AGNB">
+          <SidebarNavItem to="/pipeline" label="Pipeline" icon={LayoutGrid} />
+          <SidebarNavItem to="/assets" label="Assets" icon={Package} />
+        </SidebarSection>
+
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
@@ -120,11 +125,6 @@ export function Sidebar() {
         <SidebarProjects />
 
         <SidebarAgents />
-
-        <SidebarSection label="AGNB">
-          <SidebarNavItem to="/assets" label="Assets" icon={Package} />
-          <SidebarNavItem to="/pipeline" label="Pipeline" icon={LayoutGrid} />
-        </SidebarSection>
 
         <SidebarSection label="Company">
           <SidebarNavItem to="/org" label="Org" icon={Network} />

@@ -53,6 +53,14 @@ import { PluginPage } from "./pages/PluginPage";
 import { OrgChart } from "./pages/OrgChart";
 import { Assets } from "./pages/Assets";
 import { Pipeline } from "./pages/Pipeline";
+import { Forecast } from "./pages/Forecast";
+import { Demos } from "./pages/Demos";
+import { Channels } from "./pages/Channels";
+import { Attribution } from "./pages/Attribution";
+import { Funnel } from "./pages/Funnel";
+import { CrmHygiene } from "./pages/CrmHygiene";
+import { WinLoss } from "./pages/WinLoss";
+import { Invoices } from "./pages/Invoices";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
@@ -91,6 +99,14 @@ function boardRoutes() {
       <Route path="org" element={<OrgChart />} />
       <Route path="assets" element={<Assets />} />
       <Route path="pipeline" element={<Pipeline />} />
+      <Route path="forecast" element={<Forecast />} />
+      <Route path="demos" element={<Demos />} />
+      <Route path="channels" element={<Channels />} />
+      <Route path="attribution" element={<Attribution />} />
+      <Route path="funnel" element={<Funnel />} />
+      <Route path="crm-hygiene" element={<CrmHygiene />} />
+      <Route path="win-loss" element={<WinLoss />} />
+      <Route path="invoices" element={<Invoices />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />
@@ -315,6 +331,14 @@ export function App() {
           <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
           <Route path="assets" element={<UnprefixedBoardRedirect />} />
           <Route path="pipeline" element={<UnprefixedBoardRedirect />} />
+          <Route path="forecast" element={<UnprefixedBoardRedirect />} />
+          <Route path="demos" element={<UnprefixedBoardRedirect />} />
+          <Route path="channels" element={<UnprefixedBoardRedirect />} />
+          <Route path="attribution" element={<UnprefixedBoardRedirect />} />
+          <Route path="funnel" element={<UnprefixedBoardRedirect />} />
+          <Route path="crm-hygiene" element={<UnprefixedBoardRedirect />} />
+          <Route path="win-loss" element={<UnprefixedBoardRedirect />} />
+          <Route path="invoices" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
           <Route path="agents" element={<UnprefixedBoardRedirect />} />

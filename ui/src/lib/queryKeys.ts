@@ -210,5 +210,13 @@ export const queryKeys = {
   agnb: {
     assets: (q: string) => ["agnb", "assets", q] as const,
     pipeline: ["agnb", "pipeline"] as const,
+    forecast: ["agnb", "forecast"] as const,
+    demos: ["agnb", "demos"] as const,
+    channels: (days: number) => ["agnb", "channels", days] as const,
+    attribution: ["agnb", "attribution"] as const,
+    funnel: ["agnb", "funnel"] as const,
+    crmHygiene: ["agnb", "crm-hygiene"] as const,
+    winLoss: (outcome: string) => ["agnb", "win-loss", outcome] as const,
+    invoices: ["agnb", "invoices"] as const,
   },
 };

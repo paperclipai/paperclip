@@ -29,6 +29,7 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Badge } from "@/components/ui/badge";
 import { cn, relativeTime } from "../lib/utils";
+import { AgnbSubnav } from "../components/AgnbSubnav";
 
 const AGNB_BASE =
   (import.meta.env.VITE_AGNB_BASE_URL as string | undefined) ??
@@ -134,6 +135,7 @@ export function Pipeline() {
 
   return (
     <div className="space-y-4">
+      <AgnbSubnav group="pipeline" />
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
