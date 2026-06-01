@@ -22,7 +22,7 @@ import {
   executionWorkspaceService,
   mergeExecutionWorkspaceConfig,
   readExecutionWorkspaceConfig,
-} from "../services/execution-workspaces.ts";
+} from "../services/execution-workspaces.js";
 
 const execFileAsync = promisify(execFile);
 

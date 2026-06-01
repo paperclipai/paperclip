@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldEnablePrivateHostnameGuard } from "../app.ts";
+import { shouldEnablePrivateHostnameGuard } from "../app.js";
 
 describe("shouldEnablePrivateHostnameGuard", () => {
   it("enables the hostname guard for local_trusted private deployments", () => {

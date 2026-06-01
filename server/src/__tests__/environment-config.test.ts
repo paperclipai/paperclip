@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HttpError } from "../errors.js";
-import { normalizeEnvironmentConfig, parseEnvironmentDriverConfig } from "../services/environment-config.ts";
+import { normalizeEnvironmentConfig, parseEnvironmentDriverConfig } from "../services/environment-config.js";
 
 describe("environment config helpers", () => {
   it("normalizes SSH config into its canonical stored shape", () => {

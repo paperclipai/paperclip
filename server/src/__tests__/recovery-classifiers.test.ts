@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { classifyIssueGraphLiveness as classifyIssueGraphLivenessCompat } from "../services/issue-liveness.ts";
-import { decideRunLivenessContinuation as decideRunLivenessContinuationCompat } from "../services/run-continuations.ts";
+import { classifyIssueGraphLiveness as classifyIssueGraphLivenessCompat } from "../services/issue-liveness.js";
+import { decideRunLivenessContinuation as decideRunLivenessContinuationCompat } from "../services/run-continuations.js";
 import {
   RECOVERY_KEY_PREFIXES,
   RECOVERY_ORIGIN_KINDS,
@@ -13,7 +13,7 @@ import {
   isStrandedIssueRecoveryOriginKind,
   isZeroTokenStartupFailureRun,
   parseIssueGraphLivenessIncidentKey,
-} from "../services/recovery/index.ts";
+} from "../services/recovery/index.js";
 
 const companyId = "company-1";
 const agentId = "agent-1";

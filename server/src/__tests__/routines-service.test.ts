@@ -26,11 +26,11 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { issueService } from "../services/issues.ts";
-import { instanceSettingsService } from "../services/instance-settings.ts";
-import * as providerRegistry from "../secrets/provider-registry.ts";
-import { routineService } from "../services/routines.ts";
-import { secretService } from "../services/secrets.ts";
+import { issueService } from "../services/issues.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import * as providerRegistry from "../secrets/provider-registry.js";
+import { routineService } from "../services/routines.js";
+import { secretService } from "../services/secrets.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;

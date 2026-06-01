@@ -21,8 +21,8 @@ import {
   issueDocuments,
   issues,
 } from "@paperclipai/db";
-import { feedbackService } from "../services/feedback.ts";
-import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.ts";
+import { feedbackService } from "../services/feedback.js";
+import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
   await db?.$client?.end?.({ timeout: 0 });

@@ -1,14 +1,20 @@
 import { describe, expect, it } from "vitest";
+import type { Request } from "express";
 import { assertBoardOrgAccess, assertCompanyAccess, hasBoardOrgAccess } from "../routes/authz.js";
 
 function makeReq(input: {
   method?: string;
   actor: Express.Request["actor"];
 }) {
+  // `as Express.Request` resolves to the namespace-augmented type without the
+  // generic params; the route helpers below take the fully-generic Express
+  // `Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>`.
+  // Cast via unknown — same pattern as error-handler.test.ts:13 and
+  // app-vite-dev-routing.test.ts:9.
   return {
     method: input.method ?? "GET",
     actor: input.actor,
-  } as Express.Request;
+  } as unknown as Request;
 }
 
 describe("assertCompanyAccess", () => {

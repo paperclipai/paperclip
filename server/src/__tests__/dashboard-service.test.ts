@@ -5,7 +5,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { dashboardService, getUtcMonthStart } from "../services/dashboard.ts";
+import { dashboardService, getUtcMonthStart } from "../services/dashboard.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;

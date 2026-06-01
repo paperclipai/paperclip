@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeAgentMentionToken } from "../services/issues.ts";
+import { normalizeAgentMentionToken } from "../services/issues.js";
 
 describe("normalizeAgentMentionToken", () => {
   it("decodes hex numeric entities such as space (&#x20;)", () => {

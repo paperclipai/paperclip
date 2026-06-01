@@ -2,7 +2,7 @@ import express from "express";
 import request from "supertest";
 import { getTableName } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
+import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),

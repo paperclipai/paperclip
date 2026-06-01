@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.js";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveIssueUserContext } from "../services/issues.ts";
+import { deriveIssueUserContext } from "../services/issues.js";
 
 function makeIssue(overrides?: Partial<{
   createdByUserId: string | null;

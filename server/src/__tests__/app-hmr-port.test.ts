@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveViteHmrHost, resolveViteHmrPort } from "../app.ts";
+import { resolveViteHmrHost, resolveViteHmrPort } from "../app.js";
 
 describe("resolveViteHmrPort", () => {
   it("uses serverPort + 10000 when the result stays in range", () => {

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { approvalService } from "../services/approvals.ts";
+import { approvalService } from "../services/approvals.js";
 
 const mockAgentService = vi.hoisted(() => ({
   activatePendingApproval: vi.fn(),

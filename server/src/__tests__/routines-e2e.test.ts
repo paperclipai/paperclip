@@ -21,8 +21,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { accessService } from "../services/access.js";
-import { heartbeatService } from "../services/heartbeat.ts";
-import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.ts";
+import { heartbeatService } from "../services/heartbeat.js";
+import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.js";
 
 function registerRoutineServiceMock() {
   vi.doMock("../services/routines.js", async () => {

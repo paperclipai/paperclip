@@ -31,7 +31,7 @@ vi.mock("@kubernetes/client-node", () => {
   };
 });
 
-import { probeEnvironment } from "../services/environment-probe.ts";
+import { probeEnvironment } from "../services/environment-probe.js";
 
 function makeEnv(config: Record<string, unknown>) {
   return {

@@ -4,7 +4,7 @@ import {
   RUN_LIVENESS_CONTINUATION_REASON,
   buildRunLivenessContinuationIdempotencyKey,
   decideRunLivenessContinuation,
-} from "../services/run-continuations.ts";
+} from "../services/run-continuations.js";
 
 const companyId = "company-1";
 const agentId = "agent-1";

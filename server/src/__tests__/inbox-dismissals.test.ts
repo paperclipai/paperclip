@@ -14,8 +14,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { inboxDismissalService } from "../services/inbox-dismissals.ts";
-import { sidebarBadgeService } from "../services/sidebar-badges.ts";
+import { inboxDismissalService } from "../services/inbox-dismissals.js";
+import { sidebarBadgeService } from "../services/sidebar-badges.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;

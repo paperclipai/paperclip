@@ -8,7 +8,7 @@ import {
   parseProjectExecutionWorkspacePolicy,
   resolveExecutionWorkspaceEnvironmentId,
   resolveExecutionWorkspaceMode,
-} from "../services/execution-workspace-policy.ts";
+} from "../services/execution-workspace-policy.js";
 
 describe("execution workspace policy helpers", () => {
   it("defaults new issue settings from enabled project policy", () => {

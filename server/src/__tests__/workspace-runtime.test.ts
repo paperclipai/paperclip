@@ -37,11 +37,11 @@ import {
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
   WorkspaceRepoMismatchError,
-} from "../services/workspace-runtime.ts";
-import { writeLocalServiceRegistryRecord } from "../services/local-service-supervisor.ts";
-import { resolvePaperclipConfigPath } from "../paths.ts";
+} from "../services/workspace-runtime.js";
+import { writeLocalServiceRegistryRecord } from "../services/local-service-supervisor.js";
+import { resolvePaperclipConfigPath } from "../paths.js";
 import type { WorkspaceOperation } from "@paperclipai/shared";
-import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
+import type { WorkspaceOperationRecorder } from "../services/workspace-operations.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

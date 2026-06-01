@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { companyService } from "../services/companies.ts";
-import { agentService } from "../services/agents.ts";
+import { companyService } from "../services/companies.js";
+import { agentService } from "../services/agents.js";
 
 function createSelectSequenceDb(results: unknown[]) {
   const pending = [...results];

@@ -34,9 +34,9 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { routineService } from "../services/routines.ts";
-import { secretService } from "../services/secrets.ts";
-import { resolveExecutionRunAdapterConfig } from "../services/heartbeat.ts";
+import { routineService } from "../services/routines.js";
+import { secretService } from "../services/secrets.js";
+import { resolveExecutionRunAdapterConfig } from "../services/heartbeat.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeEmbedded = support.supported ? describe : describe.skip;

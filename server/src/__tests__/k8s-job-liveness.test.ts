@@ -1,7 +1,7 @@
 import type { V1Job } from "@kubernetes/client-node";
 import { describe, expect, it } from "vitest";
 
-import { classifyAgentJobRunStatus } from "../services/k8s-job-liveness.ts";
+import { classifyAgentJobRunStatus } from "../services/k8s-job-liveness.js";
 
 describe("classifyAgentJobRunStatus", () => {
   it("keeps multi-completion Jobs active when only one pod succeeded and no Complete condition exists", () => {

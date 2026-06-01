@@ -28,7 +28,7 @@ import {
   __test_verifyGithubSignature,
   githubWebhookRoutes,
   type GithubWebhookConfig,
-} from "../routes/github-webhook.ts";
+} from "../routes/github-webhook.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

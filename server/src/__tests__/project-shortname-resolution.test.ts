@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveProjectNameForUniqueShortname } from "../services/projects.ts";
+import { resolveProjectNameForUniqueShortname } from "../services/projects.js";
 
 describe("resolveProjectNameForUniqueShortname", () => {
   it("keeps name when shortname is not used", () => {

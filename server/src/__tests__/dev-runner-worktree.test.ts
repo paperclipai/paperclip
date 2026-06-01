@@ -6,7 +6,7 @@ import {
   bootstrapDevRunnerWorktreeEnv,
   isLinkedGitWorktreeCheckout,
   resolveWorktreeEnvFilePath,
-} from "../dev-runner-worktree.ts";
+} from "../dev-runner-worktree.js";
 
 const tempRoots = new Set<string>();
 

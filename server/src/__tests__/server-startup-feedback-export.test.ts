@@ -204,7 +204,7 @@ vi.mock("../auth/better-auth.js", () => ({
   resolveBetterAuthSessionFromHeaders: vi.fn(async () => null),
 }));
 
-import { startServer } from "../index.ts";
+import { startServer } from "../index.js";
 
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {

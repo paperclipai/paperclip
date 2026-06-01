@@ -36,7 +36,7 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
   };
 });
 
-import { routineService } from "../services/routines.ts";
+import { routineService } from "../services/routines.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;

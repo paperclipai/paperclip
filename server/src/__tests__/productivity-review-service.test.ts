@@ -23,7 +23,7 @@ import {
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
   PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX,
   productivityReviewService,
-} from "../services/productivity-review.ts";
+} from "../services/productivity-review.js";
 import { logActivity } from "../services/activity-log.js";
 import { RECOVERY_ORIGIN_KINDS } from "../services/recovery/origins.js";
 

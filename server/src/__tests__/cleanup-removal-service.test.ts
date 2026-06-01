@@ -21,8 +21,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { agentService } from "../services/agents.ts";
-import { companyService } from "../services/companies.ts";
+import { agentService } from "../services/agents.js";
+import { companyService } from "../services/companies.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;

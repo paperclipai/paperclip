@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyRunLiveness } from "../services/run-liveness.ts";
+import { classifyRunLiveness } from "../services/run-liveness.js";
 
 const baseInput = {
   runStatus: "succeeded",

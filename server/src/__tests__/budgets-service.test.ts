@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { budgetService } from "../services/budgets.ts";
+import { budgetService } from "../services/budgets.js";
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 

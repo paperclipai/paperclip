@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { workProductService } from "../services/work-products.ts";
+import { workProductService } from "../services/work-products.js";
 
 function createWorkProductRow(overrides: Partial<Record<string, unknown>> = {}) {
   const now = new Date("2026-03-17T00:00:00.000Z");

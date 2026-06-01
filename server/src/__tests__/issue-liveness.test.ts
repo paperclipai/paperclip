@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyIssueGraphLiveness } from "../services/issue-liveness.ts";
+import { classifyIssueGraphLiveness } from "../services/issue-liveness.js";
 
 const companyId = "company-1";
 const managerId = "manager-1";

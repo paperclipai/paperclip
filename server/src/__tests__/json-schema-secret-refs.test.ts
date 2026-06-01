@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collectSecretRefPaths } from "../services/json-schema-secret-refs.ts";
+import { collectSecretRefPaths } from "../services/json-schema-secret-refs.js";
 
 describe("collectSecretRefPaths", () => {
   it("collects nested secret-ref paths from object properties", () => {

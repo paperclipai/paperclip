@@ -15,7 +15,7 @@ vi.mock("../services/plugin-environment-driver.js", () => ({
   resolvePluginSandboxProviderDriverByKey: mockResolvePluginSandboxProviderDriverByKey,
 }));
 
-import { probeEnvironment } from "../services/environment-probe.ts";
+import { probeEnvironment } from "../services/environment-probe.js";
 
 describe("probeEnvironment", () => {
   beforeEach(() => {

@@ -10,7 +10,7 @@ import {
   sandboxConfigFromLeaseMetadata,
   sandboxConfigFromLeaseMetadataLoose,
   validateSandboxProviderConfig,
-} from "../services/sandbox-provider-runtime.ts";
+} from "../services/sandbox-provider-runtime.js";
 
 describe("sandbox provider runtime", () => {
   it("exposes fake as the built-in sandbox provider implementation", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveAgentCwd } from "../services/execution-workspaces.ts";
+import { deriveAgentCwd } from "../services/execution-workspaces.js";
 
 describe("deriveAgentCwd", () => {
   it("returns fallback when metadata is null", () => {
