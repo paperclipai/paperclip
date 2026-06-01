@@ -3239,4 +3239,85 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  it("short-circuits stranded-issue recovery and pauses the agent when in a 3-failure cascade", async () => {
+    // Reproduce the 2026-05-09 runaway: a misconfigured Hermes adapter
+    // failed every heartbeat, generating a fresh "Recover stalled issue"
+    // per failure (156 issues in 10 min). This test locks the
+    // short-circuit: 3 consecutive failed runs in the cascade window must
+    // suppress further recovery-issue creation AND pause the agent with
+    // pauseReason: "cascade".
+    mockAdapterExecute.mockRejectedValueOnce(new Error("continuation recovery failed"));
+
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+    });
+
+    // Seed three additional FAILED heartbeat runs for the same agent in
+    // the last 15 min — this is what flips the cascade detector.
+    const recentBase = new Date(Date.now() - 5 * 60 * 1000);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        status: "failed",
+        startedAt: new Date(recentBase.getTime() + 60_000),
+        finishedAt: new Date(recentBase.getTime() + 90_000),
+        contextSnapshot: {},
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        status: "failed",
+        startedAt: new Date(recentBase.getTime() + 2 * 60_000),
+        finishedAt: new Date(recentBase.getTime() + 2.5 * 60_000),
+        contextSnapshot: {},
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        status: "failed",
+        startedAt: new Date(recentBase.getTime() + 3 * 60_000),
+        finishedAt: new Date(recentBase.getTime() + 3.5 * 60_000),
+        contextSnapshot: {},
+      },
+    ]);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    // Block the issue gets blocked but NO recovery issue should be created.
+    const blockedIssue = await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+        const issue = rows[0] ?? null;
+        return issue?.status === "blocked" ? issue : null;
+      })
+    );
+    expect(blockedIssue?.status).toBe("blocked");
+
+    // Critical: NO stranded_issue_recovery issue exists for this source.
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originId, issueId)));
+    expect(recoveryIssues).toHaveLength(0);
+
+    // Agent must be paused with the cascade reason.
+    const pausedAgent = await waitForValue(async () =>
+      db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => {
+        const a = rows[0] ?? null;
+        return a?.pauseReason === "cascade" ? a : null;
+      })
+    );
+    expect(pausedAgent?.status).toBe("paused");
+    expect(pausedAgent?.pauseReason).toBe("cascade");
+    expect(pausedAgent?.pausedAt).not.toBeNull();
+  });
 });
