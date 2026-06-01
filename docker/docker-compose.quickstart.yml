@@ -3,6 +3,11 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "${PAPERCLIP_PORT:-3100}:3100"
     environment:
