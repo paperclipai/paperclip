@@ -193,6 +193,17 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+const GLOBAL_MAX_CONCURRENT_RUNS_DEFAULT = 5;
+const GLOBAL_MAX_CONCURRENT_RUNS_MIN = 1;
+const GLOBAL_MAX_CONCURRENT_RUNS_MAX = 10;
+function normalizeGlobalMaxConcurrentRuns(value: unknown) {
+  const parsed = Math.floor(Number(value));
+  if (!Number.isFinite(parsed)) return GLOBAL_MAX_CONCURRENT_RUNS_DEFAULT;
+  return Math.max(GLOBAL_MAX_CONCURRENT_RUNS_MIN, Math.min(GLOBAL_MAX_CONCURRENT_RUNS_MAX, parsed));
+}
+const GLOBAL_MAX_CONCURRENT_RUNS = normalizeGlobalMaxConcurrentRuns(
+  process.env.PAPERCLIP_MAX_GLOBAL_CONCURRENT_RUNS ?? GLOBAL_MAX_CONCURRENT_RUNS_DEFAULT,
+);
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -6030,6 +6041,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function countAllRunningRuns() {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "running"));
+    return Number(count ?? 0);
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -6952,6 +6971,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
       if (availableSlots <= 0) return [];
 
+      const globalRunningCount = await countAllRunningRuns();
+      const globalAvailableSlots = Math.max(0, GLOBAL_MAX_CONCURRENT_RUNS - globalRunningCount);
+      if (globalAvailableSlots <= 0) {
+        logger.info(
+          { agentId, globalRunningCount, globalMax: GLOBAL_MAX_CONCURRENT_RUNS },
+          "startNextQueuedRunForAgent: global concurrent run cap reached, leaving run queued",
+        );
+        return [];
+      }
+
       const queuedRuns = await db
         .select()
         .from(heartbeatRuns)
@@ -6997,8 +7026,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+      const effectiveSlots = Math.min(availableSlots, globalAvailableSlots);
       for (const queuedRun of prioritizedRuns) {
-        if (claimedRuns.length >= availableSlots) break;
+        if (claimedRuns.length >= effectiveSlots) break;
         const claimed = await claimQueuedRun(queuedRun);
         if (claimed) claimedRuns.push(claimed);
       }
