@@ -42,6 +42,22 @@ export async function runCommand(opts: RunOptions): Promise<void> {
   const paths = describeLocalInstancePaths(instanceId);
   fs.mkdirSync(paths.instanceRoot, { recursive: true });
 
+  // Instance guard: abort if another server process is already running for this instance.
+  const pidFile = path.join(paths.instanceRoot, "server.pid");
+  if (fs.existsSync(pidFile)) {
+    const rawPid = fs.readFileSync(pidFile, "utf-8").trim();
+    const existingPid = parseInt(rawPid, 10);
+    if (!isNaN(existingPid) && existingPid > 0 && isProcessAlive(existingPid)) {
+      console.error(
+        `Error: a Paperclip server is already running for instance "${instanceId}" (PID ${existingPid}).\n` +
+          `Stop it first with: paperclipai stop`,
+      );
+      process.exit(1);
+    }
+    // Stale PID file — remove it and continue.
+    fs.rmSync(pidFile);
+  }
+
   const configPath = resolveConfigPath(opts.config);
   process.env.PAPERCLIP_CONFIG = configPath;
   loadPaperclipEnvFile(configPath);
@@ -83,6 +99,21 @@ export async function runCommand(opts: RunOptions): Promise<void> {
   p.log.step("Starting Paperclip server...");
   const startedServer = await importServerEntry();
 
+  // Write PID file so `paperclipai stop` and the instance guard can find this process.
+  fs.writeFileSync(pidFile, String(process.pid), "utf-8");
+
+  // Remove the PID file when the process exits for any reason.
+  const removePidFile = (): void => {
+    try {
+      if (fs.existsSync(pidFile)) fs.rmSync(pidFile);
+    } catch {
+      // best-effort
+    }
+  };
+  process.once("exit", removePidFile);
+  process.once("SIGINT", () => { removePidFile(); process.exit(130); });
+  process.once("SIGTERM", () => { removePidFile(); process.exit(143); });
+
   if (shouldGenerateBootstrapInviteAfterStart(config)) {
     p.log.step("Generating bootstrap CEO invite");
     await bootstrapCeoInvite({
@@ -90,6 +121,15 @@ export async function runCommand(opts: RunOptions): Promise<void> {
       dbUrl: startedServer.databaseUrl,
       baseUrl: resolveBootstrapInviteBaseUrl(config, startedServer),
     });
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as { code?: string }).code !== "ESRCH";
   }
 }
 
