@@ -27,6 +27,8 @@
 
 # Paperclip is the app people use to manage AI agents for work.
 
+Paperclip is an open-source control plane that lets you run and manage a team of AI agents as if they were employees in a real company.
+
 Open-source orchestration for teams of AI agents.
 
 **If OpenClaw is an _employee_, Paperclip is the _company_.**
