@@ -136,7 +136,7 @@ describe("company portability", () => {
   const companyPlaybookKey = "company/company-1/company-playbook";
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     secretSvc.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
     secretSvc.resolveAdapterConfigForRuntime.mockImplementation(async (_companyId, config) => ({
       config,
