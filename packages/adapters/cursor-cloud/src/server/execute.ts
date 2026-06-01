@@ -1,14 +1,17 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import {
-  Agent,
-  type AgentOptions,
-  type ModelSelection,
-  type Run,
-  type RunResult,
-  type SDKAgent,
-  type SDKMessage,
+import type {
+  AgentOptions,
+  ModelSelection,
+  Run,
+  RunResult,
+  SDKAgent,
+  SDKMessage,
 } from "@cursor/sdk";
+
+async function getCursorSdk(): Promise<typeof import("@cursor/sdk")> {
+  return import("@cursor/sdk");
+}
 import type { AdapterExecutionContext, AdapterExecutionResult, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -307,6 +310,7 @@ async function getAttachedRun(input: {
   const cursorAgentId = input.session?.cursorAgentId;
   if (!latestRunId || !cursorAgentId) return null;
   try {
+    const { Agent } = await getCursorSdk();
     const run = await Agent.getRun(latestRunId, {
       runtime: "cloud",
       agentId: cursorAgentId,
@@ -488,6 +492,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
 
+    const { Agent } = await getCursorSdk();
     sdkAgent = canReuseSession && session
       ? await Agent.resume(session.cursorAgentId, agentOptions)
       : await Agent.create(agentOptions);

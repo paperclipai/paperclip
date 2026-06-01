@@ -1,4 +1,3 @@
-import { Cursor } from "@cursor/sdk";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
@@ -73,6 +72,7 @@ export async function testEnvironment(
 
   if (apiKey) {
     try {
+      const { Cursor } = await import("@cursor/sdk");
       const me = await Cursor.me({ apiKey });
       checks.push({
         code: "cursor_cloud_auth_ok",
@@ -91,6 +91,7 @@ export async function testEnvironment(
 
   if (apiKey && model) {
     try {
+      const { Cursor } = await import("@cursor/sdk");
       const models = await Cursor.models.list({ apiKey });
       const match = models.find((entry) => entry.id === model);
       checks.push({
