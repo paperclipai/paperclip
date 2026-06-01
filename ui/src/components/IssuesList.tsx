@@ -70,7 +70,12 @@ import {
   KANBAN_COLUMN_PAGE_SIZE_OPTIONS,
   type KanbanColumnPageSize,
 } from "./KanbanBoard";
-import { buildIssueTree, countDescendants } from "../lib/issue-tree";
+import { buildIssueTree, buildRenderedIssueOrder, countDescendants } from "../lib/issue-tree";
+import {
+  toggleIssueSelection as toggleIssueSelectionPure,
+  summarizeBatchOutcome,
+} from "../lib/issue-selection";
+import { useToastActions } from "../context/ToastContext";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
 import { workflowSort } from "../lib/workflow-sort";
@@ -730,26 +735,18 @@ export function IssuesList({
   const [selectedIssueIds, setSelectedIssueIds] = useState<Set<string>>(new Set());
   const [isBatchBusy, setIsBatchBusy] = useState(false);
   const lastClickedIssueIdRef = useRef<string | null>(null);
+  const { pushToast } = useToastActions();
 
-  const toggleIssueSelection = useCallback((issueId: string, shiftKey: boolean, flatIssueIds: string[]) => {
+  const toggleIssueSelection = useCallback((issueId: string, shiftKey: boolean, renderedIssueIds: string[]) => {
     setSelectedIssueIds((prev) => {
-      const next = new Set(prev);
-      if (shiftKey && lastClickedIssueIdRef.current) {
-        const lastIdx = flatIssueIds.indexOf(lastClickedIssueIdRef.current);
-        const currIdx = flatIssueIds.indexOf(issueId);
-        if (lastIdx !== -1 && currIdx !== -1) {
-          const [start, end] = lastIdx < currIdx ? [lastIdx, currIdx] : [currIdx, lastIdx];
-          for (let i = start; i <= end; i++) {
-            next.add(flatIssueIds[i]);
-          }
-          lastClickedIssueIdRef.current = issueId;
-          return next;
-        }
-      }
-      if (next.has(issueId)) next.delete(issueId);
-      else next.add(issueId);
-      lastClickedIssueIdRef.current = issueId;
-      return next;
+      const result = toggleIssueSelectionPure(
+        { selectedIds: prev, anchorId: lastClickedIssueIdRef.current },
+        issueId,
+        shiftKey,
+        renderedIssueIds,
+      );
+      lastClickedIssueIdRef.current = result.anchorId;
+      return result.selectedIds as Set<string>;
     });
   }, []);
 
@@ -761,14 +758,44 @@ export function IssuesList({
   const handleBatchAction = useCallback(async (update: { status?: string; priority?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null }) => {
     if (!selectedCompanyId || selectedIssueIds.size === 0) return;
     setIsBatchBusy(true);
+    const requestedIds = [...selectedIssueIds];
     try {
-      await issuesApi.batchUpdate(selectedCompanyId, [...selectedIssueIds], update);
+      let outcome;
+      try {
+        const response = await issuesApi.batchUpdate(selectedCompanyId, requestedIds, update);
+        outcome = summarizeBatchOutcome(requestedIds, response?.results);
+      } catch (err) {
+        outcome = {
+          failedIds: [...requestedIds],
+          firstError: err instanceof Error ? err.message : String(err),
+          succeededCount: 0,
+          totalRequested: requestedIds.length,
+        };
+      }
+
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
-      clearSelection();
+
+      if (outcome.failedIds.length === 0) {
+        clearSelection();
+        return;
+      }
+
+      setSelectedIssueIds(new Set(outcome.failedIds));
+      const failedCount = outcome.failedIds.length;
+      const tone = failedCount === outcome.totalRequested ? "error" : "warn";
+      const title = failedCount === outcome.totalRequested
+        ? `Failed to update ${failedCount} issue${failedCount === 1 ? "" : "s"}`
+        : `${failedCount} of ${outcome.totalRequested} issues failed to update`;
+      pushToast({
+        title,
+        body: outcome.firstError,
+        tone,
+        dedupeKey: `issues-batch-failure:${failedCount}:${outcome.totalRequested}`,
+      });
     } finally {
       setIsBatchBusy(false);
     }
-  }, [selectedCompanyId, selectedIssueIds, queryClient, clearSelection]);
+  }, [selectedCompanyId, selectedIssueIds, queryClient, clearSelection, pushToast]);
 
   useEffect(() => {
     setIssueSearch(initialSearch ?? "");
@@ -1273,6 +1300,21 @@ export function IssuesList({
     companyUserLabelMap,
     projectById,
   ]);
+
+  // Order of issue ids as the list view actually renders them: concatenation of
+  // a DFS walk over each group's parent/child tree when nesting is enabled.
+  // Used as the index basis for shift-click range selection so the selected set
+  // matches the visually highlighted rows even when sorts interleave parents
+  // with descendants of other parents.
+  const renderedIssueIds = useMemo(() => {
+    const order: string[] = [];
+    for (const group of groupedContent) {
+      for (const id of buildRenderedIssueOrder(group.items, viewState.nestingEnabled)) {
+        order.push(id);
+      }
+    }
+    return order;
+  }, [groupedContent, viewState.nestingEnabled]);
 
   useEffect(() => {
     if (viewState.viewMode !== "list") return;
@@ -1887,7 +1929,7 @@ export function IssuesList({
                         onClick={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
-                          toggleIssueSelection(issue.id, e.shiftKey, filteredIssueIds);
+                          toggleIssueSelection(issue.id, e.shiftKey, renderedIssueIds);
                         }}
                       >
                         <Checkbox
