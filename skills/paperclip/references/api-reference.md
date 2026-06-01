@@ -686,6 +686,21 @@ Rules:
 - A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names what the board/user must decide.
 - For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before creating implementation subtasks.
 
+#### Superseding stale interactions
+
+When a board/user posts an inline ruling (comment, fresh interaction, or document update) that overrides a still-`pending` `request_confirmation` or `ask_user_questions`:
+
+1. Add a comment that names the stale interaction by id and states it is superseded by the inline ruling.
+2. If the question is now moot, that is enough — leave the stale interaction pending; readers see the supersession in the thread.
+3. If a fresh decision is still needed, post a **new** `request_confirmation` or `ask_user_questions` reflecting the current question and link both ids in the comment ("supersedes `<oldId>`").
+4. Do **not** try to retire the old interaction via API — there is no agent-side endpoint. Document the supersession in the thread instead.
+
+**Anti-pattern.** Leaving multiple `pending` interactions on one issue with overlapping or contradictory asks. Each `in_review` issue should expose **one** live question to the board.
+
+**Worked examples.** [NOC-755](/NOC/issues/NOC-755) (stale `b6e2e859`, `0717c9e0`; live ruling via board comment + G-1 codification). [NOC-1228](/NOC/issues/NOC-1228) (stale `49baae6b` with `continuationPolicy: none`; CEO posted fresh `1e3991fe` + "please ignore 49baae6b" comment).
+
+Source: [NOC-1539](/NOC/issues/NOC-1539), [NOC-1536](/NOC/issues/NOC-1536).
+
 ### Checking approval status
 
 ```
