@@ -9,9 +9,12 @@ import {
   companySecrets,
   companySecretVersions,
   createDb,
+  documentRevisions,
+  documents,
   executionWorkspaces,
   heartbeatRuns,
   instanceSettings,
+  issueDocuments,
   issueInboxArchives,
   issueReadStates,
   issues,
@@ -26,6 +29,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { documentService } from "../services/documents.ts";
 import { issueService } from "../services/issues.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import * as providerRegistry from "../secrets/provider-registry.ts";
@@ -68,6 +72,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(heartbeatRuns);
+    await db.delete(issueDocuments);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -1509,5 +1516,122 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
+  });
+
+  it("reads a run verdict back with the webhook secret: pending until a verdict document exists, then ready", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      { kind: "webhook", signingMode: "github_hmac" },
+      {},
+    );
+
+    const payload = { action: "opened", pull_request: { number: 7 } };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const signature = `sha256=${createHmac("sha256", secretMaterial!.webhookSecret).update(rawBody).digest("hex")}`;
+    const run = await svc.firePublicTrigger(trigger.publicId!, {
+      hubSignatureHeader: signature,
+      rawBody,
+      payload,
+    });
+    expect(run.linkedIssueId).toBeTruthy();
+
+    const authorizationHeader = `Bearer ${secretMaterial!.webhookSecret}`;
+
+    const pending = await svc.readPublicTriggerVerdict(trigger.publicId!, run.linkedIssueId!, {
+      authorizationHeader,
+    });
+    expect(pending).toEqual({ status: "pending", verdict: null, error: null });
+
+    await documentService(db).upsertIssueDocument({
+      issueId: run.linkedIssueId!,
+      key: "verdict",
+      format: "markdown",
+      body: "verdict: ✅ ship it\n\nNo blocking findings.",
+    });
+
+    const ready = await svc.readPublicTriggerVerdict(trigger.publicId!, run.linkedIssueId!, {
+      authorizationHeader,
+    });
+    expect(ready.status).toBe("ready");
+    expect(ready.verdict?.body).toContain("ship it");
+    expect(ready.error).toBeNull();
+  });
+
+  it("rejects the verdict endpoint when the webhook secret is wrong", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      { kind: "webhook", signingMode: "github_hmac" },
+      {},
+    );
+
+    const payload = { ok: true };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const signature = `sha256=${createHmac("sha256", secretMaterial!.webhookSecret).update(rawBody).digest("hex")}`;
+    const run = await svc.firePublicTrigger(trigger.publicId!, {
+      hubSignatureHeader: signature,
+      rawBody,
+      payload,
+    });
+
+    await expect(
+      svc.readPublicTriggerVerdict(trigger.publicId!, run.linkedIssueId!, {
+        authorizationHeader: "Bearer not-the-real-secret-value",
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("404s the verdict endpoint for an issue belonging to a different routine", async () => {
+    const { companyId, agentId, issueSvc, routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      { kind: "webhook", signingMode: "github_hmac" },
+      {},
+    );
+    const authorizationHeader = `Bearer ${secretMaterial!.webhookSecret}`;
+
+    const otherRoutine = await svc.create(
+      companyId,
+      {
+        projectId: routine.projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "other routine",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+    const foreignRunId = randomUUID();
+    const foreignIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: "foreign execution issue",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      originKind: "routine_execution",
+      originId: otherRoutine.id,
+      originRunId: foreignRunId,
+    });
+    await db.insert(routineRuns).values({
+      id: foreignRunId,
+      companyId,
+      routineId: otherRoutine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date(),
+      linkedIssueId: foreignIssue.id,
+    });
+
+    await expect(
+      svc.readPublicTriggerVerdict(trigger.publicId!, foreignIssue.id, { authorizationHeader }),
+    ).rejects.toThrow();
   });
 });

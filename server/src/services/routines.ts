@@ -51,6 +51,7 @@ import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../e
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
+import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
 import { secretService } from "./secrets.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
@@ -65,6 +66,9 @@ const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const MAX_ROUTINE_REVISIONS = 100;
+// Document key on a routine-execution issue where a consolidating agent writes the
+// final review markdown. The public verdict poll-back endpoint reads from here.
+const ROUTINE_VERDICT_DOCUMENT_KEY = "verdict";
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -478,6 +482,7 @@ export function routineService(
   } = {},
 ) {
   const issueSvc = issueService(db);
+  const documentsSvc = documentService(db);
   const secretsSvc = secretService(db);
   const heartbeat = deps.heartbeat ?? heartbeatService(db, {
     pluginWorkerManager: deps.pluginWorkerManager,
@@ -2224,6 +2229,93 @@ export function routineService(
           : null,
         idempotencyKey: input.idempotencyKey,
       });
+    },
+
+    // Webhook-secret-authenticated read of a routine run's consolidated verdict.
+    // Companion to firePublicTrigger for the poll-back model (TWB-132): a caller
+    // that only holds the webhook secret fires the trigger, then polls this with
+    // the run's linked issue id until the consolidating agent publishes a verdict
+    // document. Scoped so runIssueId must belong to a run of THIS trigger's
+    // routine — otherwise 404, never leaking other issues.
+    readPublicTriggerVerdict: async (
+      publicId: string,
+      runIssueId: string,
+      input: { authorizationHeader?: string | null },
+    ): Promise<{
+      status: "pending" | "in_progress" | "ready" | "error";
+      verdict: { body: string } | null;
+      error: string | null;
+    }> => {
+      const trigger = await db
+        .select()
+        .from(routineTriggers)
+        .where(and(eq(routineTriggers.publicId, publicId), eq(routineTriggers.kind, "webhook")))
+        .then((rows) => rows[0] ?? null);
+      if (!trigger) throw notFound("Routine trigger not found");
+      const routine = await getRoutineById(trigger.routineId);
+      if (!routine) throw notFound("Routine not found");
+
+      // Authenticate with the same webhook secret as /fire. A GET poll has no body
+      // to sign, so it uses bearer auth regardless of the trigger's fire signing
+      // mode; "none" mode treats the publicId in the URL as the shared secret.
+      if (trigger.signingMode !== "none") {
+        const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
+        const expected = `Bearer ${secretValue}`;
+        const provided = input.authorizationHeader?.trim() ?? "";
+        const expectedBuf = Buffer.from(expected);
+        const providedBuf = Buffer.alloc(expectedBuf.length);
+        providedBuf.write(provided.slice(0, expectedBuf.length));
+        const valid =
+          provided.length === expected.length &&
+          crypto.timingSafeEqual(providedBuf, expectedBuf);
+        if (!valid) throw unauthorized();
+      }
+
+      // Scope: the issue must be the linked execution issue of a run of this routine.
+      const run = await db
+        .select({ status: routineRuns.status, failureReason: routineRuns.failureReason })
+        .from(routineRuns)
+        .where(
+          and(
+            eq(routineRuns.companyId, routine.companyId),
+            eq(routineRuns.routineId, routine.id),
+            eq(routineRuns.linkedIssueId, runIssueId),
+          ),
+        )
+        .orderBy(desc(routineRuns.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!run) throw notFound("Routine run not found");
+
+      const issue = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.id, runIssueId), eq(issues.companyId, routine.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) throw notFound("Routine run issue not found");
+
+      const verdictDoc = await documentsSvc.getIssueDocumentByKey(runIssueId, ROUTINE_VERDICT_DOCUMENT_KEY);
+      if (verdictDoc && verdictDoc.body && verdictDoc.body.trim().length > 0) {
+        return { status: "ready", verdict: { body: verdictDoc.body }, error: null };
+      }
+
+      if (issue.status === "cancelled" || issue.status === "blocked") {
+        return { status: "error", verdict: null, error: run.failureReason ?? `Review issue ${issue.status}` };
+      }
+      if (run.status === "failed") {
+        return { status: "error", verdict: null, error: run.failureReason ?? "Routine run failed" };
+      }
+      if (issue.status === "done") {
+        return {
+          status: "error",
+          verdict: null,
+          error: "Review issue completed without producing a verdict document",
+        };
+      }
+      if (issue.status === "backlog" || issue.status === "todo") {
+        return { status: "pending", verdict: null, error: null };
+      }
+      return { status: "in_progress", verdict: null, error: null };
     },
 
     listRuns: async (routineId: string, limit = 50): Promise<RoutineRunSummary[]> => {

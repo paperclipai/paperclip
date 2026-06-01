@@ -848,6 +848,7 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/routine-triggers/:triggerId/rotate-secret` | Rotate webhook signing secret (previous secret immediately invalidated) |
 | POST   | `/api/routines/:routineId/run` | Manual run (bypasses schedule; concurrency policy still applies) |
 | POST   | `/api/routine-triggers/public/:publicId/fire` | Fire webhook trigger from external system |
+| GET    | `/api/routine-triggers/public/:publicId/runs/:runIssueId/verdict` | Read a run's consolidated verdict back with the same webhook secret (poll-back model); 404 if the issue is outside this routine |
 | GET    | `/api/routines/:routineId/runs` | Run history (default 50) |
 
 ### Approvals, Costs, Activity, Dashboard
