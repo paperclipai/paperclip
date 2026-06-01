@@ -3728,8 +3728,60 @@ export function issueService(db: Db) {
     });
   }
 
+  async function clearStaleExecutionLock(issueId: string): Promise<{
+    cleared: boolean;
+    previousExecutionRunId: string | null;
+    previousCheckoutRunId: string | null;
+    clearedExecutionRunId: boolean;
+    clearedCheckoutRunId: boolean;
+  } | null> {
+    return db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
+      );
+      const issue = await tx
+        .select({
+          id: issues.id,
+          executionRunId: issues.executionRunId,
+          checkoutRunId: issues.checkoutRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) return null;
+
+      let clearedExecutionRunId = false;
+      let clearedCheckoutRunId = false;
+
+      if (issue.executionRunId) {
+        const isStale = await isTerminalOrMissingHeartbeatRun(issue.executionRunId);
+        if (isStale) {
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(issues.id, issueId));
+          clearedExecutionRunId = true;
+        }
+      }
+
+      return {
+        cleared: true,
+        previousExecutionRunId: issue.executionRunId,
+        previousCheckoutRunId: issue.checkoutRunId,
+        clearedExecutionRunId,
+        clearedCheckoutRunId,
+      };
+    });
+  }
+
   return {
     clearExecutionRunIfTerminal,
+    clearStaleExecutionLock,
 
     list: async (companyId: string, filters?: IssueFilters) => {
       if (filters?.attention === "blocked") {
