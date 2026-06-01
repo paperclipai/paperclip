@@ -39,7 +39,14 @@ import type {
   RoutineRun,
   Agent,
   Goal,
+  HumanCompanyMembershipRole,
+  InviteJoinType,
+  MembershipStatus,
+  PermissionKey,
+  PrincipalPermissionGrant,
+  PrincipalType,
 } from "@paperclipai/shared";
+import type { PluginPerformActionContext } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports from @paperclipai/shared (plugin authors import from one place)
@@ -120,6 +127,12 @@ export type {
   IssueSurfaceVisibility,
   Agent,
   Goal,
+  HumanCompanyMembershipRole,
+  InviteJoinType,
+  MembershipStatus,
+  PermissionKey,
+  PrincipalPermissionGrant,
+  PrincipalType,
 } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
@@ -945,9 +958,12 @@ export interface PluginActionsClient {
    * Register a handler for a plugin-defined action key.
    *
    * @param key - Stable string identifier for this action (e.g. `"resync"`)
-   * @param handler - Async function that receives action params and returns a result
+   * @param handler - Async function that receives action params plus immutable host actor context and returns a result
    */
-  register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void;
+  register(
+    key: string,
+    handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
+  ): void;
 }
 
 /**
@@ -1577,6 +1593,169 @@ export interface PluginGoalsClient {
 }
 
 // ---------------------------------------------------------------------------
+// Access and Authorization
+// ---------------------------------------------------------------------------
+
+export interface PluginAccessMember {
+  id: string;
+  companyId: string;
+  principalType: PrincipalType;
+  principalId: string;
+  status: MembershipStatus;
+  membershipRole: string | null;
+  grants: PrincipalPermissionGrant[];
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export interface PluginAccessInvite {
+  id: string;
+  companyId: string | null;
+  inviteType: string;
+  allowedJoinTypes: InviteJoinType;
+  defaultsPayload: Record<string, unknown> | null;
+  expiresAt: Date | string;
+  invitedByUserId: string | null;
+  revokedAt: Date | string | null;
+  acceptedAt: Date | string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  state: "active" | "revoked" | "accepted" | "expired";
+}
+
+export interface PluginAccessMembersClient {
+  list(input: { companyId: string; includeArchived?: boolean }): Promise<PluginAccessMember[]>;
+  get(memberId: string, companyId: string): Promise<PluginAccessMember | null>;
+  update(
+    memberId: string,
+    patch: {
+      membershipRole?: HumanCompanyMembershipRole | null;
+      status?: Extract<MembershipStatus, "pending" | "active" | "suspended">;
+    },
+    companyId: string,
+  ): Promise<PluginAccessMember>;
+}
+
+export interface PluginAccessInvitesClient {
+  list(input: {
+    companyId: string;
+    state?: PluginAccessInvite["state"];
+    limit?: number;
+    offset?: number;
+  }): Promise<{ invites: PluginAccessInvite[]; nextOffset: number | null }>;
+  create(input: {
+    companyId: string;
+    allowedJoinTypes?: InviteJoinType;
+    humanRole?: HumanCompanyMembershipRole | null;
+    defaultsPayload?: Record<string, unknown> | null;
+    agentMessage?: string | null;
+  }): Promise<PluginAccessInvite & { token: string }>;
+  revoke(inviteId: string, companyId: string): Promise<PluginAccessInvite>;
+}
+
+export interface PluginAccessClient {
+  /** Read and update company memberships. Requires `access.members.*`. */
+  members: PluginAccessMembersClient;
+  /** Read, create, and revoke company invites. Requires `access.invites.*`. */
+  invites: PluginAccessInvitesClient;
+}
+
+export interface PluginAuthorizationPolicySummary {
+  companyId: string;
+  permissionsMode: "simple";
+  memberCount: number;
+  activeMemberCount: number;
+  grantCount: number;
+  advancedPolicyAvailable: false;
+}
+
+export interface PluginAuthorizationPolicyRecord {
+  resourceType: "company" | "agent" | "project" | "issue";
+  resourceId: string;
+  companyId: string;
+  policy: Record<string, unknown> | null;
+  updatedAt: Date | string | null;
+}
+
+export interface PluginAssignmentPreviewInput {
+  companyId: string;
+  actor:
+    | { type: "board"; userId?: string | null; companyIds?: string[]; isInstanceAdmin?: boolean }
+    | { type: "agent"; agentId: string; companyId: string };
+  target: {
+    issueId?: string | null;
+    projectId?: string | null;
+    parentIssueId?: string | null;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    status?: string | null;
+  };
+}
+
+export interface PluginAuthorizationDecisionResult {
+  allowed: boolean;
+  action: string;
+  explanation: string;
+  reason: string;
+  grant?: {
+    principalType: PrincipalType;
+    principalId: string;
+    permissionKey: PermissionKey;
+    scope: Record<string, unknown> | null;
+  };
+}
+
+export interface PluginAuthorizationAuditEntry {
+  id: string;
+  companyId: string;
+  actorType: string;
+  actorId: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  details: Record<string, unknown> | null;
+  createdAt: Date | string;
+}
+
+export interface PluginAuthorizationClient {
+  grants: {
+    list(input: { companyId: string; principalType?: PrincipalType; principalId?: string }): Promise<PrincipalPermissionGrant[]>;
+    set(input: {
+      companyId: string;
+      principalType: PrincipalType;
+      principalId: string;
+      grants: Array<{ permissionKey: PermissionKey; scope?: Record<string, unknown> | null }>;
+      grantedByUserId?: string | null;
+    }): Promise<PrincipalPermissionGrant[]>;
+  };
+  policies: {
+    summary(companyId: string): Promise<PluginAuthorizationPolicySummary>;
+    get(input: { companyId: string; resourceType: PluginAuthorizationPolicyRecord["resourceType"]; resourceId: string }): Promise<PluginAuthorizationPolicyRecord | null>;
+    update(input: {
+      companyId: string;
+      resourceType: PluginAuthorizationPolicyRecord["resourceType"];
+      resourceId: string;
+      policy: Record<string, unknown> | null;
+    }): Promise<PluginAuthorizationPolicyRecord>;
+    previewAssignment(input: PluginAssignmentPreviewInput): Promise<PluginAuthorizationDecisionResult>;
+    explainAssignment(input: PluginAssignmentPreviewInput): Promise<PluginAuthorizationDecisionResult>;
+  };
+  audit: {
+    search(input: {
+      companyId: string;
+      action?: string;
+      actorType?: string;
+      actorId?: string;
+      entityType?: string;
+      entityId?: string;
+      decision?: string;
+      limit?: number;
+      offset?: number;
+    }): Promise<PluginAuthorizationAuditEntry[]>;
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Streaming (worker → UI push channel)
 // ---------------------------------------------------------------------------
 
@@ -1715,6 +1894,12 @@ export interface PluginContext {
 
   /** Read and mutate goals. Requires `goals.read` for reads; `goals.create` / `goals.update` for write ops. */
   goals: PluginGoalsClient;
+
+  /** Read and manage access memberships and invites. Requires `access.*` capabilities. */
+  access: PluginAccessClient;
+
+  /** Read and manage authorization grants, policy summaries, previews, and audit entries. Requires `authorization.*` capabilities. */
+  authorization: PluginAuthorizationClient;
 
   /** Register getData handlers for the plugin's UI components. */
   data: PluginDataClient;

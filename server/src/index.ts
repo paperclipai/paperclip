@@ -15,6 +15,7 @@ import {
   inspectMigrations,
   applyPendingMigrations,
   createEmbeddedPostgresLogBuffer,
+  prepareEmbeddedPostgresNativeRuntime,
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
   runDatabaseBackup,
@@ -30,8 +31,10 @@ import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   feedbackService,
+  backfillPrincipalAccessCompatibility,
   heartbeatService,
   instanceSettingsService,
+  reconcileCloudUpstreamRunsOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
@@ -316,6 +319,7 @@ export async function startServer(): Promise<StartedServer> {
         "Embedded PostgreSQL mode requires dependency `embedded-postgres`. Reinstall dependencies (without omitting required packages), or set DATABASE_URL for external Postgres.",
       );
     }
+    await prepareEmbeddedPostgresNativeRuntime();
   
     const dataDir = resolve(config.embeddedPostgresDataDir);
     const configuredPort = config.embeddedPostgresPort;
@@ -512,6 +516,10 @@ export async function startServer(): Promise<StartedServer> {
   if (config.deploymentMode === "local_trusted") {
     await ensureLocalTrustedBoardPrincipal(db as any);
   }
+  const accessBackfill = await backfillPrincipalAccessCompatibility(db as any);
+  if (accessBackfill.agentMembershipsInserted > 0 || accessBackfill.humanGrantsInserted > 0) {
+    logger.info(accessBackfill, "Backfilled principal access compatibility records");
+  }
   if (config.deploymentMode === "authenticated") {
     const {
       createBetterAuthHandler,
@@ -694,6 +702,19 @@ export async function startServer(): Promise<StartedServer> {
     })
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
+    });
+
+  void reconcileCloudUpstreamRunsOnStartup(db as any)
+    .then((result) => {
+      if (result.reconciled > 0) {
+        logger.warn(
+          { reconciled: result.reconciled },
+          "reconciled cloud upstream runs from a previous server process",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
     });
   
   if (config.heartbeatSchedulerEnabled) {

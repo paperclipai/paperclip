@@ -30,6 +30,7 @@ import { dashboardRoutes } from "./routes/dashboard.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
+import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import {
@@ -43,6 +44,7 @@ import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
@@ -96,6 +98,12 @@ export function resolveViteHmrPort(serverPort: number): number {
     return serverPort + 10_000;
   }
   return Math.max(1_024, serverPort - 10_000);
+}
+
+export function resolveViteHmrHost(bindHost: string): string | undefined {
+  const normalized = bindHost.trim().toLowerCase();
+  if (normalized === "0.0.0.0" || normalized === "::") return undefined;
+  return bindHost;
 }
 
 export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
@@ -225,6 +233,7 @@ export async function createApp(
   api.use(userProfileRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
+  api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
   if (opts.databaseBackupService) {
@@ -326,7 +335,6 @@ export async function createApp(
     ];
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
-      const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8"));
       // Hashed asset files (Vite emits them under /assets/<name>.<hash>.<ext>)
       // never change once built, so they can be cached aggressively.
       app.use(
@@ -366,7 +374,7 @@ export async function createApp(
           .status(200)
           .set("Content-Type", "text/html")
           .set("Cache-Control", "no-cache")
-          .end(indexHtml);
+          .end(readBrandedStaticIndexHtml(uiDist));
       });
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");
@@ -377,6 +385,7 @@ export async function createApp(
     const uiRoot = path.resolve(__dirname, "../../ui");
     const publicUiRoot = path.resolve(uiRoot, "public");
     const hmrPort = resolveViteHmrPort(opts.serverPort);
+    const hmrHost = resolveViteHmrHost(opts.bindHost);
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       root: uiRoot,
@@ -384,7 +393,7 @@ export async function createApp(
       server: {
         middlewareMode: true,
         hmr: {
-          host: opts.bindHost,
+          ...(hmrHost ? { host: hmrHost } : {}),
           port: hmrPort,
           clientPort: hmrPort,
         },

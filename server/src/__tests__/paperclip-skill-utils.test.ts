@@ -43,6 +43,24 @@ describe("paperclip skill utils", () => {
     expect(entries[1]?.source).toBe(path.join(root, "skills", "paperclip-create-agent"));
   });
 
+  it("documents artifact uploads in the installed Paperclip skill", async () => {
+    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    const referenceBody = await fs.readFile(path.resolve("skills/paperclip/references/artifacts.md"), "utf8");
+
+    expect(skillBody).toContain("Generated Artifacts and Work Products");
+    expect(skillBody).toContain("references/artifacts.md");
+    expect(skillBody).not.toContain("/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments");
+    expect(referenceBody).toContain("Generated Artifacts and Work Products");
+    expect(referenceBody).toContain("scripts/paperclip-upload-artifact.sh");
+    expect(referenceBody).toContain("POST");
+    expect(referenceBody).toContain("/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments");
+    expect(referenceBody).toContain("/api/issues/$PAPERCLIP_TASK_ID/work-products");
+    await expect(
+      fs.access(path.resolve("skills/paperclip/scripts/paperclip-upload-artifact.sh")),
+    ).resolves.toBeUndefined();
+    await expect(fs.access(path.resolve("scripts/paperclip-upload-artifact.sh"))).rejects.toThrow();
+  });
+
   it("marks skills with required: false in SKILL.md frontmatter as optional", async () => {
     const root = await makeTempDir("paperclip-skill-optional-");
     cleanupDirs.add(root);

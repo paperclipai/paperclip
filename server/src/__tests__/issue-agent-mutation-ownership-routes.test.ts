@@ -30,6 +30,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(),
   hasPermission: vi.fn(),
 }));
 
@@ -96,6 +97,7 @@ function registerRouteMocks() {
   }));
 
   vi.doMock("../services/documents.js", () => ({
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => mockDocumentService,
   }));
 
@@ -115,6 +117,7 @@ function registerRouteMocks() {
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
     companyService: () => mockCompanyService,
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => mockDocumentService,
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
@@ -275,6 +278,13 @@ describe("agent issue mutation checkout ownership", () => {
     registerRouteMocks();
     vi.clearAllMocks();
     mockAccessService.canUser.mockReset();
+    mockAccessService.decide.mockReset();
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "tasks:assign",
+      action: input.action,
+      reason: input.action === "tasks:assign" ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: input.action === "tasks:assign" ? "Allowed by test assignment default." : "Missing permission.",
+    }));
     mockAccessService.hasPermission.mockReset();
     mockAgentService.getById.mockReset();
     mockAgentService.list.mockReset();
@@ -682,12 +692,12 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it("allows agents with the active-checkout management grant to mutate active checkouts", async () => {
-    mockAccessService.hasPermission.mockImplementation(async (
-      _companyId: string,
-      _principalType: string,
-      principalId: string,
-      permissionKey: string,
-    ) => principalId === peerAgentId && permissionKey === "tasks:manage_active_checkouts");
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "tasks:manage_active_checkouts" ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: input.action === "tasks:manage_active_checkouts" ? "Allowed by checkout management grant." : "Missing permission.",
+    }));
 
     const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ title: "Managed update" });
 
@@ -827,5 +837,38 @@ describe("agent issue mutation checkout ownership", () => {
         }),
       }),
     );
+  });
+
+  it("uses the authorization decision path for assignment changes", async () => {
+    const decide = vi.fn(async () => ({
+      allowed: false,
+      action: "tasks:assign",
+      reason: "deny_policy_restricted",
+      explanation: "Target agent requires approval before task assignment.",
+    }));
+    (mockAccessService as any).decide = decide;
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+    mockAgentService.resolveByReference.mockResolvedValue({
+      ambiguous: false,
+      agent: makeAgent(peerAgentId),
+    });
+
+    const app = await createApp(ownerActor());
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ assigneeAgentId: peerAgentId });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("requires approval");
+    expect(decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "tasks:assign",
+      resource: expect.objectContaining({
+        type: "issue",
+        companyId,
+        issueId,
+        assigneeAgentId: peerAgentId,
+      }),
+    }));
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 });
