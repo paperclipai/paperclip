@@ -673,6 +673,13 @@
       "when": 1748617200000,
       "tag": "0095_backfill_subscription_cost_cents",
       "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1748700000000,
+      "tag": "0096_company_issue_intake_lint_rules",
+      "breakpoints": true
     }
   ]
 }
