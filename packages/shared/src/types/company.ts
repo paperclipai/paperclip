@@ -29,7 +29,7 @@ export interface Company {
   feedbackDataSharingConsentByUserId: string | null;
   feedbackDataSharingTermsVersion: string | null;
   brandColor: string | null;
-  issueIntakeLintRules: IssueIntakeLintRule[] | null;
+  issueIntakeLintRules?: IssueIntakeLintRule[] | null;
   logoAssetId: string | null;
   logoUrl: string | null;
   createdAt: Date;
