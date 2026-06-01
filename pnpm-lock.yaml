@@ -43,6 +43,9 @@ importers:
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
+      '@paperclipai/adapter-claude-tui':
+        specifier: workspace:*
+        version: link:../packages/adapters/claude-tui
       '@paperclipai/adapter-codex-local':
         specifier: workspace:*
         version: link:../packages/adapters/codex-local
@@ -154,9 +157,15 @@ importers:
 
   packages/adapters/claude-tui:
     dependencies:
+      '@paperclipai/adapter-claude-local':
+        specifier: workspace:*
+        version: link:../claude-local
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
+      picocolors:
+        specifier: ^1.1.1
+        version: 1.1.1
     devDependencies:
       '@types/node':
         specifier: ^24.6.0

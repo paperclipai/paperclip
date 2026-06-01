@@ -1,5 +1,12 @@
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 
+function parseCommaArgs(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function parseEnvVars(text: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const line of text.split(/\r?\n/)) {
@@ -34,9 +41,7 @@ function parseEnvBindings(bindings: unknown): Record<string, unknown> {
       env[key] = {
         type: "secret_ref",
         secretId: rec.secretId,
-        ...(typeof rec.version === "number" || rec.version === "latest"
-          ? { version: rec.version }
-          : {}),
+        ...(typeof rec.version === "number" || rec.version === "latest" ? { version: rec.version } : {}),
       };
     }
   }
@@ -48,8 +53,12 @@ export function buildClaudeTuiConfig(v: CreateConfigValues): Record<string, unkn
   if (v.cwd) ac.cwd = v.cwd;
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
   if (v.model) ac.model = v.model;
-  ac.timeoutSec = 0;
-  ac.graceSec = 15;
+  if (v.thinkingEffort) ac.effort = v.thinkingEffort;
+  if (v.chrome) ac.chrome = true;
+  // Pass an explicit per-run timeout so claude-p does not self-terminate at its
+  // internal 300s default.
+  ac.timeoutSec = 3600;
+  ac.graceSec = 20;
   const env = parseEnvBindings(v.envBindings);
   const legacy = parseEnvVars(v.envVars);
   for (const [key, value] of Object.entries(legacy)) {
@@ -58,5 +67,9 @@ export function buildClaudeTuiConfig(v: CreateConfigValues): Record<string, unkn
     }
   }
   if (Object.keys(env).length > 0) ac.env = env;
+  ac.maxTurnsPerRun = v.maxTurnsPerRun;
+  ac.dangerouslySkipPermissions = v.dangerouslySkipPermissions;
+  if (v.command) ac.command = v.command;
+  if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
   return ac;
 }

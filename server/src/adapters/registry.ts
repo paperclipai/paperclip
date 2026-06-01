@@ -283,6 +283,7 @@ const claudeTuiAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
+  getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "claude-p", "claude-p"),
   agentConfigurationDoc: claudeTuiAgentConfigurationDoc,
 };
 

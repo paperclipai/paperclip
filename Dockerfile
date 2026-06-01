@@ -47,29 +47,19 @@ COPY . .
 RUN pnpm --filter "@paperclipai/ui..." build
 RUN pnpm --filter "@paperclipai/server..." build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
-RUN test -f /app/packages/adapters/claude-tui/python/cli.py \
-  || (echo "ERROR: claude-tui python CLI missing in build stage" \
-      && ls -la /app/packages/adapters/claude-tui/ \
-      && exit 1)
-# Mirror python files into dist/ so the dist-relative path resolution also works.
-RUN mkdir -p /app/packages/adapters/claude-tui/dist/python \
-  && cp /app/packages/adapters/claude-tui/python/*.py /app/packages/adapters/claude-tui/dist/python/ \
-  && chmod -R a+r /app/packages/adapters/claude-tui/python /app/packages/adapters/claude-tui/dist/python
 
 FROM base AS production
 WORKDIR /app
 COPY --from=build /app /app
-RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client bsdextrautils python3 python3-ptyprocess python3-pyte && rm -rf /var/lib/apt/lists/*
-RUN test -f /app/packages/adapters/claude-tui/python/cli.py \
-  && test -f /app/packages/adapters/claude-tui/dist/python/cli.py \
-  || (echo "ERROR: claude-tui python CLI missing in production stage" \
-      && ls -la /app/packages/adapters/claude-tui/ \
-      && ls -la /app/packages/adapters/claude-tui/dist/ 2>/dev/null \
-      && exit 1)
+RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client bsdextrautils && rm -rf /var/lib/apt/lists/*
 ARG CLAUDE_CODE_VERSION=2.1.141
 ARG CODEX_VERSION=0.130.0
 ARG AGENT_BROWSER_VERSION=0.27.0
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex@${CODEX_VERSION} playwright agent-browser@${AGENT_BROWSER_VERSION}
+# claude-p: drop-in `claude -p` replacement that drives the interactive Claude
+# Code TUI in a PTY (used by the claude_tui adapter). Ships a prebuilt glibc
+# binary via npm postinstall; base image is Debian (glibc) so it runs as-is.
+ARG CLAUDE_P_VERSION=0.1.0
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex@${CODEX_VERSION} claude-p@${CLAUDE_P_VERSION} playwright agent-browser@${AGENT_BROWSER_VERSION}
 
 # Install Chromium + all system dependencies for headless browser automation
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
