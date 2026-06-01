@@ -76,8 +76,8 @@ async function applyMigrationFile(sql: ReturnType<typeof postgres>, migrationFil
   }
 }
 
-async function seedForkMigrationStateThrough0051(connectionString: string): Promise<void> {
-  const migrationFiles = await listMigrationFilesThrough("0051_calm_puff_adder.sql");
+async function seedMigrationStateThrough(connectionString: string, lastMigrationFile: string): Promise<void> {
+  const migrationFiles = await listMigrationFilesThrough(lastMigrationFile);
   const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
   try {
     await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS "drizzle"`);
@@ -112,11 +112,11 @@ if (!embeddedPostgresSupport.supported) {
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
   it(
-    "applies shifted upstream migrations after the fork standup migrations already applied on mini",
+    "applies shifted upstream migrations after the fork direct-exec migrations already applied on mini",
     async () => {
       const connectionString = await createEmptyTempDatabase();
 
-      await seedForkMigrationStateThrough0051(connectionString);
+      await seedMigrationStateThrough(connectionString, "0090_routine_linked_session_policy.sql");
 
       const pendingState = await inspectMigrations(connectionString);
       expect(pendingState).toMatchObject({
@@ -126,11 +126,18 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       if (pendingState.status !== "needsMigrations") {
         throw new Error("Expected mini-like fork state to need shifted upstream migrations");
       }
-      expect(pendingState.appliedMigrations.at(-2)).toBe("0050_tiresome_gambit.sql");
-      expect(pendingState.appliedMigrations.at(-1)).toBe("0051_calm_puff_adder.sql");
-      expect(pendingState.pendingMigrations[0]).toBe("0052_stiff_luckman.sql");
-      expect(pendingState.pendingMigrations).toContain("0089_direct_exec_contract.sql");
-      expect(pendingState.pendingMigrations.at(-1)).toBe("0090_routine_linked_session_policy.sql");
+      expect(pendingState.appliedMigrations.at(-2)).toBe("0089_direct_exec_contract.sql");
+      expect(pendingState.appliedMigrations.at(-1)).toBe("0090_routine_linked_session_policy.sql");
+      expect(pendingState.pendingMigrations[0]).toBe("0091_backfill_environment_manage_human_defaults.sql");
+      expect(pendingState.pendingMigrations).toEqual([
+        "0091_backfill_environment_manage_human_defaults.sql",
+        "0092_backfill_principal_access_compatibility.sql",
+        "0093_cloud_upstreams.sql",
+        "0094_resource_memberships.sql",
+        "0095_old_swarm.sql",
+        "0096_mighty_puma.sql",
+        "0097_giant_green_goblin.sql",
+      ]);
 
       await applyPendingMigrations(connectionString);
 
@@ -151,17 +158,29 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
                 'inbox_dismissals',
                 'company_secret_provider_configs',
                 'direct_exec_threads',
-                'direct_exec_context_bundles'
+                'direct_exec_context_bundles',
+                'cloud_upstream_connections',
+                'cloud_upstream_runs',
+                'agent_memberships',
+                'project_memberships',
+                'document_annotation_threads',
+                'issue_plan_decompositions'
               )
             ORDER BY table_name
           `,
         );
         expect(tables.map((row) => row.table_name)).toEqual([
+          "agent_memberships",
+          "cloud_upstream_connections",
+          "cloud_upstream_runs",
           "company_secret_provider_configs",
           "direct_exec_context_bundles",
           "direct_exec_threads",
+          "document_annotation_threads",
           "inbox_dismissals",
           "issue_execution_decisions",
+          "issue_plan_decompositions",
+          "project_memberships",
           "standup_responses",
           "standup_sessions",
         ]);

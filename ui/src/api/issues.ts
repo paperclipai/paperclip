@@ -1,4 +1,5 @@
 import type {
+  AcceptedPlanDecompositionSummary,
   AskUserQuestionsAnswer,
   Approval,
   CreateIssueTreeHold,
@@ -60,6 +61,8 @@ export const issuesApi = {
       q?: string;
       limit?: number;
       offset?: number;
+      sortField?: "updated";
+      sortDir?: "asc" | "desc";
     },
   ) => {
     const params = new URLSearchParams();
@@ -86,6 +89,8 @@ export const issuesApi = {
     if (filters?.q) params.set("q", filters.q);
     if (filters?.limit) params.set("limit", String(filters.limit));
     if (filters?.offset !== undefined) params.set("offset", String(filters.offset));
+    if (filters?.sortField) params.set("sortField", filters.sortField);
+    if (filters?.sortDir) params.set("sortDir", filters.sortDir);
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
   },
@@ -197,6 +202,8 @@ export const issuesApi = {
   },
   listInteractions: (id: string) =>
     api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
+  listAcceptedPlanDecompositions: (id: string) =>
+    api.get<AcceptedPlanDecompositionSummary[]>(`/issues/${id}/accepted-plan-decompositions`),
   createInteraction: (id: string, data: Record<string, unknown>) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions`, data),
   acceptInteraction: (

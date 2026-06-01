@@ -6,6 +6,7 @@ import {
   remoteSecretImportPreviewSchema,
   remoteSecretImportSchema,
   rotateSecretSchema,
+  secretProviderConfigDiscoveryPreviewSchema,
   updateSecretProviderConfigSchema,
   updateSecretSchema,
 } from "@paperclipai/shared";
@@ -40,6 +41,41 @@ export function secretRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     res.json(await svc.listProviderConfigs(companyId));
   });
+
+  router.post(
+    "/companies/:companyId/secret-provider-configs/discovery/preview",
+    validate(secretProviderConfigDiscoveryPreviewSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      const preview = await svc.previewProviderConfigDiscovery(companyId, {
+        provider: req.body.provider,
+        config: req.body.config,
+        query: req.body.query,
+        nextToken: req.body.nextToken,
+        pageSize: req.body.pageSize,
+      });
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "secret_provider_config.discovery_previewed",
+        entityType: "secret_provider_config_discovery",
+        entityId: companyId,
+        details: {
+          provider: preview.provider,
+          candidateCount: preview.candidates.length,
+          sampledSecretCount: preview.sampledSecretCount,
+          warningCount: preview.warnings.length,
+        },
+      });
+
+      res.json(preview);
+    },
+  );
 
   router.post("/companies/:companyId/secret-provider-configs", validate(createSecretProviderConfigSchema), async (req, res) => {
     assertBoard(req);
@@ -136,27 +172,27 @@ export function secretRoutes(db: Db) {
     }
     assertCompanyAccess(req, existing.companyId);
 
-    const disabled = await svc.disableProviderConfig(id);
-    if (!disabled) {
+    const removed = await svc.removeProviderConfig(id);
+    if (!removed) {
       res.status(404).json({ error: "Provider vault not found" });
       return;
     }
 
     await logActivity(db, {
-      companyId: disabled.companyId,
+      companyId: removed.companyId,
       actorType: "user",
       actorId: req.actor.userId ?? "board",
-      action: "secret_provider_config.disabled",
+      action: "secret_provider_config.removed",
       entityType: "secret_provider_config",
-      entityId: disabled.id,
+      entityId: removed.id,
       details: {
-        provider: disabled.provider,
-        displayName: disabled.displayName,
-        status: disabled.status,
+        provider: removed.provider,
+        displayName: removed.displayName,
+        remoteDeleted: false,
       },
     });
 
-    res.json(disabled);
+    res.json(removed);
   });
 
   router.post("/secret-provider-configs/:id/default", async (req, res) => {

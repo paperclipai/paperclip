@@ -233,6 +233,23 @@ async function waitForMicrotaskAssertion(assertion: () => void, attempts = 20) {
   throw lastError;
 }
 
+async function waitForScrollAssertion(scroll: () => void, assertion: () => void, attempts = 40) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    act(scroll);
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await flush();
+    }
+  }
+
+  throw lastError;
+}
+
 function setDocumentScrollMetrics({
   innerHeight,
   scrollY,
@@ -301,6 +318,7 @@ describe("IssuesList", () => {
   afterEach(() => {
     vi.useRealTimers();
     container.remove();
+    document.body.replaceChildren();
   });
 
   it("renders server search results instead of filtering the full issue list locally", async () => {
@@ -1219,12 +1237,10 @@ describe("IssuesList", () => {
       expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
     });
 
-    act(() => {
+    await waitForScrollAssertion(() => {
       setDocumentScrollMetrics({ innerHeight: 600, scrollY: 1500, scrollHeight: 2000 });
       window.dispatchEvent(new Event("scroll"));
-    });
-
-    await waitForAssertion(() => {
+    }, () => {
       expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(250);
       expect(container.textContent).toContain("Rendering 250 of 420 issues");
     });
@@ -1271,12 +1287,10 @@ describe("IssuesList", () => {
     await flush();
     expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
 
-    act(() => {
+    await waitForScrollAssertion(() => {
       main.scrollTop = 1500;
       main.dispatchEvent(new Event("scroll"));
-    });
-
-    await waitForAssertion(() => {
+    }, () => {
       expect(container.querySelectorAll('[data-testid="issue-row"]').length).toBeGreaterThan(100);
     });
 
@@ -1312,17 +1326,16 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
     });
-    await flush();
-    expect(onLoadMoreIssues).toHaveBeenCalledTimes(1);
+    await waitForAssertion(() => {
+      expect(onLoadMoreIssues).toHaveBeenCalledTimes(1);
+    }, 40);
     await flush();
     expect(onLoadMoreIssues).toHaveBeenCalledTimes(1);
 
-    act(() => {
+    await waitForScrollAssertion(() => {
       setDocumentScrollMetrics({ innerHeight: 600, scrollY: 1500, scrollHeight: 2000 });
       window.dispatchEvent(new Event("scroll"));
-    });
-
-    await waitForAssertion(() => {
+    }, () => {
       expect(onLoadMoreIssues).toHaveBeenCalledTimes(2);
     });
 

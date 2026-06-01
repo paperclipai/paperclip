@@ -36,6 +36,7 @@ const autoRestartPollIntervalMs = 2500;
 const gracefulShutdownTimeoutMs = 10_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
+const devServerRestartRequestFilePath = path.join(repoRoot, ".paperclip", "dev-server-restart-request.json");
 const devServerStatusToken = mode === "dev" ? randomUUID() : null;
 const devServerStatusTokenHeader = "x-paperclip-dev-server-status-token";
 
@@ -46,6 +47,7 @@ const watchedDirectories = [
   "packages/adapter-utils",
   "packages/adapters",
   "packages/db",
+  "packages/skills-catalog",
   "packages/plugins/sdk",
   "packages/shared",
 ].map((relativePath) => path.join(repoRoot, relativePath));
@@ -70,6 +72,7 @@ const ignoredDirectoryNames = new Set([
 ]);
 
 const ignoredRelativePaths = new Set([
+  ".paperclip/dev-server-restart-request.json",
   ".paperclip/dev-server-status.json",
 ]);
 
@@ -348,6 +351,13 @@ function writeDevServerStatus() {
 function clearDevServerStatus() {
   if (mode !== "dev") return;
   rmSync(devServerStatusFilePath, { force: true });
+  rmSync(devServerRestartRequestFilePath, { force: true });
+}
+
+function consumeDevServerRestartRequest() {
+  if (mode !== "dev" || !existsSync(devServerRestartRequestFilePath)) return false;
+  rmSync(devServerRestartRequestFilePath, { force: true });
+  return true;
 }
 
 async function updateDevServiceRecord(extra?: Record<string, unknown>) {
@@ -633,7 +643,8 @@ async function startServerChild() {
 
 async function maybeAutoRestartChild() {
   if (mode !== "dev" || restartInFlight || !child) return;
-  if (dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
+  const manualRestartRequested = consumeDevServerRestartRequest();
+  if (!manualRestartRequested && dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
 
   restartInFlight = true;
   let health: { devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } } | null = null;
@@ -645,11 +656,15 @@ async function maybeAutoRestartChild() {
   }
 
   const devServer = health?.devServer;
-  if (!devServer?.enabled || devServer.autoRestartEnabled !== true) {
+  if (!devServer?.enabled) {
     restartInFlight = false;
     return;
   }
-  if ((devServer.activeRunCount ?? 0) > 0) {
+  if (!manualRestartRequested && devServer.autoRestartEnabled !== true) {
+    restartInFlight = false;
+    return;
+  }
+  if (!manualRestartRequested && (devServer.activeRunCount ?? 0) > 0) {
     restartInFlight = false;
     return;
   }

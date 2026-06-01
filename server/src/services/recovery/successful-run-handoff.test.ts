@@ -76,11 +76,17 @@ describe("successful run handoff decision", () => {
       resumeIntent: true,
       resumeFromRunId: "run-1",
       modelProfile: "cheap",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
     });
     expect(decision.contextSnapshot).toMatchObject({
       wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
       handoffRequired: true,
       modelProfile: "cheap",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
     });
     expect(decision.instruction).toContain("Resolve the missing disposition before creating or revising any new artifacts");
     expect(decision.instruction).toContain("Choose **exactly one** outcome");
@@ -195,9 +201,7 @@ describe("successful run handoff decision", () => {
   });
 
   it("does not trigger finish_successful_run_handoff for source_scoped_recovery_action runs (CAR-1882)", () => {
-    // Regression guard: recovery runs must not re-enter the handoff cycle. Without this guard,
-    // a productive recovery run (advanced liveness) caused: recovery run → handoff wake →
-    // needs_followup → exhausted → blocked → recovery wake, repeating every ~30s.
+    // Regression guard: recovery runs must not re-enter the handoff cycle.
     expect(decide({
       run: {
         ...run,
@@ -208,14 +212,23 @@ describe("successful run handoff decision", () => {
           recoveryActionId: "action-1",
         },
       } as any,
-    })).toEqual({ kind: "skip", reason: "source-scoped recovery run owns its own recovery path" });
-    // Also skips on source match alone (wakeReason may differ in edge cases)
+    })).toEqual({
+      kind: "skip",
+      reason: "source-scoped recovery run owns its own recovery path",
+    });
+    // Also skips on source match alone when wakeReason differs or is absent.
     expect(decide({
       run: {
         ...run,
-        contextSnapshot: { issueId: "issue-1", source: "issue_recovery_action" },
+        contextSnapshot: {
+          issueId: "issue-1",
+          source: "issue_recovery_action",
+        },
       } as any,
-    })).toEqual({ kind: "skip", reason: "source-scoped recovery run owns its own recovery path" });
+    })).toEqual({
+      kind: "skip",
+      reason: "source-scoped recovery run owns its own recovery path",
+    });
   });
 
   it("uses a stable one-attempt idempotency key", () => {

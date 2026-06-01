@@ -66,6 +66,9 @@ import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
+import { IssuePlanDecompositionsSection } from "../components/IssuePlanDecompositionsSection";
+import { IssueOutputSection } from "../components/issue-output/IssueOutputSection";
+import { formatBytes } from "../lib/issue-output";
 import { IssueSiblingNavigation } from "../components/IssueSiblingNavigation";
 import { IssuesList } from "../components/IssuesList";
 import { AgentIcon } from "../components/AgentIconPicker";
@@ -149,6 +152,7 @@ import {
   type Issue,
   type IssueAttachment,
   type IssueComment,
+  type IssueWorkProduct,
   type IssueWorkMode,
   type IssueThreadInteraction,
   type RequestConfirmationInteraction,
@@ -617,6 +621,7 @@ type IssueDetailChatTabProps = {
   blockedBy: Issue["blockedBy"];
   blockerAttention: Issue["blockerAttention"] | null;
   successfulRunHandoff: Issue["successfulRunHandoff"] | null;
+  scheduledRetry: Issue["scheduledRetry"] | null;
   recoveryAction: Issue["activeRecoveryAction"];
   onResolveRecoveryAction?: (outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome) => void;
   canFalsePositiveRecoveryAction?: boolean;
@@ -689,6 +694,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   blockedBy,
   blockerAttention,
   successfulRunHandoff,
+  scheduledRetry,
   recoveryAction,
   onResolveRecoveryAction,
   canFalsePositiveRecoveryAction,
@@ -897,9 +903,11 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         timelineEvents={timelineEvents}
         liveRuns={resolvedLiveRuns}
         activeRun={resolvedActiveRun}
+        issueId={issueId}
         blockedBy={blockedBy ?? []}
         blockerAttention={blockerAttention}
         successfulRunHandoff={successfulRunHandoff}
+        scheduledRetry={scheduledRetry}
         recoveryAction={recoveryAction ?? null}
         onResolveRecoveryAction={onResolveRecoveryAction}
         canFalsePositiveRecoveryAction={canFalsePositiveRecoveryAction}
@@ -1334,6 +1342,13 @@ export function IssueDetail() {
     placeholderData: keepPreviousDataForSameQueryTail<IssueAttachment[]>(issueId ?? "pending"),
   });
 
+  const { data: workProducts } = useQuery({
+    queryKey: queryKeys.issues.workProducts(issueId!),
+    queryFn: () => issuesApi.listWorkProducts(issueId!),
+    enabled: !!issueId,
+    placeholderData: keepPreviousDataForSameQueryTail<IssueWorkProduct[]>(issueId ?? "pending"),
+  });
+
   const { data: liveRunCount = 0 } = useQuery<LiveRunForIssue[], Error, number>({
     queryKey: queryKeys.issues.liveRuns(issueId!),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
@@ -1436,8 +1451,16 @@ export function IssueDetail() {
     enabled: !!issueId,
     retry: false,
   });
+  const { data: instanceExperimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    enabled: !!issueId,
+    retry: false,
+  });
   const keyboardShortcutsEnabled = instanceGeneralSettings?.keyboardShortcuts === true;
   const feedbackDataSharingPreference = instanceGeneralSettings?.feedbackDataSharingPreference ?? "prompt";
+  const showPlanDecompositionsSection =
+    instanceExperimentalSettings?.enableIssuePlanDecompositions === true;
   const { orderedProjects } = useProjectOrder({
     projects: projects ?? [],
     companyId: selectedCompanyId,
@@ -3709,6 +3732,14 @@ export function IssueDetail() {
         </div>
       )}
 
+      {showPlanDecompositionsSection ? (
+        <IssuePlanDecompositionsSection
+          issueId={issue.id}
+          issueIdentifier={issue.identifier}
+          agentMap={agentMap}
+        />
+      ) : null}
+
       <IssueDocumentsSection
         issue={issue}
         canDeleteDocuments={Boolean(session?.user?.id)}
@@ -3732,7 +3763,11 @@ export function IssueDetail() {
           });
         }}
         extraActions={!hasAttachments ? attachmentUploadButton : null}
+        agentMap={agentMap}
+        userProfileMap={userProfileMap}
       />
+
+      <IssueOutputSection workProducts={workProducts} />
 
       {attachmentsInitialLoading ? (
         <IssueSectionSkeleton titleWidth="w-24" rows={2} />
@@ -3857,7 +3892,7 @@ export function IssueDetail() {
                   </button>
                 </div>
                 <p className="text-[11px] text-muted-foreground">
-                  {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
+                  {attachment.contentType} · {formatBytes(attachment.byteSize)}
                 </p>
               </div>
             ))}
@@ -3914,6 +3949,7 @@ export function IssueDetail() {
               blockedBy={issue.blockedBy ?? []}
               blockerAttention={issue.blockerAttention ?? null}
               successfulRunHandoff={issue.successfulRunHandoff ?? null}
+              scheduledRetry={issue.scheduledRetry ?? null}
               recoveryAction={issue.activeRecoveryAction ?? null}
               onResolveRecoveryAction={handleResolveRecoveryAction}
               canFalsePositiveRecoveryAction={canResolveBoardRecoveryAction}

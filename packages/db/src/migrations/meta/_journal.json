@@ -638,6 +638,55 @@
       "when": 1779210328000,
       "tag": "0090_routine_linked_session_policy",
       "breakpoints": true
-    }
+    },
+  {
+    "idx": 91,
+    "version": "7",
+    "when": 1779360000000,
+    "tag": "0091_backfill_environment_manage_human_defaults",
+    "breakpoints": true
+  },
+  {
+    "idx": 92,
+    "version": "7",
+    "when": 1779446400000,
+    "tag": "0092_backfill_principal_access_compatibility",
+    "breakpoints": true
+  },
+  {
+    "idx": 93,
+    "version": "7",
+    "when": 1779446400001,
+    "tag": "0093_cloud_upstreams",
+    "breakpoints": true
+  },
+  {
+    "idx": 94,
+    "version": "7",
+    "when": 1779573019125,
+    "tag": "0094_resource_memberships",
+    "breakpoints": true
+  },
+  {
+    "idx": 95,
+    "version": "7",
+    "when": 1779573019126,
+    "tag": "0095_old_swarm",
+    "breakpoints": true
+  },
+  {
+    "idx": 96,
+    "version": "7",
+    "when": 1779999768200,
+    "tag": "0096_mighty_puma",
+    "breakpoints": true
+  },
+  {
+    "idx": 97,
+    "version": "7",
+    "when": 1780040470886,
+    "tag": "0097_giant_green_goblin",
+    "breakpoints": true
+  }
   ]
 }
