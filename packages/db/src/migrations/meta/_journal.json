@@ -659,6 +659,13 @@
       "when": 1780040470886,
       "tag": "0093_giant_green_goblin",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1780315840663,
+      "tag": "0094_uneven_red_wolf",
+      "breakpoints": true
     }
   ]
 }
