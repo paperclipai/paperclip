@@ -613,7 +613,15 @@ export function agentService(db: Db) {
         // Agent-scoped tables with nullable agent FK (no cascade)
         await tx.delete(costEvents).where(eq(costEvents.agentId, id));
         await tx.delete(financeEvents).where(eq(financeEvents.agentId, id));
+        // Delete approval comments: first cover comments this agent authored on other agents' approvals,
+        // then cover comments on this agent's own approvals (by approvalId, not authorAgentId)
         await tx.delete(approvalComments).where(eq(approvalComments.authorAgentId, id));
+        await tx.delete(approvalComments).where(
+          inArray(
+            approvalComments.approvalId,
+            tx.select({ id: approvals.id }).from(approvals).where(eq(approvals.requestedByAgentId, id)),
+          ),
+        );
         await tx.delete(approvals).where(eq(approvals.requestedByAgentId, id));
         await tx.delete(joinRequests).where(eq(joinRequests.createdAgentId, id));
         await tx.delete(assets).where(eq(assets.createdByAgentId, id));
