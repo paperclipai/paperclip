@@ -239,5 +239,8 @@ export const queryKeys = {
     blogDrafts: ["agnb", "blog-drafts"] as const,
     contentAudit: ["agnb", "content-audit"] as const,
     utmHygiene: ["agnb", "utm-hygiene"] as const,
+    liQueue: ["agnb", "li-queue"] as const,
+    liHooks: ["agnb", "li-hooks"] as const,
+    liSeries: ["agnb", "li-series"] as const,
   },
 };
