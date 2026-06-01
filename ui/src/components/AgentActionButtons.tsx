@@ -4,16 +4,18 @@ import { Button } from "@/components/ui/button";
 export function RunButton({
   onClick,
   disabled,
+  disabledReason,
   label = "Run now",
   size = "sm",
 }: {
   onClick: () => void;
   disabled?: boolean;
+  disabledReason?: string;
   label?: string;
   size?: "sm" | "default";
 }) {
   return (
-    <Button variant="outline" size={size} onClick={onClick} disabled={disabled}>
+    <Button variant="outline" size={size} onClick={onClick} disabled={disabled} title={disabled ? disabledReason : undefined}>
       <Play className="h-3.5 w-3.5 sm:mr-1" />
       <span className="hidden sm:inline">{label}</span>
     </Button>
