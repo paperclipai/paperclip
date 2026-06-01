@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-05-28T03:02:49.579Z",
+  "generatedAt": "2026-05-31T18:06:11.126Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -107,6 +107,78 @@
         }
       ],
       "contentHash": "sha256:4fb46a4bcefad4fd46fae48c433ee497112509a8e19fb8a7745ead44d219b498"
+    },
+    {
+      "id": "paperclipai:bundled:product:wireframe",
+      "key": "paperclipai/bundled/product/wireframe",
+      "kind": "bundled",
+      "category": "product",
+      "slug": "wireframe",
+      "name": "wireframe",
+      "description": "Produce low-fidelity black-and-white UI wireframes as standalone SVG files, optionally bundled into a single-page HTML viewer and published via the here-now skill. Use when the user asks to \"wireframe X\", \"sketch a screen for\", \"draft a layout\", \"low-fi mockup\", \"rough mock\", \"make a page to view the wireframes\", \"build a viewer for these screens\", or to \"deploy / publish / host the wireframes\". Do NOT use when the user wants production UI code, branded designs, hi-fi mockups, or animated/interactive prototypes — use frontend-design or similar instead.",
+      "path": "catalog/bundled/product/wireframe",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "assets",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "designer",
+        "product",
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "design",
+        "wireframe",
+        "ux",
+        "prototyping",
+        "svg"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 11887,
+          "sha256": "a910d038d8cdd13615b82f44a2195b781ebccf01c49f9c58babd43b0701fe644"
+        },
+        {
+          "path": "assets/site-template.html",
+          "kind": "asset",
+          "sizeBytes": 14791,
+          "sha256": "8886ad77c386c17b0457f11624aab136c33db7f28dcd6f10fc18e9d833d0950f"
+        },
+        {
+          "path": "assets/template-mobile.svg",
+          "kind": "asset",
+          "sizeBytes": 925,
+          "sha256": "dc32af257df1f986b87a7b30a6104de825057dc4d6f12b381f5a28308f0002f0"
+        },
+        {
+          "path": "assets/template.svg",
+          "kind": "asset",
+          "sizeBytes": 1262,
+          "sha256": "63f8adb8eb4b21dea6fd442b9e9312704c419535eb577d4ef0bfb54410fd576b"
+        },
+        {
+          "path": "references/components.md",
+          "kind": "reference",
+          "sizeBytes": 14806,
+          "sha256": "4ce18f418d78b13cdfa6fe8070173044a631576cd2b999571e6703f58894496c"
+        },
+        {
+          "path": "references/examples.md",
+          "kind": "reference",
+          "sizeBytes": 16108,
+          "sha256": "18f486e95a578a50cf6c9f93394b82534392771320692e4876edf17054bfae55"
+        },
+        {
+          "path": "references/grid-system.md",
+          "kind": "reference",
+          "sizeBytes": 4581,
+          "sha256": "017260d2216859d57e5fa869e0efc6b88c7ed4d8a8a4f5af04fe89a3ef2445bd"
+        }
+      ],
+      "contentHash": "sha256:0bd9a9fdc656d529e3f97c00cd504dcf72d3a4fecb8b0504ca2fe3e00d63287f"
     },
     {
       "id": "paperclipai:bundled:quality:qa-acceptance",

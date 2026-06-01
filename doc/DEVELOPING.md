@@ -212,6 +212,32 @@ Configure storage provider/settings:
 pnpm paperclipai configure --section storage
 ```
 
+## Agent Artifact Uploads
+
+When an agent generates a file that a board user or reviewer should inspect,
+attach it to the issue before marking the task complete. Do not rely on a local
+workspace path as the only access path.
+
+Use the helper bundled with the Paperclip skill from the repo root:
+
+```sh
+skills/paperclip/scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
+  --title "Demo video render" \
+  --summary "MP4 render for board review"
+```
+
+For WebM output:
+
+```sh
+skills/paperclip/scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
+  --title "Walkthrough video" \
+  --summary "WebM walkthrough render"
+```
+
+The helper uploads the file as an issue attachment, creates an artifact work
+product by default, and prints markdown links for the final issue comment. See
+`doc/AGENT-ARTIFACTS.md` for the full completion pattern and direct API shape.
+
 ## Default Agent Workspaces
 
 When a local agent run has no resolved project/session workspace, Paperclip falls back to an agent home workspace under the instance root:

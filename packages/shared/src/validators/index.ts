@@ -282,6 +282,7 @@ export {
 export {
   createIssueWorkProductSchema,
   updateIssueWorkProductSchema,
+  attachmentArtifactWorkProductMetadataSchema,
   issueWorkProductTypeSchema,
   issueWorkProductStatusSchema,
   issueWorkProductReviewStateSchema,

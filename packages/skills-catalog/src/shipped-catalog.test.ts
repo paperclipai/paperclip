@@ -6,6 +6,7 @@ const EXPECTED_BUNDLED_KEYS = [
   "paperclipai/bundled/docs/doc-maintenance",
   "paperclipai/bundled/paperclip-operations/issue-triage",
   "paperclipai/bundled/paperclip-operations/task-planning",
+  "paperclipai/bundled/product/wireframe",
   "paperclipai/bundled/quality/qa-acceptance",
   "paperclipai/bundled/software-development/github-pr-workflow",
 ];
@@ -31,8 +32,11 @@ describe("shipped skills catalog", () => {
     expect(optionalKeys).toEqual(EXPECTED_OPTIONAL_KEYS);
   });
 
-  it("keeps every shipped skill markdown-only until a script-bearing skill clears security review", () => {
-    const scriptBearing = catalogSkills.filter((skill) => skill.trustLevel !== "markdown_only");
+  it("keeps every shipped skill free of executable scripts until script-bearing skills clear security review", () => {
+    // The real install-time security boundary (server assertCatalogSkillInstallable) blocks
+    // only "scripts_executables". Static assets (svg/html templates, e.g. the wireframe skill)
+    // carry the "assets" trust level and are installable, so they are allowed in the catalog.
+    const scriptBearing = catalogSkills.filter((skill) => skill.trustLevel === "scripts_executables");
     expect(scriptBearing, formatViolations("script-bearing skills require security review", scriptBearing)).toEqual([]);
   });
 
