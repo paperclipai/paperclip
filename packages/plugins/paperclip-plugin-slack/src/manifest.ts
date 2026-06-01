@@ -111,6 +111,14 @@ const manifest: PaperclipPluginManifestV1 = {
         title: "Notify on approval requested",
         default: DEFAULT_CONFIG.notifyOnApprovalCreated,
       },
+      approvalReactorSlackIds: {
+        type: "array",
+        items: { type: "string" },
+        title: "Approval reactor allowlist (Slack user IDs)",
+        description:
+          "Slack user IDs (e.g. U01ABC2DEF3) allowed to resolve approvals via reaction (✅ approve / ❌ reject) or thread command (!approve / !reject / !revise). Reactions from anyone else are ignored. Leave empty to keep approval cards read-only. Requires the Slack app to subscribe to reaction_added, reaction_removed, and message.channels events (scopes: reactions:read, channels:history/groups:history).",
+        default: DEFAULT_CONFIG.approvalReactorSlackIds,
+      },
       notifyOnAgentError: {
         type: "boolean",
         title: "Notify on agent error",
@@ -212,7 +220,7 @@ const manifest: PaperclipPluginManifestV1 = {
       endpointKey: WEBHOOK_KEYS.slackEvents,
       displayName: "Slack Events API",
       description:
-        "Receives Slack Events API payloads (url_verification, event callbacks, file_shared).",
+        "Receives Slack Events API payloads (url_verification, event callbacks: file_shared, reaction_added, reaction_removed, message). Approval reaction/thread interactions require the Slack app to subscribe to reaction_added, reaction_removed, and message.channels with scopes reactions:read and channels:history (or groups:history for private channels).",
     },
     {
       endpointKey: WEBHOOK_KEYS.slashCommand,

@@ -73,6 +73,13 @@ import {
 } from "./proactive-suggestions.js";
 import { resolveSlackUserId } from "./user-mapping.js";
 import { postHumanDecisionEscalation } from "./escalation-watch.js";
+import {
+  resolveApproval,
+  tryUndoResolution,
+  emojiToDecision,
+  parseThreadCommand,
+  type ApprovalDecision,
+} from "./approval-actions.js";
 import type {
   SlackPluginConfig,
   EscalationRecord,
@@ -128,6 +135,126 @@ async function resolveChannel(
     stateKey: STATE_KEYS.slackChannel,
   });
   return (override as string | null) ?? fallback ?? null;
+}
+
+// --- Approval interaction helpers (Phase 1) ---
+
+/** Look up the approval id a given (channel, ts) message belongs to. */
+async function approvalIdForMessage(
+  companyId: string,
+  channel: string,
+  ts: string,
+): Promise<string | null> {
+  const id = await pluginCtx.state.get({
+    scopeKind: "company",
+    scopeId: companyId,
+    stateKey: STATE_KEYS.approvalByTs(channel, ts),
+  });
+  return typeof id === "string" ? id : null;
+}
+
+function isAuthorizedReactor(slackUserId: string): boolean {
+  const allow = pluginConfig.approvalReactorSlackIds ?? [];
+  return allow.includes(slackUserId);
+}
+
+/**
+ * Handle a Slack `reaction_added` / `reaction_removed` event. Scoped to messages
+ * that are known approval cards; reactions on anything else are ignored.
+ */
+async function handleReactionEvent(
+  event: Record<string, unknown>,
+): Promise<void> {
+  const reaction = String(event.reaction ?? "");
+  const decision = emojiToDecision(reaction);
+  if (!decision) return; // not an approve/reject emoji
+
+  const item = event.item as Record<string, unknown> | undefined;
+  const channel = String(item?.channel ?? "");
+  const ts = String(item?.ts ?? "");
+  const slackUserId = String(event.user ?? "");
+  if (!channel || !ts || !slackUserId) return;
+
+  const companies = await pluginCtx.companies.list({ limit: 1, offset: 0 });
+  const companyId = companies[0]?.id ?? "";
+  if (!companyId) return;
+
+  const approvalId = await approvalIdForMessage(companyId, channel, ts);
+  if (!approvalId) return; // reaction on a non-approval message → ignore
+
+  if (event.type === "reaction_removed") {
+    await tryUndoResolution(pluginCtx, pluginToken, {
+      companyId,
+      approvalId,
+      decision,
+      slackUserId,
+      channel,
+      ts,
+    });
+    return;
+  }
+
+  // reaction_added
+  if (!isAuthorizedReactor(slackUserId)) {
+    await postMessage(
+      pluginCtx,
+      pluginToken,
+      channel,
+      {
+        text: `:warning: <@${slackUserId}> is not on the approval allowlist — reaction ignored.`,
+      },
+      { threadTs: ts },
+    );
+    return;
+  }
+
+  await resolveApproval(pluginCtx, pluginToken, {
+    companyId,
+    approvalId,
+    decision,
+    slackUserId,
+    channel,
+    ts,
+    paperclipBaseUrl: pluginConfig.paperclipBaseUrl,
+  });
+}
+
+/**
+ * Translate an inbound Slack `message` event into the synthetic
+ * `plugin.slack.thread_message` event the in-process router listens for. Bot
+ * messages and edit/delete subtypes are skipped. Approval thread-command
+ * parsing happens in the router handler (see start()).
+ */
+async function handleInboundMessageEvent(
+  event: Record<string, unknown>,
+): Promise<void> {
+  // Ignore bot messages and non-plain subtypes (edits, deletes, joins, …).
+  if (event.bot_id || event.app_id) return;
+  const subtype = event.subtype ? String(event.subtype) : "";
+  if (subtype && subtype !== "thread_broadcast") return;
+
+  const channel = String(event.channel ?? "");
+  const ts = String(event.ts ?? "");
+  const threadTs = String(event.thread_ts ?? event.ts ?? "");
+  const text = String(event.text ?? "");
+  if (!channel || !threadTs) return;
+
+  const companies = await pluginCtx.companies.list({ limit: 1, offset: 0 });
+  const companyId = companies[0]?.id ?? "";
+  if (!companyId) return;
+
+  const files = Array.isArray(event.files)
+    ? (event.files as Array<Record<string, unknown>>)
+    : [];
+
+  await pluginCtx.events.emit("plugin.slack.thread_message", companyId, {
+    channel,
+    threadTs,
+    text,
+    replyToMessageTs: ts,
+    slackUserId: String(event.user ?? ""),
+    files,
+  });
 }
 
 interface ParsedSlashCommand {
@@ -930,7 +1057,39 @@ const plugin = definePlugin({
     }
     if (config.notifyOnApprovalCreated) {
       ctx.events.on("approval.created", async (event) => {
-        await notify(event, formatApprovalCreated, config.approvalsChannelId);
+        const result = await notify(
+          event,
+          formatApprovalCreated,
+          config.approvalsChannelId,
+        );
+        // Persist the posted card's ts so reactions/thread-replies can resolve
+        // it later (mirrors the issue.created → threadIssue ts persistence).
+        const approvalId = event.entityId;
+        if (result?.ok && result.ts && approvalId) {
+          const channelId = await resolveChannel(
+            ctx,
+            event.companyId,
+            config.approvalsChannelId || config.defaultChannelId,
+          );
+          if (channelId) {
+            await ctx.state.set(
+              {
+                scopeKind: "company",
+                scopeId: event.companyId,
+                stateKey: STATE_KEYS.approvalMessage(approvalId),
+              },
+              { channel: channelId, ts: result.ts },
+            );
+            await ctx.state.set(
+              {
+                scopeKind: "company",
+                scopeId: event.companyId,
+                stateKey: STATE_KEYS.approvalByTs(channelId, result.ts),
+              },
+              approvalId,
+            );
+          }
+        }
       });
       ctx.events.on("issue.thread_interaction.created", async (event) => {
         await notify(event, formatIssueThreadInteractionCreated, config.approvalsChannelId);
@@ -1384,6 +1543,65 @@ const plugin = definePlugin({
         ? (p.files as Array<Record<string, unknown>>)
         : [];
       if (!channel || !threadTs) return;
+      // Phase 1 approval interactions: if this thread is an approval card,
+      // parse !approve/!reject/!revise/!status (or a freeform reply = revision)
+      // and resolve it, then stop (don't fall through to agent routing).
+      const approvalId = await approvalIdForMessage(
+        event.companyId,
+        channel,
+        threadTs,
+      );
+      if (approvalId && text) {
+        const parsed = parseThreadCommand(text);
+        if (parsed.kind === "ignore") return;
+        if (parsed.kind === "usage") {
+          await postMessage(ctx, token, channel, { text: parsed.message }, { threadTs });
+          return;
+        }
+        if (parsed.kind === "status") {
+          const lock = (await ctx.state.get({
+            scopeKind: "company",
+            scopeId: event.companyId,
+            stateKey: STATE_KEYS.approvalResolved(approvalId),
+          })) as { decision: ApprovalDecision; by: string } | null;
+          await postMessage(
+            ctx,
+            token,
+            channel,
+            {
+              text: lock
+                ? `:information_source: This approval was ${lock.decision} by <@${lock.by}>.`
+                : ":hourglass: This approval is still pending. React :white_check_mark: / :x:, or reply \`!approve\` / \`!reject\` / \`!revise <reason>\`.",
+            },
+            { threadTs },
+          );
+          return;
+        }
+        // parsed.kind === "decision"
+        const slackUserId = p.slackUserId ? String(p.slackUserId) : "";
+        if (!slackUserId || !isAuthorizedReactor(slackUserId)) {
+          await postMessage(
+            ctx,
+            token,
+            channel,
+            { text: `:warning: <@${slackUserId}> is not on the approval allowlist — command ignored.` },
+            { threadTs },
+          );
+          return;
+        }
+        await resolveApproval(ctx, token, {
+          companyId: event.companyId,
+          approvalId,
+          decision: parsed.decision,
+          slackUserId: slackUserId ?? "unknown",
+          channel,
+          ts: threadTs,
+          reason: parsed.reason,
+          threadTs,
+          paperclipBaseUrl: config.paperclipBaseUrl,
+        });
+        return;
+      }
       // Phase 3: Check for media files
       for (const file of files) {
         const fileId = String(file.id ?? "");
@@ -1598,6 +1816,18 @@ const plugin = definePlugin({
               "",
             );
           }
+        }
+        // Approval interactions via emoji reaction (Phase 1)
+        if (
+          event?.type === "reaction_added" ||
+          event?.type === "reaction_removed"
+        ) {
+          await handleReactionEvent(event);
+        }
+        // Thread replies → emit the synthetic thread_message event so the
+        // existing router (and approval thread-command parsing) activates.
+        if (event?.type === "message") {
+          await handleInboundMessageEvent(event);
         }
       }
     }

@@ -1,0 +1,250 @@
+import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { STATE_KEYS } from "./constants.js";
+import { postMessage, updateMessage } from "./slack-api.js";
+
+/**
+ * Phase 1 approval interactions: resolve a Slack-posted approval card via
+ * reaction (✅/❌) or thread command (!approve/!reject/!revise).
+ *
+ * Authorization note: the Paperclip server gates /approve, /reject, and
+ * /request-revision with `assertBoard` using THIS plugin's bearer token — not
+ * the reacting Slack user. The `decidedByUserId: slack:<id>` body field is audit
+ * metadata only. Reactor authorization is therefore enforced entirely
+ * client-side here, against `config.approvalReactorSlackIds`.
+ */
+
+export type ApprovalDecision = "approve" | "reject" | "revise";
+
+const DECISION_ENDPOINT: Record<ApprovalDecision, string> = {
+  approve: "approve",
+  reject: "reject",
+  revise: "request-revision",
+};
+
+const DECISION_PAST: Record<ApprovalDecision, string> = {
+  approve: "approved",
+  reject: "rejected",
+  revise: "revision requested",
+};
+
+const DECISION_EMOJI: Record<ApprovalDecision, string> = {
+  approve: ":white_check_mark:",
+  reject: ":x:",
+  revise: ":pencil2:",
+};
+
+/** Grace window (ms) within which removing the resolving reaction can undo. */
+export const UNDO_GRACE_MS = 30_000;
+
+interface ResolvedLock {
+  decision: ApprovalDecision;
+  by: string;
+  at: string; // ISO
+}
+
+type ResolveCtx = Pick<
+  PluginContext,
+  "http" | "logger" | "state" | "metrics"
+>;
+
+export interface ResolveApprovalParams {
+  companyId: string;
+  approvalId: string;
+  decision: ApprovalDecision;
+  /** Slack user id of the actor (already allowlist-checked by the caller). */
+  slackUserId: string;
+  /** Channel + ts of the original approval card (for the status-echo edit). */
+  channel: string;
+  ts: string;
+  /** Required for `revise`; optional note for approve/reject. */
+  reason?: string;
+  /** Thread ts to post no-op / confirmation notes into (defaults to `ts`). */
+  threadTs?: string;
+  paperclipBaseUrl: string;
+}
+
+/**
+ * Resolve an approval. Idempotent: the first valid decision locks the approval;
+ * later calls are no-ops that post a short thread note. On success, edits the
+ * original card to show actor + outcome + time.
+ */
+export async function resolveApproval(
+  ctx: ResolveCtx,
+  token: string,
+  params: ResolveApprovalParams,
+): Promise<{ ok: boolean; alreadyResolved?: boolean; error?: string }> {
+  const {
+    companyId,
+    approvalId,
+    decision,
+    slackUserId,
+    channel,
+    ts,
+    reason,
+    threadTs,
+    paperclipBaseUrl,
+  } = params;
+
+  const scope = { scopeKind: "company" as const, scopeId: companyId };
+  const lockRef = { ...scope, stateKey: STATE_KEYS.approvalResolved(approvalId) };
+
+  // --- Idempotency lock: first valid decision wins ---
+  const existing = (await ctx.state.get(lockRef)) as ResolvedLock | null;
+  if (existing) {
+    await postMessage(ctx, token, channel, {
+      text: `:lock: Approval already ${DECISION_PAST[existing.decision]} by <@${existing.by}> — ignoring this action.`,
+    }, { threadTs: threadTs ?? ts });
+    return { ok: false, alreadyResolved: true };
+  }
+  await ctx.state.set(lockRef, {
+    decision,
+    by: slackUserId,
+    at: new Date().toISOString(),
+  } satisfies ResolvedLock);
+
+  // --- Call the Paperclip approvals API ---
+  const endpoint = DECISION_ENDPOINT[decision];
+  try {
+    const res = await ctx.http.fetch(
+      `${paperclipBaseUrl}/api/approvals/${approvalId}/${endpoint}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          decidedByUserId: `slack:${slackUserId}`,
+          decisionNote: reason ?? null,
+        }),
+      },
+    );
+    // Paperclip create/resolve can return 5xx even on success; treat 2xx as ok,
+    // and surface non-2xx without blind-retrying (the lock already guards dupes).
+    const ok = res.status >= 200 && res.status < 300;
+    if (!ok) {
+      // Release the lock so a corrected retry is possible.
+      await ctx.state.delete(lockRef);
+      ctx.logger.warn("Approval action returned non-2xx", {
+        approvalId,
+        endpoint,
+        status: res.status,
+      });
+      await postMessage(ctx, token, channel, {
+        text: `:warning: Couldn't ${decision} approval \`${approvalId}\` (HTTP ${res.status}). No change made.`,
+      }, { threadTs: threadTs ?? ts });
+      return { ok: false, error: `http_${res.status}` };
+    }
+  } catch (err) {
+    await ctx.state.set(lockRef, null as unknown as ResolvedLock);
+    ctx.logger.warn("Approval action failed", { approvalId, endpoint, err });
+    await postMessage(ctx, token, channel, {
+      text: `:warning: Couldn't ${decision} approval \`${approvalId}\`. No change made.`,
+    }, { threadTs: threadTs ?? ts });
+    return { ok: false, error: "fetch_failed" };
+  }
+
+  // --- Status echo: edit the original card with actor + outcome + time ---
+  const when = new Date().toISOString().replace("T", " ").slice(0, 16) + " UTC";
+  await updateMessage(ctx, token, channel, ts, {
+    text: `${DECISION_EMOJI[decision]} *Approval ${DECISION_PAST[decision]}* by <@${slackUserId}> · ${when}${reason ? `\n> ${reason}` : ""}`,
+  });
+
+  await ctx.metrics.write("slack.approvals.decided", 1, {
+    decision: endpoint,
+    source: "slack_interaction",
+  });
+
+  return { ok: true };
+}
+
+/**
+ * Best-effort undo: if `slackUserId` removed the reaction that resolved this
+ * approval within the grace window, clear the lock and note it. We do NOT call a
+ * server "unresolve" endpoint (none exists); we only reverse our local lock and
+ * tell the channel. If the server already applied the decision irreversibly,
+ * that is surfaced honestly rather than pretending to revert.
+ */
+export async function tryUndoResolution(
+  ctx: ResolveCtx,
+  token: string,
+  params: {
+    companyId: string;
+    approvalId: string;
+    decision: ApprovalDecision;
+    slackUserId: string;
+    channel: string;
+    ts: string;
+  },
+): Promise<{ undone: boolean }> {
+  const { companyId, approvalId, decision, slackUserId, channel, ts } = params;
+  const scope = { scopeKind: "company" as const, scopeId: companyId };
+  const lockRef = { ...scope, stateKey: STATE_KEYS.approvalResolved(approvalId) };
+
+  const lock = (await ctx.state.get(lockRef)) as ResolvedLock | null;
+  if (!lock) return { undone: false };
+  if (lock.decision !== decision || lock.by !== slackUserId) {
+    return { undone: false };
+  }
+  const age = Date.now() - Date.parse(lock.at);
+  if (!Number.isFinite(age) || age > UNDO_GRACE_MS) {
+    await postMessage(ctx, token, channel, {
+      text: `:information_source: Too late to undo the ${DECISION_PAST[decision]} on this approval (grace window passed). It remains ${DECISION_PAST[decision]} server-side.`,
+    }, { threadTs: ts });
+    return { undone: false };
+  }
+  await ctx.state.delete(lockRef);
+  await updateMessage(ctx, token, channel, ts, {
+    text: `:leftwards_arrow_with_hook: Resolution undone by <@${slackUserId}> within the grace window. The approval is open again.`,
+  });
+  await ctx.metrics.write("slack.approvals.undone", 1, { decision });
+  return { undone: true };
+}
+
+/** Map an approval-card reaction emoji name to a decision (or null). */
+export function emojiToDecision(name: string): ApprovalDecision | null {
+  if (name === "white_check_mark" || name === "heavy_check_mark") return "approve";
+  if (name === "x" || name === "no_entry" || name === "no_entry_sign") return "reject";
+  return null;
+}
+
+/**
+ * Parse an approval thread reply into a decision + reason.
+ * `!approve [note]`, `!reject [reason]`, `!revise <reason>`, `!status`.
+ * A non-`!` reply is treated as a revision comment (reason = the whole text).
+ */
+export function parseThreadCommand(
+  text: string,
+):
+  | { kind: "decision"; decision: ApprovalDecision; reason?: string }
+  | { kind: "status" }
+  | { kind: "usage"; message: string }
+  | { kind: "ignore" } {
+  const trimmed = text.trim();
+  if (!trimmed) return { kind: "ignore" };
+
+  if (!trimmed.startsWith("!")) {
+    // Freeform reply on an approval thread → revision comment.
+    return { kind: "decision", decision: "revise", reason: trimmed };
+  }
+
+  const [cmd, ...rest] = trimmed.slice(1).split(/\s+/);
+  const reason = rest.join(" ").trim();
+  switch (cmd.toLowerCase()) {
+    case "approve":
+      return { kind: "decision", decision: "approve", reason: reason || undefined };
+    case "reject":
+      return { kind: "decision", decision: "reject", reason: reason || undefined };
+    case "revise":
+    case "revise-request":
+    case "request-changes":
+      if (!reason) {
+        return { kind: "usage", message: "Usage: `!revise <reason>` — a reason is required." };
+      }
+      return { kind: "decision", decision: "revise", reason };
+    case "status":
+      return { kind: "status" };
+    default:
+      return {
+        kind: "usage",
+        message: "Unknown command. Use `!approve [note]`, `!reject [reason]`, `!revise <reason>`, or `!status`.",
+      };
+  }
+}

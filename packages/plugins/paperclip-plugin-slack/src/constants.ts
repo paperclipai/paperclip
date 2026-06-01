@@ -43,6 +43,12 @@ export const STATE_KEYS = {
   slackUser: (paperclipUserId: string) => `slack-user-${paperclipUserId}`,
   assigneeDmSent: (issueId: string, paperclipUserId: string) =>
     `assignee-dm-sent-${issueId}-${paperclipUserId}`,
+  // Approval interaction (Phase 1): forward + reverse maps between a posted
+  // approval card and its approval id, plus a one-shot resolution lock.
+  approvalMessage: (approvalId: string) => `approval-msg-${approvalId}`,
+  approvalByTs: (channel: string, ts: string) =>
+    `approval-by-ts-${channel}-${ts}`,
+  approvalResolved: (approvalId: string) => `approval-resolved-${approvalId}`,
 } as const;
 
 export const DEFAULT_CONFIG: SlackPluginConfig = {
@@ -69,4 +75,5 @@ export const DEFAULT_CONFIG: SlackPluginConfig = {
     "Your request has been escalated to a human agent. Please hold.",
   paperclipBaseUrl: "http://localhost:3100",
   maxAgentsPerThread: 5,
+  approvalReactorSlackIds: [],
 };

@@ -27,6 +27,14 @@ export interface SlackPluginConfig {
   escalationHoldMessage: string;
   paperclipBaseUrl: string;
   maxAgentsPerThread: number;
+  /**
+   * Slack user IDs allowed to resolve approvals via reaction (✅/❌) or thread
+   * command (!approve/!reject/!revise). The server gates approve/reject/revision
+   * with `assertBoard` using the plugin's own bearer — NOT the reacting user — so
+   * this allowlist is the only place reactor authorization is enforced. Empty list
+   * means no one can resolve via Slack interactions (notifications stay read-only).
+   */
+  approvalReactorSlackIds?: string[];
 }
 
 /** Alias preserving the upstream symbol name used across ported modules. */
