@@ -48,7 +48,7 @@ describe("http adapter execute", () => {
     expect(result.resultJson).toMatchObject({ ok: true, output: "DONE" });
   });
 
-  it("includes remote error detail when the endpoint fails", async () => {
+  it("includes remote error detail when the endpoint fails (maxAttempts=1, no retry)", async () => {
     const url = await startJsonServer((_req, res) => {
       res.statusCode = 502;
       res.setHeader("content-type", "application/json");
@@ -60,10 +60,59 @@ describe("http adapter execute", () => {
         runId: "run-1",
         agent: { id: "agent-1", name: "Florence", adapterType: "http", adapterConfig: {} },
         runtime: { id: "runtime-1", type: "local", label: "test" },
-        config: { url, method: "POST" },
+        config: { url, method: "POST", maxAttempts: 1 },
         context: {},
         onLog: async () => {},
       }),
     ).rejects.toThrow("HTTP invoke failed with status 502: bridge unavailable");
+  });
+
+  it("retries a transient 502 and succeeds on the next attempt", async () => {
+    let calls = 0;
+    const url = await startJsonServer((_req, res) => {
+      calls += 1;
+      res.setHeader("content-type", "application/json");
+      if (calls === 1) {
+        res.statusCode = 502;
+        res.end(JSON.stringify({ ok: false, error: "worker respawning" }));
+        return;
+      }
+      res.end(JSON.stringify({ ok: true, summary: "Hermes profile editor exited 0", output: "DONE" }));
+    });
+
+    const result = await execute({
+      runId: "run-retry",
+      agent: { id: "agent-1", name: "Editor", adapterType: "http", adapterConfig: {} },
+      runtime: { id: "runtime-1", type: "local", label: "test" },
+      config: { url, method: "POST", retryBackoffMs: 1 },
+      context: {},
+      onLog: async () => {},
+    });
+
+    expect(calls).toBe(2);
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("Hermes profile editor exited 0");
+  });
+
+  it("gives up after maxAttempts on a persistent transient failure (bounded retry)", async () => {
+    let calls = 0;
+    const url = await startJsonServer((_req, res) => {
+      calls += 1;
+      res.statusCode = 503;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: false, error: "still down" }));
+    });
+
+    await expect(
+      execute({
+        runId: "run-giveup",
+        agent: { id: "agent-1", name: "Editor", adapterType: "http", adapterConfig: {} },
+        runtime: { id: "runtime-1", type: "local", label: "test" },
+        config: { url, method: "POST", maxAttempts: 2, retryBackoffMs: 1 },
+        context: {},
+        onLog: async () => {},
+      }),
+    ).rejects.toThrow("HTTP invoke failed with status 503: still down");
+    expect(calls).toBe(2);
   });
 });
