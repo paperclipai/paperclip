@@ -1,0 +1,20 @@
+suite: pod disruption budget
+templates:
+  - templates/pdb.yaml
+tests:
+  - it: uses maxUnavailable so a single replica can still be evicted
+    asserts:
+      - isKind:
+          of: PodDisruptionBudget
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - notExists:
+          path: spec.minAvailable
+
+  - it: renders nothing when disabled
+    set:
+      pdb.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
