@@ -5061,6 +5061,17 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    const mayBeWorkflowControlledReviewHandoff =
+      req.actor.type === "agent" &&
+      req.body.status === "in_review" &&
+      req.body.reviewRequest !== undefined &&
+      req.body.assigneeUserId !== undefined;
+    if (!mayBeWorkflowControlledReviewHandoff && !(await assertBoardTriageAuthorityForIssueAssigneeUserPatch(
+      req,
+      res,
+      existing,
+      req.body.assigneeUserId,
+    ))) return;
     const triageAuthorityPatch = await assertBoardTriageAuthorityForIssuePatch(
       req,
       res,

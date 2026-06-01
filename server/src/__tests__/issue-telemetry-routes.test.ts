@@ -7,6 +7,7 @@ const mockIssueService = vi.hoisted(() => ({
   getWakeableParentAfterChildCompletion: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   update: vi.fn(),
+  addComment: vi.fn(),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
@@ -117,7 +118,9 @@ async function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes(mockDb as any, {} as any));
+  app.use("/api", issueRoutes({
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({}),
+  } as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -141,12 +144,16 @@ describe("issue telemetry routes", () => {
       ...makeIssue("todo"),
       ...patch,
     }));
-    mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
-    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
-    mockDbSelectWhere.mockImplementation(() => ({
-      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-        Promise.resolve([{ companyId: "company-1", permissions: null }]).then(onFulfilled, onRejected),
-    }));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "Completed telemetry test",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: "agent-1",
+      authorUserId: null,
+    });
   });
 
   it("emits task-completed telemetry with the agent role, adapter type, and model", async () => {
@@ -166,7 +173,7 @@ describe("issue telemetry routes", () => {
     });
     const res = await request(app)
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ status: "done" });
+      .send({ status: "done", comment: "Completed telemetry test" });
 
     expect(res.status).toBe(200);
     await vi.waitFor(() => {
