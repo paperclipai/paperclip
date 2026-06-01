@@ -167,6 +167,28 @@ function isAuthorizedReactor(slackUserId: string): boolean {
   return allow.includes(slackUserId);
 }
 
+function configuredCompanyId(): string | null {
+  const companyId = pluginConfig.companyId?.trim();
+  return companyId ? companyId : null;
+}
+
+async function listTargetCompanies(
+  ctx: Pick<PluginContext, "companies">,
+): Promise<Array<{ id: string }>> {
+  const companyId = configuredCompanyId();
+  if (companyId) return [{ id: companyId }];
+  return ctx.companies.list({ limit: 100, offset: 0 });
+}
+
+async function resolveTargetCompanyId(
+  ctx: Pick<PluginContext, "companies">,
+): Promise<string> {
+  const companyId = configuredCompanyId();
+  if (companyId) return companyId;
+  const companies = await ctx.companies.list({ limit: 1, offset: 0 });
+  return companies[0]?.id ?? "";
+}
+
 /**
  * Handle a Slack `reaction_added` / `reaction_removed` event. Scoped to messages
  * that are known approval cards; reactions on anything else are ignored.
@@ -184,8 +206,7 @@ async function handleReactionEvent(
   const slackUserId = String(event.user ?? "");
   if (!channel || !ts || !slackUserId) return;
 
-  const companies = await pluginCtx.companies.list({ limit: 1, offset: 0 });
-  const companyId = companies[0]?.id ?? "";
+  const companyId = await resolveTargetCompanyId(pluginCtx);
   if (!companyId) return;
 
   const approvalId = await approvalIdForMessage(companyId, channel, ts);
@@ -251,8 +272,7 @@ async function handleInboundMessageEvent(
   const text = String(event.text ?? "");
   if (!channel || !threadTs) return;
 
-  const companies = await pluginCtx.companies.list({ limit: 1, offset: 0 });
-  const companyId = companies[0]?.id ?? "";
+  const companyId = await resolveTargetCompanyId(pluginCtx);
   if (!companyId) return;
 
   const files = Array.isArray(event.files)
@@ -316,8 +336,7 @@ async function handleSlashCommand(
   const parts = text.trim().split(/\s+/);
   const subcommand = parts[0]?.toLowerCase() ?? "";
   const arg = parts[1]?.toLowerCase() ?? "";
-  const companies = await ctx.companies.list({ limit: 1, offset: 0 });
-  const companyId = companies[0]?.id ?? "";
+  const companyId = await resolveTargetCompanyId(ctx);
   try {
     switch (subcommand) {
       case "status":
@@ -1212,91 +1231,91 @@ const plugin = definePlugin({
     // "No handler registered for job 'daily-digest'" error every day.
     ctx.jobs.register("daily-digest", async () => {
       if (!config.enableDailyDigest) return;
-      const companies = await ctx.companies.list({ limit: 100, offset: 0 });
-        for (const company of companies) {
-          const channelId = await resolveChannel(
-            ctx,
-            company.id,
-            config.defaultChannelId,
-          );
-          if (!channelId) continue;
-          const issues = await ctx.issues.list({
-            companyId: company.id,
-            limit: 200,
-            offset: 0,
-          });
-          const now = new Date();
-          const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-          let tasksCompleted = 0;
-          let tasksCreated = 0;
-          for (const issue of issues) {
-            const updated = new Date(issue.updatedAt);
-            const created = new Date(issue.createdAt);
-            if (issue.status === "done" && updated >= dayAgo) tasksCompleted++;
-            if (created >= dayAgo) tasksCreated++;
-          }
-          const agents = await ctx.agents.list({
-            companyId: company.id,
-            limit: 100,
-            offset: 0,
-          });
-          const agentsActive = agents.filter(
-            (a) => a.status === "active" || a.status === "running",
-          ).length;
-          const dateKey = now.toISOString().slice(0, 10);
-          const dailyCost = await ctx.state.get({
-            scopeKind: "company",
-            scopeId: company.id,
-            stateKey: STATE_KEYS.dailyCost(dateKey),
-          });
-          const totalCost = dailyCost
-            ? String((dailyCost as number).toFixed(2))
-            : "0.00";
-          const topAgentCosts = await ctx.state.get({
-            scopeKind: "company",
-            scopeId: company.id,
-            stateKey: STATE_KEYS.dailyAgentCosts(dateKey),
-          });
-          let topAgent = "";
-          if (topAgentCosts && typeof topAgentCosts === "object") {
-            const costs = topAgentCosts as Record<string, number>;
-            let maxCost = 0;
-            for (const [name, cost] of Object.entries(costs)) {
-              if (cost > maxCost) {
-                maxCost = cost;
-                topAgent = name;
-              }
+      const companies = await listTargetCompanies(ctx);
+      for (const company of companies) {
+        const channelId = await resolveChannel(
+          ctx,
+          company.id,
+          config.defaultChannelId,
+        );
+        if (!channelId) continue;
+        const issues = await ctx.issues.list({
+          companyId: company.id,
+          limit: 200,
+          offset: 0,
+        });
+        const now = new Date();
+        const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        let tasksCompleted = 0;
+        let tasksCreated = 0;
+        for (const issue of issues) {
+          const updated = new Date(issue.updatedAt);
+          const created = new Date(issue.createdAt);
+          if (issue.status === "done" && updated >= dayAgo) tasksCompleted++;
+          if (created >= dayAgo) tasksCreated++;
+        }
+        const agents = await ctx.agents.list({
+          companyId: company.id,
+          limit: 100,
+          offset: 0,
+        });
+        const agentsActive = agents.filter(
+          (a) => a.status === "active" || a.status === "running",
+        ).length;
+        const dateKey = now.toISOString().slice(0, 10);
+        const dailyCost = await ctx.state.get({
+          scopeKind: "company",
+          scopeId: company.id,
+          stateKey: STATE_KEYS.dailyCost(dateKey),
+        });
+        const totalCost = dailyCost
+          ? String((dailyCost as number).toFixed(2))
+          : "0.00";
+        const topAgentCosts = await ctx.state.get({
+          scopeKind: "company",
+          scopeId: company.id,
+          stateKey: STATE_KEYS.dailyAgentCosts(dateKey),
+        });
+        let topAgent = "";
+        if (topAgentCosts && typeof topAgentCosts === "object") {
+          const costs = topAgentCosts as Record<string, number>;
+          let maxCost = 0;
+          for (const [name, cost] of Object.entries(costs)) {
+            if (cost > maxCost) {
+              maxCost = cost;
+              topAgent = name;
             }
           }
-          await postMessage(
-            ctx,
-            token,
-            channelId,
-            formatDailyDigest({
-              tasksCompleted,
-              tasksCreated,
-              agentsActive,
-              totalCost,
-              topAgent,
-            }),
-          );
-          // Clean up previous day's cost state
-          const yesterday = new Date(now.getTime() - 86400000)
-            .toISOString()
-            .slice(0, 10);
-          await ctx.state.delete({
-            scopeKind: "company",
-            scopeId: company.id,
-            stateKey: STATE_KEYS.dailyCost(yesterday),
-          });
-          await ctx.state.delete({
-            scopeKind: "company",
-            scopeId: company.id,
-            stateKey: STATE_KEYS.dailyAgentCosts(yesterday),
-          });
         }
-        ctx.logger.info("Daily digest posted to Slack");
-        await ctx.metrics.write("slack.digest.sent", 1);
+        await postMessage(
+          ctx,
+          token,
+          channelId,
+          formatDailyDigest({
+            tasksCompleted,
+            tasksCreated,
+            agentsActive,
+            totalCost,
+            topAgent,
+          }),
+        );
+        // Clean up previous day's cost state
+        const yesterday = new Date(now.getTime() - 86400000)
+          .toISOString()
+          .slice(0, 10);
+        await ctx.state.delete({
+          scopeKind: "company",
+          scopeId: company.id,
+          stateKey: STATE_KEYS.dailyCost(yesterday),
+        });
+        await ctx.state.delete({
+          scopeKind: "company",
+          scopeId: company.id,
+          stateKey: STATE_KEYS.dailyAgentCosts(yesterday),
+        });
+      }
+      ctx.logger.info("Daily digest posted to Slack");
+      await ctx.metrics.write("slack.digest.sent", 1);
     });
     if (config.enableDailyDigest) {
       // Accumulate costs
@@ -1342,7 +1361,7 @@ const plugin = definePlugin({
     }
     // Escalation timeout job
     ctx.jobs.register("check-escalation-timeouts", async () => {
-      const companies = await ctx.companies.list({ limit: 100, offset: 0 });
+      const companies = await listTargetCompanies(ctx);
       const timeoutMs = config.escalationTimeoutMs ?? 900000;
       const now = Date.now();
       for (const company of companies) {
@@ -1420,7 +1439,7 @@ const plugin = definePlugin({
     });
     // Phase 5: Check watches job
     ctx.jobs.register("check-watches", async () => {
-      const companies = await ctx.companies.list({ limit: 100, offset: 0 });
+      const companies = await listTargetCompanies(ctx);
       for (const company of companies) {
         // Get recent events from state (populated by event listeners below)
         const recentEventsRaw = await ctx.state.get({
@@ -1815,14 +1834,10 @@ const plugin = definePlugin({
       if (body?.type === "event_callback") {
         const event = body.event as Record<string, unknown> | undefined;
         if (event?.type === "file_shared") {
-          const companies = await pluginCtx.companies.list({
-            limit: 1,
-            offset: 0,
-          });
-          const companyId = companies[0]?.id ?? "";
+          const companyId = await resolveTargetCompanyId(pluginCtx);
           const fileId = String(event.file_id ?? "");
           const channelId = String(event.channel_id ?? "");
-          if (fileId && channelId) {
+          if (companyId && fileId && channelId) {
             await processMediaFile(
               pluginCtx,
               pluginToken,
@@ -1913,11 +1928,8 @@ const plugin = definePlugin({
         }
         return;
       }
-      const companies = await pluginCtx.companies.list({
-        limit: 1,
-        offset: 0,
-      });
-      const companyId = companies[0]?.id ?? "";
+      const companyId = await resolveTargetCompanyId(pluginCtx);
+      if (!companyId) return;
       // --- Escalation buttons ---
       if (
         actionId === "escalation_use_suggested" ||

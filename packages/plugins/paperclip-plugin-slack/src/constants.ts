@@ -55,6 +55,7 @@ export const DEFAULT_CONFIG: SlackPluginConfig = {
   slackTokenRef: "",
   slackSigningSecretRef: "",
   slackUserTokenRef: "",
+  companyId: "",
   defaultChannelId: "",
   approvalsChannelId: "",
   errorsChannelId: "",

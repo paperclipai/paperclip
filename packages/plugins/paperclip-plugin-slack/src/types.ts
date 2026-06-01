@@ -3,6 +3,14 @@ export interface SlackPluginConfig {
   slackSigningSecretRef: string;
   /** Optional secret reference to a Slack user token (xoxp-...) used by search.messages. */
   slackUserTokenRef?: string;
+  /**
+   * Optional fixed company id for hosted single-company deployments.
+   *
+   * Slack Events API callbacks and scheduled jobs are not naturally invoked from
+   * a Paperclip company-scoped request. Setting this lets those paths address
+   * company-scoped plugin state without making an unscoped companies.list call.
+   */
+  companyId?: string;
   defaultChannelId: string;
   approvalsChannelId: string;
   errorsChannelId: string;

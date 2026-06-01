@@ -69,6 +69,13 @@ const manifest: PaperclipPluginManifestV1 = {
           "Required for slack_search_messages. Bot tokens cannot use search.messages. Leave blank to disable search.",
         default: DEFAULT_CONFIG.slackUserTokenRef,
       },
+      companyId: {
+        type: "string",
+        title: "Company ID (optional runtime scope)",
+        description:
+          "Hosted single-company deployments should set this to avoid unscoped company discovery from Slack webhooks and scheduled jobs.",
+        default: DEFAULT_CONFIG.companyId,
+      },
       defaultChannelId: {
         type: "string",
         title: "Default Slack Channel ID",
