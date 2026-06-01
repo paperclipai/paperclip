@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -13,16 +14,27 @@ import { HttpError, conflict, notFound, unprocessable } from "../errors.js";
 import { ghFetch, resolveRawGitHubUrl } from "./github-fetch.js";
 import { normalizePortablePath } from "./portable-path.js";
 
+const require = createRequire(import.meta.url);
+
+function resolveCatalogPackageRoot(): string {
+  try {
+    const manifestPath = require.resolve("@paperclipai/skills-catalog/generated/catalog.json");
+    return path.dirname(path.dirname(manifestPath));
+  } catch {
+    const serviceDir = path.dirname(fileURLToPath(import.meta.url));
+    return path.join(path.resolve(serviceDir, "../../.."), "packages/skills-catalog");
+  }
+}
+
+const catalogPackageRoot = resolveCatalogPackageRoot();
+const catalogManifestPath = path.join(catalogPackageRoot, "generated/catalog.json");
+
 interface CatalogManifestFile {
   packageName: string;
   packageVersion: string;
   skills: CatalogSkill[];
 }
 
-const serviceDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(serviceDir, "../../..");
-const catalogPackageRoot = path.join(repoRoot, "packages/skills-catalog");
-const catalogManifestPath = path.join(catalogPackageRoot, "generated/catalog.json");
 let cachedCatalogManifest: {
   manifest: CatalogManifestFile;
   mtimeMs: number;
@@ -92,10 +104,6 @@ function inferLanguageFromPath(filePath: string) {
   return null;
 }
 
-function resolveCatalogPackageRoot() {
-  return catalogPackageRoot;
-}
-
 function sourceRootPath(source: CatalogSkillSource) {
   return source.path ? normalizePortablePath(source.path) : "";
 }
@@ -149,7 +157,6 @@ async function readCatalogFileBytes(
   }
   return bytes;
 }
-
 function searchText(skill: CatalogSkill) {
   return [
     skill.id,
