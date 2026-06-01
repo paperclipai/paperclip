@@ -186,6 +186,42 @@ POST /api/routine-triggers/public/{publicId}/fire
 
 Fires a webhook trigger from an external system. Requires a valid `Authorization` or `X-Paperclip-Signature` + `X-Paperclip-Timestamp` header pair matching the trigger's signing mode.
 
+## Read Public Trigger Verdict
+
+```
+GET /api/routine-triggers/public/{publicId}/runs/{runIssueId}/verdict
+```
+
+Companion to **Fire Public Trigger** for the poll-back model: a caller that only
+holds the webhook secret can read back a run's consolidated verdict without
+normal Paperclip auth. Authenticate with the **same webhook secret as `/fire`**,
+presented as `Authorization: Bearer <secret>` (a GET poll has no body to sign, so
+bearer is used regardless of the trigger's fire signing mode; `none` mode treats
+the `publicId` as the shared secret). `runIssueId` is the linked execution issue
+id returned by `/fire`; it **must** belong to a run of this trigger's routine,
+otherwise the endpoint returns `404` (it never leaks other issues).
+
+Response `200`:
+
+```json
+{
+  "status": "pending" | "in_progress" | "ready" | "error",
+  "verdict": null | { "body": "<consolidated review markdown>" },
+  "error": null | "<short reason>"
+}
+```
+
+- `pending` / `in_progress` — the run issue exists but no verdict has been
+  published yet; the caller should sleep and re-poll.
+- `ready` — `verdict.body` holds the full consolidated markdown. It is read from a
+  `verdict` issue document on the run issue, which the consolidating agent writes
+  when the review is done.
+- `error` — the run failed or the issue was cancelled/blocked/closed without a
+  verdict; `error` carries a short reason.
+
+Returns `401` for a missing/invalid secret and `404` for an unknown `publicId` or a
+`runIssueId` outside this routine.
+
 ## List Runs
 
 ```
