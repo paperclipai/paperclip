@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { authUsers } from "@paperclipai/db";
+import { authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import {
   authSessionSchema,
   currentUserProfileSchema,
@@ -10,6 +10,66 @@ import {
 import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 
+function configuredAdminEmails(): Set<string> {
+  return new Set(
+    (process.env.PAPERCLIP_ADMIN_EMAILS ?? process.env.PAPERCLIP_ADMIN_EMAIL ?? "")
+      .split(",")
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+function signUpIsDisabled(): boolean {
+  return process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP === "true";
+}
+
+async function ensureConfiguredAdminAccess(
+  db: Db,
+  user: { id: string; email: string | null; emailVerified: boolean },
+) {
+  const email = user.email?.trim().toLowerCase();
+  if (!email || !configuredAdminEmails().has(email)) return;
+  if (!user.emailVerified && !signUpIsDisabled()) return;
+
+  const now = new Date();
+  await db
+    .insert(instanceUserRoles)
+    .values({
+      userId: user.id,
+      role: "instance_admin",
+      updatedAt: now,
+    })
+    .onConflictDoNothing({
+      target: [instanceUserRoles.userId, instanceUserRoles.role],
+    });
+
+  const companyRows = await db.select({ id: companies.id }).from(companies);
+  for (const company of companyRows) {
+    await db
+      .insert(companyMemberships)
+      .values({
+        companyId: company.id,
+        principalType: "user",
+        principalId: user.id,
+        status: "active",
+        membershipRole: "owner",
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [
+          companyMemberships.companyId,
+          companyMemberships.principalType,
+          companyMemberships.principalId,
+        ],
+        set: {
+          status: "active",
+          membershipRole: "owner",
+          updatedAt: now,
+        },
+      });
+  }
+}
+
 async function loadCurrentUserProfile(db: Db, userId: string) {
   const user = await db
     .select({
@@ -17,6 +77,7 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
       email: authUsers.email,
       name: authUsers.name,
       image: authUsers.image,
+      emailVerified: authUsers.emailVerified,
     })
     .from(authUsers)
     .where(eq(authUsers.id, userId))
@@ -25,6 +86,8 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
   if (!user) {
     throw unauthorized("Signed-in user not found");
   }
+
+  await ensureConfiguredAdminAccess(db, user);
 
   return currentUserProfileSchema.parse({
     id: user.id,
@@ -81,6 +144,7 @@ export function authRoutes(db: Db) {
         email: authUsers.email,
         name: authUsers.name,
         image: authUsers.image,
+      emailVerified: authUsers.emailVerified,
       })
       .then((rows) => rows[0] ?? null);
 

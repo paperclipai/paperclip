@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { authRoutes } from "../routes/auth.js";
 
@@ -32,30 +32,68 @@ function createUpdateChain(row: unknown) {
   };
 }
 
-function createDb(row: Record<string, unknown>) {
+function createInsertChain(inserts: Array<Record<string, unknown>>) {
+  const chain = {
+    values(values: Record<string, unknown>) {
+      inserts.push(values);
+      return chain;
+    },
+    onConflictDoNothing() {
+      return Promise.resolve();
+    },
+    onConflictDoUpdate() {
+      return Promise.resolve();
+    },
+  };
+  return chain;
+}
+
+function createDb(row: Record<string, unknown>, opts: { companyRows?: Array<Record<string, unknown>> } = {}) {
+  const inserts: Array<Record<string, unknown>> = [];
+  const select = vi
+    .fn()
+    .mockImplementationOnce(() => createSelectChain([row]))
+    .mockImplementation(() => ({
+      from() {
+        return Promise.resolve(opts.companyRows ?? []);
+      },
+    }));
   return {
-    select: () => createSelectChain([row]),
+    select,
     update: () => createUpdateChain(row),
+    insert: () => createInsertChain(inserts),
+    inserts,
   } as any;
 }
 
-function createApp(actor: Express.Request["actor"], row: Record<string, unknown>) {
+function createApp(actor: Express.Request["actor"], row: Record<string, unknown>, db = createDb(row)) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     req.actor = actor;
     next();
   });
-  app.use("/api/auth", authRoutes(createDb(row)));
+  app.use("/api/auth", authRoutes(db));
   app.use(errorHandler);
   return app;
 }
 
 describe.sequential("auth routes", () => {
+  const originalAdminEmails = process.env.PAPERCLIP_ADMIN_EMAILS;
+  const originalDisableSignUp = process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP;
+
+  afterEach(() => {
+    if (originalAdminEmails === undefined) delete process.env.PAPERCLIP_ADMIN_EMAILS;
+    else process.env.PAPERCLIP_ADMIN_EMAILS = originalAdminEmails;
+    if (originalDisableSignUp === undefined) delete process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP;
+    else process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP = originalDisableSignUp;
+  });
+
   const baseUser = {
     id: "user-1",
     name: "Jane Example",
     email: "jane@example.com",
+    emailVerified: false,
     image: "https://example.com/jane.png",
   };
 
@@ -77,8 +115,73 @@ describe.sequential("auth routes", () => {
         id: "paperclip:session:user-1",
         userId: "user-1",
       },
-      user: baseUser,
+      user: {
+        id: baseUser.id,
+        name: baseUser.name,
+        email: baseUser.email,
+        image: baseUser.image,
+      },
     });
+  });
+
+
+  it("grants configured admin users instance and company owner access on session load", async () => {
+    process.env.PAPERCLIP_ADMIN_EMAILS = "alec@hltcorp.com";
+    process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP = "true";
+    const adminUser = { ...baseUser, email: "ALEC@HLTCORP.COM", emailVerified: false };
+    const db = createDb(adminUser, { companyRows: [{ id: "company-1" }, { id: "company-2" }] });
+    const app = await createApp(
+      {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+      },
+      adminUser,
+      db,
+    );
+
+    const res = await request(app).get("/api/auth/get-session");
+
+    expect(res.status).toBe(200);
+    expect(db.inserts).toEqual([
+      expect.objectContaining({ userId: "user-1", role: "instance_admin" }),
+      expect.objectContaining({
+        companyId: "company-1",
+        principalType: "user",
+        principalId: "user-1",
+        status: "active",
+        membershipRole: "owner",
+      }),
+      expect.objectContaining({
+        companyId: "company-2",
+        principalType: "user",
+        principalId: "user-1",
+        status: "active",
+        membershipRole: "owner",
+      }),
+    ]);
+  });
+
+
+  it("does not grant configured admin access to unverified emails while sign-up is enabled", async () => {
+    process.env.PAPERCLIP_ADMIN_EMAILS = "alec@hltcorp.com";
+    delete process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP;
+    const adminUser = { ...baseUser, email: "alec@hltcorp.com", emailVerified: false };
+    const db = createDb(adminUser, { companyRows: [{ id: "company-1" }] });
+    const app = await createApp(
+      {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+      },
+      adminUser,
+      db,
+    );
+
+    const res = await request(app).get("/api/auth/get-session");
+
+    expect(res.status).toBe(200);
+    expect(db.inserts).toEqual([]);
   });
 
   it("updates the signed-in profile", async () => {
