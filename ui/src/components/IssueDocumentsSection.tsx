@@ -171,6 +171,10 @@ export function IssueDocumentsSection({
   const [revisionMenuOpenKey, setRevisionMenuOpenKey] = useState<string | null>(null);
   const [selectedRevisionIds, setSelectedRevisionIds] = useState<Record<string, string | null>>({});
   const [diffViewKey, setDiffViewKey] = useState<string | null>(null);
+  const [qbankImportOpen, setQBankImportOpen] = useState(false);
+  const [qbankAppId, setQBankAppId] = useState("3");
+  const [qbankPayloadText, setQBankPayloadText] = useState("");
+  const [qbankImportMessage, setQBankImportMessage] = useState<string | null>(null);
   const autosaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copiedDocumentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasScrolledToHashRef = useRef(false);
@@ -276,6 +280,43 @@ export function IssueDocumentsSection({
     },
     onError: (err) => {
       setError(err instanceof Error ? err.message : "Failed to restore document revision");
+    },
+  });
+
+  const importQBankItem = useMutation({
+    mutationFn: async () => {
+      const trimmedAppId = qbankAppId.trim();
+      if (!trimmedAppId) {
+        throw new Error("QBank app ID is required");
+      }
+      let parsedPayload: unknown;
+      try {
+        parsedPayload = JSON.parse(qbankPayloadText);
+      } catch {
+        throw new Error("Paste a valid QBank item JSON object");
+      }
+      if (!parsedPayload || typeof parsedPayload !== "object" || Array.isArray(parsedPayload)) {
+        throw new Error("Paste a single QBank item JSON object");
+      }
+      return issuesApi.importQBankItem(issue.id, {
+        appId: trimmedAppId,
+        item: parsedPayload as Record<string, unknown>,
+      });
+    },
+    onSuccess: ({ document, sourceRef }) => {
+      syncDocumentCaches(document);
+      invalidateIssueDocuments();
+      setDraft((current) => current?.key === document.key ? null : current);
+      setDocumentConflict((current) => current?.key === document.key ? null : current);
+      setFoldedDocumentKeys((current) => current.filter((key) => key !== document.key));
+      setQBankImportMessage(`QBank card imported from ${sourceRef}`);
+      setQBankImportOpen(false);
+      setQBankPayloadText("");
+      setError(null);
+    },
+    onError: (err) => {
+      setQBankImportMessage(null);
+      setError(err instanceof Error ? err.message : "Failed to import QBank item");
     },
   });
 
@@ -703,6 +744,20 @@ export function IssueDocumentsSection({
           <h3 className="w-full text-sm font-medium text-muted-foreground shrink-0 sm:w-auto">Documents</h3>
           <div className="flex flex-wrap items-center gap-2 min-w-0 sm:ml-auto">
             {extraActions}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setQBankImportOpen((open) => !open);
+                setError(null);
+                setQBankImportMessage(null);
+              }}
+              className="shrink-0"
+            >
+              <FileText className="mr-1.5 h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Import QBank</span>
+              <span className="sm:hidden">QBank</span>
+            </Button>
             <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
               <span className="hidden sm:inline">New document</span>
@@ -713,6 +768,51 @@ export function IssueDocumentsSection({
       )}
 
       {error && <p className="text-xs text-destructive">{error}</p>}
+      {qbankImportMessage && <p className="text-xs text-emerald-600 dark:text-emerald-400">{qbankImportMessage}</p>}
+
+      {qbankImportOpen && (
+        <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
+          <div>
+            <p className="text-sm font-medium">Import QBank item</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Paste one read-only Partner API item payload. Paperclip will render it into the qbank-item document.
+            </p>
+          </div>
+          <Input
+            aria-label="QBank app ID"
+            value={qbankAppId}
+            onChange={(event) => setQBankAppId(event.target.value)}
+            placeholder="App ID"
+          />
+          <textarea
+            aria-label="QBank item JSON"
+            className="min-h-[180px] w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            value={qbankPayloadText}
+            onChange={(event) => setQBankPayloadText(event.target.value)}
+            placeholder='{"id":50067,"question":"..."}'
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setQBankImportOpen(false);
+                setQBankImportMessage(null);
+                setError(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => importQBankItem.mutate()}
+              disabled={importQBankItem.isPending}
+            >
+              {importQBankItem.isPending ? "Importing..." : "Create QBank card"}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {draft?.isNew && (
         <div

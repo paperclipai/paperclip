@@ -239,6 +239,8 @@ export const issuesApi = {
     api.post<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`, {}),
   deleteDocument: (id: string, key: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
+  importQBankItem: (id: string, data: { appId: number | string; item: Record<string, unknown> }) =>
+    api.post<{ created: boolean; document: IssueDocument; sourceRef: string }>(`/issues/${id}/qbank-item`, data),
   listAttachments: (id: string) => api.get<IssueAttachment[]>(`/issues/${id}/attachments`),
   uploadAttachment: (
     companyId: string,
