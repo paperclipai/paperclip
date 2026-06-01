@@ -1178,6 +1178,7 @@ const PRODUCTIVITY_REVIEW_TRIGGERS: readonly IssueProductivityReviewTrigger[] = 
   "long_active_duration",
   "high_churn",
 ];
+const BLOCKER_ATTENTION_TERMINAL_STATUSES = ["done", "cancelled"];
 const BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES = ["done", "cancelled"];
 const BLOCKER_ATTENTION_MAX_DEPTH = 8;
 const BLOCKER_ATTENTION_MAX_NODES = 2000;
@@ -1272,6 +1273,10 @@ function blockerSampleIdentifier(node: IssueBlockerAttentionNode | null | undefi
   return node?.identifier ?? node?.id ?? null;
 }
 
+function isBlockerAttentionTerminalStatus(status: string) {
+  return BLOCKER_ATTENTION_TERMINAL_STATUSES.includes(status);
+}
+
 function appendBlockerAttentionEdges(
   edgesByIssueId: Map<string, IssueBlockerAttentionEdge[]>,
   rows: IssueBlockerAttentionEdge[],
@@ -1343,7 +1348,7 @@ async function terminalExplicitBlockersByRoot(
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.relatedIssueId, chunk),
             eq(issues.companyId, companyId),
-            ne(issues.status, "done"),
+            notInArray(issues.status, BLOCKER_ATTENTION_TERMINAL_STATUSES),
           ),
         );
 
@@ -1367,7 +1372,7 @@ async function terminalExplicitBlockersByRoot(
   const collectTerminal = (issueId: string, seen: Set<string>): IssueRelationIssueSummary[] => {
     if (seen.has(issueId)) return [];
     const node = nodesById.get(issueId);
-    if (!node || node.status === "done") return [];
+    if (!node || isBlockerAttentionTerminalStatus(node.status)) return [];
     const nextSeen = new Set(seen);
     nextSeen.add(issueId);
     const downstreamIds = edgesByIssueId.get(issueId) ?? [];
@@ -1544,7 +1549,7 @@ async function listIssueBlockerAttentionMap(
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.relatedIssueId, chunk),
             eq(issues.companyId, companyId),
-            ne(issues.status, "done"),
+            notInArray(issues.status, BLOCKER_ATTENTION_TERMINAL_STATUSES),
           ),
         );
       const childRowsPromise: Promise<IssueBlockerAttentionQueryRow[]> = dbOrTx
@@ -1566,7 +1571,7 @@ async function listIssueBlockerAttentionMap(
           and(
             eq(issues.companyId, companyId),
             inArray(issues.parentId, chunk),
-            ne(issues.status, "done"),
+            notInArray(issues.status, BLOCKER_ATTENTION_TERMINAL_STATUSES),
           ),
         );
       const [explicitBlockerRows, childRows] = await Promise.all([
@@ -1658,7 +1663,7 @@ async function listIssueBlockerAttentionMap(
   }
 
   const explicitWaitCandidateIds = [...nodesById.values()]
-    .filter((node) => node.status !== "done")
+    .filter((node) => !isBlockerAttentionTerminalStatus(node.status))
     .map((node) => node.id);
   const explicitWaitingIssueIds = new Set<string>();
   if (explicitWaitCandidateIds.length > 0) {
@@ -1755,13 +1760,13 @@ async function listIssueBlockerAttentionMap(
       return { covered: false, stalled: false, sampleBlockerIdentifier: nodeId, sampleStalledBlockerIdentifier: null };
     }
     const nodeSample = blockerSampleIdentifier(node);
-    if (node.status === "done") {
+    if (isBlockerAttentionTerminalStatus(node.status)) {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (explicitWaitingIssueIds.has(node.id)) {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
-    if (node.assigneeUserId && node.status !== "cancelled") {
+    if (node.assigneeUserId) {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (node.status === "in_review") {
@@ -1774,14 +1779,14 @@ async function listIssueBlockerAttentionMap(
     if (activeIssueIds.has(node.id)) {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
-    if (node.status === "cancelled") {
-      return { covered: false, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
-    }
     if (node.status === "backlog" && node.assigneeAgentId) {
       return { covered: false, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
 
-    const downstream = (edgesByIssueId.get(node.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
+    const downstream = (edgesByIssueId.get(node.id) ?? []).filter((edge) => {
+      const blockerStatus = nodesById.get(edge.blockerIssueId)?.status;
+      return blockerStatus ? !isBlockerAttentionTerminalStatus(blockerStatus) : false;
+    });
     if (downstream.length > 0) {
       const nextSeen = new Set(seen);
       nextSeen.add(nodeId);
@@ -1825,7 +1830,10 @@ async function listIssueBlockerAttentionMap(
   };
 
   for (const root of roots) {
-    const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
+    const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => {
+      const blockerStatus = nodesById.get(edge.blockerIssueId)?.status;
+      return blockerStatus ? !isBlockerAttentionTerminalStatus(blockerStatus) : false;
+    });
     if (topLevelEdges.length === 0) {
       attentionMap.set(root.id, createIssueBlockerAttention({
         state: "needs_attention",

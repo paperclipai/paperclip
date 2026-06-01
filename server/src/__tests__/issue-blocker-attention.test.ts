@@ -414,15 +414,15 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       status: "in_review",
       assigneeAgentId: agentId,
     });
-    const cancelledLeafId = await insertIssue({
+    const idleLeafId = await insertIssue({
       companyId,
       identifier: "PBQ-3",
-      title: "Cancelled blocker",
-      status: "cancelled",
+      title: "Idle blocker",
+      status: "todo",
       assigneeAgentId: agentId,
     });
     await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
-    await block({ companyId, blockerIssueId: cancelledLeafId, blockedIssueId: parentId });
+    await block({ companyId, blockerIssueId: idleLeafId, blockedIssueId: parentId });
 
     const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
 
@@ -433,6 +433,101 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       stalledBlockerCount: 1,
       attentionBlockerCount: 1,
       sampleStalledBlockerIdentifier: "PBQ-2",
+    });
+  });
+
+  it("excludes cancelled child issues from blocker attention counts and samples", async () => {
+    const { companyId, agentId } = await createCompany("PBN");
+    const parentId = await insertIssue({ companyId, identifier: "PBN-1", title: "Parent", status: "blocked" });
+    await insertIssue({
+      companyId,
+      identifier: "PBN-2",
+      title: "Cancelled child",
+      status: "cancelled",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 0,
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: null,
+      sampleStalledBlockerIdentifier: null,
+    });
+  });
+
+  it("excludes cancelled explicit blockers from blocker attention counts and samples", async () => {
+    const { companyId, agentId } = await createCompany("PBD");
+    const parentId = await insertIssue({ companyId, identifier: "PBD-1", title: "Parent", status: "blocked" });
+    const cancelledBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBD-2",
+      title: "Cancelled dependency",
+      status: "cancelled",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: cancelledBlockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 0,
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: null,
+      sampleStalledBlockerIdentifier: null,
+    });
+  });
+
+  it("ignores cancelled blockers when choosing between stalled and attention paths", async () => {
+    const { companyId, agentId } = await createCompany("PBT");
+    const parentId = await insertIssue({ companyId, identifier: "PBT-1", title: "Parent", status: "blocked" });
+    const reviewLeafId = await insertIssue({
+      companyId,
+      identifier: "PBT-2",
+      title: "Stalled review leaf",
+      status: "in_review",
+      assigneeAgentId: agentId,
+    });
+    const cancelledChildId = await insertIssue({
+      companyId,
+      identifier: "PBT-3",
+      title: "Cancelled child",
+      status: "cancelled",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    const cancelledDependencyId = await insertIssue({
+      companyId,
+      identifier: "PBT-4",
+      title: "Cancelled dependency",
+      status: "cancelled",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
+    await block({ companyId, blockerIssueId: cancelledChildId, blockedIssueId: parentId });
+    await block({ companyId, blockerIssueId: cancelledDependencyId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "stalled",
+      reason: "stalled_review",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 1,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBT-2",
+      sampleStalledBlockerIdentifier: "PBT-2",
     });
   });
 
@@ -476,8 +571,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
       reason: "active_dependency",
-      unresolvedBlockerCount: 2,
-      coveredBlockerCount: 2,
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
       attentionBlockerCount: 0,
     });
   });
