@@ -26,7 +26,7 @@ jobs:
         run: helm lint deploy/helm/paperclip
 
       - name: Install helm-unittest
-        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v1.1.0
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v1.1.0 --verify=false
 
       - name: helm unittest
         run: helm unittest deploy/helm/paperclip
