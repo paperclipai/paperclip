@@ -246,10 +246,15 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
     try {
       plugin = await registry.getById(pluginId);
     } catch (error) {
-      const maybeCode =
-        typeof error === "object" && error !== null && "code" in error
-          ? (error as { code?: unknown }).code
-          : undefined;
+      const extractCode = (e: unknown): unknown => {
+        if (typeof e !== "object" || e === null) return undefined;
+        if ("code" in e && (e as { code?: unknown }).code !== undefined) {
+          return (e as { code?: unknown }).code;
+        }
+        if ("cause" in e) return extractCode((e as { cause?: unknown }).cause);
+        return undefined;
+      };
+      const maybeCode = extractCode(error);
       if (maybeCode !== "22P02") {
         throw error;
       }
