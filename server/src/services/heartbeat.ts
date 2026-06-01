@@ -10070,7 +10070,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       `);
 
       // Filter to only those whose most recent run was a failure.
-      const failedIds = (latestRows as Array<Record<string, unknown>>)
+      // db.execute may return rows as a plain array (postgres-js) or wrapped in
+      // { rows: [] } (node-postgres); normalise before filtering.
+      const rawRows: Array<Record<string, unknown>> = Array.isArray(latestRows)
+        ? (latestRows as Array<Record<string, unknown>>)
+        : ((latestRows as { rows?: Array<Record<string, unknown>> }).rows ?? []);
+      const failedIds = rawRows
         .filter((r) => r.status === "failed" || r.status === "timed_out")
         .map((r) => r.id as string);
 
@@ -10085,8 +10090,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const rows = await db
         .select(buildHeartbeatRunListProjection(safeForLegacyEncoding))
         .from(heartbeatRuns)
-        .where(inArray(heartbeatRuns.id, failedIds))
-        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
+        .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, failedIds)))
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+        .limit(500);
 
       return rows.map((row) => mapHeartbeatRunListRow(row, safeForLegacyEncoding));
     },

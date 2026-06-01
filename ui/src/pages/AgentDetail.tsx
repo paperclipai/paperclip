@@ -749,7 +749,7 @@ export function AgentDetail() {
   const { data: runStats } = useQuery({
     queryKey: [...queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined), "stats"],
     queryFn: () => heartbeatsApi.stats(resolvedCompanyId!, agent?.id ?? undefined),
-    enabled: !!resolvedCompanyId && !!agent?.id,
+    enabled: !!resolvedCompanyId && !!agent?.id && needsDashboardData,
   });
 
   const { data: allIssues } = useQuery({
