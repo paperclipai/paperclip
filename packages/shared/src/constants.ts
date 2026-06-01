@@ -784,6 +784,7 @@ export const PLUGIN_CAPABILITIES = [
   "access.invites.write",
   "authorization.grants.write",
   "authorization.policies.write",
+  "approvals.resolve",
   "agent.sessions.create",
   "agent.sessions.list",
   "agent.sessions.send",

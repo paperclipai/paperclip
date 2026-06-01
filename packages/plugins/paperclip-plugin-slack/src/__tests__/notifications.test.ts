@@ -83,6 +83,22 @@ function makeContext(configOverrides: Record<string, unknown> = {}) {
           json: async () => ({ ok: true, ts: TS }),
         })),
       },
+      rpc: {
+        call: vi.fn(async () => ({
+          id: APPROVAL,
+          companyId: COMPANY,
+          type: "request_board_approval",
+          status: "approved",
+          requestedByAgentId: null,
+          requestedByUserId: null,
+          decisionNote: null,
+          decidedByUserId: "slack:U_OMAR",
+          decidedAt: new Date().toISOString(),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          applied: true,
+        })),
+      },
     },
   };
 }
@@ -228,6 +244,10 @@ describe("Slack notifications", () => {
 
     expect(ctx.http.fetch).not.toHaveBeenCalledWith(
       expect.stringContaining("/api/approvals/"),
+      expect.any(Object),
+    );
+    expect(ctx.rpc.call).not.toHaveBeenCalledWith(
+      "approvals.resolve",
       expect.any(Object),
     );
     expect(ctx.logger.warn).toHaveBeenCalledWith(

@@ -37,10 +37,10 @@ export interface SlackPluginConfig {
   maxAgentsPerThread: number;
   /**
    * Slack user IDs allowed to resolve approvals via reaction (✅/❌) or thread
-   * command (!approve/!reject/!revise). The server gates approve/reject/revision
-   * with `assertBoard` using the plugin's own bearer — NOT the reacting user — so
-   * this allowlist is the only place reactor authorization is enforced. Empty list
-   * means no one can resolve via Slack interactions (notifications stay read-only).
+   * command (!approve/!reject/!revise). The plugin calls the host-owned
+   * `approvals.resolve` RPC after this allowlist check; the public board-only
+   * approvals API is not called from Slack interactions. Empty list means no one
+   * can resolve via Slack interactions (notifications stay read-only).
    */
   approvalReactorSlackIds?: string[];
 }

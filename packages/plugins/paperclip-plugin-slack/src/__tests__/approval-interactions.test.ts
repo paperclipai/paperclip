@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   resolveApproval,
+  resolvePaperclipApproval,
   tryUndoResolution,
   emojiToDecision,
   parseThreadCommand,
@@ -16,6 +17,20 @@ const TS = "1717200000.000100";
 
 function makeCtx() {
   const store = new Map<string, unknown>();
+  const call = vi.fn(async () => ({
+    id: APPROVAL,
+    companyId: COMPANY,
+    type: "request_board_approval",
+    status: "approved",
+    requestedByAgentId: null,
+    requestedByUserId: null,
+    decisionNote: null,
+    decidedByUserId: "slack:U_OMAR",
+    decidedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    applied: true,
+  }));
   const fetch = vi.fn(
     async (
       _url: string,
@@ -26,6 +41,7 @@ function makeCtx() {
     }),
   );
   const ctx = {
+    rpc: { call },
     http: { fetch },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     metrics: { write: vi.fn(async () => undefined) },
@@ -39,7 +55,7 @@ function makeCtx() {
       }),
     },
   };
-  return { ctx, fetch, store };
+  return { ctx, fetch, call, store };
 }
 
 const baseParams = {
@@ -89,19 +105,20 @@ describe("parseThreadCommand", () => {
 describe("resolveApproval", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("approves: POSTs /approve, sets the lock, and edits the card", async () => {
-    const { ctx, fetch, store } = makeCtx();
+  it("approves through approvals.resolve, sets the lock, and edits the card", async () => {
+    const { ctx, fetch, call, store } = makeCtx();
     const res = await resolveApproval(ctx as any, "xoxb", {
       ...baseParams,
       decision: "approve",
     });
     expect(res.ok).toBe(true);
-    // approve POST
-    expect(fetch).toHaveBeenCalledWith(
-      `${BASE}/api/approvals/${APPROVAL}/approve`,
+    expect(call).toHaveBeenCalledWith(
+      "approvals.resolve",
       expect.objectContaining({
-        method: "POST",
-        body: expect.stringContaining("slack:U_OMAR"),
+        companyId: COMPANY,
+        approvalId: APPROVAL,
+        decision: "approve",
+        decidedByUserId: "slack:U_OMAR",
       }),
     );
     // status-echo card edit
@@ -123,34 +140,32 @@ describe("resolveApproval", () => {
     );
   });
 
-  it("rejects: POSTs /reject", async () => {
-    const { ctx, fetch } = makeCtx();
+  it("rejects through approvals.resolve", async () => {
+    const { ctx, call } = makeCtx();
     await resolveApproval(ctx as any, "xoxb", { ...baseParams, decision: "reject" });
-    expect(fetch).toHaveBeenCalledWith(
-      `${BASE}/api/approvals/${APPROVAL}/reject`,
-      expect.any(Object),
+    expect(call).toHaveBeenCalledWith(
+      "approvals.resolve",
+      expect.objectContaining({ decision: "reject" }),
     );
   });
 
-  it("revise: POSTs /request-revision with the reason as decisionNote", async () => {
-    const { ctx, fetch } = makeCtx();
+  it("revise: calls approvals.resolve with the reason as decisionNote", async () => {
+    const { ctx, call } = makeCtx();
     await resolveApproval(ctx as any, "xoxb", {
       ...baseParams,
       decision: "revise",
       reason: "add tests",
     });
-    expect(fetch).toHaveBeenCalledWith(
-      `${BASE}/api/approvals/${APPROVAL}/request-revision`,
-      expect.objectContaining({ body: expect.stringContaining("add tests") }),
+    expect(call).toHaveBeenCalledWith(
+      "approvals.resolve",
+      expect.objectContaining({ decision: "revise", decisionNote: "add tests" }),
     );
   });
 
   it("is idempotent: a second conflicting decision is a no-op", async () => {
-    const { ctx, fetch } = makeCtx();
+    const { ctx, call } = makeCtx();
     await resolveApproval(ctx as any, "xoxb", { ...baseParams, decision: "approve" });
-    const decideCalls = fetch.mock.calls.filter((c) =>
-      String(c[0]).includes("/api/approvals/"),
-    ).length;
+    const decideCalls = call.mock.calls.length;
 
     const second = await resolveApproval(ctx as any, "xoxb", {
       ...baseParams,
@@ -158,31 +173,39 @@ describe("resolveApproval", () => {
       slackUserId: "U_OTHER",
     });
     expect(second.alreadyResolved).toBe(true);
-    // no new approvals API call beyond the first decision
-    const after = fetch.mock.calls.filter((c) =>
-      String(c[0]).includes("/api/approvals/"),
-    ).length;
+    // no new approvals RPC call beyond the first decision
+    const after = call.mock.calls.length;
     expect(after).toBe(decideCalls);
   });
 
-  it("releases the lock and reports when the server returns non-2xx", async () => {
-    const { ctx, fetch, store } = makeCtx();
-    fetch.mockResolvedValueOnce({ status: 500, json: async () => ({ ok: false }) });
+  it("releases the lock and reports when the host resolver rejects", async () => {
+    const { ctx, call, store } = makeCtx();
+    call.mockRejectedValueOnce(new Error("resolver unavailable"));
     const res = await resolveApproval(ctx as any, "xoxb", {
       ...baseParams,
       decision: "approve",
     });
     expect(res.ok).toBe(false);
-    expect(res.error).toBe("http_500");
+    expect(res.error).toBe("resolve_failed");
     // lock cleared so a corrected retry is possible
     expect(store.has(STATE_KEYS.approvalResolved(APPROVAL))).toBe(false);
   });
 
   it("releases the lock and leaves the card alone when the server reports applied=false", async () => {
-    const { ctx, fetch, store } = makeCtx();
-    fetch.mockResolvedValueOnce({
-      status: 200,
-      json: async () => ({ id: APPROVAL, status: "approved", applied: false }),
+    const { ctx, fetch, call, store } = makeCtx();
+    call.mockResolvedValueOnce({
+      id: APPROVAL,
+      companyId: COMPANY,
+      type: "request_board_approval",
+      status: "approved",
+      requestedByAgentId: null,
+      requestedByUserId: null,
+      decisionNote: null,
+      decidedByUserId: "slack:U_OMAR",
+      decidedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      applied: false,
     });
 
     const res = await resolveApproval(ctx as any, "xoxb", {
@@ -209,19 +232,43 @@ describe("resolveApproval", () => {
     );
   });
 
-  it("deletes the lock when the approvals API call throws", async () => {
-    const { ctx, fetch, store } = makeCtx();
-    fetch.mockRejectedValueOnce(new Error("network down"));
+  it("deletes the lock when the host approval resolver throws", async () => {
+    const { ctx, call, store } = makeCtx();
+    call.mockRejectedValueOnce(new Error("resolver down"));
 
     const res = await resolveApproval(ctx as any, "xoxb", {
       ...baseParams,
       decision: "approve",
     });
 
-    expect(res).toMatchObject({ ok: false, error: "fetch_failed" });
+    expect(res).toMatchObject({ ok: false, error: "resolve_failed" });
     expect(store.has(STATE_KEYS.approvalResolved(APPROVAL))).toBe(false);
     expect(ctx.state.delete).toHaveBeenCalledWith(
       expect.objectContaining({ stateKey: STATE_KEYS.approvalResolved(APPROVAL) }),
+    );
+  });
+
+  it("uses approvals.resolve instead of the public board-only approvals API", async () => {
+    const { ctx, fetch, call } = makeCtx();
+    await resolvePaperclipApproval(ctx as any, {
+      companyId: COMPANY,
+      approvalId: APPROVAL,
+      decision: "approve",
+      slackUserId: "U_OMAR",
+    });
+
+    expect(call).toHaveBeenCalledWith(
+      "approvals.resolve",
+      expect.objectContaining({
+        companyId: COMPANY,
+        approvalId: APPROVAL,
+        decision: "approve",
+        decidedByUserId: "slack:U_OMAR",
+      }),
+    );
+    expect(fetch).not.toHaveBeenCalledWith(
+      expect.stringContaining("/api/approvals/"),
+      expect.any(Object),
     );
   });
 });

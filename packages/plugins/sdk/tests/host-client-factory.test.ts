@@ -118,6 +118,17 @@ describe("createHostClientHandlers invocation company scope", () => {
       { companyId: "company-a" },
       (services: HostServices) => vi.mocked(services.authorization.searchAudit),
     ],
+    [
+      "approvals.resolve",
+      "approvals.resolve",
+      {
+        companyId: "company-a",
+        approvalId: "approval-a",
+        decision: "approve",
+        decidedByUserId: "slack:U1",
+      },
+      (services: HostServices) => vi.mocked(services.approvals.resolve),
+    ],
   ] as const)(
     "rejects %s when the plugin lacks %s",
     async (method, capability, params, getDelegate) => {
@@ -130,6 +141,22 @@ describe("createHostClientHandlers invocation company scope", () => {
           setGrants: vi.fn(async () => []),
           updatePolicy: vi.fn(async () => ({ policy: null })),
           searchAudit: vi.fn(async () => []),
+        },
+        approvals: {
+          resolve: vi.fn(async () => ({
+            id: "approval-a",
+            companyId: "company-a",
+            type: "request_board_approval",
+            status: "approved",
+            requestedByAgentId: null,
+            requestedByUserId: null,
+            decisionNote: null,
+            decidedByUserId: "slack:U1",
+            decidedAt: new Date().toISOString(),
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            applied: true,
+          })),
         },
       } as unknown as HostServices;
       const handlers = createHostClientHandlers({
@@ -171,5 +198,43 @@ describe("createHostClientHandlers invocation company scope", () => {
       ),
     ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
     expect(searchAudit).not.toHaveBeenCalled();
+  });
+
+  it("checks invocation company scope before resolving approvals", async () => {
+    const resolve = vi.fn(async () => ({
+      id: "approval-a",
+      companyId: "company-a",
+      type: "request_board_approval",
+      status: "approved",
+      requestedByAgentId: null,
+      requestedByUserId: null,
+      decisionNote: null,
+      decidedByUserId: "slack:U1",
+      decidedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      applied: true,
+    }));
+    const services = {
+      approvals: { resolve },
+    } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["approvals.resolve"],
+      services,
+    });
+
+    await expect(
+      handlers["approvals.resolve"](
+        {
+          companyId: "company-b",
+          approvalId: "approval-a",
+          decision: "approve",
+          decidedByUserId: "slack:U1",
+        },
+        { invocationScope: { companyId: "company-a" } },
+      ),
+    ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    expect(resolve).not.toHaveBeenCalled();
   });
 });

@@ -145,6 +145,11 @@ export interface HostServices {
     fetch(params: WorkerToHostMethods["http.fetch"][0]): Promise<WorkerToHostMethods["http.fetch"][1]>;
   };
 
+  /** Provides `approvals.resolve`. */
+  approvals: {
+    resolve(params: WorkerToHostMethods["approvals.resolve"][0]): Promise<WorkerToHostMethods["approvals.resolve"][1]>;
+  };
+
   /** Provides `secrets.resolve`, `secrets.list`, `secrets.manage`. */
   secrets: {
     resolve(params: WorkerToHostMethods["secrets.resolve"][0]): Promise<string>;
@@ -410,6 +415,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
 
   // HTTP
   "http.fetch": "http.outbound",
+
+  // Approvals
+  "approvals.resolve": "approvals.resolve",
 
   // Secrets
   "secrets.resolve": "secrets.read-ref",
@@ -743,6 +751,11 @@ export function createHostClientHandlers(
     // HTTP
     "http.fetch": gated("http.fetch", async (params) => {
       return services.http.fetch(params);
+    }),
+
+    // Approvals
+    "approvals.resolve": gated("approvals.resolve", async (params) => {
+      return services.approvals.resolve(params);
     }),
 
     // Secrets

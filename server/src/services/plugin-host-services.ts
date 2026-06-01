@@ -3,6 +3,7 @@ import {
   activityLog,
   agentTaskSessions as agentTaskSessionsTable,
   agents as agentsTable,
+  approvals as approvalsTable,
   authUsers,
   budgetIncidents,
   costEvents,
@@ -78,6 +79,7 @@ import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
+import { resolveApprovalWithSideEffects } from "./approval-resolution.js";
 import { sanitizeRecord } from "../redaction.js";
 
 // ---------------------------------------------------------------------------
@@ -708,6 +710,36 @@ export function buildHostServices(
     });
   };
 
+  const pluginApprovalResolutionResult = (
+    approval: {
+      id: string;
+      companyId: string;
+      type: string;
+      status: string;
+      requestedByAgentId: string | null;
+      requestedByUserId: string | null;
+      decisionNote: string | null;
+      decidedByUserId: string | null;
+      decidedAt: Date | null;
+      createdAt: Date;
+      updatedAt: Date;
+    },
+    applied: boolean,
+  ) => ({
+    id: approval.id,
+    companyId: approval.companyId,
+    type: approval.type,
+    status: approval.status,
+    requestedByAgentId: approval.requestedByAgentId,
+    requestedByUserId: approval.requestedByUserId,
+    decisionNote: approval.decisionNote,
+    decidedByUserId: approval.decidedByUserId,
+    decidedAt: approval.decidedAt?.toISOString() ?? null,
+    createdAt: approval.createdAt.toISOString(),
+    updatedAt: approval.updatedAt.toISOString(),
+    applied,
+  });
+
   const collectIssueSubtreeIds = async (companyId: string, rootIssueId: string) => {
     const seen = new Set<string>([rootIssueId]);
     let frontier = [rootIssueId];
@@ -1230,6 +1262,38 @@ export function buildHostServices(
         } finally {
           clearTimeout(timeout);
         }
+      },
+    },
+
+    approvals: {
+      async resolve(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const existing = await db
+          .select({
+            id: approvalsTable.id,
+            companyId: approvalsTable.companyId,
+          })
+          .from(approvalsTable)
+          .where(eq(approvalsTable.id, params.approvalId))
+          .then((rows) => rows[0] ?? null);
+        requireInCompany("Approval", existing, companyId);
+
+        const { approval, applied } = await resolveApprovalWithSideEffects(db, {
+          pluginWorkerManager: options.pluginWorkerManager,
+        }, {
+          approvalId: params.approvalId,
+          decision: params.decision,
+          decidedByUserId: params.decidedByUserId,
+          decisionNote: params.decisionNote,
+          actor: {
+            activityActorType: "plugin",
+            activityActorId: pluginId,
+            requesterWakeActorType: "system",
+            requesterWakeActorId: pluginId,
+          },
+        });
+        return pluginApprovalResolutionResult(approval, applied);
       },
     },
 

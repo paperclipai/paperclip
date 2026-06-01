@@ -6,11 +6,11 @@ import { postMessage, updateMessage } from "./slack-api.js";
  * Phase 1 approval interactions: resolve a Slack-posted approval card via
  * reaction (✅/❌) or thread command (!approve/!reject/!revise).
  *
- * Authorization note: the Paperclip server gates /approve, /reject, and
- * /request-revision with `assertBoard` using THIS plugin's bearer token — not
- * the reacting Slack user. The `decidedByUserId: slack:<id>` body field is audit
- * metadata only. Reactor authorization is therefore enforced entirely
- * client-side here, against `config.approvalReactorSlackIds`.
+ * Authorization note: Slack validates the event signature, then this plugin
+ * checks `config.approvalReactorSlackIds` before calling the host-owned
+ * `approvals.resolve` RPC. The Slack user id is persisted as audit metadata
+ * (`decidedByUserId: slack:<id>`); the public board-only approvals API is not
+ * called from the plugin worker.
  */
 
 export type ApprovalDecision = "approve" | "reject" | "revise";
@@ -117,20 +117,6 @@ function undoMessage(params: {
   };
 }
 
-async function readJsonObject(
-  res: { json?: () => Promise<unknown> },
-): Promise<Record<string, unknown> | null> {
-  if (typeof res.json !== "function") return null;
-  try {
-    const body = await res.json();
-    return body && typeof body === "object" && !Array.isArray(body)
-      ? (body as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
 /** Grace window (ms) within which removing the resolving reaction can undo. */
 export const UNDO_GRACE_MS = 30_000;
 
@@ -142,8 +128,32 @@ interface ResolvedLock {
 
 type ResolveCtx = Pick<
   PluginContext,
-  "http" | "logger" | "state" | "metrics"
+  "http" | "logger" | "state" | "metrics" | "rpc"
 >;
+
+type HostApprovalResolution = {
+  applied?: boolean;
+  status?: string;
+};
+
+export async function resolvePaperclipApproval(
+  ctx: Pick<PluginContext, "rpc">,
+  params: {
+    companyId: string;
+    approvalId: string;
+    decision: ApprovalDecision;
+    slackUserId: string;
+    reason?: string;
+  },
+): Promise<HostApprovalResolution> {
+  return ctx.rpc.call<HostApprovalResolution>("approvals.resolve", {
+    companyId: params.companyId,
+    approvalId: params.approvalId,
+    decision: params.decision,
+    decidedByUserId: `slack:${params.slackUserId}`,
+    decisionNote: params.reason ?? null,
+  });
+}
 
 export interface ResolveApprovalParams {
   companyId: string;
@@ -200,42 +210,18 @@ export async function resolveApproval(
     at: new Date().toISOString(),
   } satisfies ResolvedLock);
 
-  // --- Call the Paperclip approvals API ---
-  const endpoint = DECISION_ENDPOINT[decision];
   try {
-    const res = await ctx.http.fetch(
-      `${paperclipBaseUrl}/api/approvals/${approvalId}/${endpoint}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          decidedByUserId: `slack:${slackUserId}`,
-          decisionNote: reason ?? null,
-        }),
-      },
-    );
-    // Paperclip create/resolve can return 5xx even on success; treat 2xx as ok,
-    // and surface non-2xx without blind-retrying (the lock already guards dupes).
-    const ok = res.status >= 200 && res.status < 300;
-    if (!ok) {
-      // Release the lock so a corrected retry is possible.
-      await ctx.state.delete(lockRef);
-      ctx.logger.warn("Approval action returned non-2xx", {
-        approvalId,
-        endpoint,
-        status: res.status,
-      });
-      await postMessage(ctx, token, channel, {
-        text: `:warning: Couldn't ${decision} approval \`${approvalId}\` (HTTP ${res.status}). No change made.`,
-      }, { threadTs: threadTs ?? ts });
-      return { ok: false, error: `http_${res.status}` };
-    }
-    const body = await readJsonObject(res);
+    const body = await resolvePaperclipApproval(ctx, {
+      companyId,
+      approvalId,
+      decision,
+      slackUserId,
+      reason,
+    });
     if (body?.applied === false) {
       await ctx.state.delete(lockRef);
       ctx.logger.info("Approval action was already resolved server-side", {
         approvalId,
-        endpoint,
         status: body.status,
       });
       await postMessage(ctx, token, channel, {
@@ -245,11 +231,11 @@ export async function resolveApproval(
     }
   } catch (err) {
     await ctx.state.delete(lockRef);
-    ctx.logger.warn("Approval action failed", { approvalId, endpoint, err });
+    ctx.logger.warn("Approval action failed", { approvalId, decision, err });
     await postMessage(ctx, token, channel, {
       text: `:warning: Couldn't ${decision} approval \`${approvalId}\`. No change made.`,
     }, { threadTs: threadTs ?? ts });
-    return { ok: false, error: "fetch_failed" };
+    return { ok: false, error: "resolve_failed" };
   }
 
   // --- Status echo: edit the original card with actor + outcome + time ---
@@ -270,7 +256,7 @@ export async function resolveApproval(
   );
 
   await ctx.metrics.write("slack.approvals.decided", 1, {
-    decision: endpoint,
+    decision: DECISION_ENDPOINT[decision],
     source: "slack_interaction",
   });
 

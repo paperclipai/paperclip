@@ -75,6 +75,7 @@ import { resolveSlackUserId } from "./user-mapping.js";
 import { postHumanDecisionEscalation } from "./escalation-watch.js";
 import {
   resolveApproval,
+  resolvePaperclipApproval,
   tryUndoResolution,
   emojiToDecision,
   parseThreadCommand,
@@ -332,7 +333,7 @@ async function handleSlashCommand(
   ctx: PluginContext,
   rawBody: string,
 ): Promise<void> {
-  const { text, responseUrl, channelId, threadTs } = parseSlashCommand(rawBody);
+  const { text, responseUrl, userId, channelId, threadTs } = parseSlashCommand(rawBody);
   const parts = text.trim().split(/\s+/);
   const subcommand = parts[0]?.toLowerCase() ?? "";
   const arg = parts[1]?.toLowerCase() ?? "";
@@ -353,7 +354,7 @@ async function handleSlashCommand(
         await handleIssuesCommand(ctx, companyId, responseUrl, arg);
         break;
       case "approve":
-        await handleApproveCommand(ctx, responseUrl, arg);
+        await handleApproveCommand(ctx, companyId, responseUrl, arg, userId);
         break;
       case "acp": {
         const acpText = parts.slice(1).join(" ");
@@ -585,8 +586,10 @@ async function handleIssuesCommand(
 
 async function handleApproveCommand(
   ctx: PluginContext,
+  companyId: string,
   responseUrl: string,
   approvalId: string,
+  slackUserId: string,
 ): Promise<void> {
   if (!approvalId) {
     await respondEphemeral(ctx, responseUrl, {
@@ -594,20 +597,39 @@ async function handleApproveCommand(
     });
     return;
   }
+  if (!companyId) {
+    await respondEphemeral(ctx, responseUrl, {
+      text: ":x: Could not resolve the Paperclip company for this approval.",
+    });
+    return;
+  }
+  if (!slackUserId || !isAuthorizedReactor(slackUserId)) {
+    await respondEphemeral(ctx, responseUrl, {
+      text: slackUserId
+        ? `:warning: <@${slackUserId}> is not on the approval allowlist - command ignored.`
+        : ":warning: Command ignored because Slack did not include a user id.",
+    });
+    return;
+  }
   try {
-    await ctx.http.fetch(
-      `${pluginConfig.paperclipBaseUrl}/api/approvals/${approvalId}/approve`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decidedByUserId: "slack:command" }),
-      },
-    );
+    const result = await resolvePaperclipApproval(ctx, {
+      companyId,
+      approvalId,
+      decision: "approve",
+      slackUserId,
+    });
+    if (result.applied === false) {
+      await respondEphemeral(ctx, responseUrl, {
+        text: `:information_source: Approval \`${approvalId}\` was already resolved server-side.`,
+      });
+      return;
+    }
     await respondEphemeral(ctx, responseUrl, {
       text: `:white_check_mark: Approval \`${approvalId}\` approved.`,
     });
     await ctx.metrics.write("slack.approvals.decided", 1, {
       decision: "approve",
+      source: "slash_command",
     });
   } catch (err) {
     ctx.logger.warn("Approve command failed", { approvalId, err });
@@ -1899,18 +1921,30 @@ const plugin = definePlugin({
       if (actionId === "approval_approve" || actionId === "approval_reject") {
         if (!canProcessMutatingApprovalWebhook("interactivity")) return;
         const approved = actionId === "approval_approve";
-        const endpoint = approved ? "approve" : "reject";
+        const decision = approved ? "approve" : "reject";
         try {
-          await pluginCtx.http.fetch(
-            `${pluginConfig.paperclipBaseUrl}/api/approvals/${actionValue}/${endpoint}`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                decidedByUserId: `slack:${userId}`,
-              }),
-            },
-          );
+          if (!userId || !isAuthorizedReactor(userId)) {
+            await respondToAction(pluginCtx, pluginToken, responseUrl, {
+              text: userId
+                ? `:warning: <@${userId}> is not on the approval allowlist - action ignored.`
+                : ":warning: Action ignored because Slack did not include a user id.",
+            });
+            return;
+          }
+          const companyId = await resolveTargetCompanyId(pluginCtx);
+          if (!companyId) return;
+          const result = await resolvePaperclipApproval(pluginCtx, {
+            companyId,
+            approvalId: actionValue,
+            decision,
+            slackUserId: userId,
+          });
+          if (result.applied === false) {
+            await respondToAction(pluginCtx, pluginToken, responseUrl, {
+              text: `:information_source: Approval \`${actionValue}\` was already resolved server-side.`,
+            });
+            return;
+          }
           await respondToAction(
             pluginCtx,
             pluginToken,
@@ -1918,7 +1952,8 @@ const plugin = definePlugin({
             formatApprovalResolved(actionValue, approved, userId),
           );
           await pluginCtx.metrics.write("slack.approvals.decided", 1, {
-            decision: endpoint,
+            decision,
+            source: "interactivity",
           });
         } catch (err) {
           pluginCtx.logger.warn("Failed to handle approval action", {

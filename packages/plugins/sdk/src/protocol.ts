@@ -807,6 +807,31 @@ export interface WorkerToHostMethods {
     result: { status: number; statusText: string; headers: Record<string, string>; body: string },
   ];
 
+  // Approvals
+  "approvals.resolve": [
+    params: {
+      companyId: string;
+      approvalId: string;
+      decision: "approve" | "reject" | "revise";
+      decidedByUserId: string;
+      decisionNote?: string | null;
+    },
+    result: {
+      id: string;
+      companyId: string;
+      type: string;
+      status: string;
+      requestedByAgentId: string | null;
+      requestedByUserId: string | null;
+      decisionNote: string | null;
+      decidedByUserId: string | null;
+      decidedAt: string | null;
+      createdAt: string;
+      updatedAt: string;
+      applied: boolean;
+    },
+  ];
+
   // Secrets
   "secrets.resolve": [
     params: { secretRef: string },
