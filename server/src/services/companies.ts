@@ -35,7 +35,6 @@ import {
   inboxDismissals,
   issueExecutionDecisions,
   agentConfigRevisions,
-  issuePlanDecompositions,
   heartbeatRunWatchdogDecisions,
   secretAccessEvents,
   issueDocuments,
@@ -325,7 +324,6 @@ export function companyService(db: Db) {
         await tx.delete(issueAttachments).where(eq(issueAttachments.companyId, id));
         await tx.delete(issueApprovals).where(eq(issueApprovals.companyId, id));
         await tx.delete(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, id));
-        await tx.delete(issuePlanDecompositions).where(eq(issuePlanDecompositions.companyId, id));
         await tx.delete(issueReferenceMentions).where(eq(issueReferenceMentions.companyId, id));
         await tx.delete(documentAnnotationComments).where(eq(documentAnnotationComments.companyId, id));
         await tx.delete(feedbackVotes).where(eq(feedbackVotes.companyId, id));

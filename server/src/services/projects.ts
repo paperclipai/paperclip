@@ -784,7 +784,7 @@ export function projectService(db: Db) {
     },
 
     remove: async (id: string) => {
-      const existing = await getById(id);
+      const existing = await getProjectById(id);
       if (!existing) return null;
 
       // Get issue IDs for this project to cascade-delete issue children
