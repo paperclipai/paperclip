@@ -22,7 +22,6 @@ import {
 
 const INBOX_ISSUE_STATUSES = "backlog,todo,in_progress,in_review,blocked,done";
 const INBOX_BADGE_ISSUE_LIMIT = 500;
-const INBOX_BADGE_HEARTBEAT_RUN_LIMIT = 200;
 
 export function useDismissedInboxAlerts() {
   const [dismissed, setDismissed] = useState<Set<string>>(loadDismissedInboxAlerts);
@@ -189,9 +188,9 @@ export function useInboxBadge(companyId: string | null | undefined) {
   const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
 
-  const { data: heartbeatRuns = [] } = useQuery({
-    queryKey: [...queryKeys.heartbeats(companyId!), "limit", INBOX_BADGE_HEARTBEAT_RUN_LIMIT],
-    queryFn: () => heartbeatsApi.list(companyId!, undefined, INBOX_BADGE_HEARTBEAT_RUN_LIMIT),
+  const { data: latestFailedRuns = [] } = useQuery({
+    queryKey: [...queryKeys.heartbeats(companyId!), "latest-failed"],
+    queryFn: () => heartbeatsApi.latestFailed(companyId!),
     enabled: !!companyId,
   });
 
@@ -201,12 +200,12 @@ export function useInboxBadge(companyId: string | null | undefined) {
         approvals,
         joinRequests,
         dashboard,
-        heartbeatRuns,
+        latestFailedRuns,
         mineIssues,
         dismissedAlerts,
         dismissedAtByKey,
         currentUserId,
       }),
-    [approvals, joinRequests, dashboard, heartbeatRuns, mineIssues, dismissedAlerts, dismissedAtByKey, currentUserId],
+    [approvals, joinRequests, dashboard, latestFailedRuns, mineIssues, dismissedAlerts, dismissedAtByKey, currentUserId],
   );
 }
