@@ -42,6 +42,14 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
 
+vi.mock("../services/environments.js", () => ({
+  environmentService: () => mockEnvironmentService,
+}));
+
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => mockSecretService,
+}));
+
 vi.mock("../services/workspace-runtime.js", () => ({
   startRuntimeServicesForWorkspaceControl: vi.fn(),
   stopRuntimeServicesForProjectWorkspace: vi.fn(),
@@ -61,6 +69,14 @@ function registerModuleMocks() {
     workspaceOperationService: () => mockWorkspaceOperationService,
   }));
 
+  vi.doMock("../services/environments.js", () => ({
+    environmentService: () => mockEnvironmentService,
+  }));
+
+  vi.doMock("../services/secrets.js", () => ({
+    secretService: () => mockSecretService,
+  }));
+
   vi.doMock("../services/workspace-runtime.js", () => ({
     startRuntimeServicesForWorkspaceControl: vi.fn(),
     stopRuntimeServicesForProjectWorkspace: vi.fn(),
@@ -68,9 +84,14 @@ function registerModuleMocks() {
 }
 
 async function createApp(routeType: "project" | "goal") {
-  const { errorHandler } = await vi.importActual<typeof import("../middleware/index.js")>(
+  const middlewarePromise = vi.importActual<typeof import("../middleware/index.js")>(
     "../middleware/index.js",
   );
+  const routePromise =
+    routeType === "project"
+      ? vi.importActual<typeof import("../routes/projects.js")>("../routes/projects.js")
+      : vi.importActual<typeof import("../routes/goals.js")>("../routes/goals.js");
+  const [{ errorHandler }, routeModule] = await Promise.all([middlewarePromise, routePromise]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -84,14 +105,10 @@ async function createApp(routeType: "project" | "goal") {
     next();
   });
   if (routeType === "project") {
-    const { projectRoutes } = await vi.importActual<typeof import("../routes/projects.js")>(
-      "../routes/projects.js",
-    );
+    const { projectRoutes } = routeModule as typeof import("../routes/projects.js");
     app.use("/api", projectRoutes({} as any));
   } else {
-    const { goalRoutes } = await vi.importActual<typeof import("../routes/goals.js")>(
-      "../routes/goals.js",
-    );
+    const { goalRoutes } = routeModule as typeof import("../routes/goals.js");
     app.use("/api", goalRoutes({} as any));
   }
   app.use(errorHandler);
@@ -103,6 +120,8 @@ describe("project and goal telemetry routes", () => {
     vi.resetModules();
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/environments.js");
+    vi.doUnmock("../services/secrets.js");
     vi.doUnmock("../services/workspace-runtime.js");
     vi.doUnmock("../routes/projects.js");
     vi.doUnmock("../routes/goals.js");
