@@ -119,6 +119,12 @@ POST /api/routines/{routineId}/triggers
 - Fire externally: `POST /api/routine-triggers/public/{publicId}/fire`
   - Bearer: `Authorization: Bearer <secret>`
   - HMAC: `X-Paperclip-Signature` + `X-Paperclip-Timestamp` headers
+- Poll the verdict back (same secret, no Paperclip session):
+  `GET /api/routine-triggers/public/{publicId}/runs/{runIssueId}/verdict` with
+  `Authorization: Bearer <secret>`. `runIssueId` is the linked issue id from the
+  `/fire` response. Returns `{ status, verdict, error }` where `status` is
+  `pending` | `in_progress` | `ready` | `error`; on `ready`, `verdict.body` is the
+  consolidated markdown read from the run issue's `verdict` document.
 
 ### API (manual only)
 
