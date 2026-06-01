@@ -2038,7 +2038,9 @@ function CredentialMultiSelect({
     }
     return counts;
   }, [selectedCreds]);
-  const duplicateTypes = useMemo(
+  // Same-type credentials are NOT a conflict — they form a rotation pool that
+  // the runtime cycles through least-recently-used, skipping any on cooldown.
+  const pooledTypes = useMemo(
     () => [...typeCounts.entries()].filter(([, count]) => count > 1).map(([type]) => type),
     [typeCounts],
   );
@@ -2095,7 +2097,7 @@ function CredentialMultiSelect({
             {credentials.map((cred) => {
               const isSelected = selectedSet.has(cred.id);
               const sameTypeCount = typeCounts.get(cred.type) ?? 0;
-              const wouldDuplicateType = !isSelected && sameTypeCount >= 1;
+              const wouldPoolType = !isSelected && sameTypeCount >= 1;
               return (
                 <button
                   key={cred.id}
@@ -2122,9 +2124,9 @@ function CredentialMultiSelect({
                       default
                     </span>
                   )}
-                  {wouldDuplicateType && (
-                    <span className="shrink-0 rounded bg-destructive/10 px-1 py-0.5 text-[10px] font-medium text-destructive">
-                      conflicts
+                  {wouldPoolType && (
+                    <span className="shrink-0 rounded bg-sky-500/10 px-1 py-0.5 text-[10px] font-medium text-sky-600">
+                      + rotation
                     </span>
                   )}
                 </button>
@@ -2144,9 +2146,11 @@ function CredentialMultiSelect({
           </div>
         </PopoverContent>
       </Popover>
-      {duplicateTypes.length > 0 && (
-        <p className="text-xs text-destructive mt-1">
-          Multiple credentials of the same provider type selected ({duplicateTypes.join(", ")}). Save will be rejected.
+      {pooledTypes.length > 0 && (
+        <p className="text-xs text-muted-foreground mt-1">
+          Multiple {pooledTypes.join(", ")} credentials form a rotation pool — the
+          agent uses the least-recently-used one and rotates to another if one hits
+          a rate limit.
         </p>
       )}
     </Field>

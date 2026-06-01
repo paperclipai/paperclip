@@ -284,9 +284,13 @@ const DEEPSEEK_FLASH_MODEL = "deepseek-v4-flash";
 
 /**
  * Env that makes Claude Code talk to DeepSeek's Anthropic-compatible endpoint.
- * Mirrors DeepSeek's official Claude Code integration guide. Strong slots
- * (opus/sonnet, primary model) map to V4 Pro; cheap slots (haiku, subagents)
- * map to V4 Flash. The payload may override the two model ids.
+ * Maps Claude Code's model tiers to DeepSeek's two models so the agent's Model
+ * dropdown is the control surface:
+ *   - Opus   -> deepseek-v4-pro    (the strong model)
+ *   - Sonnet -> deepseek-v4-flash  (faster / cheaper)
+ *   - Haiku / subagents -> deepseek-v4-flash
+ * ANTHROPIC_MODEL (used when no model tier is requested) defaults to Pro. The
+ * credential payload may override either model id via proModel / flashModel.
  */
 function buildDeepSeekClaudeCodeEnv(
   apiKey: string,
@@ -304,7 +308,7 @@ function buildDeepSeekClaudeCodeEnv(
     ANTHROPIC_AUTH_TOKEN: apiKey,
     ANTHROPIC_MODEL: pro,
     ANTHROPIC_DEFAULT_OPUS_MODEL: pro,
-    ANTHROPIC_DEFAULT_SONNET_MODEL: pro,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: flash,
     ANTHROPIC_DEFAULT_HAIKU_MODEL: flash,
     CLAUDE_CODE_SUBAGENT_MODEL: flash,
     CLAUDE_CODE_EFFORT_LEVEL: "max",
