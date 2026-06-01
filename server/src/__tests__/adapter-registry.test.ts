@@ -264,6 +264,8 @@ describe("server adapter registry", () => {
   it("switches active adapter behavior back to the builtin when an override is paused", async () => {
     const builtIn = findServerAdapter("claude_local");
     expect(builtIn).not.toBeNull();
+    const builtInModels = await listAdapterModels("claude_local");
+    const builtInDetectedModel = await detectAdapterModel("claude_local");
 
     const detectModel = vi.fn(async () => ({
       model: "plugin-model",
@@ -302,8 +304,8 @@ describe("server adapter registry", () => {
     expect(setOverridePaused("claude_local", true)).toBe(true);
 
     expect(findActiveServerAdapter("claude_local")).not.toBe(plugin);
-    expect(await listAdapterModels("claude_local")).toEqual(builtIn?.models ?? []);
-    expect(await detectAdapterModel("claude_local")).toBeNull();
+    expect(await listAdapterModels("claude_local")).toEqual(builtInModels);
+    expect(await detectAdapterModel("claude_local")).toEqual(builtInDetectedModel);
     expect(detectModel).toHaveBeenCalledTimes(1);
   });
 

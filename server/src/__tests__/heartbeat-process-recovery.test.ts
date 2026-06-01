@@ -2159,7 +2159,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       updatedAt: new Date("2026-03-19T00:10:00.000Z"),
     });
 
-    const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
     await waitForValue(async () => {
       const run = await heartbeat.getRun(queuedRunId);
@@ -3185,8 +3184,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runErrorCode: "adapter_failed",
       runError: "ssh: connection reset",
     });
-    const heartbeat = heartbeatService(db);
-
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.continuationRequeued).toBe(1);
     expect(result.escalated).toBe(0);
@@ -3306,8 +3303,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runErrorCode: "provider_quota_exhausted",
       runError: "provider quota exhausted; resets later",
     });
-    const heartbeat = heartbeatService(db);
-
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.dispatchRequeued).toBe(0);
     expect(result.continuationRequeued).toBe(0);

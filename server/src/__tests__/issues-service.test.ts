@@ -22,7 +22,6 @@ import {
   issueDocuments,
   issuePlanDecompositions,
   issueRelations,
-  issueThreadInteractions,
   issues,
   projectWorkspaces,
   projects,

@@ -7,15 +7,6 @@ import { promisify } from "node:util";
 import { eq, ne } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agentTaskSessions,
-  agents,
-  companies,
-  createDb,
-  executionWorkspaces,
-  heartbeatRuns,
-  issues,
-  projects,
-  projectWorkspaces,
   activityLog,
   agentRuntimeState,
   agentTaskSessions,
@@ -348,7 +339,11 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     expect(run).not.toBeNull();
     await vi.waitFor(async () => {
       const latest = await heartbeat.getRun(run!.id);
-      expect(latest?.status).toBe("succeeded");
+      expect(latest?.status, JSON.stringify({
+        error: latest?.error,
+        resultError: latest?.resultError,
+        resultJson: latest?.resultJson,
+      })).toBe("succeeded");
     }, { timeout: 10_000 });
 
     expect(adapterExecute).toHaveBeenCalledTimes(1);
@@ -505,7 +500,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       };
     });
 
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -529,7 +524,11 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     expect(run).not.toBeNull();
     await vi.waitFor(async () => {
       const latest = await heartbeat.getRun(run!.id);
-      expect(latest?.status).toBe("succeeded");
+      expect(latest?.status, JSON.stringify({
+        error: latest?.error,
+        resultError: latest?.resultError,
+        resultJson: latest?.resultJson,
+      })).toBe("succeeded");
     }, { timeout: 10_000 });
 
     expect(adapterExecute).toHaveBeenCalledTimes(1);
@@ -662,7 +661,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       };
     });
 
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -688,7 +687,11 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     expect(run).not.toBeNull();
     await vi.waitFor(async () => {
       const latest = await heartbeat.getRun(run!.id);
-      expect(latest?.status).toBe("succeeded");
+      expect(latest?.status, JSON.stringify({
+        error: latest?.error,
+        resultError: latest?.resultError,
+        resultJson: latest?.resultJson,
+      })).toBe("succeeded");
     }, { timeout: 10_000 });
 
     expect(adapterExecute).toHaveBeenCalledTimes(1);
@@ -804,7 +807,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       };
     });
 
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
