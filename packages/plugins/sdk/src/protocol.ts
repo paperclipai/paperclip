@@ -264,7 +264,7 @@ export type PluginRpcErrorCode =
  * Absence of this metadata means the invocation is instance/global scoped.
  */
 export interface PluginInvocationScope {
-  companyId: string;
+  companyId?: string | null;
 }
 
 /**

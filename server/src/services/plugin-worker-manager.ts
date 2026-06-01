@@ -1254,8 +1254,8 @@ export function createPluginWorkerHandle(
 
       const id = nextRequestId++;
       const timeout = Math.min(timeoutMs ?? rpcTimeoutMs, MAX_RPC_TIMEOUT_MS);
-      const invocationScope = deriveInvocationScope(method, params);
-      const invocation = invocationScope ? registerInvocation(invocationScope) : null;
+      const invocationScope = deriveInvocationScope(method, params) ?? {};
+      const invocation = registerInvocation(invocationScope);
 
       // Guard against double-settlement. When a process exits all pending
       // requests are rejected via rejectAllPending(), but the timeout timer
@@ -1377,8 +1377,8 @@ export function createPluginWorkerHandle(
 
     notify(method: string, params: unknown) {
       if (status !== "running") return;
-      const invocationScope = deriveInvocationScope(method, params);
-      const invocation = invocationScope ? registerInvocation(invocationScope, MAX_RPC_TIMEOUT_MS) : null;
+      const invocationScope = deriveInvocationScope(method, params) ?? {};
+      const invocation = registerInvocation(invocationScope, MAX_RPC_TIMEOUT_MS);
       try {
         // Notifications are fire-and-forget: drop them under stdin backpressure
         // instead of queuing unbounded off-heap Buffers (see
