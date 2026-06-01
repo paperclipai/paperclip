@@ -63,6 +63,14 @@ import { Funnel } from "./pages/Funnel";
 import { CrmHygiene } from "./pages/CrmHygiene";
 import { WinLoss } from "./pages/WinLoss";
 import { Invoices } from "./pages/Invoices";
+import { Campaigns } from "./pages/Campaigns";
+import { Targeting } from "./pages/Targeting";
+import { Personas } from "./pages/Personas";
+import { Products } from "./pages/Products";
+import { JustDial } from "./pages/JustDial";
+import { Linkedin } from "./pages/Linkedin";
+import { Buckets } from "./pages/Buckets";
+import { Icps } from "./pages/Icps";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
@@ -111,6 +119,14 @@ function boardRoutes() {
       <Route path="crm-hygiene" element={<CrmHygiene />} />
       <Route path="win-loss" element={<WinLoss />} />
       <Route path="invoices" element={<Invoices />} />
+      <Route path="campaigns" element={<Campaigns />} />
+      <Route path="targeting" element={<Targeting />} />
+      <Route path="personas" element={<Personas />} />
+      <Route path="products" element={<Products />} />
+      <Route path="justdial" element={<JustDial />} />
+      <Route path="linkedin" element={<Linkedin />} />
+      <Route path="buckets" element={<Buckets />} />
+      <Route path="icps" element={<Icps />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />
@@ -345,6 +361,14 @@ export function App() {
           <Route path="crm-hygiene" element={<UnprefixedBoardRedirect />} />
           <Route path="win-loss" element={<UnprefixedBoardRedirect />} />
           <Route path="invoices" element={<UnprefixedBoardRedirect />} />
+          <Route path="campaigns" element={<UnprefixedBoardRedirect />} />
+          <Route path="targeting" element={<UnprefixedBoardRedirect />} />
+          <Route path="personas" element={<UnprefixedBoardRedirect />} />
+          <Route path="products" element={<UnprefixedBoardRedirect />} />
+          <Route path="justdial" element={<UnprefixedBoardRedirect />} />
+          <Route path="linkedin" element={<UnprefixedBoardRedirect />} />
+          <Route path="buckets" element={<UnprefixedBoardRedirect />} />
+          <Route path="icps" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
           <Route path="agents" element={<UnprefixedBoardRedirect />} />

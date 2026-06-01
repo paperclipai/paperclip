@@ -218,5 +218,13 @@ export const queryKeys = {
     crmHygiene: ["agnb", "crm-hygiene"] as const,
     winLoss: (outcome: string) => ["agnb", "win-loss", outcome] as const,
     invoices: ["agnb", "invoices"] as const,
+    campaigns: ["agnb", "campaigns"] as const,
+    targeting: ["agnb", "targeting"] as const,
+    personas: ["agnb", "personas"] as const,
+    products: ["agnb", "products"] as const,
+    justdial: ["agnb", "justdial"] as const,
+    linkedin: ["agnb", "linkedin"] as const,
+    buckets: ["agnb", "buckets"] as const,
+    icps: ["agnb", "icps"] as const,
   },
 };

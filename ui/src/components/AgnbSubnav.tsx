@@ -17,6 +17,16 @@ export const AGNB_SUBNAV = {
     { to: "/assets", label: "Sales enablement" },
     { to: "/invoices", label: "Invoices" },
   ],
+  campaigns: [
+    { to: "/campaigns", label: "Campaigns" },
+    { to: "/targeting", label: "Saved targetings" },
+    { to: "/personas", label: "Personas" },
+    { to: "/products", label: "Products" },
+    { to: "/justdial", label: "JustDial" },
+    { to: "/linkedin", label: "LinkedIn scraper" },
+    { to: "/buckets", label: "Buckets" },
+    { to: "/icps", label: "ICPs" },
+  ],
 } as const;
 
 export type AgnbSubnavGroup = keyof typeof AGNB_SUBNAV;
