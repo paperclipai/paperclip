@@ -6673,7 +6673,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
+      // GH#7270: When processPid and processGroupId are both null, the server crashed
+      // before persistRunProcessMetadata could store the PID. The original process is
+      // still running (reparented to PID 1 by the OS). Marking the run failed here
+      // triggers a replacement, causing exponential orphan accumulation across restarts.
+      // Skip these runs at startup (staleThresholdMs === 0) — the agent will naturally
+      // re-heartbeat and the run will be properly handled. For periodic checks with a
+      // staleness threshold, old null-PID runs are already filtered by the check above.
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      const hasNoProcessMetadata = !run.processPid && !run.processGroupId;
+      if (tracksLocalChild && hasNoProcessMetadata && staleThresholdMs === 0) {
+        logger.info(
+          { runId: run.id, agentId: run.agentId, startedAt: run.startedAt },
+          "skipping null-PID run at startup — agent will re-heartbeat",
+        );
+        continue;
+      }
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
