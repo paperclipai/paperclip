@@ -166,11 +166,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
         if (ctx.path !== "/sign-up/email") return;
         if (!inviteOnlySignUp) return;
         const headerToken = ctx.headers?.get(INVITE_SIGNUP_TOKEN_HEADER) ?? null;
-        const bodyToken =
-          ctx.body && typeof (ctx.body as { inviteToken?: unknown }).inviteToken === "string"
-            ? ((ctx.body as { inviteToken?: string }).inviteToken ?? null)
-            : null;
-        const token = (headerToken ?? bodyToken ?? "").trim() || null;
+        const token = (headerToken ?? "").trim() || null;
         const decision = await evaluateSignUpRequest(db, { inviteOnly: true, token });
         if (!decision.allowed) {
           throw new APIError("FORBIDDEN", {
