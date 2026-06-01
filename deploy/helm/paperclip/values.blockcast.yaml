@@ -203,8 +203,20 @@ env:
     # of the container budget while leaving ~1 GiB for libuv / native deps /
     # binary code / stack / fs cache. Tune up further if the heap-used metric
     # gets close to this ceiling under load.
+    #
+    # 2026-05-29: paperclip-0 was cgroup-OOMKilled (exitCode 137) — off-heap
+    # native-Buffer growth (NOT the V8 object heap; --max-old-space-size caps
+    # that separately). #216 added stdin backpressure to the plugin-worker
+    # fan-out, which removed the *unbounded* climb but left a *bounded* burst
+    # envelope. 2026-05-30: that envelope was measured over a 27h+ window —
+    # off-heap RSS bursts to ~5Gi under heavy agent-log load and breached 6Gi
+    # once (one OOMKilled at 05:17Z). So 6Gi is genuinely too tight; 10Gi is
+    # the correct steady-state limit (observed peak ~5Gi → ~2x headroom), not a
+    # band-aid. (An earlier 8h verdict under-sampled the bursts and led to a
+    # premature revert to 6Gi in #220 — re-raised here.) Follow-up: tighten the
+    # #216 per-worker backlog cap to shrink the burst envelope further.
     - name: NODE_OPTIONS
-      value: "--max-old-space-size=4608"
+      value: "--max-old-space-size=6144"
     # Anthropic routing for paperclip-spawned agent Job pods. Agents reach
     # Anthropic through paperclip-public-tools → ccrotate-serve using the
     # pcp_board_* bearer, so they don't need /paperclip/.ccrotate/ on disk.
@@ -235,7 +247,13 @@ resources:
     memory: 2Gi
   limits:
     cpu: "4"
-    memory: 6Gi
+    # 10Gi steady-state limit: off-heap bursts measured up to ~5Gi (and a 6Gi
+    # breach/OOM on 2026-05-30) under heavy plugin-worker fan-out even with
+    # #216's backpressure in place. ~2x headroom over the observed peak. Paired
+    # with NODE_OPTIONS --max-old-space-size=6144 above. Node k8s-paperclip-2
+    # has ~188Gi allocatable — ample. Revisit downward only after the #216 cap
+    # tightening demonstrably shrinks the burst envelope.
+    memory: 10Gi
 
 persistence:
   enabled: true
