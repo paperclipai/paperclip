@@ -3928,6 +3928,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     try {
+      const assignee = await getAgent(claimed.assigneeAgentId);
+      if (
+        !assignee ||
+        assignee.status === "paused" ||
+        assignee.status === "terminated" ||
+        assignee.status === "pending_approval"
+      ) {
+        throw conflict("Agent is not invokable in its current state", {
+          status: assignee?.status ?? "not_found",
+        });
+      }
+
       await enqueueWakeup(claimed.assigneeAgentId, {
         source: input.source,
         triggerDetail: input.triggerDetail,
@@ -8318,6 +8330,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)
       : null;
     if (
+      issueId &&
+      issueContext &&
+      issueContext.assigneeAgentId === agent.id &&
+      issueContext.status === "in_progress" &&
+      issueContext.checkoutRunId === run.id &&
+      issueContext.executionRunId === run.id
+    ) {
+      context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
+    } else if (
       issueId &&
       issueContext &&
       shouldAutoCheckoutIssueForWake({
