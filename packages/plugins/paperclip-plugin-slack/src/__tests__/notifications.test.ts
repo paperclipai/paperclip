@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import plugin from "../worker.js";
+import { WEBHOOK_KEYS } from "../constants.js";
 
 function makeContext() {
   const handlers = new Map<string, Array<(event: any) => Promise<void>>>();
@@ -98,5 +99,33 @@ describe("Slack notifications", () => {
       event_type: "approval.created",
       error_code: "no_channel",
     });
+  });
+
+  it("does not process mutating approval interactivity without a signing secret", async () => {
+    const { ctx } = makeContext();
+    await plugin.definition.setup?.(ctx as any);
+
+    await plugin.definition.onWebhook?.({
+      endpointKey: WEBHOOK_KEYS.interactivity,
+      headers: {},
+      rawBody: "",
+      parsedBody: {
+        payload: JSON.stringify({
+          type: "block_actions",
+          response_url: "https://hooks.slack.test/action",
+          user: { id: "U_OMAR" },
+          actions: [{ action_id: "approval_approve", value: "approval-1" }],
+        }),
+      },
+    } as any);
+
+    expect(ctx.http.fetch).not.toHaveBeenCalledWith(
+      expect.stringContaining("/api/approvals/"),
+      expect.any(Object),
+    );
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      "Rejected mutating Slack approval webhook: missing Slack signing secret",
+      { source: "interactivity" },
+    );
   });
 });

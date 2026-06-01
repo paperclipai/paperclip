@@ -33,6 +33,104 @@ const DECISION_EMOJI: Record<ApprovalDecision, string> = {
   revise: ":pencil2:",
 };
 
+function formatSlackUser(slackUserId: string): string {
+  return slackUserId ? `<@${slackUserId}>` : "Unknown Slack user";
+}
+
+function approvalUrl(paperclipBaseUrl: string, approvalId: string): string {
+  return `${paperclipBaseUrl.replace(/\/+$/, "")}/approvals/${approvalId}`;
+}
+
+function resolutionMessage(params: {
+  paperclipBaseUrl: string;
+  approvalId: string;
+  decision: ApprovalDecision;
+  slackUserId: string;
+  when: string;
+  reason?: string;
+}) {
+  const { paperclipBaseUrl, approvalId, decision, slackUserId, when, reason } =
+    params;
+  const actor = formatSlackUser(slackUserId);
+  const reasonText = reason ? `\n> ${reason}` : "";
+  const statusText = `${DECISION_EMOJI[decision]} *Approval ${DECISION_PAST[decision]}* by ${actor} · ${when}${reasonText}`;
+  return {
+    text: `Approval ${DECISION_PAST[decision]} by ${slackUserId || "unknown user"}`,
+    blocks: [
+      {
+        type: "section",
+        text: { type: "mrkdwn", text: statusText },
+      },
+      {
+        type: "context",
+        elements: [{ type: "mrkdwn", text: `Approval: \`${approvalId}\`` }],
+      },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "View Approval" },
+            url: approvalUrl(paperclipBaseUrl, approvalId),
+            action_id: "approval_view",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function undoMessage(params: {
+  paperclipBaseUrl: string;
+  approvalId: string;
+  decision: ApprovalDecision;
+  slackUserId: string;
+}) {
+  const { paperclipBaseUrl, approvalId, decision, slackUserId } = params;
+  const actor = formatSlackUser(slackUserId);
+  return {
+    text: `Slack approval lock cleared by ${slackUserId || "unknown user"}`,
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `:leftwards_arrow_with_hook: ${actor} removed the resolving reaction within the grace window. The Slack interaction lock was cleared; the server-side approval was not reverted and remains ${DECISION_PAST[decision]}.`,
+        },
+      },
+      {
+        type: "context",
+        elements: [{ type: "mrkdwn", text: `Approval: \`${approvalId}\`` }],
+      },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "View Approval" },
+            url: approvalUrl(paperclipBaseUrl, approvalId),
+            action_id: "approval_view",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+async function readJsonObject(
+  res: { json?: () => Promise<unknown> },
+): Promise<Record<string, unknown> | null> {
+  if (typeof res.json !== "function") return null;
+  try {
+    const body = await res.json();
+    return body && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Grace window (ms) within which removing the resolving reaction can undo. */
 export const UNDO_GRACE_MS = 30_000;
 
@@ -92,7 +190,7 @@ export async function resolveApproval(
   const existing = (await ctx.state.get(lockRef)) as ResolvedLock | null;
   if (existing) {
     await postMessage(ctx, token, channel, {
-      text: `:lock: Approval already ${DECISION_PAST[existing.decision]} by <@${existing.by}> — ignoring this action.`,
+      text: `:lock: Approval already ${DECISION_PAST[existing.decision]} by ${formatSlackUser(existing.by)} — ignoring this action.`,
     }, { threadTs: threadTs ?? ts });
     return { ok: false, alreadyResolved: true };
   }
@@ -132,8 +230,21 @@ export async function resolveApproval(
       }, { threadTs: threadTs ?? ts });
       return { ok: false, error: `http_${res.status}` };
     }
+    const body = await readJsonObject(res);
+    if (body?.applied === false) {
+      await ctx.state.delete(lockRef);
+      ctx.logger.info("Approval action was already resolved server-side", {
+        approvalId,
+        endpoint,
+        status: body.status,
+      });
+      await postMessage(ctx, token, channel, {
+        text: `:information_source: Approval \`${approvalId}\` was already resolved server-side; no Slack card change was made.`,
+      }, { threadTs: threadTs ?? ts });
+      return { ok: false, alreadyResolved: true };
+    }
   } catch (err) {
-    await ctx.state.set(lockRef, null as unknown as ResolvedLock);
+    await ctx.state.delete(lockRef);
     ctx.logger.warn("Approval action failed", { approvalId, endpoint, err });
     await postMessage(ctx, token, channel, {
       text: `:warning: Couldn't ${decision} approval \`${approvalId}\`. No change made.`,
@@ -143,9 +254,20 @@ export async function resolveApproval(
 
   // --- Status echo: edit the original card with actor + outcome + time ---
   const when = new Date().toISOString().replace("T", " ").slice(0, 16) + " UTC";
-  await updateMessage(ctx, token, channel, ts, {
-    text: `${DECISION_EMOJI[decision]} *Approval ${DECISION_PAST[decision]}* by <@${slackUserId}> · ${when}${reason ? `\n> ${reason}` : ""}`,
-  });
+  await updateMessage(
+    ctx,
+    token,
+    channel,
+    ts,
+    resolutionMessage({
+      paperclipBaseUrl,
+      approvalId,
+      decision,
+      slackUserId,
+      when,
+      reason,
+    }),
+  );
 
   await ctx.metrics.write("slack.approvals.decided", 1, {
     decision: endpoint,
@@ -172,9 +294,18 @@ export async function tryUndoResolution(
     slackUserId: string;
     channel: string;
     ts: string;
+    paperclipBaseUrl: string;
   },
 ): Promise<{ undone: boolean }> {
-  const { companyId, approvalId, decision, slackUserId, channel, ts } = params;
+  const {
+    companyId,
+    approvalId,
+    decision,
+    slackUserId,
+    channel,
+    ts,
+    paperclipBaseUrl,
+  } = params;
   const scope = { scopeKind: "company" as const, scopeId: companyId };
   const lockRef = { ...scope, stateKey: STATE_KEYS.approvalResolved(approvalId) };
 
@@ -191,9 +322,13 @@ export async function tryUndoResolution(
     return { undone: false };
   }
   await ctx.state.delete(lockRef);
-  await updateMessage(ctx, token, channel, ts, {
-    text: `:leftwards_arrow_with_hook: Resolution undone by <@${slackUserId}> within the grace window. The approval is open again.`,
-  });
+  await updateMessage(
+    ctx,
+    token,
+    channel,
+    ts,
+    undoMessage({ paperclipBaseUrl, approvalId, decision, slackUserId }),
+  );
   await ctx.metrics.write("slack.approvals.undone", 1, { decision });
   return { undone: true };
 }
@@ -208,7 +343,7 @@ export function emojiToDecision(name: string): ApprovalDecision | null {
 /**
  * Parse an approval thread reply into a decision + reason.
  * `!approve [note]`, `!reject [reason]`, `!revise <reason>`, `!status`.
- * A non-`!` reply is treated as a revision comment (reason = the whole text).
+ * Non-command replies are normal Slack conversation and do not mutate approvals.
  */
 export function parseThreadCommand(
   text: string,
@@ -221,8 +356,7 @@ export function parseThreadCommand(
   if (!trimmed) return { kind: "ignore" };
 
   if (!trimmed.startsWith("!")) {
-    // Freeform reply on an approval thread → revision comment.
-    return { kind: "decision", decision: "revise", reason: trimmed };
+    return { kind: "ignore" };
   }
 
   const [cmd, ...rest] = trimmed.slice(1).split(/\s+/);

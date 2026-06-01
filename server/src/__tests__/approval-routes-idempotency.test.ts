@@ -138,6 +138,7 @@ describe("approval routes idempotent retries", () => {
       .send({});
 
     expect(res.status).toBe(200);
+    expect(res.body.applied).toBe(false);
     expect(mockIssueApprovalService.listIssuesForApproval).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
@@ -167,6 +168,7 @@ describe("approval routes idempotent retries", () => {
       .send({});
 
     expect(res.status).toBe(200);
+    expect(res.body.applied).toBe(false);
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
@@ -230,6 +232,7 @@ describe("approval routes idempotent retries", () => {
       .send({ decidedByUserId: "forged-user", decisionNote: "ship it" });
 
     expect(res.status).toBe(200);
+    expect(res.body.applied).toBe(true);
     expect(mockApprovalService.approve).toHaveBeenCalledWith("approval-4", "user-1", "ship it");
   });
 
@@ -257,6 +260,7 @@ describe("approval routes idempotent retries", () => {
       .send({ decidedByUserId: "forged-user", decisionNote: "not now" });
 
     expect(res.status).toBe(200);
+    expect(res.body.applied).toBe(true);
     expect(mockApprovalService.reject).toHaveBeenCalledWith("approval-5", "user-1", "not now");
   });
 

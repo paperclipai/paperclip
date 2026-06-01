@@ -123,6 +123,15 @@ function verifySlackSignature(
   return timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
 }
 
+function canProcessMutatingApprovalWebhook(source: string): boolean {
+  if (slackSigningSecret) return true;
+  pluginCtx.logger.warn(
+    "Rejected mutating Slack approval webhook: missing Slack signing secret",
+    { source },
+  );
+  return false;
+}
+
 // --- Helpers ---
 async function resolveChannel(
   ctx: PluginContext,
@@ -182,6 +191,8 @@ async function handleReactionEvent(
   const approvalId = await approvalIdForMessage(companyId, channel, ts);
   if (!approvalId) return; // reaction on a non-approval message → ignore
 
+  if (!canProcessMutatingApprovalWebhook("reaction")) return;
+
   if (event.type === "reaction_removed") {
     await tryUndoResolution(pluginCtx, pluginToken, {
       companyId,
@@ -190,6 +201,7 @@ async function handleReactionEvent(
       slackUserId,
       channel,
       ts,
+      paperclipBaseUrl: pluginConfig.paperclipBaseUrl,
     });
     return;
   }
@@ -1544,8 +1556,8 @@ const plugin = definePlugin({
         : [];
       if (!channel || !threadTs) return;
       // Phase 1 approval interactions: if this thread is an approval card,
-      // parse !approve/!reject/!revise/!status (or a freeform reply = revision)
-      // and resolve it, then stop (don't fall through to agent routing).
+      // parse !approve/!reject/!revise/!status and resolve commands, then stop
+      // (don't fall through to agent routing for command replies).
       const approvalId = await approvalIdForMessage(
         event.companyId,
         channel,
@@ -1578,13 +1590,17 @@ const plugin = definePlugin({
           return;
         }
         // parsed.kind === "decision"
+        if (!canProcessMutatingApprovalWebhook("thread_command")) return;
         const slackUserId = p.slackUserId ? String(p.slackUserId) : "";
         if (!slackUserId || !isAuthorizedReactor(slackUserId)) {
+          const text = slackUserId
+            ? `:warning: <@${slackUserId}> is not on the approval allowlist — command ignored.`
+            : ":warning: Command ignored because Slack did not include a user id, so approval allowlist membership could not be verified.";
           await postMessage(
             ctx,
             token,
             channel,
-            { text: `:warning: <@${slackUserId}> is not on the approval allowlist — command ignored.` },
+            { text },
             { threadTs },
           );
           return;
@@ -1833,6 +1849,13 @@ const plugin = definePlugin({
     }
     // Slash commands
     if (input.endpointKey === WEBHOOK_KEYS.slashCommand) {
+      const slash = parseSlashCommand(input.rawBody);
+      if (
+        slash.text.trim().split(/\s+/)[0]?.toLowerCase() === "approve" &&
+        !canProcessMutatingApprovalWebhook("slash_command")
+      ) {
+        return;
+      }
       await handleSlashCommand(pluginCtx, input.rawBody);
       return;
     }
@@ -1857,13 +1880,9 @@ const plugin = definePlugin({
       const actionId = String(action.action_id ?? "");
       const actionValue = String(action.value ?? "");
       if (!actionValue) return;
-      const companies = await pluginCtx.companies.list({
-        limit: 1,
-        offset: 0,
-      });
-      const companyId = companies[0]?.id ?? "";
       // --- Approval buttons ---
       if (actionId === "approval_approve" || actionId === "approval_reject") {
+        if (!canProcessMutatingApprovalWebhook("interactivity")) return;
         const approved = actionId === "approval_approve";
         const endpoint = approved ? "approve" : "reject";
         try {
@@ -1894,6 +1913,11 @@ const plugin = definePlugin({
         }
         return;
       }
+      const companies = await pluginCtx.companies.list({
+        limit: 1,
+        offset: 0,
+      });
+      const companyId = companies[0]?.id ?? "";
       // --- Escalation buttons ---
       if (
         actionId === "escalation_use_suggested" ||

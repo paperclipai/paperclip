@@ -27,6 +27,16 @@ function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(a
   };
 }
 
+function approvalResolutionResponse<T extends { payload: Record<string, unknown> }>(
+  approval: T,
+  applied: boolean,
+): T & { applied: boolean } {
+  return {
+    ...redactApprovalPayload(approval),
+    applied,
+  };
+}
+
 export function approvalRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -226,7 +236,7 @@ export function approvalRoutes(
       }
     }
 
-    res.json(redactApprovalPayload(approval));
+    res.json(approvalResolutionResponse(approval, applied));
   });
 
   router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {
@@ -251,7 +261,7 @@ export function approvalRoutes(
       });
     }
 
-    res.json(redactApprovalPayload(approval));
+    res.json(approvalResolutionResponse(approval, applied));
   });
 
   router.post(

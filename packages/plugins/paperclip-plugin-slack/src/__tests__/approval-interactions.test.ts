@@ -17,7 +17,13 @@ const TS = "1717200000.000100";
 function makeCtx() {
   const store = new Map<string, unknown>();
   const fetch = vi.fn(
-    async (_url: string, _init?: unknown) => ({ status: 200, json: async () => ({ ok: true }) }),
+    async (
+      _url: string,
+      _init?: unknown,
+    ): Promise<{ status: number; json: () => Promise<Record<string, unknown>> }> => ({
+      status: 200,
+      json: async () => ({ ok: true }),
+    }),
   );
   const ctx = {
     http: { fetch },
@@ -68,11 +74,9 @@ describe("parseThreadCommand", () => {
     expect(r.kind).toBe("usage");
   });
 
-  it("treats a freeform reply as a revision comment", () => {
+  it("ignores freeform replies instead of mutating approvals", () => {
     expect(parseThreadCommand("please rethink the rollout")).toEqual({
-      kind: "decision",
-      decision: "revise",
-      reason: "please rethink the rollout",
+      kind: "ignore",
     });
   });
 
@@ -103,7 +107,9 @@ describe("resolveApproval", () => {
     // status-echo card edit
     expect(fetch).toHaveBeenCalledWith(
       "https://slack.com/api/chat.update",
-      expect.any(Object),
+      expect.objectContaining({
+        body: expect.stringContaining("\"blocks\""),
+      }),
     );
     // lock persisted
     expect(store.get(STATE_KEYS.approvalResolved(APPROVAL))).toMatchObject({
@@ -171,6 +177,53 @@ describe("resolveApproval", () => {
     // lock cleared so a corrected retry is possible
     expect(store.has(STATE_KEYS.approvalResolved(APPROVAL))).toBe(false);
   });
+
+  it("releases the lock and leaves the card alone when the server reports applied=false", async () => {
+    const { ctx, fetch, store } = makeCtx();
+    fetch.mockResolvedValueOnce({
+      status: 200,
+      json: async () => ({ id: APPROVAL, status: "approved", applied: false }),
+    });
+
+    const res = await resolveApproval(ctx as any, "xoxb", {
+      ...baseParams,
+      decision: "approve",
+    });
+
+    expect(res).toMatchObject({ ok: false, alreadyResolved: true });
+    expect(store.has(STATE_KEYS.approvalResolved(APPROVAL))).toBe(false);
+    expect(ctx.metrics.write).not.toHaveBeenCalledWith(
+      "slack.approvals.decided",
+      expect.any(Number),
+      expect.any(Object),
+    );
+    expect(fetch).not.toHaveBeenCalledWith(
+      "https://slack.com/api/chat.update",
+      expect.any(Object),
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      "https://slack.com/api/chat.postMessage",
+      expect.objectContaining({
+        body: expect.stringContaining("already resolved server-side"),
+      }),
+    );
+  });
+
+  it("deletes the lock when the approvals API call throws", async () => {
+    const { ctx, fetch, store } = makeCtx();
+    fetch.mockRejectedValueOnce(new Error("network down"));
+
+    const res = await resolveApproval(ctx as any, "xoxb", {
+      ...baseParams,
+      decision: "approve",
+    });
+
+    expect(res).toMatchObject({ ok: false, error: "fetch_failed" });
+    expect(store.has(STATE_KEYS.approvalResolved(APPROVAL))).toBe(false);
+    expect(ctx.state.delete).toHaveBeenCalledWith(
+      expect.objectContaining({ stateKey: STATE_KEYS.approvalResolved(APPROVAL) }),
+    );
+  });
 });
 
 describe("tryUndoResolution", () => {
@@ -190,9 +243,22 @@ describe("tryUndoResolution", () => {
       slackUserId: "U_OMAR",
       channel: CHANNEL,
       ts: TS,
+      paperclipBaseUrl: BASE,
     });
     expect(r.undone).toBe(true);
     expect(store.has(STATE_KEYS.approvalResolved(APPROVAL))).toBe(false);
+    expect(ctx.http.fetch).toHaveBeenCalledWith(
+      "https://slack.com/api/chat.update",
+      expect.objectContaining({
+        body: expect.stringContaining("\"blocks\""),
+      }),
+    );
+    expect(ctx.http.fetch).toHaveBeenCalledWith(
+      "https://slack.com/api/chat.update",
+      expect.objectContaining({
+        body: expect.stringContaining("server-side approval was not reverted"),
+      }),
+    );
   });
 
   it("does not undo after the grace window elapses", async () => {
@@ -210,6 +276,7 @@ describe("tryUndoResolution", () => {
       slackUserId: "U_OMAR",
       channel: CHANNEL,
       ts: TS,
+      paperclipBaseUrl: BASE,
     });
     expect(r.undone).toBe(false);
     // lock remains
@@ -230,6 +297,7 @@ describe("tryUndoResolution", () => {
       slackUserId: "U_SOMEONE_ELSE",
       channel: CHANNEL,
       ts: TS,
+      paperclipBaseUrl: BASE,
     });
     expect(r.undone).toBe(false);
   });
