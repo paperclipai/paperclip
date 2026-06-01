@@ -1,5 +1,16 @@
 import type { CompanyStatus, PauseReason } from "../constants.js";
 
+export interface IssueIntakeLintRule {
+  /** Display name shown in warning comment */
+  name: string;
+  /** Regex patterns tested against `title + " " + (description ?? "")`. Rule fires if ANY matches. */
+  patterns: string[];
+  /** If provided, none of these patterns may match or the rule is skipped. */
+  excludePatterns?: string[];
+  /** Human-readable routing suggestion shown in the warning comment */
+  suggestedAssignee?: string;
+}
+
 export interface Company {
   id: string;
   name: string;
@@ -18,6 +29,7 @@ export interface Company {
   feedbackDataSharingConsentByUserId: string | null;
   feedbackDataSharingTermsVersion: string | null;
   brandColor: string | null;
+  issueIntakeLintRules: IssueIntakeLintRule[] | null;
   logoAssetId: string | null;
   logoUrl: string | null;
   createdAt: Date;

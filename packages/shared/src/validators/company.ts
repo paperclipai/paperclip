@@ -6,6 +6,17 @@ import {
 
 const logoAssetIdSchema = z.string().uuid().nullable().optional();
 const brandColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional();
+
+export const issueIntakeLintRuleSchema = z.object({
+  name: z.string().min(1),
+  patterns: z.array(z.string().min(1)).min(1),
+  excludePatterns: z.array(z.string().min(1)).optional(),
+  suggestedAssignee: z.string().min(1).optional(),
+});
+
+export type IssueIntakeLintRuleInput = z.infer<typeof issueIntakeLintRuleSchema>;
+
+const issueIntakeLintRulesSchema = z.array(issueIntakeLintRuleSchema).nullable().optional();
 const feedbackDataSharingTermsVersionSchema = z.string().min(1).nullable().optional();
 const attachmentMaxBytesSchema = z
   .number()
@@ -35,6 +46,7 @@ export const updateCompanySchema = createCompanySchema
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
     attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
+    issueIntakeLintRules: issueIntakeLintRulesSchema,
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;

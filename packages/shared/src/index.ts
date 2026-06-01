@@ -266,6 +266,7 @@ export {
 
 export type {
   Company,
+  IssueIntakeLintRule,
   Environment,
   EnvironmentLease,
   EnvironmentProbeResult,

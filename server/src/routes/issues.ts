@@ -96,6 +96,8 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import type { IssueIntakeLintRule } from "@paperclipai/shared";
+import { lintIssueIntake } from "../services/issue-intake-lint.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
@@ -3860,6 +3862,24 @@ export function issueRoutes(
       requestedByActorType: actor.actorType,
       requestedByActorId: actor.actorId,
     });
+
+    // Non-blocking intake lint: post a warning comment if any configured rules fire.
+    const company = await companiesSvc.getById(companyId);
+    const lintRules = (company?.issueIntakeLintRules as IssueIntakeLintRule[] | null) ?? [];
+    if (lintRules.length > 0) {
+      const { firedRules } = lintIssueIntake(lintRules, { title: issue.title, description: issue.description });
+      if (firedRules.length > 0) {
+        const warnings = firedRules
+          .map((r) => `- **${r.name}**: ${r.suggestedAssignee ?? "check routing"}`)
+          .join("\n");
+        await svc.addComment(
+          issue.id,
+          `⚠️ **Issue intake lint warning:**\n${warnings}\n\nThis is informational only — no changes were made.`,
+          {},
+          { authorType: "system", presentation: { kind: "system_notice", tone: "warning", detailsDefaultOpen: false } },
+        );
+      }
+    }
 
     res.status(201).json({
       ...issue,
