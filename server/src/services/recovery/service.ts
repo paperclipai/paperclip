@@ -1282,7 +1282,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         `- Source issue: ${input.sourceIssue.identifier ?? input.sourceIssue.id}`,
         `- Run: \`${input.run.id}\``,
         `- Same-run evidence: \`${input.evidence.kind}:${input.evidence.id}\` at ${input.evidence.createdAt.toISOString()}`,
-        "- Outcome: false positive; the source issue already reached a terminal disposition from this run.",
+        `- Outcome: false positive; the source issue already reached a terminal disposition (evidence kind: ${input.evidence.kind}).`,
       ].join("\n"), { runId: input.run.id });
     }
 
@@ -1294,7 +1294,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         actionId: activeRecoveryAction.id,
         status: "resolved",
         outcome: "false_positive",
-        resolutionNote: "Source issue reached a terminal disposition through durable same-run activity; watchdog folded as source-resolved.",
+        resolutionNote: input.evidence.kind === "activity"
+          ? "Source issue reached a terminal disposition through durable same-run activity; watchdog folded as source-resolved."
+          : "Source issue reached a terminal disposition (status confirmed externally, no same-run activity); watchdog folded as source-resolved.",
       });
     }
 
