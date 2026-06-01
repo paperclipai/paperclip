@@ -477,9 +477,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // adapter itself changes; this covers the narrower agent toggle within ACPX.
   useEffect(() => {
     if (selectedCredentialIds.length === 0) return;
+    // Don't prune until the credentials list has actually loaded. `credentials`
+    // is fetched via useQuery and is [] on first render; pruning against an empty
+    // list would mark every saved credential "incompatible", blank them out, and
+    // flip the form dirty on open even though the user changed nothing.
+    if (credentials.length === 0) return;
     const compatibleIds = selectedCredentialIds.filter((id) => {
       const cred = credentials.find((c) => c.id === id);
-      return cred ? credentialTypesForAdapter.has(cred.type) : false;
+      // Keep credentials we can't resolve in the current list (e.g. not yet
+      // loaded, or not visible to this viewer) rather than silently dropping
+      // them — only prune ones we positively know are type-incompatible.
+      return cred ? credentialTypesForAdapter.has(cred.type) : true;
     });
     if (compatibleIds.length === selectedCredentialIds.length) return;
     if (isCreate) {
@@ -487,7 +495,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     } else {
       setOverlay((prev) => ({ ...prev, credentialIds: compatibleIds }));
     }
-  }, [credentialTypesForAdapter]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [credentialTypesForAdapter, credentials]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Props passed to adapter-specific config field components */
   const adapterFieldProps = {
