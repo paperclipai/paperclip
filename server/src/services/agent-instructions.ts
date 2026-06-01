@@ -131,14 +131,41 @@ function resolvePathWithinRoot(rootPath: string, relativePath: string): string {
 }
 
 function resolveManagedInstructionsRoot(agent: AgentLike): string {
+  return path.resolve(resolveAgentArtifactRoot(agent), "instructions");
+}
+
+export function resolveAgentArtifactRoot(agent: Pick<AgentLike, "id" | "companyId">): string {
   return path.resolve(
     resolvePaperclipInstanceRoot(),
     "companies",
     agent.companyId,
     "agents",
     agent.id,
-    "instructions",
   );
+}
+
+export function resolveAgentEnvFilePath(agent: Pick<AgentLike, "id" | "companyId">): string {
+  return path.resolve(resolveAgentArtifactRoot(agent), ".env");
+}
+
+/**
+ * Best-effort filesystem cleanup for an agent that has been deleted from the
+ * database. Removes the per-agent `.env` file, the managed `instructions/`
+ * tree, and the parent `agents/<id>/` directory if it is empty afterwards.
+ * Errors are swallowed so callers can log and proceed.
+ */
+export async function removeAgentArtifacts(
+  agent: Pick<AgentLike, "id" | "companyId">,
+): Promise<void> {
+  const artifactRoot = resolveAgentArtifactRoot(agent);
+  await fs.rm(path.resolve(artifactRoot, ".env"), { force: true });
+  await fs.rm(path.resolve(artifactRoot, "instructions"), { recursive: true, force: true });
+  try {
+    await fs.rmdir(artifactRoot);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOTEMPTY" && code !== "ENOENT") throw err;
+  }
 }
 
 function resolveLegacyInstructionsPath(candidatePath: string, config: Record<string, unknown>): string {

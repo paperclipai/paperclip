@@ -56,6 +56,7 @@ import {
   isClaudeUnknownSessionError,
 } from "./parse.js";
 import { prepareClaudeConfigSeed } from "./claude-config.js";
+import { readAgentEnvFile } from "./agent-env.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
@@ -179,7 +180,11 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  // Per-agent .env values override instance .env (process.env), but
+  // Paperclip-managed env vars and adapterConfig.env still take precedence
+  // (assigned below). See `agent-env.ts`.
+  const agentEnv = await readAgentEnvFile(agent);
+  const env: Record<string, string> = { ...agentEnv, ...buildPaperclipEnv(agent) };
   env.PAPERCLIP_RUN_ID = runId;
 
   const wakeTaskId =
