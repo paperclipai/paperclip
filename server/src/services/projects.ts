@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
@@ -10,6 +10,14 @@ import {
   plugins,
   projectWorkspaces,
   workspaceRuntimeServices,
+  costEvents,
+  financeEvents,
+  issues,
+  issueComments,
+  issueReadStates,
+  feedbackVotes,
+  issueThreadInteractions,
+  issueInboxArchives,
 } from "@paperclipai/db";
 import {
   deriveProjectUrlKey,
@@ -856,16 +864,45 @@ export function projectService(db: Db) {
       return cleared;
     },
 
-    remove: (id: string) =>
-      db
-        .delete(projects)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => {
-          const row = rows[0] ?? null;
-          if (!row) return null;
-          return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
-        }),
+    remove: async (id: string) => {
+      const existing = await getProjectById(id);
+      if (!existing) return null;
+
+      // Get issue IDs for this project to cascade-delete issue children
+      const projectIssues = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.projectId, id));
+      const issueIds = projectIssues.map((i) => i.id);
+
+      return db.transaction(async (tx) => {
+        // Issue child tables — must be deleted before issues (FK without cascade)
+        if (issueIds.length > 0) {
+          await tx.delete(issueComments).where(inArray(issueComments.issueId, issueIds));
+          await tx.delete(issueReadStates).where(inArray(issueReadStates.issueId, issueIds));
+          await tx.delete(feedbackVotes).where(inArray(feedbackVotes.issueId, issueIds));
+          await tx.delete(issueThreadInteractions).where(inArray(issueThreadInteractions.issueId, issueIds));
+          await tx.delete(issueInboxArchives).where(inArray(issueInboxArchives.issueId, issueIds));
+        }
+        // Cost/finance events — reference project and/or issues (FK without cascade)
+        await tx.delete(costEvents).where(
+          or(eq(costEvents.projectId, id), issueIds.length > 0 ? inArray(costEvents.issueId, issueIds) : sql`false`),
+        );
+        await tx.delete(financeEvents).where(
+          or(eq(financeEvents.projectId, id), issueIds.length > 0 ? inArray(financeEvents.issueId, issueIds) : sql`false`),
+        );
+        // Delete issues (FK to projects, no cascade)
+        await tx.delete(issues).where(eq(issues.projectId, id));
+        // Delete the project
+        const rows = await tx
+          .delete(projects)
+          .where(eq(projects.id, id))
+          .returning();
+        const row = rows[0] ?? null;
+        if (!row) return null;
+        return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
+      });
+    },
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
       const rows = await db
