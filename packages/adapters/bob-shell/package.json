@@ -1,0 +1,48 @@
+{
+  "name": "@paperclipai/adapter-bob-shell",
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server/index.ts",
+    "./cli": "./src/cli/index.ts",
+    "./ui": "./src/ui/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./server": {
+        "types": "./dist/server/index.d.ts",
+        "import": "./dist/server/index.js"
+      },
+      "./cli": {
+        "types": "./dist/cli/index.d.ts",
+        "import": "./dist/cli/index.js"
+      },
+      "./ui": {
+        "types": "./dist/ui/index.d.ts",
+        "import": "./dist/ui/index.js"
+      }
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/adapter-utils": "workspace:*",
+    "yaml": "^2.3.4"
+  },
+  "devDependencies": {
+    "@paperclipai/shared": "workspace:*",
+    "@types/node": "^20.0.0",
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0",
+    "typescript": "^5.7.3"
+  }
+}

@@ -21,6 +21,13 @@ import {
   models as acpxModels,
 } from "@paperclipai/adapter-acpx-local";
 import {
+  execute as bobShellExecute,
+  listBobShellSkills,
+  syncBobShellSkills,
+  testEnvironment as bobShellTestEnvironment,
+} from "@paperclipai/adapter-bob-shell/server";
+import { agentConfigurationDoc as bobShellAgentConfigurationDoc } from "@paperclipai/adapter-bob-shell";
+import {
   execute as claudeExecute,
   listClaudeSkills,
   syncClaudeSkills,
@@ -244,6 +251,19 @@ async function listAcpxModels(): Promise<AdapterModel[]> {
     ...prefixAdapterModelLabels(codex, "Codex"),
   ]);
 }
+
+const bobShellLocalAdapter: ServerAdapterModule = {
+  type: "bob_shell",
+  execute: bobShellExecute,
+  testEnvironment: bobShellTestEnvironment,
+  listSkills: listBobShellSkills,
+  syncSkills: syncBobShellSkills,
+  sessionManagement: getAdapterSessionManagement("bob_shell") ?? undefined,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: bobShellAgentConfigurationDoc,
+};
 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
@@ -513,6 +533,7 @@ const pausedOverrides = new Set<string>();
 function registerBuiltInAdapters() {
   for (const adapter of [
     acpxLocalAdapter,
+    bobShellLocalAdapter,
     claudeLocalAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,
