@@ -5,6 +5,17 @@ const mockExistsSync = vi.hoisted(() => vi.fn());
 const mockReadFileSync = vi.hoisted(() => vi.fn());
 const mockStatSync = vi.hoisted(() => vi.fn());
 const mockReadFile = vi.hoisted(() => vi.fn());
+const mockResolveCatalogJson = vi.hoisted(() => vi.fn());
+
+vi.doMock("node:module", async () => {
+  const actual = await vi.importActual<typeof import("node:module")>("node:module");
+  return {
+    ...actual,
+    createRequire: () => ({
+      resolve: mockResolveCatalogJson,
+    }),
+  };
+});
 
 vi.doMock("node:fs", async () => {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -61,6 +72,9 @@ describe("skills catalog service", () => {
     vi.clearAllMocks();
     manifestJson = manifest([catalogSkill("old-skill", "Old Skill")]);
     manifestMtimeMs = 1;
+    mockResolveCatalogJson.mockImplementation(() => {
+      throw new Error("package is not installed");
+    });
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockImplementation(() => manifestJson);
     mockStatSync.mockImplementation(() => ({
@@ -92,6 +106,24 @@ describe("skills catalog service", () => {
     expect(service.getCatalogPackageMetadata()).toEqual({
       packageName: "@paperclipai/skills-catalog",
       packageVersion: "0.3.2",
+    });
+  });
+
+  it("resolves the published skills catalog package manifest and skill files", async () => {
+    const publishedManifestPath =
+      "/install/node_modules/@paperclipai/skills-catalog/dist/generated/catalog.json";
+    mockResolveCatalogJson.mockReturnValue(publishedManifestPath);
+    const service = await import("../services/skills-catalog.js");
+
+    expect(service.listCatalogSkills().map((skill) => skill.key)).toEqual([
+      "paperclipai/bundled/software-development/old-skill",
+    ]);
+    expect(mockExistsSync).toHaveBeenCalledWith(publishedManifestPath);
+    expect(mockReadFileSync).toHaveBeenCalledWith(publishedManifestPath, "utf8");
+
+    await expect(service.readCatalogSkillFile("old-skill", "SKILL.md")).resolves.toMatchObject({
+      content:
+        "content:/install/node_modules/@paperclipai/skills-catalog/catalog/bundled/software-development/old-skill/SKILL.md",
     });
   });
 

@@ -622,6 +622,8 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/skills-catalog: {}
+
   server:
     dependencies:
       '@aws-sdk/client-s3':
@@ -669,6 +671,9 @@ importers:
       '@paperclipai/shared':
         specifier: workspace:*
         version: link:../packages/shared
+      '@paperclipai/skills-catalog':
+        specifier: workspace:*
+        version: link:../packages/skills-catalog
       ajv:
         specifier: ^8.18.0
         version: 8.18.0
