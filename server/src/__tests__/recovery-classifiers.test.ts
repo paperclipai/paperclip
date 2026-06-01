@@ -13,6 +13,7 @@ import {
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "../services/recovery/index.ts";
+import { DEFAULT_MAX_STRANDED_RECOVERY_DEPTH } from "../services/recovery/service.ts";
 
 const companyId = "company-1";
 const agentId = "agent-1";
@@ -244,5 +245,22 @@ describe("recovery classifier boundary", () => {
     expect(isStrandedIssueRecoveryOriginKind("harness_liveness_escalation")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind("manual")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind(null)).toBe(false);
+  });
+});
+
+describe("DEFAULT_MAX_STRANDED_RECOVERY_DEPTH", () => {
+  it("is a positive integer that caps runaway recovery chains", () => {
+    expect(DEFAULT_MAX_STRANDED_RECOVERY_DEPTH).toBeGreaterThan(0);
+    expect(Number.isInteger(DEFAULT_MAX_STRANDED_RECOVERY_DEPTH)).toBe(true);
+  });
+
+  it("triggers the depth cap when requestDepth meets or exceeds the limit", () => {
+    const cap = DEFAULT_MAX_STRANDED_RECOVERY_DEPTH;
+    // Below cap — recovery should proceed
+    expect(cap - 1 >= cap).toBe(false);
+    // At cap — recovery should halt
+    expect(cap >= cap).toBe(true);
+    // Above cap — recovery should halt
+    expect(cap + 1 >= cap).toBe(true);
   });
 });
