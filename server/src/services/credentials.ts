@@ -640,9 +640,25 @@ export const CREDENTIAL_DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
 export const CREDENTIAL_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 
 /**
- * After this many CONSECUTIVE credential-related failures, the credential is
- * disabled (parked long-term) and flagged for attention, so the picker stops
- * wasting runs on a permanently-dead key. A success resets the counter.
+ * Escalating cooldown ladder for a credential that keeps hitting its provider
+ * rate/usage limit (e.g. Claude's 5-hour window). The Nth consecutive limit hit
+ * parks the credential for ladder[min(N-1, last)] — 30min, then 2h, then 2h
+ * thereafter. A provider Retry-After (when sent) is NOT used to delay the AGENT
+ * (it would idle for hours); it only informs how long THIS credential rests,
+ * and we cap that at the ladder so a different bound credential is tried first.
+ * Rate-limits never freeze — they self-recover when the window resets.
+ */
+export const CREDENTIAL_RATE_LIMIT_COOLDOWN_LADDER_MS = [
+  30 * 60 * 1000, //  1st: 30 min
+  2 * 60 * 60 * 1000, // 2nd: 2 h
+  2 * 60 * 60 * 1000, // 3rd+: 2 h (a real limit is never > ~5h, so 2h always re-checks in time)
+] as const;
+
+/**
+ * After this many CONSECUTIVE AUTH/credential failures (bad/expired/invalid key,
+ * provider rejection — NOT rate-limits), the credential is frozen (disabled +
+ * flagged) so the board fixes it. Rate-limits are excluded: they escalate
+ * cooldown forever and self-recover, they never freeze a good key.
  */
 export const CREDENTIAL_DISABLE_THRESHOLD = 3;
 
@@ -758,43 +774,102 @@ export async function setCredentialCooldown(
     .where(eq(providerCredentials.id, credentialId));
 }
 
+export type CredentialFailureKind = "rate_limit" | "auth";
+
 /**
- * Record a credential-related run FAILURE: cool the credential down (so the next
- * run rotates to another of the same type) and increment its consecutive-failure
- * counter. Once the counter crosses CREDENTIAL_DISABLE_THRESHOLD the credential
- * is disabled (parked long-term) and flagged for attention, so the picker stops
- * burning runs on a dead key. `cooldownUntil` honors a provider Retry-After when
- * supplied, else uses the rate-limit or generic failure default.
+ * Record a credential-related run FAILURE and apply the right policy.
+ *
+ * `rate_limit` (provider usage/quota window, e.g. Claude's 5-hour limit):
+ *   escalating cooldown per CREDENTIAL_RATE_LIMIT_COOLDOWN_LADDER_MS
+ *   (30min → 2h → 2h…); NEVER frozen — it self-recovers when the window resets.
+ *   The provider's Retry-After, when given, sets a floor on the cooldown but is
+ *   capped at the ladder rung so the agent rotates to another key rather than
+ *   idling for hours.
+ *
+ * `auth` (bad/expired/invalid key, provider rejection): short fixed cooldown,
+ *   and FROZEN (disabled + flagged) after CREDENTIAL_DISABLE_THRESHOLD
+ *   consecutive failures so the board fixes it.
+ *
+ * The consecutive-failure counter is shared (a success resets it); auth failures
+ * are what trip the freeze threshold, rate-limits only escalate the cooldown.
  */
 export async function recordCredentialFailure(
   db: Db,
   credentialId: string,
-  opts: { reason: string | null; cooldownUntil: Date },
-): Promise<{ disabled: boolean; failureCount: number }> {
+  opts: { kind: CredentialFailureKind; reason: string | null; providerRetryAfter?: Date | null },
+): Promise<{ disabled: boolean; failureCount: number; cooldownUntil: Date }> {
   const [current] = await db
     .select({ count: providerCredentials.consecutiveFailureCount })
     .from(providerCredentials)
     .where(eq(providerCredentials.id, credentialId))
     .limit(1);
   const nextCount = (current?.count ?? 0) + 1;
-  const shouldDisable = nextCount >= CREDENTIAL_DISABLE_THRESHOLD;
   const now = new Date();
+
+  let cooldownMs: number;
+  if (opts.kind === "rate_limit") {
+    const ladder = CREDENTIAL_RATE_LIMIT_COOLDOWN_LADDER_MS;
+    const rung = ladder[Math.min(nextCount - 1, ladder.length - 1)];
+    // Honor Retry-After as a floor, but cap at the rung so we don't idle the
+    // agent for the provider's full multi-hour window when another key exists.
+    const retryAfterMs =
+      opts.providerRetryAfter && opts.providerRetryAfter.getTime() > now.getTime()
+        ? opts.providerRetryAfter.getTime() - now.getTime()
+        : 0;
+    cooldownMs = Math.min(Math.max(rung, retryAfterMs), ladder[ladder.length - 1]);
+  } else {
+    cooldownMs = CREDENTIAL_FAILURE_COOLDOWN_MS;
+  }
+  const cooldownUntil = new Date(now.getTime() + cooldownMs);
+
+  // Only AUTH failures freeze; rate-limits escalate cooldown forever.
+  const shouldDisable = opts.kind === "auth" && nextCount >= CREDENTIAL_DISABLE_THRESHOLD;
+
   await db
     .update(providerCredentials)
     .set({
-      cooldownUntil: opts.cooldownUntil,
+      cooldownUntil,
       cooldownReason: opts.reason,
       consecutiveFailureCount: nextCount,
       ...(shouldDisable
         ? {
             disabledAt: now,
-            disabledReason: `Auto-disabled after ${nextCount} consecutive failures: ${opts.reason ?? "credential error"}`,
+            disabledReason: `Frozen after ${nextCount} consecutive auth failures: ${opts.reason ?? "credential error"}`,
           }
         : {}),
       updatedAt: now,
     })
     .where(eq(providerCredentials.id, credentialId));
-  return { disabled: shouldDisable, failureCount: nextCount };
+  return { disabled: shouldDisable, failureCount: nextCount, cooldownUntil };
+}
+
+/**
+ * Does this agent have ANOTHER usable (not cooling, not disabled) credential of
+ * the given provider type, besides `excludeCredentialId`? Used to decide whether
+ * a failed run should be retried immediately (seamless switch to the other key)
+ * or just cooled down to wait. Strictly same-type — providers never cross.
+ */
+export async function hasAlternateCredentialOfType(
+  db: Db,
+  agentId: string,
+  type: string,
+  excludeCredentialId: string,
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: agentCredentials.credentialId })
+    .from(agentCredentials)
+    .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
+    .where(
+      and(
+        eq(agentCredentials.agentId, agentId),
+        eq(providerCredentials.type, type),
+        isNull(providerCredentials.disabledAt),
+      ),
+    );
+  // A still-cooling alternate counts — the picker prefers non-cooling but will
+  // fall back to the soonest-recovering one, which is still better than retrying
+  // the just-failed key.
+  return rows.some((r) => r.id !== excludeCredentialId);
 }
 
 /**

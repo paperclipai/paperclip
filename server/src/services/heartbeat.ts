@@ -63,9 +63,8 @@ import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import {
-  CREDENTIAL_DEFAULT_COOLDOWN_MS,
-  CREDENTIAL_FAILURE_COOLDOWN_MS,
   credentialTypesForAdapterType,
+  hasAlternateCredentialOfType,
   isCredentialFailure,
   recordCredentialFailure,
   recordCredentialSuccess,
@@ -7096,12 +7095,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // usage attribution can see which credential this run actually used (the
     // chosen pool member whose type matches the agent's adapter).
     let runActiveCredentialId: string | null = null;
+    let runActiveCredentialType: string | null = null;
     try {
       const credResolution = await resolveAllCredentialEnv(db, agent.id);
       const eligibleTypes = new Set(credentialTypesForAdapterType(agent.adapterType));
-      runActiveCredentialId =
-        (credResolution.chosen.find((c) => eligibleTypes.has(c.type)) ?? credResolution.chosen[0])
-          ?.credentialId ?? null;
+      const activeChoice =
+        credResolution.chosen.find((c) => eligibleTypes.has(c.type)) ?? credResolution.chosen[0] ?? null;
+      runActiveCredentialId = activeChoice?.credentialId ?? null;
+      runActiveCredentialType = activeChoice?.type ?? null;
       if (Object.keys(credResolution.env).length > 0) {
         resolvedConfig.env = {
           ...parseObject(resolvedConfig.env),
@@ -7910,14 +7911,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
       }
 
-      // Reactive credential failover. On a CREDENTIAL-related failure (rate/quota
-      // limit, auth failure, or provider rejection — not agent-logic errors or
-      // timeouts) cool down the credential the run used so the next run rotates
-      // to another bound credential of the SAME provider type (rotation is always
-      // same-type: Claude keys rotate among Claude keys, MiMo among MiMo, etc.),
-      // and increment its consecutive-failure counter — after a few in a row the
-      // credential is auto-disabled and flagged for attention. A successful run
-      // resets the counter so a transient blip doesn't accumulate.
+      // Reactive credential failover. On a CREDENTIAL-related failure cool down
+      // the credential the run used so the next run rotates to another bound
+      // credential of the SAME provider type (rotation is ALWAYS same-type —
+      // Claude↔Claude, MiMo↔MiMo, DeepSeek↔DeepSeek — never across providers,
+      // even on a shared adapter). Two policies:
+      //  - rate_limit (e.g. Claude 5-hour window): escalating cooldown
+      //    (30min→2h→2h), never frozen (it self-recovers); if the agent has
+      //    another usable credential of the same type, schedule an IMMEDIATE
+      //    retry so it seamlessly switches keys instead of idling for hours.
+      //  - auth (bad/expired/invalid key, provider rejection): short cooldown,
+      //    frozen after 3 consecutive so the board fixes it.
+      // A successful run resets the streak.
+      let seamlessFailoverRetry = false;
       if (runActiveCredentialId) {
         try {
           if (
@@ -7928,29 +7934,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               errorMessage: adapterResult.errorMessage ?? null,
             })
           ) {
-            const isRateLimit = adapterResult.errorFamily === "transient_upstream";
+            const kind: "rate_limit" | "auth" =
+              adapterResult.errorFamily === "transient_upstream" ? "rate_limit" : "auth";
             const retryAt = readNonEmptyString(adapterResult.retryNotBefore);
-            const parsed = retryAt ? new Date(retryAt) : null;
-            const cooldownUntil =
-              parsed && Number.isFinite(parsed.getTime()) && parsed.getTime() > Date.now()
-                ? parsed
-                : new Date(
-                    Date.now() +
-                      (isRateLimit ? CREDENTIAL_DEFAULT_COOLDOWN_MS : CREDENTIAL_FAILURE_COOLDOWN_MS),
-                  );
+            const parsedRetryAfter = retryAt ? new Date(retryAt) : null;
             const result = await recordCredentialFailure(db, runActiveCredentialId, {
+              kind,
               reason: adapterResult.errorCode ?? adapterResult.errorFamily ?? "credential_error",
-              cooldownUntil,
+              providerRetryAfter:
+                parsedRetryAfter && Number.isFinite(parsedRetryAfter.getTime())
+                  ? parsedRetryAfter
+                  : null,
             });
+            // Seamless switch: only for a rate-limit, and only when there's
+            // another same-type credential to land on (else an immediate retry
+            // would just hit the same wall). The just-failed credential is now
+            // cooling down, so the picker will choose the alternate.
+            const hasAlternate =
+              runActiveCredentialType != null &&
+              (await hasAlternateCredentialOfType(
+                db,
+                agent.id,
+                runActiveCredentialType,
+                runActiveCredentialId,
+              ));
+            seamlessFailoverRetry = kind === "rate_limit" && hasAlternate;
             await onLog(
               "stderr",
               result.disabled
-                ? `[paperclip] credential ${runActiveCredentialId} auto-disabled after ${result.failureCount} consecutive failures — rotating to another credential and flagging for attention\n`
-                : `[paperclip] credential ${runActiveCredentialId} cooling down until ${cooldownUntil.toISOString()} (failure ${result.failureCount}) — next run rotates to another credential\n`,
+                ? `[paperclip] credential ${runActiveCredentialId} FROZEN after ${result.failureCount} consecutive auth failures — using another credential and flagging for the board to fix\n`
+                : seamlessFailoverRetry
+                  ? `[paperclip] credential ${runActiveCredentialId} hit a usage limit (cooling until ${result.cooldownUntil.toISOString()}) — switching to another ${runActiveCredentialType} credential now\n`
+                  : `[paperclip] credential ${runActiveCredentialId} cooling down until ${result.cooldownUntil.toISOString()} (${kind} failure ${result.failureCount}) — next run rotates to another credential\n`,
             );
           } else if (outcome === "succeeded") {
-            // Reset the failure streak on a clean run so a one-off blip never
-            // accumulates toward auto-disable.
             await recordCredentialSuccess(db, runActiveCredentialId);
           }
         } catch (err) {
@@ -8022,6 +8039,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
+        } else if (seamlessFailoverRetry) {
+          // The credential hit a usage limit and the agent has another same-type
+          // credential to fall back on. Retry IMMEDIATELY (delayMs 0) rather than
+          // waiting out the provider's multi-hour window: the just-failed
+          // credential is now cooling down, so the picker selects the alternate.
+          await scheduleBoundedRetryForRun(livenessRun, agent, {
+            delayMs: 0,
+            retryReason: "credential_failover",
+            wakeReason: "credential_failover_retry",
+          });
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
