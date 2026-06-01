@@ -28,4 +28,15 @@ export const mentionsApi = {
   sov: () => agnb.get<{ ok: boolean; error?: string; prompts: SovPrompt[]; results: SovResult[] }>("/sov").then((r) => unwrap(r)),
   backlinks: () => agnb.get<{ ok: boolean; error?: string; backlinks: Backlink[] }>("/backlinks").then((r) => unwrap(r).backlinks),
   prospects: () => agnb.get<{ ok: boolean; error?: string; prospects: BacklinkProspect[] }>("/backlink-prospects").then((r) => unwrap(r).prospects),
+
+  // --- writes ---
+  syncMentions: () => agnb.post("/inbound/mentions/sync", {}),
+  logReview: (b: { platform: string; rating?: string; reviewer_handle?: string; excerpt?: string; review_url?: string }) => agnb.post("/reviews", b),
+  addPrompt: (b: { prompt: string; category?: string }) => agnb.post("/sov", b),
+  deletePrompt: (id: string) => agnb.delete(`/sov?id=${id}`),
+  runSov: () => agnb.post("/inbound/sov/run", {}),
+  addBacklink: (b: { source_url: string; target_url: string; source_domain?: string; anchor_text?: string; kind?: string; source_da?: string }) => agnb.post("/backlinks", b),
+  deleteBacklink: (id: string) => agnb.delete(`/backlinks?id=${id}`),
+  prospectStatus: (id: string, status: string) => agnb.post(`/backlinks/prospect-status/${id}`, { status }),
+  draftOutreach: (id: string) => agnb.post(`/backlinks/draft-outreach/${id}`, {}),
 };

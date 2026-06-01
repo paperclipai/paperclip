@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Star } from "lucide-react";
 import { mentionsApi } from "../api/agnbMentions";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -7,19 +7,34 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbSubnav } from "../components/AgnbSubnav";
+import { AgnbFormModal } from "../components/AgnbFormModal";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { relativeTime } from "../lib/utils";
 
 export function Reviews() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Mentions" }, { label: "Reviews radar" }]), [setBreadcrumbs]);
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.reviews, queryFn: () => mentionsApi.reviews() });
 
   return (
     <div className="space-y-4">
       <AgnbSubnav group="mentions" />
-      <h1 className="text-lg font-semibold">Reviews radar</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-semibold">Reviews radar</h1>
+        <Button size="sm" onClick={() => setOpen(true)}>Log review</Button>
+      </div>
+      {open && (
+        <AgnbFormModal
+          title="Log review"
+          fields={[{ key: "platform", label: "Platform", required: true, placeholder: "G2 / Capterra / Trustpilot" }, { key: "rating", label: "Rating (1-5)", type: "number" }, { key: "reviewer_handle", label: "Reviewer" }, { key: "excerpt", label: "Excerpt", type: "textarea" }, { key: "review_url", label: "Review URL" }]}
+          onClose={() => setOpen(false)}
+          onSubmit={async (v) => { await mentionsApi.logReview({ platform: v.platform, rating: v.rating || undefined, reviewer_handle: v.reviewer_handle || undefined, excerpt: v.excerpt || undefined, review_url: v.review_url || undefined }); qc.invalidateQueries({ queryKey: queryKeys.agnb.reviews }); }}
+        />
+      )}
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />
