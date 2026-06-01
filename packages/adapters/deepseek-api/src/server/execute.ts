@@ -10,6 +10,43 @@ const DEFAULT_BASE_URL = "https://api.deepseek.com/v1";
 const DEFAULT_MODEL = "deepseek-v4-flash";
 const DEFAULT_TIMEOUT_SEC = 600;
 
+// DeepSeek-direct list prices, USD per 1M tokens (api-docs.deepseek.com, mid-2026).
+// `inHit` = cached input token (prompt_cache_hit_tokens), `inMiss` = uncached
+// input token, `out` = output token. DeepSeek's HTTP API returns only token
+// counts (no dollar figure), so we price runs here; the value rides out on
+// AdapterExecutionResult.costUsd and the heartbeat converts it to costCents.
+// deepseek-chat / deepseek-reasoner are deprecated aliases billed at flash rates.
+// NOTE: correct only for DeepSeek-direct; a reseller (e.g. OpenRouter) prices
+// differently and would over/under-state cost.
+const DEEPSEEK_PRICES_PER_MILLION: Record<string, { inHit: number; inMiss: number; out: number }> = {
+  "deepseek-v4-pro": { inHit: 0.003625, inMiss: 0.435, out: 0.87 },
+  "deepseek-v4-flash": { inHit: 0.0028, inMiss: 0.14, out: 0.28 },
+  "deepseek-chat": { inHit: 0.0028, inMiss: 0.14, out: 0.28 },
+  "deepseek-reasoner": { inHit: 0.0028, inMiss: 0.14, out: 0.28 },
+};
+
+type DeepSeekUsage = {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+};
+
+/**
+ * Price a DeepSeek run from its token split. Returns null for an unknown model
+ * id so the run records correct tokens with 0 cost (the same safe default as
+ * before this table existed) rather than crashing or guessing.
+ */
+function computeDeepSeekCostUsd(model: string, usage: DeepSeekUsage): number | null {
+  const price = DEEPSEEK_PRICES_PER_MILLION[model];
+  if (!price) return null;
+  const cachedInput = usage.cachedInputTokens;
+  const uncachedInput = Math.max(0, usage.inputTokens - cachedInput);
+  return (
+    (cachedInput * price.inHit + uncachedInput * price.inMiss + usage.outputTokens * price.out) /
+    1_000_000
+  );
+}
+
 function nonEmpty(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -88,7 +125,7 @@ async function streamChatCompletion(params: {
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<{
   text: string;
-  usage: { inputTokens: number; outputTokens: number } | null;
+  usage: DeepSeekUsage | null;
   model: string | null;
 }> {
   const url = `${params.baseUrl.replace(/\/$/, "")}/chat/completions`;
@@ -117,7 +154,7 @@ async function streamChatCompletion(params: {
   const decoder = new TextDecoder("utf-8");
   let buffered = "";
   let assembled = "";
-  let usage: { inputTokens: number; outputTokens: number } | null = null;
+  let usage: DeepSeekUsage | null = null;
   let model: string | null = null;
 
   while (true) {
@@ -160,8 +197,13 @@ async function streamChatCompletion(params: {
 
       const usageRec = asRecord(frame.usage);
       if (usageRec) {
+        // DeepSeek's prompt_tokens INCLUDES the cache-hit tokens, so derive the
+        // cache-miss bucket by subtraction rather than adding the two together.
+        const promptTokens = asNumber(usageRec.prompt_tokens, 0);
+        const cacheHit = asNumber(usageRec.prompt_cache_hit_tokens, 0);
         usage = {
-          inputTokens: asNumber(usageRec.prompt_tokens, 0),
+          inputTokens: promptTokens,
+          cachedInputTokens: Math.max(0, Math.min(cacheHit, promptTokens)),
           outputTokens: asNumber(usageRec.completion_tokens, 0),
         };
       }
@@ -236,14 +278,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     await ctx.onLog("stdout", "\n");
 
+    const billedModel = respondedModel ?? model;
+    const costUsd = usage ? computeDeepSeekCostUsd(billedModel, usage) : null;
+    if (usage && costUsd === null) {
+      // Unknown model id — record tokens but no price. Surface it so the silent
+      // $0 is visible and the price table can be extended.
+      await ctx.onLog(
+        "stderr",
+        `[deepseek-api] no price entry for model "${billedModel}"; cost recorded as $0\n`,
+      );
+    }
+
     return {
       exitCode: 0,
       signal: null,
       timedOut: false,
       provider: "deepseek",
-      model: respondedModel ?? model,
+      model: billedModel,
       billingType: "api",
       ...(usage ? { usage } : {}),
+      ...(costUsd != null ? { costUsd } : {}),
       ...(text ? { summary: text.slice(0, 2000) } : {}),
     };
   } catch (err) {
