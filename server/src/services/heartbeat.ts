@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -204,6 +204,132 @@ const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+
+// Plan V2 P1.1 + P1.2 — wake dedupe + cooldown (RBP-52).
+// Module-level state: shared across all heartbeatService() instances in the
+// same process. Single-process assumption (multi-worker would need Redis).
+export const WAKE_DEDUPE_TTL_MS = 60_000;
+export const WAKE_COOLDOWN_MS = 30_000;
+export const WAKE_DEDUPE_BYPASS_SOURCES: ReadonlySet<string> = new Set([
+  // Human/agent free-form comments and accepted interactions must always
+  // dispatch — hash collisions are still naturally avoided by including
+  // commentId/interactionId in the hash, so this set is mostly belt-and-braces.
+  "issue_comment",
+  "interaction",
+  "blockers_resolved",
+]);
+export const WAKE_COOLDOWN_AUTO_SOURCES: ReadonlySet<string> = new Set([
+  // Cooldown only suppresses wakes that the system itself triggers. Anything
+  // sourced from a human (on_demand) or a request_confirmation acceptance
+  // bypasses cooldown unconditionally.
+  "timer",
+  "assignment",
+]);
+const wakeDedupeCache = new Map<string, number>();
+const lastWakeAtByAgentIssue = new Map<string, number>();
+const WAKE_DEDUPE_CACHE_MAX_SIZE = 5_000;
+const WAKE_COOLDOWN_CACHE_MAX_SIZE = 5_000;
+
+function readWakeFeatureFlag(name: "PAPERCLIP_ENABLE_WAKE_DEDUPE" | "PAPERCLIP_ENABLE_WAKE_COOLDOWN"): boolean {
+  const raw = process.env[name];
+  return raw === "true" || raw === "1";
+}
+
+export function computeWakeDedupeHash(parts: {
+  agentId: string;
+  issueId: string | null;
+  reason: string | null;
+  source: string;
+  commentId?: string | null;
+  interactionId?: string | null;
+}): string {
+  const seed = [
+    parts.agentId,
+    parts.issueId ?? "",
+    parts.reason ?? "",
+    parts.source,
+    parts.commentId ?? parts.interactionId ?? "create",
+  ].join("|");
+  return createHash("sha256").update(seed).digest("hex").slice(0, 32);
+}
+
+function pruneWakeDedupeCache(now: number): void {
+  if (wakeDedupeCache.size < WAKE_DEDUPE_CACHE_MAX_SIZE) {
+    // Cheap path: only sweep on insert pressure to amortize.
+    return;
+  }
+  for (const [key, expiresAt] of wakeDedupeCache) {
+    if (expiresAt <= now) wakeDedupeCache.delete(key);
+  }
+}
+
+function pruneWakeCooldownCache(now: number): void {
+  if (lastWakeAtByAgentIssue.size < WAKE_COOLDOWN_CACHE_MAX_SIZE) {
+    return;
+  }
+  // Entries older than 10× the cooldown window can never affect decisions.
+  const staleThreshold = WAKE_COOLDOWN_MS * 10;
+  for (const [key, lastAt] of lastWakeAtByAgentIssue) {
+    if (now - lastAt > staleThreshold) lastWakeAtByAgentIssue.delete(key);
+  }
+}
+
+/**
+ * Test-only handle for the in-memory wake dispatch caches. NOT part of the
+ * public API — tests use this to seed/reset state without exercising the full
+ * heartbeatService() factory.
+ */
+export const __wakeDispatchInternalsForTests = {
+  resetCaches(): void {
+    wakeDedupeCache.clear();
+    lastWakeAtByAgentIssue.clear();
+  },
+  seedDedupe(hash: string, expiresAtMs: number): void {
+    wakeDedupeCache.set(hash, expiresAtMs);
+  },
+  seedCooldown(agentId: string, issueId: string | null, atMs: number): void {
+    lastWakeAtByAgentIssue.set(`${agentId}:${issueId ?? "_no_issue"}`, atMs);
+  },
+  evaluateWake(parts: {
+    agentId: string;
+    issueId: string | null;
+    reason: string | null;
+    source: string;
+    commentId?: string | null;
+    interactionId?: string | null;
+    nowMs: number;
+    force?: boolean;
+  }): { hash: string; dedupeHit: boolean; cooldownSkip: boolean } {
+    const hash = computeWakeDedupeHash(parts);
+    const force = parts.force === true;
+    const dedupeBypass = force || WAKE_DEDUPE_BYPASS_SOURCES.has(parts.source);
+    const cachedExpiresAt = dedupeBypass ? undefined : wakeDedupeCache.get(hash);
+    const dedupeHit = !dedupeBypass && cachedExpiresAt !== undefined && cachedExpiresAt > parts.nowMs;
+    const cooldownAppliesToSource = WAKE_COOLDOWN_AUTO_SOURCES.has(parts.source) && !force;
+    const lastWakeAt = cooldownAppliesToSource
+      ? lastWakeAtByAgentIssue.get(`${parts.agentId}:${parts.issueId ?? "_no_issue"}`) ?? 0
+      : 0;
+    const cooldownSkip =
+      cooldownAppliesToSource && parts.nowMs - lastWakeAt < WAKE_COOLDOWN_MS;
+    return { hash, dedupeHit, cooldownSkip };
+  },
+  recordDispatch(parts: {
+    agentId: string;
+    issueId: string | null;
+    hash: string;
+    nowMs: number;
+    source: string;
+  }): void {
+    wakeDedupeCache.set(parts.hash, parts.nowMs + WAKE_DEDUPE_TTL_MS);
+    if (WAKE_COOLDOWN_AUTO_SOURCES.has(parts.source)) {
+      lastWakeAtByAgentIssue.set(`${parts.agentId}:${parts.issueId ?? "_no_issue"}`, parts.nowMs);
+    }
+  },
+  cacheSizes(): { dedupe: number; cooldown: number } {
+    return { dedupe: wakeDedupeCache.size, cooldown: lastWakeAtByAgentIssue.size };
+  },
+};
+
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
@@ -1045,6 +1171,9 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  // Plan V2 P1.1 — bypass dedupe + cooldown (RBP-52). Used by tooling that
+  // intentionally re-issues a wake (e.g. recovery, manual force).
+  force?: boolean;
 }
 
 type UsageTotals = {
@@ -9042,6 +9171,77 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         finishedAt: new Date(),
       });
     };
+
+    // Plan V2 P1.1 + P1.2 + P1.4 — wake dedupe / cooldown / telemetry (RBP-52).
+    // Always evaluate (telemetry runs in shadow); enforcement is gated by env flags.
+    const wakeForceBypass = opts.force === true;
+    const dedupeEnabled = readWakeFeatureFlag("PAPERCLIP_ENABLE_WAKE_DEDUPE");
+    const cooldownEnabled = readWakeFeatureFlag("PAPERCLIP_ENABLE_WAKE_COOLDOWN");
+    const interactionId =
+      readNonEmptyString(enrichedContextSnapshot.interactionId) ??
+      readNonEmptyString((payload as Record<string, unknown> | null)?.interactionId ?? null);
+    const wakeDedupeHash = computeWakeDedupeHash({
+      agentId,
+      issueId: issueId ?? null,
+      reason,
+      source,
+      commentId: wakeCommentId ?? null,
+      interactionId,
+    });
+    const wakeNowMs = Date.now();
+    pruneWakeDedupeCache(wakeNowMs);
+    pruneWakeCooldownCache(wakeNowMs);
+
+    const dedupeBypass = wakeForceBypass || WAKE_DEDUPE_BYPASS_SOURCES.has(source);
+    const dedupeCachedExpiresAt = dedupeBypass ? undefined : wakeDedupeCache.get(wakeDedupeHash);
+    const dedupeHit = !dedupeBypass && dedupeCachedExpiresAt !== undefined && dedupeCachedExpiresAt > wakeNowMs;
+
+    const cooldownAppliesToSource = WAKE_COOLDOWN_AUTO_SOURCES.has(source) && !wakeForceBypass;
+    const cooldownIssueKey = `${agentId}:${issueId ?? "_no_issue"}`;
+    const cooldownLastAt = cooldownAppliesToSource ? lastWakeAtByAgentIssue.get(cooldownIssueKey) ?? 0 : 0;
+    const cooldownDeltaMs = cooldownAppliesToSource ? wakeNowMs - cooldownLastAt : Number.POSITIVE_INFINITY;
+    const cooldownSkip = cooldownAppliesToSource && cooldownDeltaMs < WAKE_COOLDOWN_MS;
+
+    const wakeOutcome =
+      dedupeEnabled && dedupeHit
+        ? "deduped"
+        : cooldownEnabled && cooldownSkip
+          ? "cooldown_queued"
+          : "dispatched";
+    logger.info(
+      {
+        evt: "wake_evaluated",
+        outcome: wakeOutcome,
+        agentId,
+        issueId,
+        reason,
+        source,
+        triggerDetail,
+        dedupeHit,
+        cooldownSkip,
+        dedupeEnabled,
+        cooldownEnabled,
+        force: wakeForceBypass,
+        hashPrefix: wakeDedupeHash.slice(0, 8),
+        cooldownDeltaMs: Number.isFinite(cooldownDeltaMs) ? cooldownDeltaMs : null,
+      },
+      "wake dispatch evaluated",
+    );
+
+    if (dedupeEnabled && dedupeHit) {
+      await writeSkippedRequest("wake.deduped");
+      return null;
+    }
+    if (cooldownEnabled && cooldownSkip) {
+      await writeSkippedRequest("wake.cooldown_queued");
+      return null;
+    }
+
+    // Update caches AFTER the decision so concurrent calls observe the latest state.
+    wakeDedupeCache.set(wakeDedupeHash, wakeNowMs + WAKE_DEDUPE_TTL_MS);
+    if (cooldownAppliesToSource) {
+      lastWakeAtByAgentIssue.set(cooldownIssueKey, wakeNowMs);
+    }
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
     if (!projectId && issueId) {
