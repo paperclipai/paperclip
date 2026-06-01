@@ -406,7 +406,7 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
         const selectedDatabasePort =
           parsed.database.mode === "embedded-postgres"
             ? findNextUnclaimedPort(
-                parsed.database.embeddedPostgresPort === 54329
+                parsed.database.embeddedPostgresPort === 54000
                   ? 54330
                   : parsed.database.embeddedPostgresPort,
                 new Set([...siblingPorts.databasePorts, selectedServerPort]),

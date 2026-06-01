@@ -120,8 +120,8 @@ describe("resolveDatabaseTarget", () => {
     expect(target).toMatchObject({
       mode: "embedded-postgres",
       dataDir: path.join(home, "instances", "default", "db"),
-      port: 54329,
-      source: "embedded-postgres@54329",
+      port: 54000,
+      source: "embedded-postgres@54000",
       configPath: path.join(home, "instances", "default", "config.json"),
       envPath: path.join(home, "instances", "default", ".env"),
     });

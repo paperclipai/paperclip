@@ -27,7 +27,7 @@ function resolveConnectionString(configPath?: string): { value: string; source: 
     return { value: config.database.connectionString.trim(), source: "config.database.connectionString" };
   }
 
-  const port = config?.database.embeddedPostgresPort ?? 54329;
+  const port = config?.database.embeddedPostgresPort ?? 54000;
   return {
     value: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
     source: `embedded-postgres@${port}`,
