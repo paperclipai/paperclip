@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileSearch } from "lucide-react";
 import { blogApi } from "../api/agnbBlog";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -8,6 +8,7 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbSubnav } from "../components/AgnbSubnav";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 
 function sevTone(s: string): "destructive" | "secondary" | "outline" {
   if (s === "fail") return "destructive";
@@ -18,12 +19,18 @@ function sevTone(s: string): "destructive" | "secondary" | "outline" {
 export function ContentAudit() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Blog" }, { label: "Audit" }]), [setBreadcrumbs]);
+  const qc = useQueryClient();
+  const [scanning, setScanning] = useState(false);
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.contentAudit, queryFn: () => blogApi.contentAudit() });
+  const scan = async () => { setScanning(true); try { await blogApi.runContentAudit(); qc.invalidateQueries({ queryKey: queryKeys.agnb.contentAudit }); } catch (e) { alert(e instanceof Error ? e.message : "Failed"); } finally { setScanning(false); } };
 
   return (
     <div className="space-y-4">
       <AgnbSubnav group="blog" />
-      <h1 className="text-lg font-semibold">Content audit</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-semibold">Content audit</h1>
+        <Button size="sm" variant="outline" onClick={scan} disabled={scanning}>{scanning ? "Scanning…" : "Run scan"}</Button>
+      </div>
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

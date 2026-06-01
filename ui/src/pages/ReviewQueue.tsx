@@ -1,6 +1,6 @@
 import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ClipboardCheck } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ClipboardCheck, Send, Trash2 } from "lucide-react";
 import { blogApi } from "../api/agnbBlog";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -13,7 +13,11 @@ import { relativeTime } from "../lib/utils";
 export function ReviewQueue() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Blog" }, { label: "Review queue" }]), [setBreadcrumbs]);
+  const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.blogDrafts, queryFn: () => blogApi.drafts() });
+  const refresh = () => qc.invalidateQueries({ queryKey: queryKeys.agnb.blogDrafts });
+  const publish = async (id: string) => { try { await blogApi.publishDraft(id); refresh(); } catch (e) { alert(e instanceof Error ? e.message : "Failed"); } };
+  const del = async (id: string) => { if (confirm("Delete draft?")) { await blogApi.deleteDraft(id).catch(() => {}); refresh(); } };
 
   const pending = (data ?? []).filter((d) => d.status === "draft" || d.status === "scheduled");
 
@@ -38,7 +42,11 @@ export function ReviewQueue() {
                 </div>
                 {d.description && <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{d.description}</p>}
               </div>
-              <span className="shrink-0 text-[11px] text-muted-foreground">{d.created_by ?? "—"} · {relativeTime(d.updated_at)}</span>
+              <div className="flex shrink-0 items-center gap-2">
+                <span className="text-[11px] text-muted-foreground">{d.created_by ?? "—"} · {relativeTime(d.updated_at)}</span>
+                <button title="Publish" onClick={() => publish(d.id)}><Send className="h-3.5 w-3.5 text-muted-foreground hover:text-emerald-600" /></button>
+                <button title="Delete" onClick={() => del(d.id)}><Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" /></button>
+              </div>
             </div>
           ))}
         </div>
