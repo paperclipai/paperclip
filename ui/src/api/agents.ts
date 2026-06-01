@@ -59,6 +59,52 @@ export interface OrgNode {
   reports: OrgNode[];
 }
 
+export interface HermesOrgRunSummary {
+  id: string;
+  status: string;
+  invocationSource: string;
+  triggerDetail: string | null;
+  startedAt: Date | string | null;
+  finishedAt: Date | string | null;
+  createdAt: Date | string;
+  error: string | null;
+}
+
+export interface HermesOrgAgentSummary {
+  id: string;
+  name: string;
+  title: string | null;
+  profile: string;
+  division: string;
+  status: string;
+  adapterType: string;
+  bridgeConnected: boolean;
+  charter: string | null;
+  cadence: string | null;
+  skills: string[];
+  review: string[];
+  lastHeartbeatAt: Date | string | null;
+  recentRuns: HermesOrgRunSummary[];
+}
+
+export interface HermesOrgDivisionSummary {
+  name: string;
+  agentCount: number;
+  activeCount: number;
+  runningRunCount: number;
+  agents: HermesOrgAgentSummary[];
+}
+
+export interface HermesOrgVisibilitySummary {
+  orgKey: "full-lead-org";
+  totalAgents: number;
+  activeAgents: number;
+  bridgeAgents: number;
+  runningRuns: number;
+  divisions: HermesOrgDivisionSummary[];
+  firstActivationPod: HermesOrgAgentSummary[];
+}
+
 export interface AgentHireResponse {
   agent: Agent;
   approval: Approval | null;
@@ -91,6 +137,7 @@ function agentPath(id: string, companyId?: string, suffix = "") {
 export const agentsApi = {
   list: (companyId: string) => api.get<Agent[]>(`/companies/${companyId}/agents`),
   org: (companyId: string) => api.get<OrgNode[]>(`/companies/${companyId}/org`),
+  hermesOrg: (companyId: string) => api.get<HermesOrgVisibilitySummary>(`/companies/${companyId}/hermes-org`),
   listConfigurations: (companyId: string) =>
     api.get<Record<string, unknown>[]>(`/companies/${companyId}/agent-configurations`),
   get: async (id: string, companyId?: string) => {

@@ -8,6 +8,7 @@ import {
   Search,
   SquarePen,
   Network,
+  Workflow,
   Boxes,
   Repeat,
   GitBranch,
@@ -121,6 +122,7 @@ export function Sidebar() {
 
         <SidebarSection label="Company">
           <SidebarNavItem to="/org" label="Org" icon={Network} />
+          <SidebarNavItem to="/hermes-org" label="Hermes Org" icon={Workflow} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />

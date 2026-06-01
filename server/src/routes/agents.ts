@@ -99,6 +99,7 @@ import {
 import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { buildHermesOrgVisibility, type HermesOrgAgentRow, type HermesOrgRunRow } from "./hermes-org-visibility.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -1676,6 +1677,21 @@ export function agentRoutes(
       });
 
     res.json(items);
+  });
+
+  router.get("/companies/:companyId/hermes-org", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const [agents, runs] = await Promise.all([
+      svc.list(companyId),
+      heartbeat.list(companyId, undefined, 200),
+    ]);
+
+    res.json(buildHermesOrgVisibility({
+      agents: agents as HermesOrgAgentRow[],
+      runs: runs as HermesOrgRunRow[],
+    }));
   });
 
   router.get("/companies/:companyId/org", async (req, res) => {
