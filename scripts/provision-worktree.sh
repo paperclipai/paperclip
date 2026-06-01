@@ -218,7 +218,7 @@ async function main() {
 
   const preferredServerPort = Number(sourceConfig?.server?.port ?? 3101) + 1;
   const serverPort = await findAvailablePort(preferredServerPort);
-  const preferredDbPort = Number(sourceConfig?.database?.embeddedPostgresPort ?? 54329) + 1;
+  const preferredDbPort = Number(sourceConfig?.database?.embeddedPostgresPort ?? 5433) + 1;
   const databasePort = await findAvailablePort(preferredDbPort, new Set([serverPort]));
 
   fs.rmSync(configPath, { force: true });
