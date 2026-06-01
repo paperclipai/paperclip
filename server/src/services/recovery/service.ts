@@ -2108,7 +2108,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
       }),
       nextAction: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
-        ? "Choose and record a valid issue disposition without copying transcript content."
+        ? "Choose and record a valid issue disposition without copying transcript content. "
+          + "Resolve this recovery via POST /api/issues/{id}/recovery-actions/resolve "
+          + "(no checkout required). If the source issue is legitimately blocked by a "
+          + "first-class blocker, use outcome \"blocked\" + sourceIssueStatus \"blocked\" "
+          + "instead of attempting a checkout, which is rejected for blocked issues."
         : "Restore a live execution path, fix the runtime/adapter failure, or record an intentional manual resolution.",
       wakePolicy: ownerAgentId
         ? {
