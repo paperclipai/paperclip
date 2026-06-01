@@ -20,6 +20,7 @@ const mockWorkProductService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockTelemetryTrack = vi.hoisted(() => vi.fn());
 
 function registerRouteMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -28,7 +29,7 @@ function registerRouteMocks() {
   }));
 
   vi.doMock("../telemetry.js", () => ({
-    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+    getTelemetryClient: vi.fn(() => ({ track: mockTelemetryTrack })),
   }));
 
   vi.doMock("../services/issues.js", () => ({
@@ -190,6 +191,9 @@ function makeAttachment(contentType: string, originalFilename: string) {
   };
 }
 
+const ATTACHMENT_32MB = 32 * 1024 * 1024; // 33554432 bytes — the hard cap
+const ATTACHMENT_33MB = 33 * 1024 * 1024; // 34603008 bytes — one MB over the cap
+
 describe("normalizeIssueAttachmentMaxBytes", () => {
   it("keeps the process-level attachment cap as the final cap", async () => {
     const previous = process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
@@ -330,8 +334,10 @@ describe("issue attachment routes", () => {
         contentType: "application/octet-stream",
       });
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toBe("Attachment exceeds 10485760 bytes");
+    // PRO-2917 changes this from 422 to 413 — the test below verifies the intended post-deploy behaviour.
+    expect(res.status).toBe(413);
+    expect(res.body.code).toBe("ATTACHMENT_TOO_LARGE");
+    expect(typeof res.body.error).toBe("string");
     expect(storage.__calls.putFile).toBeUndefined();
   });
 
@@ -352,10 +358,210 @@ describe("issue attachment routes", () => {
       .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
       .attach("file", Buffer.from("large"), { filename: "large.txt", contentType: "text/plain" });
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toBe("Attachment exceeds 4 bytes");
+    expect(res.status).toBe(413);
+    expect(res.body.code).toBe("ATTACHMENT_TOO_LARGE");
     expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
   });
+
+  // --- 32 MB hard-cap boundary tests (PRO-2919) ---
+
+  it("accepts a file exactly at the 32 MB hard cap", async () => {
+    const previous = process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
+    process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES = String(ATTACHMENT_32MB);
+    vi.resetModules();
+    registerRouteMocks();
+    vi.clearAllMocks();
+    mockLogActivity.mockResolvedValue(undefined);
+
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      attachmentMaxBytes: ATTACHMENT_32MB,
+    });
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+    mockIssueService.createAttachment.mockResolvedValue(
+      makeAttachment("application/octet-stream", "exactly-32mb.bin"),
+    );
+
+    const storage = createStorageService();
+    const app = await createApp(storage);
+
+    const res = await request(app)
+      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .attach("file", Buffer.alloc(ATTACHMENT_32MB), {
+        filename: "exactly-32mb.bin",
+        contentType: "application/octet-stream",
+      });
+
+    try {
+      expect([200, 201]).toContain(res.status);
+      expect(storage.__calls.putFile).toBeDefined();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
+      } else {
+        process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES = previous;
+      }
+    }
+  }, 20_000);
+
+  it("rejects a 33 MB file with 413 and ATTACHMENT_TOO_LARGE code and S3 guidance", async () => {
+    const previous = process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
+    process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES = String(ATTACHMENT_32MB);
+    vi.resetModules();
+    registerRouteMocks();
+    vi.clearAllMocks();
+    mockLogActivity.mockResolvedValue(undefined);
+
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      attachmentMaxBytes: ATTACHMENT_32MB,
+    });
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+
+    const storage = createStorageService();
+    const app = await createApp(storage);
+
+    const res = await request(app)
+      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .attach("file", Buffer.alloc(ATTACHMENT_33MB), {
+        filename: "over-32mb.bin",
+        contentType: "application/octet-stream",
+      });
+
+    try {
+      expect(res.status).toBe(413);
+      expect(res.body.code).toBe("ATTACHMENT_TOO_LARGE");
+      // The error message must reference the limit and point callers at the S3 pattern.
+      expect(typeof res.body.error).toBe("string");
+      expect(res.body.error.length).toBeGreaterThan(0);
+      expect(res.body.limitBytes).toBe(ATTACHMENT_32MB);
+      // Nothing must be written to storage on rejection.
+      expect(storage.__calls.putFile).toBeUndefined();
+      expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
+      } else {
+        process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES = previous;
+      }
+    }
+  }, 20_000);
+
+  it("rejects a zero-byte file with 422 (regression guard)", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+
+    const storage = createStorageService();
+    const app = await createApp(storage);
+
+    const res = await request(app)
+      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .attach("file", Buffer.alloc(0), {
+        filename: "empty.bin",
+        contentType: "application/octet-stream",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Attachment is empty");
+    expect(storage.__calls.putFile).toBeUndefined();
+    expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
+  });
+
+  it("413 is triggered by size not content type — allowed content type still rejected when oversize", async () => {
+    const previous = process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
+    process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES = String(ATTACHMENT_32MB);
+    vi.resetModules();
+    registerRouteMocks();
+    vi.clearAllMocks();
+    mockLogActivity.mockResolvedValue(undefined);
+
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      attachmentMaxBytes: ATTACHMENT_32MB,
+    });
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+
+    const storage = createStorageService();
+    const app = await createApp(storage);
+
+    // application/pdf is an explicitly allowed content type but the file is over the cap.
+    const res = await request(app)
+      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .attach("file", Buffer.alloc(ATTACHMENT_33MB), {
+        filename: "large-report.pdf",
+        contentType: "application/pdf",
+      });
+
+    try {
+      expect(res.status).toBe(413);
+      expect(res.body.code).toBe("ATTACHMENT_TOO_LARGE");
+      // Must not be a content-type rejection (which would be 415 or 422 with different wording).
+      expect(res.body.error).not.toMatch(/content.?type/i);
+      expect(storage.__calls.putFile).toBeUndefined();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
+      } else {
+        process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES = previous;
+      }
+    }
+  }, 20_000);
+
+  it("fires telemetry counter when oversize upload is rejected", async () => {
+    const previous = process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
+    process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES = String(ATTACHMENT_32MB);
+    vi.resetModules();
+    registerRouteMocks();
+    vi.clearAllMocks();
+    mockLogActivity.mockResolvedValue(undefined);
+
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      attachmentMaxBytes: ATTACHMENT_32MB,
+    });
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+
+    const storage = createStorageService();
+    const app = await createApp(storage);
+
+    await request(app)
+      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .attach("file", Buffer.alloc(ATTACHMENT_33MB), {
+        filename: "over-32mb.bin",
+        contentType: "application/octet-stream",
+      });
+
+    try {
+      // The rejection handler must emit at least one telemetry track call so
+      // the oversize-rejection rate is visible post-deploy.
+      expect(mockTelemetryTrack).toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
+      } else {
+        process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES = previous;
+      }
+    }
+  }, 20_000);
 
   it("serves html attachments as downloads with nosniff", async () => {
     const storage = createStorageService();

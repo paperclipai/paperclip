@@ -1370,7 +1370,7 @@ export function issueRoutes(
   async function runSingleFileUpload(req: Request, res: Response, fileSizeLimit: number) {
     const upload = multer({
       storage: multer.memoryStorage(),
-      limits: { fileSize: fileSizeLimit, files: 1 },
+      limits: { fileSize: fileSizeLimit + 1, files: 1 },
     });
     await new Promise<void>((resolve, reject) => {
       upload.single("file")(req, res, (err: unknown) => {
@@ -6169,7 +6169,13 @@ export function issueRoutes(
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          res.status(422).json({ error: `Attachment exceeds ${attachmentMaxBytes} bytes` });
+          const tc = getTelemetryClient();
+          tc?.track("attachment.upload_rejected_oversize", { limitBytes: attachmentMaxBytes, companyId });
+          res.status(413).json({
+            error: "Attachment exceeds the 32 MB limit. Use S3 pre-signed URLs for large files. See /data/paperclip/.secrets/.s3_productioncity for credentials.",
+            code: "ATTACHMENT_TOO_LARGE",
+            limitBytes: attachmentMaxBytes,
+          });
           return;
         }
         res.status(400).json({ error: err.message });
