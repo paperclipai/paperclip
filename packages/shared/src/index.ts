@@ -4,6 +4,20 @@ export {
   type OnboardingStarterContext,
 } from "./onboarding-starter-context.js";
 export {
+  QBANK_ITEM_DOCUMENT_KEY,
+  formatQBankItemCard,
+  getQBankSourceRef,
+  summarizeQBankItem,
+  type FormattedQBankItemCard,
+  type FormatQBankItemCardInput,
+  type QBankAnswer,
+  type QBankCategory,
+  type QBankItemSummary,
+  type QBankPartnerItem,
+  type QBankProductAssociation,
+  type QBankSourceRefInput,
+} from "./qbank-item-card.js";
+export {
   COMPANY_STATUSES,
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,

@@ -29,11 +29,13 @@ import {
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
+  formatQBankItemCard,
   upsertIssueFeedbackVoteSchema,
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   ONBOARDING_STARTER_CONTEXT_DOCUMENT_KEY,
+  type QBankPartnerItem,
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
@@ -118,6 +120,18 @@ const CHAT_ATTACHMENT_READ_MAX_BYTES = 1024 * 1024;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+
+const qbankPartnerItemSchema = z
+  .object({
+    id: z.union([z.number(), z.string()]),
+  })
+  .passthrough();
+
+const importQBankItemDocumentSchema = z.object({
+  appId: z.union([z.number(), z.string().trim().min(1)]),
+  item: qbankPartnerItemSchema,
+});
+
 const chatAttachmentsReadQuerySchema = z.object({
   runId: z.string().trim().min(1).optional(),
   issueId: z.string().trim().min(1).optional(),
@@ -2327,6 +2341,72 @@ export function issueRoutes(
     }
 
     res.status(result.created ? 201 : 200).json(doc);
+  });
+
+  router.post("/issues/:id/qbank-item", validate(importQBankItemDocumentSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+
+    const actor = getActorInfo(req);
+    const card = formatQBankItemCard({
+      appId: req.body.appId,
+      item: req.body.item as QBankPartnerItem,
+    });
+    const referenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+    const result = await documentsSvc.upsertIssueDocument({
+      issueId: issue.id,
+      key: card.documentKey,
+      title: card.title,
+      format: "markdown",
+      body: card.markdown,
+      changeSummary: `Imported ${card.summary.sourceRef} as a readable QBank item card.`,
+      baseRevisionId: null,
+      createdByAgentId: actor.agentId ?? null,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      createdByRunId: actor.runId ?? null,
+    });
+    const doc = result.document;
+    await issueReferencesSvc.syncDocument(doc.id);
+    const referenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+    const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(referenceSummaryBefore, referenceSummaryAfter);
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: result.created ? "issue.qbank_item_document_created" : "issue.qbank_item_document_updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        key: doc.key,
+        documentId: doc.id,
+        title: doc.title,
+        format: doc.format,
+        revisionNumber: doc.latestRevisionNumber,
+        sourceRef: card.summary.sourceRef,
+        qbankAppId: card.summary.appId,
+        qbankQuestionId: card.summary.questionId,
+        ...summarizeIssueReferenceActivityDetails({
+          addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
+          removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
+          currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
+        }),
+      },
+    });
+
+    res.status(result.created ? 201 : 200).json({
+      created: result.created,
+      document: doc,
+      sourceRef: card.summary.sourceRef,
+    });
   });
 
   router.get("/issues/:id/documents/:key/revisions", async (req, res) => {
