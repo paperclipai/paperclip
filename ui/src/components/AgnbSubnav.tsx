@@ -41,6 +41,13 @@ export const AGNB_SUBNAV = {
     { to: "/backlinks", label: "Backlinks" },
     { to: "/backlink-prospects", label: "Prospects" },
   ],
+  blog: [
+    { to: "/blog-automation", label: "Draft blogs" },
+    { to: "/review-queue", label: "Review queue" },
+    { to: "/editorial-calendar", label: "Calendar" },
+    { to: "/content-audit", label: "Audit" },
+    { to: "/utm-hygiene", label: "UTM hygiene" },
+  ],
 } as const;
 
 export type AgnbSubnavGroup = keyof typeof AGNB_SUBNAV;

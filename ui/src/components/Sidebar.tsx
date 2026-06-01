@@ -17,6 +17,7 @@ import {
   Megaphone,
   FlaskConical,
   AtSign,
+  PenLine,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -104,6 +105,7 @@ export function Sidebar() {
           <SidebarNavItem to="/assets" label="Assets" icon={Package} />
           <SidebarNavItem to="/competitors" label="Research" icon={FlaskConical} />
           <SidebarNavItem to="/mentions" label="Mentions" icon={AtSign} />
+          <SidebarNavItem to="/blog-automation" label="Blog" icon={PenLine} />
         </SidebarSection>
 
         <SidebarSection label="Work">

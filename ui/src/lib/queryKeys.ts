@@ -236,5 +236,8 @@ export const queryKeys = {
     sov: ["agnb", "sov"] as const,
     backlinks: ["agnb", "backlinks"] as const,
     prospects: ["agnb", "backlink-prospects"] as const,
+    blogDrafts: ["agnb", "blog-drafts"] as const,
+    contentAudit: ["agnb", "content-audit"] as const,
+    utmHygiene: ["agnb", "utm-hygiene"] as const,
   },
 };
