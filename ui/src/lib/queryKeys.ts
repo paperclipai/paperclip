@@ -226,5 +226,10 @@ export const queryKeys = {
     linkedin: ["agnb", "linkedin"] as const,
     buckets: ["agnb", "buckets"] as const,
     icps: ["agnb", "icps"] as const,
+    competitors: ["agnb", "competitors"] as const,
+    ideaInbox: ["agnb", "idea-inbox"] as const,
+    rssFeeds: ["agnb", "rss-feeds"] as const,
+    bofu: ["agnb", "bofu"] as const,
+    content: ["agnb", "content"] as const,
   },
 };

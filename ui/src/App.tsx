@@ -71,6 +71,11 @@ import { JustDial } from "./pages/JustDial";
 import { Linkedin } from "./pages/Linkedin";
 import { Buckets } from "./pages/Buckets";
 import { Icps } from "./pages/Icps";
+import { Competitors } from "./pages/Competitors";
+import { IdeaInbox } from "./pages/IdeaInbox";
+import { RssFeeds } from "./pages/RssFeeds";
+import { Bofu } from "./pages/Bofu";
+import { ContentBriefs } from "./pages/ContentBriefs";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
@@ -127,6 +132,11 @@ function boardRoutes() {
       <Route path="linkedin" element={<Linkedin />} />
       <Route path="buckets" element={<Buckets />} />
       <Route path="icps" element={<Icps />} />
+      <Route path="competitors" element={<Competitors />} />
+      <Route path="idea-inbox" element={<IdeaInbox />} />
+      <Route path="rss-feeds" element={<RssFeeds />} />
+      <Route path="bofu" element={<Bofu />} />
+      <Route path="content" element={<ContentBriefs />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />
@@ -369,6 +379,11 @@ export function App() {
           <Route path="linkedin" element={<UnprefixedBoardRedirect />} />
           <Route path="buckets" element={<UnprefixedBoardRedirect />} />
           <Route path="icps" element={<UnprefixedBoardRedirect />} />
+          <Route path="competitors" element={<UnprefixedBoardRedirect />} />
+          <Route path="idea-inbox" element={<UnprefixedBoardRedirect />} />
+          <Route path="rss-feeds" element={<UnprefixedBoardRedirect />} />
+          <Route path="bofu" element={<UnprefixedBoardRedirect />} />
+          <Route path="content" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
           <Route path="agents" element={<UnprefixedBoardRedirect />} />
