@@ -268,7 +268,10 @@ export function credentialService(db: Db) {
  * - `gemini_api_key`: sets GEMINI_API_KEY and GOOGLE_API_KEY.
  * - `openai_api_key`: sets OPENAI_API_KEY (covers codex-local and cursor-local).
  * - `openrouter_api_key`: sets OPENROUTER_API_KEY (covers opencode-local).
- * - `deepseek_api_key`: sets DEEPSEEK_API_KEY (covers deepseek-api).
+ * - `deepseek_api_key`: sets DEEPSEEK_API_KEY (covers deepseek-api), or the
+ *   ANTHROPIC_* env when bound to a Claude Code adapter.
+ * - `mimo_api_key`: sets the ANTHROPIC_* env routing Claude Code through Xiaomi
+ *   MiMo's Anthropic-compatible endpoint (Claude-Code-routing only).
  */
 /**
  * Adapter types that drive the real Claude Code CLI. When one of these agents is
@@ -311,6 +314,47 @@ function buildDeepSeekClaudeCodeEnv(
     ANTHROPIC_DEFAULT_SONNET_MODEL: flash,
     ANTHROPIC_DEFAULT_HAIKU_MODEL: flash,
     CLAUDE_CODE_SUBAGENT_MODEL: flash,
+    CLAUDE_CODE_EFFORT_LEVEL: "max",
+  };
+}
+
+// Xiaomi MiMo's Token-Plan (SGP) Anthropic-compatible endpoint. Unlike DeepSeek,
+// MiMo does NOT auto-map claude-* model ids — it hard-rejects them (400 "Not
+// supported model"), so the agent's Model dropdown must stay on Default and the
+// tier->model resolution is driven entirely by these ANTHROPIC_*_MODEL vars,
+// which Claude Code resolves internally to concrete mimo-* ids before any
+// request leaves the CLI (MiMo never sees a claude-* id).
+const MIMO_ANTHROPIC_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/anthropic";
+const MIMO_PRO_MODEL = "mimo-v2.5-pro";
+const MIMO_LITE_MODEL = "mimo-v2.5";
+
+/**
+ * Env that makes Claude Code talk to Xiaomi MiMo's Anthropic-compatible endpoint.
+ * Tier mapping (cost-optimized, user-chosen):
+ *   - Opus   -> mimo-v2.5-pro  (flagship; heavy reasoning)
+ *   - Sonnet -> mimo-v2.5      (main loop on the ~3x cheaper model)
+ *   - Haiku / subagents -> mimo-v2.5
+ * ANTHROPIC_MODEL (no tier requested) defaults to the lite model to match the
+ * Sonnet main-loop choice. Payload may override via proModel / liteModel.
+ */
+function buildMimoClaudeCodeEnv(
+  apiKey: string,
+  payload: Record<string, unknown>,
+): Record<string, string> {
+  const pro = typeof payload.proModel === "string" && payload.proModel.trim()
+    ? payload.proModel.trim()
+    : MIMO_PRO_MODEL;
+  const lite = typeof payload.liteModel === "string" && payload.liteModel.trim()
+    ? payload.liteModel.trim()
+    : MIMO_LITE_MODEL;
+  return {
+    ANTHROPIC_BASE_URL: MIMO_ANTHROPIC_BASE_URL,
+    ANTHROPIC_AUTH_TOKEN: apiKey,
+    ANTHROPIC_MODEL: lite,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: pro,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: lite,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: lite,
+    CLAUDE_CODE_SUBAGENT_MODEL: lite,
     CLAUDE_CODE_EFFORT_LEVEL: "max",
   };
 }
@@ -519,6 +563,26 @@ export async function resolveCredentialEnv(
       return { env: { DEEPSEEK_API_KEY: apiKey } };
     }
 
+    case "mimo_api_key": {
+      const apiKey = typeof payload.apiKey === "string" ? payload.apiKey.trim() : "";
+      if (!apiKey) {
+        logger.warn({ agentId, credentialId }, "mimo_api_key credential missing apiKey");
+        return { env: {} };
+      }
+      // MiMo is Claude-Code-routing only (no standalone chat adapter), so it
+      // always resolves to the Anthropic-endpoint env. It's only offered for
+      // claude_local/claude_tui in the UI; if bound elsewhere, inject nothing
+      // rather than a key the adapter can't use.
+      if (adapterType && CLAUDE_CODE_ADAPTER_TYPES.has(adapterType)) {
+        return { env: buildMimoClaudeCodeEnv(apiKey, payload) };
+      }
+      logger.warn(
+        { agentId, credentialId, adapterType },
+        "mimo_api_key bound to a non-Claude-Code adapter; no env injected",
+      );
+      return { env: {} };
+    }
+
     default:
       logger.warn(
         { agentId, credentialId, type: cred.type },
@@ -543,8 +607,8 @@ export const CREDENTIAL_DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
  * Mirrors the UI's credentialTypesForAdapterType in AgentConfigForm.
  */
 const ADAPTER_CREDENTIAL_TYPES: Record<string, readonly string[]> = {
-  claude_local: ["claude_oauth", "claude_api_key", "deepseek_api_key"],
-  claude_tui: ["claude_oauth", "claude_api_key", "deepseek_api_key"],
+  claude_local: ["claude_oauth", "claude_api_key", "deepseek_api_key", "mimo_api_key"],
+  claude_tui: ["claude_oauth", "claude_api_key", "deepseek_api_key", "mimo_api_key"],
   gemini_local: ["gemini_api_key"],
   codex_local: ["codex_oauth", "openai_api_key"],
   cursor: ["openai_api_key"],

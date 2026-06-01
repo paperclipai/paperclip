@@ -1959,6 +1959,7 @@ const CREDENTIAL_TYPE_LABELS: Record<CredentialType, string> = {
   openai_api_key: "OpenAI API Key",
   openrouter_api_key: "OpenRouter API Key",
   deepseek_api_key: "DeepSeek API Key",
+  mimo_api_key: "MiMo (Xiaomi) API Key",
 };
 
 function credentialTypesForAdapterType(
@@ -1967,14 +1968,14 @@ function credentialTypesForAdapterType(
 ): Set<CredentialType> {
   switch (adapterType) {
     case "claude_local":
-      // deepseek_api_key routes the Claude Code CLI through DeepSeek's
-      // Anthropic-compatible endpoint (the resolver injects ANTHROPIC_BASE_URL +
-      // AUTH_TOKEN + model mapping when this credential is bound here).
-      return new Set<CredentialType>(["claude_oauth", "claude_api_key", "deepseek_api_key"]);
+      // deepseek_api_key / mimo_api_key route the Claude Code CLI through the
+      // provider's Anthropic-compatible endpoint (the resolver injects
+      // ANTHROPIC_BASE_URL + AUTH_TOKEN + model mapping when bound here).
+      return new Set<CredentialType>(["claude_oauth", "claude_api_key", "deepseek_api_key", "mimo_api_key"]);
     case "claude_tui":
       // claude_tui drives the same Claude Code CLI session as claude_local,
       // just through a TUI wrapper, so it shares the same credential set.
-      return new Set<CredentialType>(["claude_oauth", "claude_api_key", "deepseek_api_key"]);
+      return new Set<CredentialType>(["claude_oauth", "claude_api_key", "deepseek_api_key", "mimo_api_key"]);
     case "gemini_local":
       return new Set<CredentialType>(["gemini_api_key"]);
     case "codex_local":

@@ -440,6 +440,7 @@ export const CREDENTIAL_TYPES = [
   "openai_api_key",
   "openrouter_api_key",
   "deepseek_api_key",
+  "mimo_api_key",
 ] as const;
 export type CredentialType = (typeof CREDENTIAL_TYPES)[number];
 

@@ -800,6 +800,7 @@ const CREDENTIAL_TYPE_LABELS: Record<CredentialType, string> = {
   openai_api_key: "OpenAI API Key",
   openrouter_api_key: "OpenRouter API Key",
   deepseek_api_key: "DeepSeek API Key",
+  mimo_api_key: "MiMo (Xiaomi) API Key",
 };
 
 const CREDENTIAL_TYPE_OPTIONS: CredentialType[] = [
@@ -810,6 +811,7 @@ const CREDENTIAL_TYPE_OPTIONS: CredentialType[] = [
   "openai_api_key",
   "openrouter_api_key",
   "deepseek_api_key",
+  "mimo_api_key",
 ];
 
 function credentialPlaceholder(type: CredentialType): string {
@@ -828,6 +830,8 @@ function credentialPlaceholder(type: CredentialType): string {
       return "Paste sk-or-... key...";
     case "deepseek_api_key":
       return "Paste sk-... key...";
+    case "mimo_api_key":
+      return "Paste tp-... or sk-... key...";
   }
 }
 
