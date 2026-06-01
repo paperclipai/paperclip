@@ -1083,6 +1083,7 @@ export type ResolvedWorkspaceForRun = {
   source: "project_primary" | "task_session" | "agent_home";
   projectId: string | null;
   workspaceId: string | null;
+  setupCommand: string | null;
   repoUrl: string | null;
   repoRef: string | null;
   workspaceHints: Array<{
@@ -3753,6 +3754,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             source: "project_primary" as const,
             projectId: resolvedProjectId,
             workspaceId: workspace.id,
+            setupCommand: readNonEmptyString(workspace.setupCommand),
             repoUrl: workspace.repoUrl,
             repoRef: workspace.repoRef,
             workspaceHints,
@@ -3792,6 +3794,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         source: "project_primary" as const,
         projectId: resolvedProjectId,
         workspaceId: projectWorkspaceRows[0]?.id ?? null,
+        setupCommand: readNonEmptyString(projectWorkspaceRows[0]?.setupCommand),
         repoUrl: projectWorkspaceRows[0]?.repoUrl ?? null,
         repoRef: projectWorkspaceRows[0]?.repoRef ?? null,
         workspaceHints,
@@ -3810,6 +3813,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         source: "project_primary" as const,
         projectId: resolvedProjectId,
         workspaceId: null,
+        setupCommand: null,
         repoUrl: null,
         repoRef: null,
         workspaceHints,
@@ -3830,6 +3834,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           source: "task_session" as const,
           projectId: resolvedProjectId,
           workspaceId: readNonEmptyString(previousSessionParams?.workspaceId),
+          setupCommand: null,
           repoUrl: readNonEmptyString(previousSessionParams?.repoUrl),
           repoRef: readNonEmptyString(previousSessionParams?.repoRef),
           workspaceHints,
@@ -3863,6 +3868,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       source: "agent_home" as const,
       projectId: resolvedProjectId,
       workspaceId: null,
+      setupCommand: null,
       repoUrl: null,
       repoRef: null,
       workspaceHints,
@@ -7461,6 +7467,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const executionWorkspace = reusedExecutionWorkspace ?? await realizeExecutionWorkspace({
           base: executionWorkspaceBase,
           config: runtimeConfig,
+          projectSetupCommand: resolvedWorkspace.setupCommand,
           issue: issueRef,
           agent: {
             id: agent.id,

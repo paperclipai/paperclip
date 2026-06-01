@@ -1006,6 +1006,7 @@ async function recordWorkspaceCommandOperation(
 
 async function provisionExecutionWorktree(input: {
   strategy: Record<string, unknown>;
+  projectSetupCommand?: string | null;
   base: ExecutionWorkspaceInput;
   repoRoot: string;
   worktreePath: string;
@@ -1016,12 +1017,15 @@ async function provisionExecutionWorktree(input: {
   recorder?: WorkspaceOperationRecorder | null;
 }) {
   const provisionCommand = asString(input.strategy.provisionCommand, "").trim();
-  if (!provisionCommand) return;
-  const resolvedProvisionCommand = resolveRepoManagedWorkspaceCommand(provisionCommand, input.repoRoot);
+  const setupCommand = asString(input.projectSetupCommand, "").trim();
+  const command = provisionCommand || setupCommand;
+  if (!command) return;
+  const resolvedProvisionCommand = resolveRepoManagedWorkspaceCommand(command, input.repoRoot);
+  const commandLabel = provisionCommand ? "provision" : "setup";
 
   await recordWorkspaceCommandOperation(input.recorder, {
     phase: "workspace_provision",
-    command: provisionCommand,
+    command,
     resolvedCommand: resolvedProvisionCommand,
     cwd: input.worktreePath,
     env: buildWorkspaceCommandEnv({
@@ -1033,15 +1037,16 @@ async function provisionExecutionWorktree(input: {
       agent: input.agent,
       created: input.created,
     }),
-    label: `Execution workspace provision command "${provisionCommand}"`,
+    label: `Execution workspace ${commandLabel} command "${command}"`,
     metadata: {
       repoRoot: input.repoRoot,
       worktreePath: input.worktreePath,
       branchName: input.branchName,
       created: input.created,
-      resolvedCommand: resolvedProvisionCommand === provisionCommand ? null : resolvedProvisionCommand,
+      commandSource: commandLabel,
+      resolvedCommand: resolvedProvisionCommand === command ? null : resolvedProvisionCommand,
     },
-    successMessage: `Provisioned workspace at ${input.worktreePath}\n`,
+    successMessage: `${commandLabel === "setup" ? "Set up" : "Provisioned"} workspace at ${input.worktreePath}\n`,
   });
 }
 
@@ -1097,6 +1102,7 @@ async function resolveGitRepoRootForWorkspaceCleanup(
 export async function realizeExecutionWorkspace(input: {
   base: ExecutionWorkspaceInput;
   config: Record<string, unknown>;
+  projectSetupCommand?: string | null;
   issue: ExecutionWorkspaceIssueRef | null;
   agent: ExecutionWorkspaceAgentRef;
   recorder?: WorkspaceOperationRecorder | null;
@@ -1173,6 +1179,7 @@ export async function realizeExecutionWorkspace(input: {
     }
     await provisionExecutionWorktree({
       strategy: rawStrategy,
+      projectSetupCommand: input.projectSetupCommand ?? null,
       base: input.base,
       repoRoot,
       worktreePath: reusablePath,
@@ -1272,6 +1279,7 @@ export async function realizeExecutionWorkspace(input: {
   }
   await provisionExecutionWorktree({
     strategy: rawStrategy,
+    projectSetupCommand: input.projectSetupCommand ?? null,
     base: input.base,
     repoRoot,
     worktreePath,
