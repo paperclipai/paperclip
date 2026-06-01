@@ -1,0 +1,25 @@
+{
+  "name": "@paperclipai/plugin-event-waker",
+  "version": "0.1.0",
+  "description": "Wakes the assignee whenever an issue's status or assignee changes — replaces the bash event-waker.",
+  "private": true,
+  "type": "module",
+  "main": null,
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "5.7.3"
+  }
+}
