@@ -184,7 +184,9 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes({
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({}),
+  } as any, {} as any));
   app.use(errorHandler);
   return app;
 }
