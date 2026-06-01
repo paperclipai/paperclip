@@ -450,5 +450,14 @@ export function routineRoutes(
     res.status(202).json(result);
   });
 
+  router.get("/routine-triggers/public/:publicId/runs/:runIssueId/verdict", async (req, res) => {
+    const result = await svc.readPublicTriggerVerdict(
+      req.params.publicId as string,
+      req.params.runIssueId as string,
+      { authorizationHeader: req.header("authorization") },
+    );
+    res.json(result);
+  });
+
   return router;
 }
