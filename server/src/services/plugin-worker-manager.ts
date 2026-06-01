@@ -22,7 +22,8 @@ import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { PaperclipPluginManifestV1, PluginCgroupLimits } from "@paperclipai/shared";
+import type { PluginCgroupManager } from "./plugin-cgroup-manager.js";
 import {
   JSONRPC_VERSION,
   JSONRPC_ERROR_CODES,
@@ -188,6 +189,10 @@ export interface WorkerStartOptions {
    * The host wires this to the PluginStreamBus to fan out events to SSE clients.
    */
   onStreamNotification?: (method: string, params: Record<string, unknown>) => void;
+  /** Optional cgroup manager to confine the worker process. */
+  cgroupManager?: PluginCgroupManager;
+  /** Cgroup resource limits to apply when cgroupManager is provided. */
+  cgroupLimits?: PluginCgroupLimits;
 }
 
 /**
@@ -300,6 +305,8 @@ export interface WorkerDiagnostics {
   pendingRequests: number;
   lastCrashAt: number | null;
   nextRestartAt: number | null;
+  cgroupEnforced: boolean;
+  cgroupError?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +406,14 @@ export function createPluginWorkerHandle(
   // Crash tracking for exponential backoff
   let consecutiveCrashes = 0;
   let totalCrashes = 0;
+
+  // Cgroup state
+  let cgroupEnforced = false;
+  let cgroupError: string | undefined = undefined;
+  // Monotonically incremented on each startInternal() call. Captured in the
+  // teardown closure so that a delayed teardown from a prior generation can
+  // detect that the worker has restarted and skip cgroup.kill + rmdir.
+  let cgroupGeneration = 0;
   let lastCrashAt: number | null = null;
   let backoffTimer: ReturnType<typeof setTimeout> | null = null;
   let nextRestartAt: number | null = null;
@@ -818,6 +833,32 @@ export function createPluginWorkerHandle(
 
     emitter.emit("exit", { pluginId, code, signal });
 
+    // Tear down the cgroup regardless of whether the exit was intentional.
+    // Fire-and-forget: teardown failure must not block the exit handler.
+    // Capture generation so a delayed async teardown can detect whether the
+    // plugin has already been restarted and skip cgroup.kill on the new cgroup.
+    if (options.cgroupManager) {
+      cgroupEnforced = false;
+      const teardownGeneration = cgroupGeneration;
+      const mgr = options.cgroupManager;
+      (async () => {
+        // If the worker was restarted before teardown fires (cgroupGeneration
+        // advanced), skip teardown entirely — the new startInternal owns the cgroup.
+        if (cgroupGeneration !== teardownGeneration) {
+          log.debug({ pluginId }, "cgroup teardown skipped — worker already restarted");
+          return;
+        }
+        try {
+          await mgr.teardown(pluginId);
+        } catch (err) {
+          log.error(
+            { err: err instanceof Error ? err.message : String(err), pluginId },
+            "cgroup teardown failed",
+          );
+        }
+      })();
+    }
+
     if (wasIntentional) {
       // Graceful stop — status is already "stopping" or will be set to "stopped"
       setStatus("stopped");
@@ -938,6 +979,29 @@ export function createPluginWorkerHandle(
     childProcess = child;
     attachStdioHandlers(child);
     startedAt = Date.now();
+
+    // Enter cgroup after fork — non-fatal if it fails
+    if (options.cgroupManager && child.pid !== undefined) {
+      const thisGeneration = ++cgroupGeneration;
+      try {
+        await options.cgroupManager.setup(pluginId, options.cgroupLimits ?? {});
+        // Re-check generation: a very fast crash between setup and enter could
+        // have incremented cgroupGeneration via the exit handler's teardown path.
+        // If generation changed, skip enterCgroup — the new startInternal handles it.
+        if (cgroupGeneration !== thisGeneration) {
+          log.warn({ pid: child.pid }, "cgroup generation advanced during setup — skipping enterCgroup");
+        } else {
+          await options.cgroupManager.enterCgroup(pluginId, child.pid);
+          cgroupEnforced = true;
+          cgroupError = undefined;
+          log.info({ pid: child.pid }, "plugin worker placed in cgroup");
+        }
+      } catch (err) {
+        cgroupEnforced = false;
+        cgroupError = err instanceof Error ? err.message : String(err);
+        log.error({ err: cgroupError }, "cgroup entry failed — plugin runs unconstrained");
+      }
+    }
 
     // Send the initialize RPC call
     const initParams: InitializeParams = {
@@ -1299,6 +1363,8 @@ export function createPluginWorkerHandle(
         pendingRequests: pendingRequests.size,
         lastCrashAt,
         nextRestartAt,
+        cgroupEnforced,
+        cgroupError,
       };
     },
   };

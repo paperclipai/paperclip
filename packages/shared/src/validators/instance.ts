@@ -35,6 +35,31 @@ export const instanceGeneralSettingsSchema = z.object({
 
 export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();
 
+// At least 2 chars (letter + one more) to avoid single-char IDs that collide
+// with cgroup interface name prefixes (cpu, pids, memory, etc.).
+const PLUGIN_ID_REGEX = /^[a-z][a-z0-9._-]+$/;
+const MIN_MEMORY_HIGH_BYTES = 33554432;   // 32MB
+const MIN_MEMORY_MAX_BYTES = 67108864;    // 64MB
+const MIN_CPU_WEIGHT = 1;
+const MAX_CPU_WEIGHT = 10000;
+const MIN_PIDS_MAX = 32;
+const MAX_PIDS_MAX = 65536;
+
+export const pluginCgroupLimitsSchema = z.object({
+  memoryHighBytes: z.number().int().min(MIN_MEMORY_HIGH_BYTES).optional(),
+  memoryMaxBytes: z.number().int().min(MIN_MEMORY_MAX_BYTES).optional(),
+  cpuWeight: z.number().int().min(MIN_CPU_WEIGHT).max(MAX_CPU_WEIGHT).optional(),
+  pidsMax: z.number().int().min(MIN_PIDS_MAX).max(MAX_PIDS_MAX).optional(),
+}).strict().refine(
+  (v) => {
+    if (v.memoryHighBytes !== undefined && v.memoryMaxBytes !== undefined) {
+      return v.memoryMaxBytes >= v.memoryHighBytes;
+    }
+    return true;
+  },
+  { message: "memoryMaxBytes must be >= memoryHighBytes when both are set" },
+);
+
 export const instanceExperimentalSettingsSchema = z.object({
   enableEnvironments: z.boolean().default(false),
   enableIsolatedWorkspaces: z.boolean().default(false),
@@ -48,6 +73,11 @@ export const instanceExperimentalSettingsSchema = z.object({
     .min(MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS)
     .max(MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS)
     .default(DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS),
+  pluginCgroupDefaults: pluginCgroupLimitsSchema.default({}),
+  pluginCgroupOverrides: z.record(
+    z.string().regex(PLUGIN_ID_REGEX, "Plugin ID must match ^[a-z][a-z0-9._-]+$"),
+    pluginCgroupLimitsSchema,
+  ).default({}),
 }).strict();
 
 export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSettingsSchema.partial();

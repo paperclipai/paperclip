@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Clock, FlaskConical, Play, Search } from "lucide-react";
+import { Clock, FlaskConical, Play, Search, ShieldCheck, ShieldOff } from "lucide-react";
 import type {
   IssueGraphLivenessAutoRecoveryPreview,
   PatchInstanceExperimentalSettings,
@@ -203,6 +203,7 @@ export function InstanceExperimentalSettings() {
     );
   }
 
+  const pluginCgroupActive = experimentalQuery.data?.pluginCgroupActive === true;
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const enableIssuePlanDecompositions =
@@ -264,6 +265,34 @@ export function InstanceExperimentalSettings() {
           {actionError}
         </div>
       )}
+
+      <section
+        className={`rounded-xl border p-5 ${pluginCgroupActive ? "border-green-500/40 bg-green-500/5" : "border-border bg-card"}`}
+        aria-label="Plugin cgroup isolation status"
+      >
+        <div className="flex items-start gap-3">
+          {pluginCgroupActive
+            ? <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-green-600" />
+            : <ShieldOff className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />}
+          <div className="space-y-1">
+            <h2 className="text-sm font-semibold">
+              Plugin Process Isolation (cgroupsv2)
+            </h2>
+            {pluginCgroupActive ? (
+              <p className="text-sm text-muted-foreground">
+                Active — each plugin worker process is placed in its own cgroup leaf after
+                fork. Limits apply to the worker process and any child processes it spawns
+                after placement; a brief window between fork and placement is unconstrained.
+              </p>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Inactive — cgroupsv2 delegation is not available on this host. Plugin
+                workers run without kernel-enforced resource limits.
+              </p>
+            )}
+          </div>
+        </div>
+      </section>
 
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
