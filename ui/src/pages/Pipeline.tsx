@@ -30,10 +30,8 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { Badge } from "@/components/ui/badge";
 import { cn, relativeTime } from "../lib/utils";
 import { AgnbSubnav } from "../components/AgnbSubnav";
-
-const AGNB_BASE =
-  (import.meta.env.VITE_AGNB_BASE_URL as string | undefined) ??
-  "https://www.allgasnobrakes.online";
+import { PipelineCardDrawer } from "../components/PipelineCardDrawer";
+import { Button } from "@/components/ui/button";
 
 function money(n: number): string {
   if (!n) return "";
@@ -63,17 +61,15 @@ export function Pipeline() {
   }, [data?.columns]);
 
   const [activeCard, setActiveCard] = useState<PipelineCard | null>(null);
+  const [selected, setSelected] = useState<PipelineCard | null>(null);
+  const [lostTarget, setLostTarget] = useState<{ dealId: string; toColumn: string } | null>(null);
+  const [lostReason, setLostReason] = useState("");
 
   const move = useMutation({
-    mutationFn: ({ dealId, stageId }: { dealId: string; stageId: string }) =>
-      pipelineApi.move(dealId, stageId),
-    onError: () => {
-      // Revert to server truth on failure.
-      queryClient.invalidateQueries({ queryKey: queryKeys.agnb.pipeline });
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agnb.pipeline });
-    },
+    mutationFn: ({ dealId, stageId, lost }: { dealId: string; stageId: string; lost?: string }) =>
+      pipelineApi.move(dealId, stageId, lost),
+    onError: () => queryClient.invalidateQueries({ queryKey: queryKeys.agnb.pipeline }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.agnb.pipeline }),
   });
 
   const sensors = useSensors(
@@ -87,6 +83,42 @@ export function Pipeline() {
     return m;
   }, [columns]);
 
+  const isLostStage = (colId: string) => /lost/i.test(columns.find((c) => c.id === colId)?.label ?? "");
+
+  function applyOptimisticMove(dealId: string, toColumn: string) {
+    setColumns((prev) => {
+      const moving = prev.flatMap((c) => c.cards).find((c) => c.id === dealId);
+      if (!moving) return prev;
+      return prev.map((c) => {
+        if (c.cards.some((x) => x.id === dealId) && c.id !== toColumn)
+          return { ...c, cards: c.cards.filter((x) => x.id !== dealId) };
+        if (c.id === toColumn) return { ...c, cards: [...c.cards.filter((x) => x.id !== dealId), { ...moving, stageLabel: c.label }] };
+        return c;
+      });
+    });
+  }
+
+  // Move with lost-reason interception.
+  function requestMove(dealId: string, toColumn: string) {
+    const from = cardIndex.get(dealId)?.columnId;
+    if (!from || from === toColumn) return;
+    if (isLostStage(toColumn)) { setLostTarget({ dealId, toColumn }); return; }
+    applyOptimisticMove(dealId, toColumn);
+    move.mutate({ dealId, stageId: toColumn });
+  }
+
+  function confirmLost() {
+    if (!lostTarget) return;
+    applyOptimisticMove(lostTarget.dealId, lostTarget.toColumn);
+    move.mutate({ dealId: lostTarget.dealId, stageId: lostTarget.toColumn, lost: lostReason.trim() || undefined });
+    setLostTarget(null); setLostReason(""); setSelected(null);
+  }
+
+  const createDeal = useMutation({
+    mutationFn: (body: { dealname: string; dealstage: string }) => pipelineApi.createDeal(body),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.agnb.pipeline }),
+  });
+
   function handleDragStart(e: DragStartEvent) {
     setActiveCard(cardIndex.get(String(e.active.id))?.card ?? null);
   }
@@ -96,34 +128,9 @@ export function Pipeline() {
     const { active, over } = e;
     if (!over) return;
     const dealId = String(active.id);
-    const from = cardIndex.get(dealId)?.columnId;
-    if (!from) return;
-
-    // `over` is either a column (droppable) or another card — resolve to a column.
     const overId = String(over.id);
-    const toColumn = columns.some((c) => c.id === overId)
-      ? overId
-      : cardIndex.get(overId)?.columnId;
-    if (!toColumn || toColumn === from) return;
-
-    // Optimistic: pull the card out of its column, append to the target.
-    setColumns((prev) => {
-      const moving = prev
-        .flatMap((c) => c.cards)
-        .find((c) => c.id === dealId);
-      if (!moving) return prev;
-      return prev.map((c) => {
-        if (c.id === from)
-          return { ...c, cards: c.cards.filter((x) => x.id !== dealId) };
-        if (c.id === toColumn)
-          return {
-            ...c,
-            cards: [...c.cards, { ...moving, stageLabel: c.label }],
-          };
-        return c;
-      });
-    });
-    move.mutate({ dealId, stageId: toColumn });
+    const toColumn = columns.some((c) => c.id === overId) ? overId : cardIndex.get(overId)?.columnId;
+    if (toColumn) requestMove(dealId, toColumn);
   }
 
   if (isLoading) return <PageSkeleton variant="list" />;
@@ -195,7 +202,12 @@ export function Pipeline() {
         >
           <div className="flex gap-3 overflow-x-auto pb-2">
             {columns.map((col) => (
-              <DroppableColumn key={col.id} column={col} />
+              <DroppableColumn
+                key={col.id}
+                column={col}
+                onOpen={setSelected}
+                onCreate={(dealname) => createDeal.mutate({ dealname, dealstage: col.id })}
+              />
             ))}
           </div>
           <DragOverlay>
@@ -203,13 +215,45 @@ export function Pipeline() {
           </DragOverlay>
         </DndContext>
       )}
+
+      {selected && (
+        <PipelineCardDrawer
+          card={selected}
+          columns={columns}
+          onClose={() => setSelected(null)}
+          onMove={(stageId) => { requestMove(selected.id, stageId); setSelected(null); }}
+        />
+      )}
+
+      {lostTarget && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" onClick={() => setLostTarget(null)}>
+          <div className="w-full max-w-md rounded-lg border border-border bg-background p-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold">Mark deal as Closed Lost?</h3>
+            <p className="mt-1 text-xs text-muted-foreground">Capture a reason so the win/loss analyzer can learn.</p>
+            <textarea
+              value={lostReason}
+              onChange={(e) => setLostReason(e.target.value)}
+              rows={3}
+              placeholder="Why did this deal fail? (budget, timing, competitor, no-budget, ghost…)"
+              className="mt-2 w-full rounded-md border border-border bg-background p-2 text-sm"
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setLostTarget(null)}>Cancel</Button>
+              <Button variant="destructive" size="sm" onClick={confirmLost}>Mark Lost</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function DroppableColumn({ column }: { column: PipelineColumn }) {
+function DroppableColumn({ column, onOpen, onCreate }: { column: PipelineColumn; onOpen: (c: PipelineCard) => void; onCreate: (dealname: string) => void }) {
   const { setNodeRef, isOver } = useDroppable({ id: column.id });
   const total = column.cards.reduce((s, c) => s + (c.amount || 0), 0);
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const submit = () => { if (name.trim()) { onCreate(name.trim()); setName(""); setAdding(false); } };
   return (
     <div
       ref={setNodeRef}
@@ -231,15 +275,34 @@ function DroppableColumn({ column }: { column: PipelineColumn }) {
       >
         <div className="flex min-h-[40px] flex-col gap-2 p-2">
           {column.cards.map((c) => (
-            <SortableCard key={c.id} card={c} />
+            <SortableCard key={c.id} card={c} onOpen={onOpen} />
           ))}
+          {adding ? (
+            <div className="flex flex-col gap-1">
+              <textarea
+                autoFocus
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }}
+                rows={2}
+                placeholder="Deal name…"
+                className="rounded-md border border-border bg-background p-1.5 text-xs"
+              />
+              <div className="flex gap-1">
+                <button onClick={submit} className="rounded bg-foreground px-2 py-0.5 text-xs text-background">Add card</button>
+                <button onClick={() => { setAdding(false); setName(""); }} className="px-2 py-0.5 text-xs text-muted-foreground">Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <button onClick={() => setAdding(true)} className="rounded-md px-2 py-1 text-left text-xs text-muted-foreground hover:bg-accent/50">+ Add a card</button>
+          )}
         </div>
       </SortableContext>
     </div>
   );
 }
 
-function SortableCard({ card }: { card: PipelineCard }) {
+function SortableCard({ card, onOpen }: { card: PipelineCard; onOpen: (c: PipelineCard) => void }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: card.id });
   return (
@@ -250,17 +313,18 @@ function SortableCard({ card }: { card: PipelineCard }) {
       {...attributes}
       {...listeners}
     >
-      <DealCard card={card} />
+      <DealCard card={card} onOpen={onOpen} />
     </div>
   );
 }
 
-function DealCard({ card, overlay }: { card: PipelineCard; overlay?: boolean }) {
+function DealCard({ card, overlay, onOpen }: { card: PipelineCard; overlay?: boolean; onOpen?: (c: PipelineCard) => void }) {
   return (
     <div
+      onClick={() => onOpen?.(card)}
       className={cn(
         "rounded-md border border-border bg-background p-2.5",
-        overlay ? "shadow-lg" : "transition-colors hover:bg-accent/40",
+        overlay ? "shadow-lg" : "cursor-pointer transition-colors hover:bg-accent/40",
       )}
     >
       <div className="flex items-start justify-between gap-2">
