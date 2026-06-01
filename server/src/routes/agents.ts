@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
+import { agentWakeupRequests, agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -643,16 +643,60 @@ export function agentRoutes(
     return allowedByGrant || canCreateAgents(actorAgent);
   }
 
+  // Translate a raw skip reason (stored on the skipped agentWakeupRequests row)
+  // into a human, actionable message so the UI stops showing a bare
+  // "Wakeup was skipped." that hides WHY nothing ran.
+  function describeWakeupSkipReason(reason: string | null): string | null {
+    switch (reason) {
+      case "heartbeat.wakeOnDemand.disabled":
+        return "On-demand wake is disabled for this agent. Enable 'wake on demand' in the agent's settings to retry.";
+      case "heartbeat.disabled":
+        return "This agent's heartbeat is disabled. Enable it in the agent's settings to retry.";
+      case "issue_tree_hold_active":
+        return "This issue (or an ancestor) is paused by a subtree hold. Resume it to retry.";
+      case "issue_dependencies_blocked":
+        return "This issue is blocked by an unresolved dependency. Resolve/close the blocker to retry.";
+      case "issue_execution_issue_not_found":
+        return "The issue for this run no longer exists.";
+      case "budget.blocked":
+        return "A budget limit is blocking this agent. Raise the budget to retry.";
+      default:
+        return null;
+    }
+  }
+
+  // Most-recent skip reason for this agent (optionally scoped to the issue), so
+  // the response can explain the actual cause rather than a generic message.
+  async function latestSkipReason(
+    agentId: string,
+    issueId: string | null,
+  ): Promise<string | null> {
+    const rows = await db
+      .select({ reason: agentWakeupRequests.reason, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "skipped")))
+      .orderBy(desc(agentWakeupRequests.requestedAt))
+      .limit(5);
+    for (const row of rows) {
+      if (!issueId) return row.reason ?? null;
+      const rowIssueId = typeof row.payload?.issueId === "string" ? row.payload.issueId : null;
+      if (rowIssueId === issueId) return row.reason ?? null;
+    }
+    return rows[0]?.reason ?? null;
+  }
+
   async function buildSkippedWakeupResponse(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
     payload: Record<string, unknown> | null | undefined,
   ) {
     const issueId = typeof payload?.issueId === "string" && payload.issueId.trim() ? payload.issueId : null;
+    const skipReason = await latestSkipReason(agent.id, issueId);
+    const explained = describeWakeupSkipReason(skipReason);
     if (!issueId) {
       return {
         status: "skipped" as const,
-        reason: "wakeup_skipped",
-        message: "Wakeup was skipped.",
+        reason: skipReason ?? "wakeup_skipped",
+        message: explained ?? "Wakeup was skipped.",
         issueId: null,
         executionRunId: null,
         executionAgentId: null,
@@ -672,8 +716,8 @@ export function agentRoutes(
     if (!issue?.executionRunId) {
       return {
         status: "skipped" as const,
-        reason: "wakeup_skipped",
-        message: "Wakeup was skipped.",
+        reason: skipReason ?? "wakeup_skipped",
+        message: explained ?? "Wakeup was skipped.",
         issueId,
         executionRunId: null,
         executionAgentId: null,
@@ -685,8 +729,8 @@ export function agentRoutes(
     if (!executionRun || (executionRun.status !== "queued" && executionRun.status !== "running")) {
       return {
         status: "skipped" as const,
-        reason: "wakeup_skipped",
-        message: "Wakeup was skipped.",
+        reason: skipReason ?? "wakeup_skipped",
+        message: explained ?? "Wakeup was skipped.",
         issueId,
         executionRunId: issue.executionRunId,
         executionAgentId: null,
