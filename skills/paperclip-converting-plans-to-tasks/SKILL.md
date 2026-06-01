@@ -1,5 +1,6 @@
 ---
 name: paperclip-converting-plans-to-tasks
+required: false
 description: >
   The Paperclip way of converting a plan into executable tasks. Use whenever
   you are asked to plan, scope, or break down work inside a Paperclip company.

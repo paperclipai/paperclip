@@ -1,5 +1,6 @@
 ---
 name: terminal-bench-loop
+required: false
 description: >
   Run a single Terminal-Bench problem through Paperclip in a bounded,
   human-in-the-loop improvement cycle until the smoke passes, the board
