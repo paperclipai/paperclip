@@ -274,12 +274,20 @@ export function issueExecutionWorkspaceModeForPersistedWorkspace(
 
 export function resolveExecutionWorkspaceMode(input: {
   projectPolicy: ProjectExecutionWorkspacePolicy | null;
+  issuePreference?: ExecutionWorkspaceMode | string | null;
   issueSettings: IssueExecutionWorkspaceSettings | null;
   legacyUseProjectWorkspace: boolean | null;
 }): ParsedExecutionWorkspaceMode {
-  const issueMode = input.issueSettings?.mode;
+  const issueMode = input.issueSettings?.mode ?? input.issuePreference;
   if (issueMode && issueMode !== "inherit" && issueMode !== "reuse_existing") {
-    return issueMode;
+    if (
+      issueMode === "shared_workspace" ||
+      issueMode === "isolated_workspace" ||
+      issueMode === "operator_branch" ||
+      issueMode === "agent_default"
+    ) {
+      return issueMode;
+    }
   }
   if (input.projectPolicy?.enabled) {
     if (input.projectPolicy.defaultMode === "isolated_workspace") return "isolated_workspace";
@@ -296,6 +304,7 @@ export function resolveExecutionWorkspaceMode(input: {
 export function buildExecutionWorkspaceAdapterConfig(input: {
   agentConfig: Record<string, unknown>;
   projectPolicy: ProjectExecutionWorkspacePolicy | null;
+  issuePreference?: ExecutionWorkspaceMode | string | null;
   issueSettings: IssueExecutionWorkspaceSettings | null;
   mode: ParsedExecutionWorkspaceMode;
   legacyUseProjectWorkspace: boolean | null;
@@ -304,6 +313,7 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
   const projectHasPolicy = Boolean(input.projectPolicy?.enabled);
   const issueHasWorkspaceOverrides = Boolean(
     input.issueSettings?.mode ||
+    (input.issuePreference && input.issuePreference !== "inherit" && input.issuePreference !== "reuse_existing") ||
     input.issueSettings?.workspaceStrategy ||
     input.issueSettings?.workspaceRuntime,
   );

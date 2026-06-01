@@ -13,6 +13,7 @@ import {
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  resolveProjectWorkspaceIssueProjectId,
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
@@ -540,6 +541,63 @@ describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
     expect(
       prioritizeProjectWorkspaceCandidatesForRun(rows, "workspace-9").map((row) => row.id),
     ).toEqual(["workspace-1", "workspace-2"]);
+  });
+});
+
+describe("resolveProjectWorkspaceIssueProjectId", () => {
+  it("infers the only active project for unprojected isolated workspace wakes", () => {
+    expect(
+      resolveProjectWorkspaceIssueProjectId({
+        issueProjectId: null,
+        contextProjectId: null,
+        requireGitBackedWorkspace: true,
+        activeProjectIds: ["project-1"],
+      }),
+    ).toEqual({
+      projectId: "project-1",
+      inferredProjectWarning:
+        'Issue requested an isolated workspace without a project; using the only active project "project-1" for workspace resolution.',
+    });
+  });
+
+  it("does not infer a project when shared workspace mode or multiple active projects make it ambiguous", () => {
+    expect(
+      resolveProjectWorkspaceIssueProjectId({
+        issueProjectId: null,
+        contextProjectId: null,
+        requireGitBackedWorkspace: false,
+        activeProjectIds: ["project-1"],
+      }),
+    ).toEqual({ projectId: null, inferredProjectWarning: null });
+
+    expect(
+      resolveProjectWorkspaceIssueProjectId({
+        issueProjectId: null,
+        contextProjectId: null,
+        requireGitBackedWorkspace: true,
+        activeProjectIds: ["project-1", "project-2"],
+      }),
+    ).toEqual({ projectId: null, inferredProjectWarning: null });
+  });
+
+  it("preserves explicit issue and wake project bindings", () => {
+    expect(
+      resolveProjectWorkspaceIssueProjectId({
+        issueProjectId: "issue-project",
+        contextProjectId: "context-project",
+        requireGitBackedWorkspace: true,
+        activeProjectIds: ["only-project"],
+      }),
+    ).toEqual({ projectId: "issue-project", inferredProjectWarning: null });
+
+    expect(
+      resolveProjectWorkspaceIssueProjectId({
+        issueProjectId: null,
+        contextProjectId: "context-project",
+        requireGitBackedWorkspace: true,
+        activeProjectIds: ["only-project"],
+      }),
+    ).toEqual({ projectId: "context-project", inferredProjectWarning: null });
   });
 });
 
