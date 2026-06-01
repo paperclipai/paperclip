@@ -1,13 +1,34 @@
-import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { LayoutGrid, ExternalLink, MessageSquare } from "lucide-react";
-import { pipelineApi, type PipelineCard } from "../api/pipeline";
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  useDroppable,
+  closestCorners,
+  type DragStartEvent,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  useSortable,
+  SortableContext,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
+  pipelineApi,
+  type PipelineCard,
+  type PipelineColumn,
+} from "../api/pipeline";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Badge } from "@/components/ui/badge";
-import { relativeTime } from "../lib/utils";
+import { cn, relativeTime } from "../lib/utils";
 
 const AGNB_BASE =
   (import.meta.env.VITE_AGNB_BASE_URL as string | undefined) ??
@@ -22,6 +43,7 @@ function money(n: number): string {
 
 export function Pipeline() {
   const { setBreadcrumbs } = useBreadcrumbs();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Pipeline" }]);
@@ -33,9 +55,78 @@ export function Pipeline() {
     refetchInterval: 60_000,
   });
 
+  // Local mirror so drag moves apply optimistically before the server confirms.
+  const [columns, setColumns] = useState<PipelineColumn[]>([]);
+  useEffect(() => {
+    if (data?.columns) setColumns(data.columns);
+  }, [data?.columns]);
+
+  const [activeCard, setActiveCard] = useState<PipelineCard | null>(null);
+
+  const move = useMutation({
+    mutationFn: ({ dealId, stageId }: { dealId: string; stageId: string }) =>
+      pipelineApi.move(dealId, stageId),
+    onError: () => {
+      // Revert to server truth on failure.
+      queryClient.invalidateQueries({ queryKey: queryKeys.agnb.pipeline });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agnb.pipeline });
+    },
+  });
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+  );
+
+  const cardIndex = useMemo(() => {
+    const m = new Map<string, { card: PipelineCard; columnId: string }>();
+    for (const col of columns)
+      for (const card of col.cards) m.set(card.id, { card, columnId: col.id });
+    return m;
+  }, [columns]);
+
+  function handleDragStart(e: DragStartEvent) {
+    setActiveCard(cardIndex.get(String(e.active.id))?.card ?? null);
+  }
+
+  function handleDragEnd(e: DragEndEvent) {
+    setActiveCard(null);
+    const { active, over } = e;
+    if (!over) return;
+    const dealId = String(active.id);
+    const from = cardIndex.get(dealId)?.columnId;
+    if (!from) return;
+
+    // `over` is either a column (droppable) or another card — resolve to a column.
+    const overId = String(over.id);
+    const toColumn = columns.some((c) => c.id === overId)
+      ? overId
+      : cardIndex.get(overId)?.columnId;
+    if (!toColumn || toColumn === from) return;
+
+    // Optimistic: pull the card out of its column, append to the target.
+    setColumns((prev) => {
+      const moving = prev
+        .flatMap((c) => c.cards)
+        .find((c) => c.id === dealId);
+      if (!moving) return prev;
+      return prev.map((c) => {
+        if (c.id === from)
+          return { ...c, cards: c.cards.filter((x) => x.id !== dealId) };
+        if (c.id === toColumn)
+          return {
+            ...c,
+            cards: [...c.cards, { ...moving, stageLabel: c.label }],
+          };
+        return c;
+      });
+    });
+    move.mutate({ dealId, stageId: toColumn });
+  }
+
   if (isLoading) return <PageSkeleton variant="list" />;
 
-  const columns = data?.columns ?? [];
   const allCards = columns.flatMap((c) => c.cards);
   const syncMin = data?.lastSync
     ? Math.round((Date.now() - new Date(data.lastSync).getTime()) / 60000)
@@ -52,11 +143,12 @@ export function Pipeline() {
             </span>
           </div>
           <p className="text-sm text-muted-foreground">
-            HubSpot deals by stage (read-only mirror). Open a card in HubSpot to act.
+            HubSpot deals by stage. Drag a card between columns to move the deal;
+            open it to act in HubSpot.
           </p>
         </div>
         <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
-          {syncMin != null ? `synced ${syncMin}m ago` : "no sync"}
+          {move.isPending ? "saving…" : syncMin != null ? `synced ${syncMin}m ago` : "no sync"}
         </span>
       </div>
 
@@ -73,7 +165,6 @@ export function Pipeline() {
         </div>
       )}
 
-      {/* Funnel strip */}
       {(data?.funnel?.length ?? 0) > 0 && (
         <div className="flex gap-2 overflow-x-auto pb-1">
           {data!.funnel.map((s) => (
@@ -94,48 +185,95 @@ export function Pipeline() {
       {allCards.length === 0 ? (
         <EmptyState icon={LayoutGrid} message="No deals yet." />
       ) : (
-        <div className="flex gap-3 overflow-x-auto pb-2">
-          {columns.map((col) => {
-            const total = col.cards.reduce((s, c) => s + (c.amount || 0), 0);
-            return (
-              <div
-                key={col.id}
-                className="flex w-72 shrink-0 flex-col rounded-lg border border-border bg-muted/30"
-              >
-                <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-sm font-medium">{col.label}</span>
-                    <span className="text-xs text-muted-foreground">{col.cards.length}</span>
-                  </div>
-                  <span className="font-mono text-[11px] text-muted-foreground">
-                    {money(total)}
-                  </span>
-                </div>
-                <div className="flex flex-col gap-2 p-2">
-                  {col.cards.map((c) => (
-                    <DealCard key={c.id} card={c} />
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCorners}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+        >
+          <div className="flex gap-3 overflow-x-auto pb-2">
+            {columns.map((col) => (
+              <DroppableColumn key={col.id} column={col} />
+            ))}
+          </div>
+          <DragOverlay>
+            {activeCard ? <DealCard card={activeCard} overlay /> : null}
+          </DragOverlay>
+        </DndContext>
       )}
     </div>
   );
 }
 
-function DealCard({ card }: { card: PipelineCard }) {
+function DroppableColumn({ column }: { column: PipelineColumn }) {
+  const { setNodeRef, isOver } = useDroppable({ id: column.id });
+  const total = column.cards.reduce((s, c) => s + (c.amount || 0), 0);
   return (
-    <a
-      href={card.hubspotUrl}
-      target="_blank"
-      rel="noreferrer"
-      className="block rounded-md border border-border bg-background p-2.5 transition-colors hover:bg-accent/40"
+    <div
+      ref={setNodeRef}
+      className={cn(
+        "flex w-72 shrink-0 flex-col rounded-lg border bg-muted/30 transition-colors",
+        isOver ? "border-foreground/40 bg-accent/40" : "border-border",
+      )}
+    >
+      <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+        <div className="flex items-center gap-1.5">
+          <span className="text-sm font-medium">{column.label}</span>
+          <span className="text-xs text-muted-foreground">{column.cards.length}</span>
+        </div>
+        <span className="font-mono text-[11px] text-muted-foreground">{money(total)}</span>
+      </div>
+      <SortableContext
+        items={column.cards.map((c) => c.id)}
+        strategy={verticalListSortingStrategy}
+      >
+        <div className="flex min-h-[40px] flex-col gap-2 p-2">
+          {column.cards.map((c) => (
+            <SortableCard key={c.id} card={c} />
+          ))}
+        </div>
+      </SortableContext>
+    </div>
+  );
+}
+
+function SortableCard({ card }: { card: PipelineCard }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: card.id });
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={cn(isDragging && "opacity-40")}
+      {...attributes}
+      {...listeners}
+    >
+      <DealCard card={card} />
+    </div>
+  );
+}
+
+function DealCard({ card, overlay }: { card: PipelineCard; overlay?: boolean }) {
+  return (
+    <div
+      className={cn(
+        "rounded-md border border-border bg-background p-2.5",
+        overlay ? "shadow-lg" : "transition-colors hover:bg-accent/40",
+      )}
     >
       <div className="flex items-start justify-between gap-2">
         <span className="line-clamp-2 text-sm font-medium">{card.name}</span>
-        <ExternalLink className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
+        <a
+          href={card.hubspotUrl}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"
+          title="Open in HubSpot"
+        >
+          <ExternalLink className="h-3 w-3" />
+        </a>
       </div>
       {card.company?.name && (
         <div className="mt-0.5 truncate text-xs text-muted-foreground">
@@ -159,6 +297,6 @@ function DealCard({ card }: { card: PipelineCard }) {
         {(card.probability ?? 0) > 0 && <span>{card.probability}%</span>}
         {card.closeAt && <span className="ml-auto">{relativeTime(card.closeAt)}</span>}
       </div>
-    </a>
+    </div>
   );
 }
