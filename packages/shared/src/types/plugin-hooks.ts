@@ -99,7 +99,12 @@ export type SkillResolverTransformer = (
  *
  * Supported leaf forms:
  * - `{ issueHasField: "myField" }` — field exists in the exposed projection.
- * - `{ issueFieldEquals: { field, value } }` — strict equality on a scalar.
+ * - `{ issueFieldEquals: { field, value } }` — strict (deep) equality between
+ *   the named field and `value`. `value` is typed `unknown` deliberately to
+ *   mirror the board-approved registry contract ([MYO-62]) — narrowing it to
+ *   a scalar union here would diverge from the host-side validator. The host
+ *   is responsible for the equality semantics (`Object.is` for primitives,
+ *   structural compare for arrays/objects, per PLUGIN_SPEC.md).
  * - `{ agentRoleEquals: "founding_engineer" }` — agent role match.
  *
  * Composite forms (recursive):
@@ -143,15 +148,36 @@ export interface PluginHooksDeclaration {
   readonly skillResolverTransformer?: PluginHookManifestEntry;
 }
 
+/**
+ * Single source of truth for hook kinds and their handler signatures.
+ *
+ * Adding a new hook kind = adding a property here. {@link PluginHookKind} and
+ * {@link PluginHookHandlerMap} both derive from this shape, so the compiler
+ * forces every new kind to ship with its handler signature (and conversely,
+ * every signature with a kind in the union). Without this binding, the union
+ * and the map could drift independently.
+ *
+ * Intentionally not exported: consumers should use {@link PluginHookKind} or
+ * {@link PluginHookHandlerMap} (or `PluginHookHandlerMap[K]` for a specific
+ * kind), not this internal carrier.
+ */
+interface PluginHookHandlerSignatures {
+  readonly wakePayloadTransformer: WakePayloadTransformer;
+  readonly skillResolverTransformer: SkillResolverTransformer;
+}
+
 /** Symbolic name for the supported hook kinds. */
-export type PluginHookKind = "wakePayloadTransformer" | "skillResolverTransformer";
+export type PluginHookKind = keyof PluginHookHandlerSignatures;
 
 /**
  * Map from {@link PluginHookKind} to the handler signature. Useful for
  * registry implementations that want to stay strongly typed without resorting
  * to per-kind APIs.
+ *
+ * Structurally bound to {@link PluginHookKind} via a mapped type so the two
+ * cannot drift — adding a kind without a matching signature is a compile
+ * error at {@link PluginHookHandlerSignatures} and vice-versa.
  */
-export interface PluginHookHandlerMap {
-  wakePayloadTransformer: WakePayloadTransformer;
-  skillResolverTransformer: SkillResolverTransformer;
-}
+export type PluginHookHandlerMap = {
+  readonly [K in PluginHookKind]: PluginHookHandlerSignatures[K];
+};

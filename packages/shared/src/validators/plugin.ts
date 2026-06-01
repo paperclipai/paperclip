@@ -440,6 +440,16 @@ export type PluginHookManifestEntryInput = z.infer<typeof pluginHookManifestEntr
 
 /**
  * Optional `manifest.hooks` block. Both kinds are independent and additive.
+ *
+ * Capability guard intentionally deferred: every other feature block on this
+ * manifest (`tools`, `jobs`, `webhooks`, `apiRoutes`, `environmentDrivers`,
+ * `database`) is gated by a matching entry in `manifest.capabilities` via the
+ * top-level `superRefine` below. `hooks?` is deliberately *not* gated in
+ * Phase 1a — the capability constant and the gating refinement are scoped to
+ * Phase 1b/2 (registry wiring, see [MYO-62] / [MYO-63]). Adding the guard
+ * here would be non-additive: an existing plugin manifest with `hooks` but
+ * no new capability would start failing validation, defeating the
+ * Phase 1a "types-only, no behavioural change" contract.
  */
 export const pluginHooksDeclarationSchema = z.object({
   wakePayloadTransformer: pluginHookManifestEntrySchema.optional(),
