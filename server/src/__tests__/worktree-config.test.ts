@@ -34,7 +34,7 @@ function buildLegacyConfig(sharedRoot: string, publicBaseUrl = "http://127.0.0.1
     database: {
       mode: "embedded-postgres" as const,
       embeddedPostgresDataDir: path.join(sharedRoot, "db"),
-      embeddedPostgresPort: 54329,
+      embeddedPostgresPort: 54000,
       backup: {
         enabled: true,
         intervalMinutes: 60,
@@ -170,7 +170,7 @@ describe("worktree config repair", () => {
           database: {
             mode: "embedded-postgres",
             embeddedPostgresDataDir: path.join(siblingInstanceRoot, "db"),
-            embeddedPostgresPort: 54330,
+            embeddedPostgresPort: 54001,
             backup: {
               enabled: true,
               intervalMinutes: 60,
@@ -207,7 +207,7 @@ describe("worktree config repair", () => {
 
     expect(result.repairedConfig).toBe(true);
     expect(repairedConfig.server.port).toBe(3102);
-    expect(repairedConfig.database.embeddedPostgresPort).toBe(54331);
+    expect(repairedConfig.database.embeddedPostgresPort).toBe(54002);
   });
 
   it("ignores stale migrated env paths when the dev runner resolved the local config", async () => {
@@ -390,7 +390,7 @@ describe("worktree config repair", () => {
           database: {
             mode: "embedded-postgres",
             embeddedPostgresDataDir: path.join(currentInstanceRoot, "db"),
-            embeddedPostgresPort: 54330,
+            embeddedPostgresPort: 54001,
             backup: {
               enabled: true,
               intervalMinutes: 60,
@@ -409,25 +409,6 @@ describe("worktree config repair", () => {
             port: 3101,
             allowedHostnames: [],
             serveUi: true,
-          },
-          storage: {
-            provider: "local_disk",
-            localDisk: {
-              baseDir: path.join(currentInstanceRoot, "data", "storage"),
-            },
-            s3: {
-              bucket: "paperclip",
-              region: "us-east-1",
-              prefix: "",
-              forcePathStyle: false,
-            },
-          },
-          secrets: {
-            provider: "local_encrypted",
-            strictMode: false,
-            localEncrypted: {
-              keyFilePath: path.join(currentInstanceRoot, "secrets", "master.key"),
-            },
           },
         },
         null,
@@ -453,7 +434,7 @@ describe("worktree config repair", () => {
           database: {
             mode: "embedded-postgres",
             embeddedPostgresDataDir: path.join(siblingInstanceRoot, "db"),
-            embeddedPostgresPort: 54330,
+            embeddedPostgresPort: 54001,
             backup: {
               enabled: true,
               intervalMinutes: 60,
@@ -486,7 +467,7 @@ describe("worktree config repair", () => {
 
     expect(result.repairedConfig).toBe(true);
     expect(repairedConfig.server.port).toBe(3102);
-    expect(repairedConfig.database.embeddedPostgresPort).toBe(54331);
+    expect(repairedConfig.database.embeddedPostgresPort).toBe(54002);
   });
 
   it("persists runtime-selected worktree ports back into explicit-port auth URLs", async () => {
