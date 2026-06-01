@@ -179,6 +179,20 @@ const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS = 50;
 
+// BEY-1751: Default-Fenster für @-Mention-Debounce. Aufeinanderfolgende
+// Mention-Wakes auf denselben Agent + dasselbe Issue innerhalb dieses
+// Fensters werden zu einem einzigen Wake collapsed. Überschreibbar via
+// Env-Variable PAPERCLIP_MENTION_DEBOUNCE_MS (0 oder leer = Default).
+const DEFAULT_MENTION_DEBOUNCE_MS = 60_000;
+
+function readMentionDebounceMs(): number {
+  const raw = process.env.PAPERCLIP_MENTION_DEBOUNCE_MS;
+  if (raw == null || raw.trim() === "") return DEFAULT_MENTION_DEBOUNCE_MS;
+  const parsed = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_MENTION_DEBOUNCE_MS;
+  return parsed;
+}
+
 export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   summary: string,
   currentUserRedactionOptions?: CurrentUserRedactionOptions,
@@ -9042,6 +9056,70 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         finishedAt: new Date(),
       });
     };
+
+    // BEY-1737: Central Self-Wake-Filter. Catches all wake paths that pass a
+    // wakeCommentId. The existing route-level filters (routes/issues.ts:3626,
+    // :4638) only cover authenticated direct comment posts; this layer covers
+    // automation, recovery, and follow-up wakes. User-authored comments are
+    // not filtered here so human replies always wake the agent.
+    if (wakeCommentId) {
+      const [commentRow] = await db
+        .select({ authorAgentId: issueComments.authorAgentId })
+        .from(issueComments)
+        .where(
+          and(eq(issueComments.companyId, agent.companyId), eq(issueComments.id, wakeCommentId)),
+        )
+        .limit(1);
+      const commentAuthorAgentId = commentRow?.authorAgentId ?? null;
+      if (commentAuthorAgentId && commentAuthorAgentId === agentId) {
+        await writeSkippedRequest("self_comment_wake_skipped");
+        return null;
+      }
+    }
+
+    // BEY-1751: @-Mention-Debounce. Wenn innerhalb von
+    // PAPERCLIP_MENTION_DEBOUNCE_MS (Default 60s) bereits ein nicht-geskippter
+    // Mention-Wake für denselben Agent + dasselbe Issue existiert, collapsen
+    // wir den neuen Wake: coalescedCount auf dem vorhandenen Eintrag wird
+    // erhöht und für die Audit-Spur wird ein "mention_debounced"-Skip
+    // geschrieben. Damit fallen Bursts mehrerer @-Mentions auf einen Wake
+    // zusammen, ohne Comment-Posts an sich zu blockieren.
+    if (reason === "issue_comment_mentioned" && issueId) {
+      const debounceMs = readMentionDebounceMs();
+      if (debounceMs > 0) {
+        const windowStart = new Date(Date.now() - debounceMs);
+        const recentMentionWake = await db
+          .select({
+            id: agentWakeupRequests.id,
+            coalescedCount: agentWakeupRequests.coalescedCount,
+          })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, agent.companyId),
+              eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.reason, "issue_comment_mentioned"),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+              gt(agentWakeupRequests.requestedAt, windowStart),
+              notInArray(agentWakeupRequests.status, ["skipped"]),
+            ),
+          )
+          .orderBy(desc(agentWakeupRequests.requestedAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (recentMentionWake) {
+          await db
+            .update(agentWakeupRequests)
+            .set({
+              coalescedCount: (recentMentionWake.coalescedCount ?? 0) + 1,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, recentMentionWake.id));
+          await writeSkippedRequest("mention_debounced");
+          return null;
+        }
+      }
+    }
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
     if (!projectId && issueId) {
