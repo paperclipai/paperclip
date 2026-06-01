@@ -2159,7 +2159,7 @@ async function withSkillSourceMetadata(skill: CompanySkill, markdown: string) {
 }
 
 
-function parseYamlSingleQuotedScalar(value: string): string {
+export function parseYamlSingleQuotedScalar(value: string): string {
   // YAML single-quoted scalars: '' inside is escaped by doubling.
   // e.g. 'CEO / Editor' -> CEO / Editor, 'it''s' -> it's
   if (value.length < 2) return value;
