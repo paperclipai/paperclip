@@ -57,6 +57,8 @@ export interface InstanceGeneralSettings {
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;
   enableIsolatedWorkspaces: boolean;
+  enableIssuePlanDecompositions: boolean;
+  enableCloudSync: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
   issueGraphLivenessAutoRecoveryLookbackHours: number;

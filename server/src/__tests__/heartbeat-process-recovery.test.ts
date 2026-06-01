@@ -9,17 +9,27 @@ import {
   budgetPolicies,
   companies,
   costEvents,
+  documentAnnotationAnchorSnapshots,
+  documentAnnotationComments,
+  documentAnnotationThreads,
   createDb,
   documentRevisions,
   documents,
+  environmentLeases,
+  environments,
+  executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
+  issueThreadInteractions,
+  issueTreeHoldMembers,
   issueTreeHolds,
   issues,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -1594,17 +1604,21 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: "issue_continuation_needed",
       retryOfRunId: runId,
     });
+    if (!continuationRun?.id) throw new Error("Expected continuation recovery run to exist");
 
-    const blockedIssue = await waitForValue(async () =>
-      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+    const settledContinuationRun = await waitForRunToSettle(heartbeat, continuationRun.id, 10_000);
+    expect(settledContinuationRun?.status).toBe("failed");
+
+    const blockedIssue = await waitForValue(
+      async () => db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
         const issue = rows[0] ?? null;
         return issue?.status === "blocked" ? issue : null;
-      })
+      }),
+      10_000,
     );
     expect(blockedIssue?.status).toBe("blocked");
     expect(blockedIssue?.executionRunId).toBeNull();
     expect(blockedIssue?.checkoutRunId).toBeNull();
-    if (!continuationRun?.id) throw new Error("Expected continuation recovery run to exist");
 
     const recovery = await expectStrandedRecoveryArtifacts({
       companyId,
@@ -2149,7 +2163,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       updatedAt: new Date("2026-03-19T00:10:00.000Z"),
     });
 
-    const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
     await waitForValue(async () => {
       const run = await heartbeat.getRun(queuedRunId);
@@ -2361,7 +2374,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("re-enqueues assigned todo work when the last issue run died and no wake remains", async () => {
-    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "todo",
       runStatus: "failed",
     });
@@ -2621,7 +2634,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("re-enqueues continuation for stranded in-progress work with no active run", async () => {
-    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
     });
@@ -3171,6 +3184,35 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(recovery.nextAction).toContain("Restore a live execution path");
   });
 
+  it("keeps retrying transient adapter_failed continuation runs before the cap", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "adapter_failed",
+      runError: "ssh: connection reset",
+    });
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(retryRun?.contextSnapshot as Record<string, unknown> | undefined).toMatchObject({
+      issueId,
+      retryReason: "issue_continuation_needed",
+      source: "issue.continuation_recovery",
+    });
+    if (retryRun) {
+      await waitForRunToSettle(heartbeat, retryRun.id);
+    }
+  });
+
   it("reuses the raced stranded recovery action when duplicate active recovery creation conflicts", async () => {
     const { companyId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
@@ -3269,8 +3311,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runErrorCode: "provider_quota_exhausted",
       runError: "provider quota exhausted; resets later",
     });
-    const heartbeat = heartbeatService(db);
-
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.dispatchRequeued).toBe(0);
     expect(result.continuationRequeued).toBe(0);

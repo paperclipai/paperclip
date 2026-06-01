@@ -15,6 +15,8 @@ import {
 import { eq } from "drizzle-orm";
 
 const DEFAULT_SINGLETON_KEY = "default";
+const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
+const instanceExperimentalSettingsStorageSchema = instanceExperimentalSettingsSchema.strip();
 
 function normalizeShellCmd(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
@@ -23,7 +25,7 @@ function normalizeShellCmd(raw: unknown): string | null {
 }
 
 function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
-  const parsed = instanceGeneralSettingsSchema.safeParse(raw ?? {});
+  const parsed = instanceGeneralSettingsStorageSchema.safeParse(raw ?? {});
   if (parsed.success) {
     return {
       censorUsernameInLogs: parsed.data.censorUsernameInLogs ?? false,
@@ -47,12 +49,14 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   };
 }
 
-function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettings {
-  const parsed = instanceExperimentalSettingsSchema.safeParse(raw ?? {});
+export function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettings {
+  const parsed = instanceExperimentalSettingsStorageSchema.safeParse(raw ?? {});
   if (parsed.success) {
     return {
       enableEnvironments: parsed.data.enableEnvironments ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
+      enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
+      enableCloudSync: parsed.data.enableCloudSync ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? true,
       issueGraphLivenessAutoRecoveryLookbackHours:
@@ -63,6 +67,8 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
   return {
     enableEnvironments: false,
     enableIsolatedWorkspaces: false,
+    enableIssuePlanDecompositions: false,
+    enableCloudSync: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: true,
     issueGraphLivenessAutoRecoveryLookbackHours:

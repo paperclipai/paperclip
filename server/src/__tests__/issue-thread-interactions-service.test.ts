@@ -7,6 +7,7 @@ import {
   createDb,
   documentRevisions,
   documents,
+  executionWorkspaces,
   goals,
   heartbeatRuns,
   issueComments,
@@ -15,6 +16,9 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  projectWorkspaces,
+  projects,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -48,7 +52,11 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.delete(documents);
     await db.delete(issueRelations);
     await db.delete(heartbeatRuns);
+    await db.delete(workspaceOperations);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
     await db.delete(goals);
     await db.delete(agents);
     await db.delete(instanceSettings);
@@ -1133,6 +1141,264 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           revisionId,
         },
       },
+    });
+  });
+
+  describe("workspace_finalize accept gate", () => {
+    async function seedAcceptGateFixture() {
+      const companyId = randomUUID();
+      const projectId = randomUUID();
+      const projectWorkspaceId = randomUUID();
+      const executionWorkspaceId = randomUUID();
+      const issueId = randomUUID();
+      const goalId = randomUUID();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Project",
+        status: "in_progress",
+      });
+      await db.insert(projectWorkspaces).values({
+        id: projectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Workspace",
+        sourceType: "local_path",
+        visibility: "default",
+        isPrimary: true,
+      });
+      await db.insert(executionWorkspaces).values({
+        id: executionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "exec",
+        status: "active",
+        providerType: "git_worktree",
+      });
+      await db.insert(goals).values({
+        id: goalId,
+        companyId,
+        title: "Accept gate fixture",
+        level: "task",
+        status: "active",
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        projectId,
+        goalId,
+        title: "Issue with execution workspace",
+        status: "in_progress",
+        priority: "medium",
+        executionWorkspaceId,
+      });
+
+      const created = await interactionsSvc.create({
+        id: issueId,
+        companyId,
+      }, {
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Mark this issue done?",
+        },
+      }, {
+        userId: "local-board",
+      });
+
+      return { companyId, projectId, executionWorkspaceId, issueId, goalId, interactionId: created.id };
+    }
+
+    it("refuses accept when the issue's latest workspace operation is not a successful workspace_finalize", async () => {
+      const { companyId, executionWorkspaceId, issueId, goalId, interactionId } = await seedAcceptGateFixture();
+
+      // A run touched the workspace (prepare) but never recorded workspace_finalize.
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        phase: "worktree_prepare",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:00:00.000Z"),
+      });
+
+      await expect(
+        interactionsSvc.acceptInteraction(
+          { id: issueId, companyId, goalId, projectId: null },
+          interactionId,
+          {},
+          { userId: "local-board" },
+        ),
+      ).rejects.toMatchObject({
+        status: 409,
+        details: { executionWorkspaceId },
+      });
+
+      const row = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0]);
+      expect(row?.status).toBe("pending");
+    });
+
+    it("refuses accept when the latest workspace operation is a failed workspace_finalize", async () => {
+      const { companyId, executionWorkspaceId, issueId, goalId, interactionId } = await seedAcceptGateFixture();
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        phase: "worktree_prepare",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:00:00.000Z"),
+      });
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        phase: "workspace_finalize",
+        status: "failed",
+        startedAt: new Date("2026-05-23T22:05:00.000Z"),
+      });
+
+      await expect(
+        interactionsSvc.acceptInteraction(
+          { id: issueId, companyId, goalId, projectId: null },
+          interactionId,
+          {},
+          { userId: "local-board" },
+        ),
+      ).rejects.toMatchObject({
+        status: 409,
+        details: { executionWorkspaceId },
+      });
+
+      const row = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0]);
+      expect(row?.status).toBe("pending");
+    });
+
+    it("allows accept once a successful workspace_finalize lands as the latest operation", async () => {
+      const { companyId, executionWorkspaceId, issueId, goalId, interactionId } = await seedAcceptGateFixture();
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        phase: "workspace_finalize",
+        status: "failed",
+        startedAt: new Date("2026-05-23T22:05:00.000Z"),
+      });
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        phase: "workspace_finalize",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:10:00.000Z"),
+      });
+
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        interactionId,
+        {},
+        { userId: "local-board" },
+      );
+
+      expect(accepted.interaction).toMatchObject({
+        id: interactionId,
+        status: "accepted",
+      });
+    });
+
+    it("allows accept of suggest_tasks even when no successful workspace_finalize has landed", async () => {
+      // suggest_tasks acceptance only creates follow-up issues; it does not
+      // approve code state or move the source workspace forward, so the
+      // workspace_finalize gate (PAPA-440) must not apply here. Without this
+      // carve-out the board cannot triage suggested tasks on an issue whose
+      // latest workspace op is still worktree_prepare.
+      const { companyId, executionWorkspaceId, issueId, goalId } = await seedAcceptGateFixture();
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        phase: "worktree_prepare",
+        status: "succeeded",
+        startedAt: new Date("2026-05-28T22:00:00.000Z"),
+      });
+
+      const created = await interactionsSvc.create({
+        id: issueId,
+        companyId,
+      }, {
+        kind: "suggest_tasks",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          tasks: [
+            {
+              clientKey: "follow-up",
+              title: "Created from suggest_tasks accept under prepare-only workspace",
+            },
+          ],
+        },
+      }, {
+        userId: "local-board",
+      });
+
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        created.id,
+        {},
+        { userId: "local-board" },
+      );
+
+      expect(accepted.interaction).toMatchObject({
+        id: created.id,
+        kind: "suggest_tasks",
+        status: "accepted",
+      });
+    });
+
+    it("allows accept when the issue has no execution workspace attached", async () => {
+      const { companyId, issueId } = await seedConfirmationIssue("No execution workspace accept");
+
+      const created = await interactionsSvc.create({
+        id: issueId,
+        companyId,
+      }, {
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Mark this issue done?",
+        },
+      }, {
+        userId: "local-board",
+      });
+
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId: null, projectId: null },
+        created.id,
+        {},
+        { userId: "local-board" },
+      );
+
+      expect(accepted.interaction).toMatchObject({
+        id: created.id,
+        status: "accepted",
+      });
     });
   });
 });

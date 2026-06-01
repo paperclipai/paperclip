@@ -223,9 +223,14 @@ describe("InstanceSidebar", () => {
     await flushReact();
     await findPluginLinks(container, 1);
 
-    const topLevelLinks = Array.from(
-      container.querySelectorAll<HTMLAnchorElement>('a[href^="/instance/settings/"]'),
-    );
+    await vi.waitFor(() => {
+      const links = Array.from(
+        container.querySelectorAll<HTMLAnchorElement>('a[href^="/instance/settings/"]'),
+      );
+      expect(links.some((a) => a.getAttribute("href") === "/instance/settings/plugins/linear")).toBe(true);
+    });
+
+    const topLevelLinks = Array.from(container.querySelectorAll<HTMLAnchorElement>('a[href^="/instance/settings/"]'));
     const hrefs = topLevelLinks.map((a) => a.getAttribute("href"));
 
     const pluginsIndex = hrefs.indexOf("/instance/settings/plugins");
@@ -266,6 +271,9 @@ describe("InstanceSidebar", () => {
     queryClient = rendered.queryClient;
     await flushReact();
 
+    await vi.waitFor(() => {
+      expect(mockPluginsApi.list).toHaveBeenCalled();
+    });
     const pluginLinks = Array.from(container.querySelectorAll('a[href^="/instance/settings/plugins/"]'));
     expect(pluginLinks).toHaveLength(0);
   });

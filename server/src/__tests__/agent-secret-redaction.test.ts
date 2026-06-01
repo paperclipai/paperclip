@@ -64,6 +64,7 @@ const mockAgentService = vi.hoisted(() => ({
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   hasPermission: vi.fn(),
+  decide: vi.fn(),
   getMembership: vi.fn(),
   ensureMembership: vi.fn(),
   listPrincipalGrants: vi.fn(),
@@ -191,6 +192,7 @@ describe("agent secret redaction in API responses", () => {
     });
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
     mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.decide.mockResolvedValue({ allowed: true });
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
     mockSecretService.resolveAdapterConfigForRuntime.mockImplementation(async (_companyId, config) => ({ config }));

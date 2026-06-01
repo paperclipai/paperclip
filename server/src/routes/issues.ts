@@ -23,7 +23,10 @@ import {
   createIssueThreadInteractionSchema,
   createIssueWorkProductSchema,
   createIssueLabelSchema,
+  createAcceptedPlanDecompositionSchema,
   checkoutIssueSchema,
+  createDocumentAnnotationCommentSchema,
+  createDocumentAnnotationThreadSchema,
   createChildIssueSchema,
   createIssueSchema,
   resolveCreateIssueStatusDefault,
@@ -39,6 +42,7 @@ import {
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
   updateIssueWorkProductSchema,
+  updateDocumentAnnotationThreadSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
@@ -72,6 +76,7 @@ import {
   issueService,
   clampIssueListLimit,
   documentService,
+  documentAnnotationService,
   logActivity,
   projectService,
   routineService,
@@ -96,6 +101,7 @@ import { assertEnvironmentSelectionForCompany } from "./environment-selection.js
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
 import { environmentService } from "../services/environments.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
@@ -869,6 +875,7 @@ export function issueRoutes(
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
+  const documentAnnotationsSvc = documentAnnotationService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
   const routinesSvc = routineService(db, {
@@ -1107,6 +1114,69 @@ export function issueRoutes(
     return value === true || value === "true" || value === "1";
   }
 
+  function shouldIncludeDocumentAnnotations(req: Request) {
+    if (req.query.includeAnnotations === "false" || req.query.includeAnnotations === "0") return false;
+    return req.actor.type === "agent" || parseBooleanQuery(req.query.includeAnnotations);
+  }
+
+  function shouldIncludeDocumentAnnotationComments(req: Request) {
+    return parseBooleanQuery(req.query.includeAnnotationComments);
+  }
+
+  function annotationActorInput(req: Request) {
+    const actor = getActorInfo(req);
+    return {
+      actor,
+      annotationActor: {
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+        runId: actor.runId,
+      },
+    };
+  }
+
+  function queueAnnotationCommentWakeup(input: {
+    issue: { id: string; assigneeAgentId: string | null; status: string };
+    actor: { actorType: "user" | "agent"; actorId: string };
+    threadId: string;
+    commentId: string;
+    documentKey: string;
+  }) {
+    const assigneeId = input.issue.assigneeAgentId;
+    const selfComment = input.actor.actorType === "agent" && input.actor.actorId === assigneeId;
+    if (!assigneeId || selfComment || isClosedIssueStatus(input.issue.status)) return;
+    void heartbeat.wakeup(assigneeId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId: input.issue.id,
+        annotationThreadId: input.threadId,
+        annotationCommentId: input.commentId,
+        documentKey: input.documentKey,
+        mutation: "document_annotation_comment",
+      },
+      requestedByActorType: input.actor.actorType,
+      requestedByActorId: input.actor.actorId,
+      contextSnapshot: {
+        issueId: input.issue.id,
+        taskId: input.issue.id,
+        annotationThreadId: input.threadId,
+        annotationCommentId: input.commentId,
+        documentKey: input.documentKey,
+        source: "issue.document.annotation",
+        wakeReason: "issue_commented",
+      },
+    }).catch((err) => logger.warn({
+      err,
+      issueId: input.issue.id,
+      annotationThreadId: input.threadId,
+      annotationCommentId: input.commentId,
+    }, "failed to wake assignee on document annotation comment"));
+  }
+
   async function assertIssueEnvironmentSelection(
     companyId: string,
     environmentId: string | null | undefined,
@@ -1247,29 +1317,48 @@ export function issueRoutes(
     return (req.actor.companyIds ?? []).includes(companyId);
   }
 
-  function canCreateAgentsLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
-    if (agent.role === "ceo") return true;
-    if (!agent.permissions || typeof agent.permissions !== "object") return false;
-    return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  type TaskAssignmentAuthorizationScope = {
+    issueId?: string | null;
+    projectId?: string | null;
+    parentIssueId?: string | null;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+  };
+
+  async function resolveAssignmentProjectId(input: {
+    companyId: string;
+    projectId: string | null | undefined;
+    parentIssueId?: string | null;
+  }) {
+    if (input.projectId !== undefined) return input.projectId;
+    if (!input.parentIssueId) return null;
+    const parent = await svc.getById(input.parentIssueId);
+    if (!parent || parent.companyId !== input.companyId) return null;
+    return parent.projectId ?? null;
   }
 
-  async function assertCanAssignTasks(req: Request, companyId: string) {
+  async function assertCanAssignTasks(
+    req: Request,
+    companyId: string,
+    assignmentScope?: TaskAssignmentAuthorizationScope,
+  ) {
     assertCompanyAccess(req, companyId);
-    if (req.actor.type === "board") {
-      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-      const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
-      if (!allowed) throw forbidden("Missing permission: tasks:assign");
-      return;
-    }
-    if (req.actor.type === "agent") {
-      if (!req.actor.agentId) throw forbidden("Agent authentication required");
-      const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
-      if (allowedByGrant) return;
-      const actorAgent = await agentsSvc.getById(req.actor.agentId);
-      if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
-      throw forbidden("Missing permission: tasks:assign");
-    }
-    throw unauthorized();
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId,
+        issueId: assignmentScope?.issueId ?? null,
+        projectId: assignmentScope?.projectId ?? null,
+        parentIssueId: assignmentScope?.parentIssueId ?? null,
+        assigneeAgentId: assignmentScope?.assigneeAgentId ?? null,
+        assigneeUserId: assignmentScope?.assigneeUserId ?? null,
+      },
+      scope: assignmentScope ?? null,
+    });
+    if (decision.allowed) return;
+    throw forbidden(decision.explanation);
   }
 
   function requireAgentRunId(req: Request, res: Response) {
@@ -1285,31 +1374,12 @@ export function issueRoutes(
     companyId: string,
     assigneeAgentId: string,
   ) {
-    const allowedByGrant = await access.hasPermission(
-      companyId,
-      "agent",
-      actorAgentId,
-      "tasks:manage_active_checkouts",
-    );
-    if (allowedByGrant) return true;
-
-    const companyAgents = await agentsSvc.list(companyId);
-    const agentsById = new Map(companyAgents.map((agent) => [agent.id, agent]));
-    const actorAgent = agentsById.get(actorAgentId);
-    if (!actorAgent) return false;
-    if (canCreateAgentsLegacy(actorAgent)) return true;
-
-    // Reporting-chain managers may intervene in an agent's active checkout
-    // without taking the task over. Peers must own the checkout/run first.
-    let cursor: string | null = assigneeAgentId;
-    for (let depth = 0; cursor && depth < 50; depth += 1) {
-      const assignee = agentsById.get(cursor);
-      if (!assignee) return false;
-      if (assignee.reportsTo === actorAgentId) return true;
-      cursor = assignee.reportsTo;
-    }
-
-    return false;
+    const decision = await access.decide({
+      actor: { type: "agent", agentId: actorAgentId, companyId },
+      action: "tasks:manage_active_checkouts",
+      resource: { type: "issue", companyId, assigneeAgentId },
+    });
+    return decision.allowed;
   }
 
   async function assertAgentIssueMutationAllowed(
@@ -2475,8 +2545,238 @@ export function issueRoutes(
       res.status(404).json({ error: "Document not found" });
       return;
     }
-    res.json(doc);
+    if (!shouldIncludeDocumentAnnotations(req)) {
+      res.json(doc);
+      return;
+    }
+    const annotations = await documentAnnotationsSvc.listThreadsForIssueDocument(issue.id, keyParsed.data, {
+      status: "open",
+      includeComments: shouldIncludeDocumentAnnotationComments(req),
+    });
+    res.json({ ...doc, annotations });
   });
+
+  router.get("/issues/:id/documents/:key/annotations", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    if (!keyParsed.success) {
+      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      return;
+    }
+    const status = req.query.status === "resolved" || req.query.status === "all" ? req.query.status : "open";
+    const threads = await documentAnnotationsSvc.listThreadsForIssueDocument(issue.id, keyParsed.data, {
+      status,
+      includeComments: parseBooleanQuery(req.query.includeComments),
+    });
+    res.json(threads);
+  });
+
+  router.post(
+    "/issues/:id/documents/:key/annotations",
+    validate(createDocumentAnnotationThreadSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+
+      const { actor, annotationActor } = annotationActorInput(req);
+      const referenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      const thread = await documentAnnotationsSvc.createThread(issue.id, keyParsed.data, req.body, annotationActor);
+      const firstComment = thread.comments[0];
+      if (firstComment) await issueReferencesSvc.syncAnnotationComment(firstComment.id);
+      const referenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(referenceSummaryBefore, referenceSummaryAfter);
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_annotation_thread_created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          documentKey: thread.documentKey,
+          documentId: thread.documentId,
+          threadId: thread.id,
+          commentId: firstComment?.id ?? null,
+          revisionNumber: thread.currentRevisionNumber,
+          quote: thread.selectedText.slice(0, 240),
+          ...summarizeIssueReferenceActivityDetails({
+            addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
+            removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
+            currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
+          }),
+        },
+      });
+
+      if (firstComment) {
+        queueAnnotationCommentWakeup({
+          issue,
+          actor,
+          threadId: thread.id,
+          commentId: firstComment.id,
+          documentKey: thread.documentKey,
+        });
+      }
+
+      res.status(201).json(thread);
+    },
+  );
+
+  router.get("/issues/:id/documents/:key/annotations/:threadId", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    if (!keyParsed.success) {
+      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      return;
+    }
+    const thread = await documentAnnotationsSvc.getThreadForIssueDocument(
+      issue.id,
+      keyParsed.data,
+      req.params.threadId as string,
+    );
+    if (!thread) {
+      res.status(404).json({ error: "Annotation thread not found" });
+      return;
+    }
+    res.json(thread);
+  });
+
+  router.post(
+    "/issues/:id/documents/:key/annotations/:threadId/comments",
+    validate(createDocumentAnnotationCommentSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+
+      const { actor, annotationActor } = annotationActorInput(req);
+      const referenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      const comment = await documentAnnotationsSvc.addComment(
+        issue.id,
+        keyParsed.data,
+        req.params.threadId as string,
+        req.body,
+        annotationActor,
+      );
+      await issueReferencesSvc.syncAnnotationComment(comment.id);
+      const referenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(referenceSummaryBefore, referenceSummaryAfter);
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_annotation_comment_added",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          documentKey: keyParsed.data,
+          threadId: comment.threadId,
+          commentId: comment.id,
+          bodySnippet: comment.body.slice(0, 120),
+          ...summarizeIssueReferenceActivityDetails({
+            addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
+            removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
+            currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
+          }),
+        },
+      });
+
+      queueAnnotationCommentWakeup({
+        issue,
+        actor,
+        threadId: comment.threadId,
+        commentId: comment.id,
+        documentKey: keyParsed.data,
+      });
+
+      res.status(201).json(comment);
+    },
+  );
+
+  router.patch(
+    "/issues/:id/documents/:key/annotations/:threadId",
+    validate(updateDocumentAnnotationThreadSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+      const { actor, annotationActor } = annotationActorInput(req);
+      const thread = await documentAnnotationsSvc.updateThread(
+        issue.id,
+        keyParsed.data,
+        req.params.threadId as string,
+        req.body,
+        annotationActor,
+      );
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: thread.status === "resolved"
+          ? "issue.document_annotation_thread_resolved"
+          : "issue.document_annotation_thread_reopened",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          documentKey: thread.documentKey,
+          documentId: thread.documentId,
+          threadId: thread.id,
+          status: thread.status,
+        },
+      });
+      res.json(thread);
+    },
+  );
 
   router.put("/issues/:id/documents/:key", validate(upsertIssueDocumentSchema), async (req, res) => {
     const id = req.params.id as string;
@@ -2515,6 +2815,16 @@ export function issueRoutes(
     await issueReferencesSvc.syncDocument(doc.id);
     const referenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
     const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(referenceSummaryBefore, referenceSummaryAfter);
+    const remappedAnnotations = result.created
+      ? []
+      : await documentAnnotationsSvc.remapOpenThreadsForDocument({
+        issueId: issue.id,
+        key: doc.key,
+        documentId: doc.id,
+        nextRevisionId: doc.latestRevisionId,
+        nextRevisionNumber: doc.latestRevisionNumber,
+        nextBody: doc.body,
+      });
 
     await logActivity(db, {
       companyId: issue.companyId,
@@ -2539,6 +2849,28 @@ export function issueRoutes(
         }),
       },
     });
+
+    for (const remap of remappedAnnotations) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_annotation_remapped",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          key: doc.key,
+          documentId: doc.id,
+          threadId: remap.thread.id,
+          revisionNumber: doc.latestRevisionNumber,
+          anchorState: remap.thread.anchorState,
+          anchorConfidence: remap.thread.anchorConfidence,
+          snapshotId: remap.snapshot.id,
+        },
+      });
+    }
 
     if (!result.created) {
       const expiredInteractions = await issueThreadInteractionService(db).expireStaleRequestConfirmationsForIssueDocument(
@@ -2711,6 +3043,14 @@ export function issueRoutes(
       await issueReferencesSvc.syncDocument(result.document.id);
       const referenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(referenceSummaryBefore, referenceSummaryAfter);
+      const remappedAnnotations = await documentAnnotationsSvc.remapOpenThreadsForDocument({
+        issueId: issue.id,
+        key: result.document.key,
+        documentId: result.document.id,
+        nextRevisionId: result.document.latestRevisionId,
+        nextRevisionNumber: result.document.latestRevisionNumber,
+        nextBody: result.document.body,
+      });
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -2736,6 +3076,28 @@ export function issueRoutes(
           }),
         },
       });
+
+      for (const remap of remappedAnnotations) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.document_annotation_remapped",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            key: result.document.key,
+            documentId: result.document.id,
+            threadId: remap.thread.id,
+            revisionNumber: result.document.latestRevisionNumber,
+            anchorState: remap.thread.anchorState,
+            anchorConfidence: remap.thread.anchorConfidence,
+            snapshotId: remap.snapshot.id,
+          },
+        });
+      }
 
       const expiredInteractions = await issueThreadInteractionService(db).expireStaleRequestConfirmationsForIssueDocument(
         issue,
@@ -3173,7 +3535,16 @@ export function issueRoutes(
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, req.body))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, companyId);
+      await assertCanAssignTasks(req, companyId, {
+        projectId: await resolveAssignmentProjectId({
+          companyId,
+          projectId: req.body.projectId,
+          parentIssueId: req.body.parentId,
+        }),
+        parentIssueId: req.body.parentId ?? null,
+        assigneeAgentId: req.body.assigneeAgentId ?? null,
+        assigneeUserId: req.body.assigneeUserId ?? null,
+      });
     }
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
@@ -3269,7 +3640,12 @@ export function issueRoutes(
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, req.body))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, parent.companyId);
+      await assertCanAssignTasks(req, parent.companyId, {
+        projectId: req.body.projectId ?? parent.projectId ?? null,
+        parentIssueId: parent.id,
+        assigneeAgentId: req.body.assigneeAgentId ?? null,
+        assigneeUserId: req.body.assigneeUserId ?? null,
+      });
     }
     await assertIssueEnvironmentSelection(parent.companyId, req.body.executionWorkspaceSettings?.environmentId);
 
@@ -3343,6 +3719,151 @@ export function issueRoutes(
     });
 
     res.status(201).json(issue);
+  });
+
+  router.get("/issues/:id/accepted-plan-decompositions", async (req, res) => {
+    const sourceIssueId = req.params.id as string;
+    const sourceIssue = await svc.getById(sourceIssueId);
+    if (!sourceIssue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, sourceIssue.companyId);
+    const decompositions = await svc.listAcceptedPlanDecompositions(sourceIssue.id);
+    res.json(decompositions);
+  });
+
+  router.post("/issues/:id/accepted-plan-decompositions", validate(createAcceptedPlanDecompositionSchema), async (req, res) => {
+    const sourceIssueId = req.params.id as string;
+    const sourceIssue = await svc.getById(sourceIssueId);
+    if (!sourceIssue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, sourceIssue.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, sourceIssue))) return;
+
+    for (const child of req.body.children as Array<typeof req.body.children[number]>) {
+      assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(child));
+      if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, sourceIssue, child))) return;
+      if (child.assigneeAgentId || child.assigneeUserId) {
+        await assertCanAssignTasks(req, sourceIssue.companyId, {
+          projectId: child.projectId ?? sourceIssue.projectId ?? null,
+          parentIssueId: sourceIssue.id,
+          assigneeAgentId: child.assigneeAgentId ?? null,
+          assigneeUserId: child.assigneeUserId ?? null,
+        });
+      }
+      await assertIssueEnvironmentSelection(sourceIssue.companyId, child.executionWorkspaceSettings?.environmentId);
+    }
+
+    const actor = getActorInfo(req);
+    const normalizedChildren = req.body.children.map((child: typeof req.body.children[number]) => {
+      const executionPolicy = applyActorMonitorScheduledBy(
+        normalizeIssueExecutionPolicy(child.executionPolicy),
+        actor.actorType,
+      );
+      assertCanManageIssueMonitor(req, child.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+      return {
+        ...child,
+        executionPolicy,
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+        actorAgentId: actor.agentId,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      };
+    });
+
+    const result = await svc.decomposeAcceptedPlan(sourceIssue.id, {
+      acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
+      children: normalizedChildren,
+      actorAgentId: actor.agentId,
+      actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      actorRunId: actor.runId ?? null,
+    });
+
+    await logActivity(db, {
+      companyId: sourceIssue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.accepted_plan_decomposition_updated",
+      entityType: "issue",
+      entityId: sourceIssue.id,
+      details: {
+        identifier: sourceIssue.identifier,
+        acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
+        decompositionId: result.decomposition.id,
+        status: result.decomposition.status,
+        requestedChildCount: req.body.children.length,
+        childIssueIds: result.childIssueIds,
+        newlyCreatedChildIssueIds: result.newlyCreatedIssues.map((issue) => issue.id),
+      },
+    });
+
+    for (const issue of result.newlyCreatedIssues) {
+      await logActivity(db, {
+        companyId: sourceIssue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.child_created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          parentId: sourceIssue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          inheritedExecutionWorkspaceFromIssueId: sourceIssue.id,
+          acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
+          ...buildCreateIssueActivityStatusDetails(issue, res),
+        },
+      });
+
+      const executionPolicy = normalizeIssueExecutionPolicy(issue.executionPolicy);
+      if (executionPolicy?.monitor) {
+        await logActivity(db, {
+          companyId: sourceIssue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.monitor_scheduled",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            identifier: issue.identifier,
+            parentId: sourceIssue.id,
+            acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
+            nextCheckAt: executionPolicy.monitor.nextCheckAt,
+            notes: executionPolicy.monitor.notes,
+            scheduledBy: executionPolicy.monitor.scheduledBy,
+            serviceName: executionPolicy.monitor.serviceName ?? null,
+            timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
+            maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
+            recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+          },
+        });
+      }
+
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "issue_assigned",
+        mutation: "accepted_plan_decomposition",
+        contextSource: "issue.accepted_plan_decomposition",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
+
+    res.json({
+      decomposition: result.decomposition,
+      childIssueIds: result.childIssueIds,
+      newlyCreatedChildIssueIds: result.newlyCreatedIssues.map((issue) => issue.id),
+    });
   });
 
   router.post("/issues/:id/monitor/check-now", async (req, res) => {
@@ -3658,7 +4179,23 @@ export function issueRoutes(
 
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
       if (!isAgentReturningIssueToCreator) {
-        await assertCanAssignTasks(req, existing.companyId);
+        await assertCanAssignTasks(req, existing.companyId, {
+          issueId: existing.id,
+          projectId: await resolveAssignmentProjectId({
+            companyId: existing.companyId,
+            projectId: updateFields.projectId === undefined
+              ? existing.projectId
+              : updateFields.projectId as string | null | undefined,
+            parentIssueId: (updateFields.parentId === undefined
+              ? existing.parentId
+              : updateFields.parentId) as string | null | undefined,
+          }),
+          parentIssueId: (updateFields.parentId === undefined
+            ? existing.parentId
+            : updateFields.parentId) as string | null | undefined,
+          assigneeAgentId: nextAssigneeAgentId,
+          assigneeUserId: nextAssigneeUserId,
+        });
       }
     }
 
@@ -4427,6 +4964,16 @@ export function issueRoutes(
       return;
     }
 
+    if (issue.assigneeAgentId !== req.body.agentId) {
+      await assertCanAssignTasks(req, issue.companyId, {
+        issueId: issue.id,
+        projectId: issue.projectId ?? null,
+        parentIssueId: issue.parentId ?? null,
+        assigneeAgentId: req.body.agentId,
+        assigneeUserId: null,
+      });
+    }
+
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
@@ -4776,10 +5323,12 @@ export function issueRoutes(
         });
       }
 
+      const acceptedPlanTarget = readAcceptedPlanConfirmationTarget(interaction.payload);
       const acceptedPlanConfirmation =
         interaction.kind === "request_confirmation" &&
         interaction.status === "accepted" &&
-        issue.workMode === "planning";
+        acceptedPlanTarget?.issueId === issue.id &&
+        acceptedPlanTarget.key === "plan";
       queueResolvedInteractionContinuationWakeup({
         heartbeat,
         issue: continuationWakeIssue,

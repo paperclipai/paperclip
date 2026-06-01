@@ -26,6 +26,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(async () => false),
+  decide: vi.fn(),
   hasPermission: vi.fn(async () => false),
 }));
 
@@ -47,6 +48,7 @@ function registerModuleMocks() {
     agentService: () => ({
       getById: vi.fn(async () => null),
     }),
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
@@ -160,6 +162,17 @@ describe("issue execution policy routes", () => {
       parentBlockerAdded: false,
     });
     mockAccessService.canUser.mockResolvedValue(false);
+    mockAccessService.decide.mockImplementation(async (input: { actor?: { type?: string; source?: string }; action?: string }) => {
+      const allowed = input.actor?.type === "board" && input.actor.source === "local_implicit"
+        ? true
+        : Boolean(await mockAccessService.canUser() || await mockAccessService.hasPermission());
+      return {
+        allowed,
+        action: input.action,
+        reason: allowed ? "allow_explicit_grant" : "deny_missing_grant",
+        explanation: allowed ? "Allowed by test grant." : `Missing permission: ${input.action ?? "action"}`,
+      };
+    });
     mockAccessService.hasPermission.mockResolvedValue(false);
   });
 

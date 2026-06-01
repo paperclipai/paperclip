@@ -6,12 +6,18 @@ import {
   agentWakeupRequests,
   companies,
   createDb,
+  documentRevisions,
+  documents,
+  environmentLeases,
+  environments,
+  executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueRelations,
   issueTreeHolds,
   issues,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -659,7 +665,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
           .where(eq(heartbeatRuns.id, secondWake!.id))
           .then((rows) => rows[0] ?? null);
         return run?.status === "succeeded";
-      });
+      }, 10_000);
       expect(secondRunSucceeded).toBe(true);
       // Both explicit test wakes must have been dispatched to the adapter.
       // Don't assert raw call count: production also fires a

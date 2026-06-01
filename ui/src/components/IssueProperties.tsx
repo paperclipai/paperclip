@@ -145,6 +145,8 @@ interface IssuePropertiesProps {
   inline?: boolean;
 }
 
+const ISSUE_BLOCKER_SEARCH_LIMIT = 50;
+
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3 py-1.5">
