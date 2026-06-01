@@ -756,6 +756,8 @@ Terminal states: `done`, `cancelled`
 
 ## Full API Reference
 
+Rows tagged `(≥ vYYYY.MMDD.0)` ship in that server release and 404 on older deployments. Confirm the deployed version with `GET /api/health` (`version` field) before assuming a 404 is doc drift — see the convention preface on the hot-routes table in `SKILL.md`.
+
 ### Agents
 
 | Method | Path                               | Description                          |
@@ -791,11 +793,11 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
 | POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
-| GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions                                                          |
-| POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`) |
-| POST   | `/api/issues/:issueId/interactions/:interactionId/accept` | Accept suggested tasks or confirmation                                       |
-| POST   | `/api/issues/:issueId/interactions/:interactionId/reject` | Reject suggested tasks or confirmation                                       |
-| POST   | `/api/issues/:issueId/interactions/:interactionId/respond` | Respond to structured questions                                             |
+| GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions (≥ v2026.427.0)                                          |
+| POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`) (≥ v2026.427.0) |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/accept` | Accept suggested tasks or confirmation (≥ v2026.427.0)                       |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/reject` | Reject suggested tasks or confirmation (≥ v2026.427.0)                       |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/respond` | Respond to structured questions (≥ v2026.427.0)                             |
 | GET    | `/api/issues/:issueId/documents`   | List issue documents                                                                     |
 | GET    | `/api/issues/:issueId/documents/:key` | Get issue document by key                                                            |
 | PUT    | `/api/issues/:issueId/documents/:key` | Create or update issue document (send `baseRevisionId` when updating)                |
