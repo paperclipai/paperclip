@@ -253,7 +253,7 @@ export interface WorkspaceRealizationRequest {
   heartbeatRunId: string;
   requestedMode: string | null;
   source: {
-    kind: "project_primary" | "task_session" | "agent_home";
+    kind: "project_primary" | "task_session" | "agent_config" | "agent_home";
     localPath: string;
     projectId: string | null;
     projectWorkspaceId: string | null;

@@ -116,6 +116,7 @@ import {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
+import { resolveAgentConfigCwdFallback } from "./agent-workspace-fallback.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
@@ -1080,7 +1081,7 @@ export interface ModelProfileApplication {
 
 export type ResolvedWorkspaceForRun = {
   cwd: string;
-  source: "project_primary" | "task_session" | "agent_home";
+  source: "project_primary" | "task_session" | "agent_config" | "agent_home";
   projectId: string | null;
   workspaceId: string | null;
   repoUrl: string | null;
@@ -1538,7 +1539,10 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
       warning: null as string | null,
     };
   }
-  if (resolvedWorkspace.source !== "project_primary") {
+  if (
+    resolvedWorkspace.source !== "project_primary" &&
+    resolvedWorkspace.source !== "agent_config"
+  ) {
     return {
       sessionParams: previousSessionParams,
       warning: null as string | null,
@@ -3836,6 +3840,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           warnings: [],
         };
       }
+    }
+
+    // Honour agent.adapterConfig.cwd before falling back to per-agent home dir.
+    // Without this, agents hired with an explicit cwd (typically a real git repo
+    // intended for git_worktree provisioning) silently land in
+    // ~/.paperclip/instances/.../agents/<id>/_default/ and fail with
+    // `fatal: not a git repository`. Upstream issue #4946.
+    const agentConfigFallback = await resolveAgentConfigCwdFallback({
+      adapterConfig: agent.adapterConfig,
+      dirExists: (path) =>
+        fs.stat(path).then((stats) => stats.isDirectory()).catch(() => false),
+    });
+    if (agentConfigFallback) {
+      const fallbackWarnings: string[] = [];
+      if (sessionCwd) {
+        fallbackWarnings.push(
+          `Saved session workspace "${sessionCwd}" is not available. Using agent.adapterConfig.cwd "${agentConfigFallback.cwd}" for this run.`,
+        );
+      } else if (resolvedProjectId) {
+        fallbackWarnings.push(
+          `No project workspace directory is currently available for this issue. Using agent.adapterConfig.cwd "${agentConfigFallback.cwd}" for this run.`,
+        );
+      }
+      return {
+        cwd: agentConfigFallback.cwd,
+        source: "agent_config" as const,
+        projectId: resolvedProjectId,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        workspaceHints,
+        warnings: fallbackWarnings,
+      };
     }
 
     const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
