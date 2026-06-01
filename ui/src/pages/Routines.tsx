@@ -31,6 +31,14 @@ import {
   type RoutineRunDialogSubmitData,
 } from "../components/RoutineRunVariablesDialog";
 import { RoutineVariablesEditor, RoutineVariablesHint } from "../components/RoutineVariablesEditor";
+import { RoutineFiltersPopover } from "../components/RoutineFiltersPopover";
+import {
+  applyRoutineFilters,
+  countActiveRoutineFilters,
+  defaultRoutineFilterState,
+  normalizeRoutineFilterState,
+  type RoutineFilterState,
+} from "../lib/routine-filters";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -74,6 +82,7 @@ type RoutineViewState = {
   sortDir: RoutineSortDir;
   groupBy: RoutineGroupBy;
   collapsedGroups: string[];
+  filters: RoutineFilterState;
 };
 
 type RoutineGroup = {
@@ -87,16 +96,24 @@ const defaultRoutineViewState: RoutineViewState = {
   sortDir: "desc",
   groupBy: "none",
   collapsedGroups: [],
+  filters: { ...defaultRoutineFilterState },
 };
 
 function getRoutineViewState(key: string): RoutineViewState {
   try {
     const raw = localStorage.getItem(key);
-    if (raw) return { ...defaultRoutineViewState, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        ...defaultRoutineViewState,
+        ...parsed,
+        filters: normalizeRoutineFilterState(parsed?.filters),
+      };
+    }
   } catch {
     // Ignore malformed local state and fall back to defaults.
   }
-  return { ...defaultRoutineViewState };
+  return { ...defaultRoutineViewState, filters: { ...defaultRoutineFilterState } };
 }
 
 function saveRoutineViewState(key: string, state: RoutineViewState) {
@@ -417,9 +434,14 @@ export function Routines() {
     [projects],
   );
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
+  const filteredRoutines = useMemo(
+    () => applyRoutineFilters(routines ?? [], routineViewState.filters),
+    [routines, routineViewState.filters],
+  );
+  const activeFilterCount = countActiveRoutineFilters(routineViewState.filters);
   const sortedRoutines = useMemo(
-    () => sortRoutines(routines ?? [], routineViewState.sortField, routineViewState.sortDir),
-    [routineViewState.sortDir, routineViewState.sortField, routines],
+    () => sortRoutines(filteredRoutines, routineViewState.sortField, routineViewState.sortDir),
+    [filteredRoutines, routineViewState.sortDir, routineViewState.sortField],
   );
   const routineGroups = useMemo(
     () => buildRoutineGroups(sortedRoutines, routineViewState.groupBy, projectById, agentById),
@@ -516,9 +538,19 @@ export function Routines() {
         <TabsContent value="routines" className="space-y-4">
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm text-muted-foreground">
-              {(routines ?? []).length} routine{(routines ?? []).length === 1 ? "" : "s"}
+              {filteredRoutines.length} routine{filteredRoutines.length === 1 ? "" : "s"}
+              {activeFilterCount > 0 && filteredRoutines.length !== (routines ?? []).length
+                ? ` of ${(routines ?? []).length}`
+                : ""}
             </p>
             <div className="flex items-center gap-1">
+              <RoutineFiltersPopover
+                state={routineViewState.filters}
+                onChange={(patch) =>
+                  updateRoutineView({ filters: { ...routineViewState.filters, ...patch } })
+                }
+                activeFilterCount={activeFilterCount}
+              />
               <Popover>
                 <PopoverTrigger asChild>
                   <Button variant="ghost" size="sm" className="text-xs" title="Sort">
@@ -879,6 +911,20 @@ export function Routines() {
                 icon={Repeat}
                 message="No routines yet. Use Create routine to define the first recurring workflow."
               />
+            </div>
+          ) : filteredRoutines.length === 0 ? (
+            <div className="py-12 text-center">
+              <EmptyState
+                icon={Repeat}
+                message="No routines match the current filters."
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => updateRoutineView({ filters: { ...defaultRoutineFilterState } })}
+              >
+                Clear filters
+              </Button>
             </div>
           ) : (
             <div className="rounded-lg border border-border">
