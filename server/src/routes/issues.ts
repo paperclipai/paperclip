@@ -3527,11 +3527,54 @@ export function issueRoutes(
       actor.actorType,
     );
     assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+
+    // SPC-6909 — fast-path idempotency. If this POST carries an
+    // idempotencyKey we've already accepted for this company, return the
+    // prior row without re-running activity log or wake fan-out.
+    const idempotencyKey = typeof req.body.idempotencyKey === "string"
+      ? req.body.idempotencyKey.trim()
+      : "";
+    if (idempotencyKey.length > 0) {
+      const existing = await svc.getByIdempotencyKey(companyId, idempotencyKey);
+      if (existing) {
+        const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(existing.id);
+        res.status(200).json({
+          ...existing,
+          relatedWork: referenceSummary,
+          referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+          idempotentReturn: true,
+        });
+        return;
+      }
+    }
+
+    // SPC-6909 — self-checkout. An agent calling under its own run id with
+    // assigneeAgentId=self+status=in_progress would otherwise trigger an
+    // implicit-checkout wake under a fresh run id and spawn a phantom
+    // heartbeat. Stamp checkoutRunId on insert and suppress the wake for
+    // this caller.
+    let selfCheckoutRunId: string | null = null;
+    let selfCheckoutAgentNameKey: string | null = null;
+    if (
+      actor.actorType === "agent"
+      && actor.agentId
+      && actor.runId
+      && req.body.assigneeAgentId === actor.agentId
+      && req.body.status === "in_progress"
+    ) {
+      selfCheckoutRunId = actor.runId;
+      const actorAgent = await agentsSvc.getById(actor.agentId);
+      const rawName = typeof actorAgent?.name === "string" ? actorAgent.name.trim().toLowerCase() : "";
+      selfCheckoutAgentNameKey = rawName.length > 0 ? rawName : null;
+    }
+
     const issue = await svc.create(companyId, {
       ...req.body,
       executionPolicy,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      selfCheckoutRunId,
+      selfCheckoutAgentNameKey,
     });
     await issueReferencesSvc.syncIssue(issue.id);
     const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
@@ -3554,6 +3597,7 @@ export function issueRoutes(
         identifier: issue.identifier,
         ...buildCreateIssueActivityStatusDetails(issue, res),
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
+        ...(selfCheckoutRunId ? { selfCheckoutRunId } : {}),
         ...summarizeIssueReferenceActivityDetails({
           addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
           removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
@@ -3585,15 +3629,17 @@ export function issueRoutes(
       });
     }
 
-    void queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "issue_assigned",
-      mutation: "create",
-      contextSource: "issue.create",
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
-    });
+    if (!selfCheckoutRunId) {
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "issue_assigned",
+        mutation: "create",
+        contextSource: "issue.create",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
 
     res.status(201).json({
       ...issue,
@@ -3628,6 +3674,35 @@ export function issueRoutes(
       actor.actorType,
     );
     assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+
+    // SPC-6909 — fast-path idempotency on POST /issues/:id/children.
+    const idempotencyKey = typeof req.body.idempotencyKey === "string"
+      ? req.body.idempotencyKey.trim()
+      : "";
+    if (idempotencyKey.length > 0) {
+      const existing = await svc.getByIdempotencyKey(parent.companyId, idempotencyKey);
+      if (existing) {
+        res.status(200).json({ ...existing, idempotentReturn: true });
+        return;
+      }
+    }
+
+    // SPC-6909 — self-checkout suppression for child create.
+    let childSelfCheckoutRunId: string | null = null;
+    let childSelfCheckoutAgentNameKey: string | null = null;
+    if (
+      actor.actorType === "agent"
+      && actor.agentId
+      && actor.runId
+      && req.body.assigneeAgentId === actor.agentId
+      && req.body.status === "in_progress"
+    ) {
+      childSelfCheckoutRunId = actor.runId;
+      const actorAgent = await agentsSvc.getById(actor.agentId);
+      const rawName = typeof actorAgent?.name === "string" ? actorAgent.name.trim().toLowerCase() : "";
+      childSelfCheckoutAgentNameKey = rawName.length > 0 ? rawName : null;
+    }
+
     const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
       ...req.body,
       executionPolicy,
@@ -3635,6 +3710,8 @@ export function issueRoutes(
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
       actorAgentId: actor.agentId,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      selfCheckoutRunId: childSelfCheckoutRunId,
+      selfCheckoutAgentNameKey: childSelfCheckoutAgentNameKey,
     });
 
     await logActivity(db, {
@@ -3654,6 +3731,7 @@ export function issueRoutes(
         inheritedExecutionWorkspaceFromIssueId: parent.id,
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
         ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
+        ...(childSelfCheckoutRunId ? { selfCheckoutRunId: childSelfCheckoutRunId } : {}),
       },
     });
 
@@ -3681,15 +3759,17 @@ export function issueRoutes(
       });
     }
 
-    void queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "issue_assigned",
-      mutation: "create",
-      contextSource: "issue.child_create",
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
-    });
+    if (!childSelfCheckoutRunId) {
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "issue_assigned",
+        mutation: "create",
+        contextSource: "issue.child_create",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
 
     res.status(201).json(issue);
   });

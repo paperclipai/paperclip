@@ -103,6 +103,15 @@ function assertTransition(from: string, to: string) {
   }
 }
 
+export const ISSUE_IDEMPOTENCY_KEY_CONSTRAINT = "issues_company_idempotency_key_uq";
+
+export function isIssueIdempotencyKeyConflict(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const err = error as { code?: string; constraint?: string; constraint_name?: string };
+  const constraint = err.constraint ?? err.constraint_name;
+  return err.code === "23505" && constraint === ISSUE_IDEMPOTENCY_KEY_CONSTRAINT;
+}
+
 function applyStatusSideEffects(
   status: string | undefined,
   patch: Partial<typeof issues.$inferInsert>,
@@ -326,6 +335,14 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
+  // When the calling agent's run wants to "self-check-out" the issue it's
+  // creating (status=in_progress + assigneeAgentId=self), the route layer
+  // passes the caller's run id and the assignee's lowercased name key here.
+  // create() will stamp checkoutRunId/executionRunId on insert so no
+  // issue_assigned wake spawns a phantom heartbeat for the same agent.
+  // See SPC-6909 / SPC-6801.
+  selfCheckoutRunId?: string | null;
+  selfCheckoutAgentNameKey?: string | null;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -1935,6 +1952,7 @@ const issueListSelect = {
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
   hiddenAt: issues.hiddenAt,
+  idempotencyKey: issues.idempotencyKey,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };
@@ -4611,6 +4629,17 @@ export function issueService(db: Db) {
       });
     },
 
+    getByIdempotencyKey: async (companyId: string, idempotencyKey: string) => {
+      const row = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.idempotencyKey, idempotencyKey)))
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      const [enriched] = await withIssueLabels(db, [row]);
+      return enriched;
+    },
+
     create: async (
       companyId: string,
       data: IssueCreateInput,
@@ -4619,6 +4648,8 @@ export function issueService(db: Db) {
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
+        selfCheckoutRunId,
+        selfCheckoutAgentNameKey,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -4639,7 +4670,31 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+      // SPC-6909 — collapse repeat POSTs that carry the same idempotencyKey
+      // to a single winner. The pre-check returns the prior row without
+      // touching activity log or wake; the post-insert catch handles the
+      // narrow race window between pre-check and insert.
+      const idempotencyKey =
+        typeof issueData.idempotencyKey === "string" && issueData.idempotencyKey.trim().length > 0
+          ? issueData.idempotencyKey.trim()
+          : null;
+      if (idempotencyKey) {
+        const existing = await db
+          .select()
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.idempotencyKey, idempotencyKey)))
+          .then((rows) => rows[0] ?? null);
+        if (existing) {
+          const [enriched] = await withIssueLabels(db, [existing]);
+          return enriched;
+        }
+      }
+      const selfCheckoutApplies =
+        Boolean(selfCheckoutRunId)
+        && typeof data.assigneeAgentId === "string"
+        && data.status === "in_progress";
+      try {
+      return await db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -4803,6 +4858,7 @@ export function issueService(db: Db) {
           companyId,
           issueNumber,
           identifier,
+          ...(idempotencyKey ? { idempotencyKey } : {}),
         } as typeof issues.$inferInsert;
         if (values.status === "in_progress" && !values.startedAt) {
           values.startedAt = new Date();
@@ -4822,6 +4878,20 @@ export function issueService(db: Db) {
             assigneeUserId: values.assigneeUserId ?? null,
           }),
         );
+        // SPC-6909 — self-checkout: when the calling agent under its own run
+        // POSTs an issue with status=in_progress + assigneeAgentId=self, stamp
+        // checkoutRunId/executionRunId on insert so the route layer can skip
+        // the issue_assigned wake. Without this, the platform spawns a
+        // phantom heartbeat under a fresh run id concurrently with the
+        // calling run.
+        if (selfCheckoutApplies && selfCheckoutRunId) {
+          values.checkoutRunId = selfCheckoutRunId;
+          values.executionRunId = selfCheckoutRunId;
+          values.executionLockedAt = new Date();
+          if (typeof selfCheckoutAgentNameKey === "string" && selfCheckoutAgentNameKey.length > 0) {
+            values.executionAgentNameKey = selfCheckoutAgentNameKey;
+          }
+        }
 
         const [issue] = await tx.insert(issues).values(values).returning();
         if (inputLabelIds) {
@@ -4842,6 +4912,20 @@ export function issueService(db: Db) {
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
       });
+      } catch (error) {
+        if (idempotencyKey && isIssueIdempotencyKeyConflict(error)) {
+          const existing = await db
+            .select()
+            .from(issues)
+            .where(and(eq(issues.companyId, companyId), eq(issues.idempotencyKey, idempotencyKey)))
+            .then((rows) => rows[0] ?? null);
+          if (existing) {
+            const [enriched] = await withIssueLabels(db, [existing]);
+            return enriched;
+          }
+        }
+        throw error;
+      }
     },
 
     update: async (
