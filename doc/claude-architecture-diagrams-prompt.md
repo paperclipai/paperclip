@@ -274,6 +274,44 @@ Show the export/import flow:
 
 Use `flowchart LR`.
 
+### 9. BugSquid Agent Organization
+
+Show the BugSquid company-specific agent hierarchy as an org chart. This is a real-world example of how a Paperclip company structures its agent workforce:
+
+- **CEO** — Top-level decision maker, strategy, budget approval, delegates across all departments
+- **CTO** (Chief Technology Officer) — Owns technical roadmap, architecture, engineering quality, delegates all coding/debugging/testing to Coders
+- **Coder** — Implements code, fixes bugs, writes features/tests
+- **QA** — Browser validation, user-facing verification, test execution
+- **CodeReviewer** — Reviews code changes and PRs
+- **SecurityEngineer** — Security-sensitive work, vulnerability assessment, security reviews
+- **CMO** (Chief Marketing Officer) — Owns marketing, brand, communications, social media strategy
+- **Social expert** — Executes social media and content marketing
+- **UXDesigner** — User experience design, UI/UX improvements
+- **Support** — Customer support and issue triage
+- **Accountant** — Finance tracking, budget monitoring, expense reports
+- **DPO** (Data Protection Officer) — Data protection compliance, privacy reviews, GDPR/regulatory guidance
+
+The reporting structure is:
+
+```
+CEO
+├── CTO (Chief Technology Officer)
+│   ├── Coder
+│   ├── QA
+│   ├── CodeReviewer
+│   └── SecurityEngineer
+├── CMO (Chief Marketing Officer)
+│   └── Social expert
+├── UXDesigner
+├── Support
+├── Accountant
+└── DPO (Data Protection Officer)
+```
+
+Delegation flows: CEO delegates to direct reports (CTO, CMO, UXDesigner, Support, Accountant, DPO). CTO delegates technical work to Coder, QA, CodeReviewer, SecurityEngineer. CMO delegates marketing execution to Social expert. All communication via Paperclip issues with first-class blocking dependencies (`blockedByIssueIds`).
+
+Use `graph TD`. Use rounded rectangles (`[ ]`) for management roles (CEO, CTO, CMO) and standard rectangles (with different fill colors or shapes) for individual contributor roles. Annotate edges with the type of work delegated (e.g., "technical tasks", "marketing tasks", "design requests", "support inquiries"). Include a legend mapping node shapes/colors to role types.
+
 ---
 
 ## Output Format Requirements
@@ -291,4 +329,4 @@ Use `flowchart LR`.
 
 ## Example Prompt to Use
 
-> "Using the Paperclip architecture described in this document, generate all 8 Mermaid.js architecture diagrams covering system context, deployment, heartbeat execution, task lifecycle, plugin architecture, API request flow, cost/budget flow, and company portability. Output each as a standalone Mermaid code block with a brief title and description."
+> "Using the Paperclip architecture described in this document, generate all 9 Mermaid.js architecture diagrams covering system context, deployment, heartbeat execution, task lifecycle, plugin architecture, API request flow, cost/budget flow, company portability, and BugSquid agent organization. Output each as a standalone Mermaid code block with a brief title and description."
