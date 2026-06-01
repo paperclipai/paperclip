@@ -143,4 +143,17 @@ export const agnbPagesApi = {
     agnb
       .get<{ ok: boolean; error?: string; invoices: InvoiceRow[] }>("/invoices")
       .then((r) => unwrap(r).invoices),
+  createInvoice: (body: {
+    customer_name: string;
+    customer_email?: string;
+    customer_phone?: string;
+    customer_gstin?: string;
+    customer_state?: string;
+    subtotal_inr: number;
+    plan_tier?: string;
+    description?: string;
+  }) =>
+    agnb
+      .post<{ ok: boolean; error?: string; row?: InvoiceRow; rzp?: { short_url?: string } }>("/invoices/create", body)
+      .then((r) => unwrap(r)),
 };

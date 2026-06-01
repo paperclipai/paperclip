@@ -52,6 +52,8 @@ import { AdapterManager } from "./pages/AdapterManager";
 import { PluginPage } from "./pages/PluginPage";
 import { OrgChart } from "./pages/OrgChart";
 import { Assets } from "./pages/Assets";
+import { AssetDetail } from "./pages/AssetDetail";
+import { NewAsset } from "./pages/NewAsset";
 import { Pipeline } from "./pages/Pipeline";
 import { Forecast } from "./pages/Forecast";
 import { Demos } from "./pages/Demos";
@@ -98,6 +100,8 @@ function boardRoutes() {
       <Route path="plugins/:pluginId" element={<PluginPage />} />
       <Route path="org" element={<OrgChart />} />
       <Route path="assets" element={<Assets />} />
+      <Route path="assets/new" element={<NewAsset />} />
+      <Route path="assets/:assetId" element={<AssetDetail />} />
       <Route path="pipeline" element={<Pipeline />} />
       <Route path="forecast" element={<Forecast />} />
       <Route path="demos" element={<Demos />} />
@@ -330,6 +334,8 @@ export function App() {
           <Route path="u/:userSlug" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
           <Route path="assets" element={<UnprefixedBoardRedirect />} />
+          <Route path="assets/new" element={<UnprefixedBoardRedirect />} />
+          <Route path="assets/:assetId" element={<UnprefixedBoardRedirect />} />
           <Route path="pipeline" element={<UnprefixedBoardRedirect />} />
           <Route path="forecast" element={<UnprefixedBoardRedirect />} />
           <Route path="demos" element={<UnprefixedBoardRedirect />} />

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Package, Search, ExternalLink } from "lucide-react";
+import { Package, Search, Plus } from "lucide-react";
+import { Link } from "@/lib/router";
 import { marketingApi, type AssetRow, type AssetStage } from "../api/marketing";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -22,10 +23,6 @@ const STAGES: Array<{ key: AssetStage | "all"; label: string }> = [
   { key: "onboard", label: "Onboard" },
   { key: "retention", label: "Retention" },
 ];
-
-const AGNB_BASE =
-  (import.meta.env.VITE_AGNB_BASE_URL as string | undefined) ??
-  "https://www.allgasnobrakes.online";
 
 function statusTone(status: AssetRow["status"]): "default" | "secondary" | "outline" {
   if (status === "active") return "default";
@@ -73,13 +70,9 @@ export function Assets() {
           </p>
         </div>
         <Button asChild variant="outline" size="sm">
-          <a
-            href={`${AGNB_BASE}/all-gas-no-brakes/marketing/new`}
-            target="_blank"
-            rel="noreferrer"
-          >
-            New asset <ExternalLink className="ml-1.5 h-3.5 w-3.5" />
-          </a>
+          <Link to="/assets/new">
+            <Plus className="mr-1.5 h-3.5 w-3.5" /> New asset
+          </Link>
         </Button>
       </div>
 
@@ -140,11 +133,9 @@ export function Assets() {
       ) : (
         <div className="flex flex-col gap-2">
           {visible.map((a) => (
-            <a
+            <Link
               key={a.id}
-              href={`${AGNB_BASE}/all-gas-no-brakes/marketing/${a.id}`}
-              target="_blank"
-              rel="noreferrer"
+              to={`/assets/${a.id}`}
               className="block"
             >
               <Card className="transition-colors hover:bg-accent/40">
@@ -183,7 +174,7 @@ export function Assets() {
                   </div>
                 </CardContent>
               </Card>
-            </a>
+            </Link>
           ))}
         </div>
       )}
