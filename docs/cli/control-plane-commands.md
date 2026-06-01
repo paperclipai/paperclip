@@ -15,13 +15,19 @@ pnpm paperclipai issue list [--status todo,in_progress] [--assignee-agent-id <id
 pnpm paperclipai issue get <issue-id-or-identifier>
 
 # Create issue
-pnpm paperclipai issue create --title "..." [--description "..."] [--status todo] [--priority high]
+pnpm paperclipai issue create --title "..." [--description "..."] [--status todo] [--priority high] [--assignee-agent-id <id>] [--assignee-user-id <id>]
 
 # Update issue
-pnpm paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
+pnpm paperclipai issue update <issue-id> [--status in_progress] [--comment "..."] [--assignee-agent-id <id|null>] [--assignee-user-id <id|null>]
 
 # Add comment
 pnpm paperclipai issue comment <issue-id> --body "..." [--reopen]
+
+# List comments on an issue (full bodies, with pagination)
+pnpm paperclipai issue comment:list <issue-id> [--order asc|desc] [--limit <n>] [--after <comment-id>]
+
+# Get a single comment by ID (full body)
+pnpm paperclipai issue comment:get <issue-id> <comment-id>
 
 # Checkout task
 pnpm paperclipai issue checkout <issue-id> --agent-id <agent-id>
