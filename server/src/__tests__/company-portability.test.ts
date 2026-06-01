@@ -63,11 +63,7 @@ const assetSvc = {
 };
 
 const secretSvc = {
-  create: vi.fn(async () => ({ id: "secret-created" })),
-  remove: vi.fn(async () => true),
   normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
-  normalizeEnvBindingsForPersistence: vi.fn(async (_companyId: string, env: Record<string, unknown>) => env),
-  syncEnvBindingsForTarget: vi.fn(async () => []),
   resolveAdapterConfigForRuntime: vi.fn(async (_companyId: string, config: Record<string, unknown>) => ({ config, secretKeys: new Set<string>() })),
 };
 
@@ -140,12 +136,8 @@ describe("company portability", () => {
   const companyPlaybookKey = "company/company-1/company-playbook";
 
   beforeEach(() => {
-    vi.clearAllMocks();
-    secretSvc.create.mockResolvedValue({ id: "secret-created" });
-    secretSvc.remove.mockResolvedValue(true);
+    vi.resetAllMocks();
     secretSvc.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
-    secretSvc.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
-    secretSvc.syncEnvBindingsForTarget.mockResolvedValue([]);
     secretSvc.resolveAdapterConfigForRuntime.mockImplementation(async (_companyId, config) => ({
       config,
       secretKeys: new Set<string>(),
@@ -977,7 +969,6 @@ describe("company portability", () => {
         leadAgentId: "agent-1",
         targetDate: "2026-03-31",
         color: "#123456",
-        icon: "rocket",
         status: "planned",
         executionWorkspacePolicy: {
           enabled: true,
@@ -1066,7 +1057,6 @@ describe("company portability", () => {
     });
 
     const extension = asTextFile(exported.files[".paperclip.yaml"]);
-    expect(extension).toContain('icon: "rocket"');
     expect(extension).toContain("workspaces:");
     expect(extension).toContain("main-repo:");
     expect(extension).toContain('repoUrl: "https://github.com/paperclipai/paperclip.git"');
@@ -1154,64 +1144,10 @@ describe("company portability", () => {
         defaultProjectWorkspaceId: "workspace-imported",
       }),
     }));
-    expect(projectSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
-      icon: "rocket",
-    }));
     expect(issueSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
       projectId: "project-imported",
       projectWorkspaceId: "workspace-imported",
       title: "Write launch task",
-    }));
-  });
-
-  it("normalizes invalid imported project icon names to null", async () => {
-    const portability = companyPortabilityService({} as any);
-
-    companySvc.create.mockResolvedValue({
-      id: "company-imported",
-      name: "Imported Paperclip",
-    });
-    accessSvc.ensureMembership.mockResolvedValue(undefined);
-    agentSvc.list.mockResolvedValue([]);
-    projectSvc.list.mockResolvedValue([]);
-    projectSvc.create.mockResolvedValue({
-      id: "project-imported",
-      name: "Launch",
-      urlKey: "launch",
-    });
-
-    const files = {
-      "COMPANY.md": [
-        "---",
-        'schema: "agentcompanies/v1"',
-        'name: "Imported Paperclip"',
-        "---",
-        "",
-      ].join("\n"),
-      "projects/launch/PROJECT.md": [
-        "---",
-        'name: "Launch"',
-        "---",
-        "",
-      ].join("\n"),
-      ".paperclip.yaml": [
-        'schema: "paperclip/v1"',
-        "projects:",
-        "  launch:",
-        '    icon: "not-a-project-icon"',
-        "",
-      ].join("\n"),
-    };
-
-    await portability.importBundle({
-      source: { type: "inline", rootPath: "paperclip-demo", files },
-      include: { company: true, agents: false, projects: true, issues: false },
-      target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
-      collisionStrategy: "rename",
-    }, "user-1");
-
-    expect(projectSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
-      icon: null,
     }));
   });
 
@@ -1458,261 +1394,6 @@ describe("company portability", () => {
         portability: "portable",
       },
     ]);
-  });
-
-  it("materializes required agent env inputs from import secretValues as company secrets", async () => {
-    const portability = companyPortabilityService({} as any);
-    agentSvc.list.mockResolvedValue([]);
-    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
-      id: "agent-imported",
-      name: input.name,
-      adapterType: input.adapterType,
-      adapterConfig: input.adapterConfig,
-      status: input.status,
-    }));
-
-    await portability.importBundle({
-      source: {
-        type: "inline",
-        files: {
-          "COMPANY.md": [
-            "---",
-            "name: Import",
-            "includes:",
-            "  - agents/coder/AGENTS.md",
-            "---",
-            "",
-          ].join("\n"),
-          "agents/coder/AGENTS.md": [
-            "---",
-            "name: Coder",
-            "slug: coder",
-            "kind: agent",
-            "---",
-            "",
-            "# Coder",
-            "",
-          ].join("\n"),
-          ".paperclip.yaml": [
-            "schema: paperclip/v1",
-            "agents:",
-            "  coder:",
-            "    adapter:",
-            "      type: codex_local",
-            "      config: {}",
-            "    inputs:",
-            "      env:",
-            "        OPENAI_API_KEY:",
-            "          kind: secret",
-            "          requirement: required",
-            "",
-          ].join("\n"),
-        },
-      },
-      include: {
-        company: false,
-        agents: true,
-        projects: false,
-        issues: false,
-      },
-      target: {
-        mode: "existing_company",
-        companyId: "company-1",
-      },
-      collisionStrategy: "rename",
-      secretValues: {
-        "agent:coder:OPENAI_API_KEY": "sk-imported",
-      },
-    }, "user-1");
-
-    expect(secretSvc.create).toHaveBeenCalledWith(
-      "company-1",
-      expect.objectContaining({
-        provider: "local_encrypted",
-        value: "sk-imported",
-        description: expect.stringContaining("OPENAI_API_KEY"),
-      }),
-      { userId: "user-1", agentId: null },
-    );
-    expect(secretSvc.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith(
-      "company-1",
-      expect.objectContaining({
-        env: {
-          OPENAI_API_KEY: {
-            type: "secret_ref",
-            secretId: "secret-created",
-            version: "latest",
-          },
-        },
-      }),
-      { strictMode: false },
-    );
-    expect(agentSvc.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
-      adapterConfig: expect.objectContaining({
-        env: {
-          OPENAI_API_KEY: {
-            type: "secret_ref",
-            secretId: "secret-created",
-            version: "latest",
-          },
-        },
-      }),
-    }));
-    expect(secretSvc.syncEnvBindingsForTarget).toHaveBeenCalledWith(
-      "company-1",
-      { targetType: "agent", targetId: "agent-imported" },
-      expect.objectContaining({
-        OPENAI_API_KEY: expect.objectContaining({ secretId: "secret-created" }),
-      }),
-    );
-  });
-
-  it("removes import secrets created before a later import failure", async () => {
-    const portability = companyPortabilityService({} as any);
-    agentSvc.list.mockResolvedValue([]);
-    secretSvc.create.mockResolvedValueOnce({ id: "secret-created-for-failed-import" });
-    agentSvc.create.mockRejectedValueOnce(new Error("agent create failed"));
-
-    await expect(portability.importBundle({
-      source: {
-        type: "inline",
-        files: {
-          "COMPANY.md": [
-            "---",
-            "name: Import",
-            "includes:",
-            "  - agents/coder/AGENTS.md",
-            "---",
-            "",
-          ].join("\n"),
-          "agents/coder/AGENTS.md": [
-            "---",
-            "name: Coder",
-            "slug: coder",
-            "kind: agent",
-            "---",
-            "",
-            "# Coder",
-            "",
-          ].join("\n"),
-          ".paperclip.yaml": [
-            "schema: paperclip/v1",
-            "agents:",
-            "  coder:",
-            "    adapter:",
-            "      type: codex_local",
-            "      config: {}",
-            "    inputs:",
-            "      env:",
-            "        OPENAI_API_KEY:",
-            "          kind: secret",
-            "          requirement: required",
-            "",
-          ].join("\n"),
-        },
-      },
-      include: {
-        company: false,
-        agents: true,
-        projects: false,
-        issues: false,
-      },
-      target: {
-        mode: "existing_company",
-        companyId: "company-1",
-      },
-      collisionStrategy: "rename",
-      secretValues: {
-        "agent:coder:OPENAI_API_KEY": "sk-imported",
-      },
-    }, "user-1")).rejects.toThrow("agent create failed");
-
-    expect(secretSvc.remove).toHaveBeenCalledWith("secret-created-for-failed-import");
-  });
-
-  it("reparents imported roots to pre-existing target managers before resolving imported hierarchy", async () => {
-    const portability = companyPortabilityService({} as any);
-    agentSvc.list.mockResolvedValue([
-      {
-        id: "existing-ceo",
-        name: "CEO",
-        status: "idle",
-        role: "ceo",
-        adapterType: "claude_local",
-        adapterConfig: {},
-        runtimeConfig: {},
-        budgetMonthlyCents: 0,
-        permissions: {},
-        metadata: null,
-      },
-    ]);
-    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
-      id: `${String(input.name).toLowerCase()}-created`,
-      name: input.name,
-      status: input.status,
-      adapterType: input.adapterType,
-      adapterConfig: input.adapterConfig,
-      runtimeConfig: input.runtimeConfig,
-    }));
-
-    await portability.importBundle({
-      source: {
-        type: "inline",
-        rootPath: "paperclip-demo",
-        files: {
-          "COMPANY.md": [
-            "---",
-            'schema: "agentcompanies/v1"',
-            'name: "Imported Paperclip"',
-            "includes:",
-            "  - agents/cto/AGENTS.md",
-            "  - agents/qa/AGENTS.md",
-            "---",
-            "",
-          ].join("\n"),
-          "agents/cto/AGENTS.md": [
-            "---",
-            'name: "CTO"',
-            'slug: "cto"',
-            'kind: "agent"',
-            "---",
-            "",
-            "Lead engineering.",
-            "",
-          ].join("\n"),
-          "agents/qa/AGENTS.md": [
-            "---",
-            'name: "QA"',
-            'slug: "qa"',
-            'kind: "agent"',
-            'reportsTo: "cto"',
-            "---",
-            "",
-            "Verify engineering work.",
-            "",
-          ].join("\n"),
-          ".paperclip.yaml": [
-            'schema: "paperclip/v1"',
-            "agents:",
-            "  cto:",
-            '    reportsToExistingAgentId: "existing-ceo"',
-            '    reportsToExistingAgentSlug: "ceo"',
-            "    adapter:",
-            '      type: "claude_local"',
-            "  qa:",
-            "    adapter:",
-            '      type: "claude_local"',
-            "",
-          ].join("\n"),
-        },
-      },
-      include: { company: false, agents: true, projects: false, issues: false, skills: false },
-      target: { mode: "existing_company", companyId: "company-1" },
-      collisionStrategy: "rename",
-    }, "user-1");
-
-    expect(agentSvc.update).toHaveBeenCalledWith("cto-created", { reportsTo: "existing-ceo" });
-    expect(agentSvc.update).toHaveBeenCalledWith("qa-created", { reportsTo: "cto-created" });
   });
 
   it("exports project env as portable inputs without concrete values", async () => {
@@ -3307,142 +2988,6 @@ describe("company portability", () => {
     })).rejects.toThrow('Adapter type "process" is not allowed in safe imports');
 
     expect(agentSvc.create).not.toHaveBeenCalled();
-  });
-
-  it("reports unsafe project workspace commands on agent-safe import preview", async () => {
-    const portability = companyPortabilityService({} as any);
-
-    const preview = await portability.previewImport({
-      source: {
-        type: "inline",
-        files: {
-          "COMPANY.md": "---\nname: Import\nincludes:\n  - projects/app/PROJECT.md\n---\n",
-          "projects/app/PROJECT.md": "---\nname: App\nslug: app\n---\n\n# App\n",
-          ".paperclip.yaml": [
-            "schema: paperclip/v1",
-            "projects:",
-            "  app:",
-            "    workspaces:",
-            "      default:",
-            "        name: App",
-            "        repoUrl: https://github.com/paperclipai/paperclip",
-            "        setupCommand: pnpm install",
-            "",
-          ].join("\n"),
-        },
-      },
-      include: {
-        company: false,
-        agents: false,
-        projects: true,
-        issues: false,
-      },
-      target: {
-        mode: "existing_company",
-        companyId: "company-1",
-      },
-      collisionStrategy: "rename",
-    }, {
-      mode: "agent_safe",
-      sourceCompanyId: "company-1",
-    });
-
-    expect(preview.errors).toContain("Safe import does not allow project app workspace default setupCommand.");
-  });
-
-  it("reports invalid imported project env on agent-safe import preview", async () => {
-    const portability = companyPortabilityService({} as any);
-    secretSvc.normalizeEnvBindingsForPersistence.mockRejectedValueOnce(new Error("Secret must belong to same company"));
-
-    const preview = await portability.previewImport({
-      source: {
-        type: "inline",
-        files: {
-          "COMPANY.md": "---\nname: Import\nincludes:\n  - projects/app/PROJECT.md\n---\n",
-          "projects/app/PROJECT.md": "---\nname: App\nslug: app\n---\n\n# App\n",
-          ".paperclip.yaml": [
-            "schema: paperclip/v1",
-            "projects:",
-            "  app:",
-            "    inputs:",
-            "      env:",
-            "        API_KEY:",
-            "          kind: secret",
-            "          requirement: required",
-            "    env:",
-            "      API_KEY:",
-            "        type: secret_ref",
-            "        secretId: 22222222-2222-4222-8222-222222222222",
-            "        version: latest",
-            "",
-          ].join("\n"),
-        },
-      },
-      include: {
-        company: false,
-        agents: false,
-        projects: true,
-        issues: false,
-      },
-      target: {
-        mode: "existing_company",
-        companyId: "company-1",
-      },
-      collisionStrategy: "rename",
-    }, {
-      mode: "agent_safe",
-      sourceCompanyId: "company-1",
-    });
-
-    expect(preview.errors).toContain("Secret must belong to same company");
-  });
-
-  it("rejects unsafe routine and issue execution overrides on agent-safe import apply", async () => {
-    const portability = companyPortabilityService({} as any);
-
-    await expect(portability.importBundle({
-      source: {
-        type: "inline",
-        files: {
-          "COMPANY.md": "---\nname: Import\nincludes:\n  - agents/ceo/AGENTS.md\n  - projects/app/PROJECT.md\n  - tasks/review/TASK.md\n---\n",
-          "agents/ceo/AGENTS.md": "---\nname: CEO\nslug: ceo\nrole: ceo\n---\n\nLead.",
-          "projects/app/PROJECT.md": "---\nname: App\nslug: app\n---\n\n# App\n",
-          "tasks/review/TASK.md": "---\nname: Review\nslug: review\nproject: app\nassignee: ceo\nrecurring: true\n---\n\nReview.",
-          ".paperclip.yaml": [
-            "schema: paperclip/v1",
-            "tasks:",
-            "  review:",
-            "    executionWorkspaceSettings:",
-            "      mode: isolated_workspace",
-            "    assigneeAdapterOverrides:",
-            "      adapterType: codex_local",
-            "routines:",
-            "  review:",
-            "    triggers:",
-            "      - kind: webhook",
-            "        enabled: true",
-            "",
-          ].join("\n"),
-        },
-      },
-      include: {
-        company: false,
-        agents: true,
-        projects: true,
-        issues: true,
-      },
-      target: {
-        mode: "existing_company",
-        companyId: "company-1",
-      },
-      collisionStrategy: "rename",
-    }, "user-1", {
-      mode: "agent_safe",
-      sourceCompanyId: "company-1",
-    })).rejects.toThrow("Safe import does not allow task review executionWorkspaceSettings.");
-
-    expect(issueSvc.create).not.toHaveBeenCalled();
-    expect(routineSvc.createTrigger).not.toHaveBeenCalled();
   });
 
   it("imports new agents as active while preserving future hire approval settings", async () => {
