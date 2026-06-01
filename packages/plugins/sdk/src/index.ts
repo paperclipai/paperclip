@@ -170,6 +170,8 @@ export type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  ResolveRunContextParams,
+  ResolveRunContextResult,
   PluginModalBoundsRequest,
   PluginRenderCloseEvent,
   PluginLauncherRenderContextSnapshot,
