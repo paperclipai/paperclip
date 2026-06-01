@@ -499,6 +499,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
         sessionParams: { sessionId: "fresh-session" },
         sessionDisplayId: "fresh-session",
         summary: "Suppressed cross-issue accepted-plan continuation.",
+        resultJson: { summary: "Suppressed cross-issue accepted-plan continuation." },
         provider: "test",
         model: "test-model",
       };
@@ -655,6 +656,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
         sessionParams: { sessionId: "fresh-session" },
         sessionDisplayId: "fresh-session",
         summary: "Suppressed cross-issue accepted-plan continuation for a standard-work wake.",
+        resultJson: { summary: "Suppressed cross-issue accepted-plan continuation for a standard-work wake." },
         provider: "test",
         model: "test-model",
       };
@@ -796,6 +798,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
         sessionParams: { sessionId: "accepted-plan-retry-session" },
         sessionDisplayId: "accepted-plan-retry-session",
         summary: "Resumed accepted-plan continuation for the same issue.",
+        resultJson: { summary: "Resumed accepted-plan continuation for the same issue." },
         provider: "test",
         model: "test-model",
       };
