@@ -18,6 +18,7 @@ describe("resolveCommandContext", () => {
     delete process.env.PAPERCLIP_API_URL;
     delete process.env.PAPERCLIP_API_KEY;
     delete process.env.PAPERCLIP_COMPANY_ID;
+    delete process.env.PAPERCLIP_RUN_ID;
   });
 
   afterEach(() => {
@@ -78,6 +79,27 @@ describe("resolveCommandContext", () => {
     expect(resolved.api.apiBase).toBe("http://override:3200");
     expect(resolved.companyId).toBe("company-override");
     expect(resolved.api.apiKey).toBe("direct-token");
+  });
+
+  it("passes the heartbeat run id from env to the API client", () => {
+    const contextPath = createTempPath("context.json");
+    writeContext(
+      {
+        version: 1,
+        currentProfile: "default",
+        profiles: {
+          default: {
+            apiBase: "http://profile:3100",
+          },
+        },
+      },
+      contextPath,
+    );
+    process.env.PAPERCLIP_RUN_ID = "run-from-env";
+
+    const resolved = resolveCommandContext({ context: contextPath });
+
+    expect(resolved.api.runId).toBe("run-from-env");
   });
 
   it("throws when company is required but unresolved", () => {

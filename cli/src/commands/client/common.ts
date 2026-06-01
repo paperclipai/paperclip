@@ -66,6 +66,7 @@ export function resolveCommandContext(
     options.companyId?.trim() ||
     process.env.PAPERCLIP_COMPANY_ID?.trim() ||
     profile.companyId;
+  const runId = process.env.PAPERCLIP_RUN_ID?.trim() || undefined;
 
   if (opts?.requireCompany && !companyId) {
     throw new Error(
@@ -76,6 +77,7 @@ export function resolveCommandContext(
   const api = new PaperclipApiClient({
     apiBase,
     apiKey,
+    runId,
     recoverAuth: explicitApiKey || !canAttemptInteractiveBoardAuth()
       ? undefined
       : async ({ error }) => {

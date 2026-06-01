@@ -759,6 +759,31 @@ async function getProjectDefaultGoalId(
   return row?.goalId ?? null;
 }
 
+async function getDefaultProjectWorkspaceId(
+  db: DbReader,
+  companyId: string,
+  projectId: string | null | undefined,
+) {
+  if (!projectId) return null;
+  const project = await db
+    .select({
+      executionWorkspacePolicy: projects.executionWorkspacePolicy,
+    })
+    .from(projects)
+    .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  const projectPolicy = parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy);
+  if (projectPolicy?.defaultProjectWorkspaceId) {
+    return projectPolicy.defaultProjectWorkspaceId;
+  }
+  return db
+    .select({ id: projectWorkspaces.id })
+    .from(projectWorkspaces)
+    .where(and(eq(projectWorkspaces.projectId, projectId), eq(projectWorkspaces.companyId, companyId)))
+    .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
+    .then((rows) => rows[0]?.id ?? null);
+}
+
 async function getWorkspaceInheritanceIssue(
   db: DbReader,
   companyId: string,
@@ -4743,23 +4768,7 @@ export function issueService(db: Db) {
           }
         }
         if (!projectWorkspaceId && issueData.projectId) {
-          const project = await tx
-            .select({
-              executionWorkspacePolicy: projects.executionWorkspacePolicy,
-            })
-            .from(projects)
-            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
-            .then((rows) => rows[0] ?? null);
-          const projectPolicy = parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy);
-          projectWorkspaceId = projectPolicy?.defaultProjectWorkspaceId ?? null;
-          if (!projectWorkspaceId) {
-            projectWorkspaceId = await tx
-              .select({ id: projectWorkspaces.id })
-              .from(projectWorkspaces)
-              .where(and(eq(projectWorkspaces.projectId, issueData.projectId), eq(projectWorkspaces.companyId, companyId)))
-              .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
-              .then((rows) => rows[0]?.id ?? null);
-          }
+          projectWorkspaceId = await getDefaultProjectWorkspaceId(tx, companyId, issueData.projectId);
         }
         if (projectWorkspaceId) {
           await assertValidProjectWorkspace(companyId, issueData.projectId, projectWorkspaceId, tx);
@@ -4915,8 +4924,23 @@ export function issueService(db: Db) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
       }
       const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
-      const nextProjectWorkspaceId =
+      let nextProjectWorkspaceId =
         issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
+      if (
+        issueData.projectId !== undefined &&
+        issueData.projectId !== null &&
+        issueData.projectWorkspaceId === undefined &&
+        (existing.projectId !== issueData.projectId || nextProjectWorkspaceId == null)
+      ) {
+        nextProjectWorkspaceId = await getDefaultProjectWorkspaceId(
+          dbOrTx,
+          existing.companyId,
+          issueData.projectId,
+        );
+        if (nextProjectWorkspaceId) {
+          patch.projectWorkspaceId = nextProjectWorkspaceId;
+        }
+      }
       const nextExecutionWorkspaceId =
         issueData.executionWorkspaceId !== undefined ? issueData.executionWorkspaceId : existing.executionWorkspaceId;
       const nextExecutionWorkspacePreference =
