@@ -242,5 +242,6 @@ export const queryKeys = {
     liQueue: ["agnb", "li-queue"] as const,
     liHooks: ["agnb", "li-hooks"] as const,
     liSeries: ["agnb", "li-series"] as const,
+    youtube: ["agnb", "youtube"] as const,
   },
 };

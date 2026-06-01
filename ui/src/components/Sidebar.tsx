@@ -19,6 +19,7 @@ import {
   AtSign,
   PenLine,
   Linkedin as LinkedinIcon,
+  Youtube as YoutubeIcon,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -108,6 +109,7 @@ export function Sidebar() {
           <SidebarNavItem to="/mentions" label="Mentions" icon={AtSign} />
           <SidebarNavItem to="/blog-automation" label="Blog" icon={PenLine} />
           <SidebarNavItem to="/linkedin-queue" label="LinkedIn" icon={LinkedinIcon} />
+          <SidebarNavItem to="/youtube" label="YouTube" icon={YoutubeIcon} />
         </SidebarSection>
 
         <SidebarSection label="Work">

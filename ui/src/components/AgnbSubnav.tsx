@@ -56,6 +56,15 @@ export const AGNB_SUBNAV = {
     { to: "/linkedin-series", label: "Series" },
     { to: "/linkedin-performance", label: "Performance" },
   ],
+  youtube: [
+    { to: "/youtube", label: "Ideas" },
+    { to: "/youtube-trends", label: "Trends" },
+    { to: "/youtube-scripts", label: "Scripts" },
+    { to: "/youtube-titles", label: "Title tester" },
+    { to: "/youtube-thumbnails", label: "Thumbnails" },
+    { to: "/youtube-shorts", label: "Shorts mill" },
+    { to: "/youtube-performance", label: "Performance" },
+  ],
 } as const;
 
 export type AgnbSubnavGroup = keyof typeof AGNB_SUBNAV;

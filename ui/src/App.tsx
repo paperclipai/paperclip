@@ -92,6 +92,13 @@ import { LinkedinScheduled } from "./pages/LinkedinScheduled";
 import { LinkedinRepurpose } from "./pages/LinkedinRepurpose";
 import { LinkedinSeries } from "./pages/LinkedinSeries";
 import { LinkedinPerformance } from "./pages/LinkedinPerformance";
+import { YoutubeIdeas } from "./pages/YoutubeIdeas";
+import { YoutubeTrends } from "./pages/YoutubeTrends";
+import { YoutubeScripts } from "./pages/YoutubeScripts";
+import { YoutubeTitles } from "./pages/YoutubeTitles";
+import { YoutubeThumbnails } from "./pages/YoutubeThumbnails";
+import { YoutubeShorts } from "./pages/YoutubeShorts";
+import { YoutubePerformance } from "./pages/YoutubePerformance";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
@@ -169,6 +176,13 @@ function boardRoutes() {
       <Route path="linkedin-repurpose" element={<LinkedinRepurpose />} />
       <Route path="linkedin-series" element={<LinkedinSeries />} />
       <Route path="linkedin-performance" element={<LinkedinPerformance />} />
+      <Route path="youtube" element={<YoutubeIdeas />} />
+      <Route path="youtube-trends" element={<YoutubeTrends />} />
+      <Route path="youtube-scripts" element={<YoutubeScripts />} />
+      <Route path="youtube-titles" element={<YoutubeTitles />} />
+      <Route path="youtube-thumbnails" element={<YoutubeThumbnails />} />
+      <Route path="youtube-shorts" element={<YoutubeShorts />} />
+      <Route path="youtube-performance" element={<YoutubePerformance />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />
@@ -432,6 +446,13 @@ export function App() {
           <Route path="linkedin-repurpose" element={<UnprefixedBoardRedirect />} />
           <Route path="linkedin-series" element={<UnprefixedBoardRedirect />} />
           <Route path="linkedin-performance" element={<UnprefixedBoardRedirect />} />
+          <Route path="youtube" element={<UnprefixedBoardRedirect />} />
+          <Route path="youtube-trends" element={<UnprefixedBoardRedirect />} />
+          <Route path="youtube-scripts" element={<UnprefixedBoardRedirect />} />
+          <Route path="youtube-titles" element={<UnprefixedBoardRedirect />} />
+          <Route path="youtube-thumbnails" element={<UnprefixedBoardRedirect />} />
+          <Route path="youtube-shorts" element={<UnprefixedBoardRedirect />} />
+          <Route path="youtube-performance" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
           <Route path="agents" element={<UnprefixedBoardRedirect />} />
