@@ -12,7 +12,6 @@ import {
   workspaceRuntimeServices,
   costEvents,
   financeEvents,
-  issues,
   issueComments,
   issueReadStates,
   feedbackVotes,
@@ -868,14 +867,16 @@ export function projectService(db: Db) {
       const existing = await getProjectById(id);
       if (!existing) return null;
 
-      // Get issue IDs for this project to cascade-delete issue children
-      const projectIssues = await db
-        .select({ id: issues.id })
-        .from(issues)
-        .where(eq(issues.projectId, id));
-      const issueIds = projectIssues.map((i) => i.id);
-
       return db.transaction(async (tx) => {
+        // Get issue IDs for this project to cascade-delete issue children
+        // (must be inside the transaction to avoid TOCTOU — a new issue created
+        // between the SELECT and the transaction could cause an FK violation)
+        const projectIssues = await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.projectId, id));
+        const issueIds = projectIssues.map((i) => i.id);
+
         // Issue child tables — must be deleted before issues (FK without cascade)
         if (issueIds.length > 0) {
           await tx.delete(issueComments).where(inArray(issueComments.issueId, issueIds));
