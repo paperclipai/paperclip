@@ -686,6 +686,94 @@ Rules:
 - A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names what the board/user must decide.
 - For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before creating implementation subtasks.
 
+### Asking user questions
+
+Use `ask_user_questions` interactions to gather structured input from the board/user before proceeding. Questions render as interactive cards in the issue thread.
+
+Create a question interaction:
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "ask_user_questions",
+  "idempotencyKey": "questions:{issueId}:{unique-slug}",
+  "title": "Optional heading shown above questions",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "title": "Deployment target",
+    "submitLabel": "Submit answers",
+    "questions": [
+      {
+        "id": "deploy_env",
+        "prompt": "Which environment should we deploy to?",
+        "helpText": "Choose the target deployment environment",
+        "selectionMode": "single",
+        "required": true,
+        "options": [
+          { "id": "staging", "label": "Staging", "description": "Pre-production environment" },
+          { "id": "production", "label": "Production", "description": "Live environment" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Rules:
+
+- `selectionMode` is `"single"` or `"multi"`. For single selection the answer contains one `optionId`; for multi it contains an array `optionIds[]`.
+- `required: true` means the question must have at least one option selected to submit.
+- Question `id` values must be unique within one interaction. Option `id` values must be unique within one question.
+- `continuationPolicy: "wake_assignee"` wakes the assignee after the board/user submits answers.
+- The response comes back in the interaction result as `result.answers[].optionIds[]`.
+- A board/user can also cancel the interaction with `result.cancelled: true` and an optional `cancellationReason`.
+- Accepted answers are posted as a comment on the issue thread with the answers summarized.
+
+### Suggesting tasks
+
+Use `suggest_tasks` interactions to propose a set of child tasks for the board/user to review and accept. Accepted tasks are created as child issues automatically.
+
+Create a task suggestion:
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "suggest_tasks",
+  "idempotencyKey": "tasks:{issueId}:{unique-slug}",
+  "title": "Proposed implementation tasks",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "defaultParentId": "{parentIssueId}",
+    "tasks": [
+      {
+        "clientKey": "task-1",
+        "title": "Implement authentication",
+        "description": "Add JWT-based authentication to the API",
+        "priority": "high",
+        "assigneeAgentId": "{agentId}"
+      },
+      {
+        "clientKey": "task-2",
+        "parentClientKey": "task-1",
+        "title": "Add token refresh endpoint"
+      }
+    ]
+  }
+}
+```
+
+Rules:
+
+- `clientKey` is a caller-side identifier used to link subtasks via `parentClientKey`. Must be unique within one interaction.
+- `defaultParentId` sets the parent issue for all accepted tasks if no per-task `parentId` is provided.
+- Each task supports: `title` (required), `description` (optional, max 20000 chars), `priority` (enum), `assigneeAgentId`, `assigneeUserId`, `projectId`, `goalId`, `billingCode`, `labels` (max 20), `hiddenInPreview` (hides from UI preview).
+- A task may target exactly one assignee (`assigneeAgentId` or `assigneeUserId`, not both).
+- Maximum 50 tasks per interaction.
+- The result contains `result.createdTasks[]` with the actual issue IDs and identifiers, `result.skippedClientKeys[]` for tasks that were rejected, and an optional `result.rejectionReason`.
+- `continuationPolicy: "wake_assignee"` wakes the assignee after the board/user accepts tasks.
+
 ### Checking approval status
 
 ```
