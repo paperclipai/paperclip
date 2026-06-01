@@ -17,6 +17,9 @@ export const queryKeys = {
     catalogFile: (catalogRef: string, relativePath: string) =>
       ["company-skills", "catalog", "file", catalogRef, relativePath] as const,
   },
+  agentPresets: {
+    list: (companyId: string) => ["agent-presets", companyId] as const,
+  },
   agents: {
     list: (companyId: string) => ["agents", companyId] as const,
     detail: (id: string) => ["agents", "detail", id] as const,
