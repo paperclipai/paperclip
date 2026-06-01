@@ -62,6 +62,8 @@ export interface FunnelStep {
   count: number;
   conversion_pct: number;
 }
+export interface PageviewSource { source: string; views: number; unique_visitors: number }
+export interface TopPage { url: string; views: number; unique_visitors: number }
 
 // ---- CRM hygiene ----
 export interface HygieneIssue {
@@ -87,10 +89,21 @@ export interface Interview {
   contact_title: string | null;
   summary: string | null;
   top_reasons: string[] | null;
+  decision_makers?: string[] | null;
   competitors_considered: string[] | null;
+  feature_requests?: string[] | null;
+  raw_quote?: string | null;
+  raw_transcript?: string | null;
   tags: string[] | null;
   analysis_status: string;
   created_at: string;
+}
+
+export interface RematchSuggestion {
+  event_id: string;
+  bucket_id: string | null;
+  confidence: number;
+  reason: string;
 }
 
 // ---- Invoices ----
@@ -129,7 +142,7 @@ export const agnbPagesApi = {
       .then((r) => unwrap(r)),
   funnel: () =>
     agnb
-      .get<{ ok: boolean; error?: string; snapshot_date: string | null; steps: FunnelStep[] }>("/funnel")
+      .get<{ ok: boolean; error?: string; snapshot_date: string | null; steps: FunnelStep[]; sources?: PageviewSource[]; pages?: TopPage[] }>("/funnel")
       .then((r) => unwrap(r)),
   crmHygiene: () =>
     agnb
@@ -156,4 +169,22 @@ export const agnbPagesApi = {
     agnb
       .post<{ ok: boolean; error?: string; row?: InvoiceRow; rzp?: { short_url?: string } }>("/invoices/create", body)
       .then((r) => unwrap(r)),
+
+  // --- Win/loss write actions ---
+  winLossCreate: (body: { customer_name: string; outcome: string; interview_date: string; contact_name?: string; contact_title?: string; raw_transcript?: string }) =>
+    agnb.post<{ ok: boolean; error?: string; row?: Interview }>("/win-loss", body).then((r) => unwrap(r)),
+  winLossAnalyze: (id: string) =>
+    agnb.post<{ ok: boolean; error?: string; analysis?: Record<string, unknown> }>(`/win-loss/${encodeURIComponent(id)}/analyze`, {}).then((r) => unwrap(r)),
+  winLossDelete: (id: string) =>
+    agnb.delete<{ ok: boolean; error?: string }>(`/win-loss?id=${encodeURIComponent(id)}`),
+
+  // --- Attribution Gemini rematch ---
+  attributionRematch: (apply: boolean, limit = 25) =>
+    agnb
+      .post<{ ok: boolean; error?: string; suggestions: RematchSuggestion[]; applied?: number; note?: string }>("/attribution/gemini-rematch", { apply, limit })
+      .then((r) => unwrap(r)),
+
+  // --- CRM hygiene manual scan ---
+  crmScan: () =>
+    agnb.post<{ ok: boolean; error?: string }>("/crons/run?path=/all-gas-no-brakes/api/internal/crm-hygiene-scan", {}),
 };
