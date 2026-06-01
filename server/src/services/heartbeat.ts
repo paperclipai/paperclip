@@ -2181,6 +2181,9 @@ async function buildPaperclipWakePayload(input: {
 
   return {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
+    sourceIssueId: readNonEmptyString(input.contextSnapshot.sourceIssueId),
+    recoveryActionId: readNonEmptyString(input.contextSnapshot.recoveryActionId),
+    strandedRunId: readNonEmptyString(input.contextSnapshot.strandedRunId),
     issue: issueSummary
       ? {
           id: issueSummary.id,

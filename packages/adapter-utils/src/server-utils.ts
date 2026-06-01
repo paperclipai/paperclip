@@ -419,6 +419,9 @@ type PaperclipWakeTreeHoldSummary = {
 
 type PaperclipWakePayload = {
   reason: string | null;
+  sourceIssueId: string | null;
+  recoveryActionId: string | null;
+  strandedRunId: string | null;
   issue: PaperclipWakeIssue | null;
   checkedOutByHarness: boolean;
   dependencyBlockedInteraction: boolean;
@@ -630,6 +633,9 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
 
   return {
     reason: asString(payload.reason, "").trim() || null,
+    sourceIssueId: asString(payload.sourceIssueId, "").trim() || null,
+    recoveryActionId: asString(payload.recoveryActionId, "").trim() || null,
+    strandedRunId: asString(payload.strandedRunId, "").trim() || null,
     issue: normalizePaperclipWakeIssue(payload.issue),
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
