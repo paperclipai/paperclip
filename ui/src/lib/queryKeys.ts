@@ -231,5 +231,10 @@ export const queryKeys = {
     rssFeeds: ["agnb", "rss-feeds"] as const,
     bofu: ["agnb", "bofu"] as const,
     content: ["agnb", "content"] as const,
+    mentions: ["agnb", "mentions"] as const,
+    reviews: ["agnb", "reviews"] as const,
+    sov: ["agnb", "sov"] as const,
+    backlinks: ["agnb", "backlinks"] as const,
+    prospects: ["agnb", "backlink-prospects"] as const,
   },
 };

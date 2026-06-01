@@ -76,6 +76,11 @@ import { IdeaInbox } from "./pages/IdeaInbox";
 import { RssFeeds } from "./pages/RssFeeds";
 import { Bofu } from "./pages/Bofu";
 import { ContentBriefs } from "./pages/ContentBriefs";
+import { Mentions } from "./pages/Mentions";
+import { Reviews } from "./pages/Reviews";
+import { Sov } from "./pages/Sov";
+import { Backlinks } from "./pages/Backlinks";
+import { BacklinkProspects } from "./pages/BacklinkProspects";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
@@ -137,6 +142,11 @@ function boardRoutes() {
       <Route path="rss-feeds" element={<RssFeeds />} />
       <Route path="bofu" element={<Bofu />} />
       <Route path="content" element={<ContentBriefs />} />
+      <Route path="mentions" element={<Mentions />} />
+      <Route path="reviews" element={<Reviews />} />
+      <Route path="sov" element={<Sov />} />
+      <Route path="backlinks" element={<Backlinks />} />
+      <Route path="backlink-prospects" element={<BacklinkProspects />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />
@@ -384,6 +394,11 @@ export function App() {
           <Route path="rss-feeds" element={<UnprefixedBoardRedirect />} />
           <Route path="bofu" element={<UnprefixedBoardRedirect />} />
           <Route path="content" element={<UnprefixedBoardRedirect />} />
+          <Route path="mentions" element={<UnprefixedBoardRedirect />} />
+          <Route path="reviews" element={<UnprefixedBoardRedirect />} />
+          <Route path="sov" element={<UnprefixedBoardRedirect />} />
+          <Route path="backlinks" element={<UnprefixedBoardRedirect />} />
+          <Route path="backlink-prospects" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
           <Route path="agents" element={<UnprefixedBoardRedirect />} />
