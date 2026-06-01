@@ -1,4 +1,6 @@
 suite: statefulset
+release:
+  name: paperclip
 templates:
   - templates/statefulset.yaml
 tests:
