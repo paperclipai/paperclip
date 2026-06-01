@@ -51,3 +51,14 @@ export function useSidebar() {
   }
   return ctx;
 }
+
+/**
+ * Non-throwing variant: returns `false` when rendered outside a SidebarProvider
+ * (e.g. isolated component tests / UX-lab pages). Use this for purely cosmetic
+ * responsive tweaks where the absence of a provider should degrade gracefully
+ * rather than crash the subtree.
+ */
+export function useIsMobileSafe(): boolean {
+  const ctx = useContext(SidebarContext);
+  return ctx?.isMobile ?? false;
+}

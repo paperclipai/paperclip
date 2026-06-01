@@ -100,6 +100,7 @@ import {
 } from "../lib/issue-chat-scroll";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { useOptionalToastActions } from "../context/ToastContext";
+import { useIsMobileSafe } from "../context/SidebarContext";
 import type { CompanyUserProfile } from "../lib/company-members";
 import { timeAgo } from "../lib/timeAgo";
 import {
@@ -2618,6 +2619,11 @@ function issueChatMessageQueuedRunIsInterrupting(
 // unrelated parent updates. Above this threshold we switch to a windowed
 // render path so only visible rows plus overscan stay mounted.
 export const VIRTUALIZED_THREAD_ROW_THRESHOLD = 150;
+// Phones have far less memory/CPU and a tall, narrow viewport where each rich
+// comment row is expensive, so we engage the windowed path much sooner there.
+// Desktop keeps the higher threshold (windowing has its own scroll-anchoring
+// cost that isn't worth it for short threads on a roomy screen).
+export const VIRTUALIZED_THREAD_ROW_THRESHOLD_MOBILE = 40;
 const VIRTUALIZED_THREAD_OVERSCAN = 6;
 // Rough "average row" estimate. The virtualizer measures real heights as
 // rows mount, so this only affects offscreen rows it has not seen yet.
@@ -3815,7 +3821,14 @@ export function IssueChatThread({
     }
     return map;
   }, [feedbackVotes]);
-  const useVirtualizedThread = messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD;
+  // Engage the windowed render path sooner on phones, where a long-but-
+  // sub-150 thread is the main cause of sluggish loads. Safe variant so the
+  // component still renders outside a SidebarProvider (tests / UX labs).
+  const isMobile = useIsMobileSafe();
+  const virtualizationThreshold = isMobile
+    ? VIRTUALIZED_THREAD_ROW_THRESHOLD_MOBILE
+    : VIRTUALIZED_THREAD_ROW_THRESHOLD;
+  const useVirtualizedThread = messages.length >= virtualizationThreshold;
   const messageAnchorIndex = useMemo(() => {
     const map = new Map<string, number>();
     messages.forEach((message, index) => {
@@ -3830,7 +3843,7 @@ export function IssueChatThread({
     options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
     messageSnapshot: readonly ThreadMessage[] = messages,
   ) {
-    const snapshotUsesVirtualizer = messageSnapshot.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD;
+    const snapshotUsesVirtualizer = messageSnapshot.length >= virtualizationThreshold;
     const virtualIndex =
       messageSnapshot === messages
         ? messageAnchorIndex.get(anchorId)
@@ -4231,7 +4244,7 @@ export function IssueChatThread({
                 )}>
                   {resolvedEmptyMessage}
                 </div>
-              ) : messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD ? (
+              ) : messages.length >= virtualizationThreshold ? (
                 <VirtualizedIssueChatThreadList
                   ref={virtualizedThreadRef}
                   messages={messages}
