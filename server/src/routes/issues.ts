@@ -45,7 +45,6 @@ import {
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
-  isUuidLike,
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
@@ -1858,7 +1857,7 @@ export function issueRoutes(
   function requireAgentRunId(req: Request, res: Response) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
-    if (runId && isUuidLike(runId)) return runId;
+    if (runId) return runId;
     res.status(401).json({ error: "Agent run id required" });
     return null;
   }

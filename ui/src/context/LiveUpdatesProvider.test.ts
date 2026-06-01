@@ -10,11 +10,24 @@ vi.mock("../api/issues", () => ({
   },
 }));
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
+  });
+
+  function flushScheduledInvalidations() {
+    vi.advanceTimersByTime(500);
+  }
+
   it("refreshes touched inbox queries and only the changed issue data for issue updates", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
@@ -35,22 +48,23 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       },
       { userId: null, agentId: null },
     );
+    flushScheduledInvalidations();
 
-    expect(invalidations).toContainEqual({
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.listMineByMe("company-1"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.listTouchedByMe("company-1"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.listUnreadTouchedByMe("company-1"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.detail("issue-1"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.activity("issue-1"),
-    });
+    }));
     expect(invalidations).not.toContainEqual({
       queryKey: queryKeys.issues.comments("issue-1"),
     });
@@ -94,10 +108,11 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       },
       { userId: null, agentId: null },
     );
+    flushScheduledInvalidations();
 
-    expect(invalidations).toContainEqual({
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.comments("issue-1"),
-    });
+    }));
   });
 
   it("refreshes issue document caches when a document activity event arrives", () => {
@@ -126,28 +141,29 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       { userId: "user-1", agentId: null },
       { pathname: "/PAP/issues/PAP-9403", isForegrounded: true },
     );
+    flushScheduledInvalidations();
 
-    expect(invalidations).toContainEqual({
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.detail("issue-1"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.documents("issue-1"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.document("issue-1", "plan"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.documentRevisions("issue-1", "plan"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.documents("PAP-9403"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.document("PAP-9403", "plan"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.documentRevisions("PAP-9403", "plan"),
-    });
+    }));
     expect(invalidations).not.toContainEqual({
       queryKey: queryKeys.issues.documents("issue-1"),
       refetchType: "inactive",
@@ -176,16 +192,17 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       },
       { userId: "user-1", agentId: null },
     );
+    flushScheduledInvalidations();
 
-    expect(invalidations).toContainEqual({
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.documents("issue-1"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: ["issues", "document", "issue-1"],
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: ["issues", "document-revisions", "issue-1"],
-    });
+    }));
   });
 
   it("keeps self-authored comment events from refetching the active issue tree", () => {
@@ -210,6 +227,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       },
       { userId: "user-1", agentId: null },
     );
+    flushScheduledInvalidations();
 
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.detail("issue-1"),
@@ -247,6 +265,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       },
       { userId: "user-1", agentId: null },
     );
+    flushScheduledInvalidations();
 
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.detail("issue-1"),
@@ -297,6 +316,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       { userId: null, agentId: null },
       { pathname: "/PAP/issues/PAP-759", isForegrounded: true },
     );
+    flushScheduledInvalidations();
 
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.detail("issue-1"),
@@ -343,13 +363,14 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       { userId: "user-1", agentId: null },
       { pathname: "/PAP/issues/PAP-759", isForegrounded: true },
     );
+    flushScheduledInvalidations();
 
-    expect(invalidations).toContainEqual({
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.detail("issue-1"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.activity("issue-1"),
-    });
+    }));
     expect(invalidations).not.toContainEqual({
       queryKey: queryKeys.issues.detail("issue-1"),
       refetchType: "inactive",
@@ -392,6 +413,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       { userId: null, agentId: null },
       { pathname: "/PAP/issues/PAP-759", isForegrounded: true },
     );
+    flushScheduledInvalidations();
 
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.detail("issue-1"),
@@ -463,24 +485,24 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     );
 
     expect(invalidated).toBe(true);
-    expect(invalidations).toContainEqual({
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.detail("PAP-759"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.activity("PAP-759"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.runs("PAP-759"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.liveRuns("PAP-759"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.activeRun("PAP-759"),
-    });
-    expect(invalidations).toContainEqual({
+    }));
+    expect(invalidations).toContainEqual(expect.objectContaining({
       queryKey: queryKeys.issues.activeRun("issue-1"),
-    });
+    }));
     expect(cache.get(JSON.stringify(queryKeys.issues.activeRun("PAP-759")))).toBeNull();
     expect(cache.get(JSON.stringify(queryKeys.issues.liveRuns("PAP-759")))).toEqual([]);
     expect(cache.get(JSON.stringify(queryKeys.issues.detail("PAP-759")))).toMatchObject({

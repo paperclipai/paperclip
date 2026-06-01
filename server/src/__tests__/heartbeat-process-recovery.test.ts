@@ -2093,7 +2093,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect((runs[0]?.contextSnapshot as Record<string, unknown>)?.retryReason).toBeUndefined();
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("todo");
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.checkoutRunId).toBe(runs[0]?.id);
+    expect(issue?.executionRunId).toBe(runs[0]?.id);
 
     const recoveryIssues = await db
       .select()
