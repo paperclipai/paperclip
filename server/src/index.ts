@@ -763,72 +763,128 @@ export async function startServer(): Promise<StartedServer> {
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
+    // Re-entrancy guards — once HEARTBEAT_SCHEDULER_INTERVAL_MS dropped to 10s
+    // from 30s, the three chains below could pile up if any one of them got
+    // slow (e.g. a stuck DB query, a downstream HTTP timeout). Each guard
+    // skips the next tick's invocation of its own chain when the prior is
+    // still in flight, with a watchdog timeout so a permanently-hung chain
+    // doesn't permanently block its own recovery.
+    const SCHEDULER_CHAIN_WATCHDOG_MS = 5 * 60 * 1000;
+    let timersChainInFlight = false;
+    let timersChainStartedAt = 0;
+    let routinesChainInFlight = false;
+    let routinesChainStartedAt = 0;
+    let recoveryChainInFlight = false;
+    let recoveryChainStartedAt = 0;
     setInterval(() => {
-      void heartbeat
-        .tickTimers(new Date())
-        .then((result) => {
-          if (result.enqueued > 0) {
-            logger.info({ ...result }, "heartbeat timer tick enqueued runs");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "heartbeat timer tick failed");
-        });
+      // Watchdog: if a flag has been set for longer than the watchdog, force-clear
+      // it. Better to risk an overlapping run than to silently halt forever.
+      const now = Date.now();
+      if (timersChainInFlight && now - timersChainStartedAt > SCHEDULER_CHAIN_WATCHDOG_MS) {
+        logger.warn({ stalledMs: now - timersChainStartedAt }, "heartbeat timer chain watchdog tripped, force-clearing flag");
+        timersChainInFlight = false;
+      }
+      if (routinesChainInFlight && now - routinesChainStartedAt > SCHEDULER_CHAIN_WATCHDOG_MS) {
+        logger.warn({ stalledMs: now - routinesChainStartedAt }, "routine scheduler chain watchdog tripped, force-clearing flag");
+        routinesChainInFlight = false;
+      }
+      if (recoveryChainInFlight && now - recoveryChainStartedAt > SCHEDULER_CHAIN_WATCHDOG_MS) {
+        logger.warn({ stalledMs: now - recoveryChainStartedAt }, "heartbeat recovery chain watchdog tripped, force-clearing flag");
+        recoveryChainInFlight = false;
+      }
 
-      void routines
-        .tickScheduledTriggers(new Date())
-        .then((result) => {
-          if (result.triggered > 0) {
-            logger.info({ ...result }, "routine scheduler tick enqueued runs");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "routine scheduler tick failed");
-        });
-  
-      // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-      // persisted queued work is still being driven forward.
-      void heartbeat
-        .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-        .then(() => heartbeat.promoteDueScheduledRetries())
-        .then(async (promotion) => {
-          await heartbeat.resumeQueuedRuns();
-          const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
-          if (
-            promotion.promoted > 0 ||
-            reconciled.assignmentDispatched > 0 ||
-            reconciled.dispatchRequeued > 0 ||
-            reconciled.continuationRequeued > 0 ||
-            reconciled.successfulRunHandoffEscalated > 0 ||
-            reconciled.escalated > 0
-          ) {
-            logger.warn(
-              { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
-              "periodic heartbeat recovery changed assigned issue state",
-            );
-          }
-        })
-        .then(async () => {
-          const reconciled = await heartbeat.reconcileIssueGraphLiveness();
-          if (reconciled.escalationsCreated > 0) {
-            logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
-          }
-        })
-        .then(async () => {
-          const scanned = await heartbeat.scanSilentActiveRuns();
-          if (scanned.created > 0 || scanned.escalated > 0) {
-            logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
-          }
-        })
-        .then(async () => {
-          const reviewed = await heartbeat.reconcileProductivityReviews();
-          if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
-            logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "periodic heartbeat recovery failed");
-        });
+      if (!timersChainInFlight) {
+        timersChainInFlight = true;
+        timersChainStartedAt = now;
+        void heartbeat
+          .tickTimers(new Date())
+          .then((result) => {
+            if (result.enqueued > 0) {
+              logger.info({ ...result }, "heartbeat timer tick enqueued runs");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "heartbeat timer tick failed");
+          })
+          .finally(() => {
+            timersChainInFlight = false;
+          });
+      } else {
+        logger.debug({ inFlightMs: now - timersChainStartedAt }, "heartbeat timer tick skipped — prior chain still in flight");
+      }
+
+      if (!routinesChainInFlight) {
+        routinesChainInFlight = true;
+        routinesChainStartedAt = now;
+        void routines
+          .tickScheduledTriggers(new Date())
+          .then((result) => {
+            if (result.triggered > 0) {
+              logger.info({ ...result }, "routine scheduler tick enqueued runs");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "routine scheduler tick failed");
+          })
+          .finally(() => {
+            routinesChainInFlight = false;
+          });
+      } else {
+        logger.debug({ inFlightMs: now - routinesChainStartedAt }, "routine scheduler tick skipped — prior chain still in flight");
+      }
+
+      if (!recoveryChainInFlight) {
+        recoveryChainInFlight = true;
+        recoveryChainStartedAt = now;
+        // Periodically reap orphaned runs (5-min staleness threshold) and make sure
+        // persisted queued work is still being driven forward.
+        void heartbeat
+          .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+          .then(() => heartbeat.promoteDueScheduledRetries())
+          .then(async (promotion) => {
+            await heartbeat.resumeQueuedRuns();
+            const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+            if (
+              promotion.promoted > 0 ||
+              reconciled.assignmentDispatched > 0 ||
+              reconciled.dispatchRequeued > 0 ||
+              reconciled.continuationRequeued > 0 ||
+              reconciled.successfulRunHandoffEscalated > 0 ||
+              reconciled.escalated > 0
+            ) {
+              logger.warn(
+                { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+                "periodic heartbeat recovery changed assigned issue state",
+              );
+            }
+          })
+          .then(async () => {
+            const reconciled = await heartbeat.reconcileIssueGraphLiveness();
+            if (reconciled.escalationsCreated > 0) {
+              logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
+            }
+          })
+          .then(async () => {
+            const scanned = await heartbeat.scanSilentActiveRuns();
+            if (scanned.created > 0 || scanned.escalated > 0) {
+              logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
+            }
+          })
+          .then(async () => {
+            const reviewed = await heartbeat.reconcileProductivityReviews();
+            if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
+              logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "periodic heartbeat recovery failed");
+          })
+          .finally(() => {
+            recoveryChainInFlight = false;
+          });
+      } else {
+        logger.debug({ inFlightMs: now - recoveryChainStartedAt }, "heartbeat recovery tick skipped — prior chain still in flight");
+      }
     }, config.heartbeatSchedulerIntervalMs);
   }
   
