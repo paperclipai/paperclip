@@ -211,6 +211,8 @@ jobs:
     permissions:
       contents: write
       id-token: write
+    outputs:
+      tag: ${{ steps.push_tag.outputs.tag }}
 
     steps:
       - name: Checkout repository
@@ -252,12 +254,14 @@ jobs:
           ./scripts/release.sh "${args[@]}"
 
       - name: Push stable tag
+        id: push_tag
         run: |
           tag="$(git tag --points-at HEAD | grep '^v' | head -1)"
           if [ -z "$tag" ]; then
             echo "Error: no stable tag points at HEAD after release." >&2
             exit 1
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           git push origin "refs/tags/${tag}"
 
       - name: Create GitHub Release
@@ -271,3 +275,18 @@ jobs:
             exit 1
           fi
           ./scripts/create-github-release.sh "$version"
+
+  publish_stable_docker:
+    # Build & push the GHCR image for the stable release. Cannot rely on
+    # docker.yml's `on: push: tags: ['v*']` trigger because publish_stable
+    # pushes the tag with the default GITHUB_TOKEN, which GitHub suppresses
+    # workflow triggers for (anti-recursion). Calls docker.yml as a reusable
+    # workflow instead, with the freshly created tag passed as an input.
+    if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
+    needs: publish_stable
+    uses: ./.github/workflows/docker.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      tag: ${{ needs.publish_stable.outputs.tag }}
