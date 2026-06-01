@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -33,6 +34,7 @@ import {
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
+import { pickNextSeat, resetSeatRotation } from "./seat-rotation.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -468,9 +470,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : `Claude exited with code ${proc.exitCode ?? -1}`;
   };
 
-  const runAttempt = async (resumeSessionId: string | null) => {
+  const runAttempt = async (
+    resumeSessionId: string | null,
+    envOverride?: Record<string, string>,
+  ) => {
     const attemptInstructionsFilePath = resumeSessionId ? undefined : effectiveInstructionsFilePath;
     const args = buildClaudeArgs(resumeSessionId, attemptInstructionsFilePath);
+    const attemptEnv = envOverride ? { ...env, ...envOverride } : env;
     const commandNotes: string[] = [];
     if (!resumeSessionId) {
       commandNotes.push(`Using stable Claude prompt bundle ${promptBundle.bundleKey}.`);
@@ -496,7 +502,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const proc = await runChildProcess(runId, command, args, {
       cwd,
-      env,
+      env: attemptEnv,
       stdin: prompt,
       timeoutSec,
       graceSec,
@@ -609,7 +615,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  // ── Helper: emit token usage to model-usage.jsonl (ROCAA-325) ───────────────
+  const emitUsage = async (result: AdapterExecutionResult) => {
+    const usage = result.usage;
+    if (!usage) return;
+    const logDir = path.join(homedir(), "architect-os", "logs");
+    const logPath = path.join(logDir, "model-usage.jsonl");
+    try {
+      await fs.mkdir(logDir, { recursive: true });
+      const rec = JSON.stringify({
+        ts: new Date().toISOString(),
+        runId,
+        issueId: ctx.context.issueId ?? ctx.context.taskId ?? null,
+        agentId: agent.id,
+        model: result.model ?? model,
+        inputTokens: usage.inputTokens,
+        cachedInputTokens: usage.cachedInputTokens,
+        outputTokens: usage.outputTokens,
+        costUsd: result.costUsd ?? 0,
+        actionType: "heartbeat",
+        tier: "0",
+      });
+      await fs.appendFile(logPath, `${rec}\n`, "utf8");
+    } catch {
+      // Best-effort — never crash the dispatch path.
+    }
+  };
+
   const initial = await runAttempt(sessionId ?? null);
+
+  // ── Unknown-session retry (existing logic) ────────────────────────────────
   if (
     sessionId &&
     !initial.proc.timedOut &&
@@ -622,8 +657,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
     );
     const retry = await runAttempt(null);
-    return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+    const result = toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+    if (!result.errorCode) resetSeatRotation();
+    await emitUsage(result);
+    return result;
   }
 
-  return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+  // ── $0 Max-seat rotation on auth_required (ROCAA-325 Tier 0a) ────────────
+  let candidate = toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+  while (candidate.errorCode === "claude_auth_required") {
+    const { profileDir, allExhausted } = pickNextSeat();
+    if (allExhausted || !profileDir) {
+      await onLog(
+        "stdout",
+        `[paperclip] All $0 Max seats exhausted; proceeding to Tier 1 gate.\n`,
+      );
+      break;
+    }
+    await onLog(
+      "stdout",
+      `[paperclip] Seat auth_required — rotating to profile ${profileDir}.\n`,
+    );
+    const seatAttempt = await runAttempt(null, {
+      HOME: profileDir,
+      CLAUDE_CONFIG_DIR: profileDir,
+    });
+    candidate = toAdapterResult(seatAttempt, { fallbackSessionId: null });
+  }
+
+  if (!candidate.errorCode) resetSeatRotation();
+  await emitUsage(candidate);
+  return candidate;
 }
