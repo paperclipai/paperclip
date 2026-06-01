@@ -143,6 +143,54 @@ export interface ExecutionWorkspaceCloseReadiness {
   runtimeServices: WorkspaceRuntimeService[];
 }
 
+export type ExecutionWorkspaceReapReason =
+  | "source_issue_terminal"
+  | "source_issue_missing"
+  | "path_missing";
+
+export type ExecutionWorkspaceReapReportedReason =
+  | ExecutionWorkspaceReapReason
+  | "already_archived"
+  | "active_linked"
+  | "none";
+
+export type ExecutionWorkspaceReapPlannedAction =
+  | "archive_record"
+  | "archive_record_and_delete_files"
+  | "archive_record_cleanup_skipped"
+  | "exclude_active_linked"
+  | "noop_already_archived"
+  | "noop_no_cleanup_reason";
+
+export interface ExecutionWorkspaceReapItem {
+  workspaceId: string;
+  workspaceStatus: ExecutionWorkspaceStatus;
+  sourceIssueIdentifier: string | null;
+  sourceIssueStatus: string | null;
+  reason: ExecutionWorkspaceReapReportedReason;
+  reasons: ExecutionWorkspaceReapReason[];
+  pathExists: boolean;
+  activeLinkedCount: number;
+  plannedAction: ExecutionWorkspaceReapPlannedAction;
+  archived: boolean;
+  cleanupAttempted: boolean;
+  cleanupDeleted: boolean;
+  cleanupSkippedReason: string | null;
+}
+
+export interface ExecutionWorkspaceReapReport {
+  companyId: string;
+  dryRun: boolean;
+  deleteFiles: boolean;
+  checkedCount: number;
+  candidateCount: number;
+  archivedCount: number;
+  excludedActiveCount: number;
+  noopArchivedCount: number;
+  noopNoReasonCount: number;
+  items: ExecutionWorkspaceReapItem[];
+}
+
 export interface ProjectExecutionWorkspacePolicy {
   enabled: boolean;
   defaultMode?: ProjectExecutionWorkspaceDefaultMode;

@@ -17,6 +17,10 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
   update: vi.fn(),
 }));
 
+const mockExecutionWorkspaceReaperService = vi.hoisted(() => ({
+  reap: vi.fn(),
+}));
+
 const mockSecretService = vi.hoisted(() => ({
   normalizeEnvBindingsForPersistence: vi.fn(),
 }));
@@ -37,6 +41,7 @@ vi.mock("../telemetry.js", () => ({
 
 vi.mock("../services/index.js", () => ({
   environmentService: () => mockEnvironmentService,
+  executionWorkspaceReaperService: () => mockExecutionWorkspaceReaperService,
   executionWorkspaceService: () => mockExecutionWorkspaceService,
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
@@ -63,6 +68,7 @@ function registerWorkspaceRouteMocks() {
 
   vi.doMock("../services/index.js", () => ({
     environmentService: () => mockEnvironmentService,
+    executionWorkspaceReaperService: () => mockExecutionWorkspaceReaperService,
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     logActivity: mockLogActivity,
     projectService: () => mockProjectService,

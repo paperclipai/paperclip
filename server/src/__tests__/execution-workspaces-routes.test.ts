@@ -12,6 +12,10 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
   update: vi.fn(),
 }));
 
+const mockExecutionWorkspaceReaperService = vi.hoisted(() => ({
+  reap: vi.fn(),
+}));
+
 const mockWorkspaceOperationService = vi.hoisted(() => ({
   listForExecutionWorkspace: vi.fn(),
   createRecorder: vi.fn(),
@@ -20,16 +24,17 @@ const mockWorkspaceOperationService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("../services/index.js", () => ({
+  executionWorkspaceReaperService: () => mockExecutionWorkspaceReaperService,
   executionWorkspaceService: () => mockExecutionWorkspaceService,
   logActivity: mockLogActivity,
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
 
-function createApp(companyIds = ["company-1"]) {
+function createApp(companyIds = ["company-1"], actor?: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
+    (req as any).actor = actor ?? {
       type: "board",
       userId: "local-board",
       companyIds,
@@ -56,6 +61,18 @@ describe.sequential("execution workspace routes", () => {
       },
     ]);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    mockExecutionWorkspaceReaperService.reap.mockResolvedValue({
+      companyId: "company-1",
+      dryRun: true,
+      deleteFiles: false,
+      checkedCount: 0,
+      candidateCount: 0,
+      archivedCount: 0,
+      excludedActiveCount: 0,
+      noopArchivedCount: 0,
+      noopNoReasonCount: 0,
+      items: [],
+    });
   });
 
   it("uses summary mode for lightweight workspace lookups", async () => {
@@ -79,6 +96,83 @@ describe.sequential("execution workspace routes", () => {
       reuseEligible: true,
     });
     expect(mockExecutionWorkspaceService.list).not.toHaveBeenCalled();
+  });
+
+  it("runs the reaper as a dry-run by default", async () => {
+    const res = await request(createApp())
+      .get("/api/companies/company-1/execution-workspaces/reap");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      companyId: "company-1",
+      dryRun: true,
+      deleteFiles: false,
+    });
+    expect(mockExecutionWorkspaceReaperService.reap).toHaveBeenCalledWith("company-1", {
+      dryRun: true,
+      deleteFiles: false,
+    });
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid reaper deleteFiles query values", async () => {
+    const res = await request(createApp())
+      .get("/api/companies/company-1/execution-workspaces/reap?deleteFiles=maybe");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid deleteFiles query value");
+    expect(mockExecutionWorkspaceReaperService.reap).not.toHaveBeenCalled();
+  });
+
+  it("logs a bulk reaper activity entry when records are archived", async () => {
+    mockExecutionWorkspaceReaperService.reap.mockResolvedValue({
+      companyId: "company-1",
+      dryRun: false,
+      deleteFiles: false,
+      checkedCount: 3,
+      candidateCount: 2,
+      archivedCount: 2,
+      excludedActiveCount: 1,
+      noopArchivedCount: 0,
+      noopNoReasonCount: 0,
+      items: [],
+    });
+
+    const res = await request(createApp())
+      .post("/api/companies/company-1/execution-workspaces/reap")
+      .send({ dryRun: false });
+
+    expect(res.status).toBe(200);
+    expect(mockExecutionWorkspaceReaperService.reap).toHaveBeenCalledWith("company-1", {
+      dryRun: false,
+      deleteFiles: false,
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "execution_workspace.reaped",
+      entityType: "company",
+      entityId: "company-1",
+      details: expect.objectContaining({
+        archivedCount: 2,
+        excludedActiveCount: 1,
+      }),
+    }));
+  });
+
+  it("rejects agent callers for mutating reaper runs", async () => {
+    const res = await request(createApp(["company-1"], {
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    }))
+      .post("/api/companies/company-1/execution-workspaces/reap")
+      .send({ dryRun: false });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Board access required");
+    expect(mockExecutionWorkspaceReaperService.reap).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
 });

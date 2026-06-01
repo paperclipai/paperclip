@@ -5,7 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import {
   companies,
   createDb,
@@ -13,6 +13,7 @@ import {
   issues,
   projectWorkspaces,
   projects,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -23,6 +24,7 @@ import {
   mergeExecutionWorkspaceConfig,
   readExecutionWorkspaceConfig,
 } from "../services/execution-workspaces.ts";
+import { executionWorkspaceReaperService } from "../services/execution-workspace-reaper.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -131,8 +133,9 @@ async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", ["-C", cwd, ...args], { cwd });
 }
 
-async function createTempRepo() {
-  const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-execution-workspace-"));
+async function createTempRepo(repoRoot?: string) {
+  repoRoot ??= await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-execution-workspace-"));
+  await fs.mkdir(repoRoot, { recursive: true });
   await runGit(repoRoot, ["init"]);
   await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
   await runGit(repoRoot, ["config", "user.email", "test@paperclip.local"]);
@@ -156,6 +159,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(workspaceOperations);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -419,6 +423,864 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       }),
     ]);
   });
+
+  it("dry-runs conservative reaper candidates, archived no-ops, and active issue exclusions", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const sourceDoneIssueId = randomUUID();
+    const terminalWorkspaceId = randomUUID();
+    const missingSourceWorkspaceId = randomUUID();
+    const archivedWorkspaceId = randomUUID();
+    const activeStatuses = ["backlog", "todo", "in_progress", "in_review", "blocked"];
+    const activeWorkspaceIds = activeStatuses.map(() => randomUUID());
+    const existingWorkspacePath = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-reaper-existing-"));
+    tempDirs.add(existingWorkspacePath);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace reaper",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(issues).values({
+      id: sourceDoneIssueId,
+      companyId,
+      projectId,
+      title: "Finished source issue",
+      status: "done",
+      priority: "medium",
+      identifier: "PAP-1",
+    });
+    await db.insert(executionWorkspaces).values([
+      {
+        id: terminalWorkspaceId,
+        companyId,
+        projectId,
+        sourceIssueId: sourceDoneIssueId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "Terminal source",
+        status: "active",
+        providerType: "local_fs",
+        cwd: path.join(os.tmpdir(), `missing-terminal-${randomUUID()}`),
+      },
+      {
+        id: missingSourceWorkspaceId,
+        companyId,
+        projectId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "Missing source",
+        status: "idle",
+        providerType: "local_fs",
+        cwd: existingWorkspacePath,
+      },
+      {
+        id: archivedWorkspaceId,
+        companyId,
+        projectId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "Already archived",
+        status: "archived",
+        providerType: "local_fs",
+        cwd: path.join(os.tmpdir(), `missing-archived-${randomUUID()}`),
+      },
+      ...activeWorkspaceIds.map((workspaceId, index) => ({
+        id: workspaceId,
+        companyId,
+        projectId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: `Active linked ${activeStatuses[index]}`,
+        status: "active",
+        providerType: "local_fs",
+        cwd: path.join(os.tmpdir(), `missing-active-${workspaceId}`),
+      })),
+    ]);
+    await db.insert(issues).values(activeWorkspaceIds.map((workspaceId, index) => ({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      title: `Linked ${activeStatuses[index]}`,
+      status: activeStatuses[index],
+      priority: "medium",
+      executionWorkspaceId: workspaceId,
+      identifier: `PAP-${index + 2}`,
+    })));
+
+    const report = await executionWorkspaceReaperService(db).reap(companyId);
+    const byId = new Map(report.items.map((item) => [item.workspaceId, item]));
+
+    expect(report).toMatchObject({
+      dryRun: true,
+      deleteFiles: false,
+      checkedCount: 8,
+      candidateCount: 2,
+      archivedCount: 0,
+      excludedActiveCount: 5,
+      noopArchivedCount: 1,
+    });
+    expect(byId.get(terminalWorkspaceId)).toMatchObject({
+      workspaceStatus: "active",
+      sourceIssueIdentifier: "PAP-1",
+      sourceIssueStatus: "done",
+      reason: "source_issue_terminal",
+      reasons: ["source_issue_terminal", "path_missing"],
+      pathExists: false,
+      activeLinkedCount: 0,
+      plannedAction: "archive_record",
+      archived: false,
+    });
+    expect(byId.get(missingSourceWorkspaceId)).toMatchObject({
+      workspaceStatus: "idle",
+      sourceIssueIdentifier: null,
+      sourceIssueStatus: null,
+      reason: "source_issue_missing",
+      reasons: ["source_issue_missing"],
+      pathExists: true,
+      activeLinkedCount: 0,
+      plannedAction: "archive_record",
+    });
+    expect(byId.get(archivedWorkspaceId)).toMatchObject({
+      reason: "already_archived",
+      plannedAction: "noop_already_archived",
+    });
+    for (const workspaceId of activeWorkspaceIds) {
+      expect(byId.get(workspaceId)).toMatchObject({
+        reason: "active_linked",
+        pathExists: false,
+        activeLinkedCount: 1,
+        plannedAction: "exclude_active_linked",
+        archived: false,
+      });
+    }
+
+    const rows = await db
+      .select({
+        id: executionWorkspaces.id,
+        status: executionWorkspaces.status,
+      })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [terminalWorkspaceId, missingSourceWorkspaceId]));
+    expect(rows.map((row) => row.status).sort()).toEqual(["active", "idle"]);
+  });
+
+  it("archives only eligible reaper candidates when dryRun is false", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const sourceDoneIssueId = randomUUID();
+    const candidateWorkspaceId = randomUUID();
+    const activeWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace reaper apply",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(issues).values({
+      id: sourceDoneIssueId,
+      companyId,
+      projectId,
+      title: "Finished source issue",
+      status: "cancelled",
+      priority: "medium",
+      identifier: "PAP-20",
+    });
+    await db.insert(executionWorkspaces).values([
+      {
+        id: candidateWorkspaceId,
+        companyId,
+        projectId,
+        sourceIssueId: sourceDoneIssueId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "Candidate",
+        status: "active",
+        providerType: "local_fs",
+        cwd: path.join(os.tmpdir(), `missing-candidate-${randomUUID()}`),
+      },
+      {
+        id: activeWorkspaceId,
+        companyId,
+        projectId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "Active linked",
+        status: "active",
+        providerType: "local_fs",
+        cwd: path.join(os.tmpdir(), `missing-active-${randomUUID()}`),
+      },
+    ]);
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      title: "Still active",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId: activeWorkspaceId,
+      identifier: "PAP-21",
+    });
+
+    const report = await executionWorkspaceReaperService(db).reap(companyId, { dryRun: false });
+    const rows = await db
+      .select({
+        id: executionWorkspaces.id,
+        status: executionWorkspaces.status,
+        closedAt: executionWorkspaces.closedAt,
+        cleanupReason: executionWorkspaces.cleanupReason,
+      })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [candidateWorkspaceId, activeWorkspaceId]));
+    const byId = new Map(rows.map((row) => [row.id, row]));
+
+    expect(report).toMatchObject({
+      dryRun: false,
+      candidateCount: 1,
+      archivedCount: 1,
+      excludedActiveCount: 1,
+    });
+    expect(report.items.find((item) => item.workspaceId === candidateWorkspaceId)).toMatchObject({
+      plannedAction: "archive_record",
+      archived: true,
+    });
+    expect(byId.get(candidateWorkspaceId)).toMatchObject({
+      status: "archived",
+      cleanupReason: "reaper:source_issue_terminal,path_missing",
+    });
+    expect(byId.get(candidateWorkspaceId)?.closedAt).toBeInstanceOf(Date);
+    expect(byId.get(activeWorkspaceId)).toMatchObject({
+      status: "active",
+    });
+  });
+
+  it("revalidates apply candidates before archiving", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const sourceDoneIssueId = randomUUID();
+    const sourceActiveIssueId = randomUUID();
+    const firstWorkspaceId = "00000000-0000-4000-8000-000000000001";
+    const staleWorkspaceId = "00000000-0000-4000-8000-000000000002";
+    const lateActiveWorkspaceId = "00000000-0000-4000-8000-000000000003";
+    const lateActiveIssueId = randomUUID();
+    const projectWorkspacePath = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-reaper-project-"));
+    const firstWorkspacePath = await createTempRepo();
+    const staleWorkspacePath = path.join(os.tmpdir(), `paperclip-reaper-late-${randomUUID()}`);
+    const lateActiveWorkspacePath = path.join(os.tmpdir(), `paperclip-reaper-late-active-${randomUUID()}`);
+    tempDirs.add(projectWorkspacePath);
+    tempDirs.add(firstWorkspacePath);
+    tempDirs.add(staleWorkspacePath);
+    tempDirs.add(lateActiveWorkspacePath);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace reaper race",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: projectWorkspacePath,
+    });
+    await db.insert(issues).values([
+      {
+        id: sourceDoneIssueId,
+        companyId,
+        projectId,
+        title: "Finished source",
+        status: "done",
+        priority: "medium",
+        identifier: "PAP-30",
+      },
+      {
+        id: sourceActiveIssueId,
+        companyId,
+        projectId,
+        title: "Active source",
+        status: "in_progress",
+        priority: "medium",
+        identifier: "PAP-31",
+      },
+    ]);
+    await db.insert(executionWorkspaces).values([
+      {
+        id: firstWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: sourceDoneIssueId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "First candidate",
+        status: "active",
+        providerType: "local_fs",
+        cwd: firstWorkspacePath,
+        metadata: {
+          createdByRuntime: true,
+          config: {
+            cleanupCommand: `mkdir -p ${JSON.stringify(staleWorkspacePath)}`,
+          },
+        },
+      },
+      {
+        id: staleWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: sourceActiveIssueId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "Stale path-missing candidate",
+        status: "active",
+        providerType: "local_fs",
+        cwd: staleWorkspacePath,
+        metadata: {
+          createdByRuntime: true,
+        },
+      },
+      {
+        id: lateActiveWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: sourceDoneIssueId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "Late active-linked candidate",
+        status: "active",
+        providerType: "local_fs",
+        cwd: lateActiveWorkspacePath,
+        metadata: {
+          createdByRuntime: true,
+        },
+      },
+    ]);
+    await db.execute(sql.raw(`
+      SET client_min_messages TO WARNING;
+      DROP TRIGGER IF EXISTS aiva1862_reaper_active_link_after_archive ON execution_workspaces;
+      DROP FUNCTION IF EXISTS aiva1862_reaper_active_link();
+      RESET client_min_messages;
+      CREATE FUNCTION aiva1862_reaper_active_link()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+        IF NEW.id = '${firstWorkspaceId}'::uuid AND NEW.status = 'archived' AND OLD.status <> 'archived' THEN
+          INSERT INTO issues (
+            id,
+            company_id,
+            project_id,
+            title,
+            status,
+            priority,
+            execution_workspace_id,
+            identifier
+          )
+          VALUES (
+            '${lateActiveIssueId}'::uuid,
+            '${companyId}'::uuid,
+            '${projectId}'::uuid,
+            'Late active linked issue',
+            'in_progress',
+            'medium',
+            '${lateActiveWorkspaceId}'::uuid,
+            'PAP-32'
+          );
+        END IF;
+        RETURN NEW;
+      END;
+      $$;
+      CREATE TRIGGER aiva1862_reaper_active_link_after_archive
+      AFTER UPDATE ON execution_workspaces
+      FOR EACH ROW EXECUTE FUNCTION aiva1862_reaper_active_link();
+    `));
+
+    const report = await executionWorkspaceReaperService(db).reap(companyId, {
+      dryRun: false,
+      deleteFiles: true,
+    });
+    const itemById = new Map(report.items.map((item) => [item.workspaceId, item]));
+    const rows = await db
+      .select({
+        id: executionWorkspaces.id,
+        status: executionWorkspaces.status,
+      })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [firstWorkspaceId, staleWorkspaceId, lateActiveWorkspaceId]));
+    const statusById = new Map(rows.map((row) => [row.id, row.status]));
+
+    expect(report).toMatchObject({
+      dryRun: false,
+      deleteFiles: true,
+      checkedCount: 3,
+      candidateCount: 1,
+      archivedCount: 1,
+      excludedActiveCount: 1,
+      noopNoReasonCount: 1,
+    });
+    expect(itemById.get(firstWorkspaceId)).toMatchObject({
+      plannedAction: "archive_record_and_delete_files",
+      archived: true,
+      cleanupAttempted: true,
+      cleanupDeleted: true,
+    });
+    expect(itemById.get(staleWorkspaceId)).toMatchObject({
+      reason: "none",
+      reasons: [],
+      pathExists: true,
+      plannedAction: "noop_no_cleanup_reason",
+      archived: false,
+    });
+    expect(itemById.get(lateActiveWorkspaceId)).toMatchObject({
+      reason: "active_linked",
+      activeLinkedCount: 1,
+      plannedAction: "exclude_active_linked",
+      archived: false,
+    });
+    expect(statusById.get(firstWorkspaceId)).toBe("archived");
+    expect(statusById.get(staleWorkspaceId)).toBe("active");
+    expect(statusById.get(lateActiveWorkspaceId)).toBe("active");
+  }, 20_000);
+
+  it("sanitizes delete-files cleanup warnings in reaper output and storage", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const sourceDoneIssueId = randomUUID();
+    const candidateWorkspaceId = randomUUID();
+    const projectWorkspacePath = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-reaper-project-"));
+    const candidateWorkspacePath = await createTempRepo();
+    const rawCleanupOutput = "raw-cleanup-output-should-not-leak";
+    const rawCleanupError = "raw-cleanup-error-should-not-leak";
+    tempDirs.add(projectWorkspacePath);
+    tempDirs.add(candidateWorkspacePath);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace reaper cleanup",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: projectWorkspacePath,
+    });
+    await db.insert(issues).values({
+      id: sourceDoneIssueId,
+      companyId,
+      projectId,
+      title: "Finished source issue",
+      status: "done",
+      priority: "medium",
+      identifier: "PAP-40",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: candidateWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      sourceIssueId: sourceDoneIssueId,
+      mode: "isolated_workspace",
+      strategyType: "directory",
+      name: "Cleanup warning candidate",
+      status: "active",
+      providerType: "local_fs",
+      cwd: candidateWorkspacePath,
+      metadata: {
+        createdByRuntime: true,
+        config: {
+          cleanupCommand: `printf ${JSON.stringify(rawCleanupOutput)}; printf ${JSON.stringify(rawCleanupError)} >&2; exit 7`,
+        },
+      },
+    });
+
+    const report = await executionWorkspaceReaperService(db).reap(companyId, {
+      dryRun: false,
+      deleteFiles: true,
+    });
+    const item = report.items.find((entry) => entry.workspaceId === candidateWorkspaceId);
+    const row = await db
+      .select({
+        status: executionWorkspaces.status,
+        cleanupReason: executionWorkspaces.cleanupReason,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, candidateWorkspaceId))
+      .then((rows) => rows[0]);
+    const serializedItem = JSON.stringify(item);
+
+    expect(item).toMatchObject({
+      plannedAction: "archive_record_and_delete_files",
+      archived: true,
+      cleanupAttempted: true,
+      cleanupDeleted: true,
+      cleanupSkippedReason: "filesystem cleanup reported 1 warning",
+    });
+    expect(serializedItem).not.toContain(rawCleanupOutput);
+    expect(serializedItem).not.toContain(rawCleanupError);
+    expect(serializedItem).not.toContain("printf");
+    expect(row).toMatchObject({
+      status: "archived",
+      cleanupReason: "reaper:source_issue_terminal; cleanup:cleanup_warnings:1",
+    });
+    expect(row?.cleanupReason).not.toContain(rawCleanupOutput);
+    expect(row?.cleanupReason).not.toContain(rawCleanupError);
+    expect(row?.cleanupReason).not.toContain("printf");
+  }, 20_000);
+
+  it("marks incomplete delete-files cleanup as cleanup_failed and retryable", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const sourceDoneIssueId = randomUUID();
+    const candidateWorkspaceId = randomUUID();
+    const candidateWorkspacePath = await createTempRepo();
+    tempDirs.add(candidateWorkspacePath);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace reaper incomplete cleanup",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(issues).values({
+      id: sourceDoneIssueId,
+      companyId,
+      projectId,
+      title: "Finished source issue",
+      status: "done",
+      priority: "medium",
+      identifier: "PAP-50",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: candidateWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: sourceDoneIssueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Incomplete cleanup candidate",
+      status: "active",
+      providerType: "git_worktree",
+      cwd: candidateWorkspacePath,
+      providerRef: candidateWorkspacePath,
+    });
+
+    const report = await executionWorkspaceReaperService(db).reap(companyId, {
+      dryRun: false,
+      deleteFiles: true,
+    });
+    const item = report.items.find((entry) => entry.workspaceId === candidateWorkspaceId);
+    const row = await db
+      .select({
+        status: executionWorkspaces.status,
+        cleanupReason: executionWorkspaces.cleanupReason,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, candidateWorkspaceId))
+      .then((rows) => rows[0]);
+    const retryReport = await executionWorkspaceReaperService(db).reap(companyId, {
+      dryRun: true,
+      deleteFiles: true,
+    });
+    const retryItem = retryReport.items.find((entry) => entry.workspaceId === candidateWorkspaceId);
+    const serializedItem = JSON.stringify(item);
+
+    expect(item).toMatchObject({
+      plannedAction: "archive_record_and_delete_files",
+      archived: true,
+      cleanupAttempted: true,
+      cleanupDeleted: false,
+      cleanupSkippedReason: "filesystem cleanup did not remove workspace; filesystem cleanup reported 1 warning",
+    });
+    expect(serializedItem).not.toContain(candidateWorkspacePath);
+    expect(serializedItem).not.toContain("git worktree remove");
+    expect(row).toMatchObject({
+      status: "cleanup_failed",
+      cleanupReason: "reaper:source_issue_terminal; cleanup:cleanup_incomplete:1",
+    });
+    expect(row?.cleanupReason).not.toContain(candidateWorkspacePath);
+    expect(retryItem).toMatchObject({
+      workspaceStatus: "cleanup_failed",
+      plannedAction: "archive_record_and_delete_files",
+      archived: false,
+    });
+  }, 20_000);
+
+  it("archives but skips delete-files cleanup for unsafe git and project workspaces", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const sourceDoneIssueId = randomUUID();
+    const dirtyWorkspaceId = randomUUID();
+    const untrackedWorkspaceId = randomUUID();
+    const unmergedWorkspaceId = randomUUID();
+    const primaryWorkspaceId = randomUUID();
+    const sharedWorkspaceId = randomUUID();
+
+    async function addRuntimeWorktree(branchName: string) {
+      const worktreePath = path.join(path.dirname(repoRoot), `${branchName}-${randomUUID()}`);
+      tempDirs.add(worktreePath);
+      await runGit(repoRoot, ["worktree", "add", "-b", branchName, worktreePath, "main"]);
+      return worktreePath;
+    }
+
+    const dirtyBranch = "paperclip-reaper-dirty";
+    const untrackedBranch = "paperclip-reaper-untracked";
+    const unmergedBranch = "paperclip-reaper-unmerged";
+    const dirtyPath = await addRuntimeWorktree(dirtyBranch);
+    const untrackedPath = await addRuntimeWorktree(untrackedBranch);
+    const unmergedPath = await addRuntimeWorktree(unmergedBranch);
+    await fs.writeFile(path.join(dirtyPath, "README.md"), "# Test repo\nmodified\n", "utf8");
+    await fs.writeFile(path.join(untrackedPath, "untracked.txt"), "left behind\n", "utf8");
+    await fs.writeFile(path.join(unmergedPath, "feature.txt"), "hello\n", "utf8");
+    await runGit(unmergedPath, ["add", "feature.txt"]);
+    await runGit(unmergedPath, ["commit", "-m", "Feature commit"]);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace reaper safety",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "git_repo",
+      isPrimary: true,
+      cwd: repoRoot,
+    });
+    await db.insert(issues).values({
+      id: sourceDoneIssueId,
+      companyId,
+      projectId,
+      title: "Finished source issue",
+      status: "done",
+      priority: "medium",
+      identifier: "PAP-60",
+    });
+    await db.insert(executionWorkspaces).values([
+      {
+        id: dirtyWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: sourceDoneIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Dirty tracked workspace",
+        status: "active",
+        providerType: "git_worktree",
+        cwd: dirtyPath,
+        providerRef: dirtyPath,
+        branchName: dirtyBranch,
+        baseRef: "main",
+        metadata: { createdByRuntime: true },
+      },
+      {
+        id: untrackedWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: sourceDoneIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Untracked workspace",
+        status: "active",
+        providerType: "git_worktree",
+        cwd: untrackedPath,
+        providerRef: untrackedPath,
+        branchName: untrackedBranch,
+        baseRef: "main",
+        metadata: { createdByRuntime: true },
+      },
+      {
+        id: unmergedWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: sourceDoneIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Unmerged workspace",
+        status: "active",
+        providerType: "git_worktree",
+        cwd: unmergedPath,
+        providerRef: unmergedPath,
+        branchName: unmergedBranch,
+        baseRef: "main",
+        metadata: { createdByRuntime: true },
+      },
+      {
+        id: primaryWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: sourceDoneIssueId,
+        mode: "isolated_workspace",
+        strategyType: "project_primary",
+        name: "Project primary workspace",
+        status: "active",
+        providerType: "local_fs",
+        cwd: repoRoot,
+        providerRef: repoRoot,
+        metadata: { createdByRuntime: true },
+      },
+      {
+        id: sharedWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: sourceDoneIssueId,
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        name: "Shared workspace session",
+        status: "active",
+        providerType: "local_fs",
+        cwd: repoRoot,
+        providerRef: repoRoot,
+        metadata: { createdByRuntime: true },
+      },
+    ]);
+
+    const report = await executionWorkspaceReaperService(db).reap(companyId, {
+      dryRun: false,
+      deleteFiles: true,
+    });
+    const itemById = new Map(report.items.map((item) => [item.workspaceId, item]));
+    const rows = await db
+      .select({
+        id: executionWorkspaces.id,
+        status: executionWorkspaces.status,
+      })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [
+        dirtyWorkspaceId,
+        untrackedWorkspaceId,
+        unmergedWorkspaceId,
+        primaryWorkspaceId,
+        sharedWorkspaceId,
+      ]));
+
+    expect(report).toMatchObject({
+      dryRun: false,
+      deleteFiles: true,
+      checkedCount: 5,
+      candidateCount: 5,
+      archivedCount: 5,
+    });
+    expect(itemById.get(dirtyWorkspaceId)).toMatchObject({
+      plannedAction: "archive_record_cleanup_skipped",
+      archived: true,
+      cleanupAttempted: false,
+      cleanupDeleted: false,
+      cleanupSkippedReason: "workspace has modified tracked files",
+    });
+    expect(itemById.get(untrackedWorkspaceId)).toMatchObject({
+      plannedAction: "archive_record_cleanup_skipped",
+      archived: true,
+      cleanupAttempted: false,
+      cleanupDeleted: false,
+      cleanupSkippedReason: "workspace has untracked files",
+    });
+    expect(itemById.get(unmergedWorkspaceId)).toMatchObject({
+      plannedAction: "archive_record_cleanup_skipped",
+      archived: true,
+      cleanupAttempted: false,
+      cleanupDeleted: false,
+      cleanupSkippedReason: "workspace has unmerged commits ahead of its base ref",
+    });
+    expect(itemById.get(primaryWorkspaceId)).toMatchObject({
+      plannedAction: "archive_record_cleanup_skipped",
+      archived: true,
+      cleanupAttempted: false,
+      cleanupDeleted: false,
+      cleanupSkippedReason: "project primary workspaces are not filesystem cleanup targets",
+    });
+    expect(itemById.get(sharedWorkspaceId)).toMatchObject({
+      plannedAction: "archive_record_cleanup_skipped",
+      archived: true,
+      cleanupAttempted: false,
+      cleanupDeleted: false,
+      cleanupSkippedReason: "shared workspace sessions are not filesystem cleanup targets",
+    });
+    expect(rows).toHaveLength(5);
+    expect(new Set(rows.map((row) => row.status))).toEqual(new Set(["archived"]));
+    await expect(fs.access(dirtyPath)).resolves.toBeUndefined();
+    await expect(fs.access(untrackedPath)).resolves.toBeUndefined();
+    await expect(fs.access(unmergedPath)).resolves.toBeUndefined();
+    await expect(fs.access(repoRoot)).resolves.toBeUndefined();
+  }, 30_000);
 
   it("warns about dirty and unmerged git worktrees and reports cleanup actions", async () => {
     const repoRoot = await createTempRepo();

@@ -65,6 +65,7 @@ export { cloudUpstreamService, reconcileCloudUpstreamRunsOnStartup } from "./clo
 export { companyPortabilityService } from "./company-portability.js";
 export { environmentService } from "./environments.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";
+export { executionWorkspaceReaperService } from "./execution-workspace-reaper.js";
 export { workspaceOperationService } from "./workspace-operations.js";
 export { workProductService } from "./work-products.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";

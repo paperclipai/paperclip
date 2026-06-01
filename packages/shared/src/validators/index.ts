@@ -300,6 +300,8 @@ export {
   executionWorkspaceCloseLinkedIssueSchema,
   executionWorkspaceCloseReadinessSchema,
   executionWorkspaceCloseReadinessStateSchema,
+  reapExecutionWorkspacesSchema,
+  type ReapExecutionWorkspaces,
   type UpdateExecutionWorkspace,
 } from "./execution-workspace.js";
 
