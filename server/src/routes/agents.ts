@@ -2836,7 +2836,8 @@ export function agentRoutes(
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
-    const runs = await heartbeat.list(companyId, agentId, limit);
+    const status = req.query.status as string | undefined;
+    const runs = await heartbeat.list(companyId, agentId, limit, status);
     res.json(runs);
   });
 

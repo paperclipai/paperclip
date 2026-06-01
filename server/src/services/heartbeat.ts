@@ -7510,7 +7510,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   return {
-    list: async (companyId: string, agentId?: string, limit?: number) => {
+    list: async (companyId: string, agentId?: string, limit?: number, status?: string) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const query = db
         .select(
@@ -7528,9 +7528,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         )
         .from(heartbeatRuns)
         .where(
-          agentId
-            ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
-            : eq(heartbeatRuns.companyId, companyId),
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            agentId ? eq(heartbeatRuns.agentId, agentId) : undefined,
+            status ? eq(heartbeatRuns.status, status) : undefined,
+          ),
         )
         .orderBy(desc(heartbeatRuns.createdAt));
 
