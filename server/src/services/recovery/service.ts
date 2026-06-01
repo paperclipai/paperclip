@@ -2500,6 +2500,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (isSuccessfulInProgressContinuationRun(latestRun)) {
         const successfulRun = latestRun;
 
+        // source_scoped_recovery_action runs are recovery-system dispatches that have their own
+        // resolution path. Treating them as productive continuations causes a secondary loop:
+        // recovery run (advanced) → continuation enqueued → handoff fired → exhausted → blocked.
+        const recoveryWakeReason = readNonEmptyString(parseObject(successfulRun.contextSnapshot)?.wakeReason);
+        if (recoveryWakeReason === "source_scoped_recovery_action") {
+          result.skipped += 1;
+          continue;
+        }
+
         if (!isProductiveContinuationRun(successfulRun)) {
           result.successfulContinuationObserved += 1;
           result.skipped += 1;

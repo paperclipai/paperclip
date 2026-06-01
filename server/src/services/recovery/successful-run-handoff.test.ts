@@ -200,14 +200,15 @@ describe("successful run handoff decision", () => {
     });
   });
 
-  it("does not queue for source-scoped recovery action runs", () => {
+  it("does not trigger finish_successful_run_handoff for source_scoped_recovery_action runs (CAR-1882)", () => {
+    // Regression guard: recovery runs must not re-enter the handoff cycle.
     expect(decide({
       run: {
         ...run,
         contextSnapshot: {
           issueId: "issue-1",
-          source: "issue_recovery_action",
           wakeReason: "source_scoped_recovery_action",
+          source: "issue_recovery_action",
           recoveryActionId: "action-1",
         },
       } as any,
@@ -215,7 +216,7 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "source-scoped recovery run owns its own recovery path",
     });
-    // also skips on source match alone (without wakeReason)
+    // Also skips on source match alone when wakeReason differs or is absent.
     expect(decide({
       run: {
         ...run,
