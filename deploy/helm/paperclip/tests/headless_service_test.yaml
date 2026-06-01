@@ -1,4 +1,6 @@
 suite: headless service
+release:
+  name: paperclip
 templates:
   - templates/service-headless.yaml
 tests:
