@@ -82,6 +82,33 @@ describe("PaperclipApiClient", () => {
     );
   });
 
+  it("falls back to localhost when the configured host is unreachable", async () => {
+    const fetchMock = vi.fn((input: unknown) => {
+      const url = String(input);
+      if (url.includes("localhost")) {
+        return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      }
+      return Promise.reject(new TypeError("fetch failed"));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new PaperclipApiClient({ apiBase: "http://remote-host.example:3100" });
+    const result = await client.get<{ ok: boolean }>("/api/health");
+
+    expect(result).toMatchObject({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0][0])).toContain("remote-host.example");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("localhost");
+  });
+
+  it("does not double-fetch when the configured host is already loopback", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new PaperclipApiClient({ apiBase: "http://localhost:3100" });
+    await expect(client.get("/api/health")).rejects.toBeInstanceOf(ApiConnectionError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("retries once after interactive auth recovery", async () => {
     const fetchMock = vi
       .fn()
