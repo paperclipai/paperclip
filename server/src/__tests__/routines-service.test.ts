@@ -1510,4 +1510,118 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
   });
+
+  it("skip_missed drops dispatch when nextRunAt is far in the past (engine downtime)", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        label: "office hours",
+        cronExpression: "0 8-19 * * *",
+        timezone: "UTC",
+      },
+      {},
+    );
+
+    // Simulate engine downtime: backdate nextRunAt to many windows ago.
+    const staleNextRunAt = new Date("2026-05-06T07:00:00.000Z");
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: staleNextRunAt })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const now = new Date("2026-05-07T03:24:10.577Z");
+    const result = await svc.tickScheduledTriggers(now);
+
+    expect(result.triggered).toBe(0);
+
+    const runs = await db
+      .select({ id: routineRuns.id })
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(0);
+
+    const advanced = await db
+      .select({ nextRunAt: routineTriggers.nextRunAt })
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, trigger.id))
+      .then((rows) => rows[0] ?? null);
+    expect(advanced?.nextRunAt?.toISOString()).toBe("2026-05-07T08:00:00.000Z");
+  });
+
+  it("skip_missed still fires when nextRunAt is within the grace window of now", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        label: "office hours",
+        cronExpression: "0 8-19 * * *",
+        timezone: "UTC",
+      },
+      {},
+    );
+
+    const onSchedule = new Date("2026-05-07T08:00:00.000Z");
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: onSchedule })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    // Tick 15 seconds late — well within the grace window.
+    const now = new Date("2026-05-07T08:00:15.000Z");
+    const result = await svc.tickScheduledTriggers(now);
+
+    expect(result.triggered).toBe(1);
+
+    const runs = await db
+      .select({ id: routineRuns.id })
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(1);
+  });
+
+  it("enqueue_missed_with_cap still enqueues missed runs after engine downtime", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const catchUpRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "catch up",
+        description: "Catch up after downtime",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "enqueue_missed_with_cap",
+      },
+      {},
+    );
+    const { trigger } = await svc.createTrigger(
+      catchUpRoutine.id,
+      {
+        kind: "schedule",
+        label: "office hours",
+        cronExpression: "0 8-19 * * *",
+        timezone: "UTC",
+      },
+      {},
+    );
+
+    // Three windows ago.
+    const staleNextRunAt = new Date("2026-05-07T08:00:00.000Z");
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: staleNextRunAt })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const now = new Date("2026-05-07T11:30:00.000Z");
+    const result = await svc.tickScheduledTriggers(now);
+
+    // Expected fires at 08:00, 09:00, 10:00, 11:00 = 4 runs.
+    expect(result.triggered).toBe(4);
+  });
 });

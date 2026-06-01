@@ -64,6 +64,11 @@ const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blo
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
+// Maximum lag between a trigger's nextRunAt and now beyond which `skip_missed`
+// drops the dispatch instead of firing late. Set to 2× the default scheduler
+// tick interval (30s) so normal tick jitter still fires while engine downtime
+// gaps don't fire stale runs.
+const SKIP_MISSED_GRACE_MS = 2 * 60_000;
 const MAX_ROUTINE_REVISIONS = 100;
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
@@ -2333,6 +2338,14 @@ export function routineService(
             runCount += 1;
             claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
             cursor = claimedNextRunAt;
+          }
+        } else {
+          // skip_missed: only dispatch when nextRunAt is within one tick of now.
+          // If the trigger is older than the grace window (e.g. engine downtime),
+          // advance nextRunAt to the next future cron tick without firing.
+          const lagMs = now.getTime() - row.trigger.nextRunAt.getTime();
+          if (lagMs > SKIP_MISSED_GRACE_MS) {
+            runCount = 0;
           }
         }
 
