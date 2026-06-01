@@ -3038,6 +3038,10 @@ export function agentRoutes(
       idempotencyKey: req.body.idempotencyKey ?? null,
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
+      // A deliberate operator Retry of a failed run force-clears a stale
+      // execution lock so the agent actually runs instead of coalescing into a
+      // wedged ghost run. Scoped to the explicit retry reason + a human board actor.
+      forceClearStaleExecution: req.body.reason === "retry_failed_run" && req.actor.type !== "agent",
       contextSnapshot: {
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,

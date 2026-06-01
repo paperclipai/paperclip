@@ -972,6 +972,15 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  /**
+   * Operator override: when an explicit manual Retry hits an issue whose
+   * execution lock is held by a wedged same-agent run (a run stuck in a
+   * non-terminal status with no live process — e.g. it errored without writing
+   * a terminal status, or a doomed scheduled_retry), forcibly cancel that ghost
+   * run and release the lock so a fresh run can start instead of coalescing into
+   * the dead one. Only set for deliberate user retries, never timer wakes.
+   */
+  forceClearStaleExecution?: boolean;
 }
 
 type UsageTotals = {
@@ -7998,7 +8007,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
-        await releaseIssueExecutionAndPromote(livenessRun);
+        // A deliberately cancelled run (or one killed by a signal during an
+        // active cancel) must be terminal — suppress immediate recovery so it
+        // doesn't queue an assignment-recovery run (the recovery gate explicitly
+        // treats status "cancelled" as needing recovery). Genuine failures still
+        // recover normally.
+        await releaseIssueExecutionAndPromote(livenessRun, {
+          suppressImmediateRecovery: outcome === "cancelled" || adapterResult.signal != null,
+        });
         await handleRunLivenessContinuation(livenessRun);
         await handleSuccessfulRunHandoff(
           issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
@@ -8916,6 +8932,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           activeExecutionRun = null;
         }
 
+        // Operator override: an explicit manual Retry force-reaps a wedged
+        // same-agent run that is holding the execution lock but has no live
+        // process (it errored/quota-died without writing a terminal status, or
+        // is a doomed scheduled_retry). Without this, the manual wake just
+        // coalesces into the ghost and the agent never actually runs.
+        if (
+          activeExecutionRun &&
+          opts.forceClearStaleExecution &&
+          !runningProcesses.has(activeExecutionRun.id)
+        ) {
+          const now = new Date();
+          const reapReason = "Force-cancelled by manual retry: previous run was wedged without a live process";
+          const reaped = await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: reapReason,
+              errorCode: "stale_execution_reaped",
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(heartbeatRuns.id, activeExecutionRun.id),
+                inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (reaped) {
+            if (reaped.wakeupRequestId) {
+              await tx
+                .update(agentWakeupRequests)
+                .set({ status: "cancelled", finishedAt: now, error: reapReason, updatedAt: now })
+                .where(eq(agentWakeupRequests.id, reaped.wakeupRequestId));
+            }
+            activeExecutionRun = null;
+          }
+        }
+
         if (!activeExecutionRun && issue.executionRunId) {
           await tx
             .update(issues)
@@ -9425,6 +9481,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
     const agent = await getAgent(run.agentId);
 
+    // Mark the run cancelled BEFORE killing the process. terminate* awaits a
+    // SIGTERM grace period during which the killed child resolves adapter.execute
+    // and the run's own completion handler runs concurrently — if the status
+    // isn't already terminal there, it misclassifies the deliberate cancel as
+    // "failed" and schedules a doomed retry. Writing "cancelled" first makes the
+    // completion handler see a terminal status and treat the run as cancelled.
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: new Date(),
+      error: reason,
+      errorCode: "cancelled",
+      ...(agent ? {
+        resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
+          resultJson: parseObject(run.resultJson),
+          errorCode: "cancelled",
+          errorMessage: reason,
+        }),
+      } : {}),
+    });
+
     const running = runningProcesses.get(run.id);
     if (running) {
       await terminateHeartbeatRunProcess({
@@ -9438,19 +9513,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         processGroupId: run.processGroupId,
       });
     }
-
-    const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt: new Date(),
-      error: reason,
-      errorCode: "cancelled",
-      ...(agent ? {
-        resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
-          resultJson: parseObject(run.resultJson),
-          errorCode: "cancelled",
-          errorMessage: reason,
-        }),
-      } : {}),
-    });
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt: new Date(),
