@@ -452,7 +452,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
 
     const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
       .patch(`/api/issues/${issueId}`)
-      .send({ status: "done" });
+      .send({ status: "done", comment: "Completed stale lock recovery" });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
 
     const action = await db
