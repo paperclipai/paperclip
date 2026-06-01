@@ -54,6 +54,14 @@ The Docker image pre-installs:
 
 - `claude` (Anthropic Claude Code CLI)
 - `codex` (OpenAI Codex CLI)
+- `qmd` for agent memory recall
+- Playwright Chromium and its Linux system dependencies for screenshot and audit work
+
+Verify the runtime tooling after a build:
+
+```sh
+docker run --rm paperclip-local node scripts/check-agent-runtime-tools.mjs
+```
 
 Pass API keys to enable local adapter runs inside the container:
 

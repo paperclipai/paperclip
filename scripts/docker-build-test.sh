@@ -40,6 +40,7 @@ echo "==> Verifying key binaries in image"
   rg --version
   python3 --version
   curl --version | head -1
+  node scripts/check-agent-runtime-tools.mjs
   claude --version 2>/dev/null || echo "claude CLI not found (OK in minimal builds)"
 '
 
