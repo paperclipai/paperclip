@@ -173,6 +173,7 @@ export function IssueDocumentsSection({
   const [diffViewKey, setDiffViewKey] = useState<string | null>(null);
   const [qbankImportOpen, setQBankImportOpen] = useState(false);
   const [qbankAppId, setQBankAppId] = useState("3");
+  const [qbankQuestionId, setQBankQuestionId] = useState("");
   const [qbankPayloadText, setQBankPayloadText] = useState("");
   const [qbankImportMessage, setQBankImportMessage] = useState<string | null>(null);
   const autosaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -280,6 +281,29 @@ export function IssueDocumentsSection({
     },
     onError: (err) => {
       setError(err instanceof Error ? err.message : "Failed to restore document revision");
+    },
+  });
+
+  const fetchQBankItem = useMutation({
+    mutationFn: async () => {
+      const trimmedAppId = qbankAppId.trim();
+      const trimmedQuestionId = qbankQuestionId.trim();
+      if (!trimmedAppId) throw new Error("QBank app ID is required");
+      if (!trimmedQuestionId) throw new Error("QBank question ID is required");
+      return issuesApi.fetchQBankItemSource(issue.id, {
+        appId: trimmedAppId,
+        questionId: trimmedQuestionId,
+      });
+    },
+    onSuccess: ({ appId, item }) => {
+      setQBankAppId(String(appId));
+      setQBankPayloadText(JSON.stringify(item, null, 2));
+      setQBankImportMessage("QBank item fetched. Review, then create the card.");
+      setError(null);
+    },
+    onError: (err) => {
+      setQBankImportMessage(null);
+      setError(err instanceof Error ? err.message : "Failed to fetch QBank item");
     },
   });
 
@@ -733,6 +757,20 @@ export function IssueDocumentsSection({
       {isEmpty && !draft?.isNew ? (
         <div className="flex flex-wrap items-center justify-end gap-2 min-w-0">
           {extraActions}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setQBankImportOpen((open) => !open);
+              setError(null);
+              setQBankImportMessage(null);
+            }}
+            className="shrink-0"
+          >
+            <FileText className="mr-1.5 h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Import QBank</span>
+            <span className="sm:hidden">QBank</span>
+          </Button>
           <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
             <span className="hidden sm:inline">New document</span>
@@ -784,6 +822,23 @@ export function IssueDocumentsSection({
             onChange={(event) => setQBankAppId(event.target.value)}
             placeholder="App ID"
           />
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Input
+              aria-label="QBank question ID"
+              value={qbankQuestionId}
+              onChange={(event) => setQBankQuestionId(event.target.value)}
+              placeholder="Question ID"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => fetchQBankItem.mutate()}
+              disabled={fetchQBankItem.isPending}
+              className="shrink-0"
+            >
+              {fetchQBankItem.isPending ? "Fetching..." : "Fetch item"}
+            </Button>
+          </div>
           <textarea
             aria-label="QBank item JSON"
             className="min-h-[180px] w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"

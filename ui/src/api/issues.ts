@@ -241,6 +241,13 @@ export const issuesApi = {
     api.delete<{ ok: true }>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   importQBankItem: (id: string, data: { appId: number | string; item: Record<string, unknown> }) =>
     api.post<{ created: boolean; document: IssueDocument; sourceRef: string }>(`/issues/${id}/qbank-item`, data),
+  fetchQBankItemSource: (id: string, data: { appId: number | string; questionId: number | string }) => {
+    const params = new URLSearchParams({
+      appId: String(data.appId),
+      questionId: String(data.questionId),
+    });
+    return api.get<{ appId: number; item: Record<string, unknown> }>(`/issues/${id}/qbank-item/source?${params.toString()}`);
+  },
   listAttachments: (id: string) => api.get<IssueAttachment[]>(`/issues/${id}/attachments`),
   uploadAttachment: (
     companyId: string,

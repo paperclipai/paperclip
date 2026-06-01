@@ -113,6 +113,7 @@ import {
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { fetchPartnerQBankQuestion, getConfiguredPartnerApiKey } from "../services/hlt-partner-qbank.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const CHAT_ATTACHMENT_READ_DEFAULT_MAX_BYTES = 128 * 1024;
@@ -130,6 +131,11 @@ const qbankPartnerItemSchema = z
 const importQBankItemDocumentSchema = z.object({
   appId: z.union([z.number(), z.string().trim().min(1)]),
   item: qbankPartnerItemSchema,
+});
+
+const fetchQBankItemQuerySchema = z.object({
+  appId: z.coerce.number().int().positive(),
+  questionId: z.string().trim().min(1),
 });
 
 const chatAttachmentsReadQuerySchema = z.object({
@@ -2341,6 +2347,30 @@ export function issueRoutes(
     }
 
     res.status(result.created ? 201 : 200).json(doc);
+  });
+
+  router.get("/issues/:id/qbank-item/source", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+
+    const parsedQuery = fetchQBankItemQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      res.status(400).json({ error: "Invalid QBank source query", details: parsedQuery.error.flatten() });
+      return;
+    }
+
+    const item = await fetchPartnerQBankQuestion({
+      appId: parsedQuery.data.appId,
+      questionId: parsedQuery.data.questionId,
+      apiKey: getConfiguredPartnerApiKey(),
+    });
+    res.json({ appId: parsedQuery.data.appId, item });
   });
 
   router.post("/issues/:id/qbank-item", validate(importQBankItemDocumentSchema), async (req, res) => {

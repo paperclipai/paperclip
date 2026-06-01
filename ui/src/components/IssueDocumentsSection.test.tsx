@@ -18,6 +18,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   deleteDocument: vi.fn(),
   getDocument: vi.fn(),
   importQBankItem: vi.fn(),
+  fetchQBankItemSource: vi.fn(),
 }));
 
 const markdownEditorMockState = vi.hoisted(() => ({
@@ -654,6 +655,116 @@ describe("IssueDocumentsSection", () => {
     expect(container.textContent).toContain("QBank card imported");
     expect(container.textContent).toContain("# QBank item 50067");
     expect(container.textContent).toContain("Source ref: `qbank:app-3/question-50067`");
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("fetches a QBank payload by app and question id before import", async () => {
+    const issue = createIssue();
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    mockIssuesApi.listDocuments.mockResolvedValue([createIssueDocument({ body: "# Plan" })]);
+    mockIssuesApi.fetchQBankItemSource.mockResolvedValue({
+      appId: 3,
+      item: { id: 50067, question: "<p>Ovarian cancer spread?</p>" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection issue={issue} canDeleteDocuments={false} />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const openImportButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Import QBank"));
+    expect(openImportButton).toBeTruthy();
+
+    await act(async () => {
+      openImportButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const questionIdInput = container.querySelector('input[aria-label="QBank question ID"]') as HTMLInputElement | null;
+    const payloadTextarea = container.querySelector('textarea[aria-label="QBank item JSON"]') as HTMLTextAreaElement | null;
+    expect(questionIdInput).toBeTruthy();
+    expect(payloadTextarea).toBeTruthy();
+
+    await act(async () => {
+      const inputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      inputValueSetter?.call(questionIdInput, "50067");
+      questionIdInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const fetchButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Fetch item"));
+    expect(fetchButton).toBeTruthy();
+
+    await act(async () => {
+      fetchButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.fetchQBankItemSource).toHaveBeenCalledWith("issue-1", {
+      appId: "3",
+      questionId: "50067",
+    });
+    expect(payloadTextarea!.value).toContain('"id": 50067');
+    expect(payloadTextarea!.value).toContain("Ovarian cancer spread");
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("keeps the QBank importer available when an issue has no documents yet", async () => {
+    const issue = {
+      ...createIssue(),
+      planDocument: null,
+      documentSummaries: [],
+    };
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    mockIssuesApi.listDocuments.mockResolvedValue([]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection issue={issue} canDeleteDocuments={false} />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const openImportButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Import QBank"));
+    expect(openImportButton).toBeTruthy();
+
+    await act(async () => {
+      openImportButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.querySelector('input[aria-label="QBank app ID"]')).toBeTruthy();
+    expect(container.querySelector('input[aria-label="QBank question ID"]')).toBeTruthy();
 
     await act(async () => {
       root.unmount();
