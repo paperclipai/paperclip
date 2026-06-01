@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Crosshair } from "lucide-react";
 import { campaignsApi, type IcpRow } from "../api/agnbCampaigns";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -7,20 +7,52 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbSubnav } from "../components/AgnbSubnav";
+import { AgnbFormModal } from "../components/AgnbFormModal";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 
 const TIERS: Array<IcpRow["tier"]> = ["now", "later", "monitor"];
+const csv = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
 
 export function Icps() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Campaigns" }, { label: "ICPs" }]), [setBreadcrumbs]);
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.icps, queryFn: () => campaignsApi.icps() });
 
   return (
     <div className="space-y-4">
       <AgnbSubnav group="campaigns" />
-      <h1 className="text-lg font-semibold">ICPs</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-semibold">ICPs</h1>
+        <Button size="sm" onClick={() => setOpen(true)}>New ICP</Button>
+      </div>
+      {open && (
+        <AgnbFormModal
+          title="New ICP"
+          fields={[
+            { key: "name", label: "Name", required: true },
+            { key: "tier", label: "Tier", type: "select", options: [{ value: "now", label: "now" }, { value: "later", label: "later" }, { value: "monitor", label: "monitor" }] },
+            { key: "industries", label: "Industries (comma)" },
+            { key: "regions", label: "Regions (comma)" },
+            { key: "functions", label: "Functions (comma)" },
+            { key: "company_size_min", label: "Company size min", type: "number" },
+            { key: "company_size_max", label: "Company size max", type: "number" },
+          ]}
+          onClose={() => setOpen(false)}
+          onSubmit={async (v) => {
+            await campaignsApi.createIcp({
+              name: v.name, tier: v.tier || "monitor",
+              industries: csv(v.industries), regions: csv(v.regions), functions: csv(v.functions),
+              company_size_min: v.company_size_min ? Number(v.company_size_min) : null,
+              company_size_max: v.company_size_max ? Number(v.company_size_max) : null,
+            });
+            qc.invalidateQueries({ queryKey: queryKeys.agnb.icps });
+          }}
+        />
+      )}
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

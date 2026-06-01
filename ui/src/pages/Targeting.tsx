@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Crosshair } from "lucide-react";
 import { campaignsApi } from "../api/agnbCampaigns";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -7,19 +7,34 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbSubnav } from "../components/AgnbSubnav";
+import { AgnbFormModal } from "../components/AgnbFormModal";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { relativeTime } from "../lib/utils";
 
 export function Targeting() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Campaigns" }, { label: "Saved targetings" }]), [setBreadcrumbs]);
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.targeting, queryFn: () => campaignsApi.targeting() });
 
   return (
     <div className="space-y-4">
       <AgnbSubnav group="campaigns" />
-      <h1 className="text-lg font-semibold">Saved targetings</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-semibold">Saved targetings</h1>
+        <Button size="sm" onClick={() => setOpen(true)}>Save targeting</Button>
+      </div>
+      {open && (
+        <AgnbFormModal
+          title="Save targeting"
+          fields={[{ key: "name", label: "Name", required: true }, { key: "query", label: "Query", type: "textarea", required: true }, { key: "notes", label: "Notes" }, { key: "tags", label: "Tags (comma-separated)" }]}
+          onClose={() => setOpen(false)}
+          onSubmit={async (v) => { await campaignsApi.saveTargeting({ name: v.name, query: v.query, notes: v.notes || undefined, tags: v.tags ? v.tags.split(",").map((t) => t.trim()).filter(Boolean) : undefined }); qc.invalidateQueries({ queryKey: queryKeys.agnb.targeting }); }}
+        />
+      )}
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { FlaskConical } from "lucide-react";
 import { campaignsApi, type BucketRow } from "../api/agnbCampaigns";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -7,7 +7,9 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbSubnav } from "../components/AgnbSubnav";
+import { AgnbFormModal } from "../components/AgnbFormModal";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { cn } from "../lib/utils";
 
 const pct = (n: number | null | undefined) => (n == null ? "—" : `${(n * 100).toFixed(1)}%`);
@@ -22,6 +24,8 @@ export function Buckets() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Campaigns" }, { label: "Buckets" }]), [setBreadcrumbs]);
   const [status, setStatus] = useState<string>("all");
+  const [open, setOpen] = useState(false);
+  const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.buckets, queryFn: () => campaignsApi.buckets() });
 
   const rows: BucketRow[] = (data ?? []).filter((b) => status === "all" || b.status === status);
@@ -29,9 +33,18 @@ export function Buckets() {
   return (
     <div className="space-y-4">
       <AgnbSubnav group="campaigns" />
+      {open && (
+        <AgnbFormModal
+          title="New bucket"
+          fields={[{ key: "name", label: "Name", required: true }, { key: "target_reply_rate", label: "Target reply rate (e.g. 0.03)", type: "number" }]}
+          onClose={() => setOpen(false)}
+          onSubmit={async (v) => { await campaignsApi.createBucket({ name: v.name, target_reply_rate: v.target_reply_rate ? Number(v.target_reply_rate) : undefined }); qc.invalidateQueries({ queryKey: queryKeys.agnb.buckets }); }}
+        />
+      )}
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">Buckets</h1>
-        <div className="flex flex-wrap gap-1">
+        <div className="flex flex-wrap items-center gap-1">
+          <Button size="sm" className="mr-1" onClick={() => setOpen(true)}>New bucket</Button>
           {STATUSES.map((s) => (
             <button key={s} onClick={() => setStatus(s)}
               className={cn("rounded-md border px-2 py-0.5 text-xs capitalize", status === s ? "border-foreground bg-foreground text-background" : "border-border text-muted-foreground")}>
