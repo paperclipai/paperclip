@@ -1357,6 +1357,36 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("Planning");
   });
 
+  it("renders inline audio controls for audio attachments", async () => {
+    const issue = createIssue();
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.listAttachments.mockResolvedValue([
+      {
+        id: "attachment-audio",
+        issueId: issue.id,
+        issueCommentId: null,
+        originalFilename: "ceo-briefing.mp3",
+        contentPath: "/api/assets/briefing/content",
+        contentType: "audio/mpeg",
+        byteSize: 8192,
+        uploadedByUserId: null,
+        uploadedAt: new Date("2026-05-27T00:00:00.000Z"),
+      },
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.querySelector("audio[controls]")).not.toBeNull();
+    expect(container.textContent).toContain("ceo-briefing.mp3");
+  });
+
   it("forwards composer work mode changes to the issues API", async () => {
     const issue = createIssue();
     mockIssuesApi.get.mockResolvedValue(issue);

@@ -80,6 +80,7 @@ import { IssueProperties } from "../components/IssueProperties";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import type { MentionOption } from "../components/MarkdownEditor";
+import { AudioAttachmentPlayer } from "../components/AudioAttachmentPlayer";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
@@ -2829,9 +2830,11 @@ export function IssueDetail() {
   }, [detailTab, pendingCommentComposerFocusKey]);
 
   const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
+  const isAudioAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("audio/");
   const attachmentList = attachments ?? [];
   const imageAttachments = attachmentList.filter(isImageAttachment);
-  const nonImageAttachments = attachmentList.filter((a) => !isImageAttachment(a));
+  const audioAttachments = attachmentList.filter(isAudioAttachment);
+  const fileAttachments = attachmentList.filter((a) => !isImageAttachment(a) && !isAudioAttachment(a));
 
   const handleChatImageClick = useCallback(
     (src: string) => {
@@ -3867,9 +3870,22 @@ export function IssueDetail() {
           </div>
         )}
 
-        {nonImageAttachments.length > 0 && (
+        {audioAttachments.length > 0 && (
           <div className="space-y-2">
-            {nonImageAttachments.map((attachment) => (
+            {audioAttachments.map((attachment) => (
+              <AudioAttachmentPlayer
+                key={attachment.id}
+                attachment={attachment}
+                onDelete={() => deleteAttachment.mutate(attachment.id)}
+                deletePending={deleteAttachment.isPending}
+              />
+            ))}
+          </div>
+        )}
+
+        {fileAttachments.length > 0 && (
+          <div className="space-y-2">
+            {fileAttachments.map((attachment) => (
               <div key={attachment.id} className="border border-border rounded-md p-2">
                 <div className="flex items-center justify-between gap-2">
                   <a
