@@ -501,8 +501,18 @@ export async function startServer(): Promise<StartedServer> {
 
   const requestedListenPort = config.port;
   const listenPort = await detectPort(requestedListenPort);
-  if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
-    config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
+  // Only rewrite authPublicBaseUrl when detectPort bumped the port AND the URL
+  // explicitly encodes the configured port (meaning the operator tracks the listen port).
+  // This preserves Tailscale/proxy URLs where the URL port differs from config.port.
+  if (config.authPublicBaseUrl && listenPort !== requestedListenPort) {
+    let urlPort: number | null = null;
+    try {
+      const p = new URL(config.authPublicBaseUrl).port;
+      urlPort = p ? parseInt(p, 10) : null;
+    } catch { /* ignore unparseable URL */ }
+    if (urlPort === requestedListenPort) {
+      config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
+    }
   }
   
   let authReady = config.deploymentMode === "local_trusted";
