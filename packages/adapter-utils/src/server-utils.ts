@@ -928,6 +928,31 @@ export function buildInvocationEnvForLogs(
   return redactEnvForLogs(merged);
 }
 
+/**
+ * Returns a loopback-preferring API URL for co-located agents/runners.
+ * Co-located callers share the host, so loopback is reachable and fastest; a
+ * non-loopback configured host (e.g. a Tailscale MagicDNS name) is only
+ * meaningful to off-box callers and is unreachable from inside the sandbox.
+ * The port is preserved; only the host is rewritten. Returns undefined for
+ * empty input so it composes in `??` chains.
+ */
+export function preferLoopbackApiUrl(rawUrl: string | undefined): string | undefined {
+  const value = rawUrl?.trim();
+  if (!value) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return value; // not a parseable URL; leave untouched
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const isLoopback =
+    host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1";
+  if (isLoopback) return value;
+  parsed.hostname = "localhost";
+  return parsed.toString().replace(/\/+$/, "");
+}
+
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
@@ -945,7 +970,7 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
   const apiUrl =
     process.env.PAPERCLIP_RUNTIME_API_URL ??
-    process.env.PAPERCLIP_API_URL ??
+    preferLoopbackApiUrl(process.env.PAPERCLIP_API_URL) ??
     `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;

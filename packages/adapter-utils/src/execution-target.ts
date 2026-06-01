@@ -21,6 +21,7 @@ import {
 import { createSshCommandManagedRuntimeRunner, parseSshRemoteExecutionSpec, runSshCommand, shellQuote } from "./ssh.js";
 import {
   ensureCommandResolvable,
+  preferLoopbackApiUrl,
   resolveCommandForLogs,
   runChildProcess,
   type RunProcessResult,
@@ -1088,7 +1089,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   const hostApiUrl =
     input.hostApiUrl?.trim() ||
     process.env.PAPERCLIP_RUNTIME_API_URL?.trim() ||
-    process.env.PAPERCLIP_API_URL?.trim() ||
+    preferLoopbackApiUrl(process.env.PAPERCLIP_API_URL?.trim()) ||
     resolveDefaultPaperclipApiUrl();
   const shellCommand = adapterExecutionTargetShellCommand(target);
   const runner = adapterExecutionTargetCommandRunner(target);
