@@ -6220,6 +6220,31 @@ export function issueService(db: Db) {
         }
       }
 
+      // in_review is intentionally not claimable via checkout (it is excluded from every
+      // caller's expectedStatuses, matching shouldAutoCheckoutIssueForWake). When the caller
+      // already owns the issue and there is no active checkout/execution owner, the generic
+      // "Issue checkout conflict" 409 is misleading: there is no owner to conflict with. Surface
+      // a typed 422 pointing at the review-mutation path instead — the assignee can already
+      // PATCH/comment/close their own in_review issue without checkout (BLO-8454).
+      if (
+        current.status === "in_review" &&
+        current.assigneeAgentId === agentId &&
+        current.checkoutRunId == null &&
+        current.executionRunId == null
+      ) {
+        throw unprocessable("Issue in review is not checked out", {
+          code: "issue_in_review_not_checkoutable",
+          issueId: current.id,
+          status: current.status,
+          assigneeAgentId: current.assigneeAgentId,
+          checkoutRunId: current.checkoutRunId,
+          executionRunId: current.executionRunId,
+          supportedMutationPath:
+            "Assignees may update, comment on, or close their own in_review issue directly via " +
+            "PATCH /issues/{id} without checkout. To resume active work, PATCH status to in_progress first.",
+        });
+      }
+
       throw conflict("Issue checkout conflict", {
         issueId: current.id,
         status: current.status,

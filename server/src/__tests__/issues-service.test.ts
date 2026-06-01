@@ -4382,6 +4382,63 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       .then((rows) => rows[0] ?? null);
     expect(duplicateIssue?.executionRunId).toBeNull();
   });
+
+  it("returns a typed 422 (not generic 409) for assignee-owned in_review checkout with no active owner", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CTO",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // Reproduction matrix (BLO-8454): status=in_review, assignee matches caller,
+    // checkoutRunId=null, executionRunId=null.
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Awaiting review",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    await expect(
+      svc.checkout(issueId, assigneeAgentId, ["todo", "backlog", "blocked"], randomUUID()),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { code: "issue_in_review_not_checkoutable", issueId },
+    });
+
+    // The rejected checkout must not mutate the issue out of review (no state-machine side effect).
+    const after = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(after?.status).toBe("in_review");
+    expect(after?.checkoutRunId).toBeNull();
+    expect(after?.executionRunId).toBeNull();
+  });
 });
 
 describeEmbeddedPostgres("accepted plan decomposition", () => {
