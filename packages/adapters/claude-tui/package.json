@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/adapter-claude-tui",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
   "bugs": {
@@ -15,7 +15,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./server": "./src/server/index.ts",
-    "./ui": "./src/ui/index.ts"
+    "./ui": "./src/ui/index.ts",
+    "./cli": "./src/cli/index.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -31,6 +32,10 @@
       "./ui": {
         "types": "./dist/ui/index.d.ts",
         "import": "./dist/ui/index.js"
+      },
+      "./cli": {
+        "types": "./dist/cli/index.d.ts",
+        "import": "./dist/cli/index.js"
       }
     },
     "main": "./dist/index.js",
@@ -45,7 +50,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@paperclipai/adapter-utils": "workspace:*"
+    "@paperclipai/adapter-claude-local": "workspace:*",
+    "@paperclipai/adapter-utils": "workspace:*",
+    "picocolors": "^1.1.1"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",

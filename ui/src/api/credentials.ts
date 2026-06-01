@@ -8,10 +8,15 @@ export interface ProviderCredential {
   type: CredentialType;
   isDefault: boolean;
   // Auto-rotation bookkeeping (see server credential rotator). `cooldownUntil`
-  // is an ISO timestamp while the credential is parked after an upstream limit.
+  // is an ISO timestamp while the credential is parked after a failure.
   cooldownUntil: string | null;
   cooldownReason: string | null;
   lastUsedAt: string | null;
+  // Escalating failover: count of consecutive credential-related failures, and
+  // (when auto- or manually disabled) when/why it was parked out of the pool.
+  consecutiveFailureCount: number;
+  disabledAt: string | null;
+  disabledReason: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -76,6 +81,7 @@ export const credentialsApi = {
     ),
   test: (id: string) =>
     api.post<{ ok: boolean; message: string }>(`/credentials/${id}/test`, {}),
+  reenable: (id: string) => api.post<ProviderCredential>(`/credentials/${id}/reenable`, {}),
   probe: (type: CredentialType, credential: Record<string, unknown>) =>
     api.post<{ ok: boolean; message: string }>(`/credentials/probe`, {
       type,

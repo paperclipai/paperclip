@@ -230,6 +230,25 @@ export function credentialRoutes(db: Db) {
     res.json({ ok: result.ok, message: result.message });
   });
 
+  // Re-enable a disabled / cooling-down credential so it rejoins the rotation
+  // pool (clears disabled flag, cooldown, and the failure counter).
+  router.post("/credentials/:id/reenable", async (req, res) => {
+    const id = req.params.id as string;
+    if (!UUID_RE.test(id)) {
+      res.status(400).json({ error: "Invalid credential id" });
+      return;
+    }
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Credential not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    await requireCredentialManage(req, existing.companyId);
+    const updated = await svc.reenable(id);
+    res.json(updated);
+  });
+
   // ── Reveal credential value (audit-logged, rate-limited) ──────────────
 
   // In-memory sliding-window rate limit: max 10 reveals per minute per user
