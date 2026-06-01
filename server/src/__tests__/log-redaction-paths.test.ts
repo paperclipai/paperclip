@@ -57,9 +57,19 @@ describe("HTTP_LOG_REDACT_PATHS (SOF-100)", () => {
       headers: {
         cookie: "session=another-secret",
         authorization: "Bearer another-token",
+        "set-cookie": "session=set-cookie-secret",
+        "proxy-authorization": "Basic proxy-secret",
+        "x-csrf-token": "bare-csrf-secret",
+        "x-xsrf-token": "bare-xsrf-secret",
+        "x-api-key": "bare-api-key-secret",
       },
     });
     expect(record.headers.cookie).toBe("[Redacted]");
     expect(record.headers.authorization).toBe("[Redacted]");
+    expect(record.headers["set-cookie"]).toBe("[Redacted]");
+    expect(record.headers["proxy-authorization"]).toBe("[Redacted]");
+    expect(record.headers["x-csrf-token"]).toBe("[Redacted]");
+    expect(record.headers["x-xsrf-token"]).toBe("[Redacted]");
+    expect(record.headers["x-api-key"]).toBe("[Redacted]");
   });
 });

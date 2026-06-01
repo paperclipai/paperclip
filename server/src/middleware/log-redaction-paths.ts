@@ -31,4 +31,8 @@ export const HTTP_LOG_REDACT_PATHS: string[] = [
   "headers.authorization",
   "headers.cookie",
   'headers["set-cookie"]',
+  'headers["proxy-authorization"]',
+  'headers["x-csrf-token"]',
+  'headers["x-xsrf-token"]',
+  'headers["x-api-key"]',
 ];
