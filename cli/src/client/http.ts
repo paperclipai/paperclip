@@ -81,6 +81,78 @@ export class PaperclipApiClient {
     }, opts);
   }
 
+  put<T>(path: string, body?: unknown, opts?: RequestOptions): Promise<T | null> {
+    return this.request<T>(path, {
+      method: "PUT",
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }, opts);
+  }
+
+  /**
+   * Issue a GET that returns raw text instead of JSON. Useful for
+   * /api/llms/* and other text/plain endpoints.
+   */
+  async getText(path: string): Promise<string> {
+    const url = buildUrl(this.apiBase, path);
+    const headers: Record<string, string> = { accept: "text/plain, */*" };
+    if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
+    if (this.runId) headers["x-paperclip-run-id"] = this.runId;
+    let response: Response;
+    try {
+      response = await fetch(url, { headers });
+    } catch (error) {
+      throw new ApiConnectionError({ apiBase: this.apiBase, path, method: "GET", cause: error });
+    }
+    if (!response.ok) {
+      throw await toApiError(response);
+    }
+    return await response.text();
+  }
+
+  /**
+   * Issue a GET that streams the binary response body. Caller is responsible
+   * for piping the returned ReadableStream into a writable destination.
+   */
+  async getStream(path: string): Promise<{ body: ReadableStream<Uint8Array>; contentType: string | null }> {
+    const url = buildUrl(this.apiBase, path);
+    const headers: Record<string, string> = { accept: "*/*" };
+    if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
+    if (this.runId) headers["x-paperclip-run-id"] = this.runId;
+    let response: Response;
+    try {
+      response = await fetch(url, { headers });
+    } catch (error) {
+      throw new ApiConnectionError({ apiBase: this.apiBase, path, method: "GET", cause: error });
+    }
+    if (!response.ok) throw await toApiError(response);
+    if (!response.body) throw new Error("Empty response body");
+    return { body: response.body, contentType: response.headers.get("content-type") };
+  }
+
+  /**
+   * Issue a POST whose body is multipart form data. Used for asset/image
+   * upload endpoints.
+   */
+  async postMultipart<T>(path: string, form: FormData): Promise<T | null> {
+    const url = buildUrl(this.apiBase, path);
+    const headers: Record<string, string> = { accept: "application/json" };
+    if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
+    if (this.runId) headers["x-paperclip-run-id"] = this.runId;
+    let response: Response;
+    try {
+      response = await fetch(url, { method: "POST", headers, body: form });
+    } catch (error) {
+      throw new ApiConnectionError({ apiBase: this.apiBase, path, method: "POST", cause: error });
+    }
+    if (!response.ok) {
+      throw await toApiError(response);
+    }
+    if (response.status === 204) return null;
+    const text = await response.text();
+    if (!text.trim()) return null;
+    return safeParseJson(text) as T;
+  }
+
   delete<T>(path: string, opts?: RequestOptions): Promise<T | null> {
     return this.request<T>(path, { method: "DELETE" }, opts);
   }
