@@ -181,6 +181,7 @@ describe("assigned backlog creation contract", () => {
       }),
       parentBlockerAdded: Boolean(data.blockParentUntilDone),
     }));
+    mockIssueService.getByIdentifier.mockResolvedValue(null);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
@@ -233,6 +234,33 @@ describe("assigned backlog creation contract", () => {
         }),
       }),
     );
+  });
+
+  it("rejects blocked issue creation when description names an unlinked required blocker", async () => {
+    mockIssueService.getByIdentifier.mockResolvedValue({
+      id: "blocker-1",
+      companyId: "company-1",
+      identifier: "PAP-200",
+      title: "Launch gate",
+      status: "todo",
+      priority: "high",
+    });
+
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Blocked launch phase",
+        status: "blocked",
+        description: "Blocked by [PAP-200](/issues/PAP-200) before launch.",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      error: "Issue text names required blocker issues without first-class blocker edges",
+      requiredBlockerIssueIdentifiers: ["PAP-200"],
+    });
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+    expect(mockWakeup).not.toHaveBeenCalled();
   });
 
   it("does not let a parent-blocking assigned child become an unwoken backlog leaf by default", async () => {

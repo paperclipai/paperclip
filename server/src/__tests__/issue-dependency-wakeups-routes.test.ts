@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockIssueService = vi.hoisted(() => ({
+  create: vi.fn(),
   getAncestors: vi.fn(),
   getById: vi.fn(),
   getByIdentifier: vi.fn(async () => null),
@@ -183,6 +184,56 @@ describe("issue dependency wakeups in issue routes", () => {
         }),
       );
     });
+  });
+
+  it("rejects blocker-naming closeouts without first-class blocker edges before wakeups", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-100",
+      title: "Finish source",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.getByIdentifier.mockResolvedValue({
+      id: "issue-2",
+      companyId: "company-1",
+      identifier: "PAP-200",
+      title: "Required downstream blocker",
+      status: "todo",
+      priority: "high",
+    });
+
+    const res = await request(await createApp())
+      .patch("/api/issues/issue-1")
+      .send({
+        status: "done",
+        comment: "Closeout blocked on [PAP-200](/issues/PAP-200) before launch.",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      error: "Issue text names required blocker issues without first-class blocker edges",
+      requiredBlockerIssueIdentifiers: ["PAP-200"],
+      missingBlockedByIssues: [
+        expect.objectContaining({
+          id: "issue-2",
+          identifier: "PAP-200",
+        }),
+      ],
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.listWakeableBlockedDependents).not.toHaveBeenCalled();
+    expect(mockWakeup).not.toHaveBeenCalled();
   });
 
   it("wakes the parent when all direct children become terminal", async () => {
