@@ -2,6 +2,53 @@ import type { Response } from "express";
 
 const active = new Set<Response>();
 
+/**
+ * Max bytes allowed to sit un-drained in an SSE response socket before the
+ * connection is force-closed. An SSE client that has fallen this far behind is
+ * effectively wedged; continuing to res.write() to it queues the event frames
+ * as native socket buffers (off-heap) without bound — the same failure shape as
+ * the plugin-worker stdin backlog addressed in #216, but for HTTP responses.
+ * Disconnecting (rather than silently dropping individual frames, which would
+ * corrupt the event stream) lets the browser's EventSource auto-reconnect and
+ * resume cleanly.
+ */
+export const MAX_SSE_BACKLOG_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Pure predicate: should an SSE connection be closed because its un-drained
+ * write backlog has exceeded the cap? Extracted for testability.
+ */
+export function sseBacklogExceeded(
+  writableLength: number,
+  cap: number = MAX_SSE_BACKLOG_BYTES,
+): boolean {
+  return writableLength > cap;
+}
+
+/**
+ * Write an SSE frame with backpressure. Returns true if written; false if the
+ * connection is not writable or was closed due to an over-cap backlog. On an
+ * over-cap backlog the response is ended so the caller can tear down its
+ * subscription; the browser reconnects via EventSource.
+ */
+export function writeSseFrame(res: Response, frame: string): boolean {
+  if (!res.writable) return false;
+  if (sseBacklogExceeded(res.writableLength)) {
+    try {
+      res.end();
+    } catch {
+      // already closing / broken pipe — nothing to do
+    }
+    return false;
+  }
+  try {
+    res.write(frame);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export const sseRegistry = {
   register(res: Response): void {
     active.add(res);
