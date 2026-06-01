@@ -144,4 +144,81 @@ describe("heartbeat model profile application", () => {
 
     expect(contextSnapshot).toMatchObject({ modelProfile: "cheap" });
   });
+
+  it("applies cheap profile automatically when useLightweightMode is true", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [cheapProfile],
+      agentRuntimeConfig: {
+        useLightweightMode: true,
+      },
+      issueModelProfile: null,
+      contextSnapshot: {},
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "cheap",
+      requestedBy: "agent_runtime",
+      applied: "cheap",
+      configSource: "adapter_default",
+      fallbackReason: null,
+      adapterConfig: {
+        model: "adapter-cheap",
+        modelReasoningEffort: "low",
+      },
+    });
+  });
+
+  it("does not apply cheap profile when useLightweightMode is false", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [cheapProfile],
+      agentRuntimeConfig: {
+        useLightweightMode: false,
+      },
+      issueModelProfile: null,
+      contextSnapshot: {},
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: null,
+      requestedBy: null,
+      applied: null,
+      configSource: null,
+      fallbackReason: null,
+      adapterConfig: null,
+    });
+  });
+
+  it("prefers explicit issue profile over lightweight mode default", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [cheapProfile],
+      agentRuntimeConfig: {
+        useLightweightMode: true,
+      },
+      issueModelProfile: "cheap",
+      contextSnapshot: {},
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "cheap",
+      requestedBy: "issue_override",
+      applied: "cheap",
+    });
+  });
+
+  it("prefers context profile over lightweight mode default", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [cheapProfile],
+      agentRuntimeConfig: {
+        useLightweightMode: true,
+      },
+      issueModelProfile: null,
+      contextSnapshot: { modelProfile: "cheap" },
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "cheap",
+      requestedBy: "wake_context",
+      applied: "cheap",
+    });
+  });
 });

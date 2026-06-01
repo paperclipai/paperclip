@@ -22,6 +22,7 @@ export interface AgentModelProfileConfig {
 
 export interface AgentRuntimeConfig extends Record<string, unknown> {
   modelProfiles?: Partial<Record<ModelProfileKey, AgentModelProfileConfig>>;
+  useLightweightMode?: boolean;
 }
 
 export type AgentInstructionsBundleMode = "managed" | "external";

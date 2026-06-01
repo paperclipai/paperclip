@@ -61,6 +61,7 @@ export const agentRuntimeConfigSchema = z.object({
   modelProfiles: z.object({
     cheap: agentModelProfileConfigSchema.optional(),
   }).strict().optional(),
+  useLightweightMode: z.boolean().optional(),
 }).catchall(z.unknown());
 
 export const createAgentSchema = z.object({
