@@ -148,7 +148,21 @@ export function detectClaudeLoginRequired(input: {
   };
 }
 
+// A Claude CLI result with `subtype: "success"` and no `is_error: true` is the
+// authoritative signal that the run completed successfully — even if the host
+// process later exits non-zero (e.g. when `terminalResultCleanup` SIGTERMs the
+// CLI after it emits the final result event).
+export function isClaudeSuccessfulResult(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+  const subtype = asString(parsed.subtype, "").trim().toLowerCase();
+  if (subtype !== "success") return false;
+  const isError = parsed.is_error === true;
+  return !isError;
+}
+
 export function describeClaudeFailure(parsed: Record<string, unknown>): string | null {
+  if (isClaudeSuccessfulResult(parsed)) return null;
+
   const subtype = asString(parsed.subtype, "");
   const resultText = asString(parsed.result, "").trim();
   const errors = extractClaudeErrorMessages(parsed);
