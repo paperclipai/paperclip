@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 
@@ -15,7 +15,7 @@ export const agentApiKeys = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    keyHashIdx: index("agent_api_keys_key_hash_idx").on(table.keyHash),
+    keyHashIdx: uniqueIndex("agent_api_keys_key_hash_idx").on(table.keyHash),
     companyAgentIdx: index("agent_api_keys_company_agent_idx").on(table.companyId, table.agentId),
   }),
 );
