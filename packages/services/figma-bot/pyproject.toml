@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "figma-bot"
-version = "0.3.1"
+version = "0.3.2"
 description = "Multi-identity Camoufox session that holds authenticated Figma Designer pages for paperclip agents to drive."
 requires-python = ">=3.10"
 license = { text = "Proprietary" }

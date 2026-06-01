@@ -560,6 +560,132 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.errorCode).toBeNull();
   });
 
+  it("runs source_scoped_recovery_action wakes even when the issue assignee is a different agent (recovery owner ≠ assignee)", async () => {
+    // Regression test for BLO-8299: the recovery owner is intentionally
+    // different from the source issue's current assignee, so the pre-claim
+    // staleness guard must NOT cancel these wakes via issue_assignee_changed.
+    // Pre-fix, 284/289 (98%) of source_scoped_recovery_action wakes in a 7d
+    // window were cancelled on arrival because of this bug.
+    const { companyId, agentId: recoveryOwnerAgentId } = await seedCompanyAndAgent({
+      agentName: "CTO-RecoveryOwner",
+      agentRole: "cto",
+    });
+    const failedAssigneeAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: failedAssigneeAgentId,
+      companyId,
+      name: "ReleaseEngineer-Stranded",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stranded issue awaiting recovery owner inspection",
+      status: "blocked",
+      priority: "high",
+      // Source issue is still assigned to the failed engineer; the recovery
+      // wake's run.agentId is the recovery owner (CTO). These intentionally
+      // disagree — that's the whole point of a wake_owner recovery policy.
+      assigneeAgentId: failedAssigneeAgentId,
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId: recoveryOwnerAgentId,
+      issueId,
+      wakeReason: "source_scoped_recovery_action",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const [run, wakeup] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("succeeded");
+    expect(run?.errorCode).toBeNull();
+    // Wakeup is `claimed` once the staleness gate has admitted the run and the
+    // dispatcher has handed off to the adapter; the wake completed → no skipped
+    // status, no issue_assignee_changed error. The pre-fix behavior was
+    // `status=skipped` / `error="…assignee changed…"` here.
+    expect(wakeup?.status).not.toBe("skipped");
+    expect(wakeup?.error ?? "").not.toContain("assignee changed");
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("still runs source_scoped_recovery_action wakes when the issue assignee has been re-set to the recovery owner mid-flight (idempotent)", async () => {
+    // Sanity check: if the issue's assignee transitions to the recovery
+    // owner before the queued wake is claimed (e.g. an operator manually
+    // re-pointed the issue), the recovery wake must still run, not be
+    // cancelled by some other guard.
+    const { companyId, agentId: recoveryOwnerAgentId } = await seedCompanyAndAgent({
+      agentName: "CTO-RecoveryOwner-Idempotent",
+      agentRole: "cto",
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stranded issue re-assigned to recovery owner before wake claim",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: recoveryOwnerAgentId,
+    });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId: recoveryOwnerAgentId,
+      issueId,
+      wakeReason: "source_scoped_recovery_action",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const run = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("succeeded");
+    expect(run?.errorCode).toBeNull();
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+  });
+
   it("baseline: runs queued runs when the issue is in_progress with the same assignee", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();

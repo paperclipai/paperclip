@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { applyPendingMigrations, ensurePostgresDatabase } from "./client.js";
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
+import { endTrackedClients, trackTestDatabase } from "./embedded-test-client-registry.js";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -160,11 +161,17 @@ export async function startEmbeddedPostgresTestDatabase(
     const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
     await ensurePostgresDatabase(adminConnectionString, "paperclip");
     const connectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
+    trackTestDatabase(connectionString);
     await applyPendingMigrations(connectionString);
 
     return {
       connectionString,
       cleanup: async () => {
+        // Close any createDb() client pools opened against this database BEFORE
+        // stopping the server, so postgres.js doesn't emit an unhandled
+        // `write CONNECTION_CLOSED` rejection when the socket is torn down
+        // (which fails the whole vitest process despite all tests passing).
+        await endTrackedClients(connectionString);
         await instance?.stop().catch(() => {});
         if (dataDir) cleanupEmbeddedPostgresTestDirs(dataDir);
       },

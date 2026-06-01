@@ -99,6 +99,15 @@ export interface RuntimeServiceRef {
   reused: boolean;
 }
 
+export class WorkspaceRepoMismatchError extends Error {
+  code = "workspace_repo_mismatch";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspaceRepoMismatchError";
+  }
+}
+
 interface RuntimeServiceRecord extends RuntimeServiceRef {
   db?: Db;
   child: ChildProcess | null;
@@ -690,6 +699,45 @@ async function isGitCheckout(cwd: string): Promise<boolean> {
   return Boolean(await runGit(["rev-parse", "--git-dir"], cwd).catch(() => null));
 }
 
+function normalizeRepoIdentity(repoUrl: string | null | undefined): string | null {
+  const trimmed = (repoUrl ?? "").trim();
+  if (!trimmed) return null;
+
+  const sshMatch = trimmed.match(/^[^@\s]+@([^:\s]+):(.+)$/);
+  const pathish = sshMatch
+    ? `/${sshMatch[2]}`
+    : (() => {
+        try {
+          return new URL(trimmed).pathname;
+        } catch {
+          return trimmed;
+        }
+      })();
+  const parts = pathish.replace(/\\/g, "/").replace(/\/+$/, "").split("/").filter(Boolean);
+  if (parts.length >= 2) {
+    const owner = parts[parts.length - 2].toLowerCase();
+    const repo = parts[parts.length - 1].replace(/\.git$/i, "").toLowerCase();
+    if (owner && repo) return `${owner}/${repo}`;
+  }
+  return trimmed.replace(/\.git$/i, "").toLowerCase();
+}
+
+async function validateProjectPrimaryRepoOrigin(input: {
+  cwd: string;
+  expectedRepoUrl: string | null | undefined;
+}) {
+  const expected = normalizeRepoIdentity(input.expectedRepoUrl);
+  if (!expected) return;
+
+  const actualUrl = await runGit(["config", "--get", "remote.origin.url"], input.cwd).catch(() => null);
+  const actual = normalizeRepoIdentity(actualUrl);
+  if (!actual || actual === expected) return;
+
+  throw new WorkspaceRepoMismatchError(
+    `Execution workspace cwd "${input.cwd}" is checked out from "${actualUrl}" but the issue expects "${input.expectedRepoUrl}". Refusing to start the agent in the wrong repository.`,
+  );
+}
+
 async function detectDefaultBranch(repoRoot: string): Promise<string | null> {
   const originMasterRef = "origin/master";
   await refreshRemoteTrackingBaseRef(repoRoot, originMasterRef);
@@ -1117,6 +1165,12 @@ export async function realizeExecutionWorkspace(input: {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
   const strategyType = asString(rawStrategy.type, "project_primary");
   if (strategyType !== "git_worktree") {
+    if (input.base.source === "project_primary" && await isGitCheckout(input.base.baseCwd)) {
+      await validateProjectPrimaryRepoOrigin({
+        cwd: input.base.baseCwd,
+        expectedRepoUrl: input.base.repoUrl,
+      });
+    }
     return {
       ...input.base,
       strategy: "project_primary",
@@ -1350,27 +1404,32 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   const provisionCommand = asString(input.workspace.config?.provisionCommand, "").trim();
 
   if (strategy !== "git_worktree") {
-    if (
-      input.workspace.mode === "shared_workspace"
-      && !(await isGitCheckout(cwd))
-    ) {
-      const repoUrl = asString(input.workspace.repoUrl ?? input.base.repoUrl, "").trim();
-      const projectId = asString(input.workspace.projectId ?? input.base.projectId, "").trim();
-      const companyId = asString(input.agent.companyId, "").trim();
-      if (repoUrl && projectId && companyId) {
-        const managedCwd = resolveManagedProjectWorkspaceDir({
-          companyId,
-          projectId,
-          repoName: deriveRepoNameFromRepoUrlForRuntime(repoUrl),
+    const repoUrl = asString(input.workspace.repoUrl ?? input.base.repoUrl, "").trim();
+    if (input.workspace.mode === "shared_workspace") {
+      const cwdIsGitCheckout = await isGitCheckout(cwd);
+      if (cwdIsGitCheckout) {
+        await validateProjectPrimaryRepoOrigin({
+          cwd,
+          expectedRepoUrl: repoUrl,
         });
-        if (managedCwd !== cwd && (await isGitCheckout(managedCwd))) {
-          return {
-            ...realized,
-            cwd: managedCwd,
-            warnings: [
-              `Rebound stale shared workspace cwd "${cwd}" to managed checkout "${managedCwd}".`,
-            ],
-          };
+      } else {
+        const projectId = asString(input.workspace.projectId ?? input.base.projectId, "").trim();
+        const companyId = asString(input.agent.companyId, "").trim();
+        if (repoUrl && projectId && companyId) {
+          const managedCwd = resolveManagedProjectWorkspaceDir({
+            companyId,
+            projectId,
+            repoName: deriveRepoNameFromRepoUrlForRuntime(repoUrl),
+          });
+          if (managedCwd !== cwd && (await isGitCheckout(managedCwd))) {
+            return {
+              ...realized,
+              cwd: managedCwd,
+              warnings: [
+                `Rebound stale shared workspace cwd "${cwd}" to managed checkout "${managedCwd}".`,
+              ],
+            };
+          }
         }
       }
     }

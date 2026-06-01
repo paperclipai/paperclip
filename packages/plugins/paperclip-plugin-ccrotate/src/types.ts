@@ -9,9 +9,11 @@ export interface AccountRow {
   utilization7dSonnet: number | null;
   utilization7dOpus: number | null;
   availability: string;
+  availabilityMark?: string | null;
   apiLimit: string | null;
   isActive: boolean;
   isHealthy: boolean;
+  isStale?: boolean;
 }
 
 export interface SnapshotResponse {

@@ -48,7 +48,7 @@ import { pluginRegistryService } from "../services/plugin-registry.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import { getPluginUiContributionMetadata, pluginLoader } from "../services/plugin-loader.js";
 import { logActivity } from "../services/activity-log.js";
-import { sseRegistry } from "../services/sse-registry.js";
+import { sseRegistry, writeSseFrame } from "../services/sse-registry.js";
 import { publishGlobalLiveEvent } from "../services/live-events.js";
 import { issueService } from "../services/issues.js";
 import type { PluginJobScheduler } from "../services/plugin-job-scheduler.js";
@@ -1694,15 +1694,14 @@ export function pluginRoutes(
       companyId,
       (event, eventType) => {
         if (unsubscribed || !res.writable) return;
-        try {
-          if (eventType !== "message") {
-            res.write(`event: ${eventType}\n`);
-          }
-          res.write(`data: ${JSON.stringify(event)}\n\n`);
-        } catch {
-          // Connection closed or write error — stop delivering
-          safeUnsubscribe();
-        }
+        // Backpressure: a wedged client whose un-drained socket backlog exceeds
+        // the cap is force-closed (writeSseFrame ends the response) rather than
+        // accumulating event frames off-heap without bound. The browser's
+        // EventSource reconnects. See MAX_SSE_BACKLOG_BYTES.
+        const prefix =
+          eventType !== "message" ? `event: ${eventType}\n` : "";
+        const ok = writeSseFrame(res, `${prefix}data: ${JSON.stringify(event)}\n\n`);
+        if (!ok) safeUnsubscribe();
       },
     );
 
