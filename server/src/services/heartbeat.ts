@@ -5033,7 +5033,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+    if (agent.status !== "idle" && agent.status !== "running") {
       return {
         allowed: false,
         reason: "Scheduled retry suppressed because the agent is not invokable",
@@ -6051,7 +6051,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
       return null;
     }
-    if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+    if (agent.status !== "idle" && agent.status !== "running") {
       await cancelRunInternal(run.id, "Cancelled because the agent is not invokable");
       return null;
     }
@@ -6971,7 +6971,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
-      if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+      // Only dispatch to agents that are idle or actively running with available slots.
+      // Explicitly block all other states (paused, terminated, pending_approval, error,
+      // and any future states) rather than using a blocklist that can miss new values.
+      if (agent.status !== "idle" && agent.status !== "running") {
         return [];
       }
       const policy = parseHeartbeatPolicy(agent);
@@ -10254,7 +10257,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       for (const agent of allAgents) {
-        if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
+        if (agent.status !== "idle" && agent.status !== "running") continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 

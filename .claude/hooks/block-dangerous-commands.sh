@@ -129,7 +129,7 @@ if echo "$COMMAND_TO_CHECK" | grep -qE '(curl|wget)[[:space:]].*\|[[:space:]]*(b
   deny "Blocked: piping downloaded content directly to a shell is dangerous. Download first, inspect, then execute."
 fi
 
-if echo "$COMMAND_TO_CHECK" | grep -qE '(mkfs|dd[[:space:]]+if=|>[[:space:]]*/dev/)'; then
+if echo "$COMMAND_TO_CHECK" | grep -qE '(mkfs|dd[[:space:]]+if=|>[[:space:]]*/dev/)' && ! echo "$COMMAND_TO_CHECK" | grep -qE '>[[:space:]]*/dev/(null|stderr|stdout|tty|fd/)'; then
   deny "Blocked: destructive disk operation detected."
 fi
 

@@ -220,6 +220,7 @@ Routines are recurring tasks. Each time a routine fires it creates an execution 
 - Create and manage routines with the routines API — agents can only manage routines assigned to themselves.
 - Add triggers per routine: `schedule` (cron), `webhook`, or `api` (manual).
 - Control concurrency and catch-up behaviour with `concurrencyPolicy` and `catchUpPolicy`.
+- **Idempotency guard (mandatory):** Any routine whose description involves posting comments or creating issues MUST include the idempotency guard from `references/routines.md` in its `description`. Without it, routines running every 15–30 min will flood issue threads with identical status updates.
 
 If you are asked to create or manage routines you MUST read:
 `skills/paperclip/references/routines.md`
