@@ -6031,6 +6031,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function countPendingRunsForAgent(agentId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+        ),
+      );
+    return Number(count ?? 0);
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -10251,6 +10264,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
         if (quotaBlocked) {
+          skipped += 1;
+          continue;
+        }
+
+        // Skip if the agent already has pending runs (queued/running/scheduled_retry).
+        // Those runs will drive the inbox forward; stacking another timer wake only
+        // inflates the queue and wastes quota on empty-inbox heartbeats.
+        const pendingCount = await countPendingRunsForAgent(agent.id);
+        if (pendingCount > 0) {
           skipped += 1;
           continue;
         }

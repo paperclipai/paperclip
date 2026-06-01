@@ -2434,6 +2434,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  async function agentHasPendingRuns(agentId: string) {
+    const [run] = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+        ),
+      )
+      .limit(1);
+    return Boolean(run);
+  }
+
   async function reconcileStrandedAssignedIssues() {
     const candidates = await db
       .select()
@@ -2445,6 +2459,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           sql`${issues.assigneeAgentId} is not null`,
         ),
       );
+
+    // Track agents that already have a recovery run queued this sweep so we
+    // don't create one queued run per stranded issue (an agent with 35 assigned
+    // issues would produce 35 sequential heartbeat sessions burning quota on
+    // empty-inbox checks). One pending run per agent is enough — the agent
+    // picks up all assigned work from its inbox in that session.
+    const agentsWithPendingRecovery = new Set<string>();
 
     const result = {
       assignmentDispatched: 0,
@@ -2473,6 +2494,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // One pending run per agent is enough — a running heartbeat handles all
+      // assigned work from the inbox. Skip if we already queued a recovery run
+      // for this agent this sweep, or if one is already pending in the DB.
+      if (agentsWithPendingRecovery.has(agentId) || await agentHasPendingRuns(agentId)) {
         result.skipped += 1;
         continue;
       }
@@ -2514,6 +2543,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           if (queued) {
             result.assignmentDispatched += 1;
             result.issueIds.push(issue.id);
+            agentsWithPendingRecovery.add(agentId);
           } else {
             result.skipped += 1;
           }
@@ -2561,6 +2591,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         if (queued) {
           result.dispatchRequeued += 1;
           result.issueIds.push(issue.id);
+          agentsWithPendingRecovery.add(agentId);
         } else {
           result.skipped += 1;
         }
@@ -2636,6 +2667,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         if (queued) {
           result.continuationRequeued += 1;
           result.issueIds.push(issue.id);
+          agentsWithPendingRecovery.add(agentId);
         } else {
           result.skipped += 1;
         }
@@ -2722,6 +2754,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (queued) {
         result.continuationRequeued += 1;
         result.issueIds.push(issue.id);
+        agentsWithPendingRecovery.add(agentId);
       } else {
         result.skipped += 1;
       }
