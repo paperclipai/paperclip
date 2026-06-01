@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -10,16 +11,27 @@ import type {
 import { HttpError, conflict, notFound } from "../errors.js";
 import { normalizePortablePath } from "./portable-path.js";
 
+const require = createRequire(import.meta.url);
+
+function resolveCatalogPackageRoot(): string {
+  try {
+    const manifestPath = require.resolve("@paperclipai/skills-catalog/generated/catalog.json");
+    return path.dirname(path.dirname(manifestPath));
+  } catch {
+    const serviceDir = path.dirname(fileURLToPath(import.meta.url));
+    return path.join(path.resolve(serviceDir, "../../.."), "packages/skills-catalog");
+  }
+}
+
+const catalogPackageRoot = resolveCatalogPackageRoot();
+const catalogManifestPath = path.join(catalogPackageRoot, "generated/catalog.json");
+
 interface CatalogManifestFile {
   packageName: string;
   packageVersion: string;
   skills: CatalogSkill[];
 }
 
-const serviceDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(serviceDir, "../../..");
-const catalogPackageRoot = path.join(repoRoot, "packages/skills-catalog");
-const catalogManifestPath = path.join(catalogPackageRoot, "generated/catalog.json");
 let cachedCatalogManifest: {
   manifest: CatalogManifestFile;
   mtimeMs: number;
@@ -87,10 +99,6 @@ function inferLanguageFromPath(filePath: string) {
   if (fileName.endsWith(".html")) return "html";
   if (fileName.endsWith(".css")) return "css";
   return null;
-}
-
-function resolveCatalogPackageRoot() {
-  return catalogPackageRoot;
 }
 
 function searchText(skill: CatalogSkill) {
