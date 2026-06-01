@@ -7,11 +7,14 @@ import {
   companyPortabilityImportSchema,
   companyPortabilityPreviewSchema,
   createCompanySchema,
+  documentKeySchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
+  restoreCompanyDocumentRevisionSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
+  upsertCompanyDocumentSchema,
 } from "@paperclipai/shared";
 import { badRequest, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -21,6 +24,7 @@ import {
   budgetService,
   companyPortabilityService,
   companyService,
+  documentService,
   feedbackService,
   logActivity,
 } from "../services/index.js";
@@ -38,6 +42,33 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const feedback = feedbackService(db);
   const importJobs = new Map<string, ImportJobRecord>();
   const importJobTerminalRetentionMs = 5 * 60 * 1000;
+  const documentsSvc = documentService(db);
+
+  async function assertCanWriteCompanyDocument(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") return;
+    if (!req.actor.agentId) throw forbidden("Agent authentication required");
+
+    const actorAgent = await agents.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== companyId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+    if (actorAgent.role === "ceo") return;
+
+    const hasGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "documents:manage");
+    if (!hasGrant) {
+      throw forbidden("Agent lacks documents:manage permission for this company");
+    }
+  }
+
+  function parseCompanyDocumentKey(rawKey: unknown): string {
+    const normalized = String(rawKey ?? "").trim().toLowerCase();
+    const parsed = documentKeySchema.safeParse(normalized);
+    if (!parsed.success) {
+      throw badRequest("Invalid document key");
+    }
+    return parsed.data;
+  }
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
@@ -437,6 +468,219 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
+    res.json({ ok: true });
+  });
+
+  router.get("/:companyId/documents", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const docs = await documentsSvc.listCompanyDocuments(companyId, {
+      includeSystem: req.query.includeSystem === "true",
+    });
+    res.json(docs);
+  });
+
+  router.get("/:companyId/documents/:key", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const key = parseCompanyDocumentKey(req.params.key);
+    const doc = await documentsSvc.getCompanyDocumentByKey(companyId, key);
+    if (!doc) {
+      res.status(404).json({ error: "Document not found" });
+      return;
+    }
+    res.json(doc);
+  });
+
+  router.put("/:companyId/documents/:key", validate(upsertCompanyDocumentSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanWriteCompanyDocument(req, companyId);
+    const key = parseCompanyDocumentKey(req.params.key);
+    const actor = getActorInfo(req);
+    const result = await documentsSvc.upsertCompanyDocument({
+      companyId,
+      key,
+      title: req.body.title ?? null,
+      format: req.body.format,
+      body: req.body.body,
+      changeSummary: req.body.changeSummary ?? null,
+      baseRevisionId: req.body.baseRevisionId ?? null,
+      createdByAgentId: actor.agentId ?? null,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      createdByRunId: actor.runId ?? null,
+      lockedDocumentStrategy: req.actor.type === "agent" ? "create_new_document" : "conflict",
+    });
+    const doc = result.document;
+    const redirectedFromLockedDocument =
+      "redirectedFromLockedDocument" in result ? result.redirectedFromLockedDocument : null;
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: result.created ? "company.document_created" : "company.document_updated",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        key: doc.key,
+        documentId: doc.id,
+        title: doc.title,
+        format: doc.format,
+        revisionNumber: doc.latestRevisionNumber,
+        redirectedFromLockedDocument,
+      },
+    });
+
+    res.status(result.created ? 201 : 200).json(doc);
+  });
+
+  router.get("/:companyId/documents/:key/revisions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const key = parseCompanyDocumentKey(req.params.key);
+    const revisions = await documentsSvc.listCompanyDocumentRevisions(companyId, key);
+    res.json(revisions);
+  });
+
+  router.post(
+    "/:companyId/documents/:key/revisions/:revisionId/restore",
+    validate(restoreCompanyDocumentRevisionSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCanWriteCompanyDocument(req, companyId);
+      const key = parseCompanyDocumentKey(req.params.key);
+      const revisionId = req.params.revisionId as string;
+      const actor = getActorInfo(req);
+      const result = await documentsSvc.restoreCompanyDocumentRevision({
+        companyId,
+        key,
+        revisionId,
+        createdByAgentId: actor.agentId ?? null,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.document_restored",
+        entityType: "company",
+        entityId: companyId,
+        details: {
+          key: result.document.key,
+          documentId: result.document.id,
+          title: result.document.title,
+          format: result.document.format,
+          revisionNumber: result.document.latestRevisionNumber,
+          restoredFromRevisionId: result.restoredFromRevisionId,
+          restoredFromRevisionNumber: result.restoredFromRevisionNumber,
+        },
+      });
+
+      res.json(result.document);
+    },
+  );
+
+  router.post("/:companyId/documents/:key/lock", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board") {
+      throw forbidden("Board authentication required");
+    }
+    const key = parseCompanyDocumentKey(req.params.key);
+    const actor = getActorInfo(req);
+    const result = await documentsSvc.lockCompanyDocument({
+      companyId,
+      key,
+      lockedByAgentId: actor.agentId ?? null,
+      lockedByUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    if (result.changed) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.document_locked",
+        entityType: "company",
+        entityId: companyId,
+        details: {
+          key: result.document.key,
+          documentId: result.document.id,
+          title: result.document.title,
+          lockedAt: result.document.lockedAt,
+        },
+      });
+    }
+
+    res.json(result.document);
+  });
+
+  router.post("/:companyId/documents/:key/unlock", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board") {
+      throw forbidden("Board authentication required");
+    }
+    const key = parseCompanyDocumentKey(req.params.key);
+    const actor = getActorInfo(req);
+    const result = await documentsSvc.unlockCompanyDocument(companyId, key);
+
+    if (result.changed) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.document_unlocked",
+        entityType: "company",
+        entityId: companyId,
+        details: {
+          key: result.document.key,
+          documentId: result.document.id,
+          title: result.document.title,
+        },
+      });
+    }
+
+    res.json(result.document);
+  });
+
+  router.delete("/:companyId/documents/:key", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board") {
+      throw forbidden("Board authentication required");
+    }
+    const key = parseCompanyDocumentKey(req.params.key);
+    const removed = await documentsSvc.deleteCompanyDocument(companyId, key);
+    if (!removed) {
+      res.status(404).json({ error: "Document not found" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.document_deleted",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        key: removed.key,
+        documentId: removed.id,
+        title: removed.title,
+      },
+    });
     res.json({ ok: true });
   });
 

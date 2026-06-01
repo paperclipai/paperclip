@@ -35,6 +35,16 @@ vi.mock("../services/index.js", () => ({
     getFeedbackTraceById: vi.fn(),
     saveIssueVote: vi.fn(),
   }),
+  documentService: () => ({
+    listCompanyDocuments: vi.fn(),
+    getCompanyDocumentByKey: vi.fn(),
+    listCompanyDocumentRevisions: vi.fn(),
+    upsertCompanyDocument: vi.fn(),
+    restoreCompanyDocumentRevision: vi.fn(),
+    lockCompanyDocument: vi.fn(),
+    unlockCompanyDocument: vi.fn(),
+    deleteCompanyDocument: vi.fn(),
+  }),
   logActivity: vi.fn(),
 }));
 
