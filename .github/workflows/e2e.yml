@@ -28,10 +28,13 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+      - name: Verify runner Chrome
+        run: google-chrome --version
       - run: pnpm build
-      - run: npx playwright install --with-deps chromium
 
       - name: Run e2e tests
+        env:
+          PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
         run: pnpm run test:e2e
 
       - uses: actions/upload-artifact@v4
