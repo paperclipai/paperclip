@@ -11,7 +11,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { heartbeatService } from "../services/heartbeat.ts";
+import { heartbeatService } from "../services/heartbeat.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { withAgentStartLock } from "../services/agent-start-lock.ts";
+import { withAgentStartLock } from "../services/agent-start-lock.js";
 
 describe("heartbeat agent start lock", () => {
   afterEach(() => {

@@ -18,9 +18,9 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { heartbeatService } from "../services/heartbeat.ts";
-import { instanceSettingsService } from "../services/instance-settings.ts";
-import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
+import { heartbeatService } from "../services/heartbeat.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const adapterExecute = vi.hoisted(() => vi.fn(async () => ({
   exitCode: 0,
@@ -59,7 +59,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
 
   beforeAll(async () => {
     const started = await startEmbeddedPostgresTestDatabase("heartbeat-plugin-environment");
-    stopDb = started.stop;
+    stopDb = started.cleanup;
     db = createDb(started.connectionString);
   });
 

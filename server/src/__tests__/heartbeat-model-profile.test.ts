@@ -7,7 +7,7 @@ import {
   mergeModelProfileAdapterConfig,
   normalizeModelProfileWakeContext,
   resolveModelProfileApplication,
-} from "../services/heartbeat.ts";
+} from "../services/heartbeat.js";
 
 const cheapProfile: AdapterModelProfileDefinition = {
   key: "cheap",

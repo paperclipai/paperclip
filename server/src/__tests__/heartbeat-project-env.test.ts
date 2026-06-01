@@ -4,7 +4,7 @@ import {
   applyRunScopedMentionedSkillKeys,
   extractMentionedSkillIdsFromSources,
   resolveExecutionRunAdapterConfig,
-} from "../services/heartbeat.ts";
+} from "../services/heartbeat.js";
 
 describe("resolveExecutionRunAdapterConfig", () => {
   it("overlays project and routine env on top of agent env and unions secret keys", async () => {

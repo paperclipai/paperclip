@@ -18,7 +18,7 @@ import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
   heartbeatService,
   shouldScheduleAutomaticRunRetry,
-} from "../services/heartbeat.ts";
+} from "../services/heartbeat.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({

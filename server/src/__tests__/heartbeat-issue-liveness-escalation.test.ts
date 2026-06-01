@@ -967,11 +967,17 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
     await db
       .update(issues)
-      .set({ status: "done", blockedByIssueIds: [] })
+      // `blockedByIssueIds` was never a column on the `issues` table — blocker
+      // relationships live in `recoveryBlockerIssues`. Status=done is the
+      // signal `reconcileIssueGraphLiveness` reads to prune the relation.
+      .set({ status: "done" })
       .where(eq(issues.id, escalations[0]!.id));
     await db
       .update(issues)
-      .set({ status: "done", blockedByIssueIds: [] })
+      // `blockedByIssueIds` was never a column on the `issues` table — blocker
+      // relationships live in `recoveryBlockerIssues`. Status=done is the
+      // signal `reconcileIssueGraphLiveness` reads to prune the relation.
+      .set({ status: "done" })
       .where(eq(issues.id, blockerIssueId));
 
     const second = await heartbeat.reconcileIssueGraphLiveness();

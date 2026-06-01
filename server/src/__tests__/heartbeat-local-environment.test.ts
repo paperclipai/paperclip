@@ -12,9 +12,9 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.ts";
-import { runningProcesses } from "../adapters/index.ts";
-import { heartbeatService } from "../services/heartbeat.ts";
+import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.js";
+import { runningProcesses } from "../adapters/index.js";
+import { heartbeatService } from "../services/heartbeat.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;

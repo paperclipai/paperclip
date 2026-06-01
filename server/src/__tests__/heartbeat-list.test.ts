@@ -5,7 +5,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { boundHeartbeatRunEventPayloadForStorage, heartbeatService } from "../services/heartbeat.ts";
+import { boundHeartbeatRunEventPayloadForStorage, heartbeatService } from "../services/heartbeat.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -96,7 +96,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
       if (originalDescriptor) {
         Object.defineProperty(heartbeatRuns, "processGroupId", originalDescriptor);
       } else {
-        delete (heartbeatRuns as Record<string, unknown>).processGroupId;
+        delete (heartbeatRuns as unknown as Record<string, unknown>).processGroupId;
       }
     }
   });
