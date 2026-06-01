@@ -11,9 +11,34 @@ export interface YoutubeData {
   ideas: YtIdea[]; scripts: YtScript[]; titles: YtTitle[]; thumbnails: YtThumbnail[]; shorts: YtShort[]; performance: YtPerf[];
 }
 
+export interface Trend { title: string; source: string; angle: string; score: number; source_url?: string }
+
 export const youtubeApi = {
   all: () => agnb.get<{ ok: boolean; error?: string } & YoutubeData>("/youtube").then((r) => {
     const u = unwrap(r);
     return { ideas: u.ideas, scripts: u.scripts, titles: u.titles, thumbnails: u.thumbnails, shorts: u.shorts, performance: u.performance } as YoutubeData;
   }),
+
+  // --- ideas ---
+  captureIdea: (title: string) => agnb.post("/youtube/ideas", { title }),
+  patchIdea: (id: string, b: { status?: string }) => agnb.patch(`/youtube/ideas?id=${id}`, b),
+  deleteIdea: (id: string) => agnb.delete(`/youtube/ideas?id=${id}`),
+  // --- trends ---
+  fetchTrends: () => agnb.post<{ ok: boolean; error?: string; trends: Trend[] }>("/youtube/trends", {}).then((r) => unwrap(r).trends),
+  promoteTrend: (t: Trend) => agnb.post("/youtube/ideas", { title: t.title, source: t.source, source_url: t.source_url ?? null, score: t.score }),
+  // --- scripts ---
+  createScript: (title: string) => agnb.post("/youtube/scripts", { title }),
+  patchScript: (id: string, b: { status?: string }) => agnb.patch(`/youtube/scripts?id=${id}`, b),
+  deleteScript: (id: string) => agnb.delete(`/youtube/scripts?id=${id}`),
+  // --- titles ---
+  titleWinner: (id: string) => agnb.patch(`/youtube/titles?id=${id}`, { is_winner: true }),
+  deleteTitle: (id: string) => agnb.delete(`/youtube/titles?id=${id}`),
+  // --- thumbnails ---
+  thumbWinner: (id: string) => agnb.patch(`/youtube/thumbnails?id=${id}`, { is_winner: true }),
+  deleteThumb: (id: string) => agnb.delete(`/youtube/thumbnails?id=${id}`),
+  // --- shorts ---
+  addShort: (b: { title: string; parent_script_id?: string; duration_sec?: number }) => agnb.post("/youtube/shorts", b),
+  patchShort: (id: string, b: { status?: string }) => agnb.patch(`/youtube/shorts?id=${id}`, b),
+  deleteShort: (id: string) => agnb.delete(`/youtube/shorts?id=${id}`),
+  millShorts: () => agnb.post("/youtube/mine", {}),
 };

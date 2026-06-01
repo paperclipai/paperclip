@@ -1,6 +1,6 @@
 import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Image as ImageIcon, Crown } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Image as ImageIcon, Crown, Trash2 } from "lucide-react";
 import { youtubeApi } from "../api/agnbYoutube";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -11,7 +11,11 @@ import { AgnbSubnav } from "../components/AgnbSubnav";
 export function YoutubeThumbnails() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "YouTube" }, { label: "Thumbnails" }]), [setBreadcrumbs]);
+  const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.youtube, queryFn: () => youtubeApi.all() });
+  const refresh = () => qc.invalidateQueries({ queryKey: queryKeys.agnb.youtube });
+  const win = async (id: string) => { await youtubeApi.thumbWinner(id).catch(() => {}); refresh(); };
+  const del = async (id: string) => { await youtubeApi.deleteThumb(id).catch(() => {}); refresh(); };
 
   return (
     <div className="space-y-4">
@@ -29,7 +33,11 @@ export function YoutubeThumbnails() {
               <img src={t.url} alt={t.concept ?? ""} className="aspect-video w-full object-cover" />
               <div className="flex items-center justify-between gap-2 p-2 text-sm">
                 <span className="flex items-center gap-1.5 truncate">{t.is_winner && <Crown className="h-3.5 w-3.5 text-amber-500" />}{t.concept ?? "—"}</span>
-                {t.ctr_pct != null && <span className="shrink-0 text-[11px] text-muted-foreground">{t.ctr_pct}% CTR</span>}
+                <span className="flex shrink-0 items-center gap-2 text-muted-foreground">
+                  {t.ctr_pct != null && <span className="text-[11px]">{t.ctr_pct}% CTR</span>}
+                  {!t.is_winner && <button title="Mark winner" onClick={() => win(t.id)}><Crown className="h-3.5 w-3.5 hover:text-amber-500" /></button>}
+                  <button title="Delete" onClick={() => del(t.id)}><Trash2 className="h-3.5 w-3.5 hover:text-destructive" /></button>
+                </span>
               </div>
             </div>
           ))}
