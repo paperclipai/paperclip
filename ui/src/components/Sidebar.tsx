@@ -12,6 +12,8 @@ import {
   Repeat,
   GitBranch,
   Settings,
+  Package,
+  LayoutGrid,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -118,6 +120,11 @@ export function Sidebar() {
         <SidebarProjects />
 
         <SidebarAgents />
+
+        <SidebarSection label="AGNB">
+          <SidebarNavItem to="/assets" label="Assets" icon={Package} />
+          <SidebarNavItem to="/pipeline" label="Pipeline" icon={LayoutGrid} />
+        </SidebarSection>
 
         <SidebarSection label="Company">
           <SidebarNavItem to="/org" label="Org" icon={Network} />

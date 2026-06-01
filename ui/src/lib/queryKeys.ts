@@ -207,4 +207,8 @@ export const queryKeys = {
   adapters: {
     all: ["adapters"] as const,
   },
+  agnb: {
+    assets: (q: string) => ["agnb", "assets", q] as const,
+    pipeline: ["agnb", "pipeline"] as const,
+  },
 };
