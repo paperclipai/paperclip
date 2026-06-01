@@ -659,6 +659,20 @@
       "when": 1780040470886,
       "tag": "0093_giant_green_goblin",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1779890400000,
+      "tag": "0094_process_loss_cause_class",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1779890401000,
+      "tag": "0095_process_loss_classify_confidence",
+      "breakpoints": true
     }
   ]
 }
