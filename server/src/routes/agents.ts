@@ -6,6 +6,7 @@ import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable 
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
+  agentSkillsPutSchema,
   agentMineInboxQuerySchema,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   createAgentKeySchema,
@@ -1596,6 +1597,95 @@ export function agentRoutes(
         actorType: actor.actorType,
         actorId: actor.actorId,
         action: "agent.skills_synced",
+        entityType: "agent",
+        entityId: updated.id,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        details: {
+          adapterType: updated.adapterType,
+          desiredSkills,
+          mode: snapshot.mode,
+          supported: snapshot.supported,
+          entryCount: snapshot.entries.length,
+          warningCount: snapshot.warnings.length,
+        },
+      });
+
+      res.json(snapshot);
+    },
+  );
+
+  router.put(
+    "/agents/:id/skills",
+    validate(agentSkillsPutSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const agent = await svc.getById(id);
+      if (!agent) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      await assertCanUpdateAgent(req, agent);
+
+      const requestedSkills = Array.from(
+        new Set(
+          (req.body.skills as string[])
+            .map((value) => value.trim())
+            .filter(Boolean),
+        ),
+      );
+
+      const {
+        adapterConfig: nextAdapterConfig,
+        desiredSkills,
+        runtimeSkillEntries,
+      } = await resolveDesiredSkillAssignment(
+        agent.companyId,
+        agent.adapterType,
+        agent.adapterConfig as Record<string, unknown>,
+        requestedSkills,
+      );
+      if (!desiredSkills || !runtimeSkillEntries) {
+        throw unprocessable("Skill assignment requires desiredSkills.");
+      }
+      const actor = getActorInfo(req);
+      const updated = await svc.update(agent.id, {
+        adapterConfig: nextAdapterConfig,
+      }, {
+        recordRevision: {
+          createdByAgentId: actor.agentId,
+          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+          source: "skills-put",
+        },
+      });
+      if (!updated) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+
+      const adapter = findActiveServerAdapter(updated.adapterType);
+      const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
+        updated.companyId,
+        updated.adapterConfig,
+      );
+      const runtimeSkillConfig = {
+        ...runtimeConfig,
+        paperclipRuntimeSkills: runtimeSkillEntries,
+      };
+      const snapshot = adapter?.listSkills
+        ? await adapter.listSkills({
+            agentId: updated.id,
+            companyId: updated.companyId,
+            adapterType: updated.adapterType,
+            config: runtimeSkillConfig,
+          })
+        : buildUnsupportedSkillSnapshot(updated.adapterType, desiredSkills);
+
+      await logActivity(db, {
+        companyId: updated.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        action: "agent.skills_assigned",
         entityType: "agent",
         entityId: updated.id,
         agentId: actor.agentId,
