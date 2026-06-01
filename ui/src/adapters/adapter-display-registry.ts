@@ -67,6 +67,14 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Sparkles,
     recommended: true,
   },
+  claude_tui: {
+    label: "Claude (TUI wrapper)",
+    description:
+      "Drives the Claude Code TUI via PTY — slower but uses your interactive Claude session",
+    icon: Sparkles,
+    experimental: true,
+    hideFromVisualSelection: true,
+  },
   codex_local: {
     label: "Codex",
     description: "Local Codex agent",
@@ -102,6 +110,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "Cursor Cloud",
     description: "Managed remote Cursor agent",
     icon: MousePointer2,
+  },
+  deepseek_api: {
+    label: "DeepSeek API",
+    description: "Call DeepSeek's chat completions API directly with an API key",
+    icon: Bot,
   },
   openclaw_gateway: {
     label: "OpenClaw Gateway",

@@ -5,6 +5,7 @@ import { issues } from "./issues.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
+import { providerCredentials } from "./provider_credentials.js";
 
 export const costEvents = pgTable(
   "cost_events",
@@ -16,6 +17,11 @@ export const costEvents = pgTable(
     projectId: uuid("project_id").references(() => projects.id),
     goalId: uuid("goal_id").references(() => goals.id),
     heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id),
+    // The managed provider credential that funded this event, when the run was
+    // executed with one. Nullable: legacy events and runs using adapterConfig
+    // keys (not a managed credential) carry no credentialId. ON DELETE SET NULL
+    // so deleting a credential preserves its historical cost events.
+    credentialId: uuid("credential_id").references(() => providerCredentials.id, { onDelete: "set null" }),
     billingCode: text("billing_code"),
     provider: text("provider").notNull(),
     biller: text("biller").notNull().default("unknown"),
@@ -48,6 +54,11 @@ export const costEvents = pgTable(
     companyHeartbeatRunIdx: index("cost_events_company_heartbeat_run_idx").on(
       table.companyId,
       table.heartbeatRunId,
+    ),
+    companyCredentialOccurredIdx: index("cost_events_company_credential_occurred_idx").on(
+      table.companyId,
+      table.credentialId,
+      table.occurredAt,
     ),
   }),
 );

@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, providerCredentials } from "@paperclipai/db";
+import { agentCredentials, agents, costEvents, providerCredentials } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -124,19 +124,26 @@ export function credentialService(db: Db) {
     },
 
     async remove(id: string, force?: boolean) {
-      const agentRefs = await db
+      const legacyRefs = await db
         .select({ id: agents.id })
         .from(agents)
         .where(eq(agents.credentialId, id));
+      const joinRefs = await db
+        .select({ id: agentCredentials.id })
+        .from(agentCredentials)
+        .where(eq(agentCredentials.credentialId, id));
 
-      if (agentRefs.length > 0) {
+      if (legacyRefs.length > 0 || joinRefs.length > 0) {
         if (!force) {
           return { error: "credential_in_use" as const };
         }
-        await db
-          .update(agents)
-          .set({ credentialId: null, updatedAt: new Date() })
-          .where(eq(agents.credentialId, id));
+        if (legacyRefs.length > 0) {
+          await db
+            .update(agents)
+            .set({ credentialId: null, updatedAt: new Date() })
+            .where(eq(agents.credentialId, id));
+        }
+        // joinRefs are cleared via ON DELETE CASCADE on the FK.
       }
 
       const [removed] = await db
@@ -145,6 +152,104 @@ export function credentialService(db: Db) {
         .returning();
 
       return removed ? stripCredential(removed) : null;
+    },
+
+    async listForAgent(agentId: string): Promise<SafeCredential[]> {
+      const rows = await db
+        .select({ credential: providerCredentials })
+        .from(agentCredentials)
+        .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
+        .where(eq(agentCredentials.agentId, agentId))
+        .orderBy(providerCredentials.type, providerCredentials.name);
+      return rows.map((row) => stripCredential(row.credential));
+    },
+
+    /**
+     * Replace the full set of credentials assigned to an agent.
+     *
+     * Multiple credentials of the same provider type ARE allowed — they form a
+     * rotation pool that the heartbeat picker rotates through (least-recently-
+     * used, skipping any on cooldown). The `duplicate_type` error variant is
+     * retained in the return type for backward compatibility but is no longer
+     * produced.
+     */
+    async setForAgent(
+      agentId: string,
+      credentialIds: string[],
+    ): Promise<{ ok: true; credentials: SafeCredential[] } | { ok: false; error: "duplicate_type"; type: string } | { ok: false; error: "credential_not_found"; credentialId: string }> {
+      const uniqueIds = Array.from(new Set(credentialIds));
+
+      if (uniqueIds.length === 0) {
+        await db.delete(agentCredentials).where(eq(agentCredentials.agentId, agentId));
+        return { ok: true, credentials: [] };
+      }
+
+      const creds = await db
+        .select()
+        .from(providerCredentials)
+        .where(inArray(providerCredentials.id, uniqueIds));
+
+      if (creds.length !== uniqueIds.length) {
+        const found = new Set(creds.map((c) => c.id));
+        const missing = uniqueIds.find((id) => !found.has(id))!;
+        return { ok: false, error: "credential_not_found", credentialId: missing };
+      }
+
+      await db.transaction(async (tx) => {
+        await tx.delete(agentCredentials).where(eq(agentCredentials.agentId, agentId));
+        await tx.insert(agentCredentials).values(uniqueIds.map((credentialId) => ({ agentId, credentialId })));
+      });
+
+      return { ok: true, credentials: creds.map(stripCredential) };
+    },
+
+    /**
+     * Aggregate token/cost usage per managed credential for a company over a
+     * trailing window, from cost_events.credentialId. Used by the Credentials
+     * UI to show how much each credential (and each pool member) has spent.
+     */
+    async usageByCredential(
+      companyId: string,
+      sinceMs: number,
+    ): Promise<
+      Array<{
+        credentialId: string;
+        inputTokens: number;
+        outputTokens: number;
+        cachedInputTokens: number;
+        costCents: number;
+        events: number;
+      }>
+    > {
+      const since = new Date(Date.now() - Math.max(0, sinceMs));
+      const rows = await db
+        .select({
+          credentialId: costEvents.credentialId,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)`,
+          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)`,
+          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)`,
+          events: sql<number>`count(*)`,
+        })
+        .from(costEvents)
+        .where(
+          and(
+            eq(costEvents.companyId, companyId),
+            gte(costEvents.occurredAt, since),
+            isNotNull(costEvents.credentialId),
+          ),
+        )
+        .groupBy(costEvents.credentialId);
+      return rows
+        .filter((r): r is typeof r & { credentialId: string } => r.credentialId != null)
+        .map((r) => ({
+          credentialId: r.credentialId,
+          inputTokens: Number(r.inputTokens),
+          outputTokens: Number(r.outputTokens),
+          cachedInputTokens: Number(r.cachedInputTokens),
+          costCents: Number(r.costCents),
+          events: Number(r.events),
+        }));
     },
   };
 
@@ -163,11 +268,102 @@ export function credentialService(db: Db) {
  * - `gemini_api_key`: sets GEMINI_API_KEY and GOOGLE_API_KEY.
  * - `openai_api_key`: sets OPENAI_API_KEY (covers codex-local and cursor-local).
  * - `openrouter_api_key`: sets OPENROUTER_API_KEY (covers opencode-local).
+ * - `deepseek_api_key`: sets DEEPSEEK_API_KEY (covers deepseek-api), or the
+ *   ANTHROPIC_* env when bound to a Claude Code adapter.
+ * - `mimo_api_key`: sets the ANTHROPIC_* env routing Claude Code through Xiaomi
+ *   MiMo's Anthropic-compatible endpoint (Claude-Code-routing only).
  */
+/**
+ * Adapter types that drive the real Claude Code CLI. When one of these agents is
+ * bound to a `deepseek_api_key` credential, we don't set DEEPSEEK_API_KEY (the
+ * CLI wouldn't read it) — instead we point Claude Code at DeepSeek's
+ * Anthropic-compatible endpoint so the full agentic loop runs on DeepSeek.
+ */
+const CLAUDE_CODE_ADAPTER_TYPES = new Set(["claude_local", "claude_tui"]);
+
+const DEEPSEEK_ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic";
+const DEEPSEEK_PRO_MODEL = "deepseek-v4-pro";
+const DEEPSEEK_FLASH_MODEL = "deepseek-v4-flash";
+
+/**
+ * Env that makes Claude Code talk to DeepSeek's Anthropic-compatible endpoint.
+ * Maps Claude Code's model tiers to DeepSeek's two models so the agent's Model
+ * dropdown is the control surface:
+ *   - Opus   -> deepseek-v4-pro    (the strong model)
+ *   - Sonnet -> deepseek-v4-flash  (faster / cheaper)
+ *   - Haiku / subagents -> deepseek-v4-flash
+ * ANTHROPIC_MODEL (used when no model tier is requested) defaults to Pro. The
+ * credential payload may override either model id via proModel / flashModel.
+ */
+function buildDeepSeekClaudeCodeEnv(
+  apiKey: string,
+  payload: Record<string, unknown>,
+): Record<string, string> {
+  const pro = typeof payload.proModel === "string" && payload.proModel.trim()
+    ? payload.proModel.trim()
+    : DEEPSEEK_PRO_MODEL;
+  const flash = typeof payload.flashModel === "string" && payload.flashModel.trim()
+    ? payload.flashModel.trim()
+    : DEEPSEEK_FLASH_MODEL;
+  return {
+    ANTHROPIC_BASE_URL: DEEPSEEK_ANTHROPIC_BASE_URL,
+    // DeepSeek's guide uses ANTHROPIC_AUTH_TOKEN (sent as a Bearer token).
+    ANTHROPIC_AUTH_TOKEN: apiKey,
+    ANTHROPIC_MODEL: pro,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: pro,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: flash,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: flash,
+    CLAUDE_CODE_SUBAGENT_MODEL: flash,
+    CLAUDE_CODE_EFFORT_LEVEL: "max",
+  };
+}
+
+// Xiaomi MiMo's Token-Plan (SGP) Anthropic-compatible endpoint. Unlike DeepSeek,
+// MiMo does NOT auto-map claude-* model ids — it hard-rejects them (400 "Not
+// supported model"), so the agent's Model dropdown must stay on Default and the
+// tier->model resolution is driven entirely by these ANTHROPIC_*_MODEL vars,
+// which Claude Code resolves internally to concrete mimo-* ids before any
+// request leaves the CLI (MiMo never sees a claude-* id).
+const MIMO_ANTHROPIC_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/anthropic";
+const MIMO_PRO_MODEL = "mimo-v2.5-pro";
+const MIMO_LITE_MODEL = "mimo-v2.5";
+
+/**
+ * Env that makes Claude Code talk to Xiaomi MiMo's Anthropic-compatible endpoint.
+ * Tier mapping (cost-optimized, user-chosen):
+ *   - Opus   -> mimo-v2.5-pro  (flagship; heavy reasoning)
+ *   - Sonnet -> mimo-v2.5      (main loop on the ~3x cheaper model)
+ *   - Haiku / subagents -> mimo-v2.5
+ * ANTHROPIC_MODEL (no tier requested) defaults to the lite model to match the
+ * Sonnet main-loop choice. Payload may override via proModel / liteModel.
+ */
+function buildMimoClaudeCodeEnv(
+  apiKey: string,
+  payload: Record<string, unknown>,
+): Record<string, string> {
+  const pro = typeof payload.proModel === "string" && payload.proModel.trim()
+    ? payload.proModel.trim()
+    : MIMO_PRO_MODEL;
+  const lite = typeof payload.liteModel === "string" && payload.liteModel.trim()
+    ? payload.liteModel.trim()
+    : MIMO_LITE_MODEL;
+  return {
+    ANTHROPIC_BASE_URL: MIMO_ANTHROPIC_BASE_URL,
+    ANTHROPIC_AUTH_TOKEN: apiKey,
+    ANTHROPIC_MODEL: lite,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: pro,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: lite,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: lite,
+    CLAUDE_CODE_SUBAGENT_MODEL: lite,
+    CLAUDE_CODE_EFFORT_LEVEL: "max",
+  };
+}
+
 export async function resolveCredentialEnv(
   db: Db,
   agentId: string,
   credentialId: string,
+  adapterType?: string,
 ): Promise<{ env: Record<string, string>; home?: string }> {
   const [cred] = await db
     .select()
@@ -198,20 +394,15 @@ export async function resolveCredentialEnv(
         logger.warn({ agentId, credentialId }, "claude_oauth credential missing accessToken");
         return { env: {} };
       }
-      // Long-lived tokens (from `claude setup-token`) use a distinct prefix and
-      // have no refreshToken / expiresAt; flag them so we can route through the
-      // CLAUDE_CODE_OAUTH_TOKEN env var instead of synthesising a fake-expiry
-      // .credentials.json that the CLI would otherwise try to refresh.
+      // Detect long-lived tokens (from `claude setup-token`). They have no
+      // refreshToken / expiresAt of their own, so we synthesise a far-future
+      // expiry below. We still write `.credentials.json` because the interactive
+      // TUI (claude_tui adapter) ignores CLAUDE_CODE_OAUTH_TOKEN and only reads
+      // the credentials file. We additionally expose the env var as a redundant
+      // fallback for the headless claude_local path.
       const tokenKind = typeof payload.tokenKind === "string" ? payload.tokenKind : null;
       const isLongLivedToken =
         tokenKind === "long_lived" || (accessToken.startsWith("sk-ant-oat") && !payload.refreshToken);
-      if (isLongLivedToken) {
-        logger.info(
-          { agentId, credentialId },
-          "resolving claude_oauth long-lived token via CLAUDE_CODE_OAUTH_TOKEN env",
-        );
-        return { env: { CLAUDE_CODE_OAUTH_TOKEN: accessToken } };
-      }
       const refreshToken = typeof payload.refreshToken === "string" ? payload.refreshToken : "";
       const expiresAt = typeof payload.expiresAt === "number" ? payload.expiresAt : 4102444800000;
       const scopes = Array.isArray(payload.scopes) && payload.scopes.every((s) => typeof s === "string")
@@ -227,10 +418,63 @@ export async function resolveCredentialEnv(
       const credFile = path.join(claudeDir, ".credentials.json");
       await fs.writeFile(credFile, JSON.stringify({ claudeAiOauth: oauth }), "utf-8");
       await fs.chmod(credFile, 0o600).catch(() => undefined);
+
+      // Pre-seed ~/.claude.json so the interactive TUI skips its first-run
+      // onboarding wizard (theme picker → login picker → OAuth paste). The
+      // headless --print path doesn't read this file, but the TUI does. Merge
+      // with any existing file in case the adapter has already written a
+      // per-project trust entry alongside.
+      const globalConfigFile = path.join(agentHome, ".claude.json");
+      let existingGlobalConfig: Record<string, unknown> = {};
+      try {
+        const raw = await fs.readFile(globalConfigFile, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          existingGlobalConfig = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // missing or unreadable — start fresh
+      }
+      const globalConfig: Record<string, unknown> = {
+        ...existingGlobalConfig,
+        hasCompletedOnboarding: true,
+        lastOnboardingVersion: "2.1.141",
+      };
+      await fs.writeFile(globalConfigFile, JSON.stringify(globalConfig), "utf-8");
+      await fs.chmod(globalConfigFile, 0o600).catch(() => undefined);
+
+      // Pre-seed ~/.claude/settings.json so the interactive TUI skips the
+      // "Bypass Permissions mode — Yes, I accept" dialog that fires when
+      // --dangerously-skip-permissions is passed, and the auto-mode opt-in
+      // dialog. These keys are normally written when the user clicks accept
+      // (see binary: `m6("userSettings",{skipDangerousModePermissionPrompt:!0})`).
+      const settingsFile = path.join(claudeDir, "settings.json");
+      let existingSettings: Record<string, unknown> = {};
+      try {
+        const raw = await fs.readFile(settingsFile, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          existingSettings = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // missing — start fresh
+      }
+      const settings: Record<string, unknown> = {
+        ...existingSettings,
+        skipDangerousModePermissionPrompt: true,
+        skipAutoPermissionPrompt: true,
+      };
+      await fs.writeFile(settingsFile, JSON.stringify(settings), "utf-8");
+      await fs.chmod(settingsFile, 0o600).catch(() => undefined);
+
       logger.info(
-        { agentId, credentialId, credFile, hasRefreshToken: refreshToken.length > 0, subscriptionType },
+        { agentId, credentialId, credFile, hasRefreshToken: refreshToken.length > 0, isLongLivedToken, subscriptionType },
         "wrote claude_oauth credentials.json for agent",
       );
+      // Deliberately NOT setting CLAUDE_CODE_OAUTH_TOKEN: when both the env var
+      // and a credentials file are present, the interactive TUI auto-pastes
+      // the env var into its OAuth-code dialog and rejects it as "Invalid code"
+      // instead of reading the file. The file is the canonical credential.
       return { env: { HOME: agentHome }, home: agentHome };
     }
 
@@ -303,6 +547,42 @@ export async function resolveCredentialEnv(
       return { env: { OPENROUTER_API_KEY: apiKey } };
     }
 
+    case "deepseek_api_key": {
+      const apiKey = typeof payload.apiKey === "string" ? payload.apiKey.trim() : "";
+      if (!apiKey) {
+        logger.warn({ agentId, credentialId }, "deepseek_api_key credential missing apiKey");
+        return { env: {} };
+      }
+      // Same key, two consumers: the deepseek_api chat adapter reads
+      // DEEPSEEK_API_KEY, while a Claude Code CLI agent (claude_local/claude_tui)
+      // needs the ANTHROPIC_* env that routes it through DeepSeek's
+      // Anthropic-compatible endpoint.
+      if (adapterType && CLAUDE_CODE_ADAPTER_TYPES.has(adapterType)) {
+        return { env: buildDeepSeekClaudeCodeEnv(apiKey, payload) };
+      }
+      return { env: { DEEPSEEK_API_KEY: apiKey } };
+    }
+
+    case "mimo_api_key": {
+      const apiKey = typeof payload.apiKey === "string" ? payload.apiKey.trim() : "";
+      if (!apiKey) {
+        logger.warn({ agentId, credentialId }, "mimo_api_key credential missing apiKey");
+        return { env: {} };
+      }
+      // MiMo is Claude-Code-routing only (no standalone chat adapter), so it
+      // always resolves to the Anthropic-endpoint env. It's only offered for
+      // claude_local/claude_tui in the UI; if bound elsewhere, inject nothing
+      // rather than a key the adapter can't use.
+      if (adapterType && CLAUDE_CODE_ADAPTER_TYPES.has(adapterType)) {
+        return { env: buildMimoClaudeCodeEnv(apiKey, payload) };
+      }
+      logger.warn(
+        { agentId, credentialId, adapterType },
+        "mimo_api_key bound to a non-Claude-Code adapter; no env injected",
+      );
+      return { env: {} };
+    }
+
     default:
       logger.warn(
         { agentId, credentialId, type: cred.type },
@@ -310,4 +590,186 @@ export async function resolveCredentialEnv(
       );
       return { env: {} };
   }
+}
+
+const HOME_OWNER_CREDENTIAL_TYPES = new Set(["claude_oauth", "codex_oauth"]);
+
+/**
+ * Default cooldown applied to a credential that hit a rate/quota limit when the
+ * provider did not send a usable Retry-After header.
+ */
+export const CREDENTIAL_DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
+
+/**
+ * Provider credential types each adapter authenticates with. Used to map a
+ * failed run (known by its adapterType) back to the specific credential the run
+ * consumed, so a reactive cooldown lands on the right rotation-pool member.
+ * Mirrors the UI's credentialTypesForAdapterType in AgentConfigForm.
+ */
+const ADAPTER_CREDENTIAL_TYPES: Record<string, readonly string[]> = {
+  claude_local: ["claude_oauth", "claude_api_key", "deepseek_api_key", "mimo_api_key"],
+  claude_tui: ["claude_oauth", "claude_api_key", "deepseek_api_key", "mimo_api_key"],
+  gemini_local: ["gemini_api_key"],
+  codex_local: ["codex_oauth", "openai_api_key"],
+  cursor: ["openai_api_key"],
+  deepseek_api: ["deepseek_api_key"],
+  opencode_local: ["openrouter_api_key", "openai_api_key", "claude_api_key", "gemini_api_key"],
+  acpx_local: ["claude_oauth", "claude_api_key", "codex_oauth", "openai_api_key"],
+};
+
+export function credentialTypesForAdapterType(adapterType: string): readonly string[] {
+  return ADAPTER_CREDENTIAL_TYPES[adapterType] ?? [];
+}
+
+type RotationCandidate = {
+  credentialId: string;
+  type: string;
+  cooldownUntil: Date | null;
+  lastUsedAt: Date | null;
+};
+
+/**
+ * Pick one credential from a same-type pool: prefer credentials not on cooldown,
+ * and among those the least-recently-used (null lastUsedAt = never used = first).
+ * If every candidate is cooling down, fall back to the one whose cooldown expires
+ * soonest so the agent can still attempt a run rather than be wedged.
+ */
+function pickPoolCredential(candidates: RotationCandidate[], nowMs: number): RotationCandidate {
+  const byLru = (a: RotationCandidate, b: RotationCandidate) =>
+    (a.lastUsedAt ? a.lastUsedAt.getTime() : 0) - (b.lastUsedAt ? b.lastUsedAt.getTime() : 0);
+  const available = candidates.filter(
+    (c) => !c.cooldownUntil || c.cooldownUntil.getTime() <= nowMs,
+  );
+  if (available.length > 0) return [...available].sort(byLru)[0];
+  return [...candidates].sort(
+    (a, b) => (a.cooldownUntil?.getTime() ?? 0) - (b.cooldownUntil?.getTime() ?? 0),
+  )[0];
+}
+
+async function touchCredentialLastUsed(db: Db, credentialId: string): Promise<void> {
+  await db
+    .update(providerCredentials)
+    .set({ lastUsedAt: new Date() })
+    .where(eq(providerCredentials.id, credentialId));
+}
+
+/**
+ * Put a credential on cooldown after an upstream rate/quota limit. The heartbeat
+ * picker skips it until `cooldownUntil`, rotating the agent to another bound
+ * credential of the same provider type.
+ */
+export async function setCredentialCooldown(
+  db: Db,
+  credentialId: string,
+  cooldownUntil: Date,
+  reason: string | null,
+): Promise<void> {
+  await db
+    .update(providerCredentials)
+    .set({ cooldownUntil, cooldownReason: reason, updatedAt: new Date() })
+    .where(eq(providerCredentials.id, credentialId));
+}
+
+/**
+ * Resolve env for an agent's bound credentials, ONE per provider type. When an
+ * agent binds several credentials of the same type they form a rotation pool;
+ * the least-recently-used non-cooling member is selected (see pickPoolCredential)
+ * and its lastUsedAt is bumped. Falls back to the legacy `agents.credential_id`
+ * singular FK when the join is empty so existing single-credential agents keep
+ * working.
+ *
+ * Provider env vars do not collide across types (Anthropic / OpenAI / Gemini /
+ * OpenRouter / DeepSeek each own distinct keys), but HOME is the one shared key —
+ * if both claude_oauth and codex_oauth are chosen, the last write wins. Codex is
+ * resolved last so CODEX_HOME + its HOME take precedence; the Claude CLI still
+ * finds its .credentials.json via the agent-specific HOME path it shares.
+ *
+ * Returns `chosen` (the selected credentialId + type per provider type) so the
+ * caller can attribute a run's usage and any rate-limit cooldown to the exact
+ * credential it used.
+ */
+export async function resolveAllCredentialEnv(
+  db: Db,
+  agentId: string,
+): Promise<{
+  env: Record<string, string>;
+  home?: string;
+  credentialIds: string[];
+  chosen: Array<{ credentialId: string; type: string }>;
+}> {
+  const joinRows = await db
+    .select({
+      credentialId: agentCredentials.credentialId,
+      type: providerCredentials.type,
+      cooldownUntil: providerCredentials.cooldownUntil,
+      lastUsedAt: providerCredentials.lastUsedAt,
+    })
+    .from(agentCredentials)
+    .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
+    .where(eq(agentCredentials.agentId, agentId));
+
+  // adapterType decides how some credentials resolve (e.g. a deepseek_api_key on
+  // a Claude Code agent routes the CLI through DeepSeek's Anthropic endpoint).
+  const [agentRow] = await db
+    .select({ credentialId: agents.credentialId, adapterType: agents.adapterType })
+    .from(agents)
+    .where(eq(agents.id, agentId))
+    .limit(1);
+  const adapterType = agentRow?.adapterType ?? undefined;
+
+  if (joinRows.length === 0) {
+    if (!agentRow?.credentialId) return { env: {}, credentialIds: [], chosen: [] };
+    const res = await resolveCredentialEnv(db, agentId, agentRow.credentialId, adapterType);
+    await touchCredentialLastUsed(db, agentRow.credentialId);
+    const [row] = await db
+      .select({ type: providerCredentials.type })
+      .from(providerCredentials)
+      .where(eq(providerCredentials.id, agentRow.credentialId))
+      .limit(1);
+    return {
+      env: res.env,
+      home: res.home,
+      credentialIds: [agentRow.credentialId],
+      chosen: row ? [{ credentialId: agentRow.credentialId, type: row.type }] : [],
+    };
+  }
+
+  // Group bound credentials by provider type, then select exactly one per type
+  // (rotation pool). Preserves behaviour for agents with a single credential per
+  // type while enabling LRU rotation when several of the same type are bound.
+  const nowMs = Date.now();
+  const byType = new Map<string, RotationCandidate[]>();
+  for (const r of joinRows) {
+    const list = byType.get(r.type) ?? [];
+    list.push(r);
+    byType.set(r.type, list);
+  }
+  const chosenCandidates: RotationCandidate[] = [];
+  for (const list of byType.values()) {
+    chosenCandidates.push(pickPoolCredential(list, nowMs));
+  }
+
+  // Resolve oauth (HOME-owning) types last so their HOME overrides take
+  // precedence over any api-key types (which never set HOME).
+  const ordered = [...chosenCandidates].sort((a, b) => {
+    const aHome = HOME_OWNER_CREDENTIAL_TYPES.has(a.type) ? 1 : 0;
+    const bHome = HOME_OWNER_CREDENTIAL_TYPES.has(b.type) ? 1 : 0;
+    return aHome - bHome;
+  });
+
+  const env: Record<string, string> = {};
+  let home: string | undefined;
+  const credentialIds: string[] = [];
+  const chosen: Array<{ credentialId: string; type: string }> = [];
+
+  for (const candidate of ordered) {
+    const res = await resolveCredentialEnv(db, agentId, candidate.credentialId, adapterType);
+    Object.assign(env, res.env);
+    if (res.home) home = res.home;
+    credentialIds.push(candidate.credentialId);
+    chosen.push({ credentialId: candidate.credentialId, type: candidate.type });
+    await touchCredentialLastUsed(db, candidate.credentialId);
+  }
+
+  return { env, home, credentialIds, chosen };
 }

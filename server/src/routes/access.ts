@@ -1107,7 +1107,6 @@ async function getProtectedMemberReason(
 
   const actorRole = opts?.actorRole ?? await resolveActorHumanRole(req, access, companyId);
   if (!actorRole) return "Only active company members can remove users.";
-
   if (opts?.operation === "archive" && targetRole === "owner") {
     // Allow archiving an Owner only when another active Owner remains in the
     // company. Mirrors the demotion safety check on PATCH /members/:id below.
@@ -1121,6 +1120,13 @@ async function getProtectedMemberReason(
     if (actorRole === "owner") return null;
   }
 
+  // Instance admins (root) are not constrained by the per-company role
+  // hierarchy: as the instance owner they may manage any company member —
+  // including a peer Owner — e.g. to grant a company Owner credentials/secrets
+  // permissions. A regular company Owner still cannot manage another Owner
+  // (the rank check below). This bypass sits after the archive guard above, so
+  // it only loosens the permission-UPDATE path, not owner/admin archival.
+  if (req.actor.isInstanceAdmin) return null;
   if (humanRoleRank[targetRole] >= humanRoleRank[actorRole]) {
     return "You can only remove users below your company role.";
   }

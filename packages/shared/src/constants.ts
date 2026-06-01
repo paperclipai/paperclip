@@ -32,6 +32,7 @@ export const AGENT_ADAPTER_TYPES = [
   "http",
   "acpx_local",
   "claude_local",
+  "claude_tui",
   "codex_local",
   "cursor_cloud",
   "gemini_local",
@@ -39,6 +40,7 @@ export const AGENT_ADAPTER_TYPES = [
   "pi_local",
   "cursor",
   "openclaw_gateway",
+  "deepseek_api",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number] | (string & {});
 
@@ -437,6 +439,8 @@ export const CREDENTIAL_TYPES = [
   "gemini_api_key",
   "openai_api_key",
   "openrouter_api_key",
+  "deepseek_api_key",
+  "mimo_api_key",
 ] as const;
 export type CredentialType = (typeof CREDENTIAL_TYPES)[number];
 

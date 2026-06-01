@@ -35,6 +35,15 @@ import {
   modelProfiles as claudeModelProfiles,
 } from "@paperclipai/adapter-claude-local";
 import {
+  execute as claudeTuiExecute,
+  testEnvironment as claudeTuiTestEnvironment,
+  sessionCodec as claudeTuiSessionCodec,
+} from "@paperclipai/adapter-claude-tui/server";
+import {
+  agentConfigurationDoc as claudeTuiAgentConfigurationDoc,
+  models as claudeTuiModels,
+} from "@paperclipai/adapter-claude-tui";
+import {
   execute as codexExecute,
   listCodexSkills,
   syncCodexSkills,
@@ -66,6 +75,15 @@ import {
   testEnvironment as cursorCloudTestEnvironment,
 } from "@paperclipai/adapter-cursor-cloud/server";
 import { agentConfigurationDoc as cursorCloudAgentConfigurationDoc } from "@paperclipai/adapter-cursor-cloud";
+import {
+  execute as deepseekApiExecute,
+  testEnvironment as deepseekApiTestEnvironment,
+  getConfigSchema as getDeepseekApiConfigSchema,
+} from "@paperclipai/adapter-deepseek-api/server";
+import {
+  agentConfigurationDoc as deepseekApiAgentConfigurationDoc,
+  models as deepseekApiModels,
+} from "@paperclipai/adapter-deepseek-api";
 import {
   execute as geminiExecute,
   listGeminiSkills,
@@ -254,6 +272,20 @@ const claudeLocalAdapter: ServerAdapterModule = {
   getQuotaWindows: claudeGetQuotaWindows,
 };
 
+const claudeTuiAdapter: ServerAdapterModule = {
+  type: "claude_tui",
+  execute: claudeTuiExecute,
+  testEnvironment: claudeTuiTestEnvironment,
+  sessionCodec: claudeTuiSessionCodec,
+  sessionManagement: getAdapterSessionManagement("claude_tui") ?? undefined,
+  models: claudeTuiModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: claudeTuiAgentConfigurationDoc,
+};
+
 const acpxLocalAdapter: ServerAdapterModule = {
   type: "acpx_local",
   execute: acpxExecute,
@@ -328,6 +360,18 @@ const cursorCloudAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: cursorCloudAgentConfigurationDoc,
   getConfigSchema: getCursorCloudConfigSchema,
+};
+
+const deepseekApiAdapter: ServerAdapterModule = {
+  type: "deepseek_api",
+  execute: deepseekApiExecute,
+  testEnvironment: deepseekApiTestEnvironment,
+  models: deepseekApiModels,
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: deepseekApiAgentConfigurationDoc,
+  getConfigSchema: getDeepseekApiConfigSchema,
 };
 
 const geminiLocalAdapter: ServerAdapterModule = {
@@ -480,11 +524,13 @@ function registerBuiltInAdapters() {
   for (const adapter of [
     acpxLocalAdapter,
     claudeLocalAdapter,
+    claudeTuiAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorCloudAdapter,
     cursorLocalAdapter,
+    deepseekApiAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,

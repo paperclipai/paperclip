@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
+import { agentWakeupRequests, agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -551,15 +551,17 @@ export function agentRoutes(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
     options?: { restricted?: boolean },
   ) {
-    const [chainOfCommand, accessState] = await Promise.all([
+    const [chainOfCommand, accessState, credentials] = await Promise.all([
       svc.getChainOfCommand(agent.id),
       buildAgentAccessState(agent),
+      credentialsSvc.listForAgent(agent.id),
     ]);
 
     return {
       ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
       chainOfCommand,
       access: accessState,
+      credentials,
     };
   }
 
@@ -641,16 +643,60 @@ export function agentRoutes(
     return allowedByGrant || canCreateAgents(actorAgent);
   }
 
+  // Translate a raw skip reason (stored on the skipped agentWakeupRequests row)
+  // into a human, actionable message so the UI stops showing a bare
+  // "Wakeup was skipped." that hides WHY nothing ran.
+  function describeWakeupSkipReason(reason: string | null): string | null {
+    switch (reason) {
+      case "heartbeat.wakeOnDemand.disabled":
+        return "On-demand wake is disabled for this agent. Enable 'wake on demand' in the agent's settings to retry.";
+      case "heartbeat.disabled":
+        return "This agent's heartbeat is disabled. Enable it in the agent's settings to retry.";
+      case "issue_tree_hold_active":
+        return "This issue (or an ancestor) is paused by a subtree hold. Resume it to retry.";
+      case "issue_dependencies_blocked":
+        return "This issue is blocked by an unresolved dependency. Resolve/close the blocker to retry.";
+      case "issue_execution_issue_not_found":
+        return "The issue for this run no longer exists.";
+      case "budget.blocked":
+        return "A budget limit is blocking this agent. Raise the budget to retry.";
+      default:
+        return null;
+    }
+  }
+
+  // Most-recent skip reason for this agent (optionally scoped to the issue), so
+  // the response can explain the actual cause rather than a generic message.
+  async function latestSkipReason(
+    agentId: string,
+    issueId: string | null,
+  ): Promise<string | null> {
+    const rows = await db
+      .select({ reason: agentWakeupRequests.reason, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "skipped")))
+      .orderBy(desc(agentWakeupRequests.requestedAt))
+      .limit(5);
+    for (const row of rows) {
+      if (!issueId) return row.reason ?? null;
+      const rowIssueId = typeof row.payload?.issueId === "string" ? row.payload.issueId : null;
+      if (rowIssueId === issueId) return row.reason ?? null;
+    }
+    return rows[0]?.reason ?? null;
+  }
+
   async function buildSkippedWakeupResponse(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
     payload: Record<string, unknown> | null | undefined,
   ) {
     const issueId = typeof payload?.issueId === "string" && payload.issueId.trim() ? payload.issueId : null;
+    const skipReason = await latestSkipReason(agent.id, issueId);
+    const explained = describeWakeupSkipReason(skipReason);
     if (!issueId) {
       return {
         status: "skipped" as const,
-        reason: "wakeup_skipped",
-        message: "Wakeup was skipped.",
+        reason: skipReason ?? "wakeup_skipped",
+        message: explained ?? "Wakeup was skipped.",
         issueId: null,
         executionRunId: null,
         executionAgentId: null,
@@ -670,8 +716,8 @@ export function agentRoutes(
     if (!issue?.executionRunId) {
       return {
         status: "skipped" as const,
-        reason: "wakeup_skipped",
-        message: "Wakeup was skipped.",
+        reason: skipReason ?? "wakeup_skipped",
+        message: explained ?? "Wakeup was skipped.",
         issueId,
         executionRunId: null,
         executionAgentId: null,
@@ -683,8 +729,8 @@ export function agentRoutes(
     if (!executionRun || (executionRun.status !== "queued" && executionRun.status !== "running")) {
       return {
         status: "skipped" as const,
-        reason: "wakeup_skipped",
-        message: "Wakeup was skipped.",
+        reason: skipReason ?? "wakeup_skipped",
+        message: explained ?? "Wakeup was skipped.",
         issueId,
         executionRunId: issue.executionRunId,
         executionAgentId: null,
@@ -2185,6 +2231,7 @@ export function agentRoutes(
     const {
       desiredSkills: requestedDesiredSkills,
       instructionsBundle,
+      credentialIds: requestedCredentialIds,
       ...createInput
     } = req.body;
     createInput.adapterType = assertKnownAdapterType(createInput.adapterType);
@@ -2280,7 +2327,28 @@ export function agentRoutes(
       );
     }
 
-    res.status(201).json(agent);
+    if (Array.isArray(requestedCredentialIds) && requestedCredentialIds.length > 0) {
+      const setResult = await credentialsSvc.setForAgent(agent.id, requestedCredentialIds);
+      if (!setResult.ok) {
+        if (setResult.error === "duplicate_type") {
+          res.status(422).json({
+            error: "duplicate_credential_type",
+            message: `An agent can hold at most one credential per provider type (got multiple ${setResult.type}).`,
+          });
+          return;
+        }
+        if (setResult.error === "credential_not_found") {
+          res.status(404).json({
+            error: "credential_not_found",
+            credentialId: setResult.credentialId,
+          });
+          return;
+        }
+      }
+    }
+    const credentials = await credentialsSvc.listForAgent(agent.id);
+
+    res.status(201).json({ ...agent, credentials });
   });
 
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
@@ -2602,6 +2670,13 @@ export function agentRoutes(
     const patchData = { ...(req.body as Record<string, unknown>) };
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
+    // credentialIds is a virtual field — owned by the agent_credentials join,
+    // not a column on agents. Extract before passing patchData to svc.update.
+    const hasCredentialIdsPatch = hasOwn(patchData, "credentialIds");
+    const requestedCredentialIds = hasCredentialIdsPatch
+      ? (Array.isArray(patchData.credentialIds) ? (patchData.credentialIds as string[]) : [])
+      : null;
+    if (hasCredentialIdsPatch) delete patchData.credentialIds;
     if (hasOwn(patchData, "adapterConfig")) {
       const adapterConfig = asRecord(patchData.adapterConfig);
       if (!adapterConfig) {
@@ -2724,6 +2799,28 @@ export function agentRoutes(
       );
     }
 
+    if (requestedCredentialIds !== null) {
+      const setResult = await credentialsSvc.setForAgent(agent.id, requestedCredentialIds);
+      if (!setResult.ok) {
+        if (setResult.error === "duplicate_type") {
+          res.status(422).json({
+            error: "duplicate_credential_type",
+            message: `An agent can hold at most one credential per provider type (got multiple ${setResult.type}).`,
+          });
+          return;
+        }
+        if (setResult.error === "credential_not_found") {
+          res.status(404).json({
+            error: "credential_not_found",
+            credentialId: setResult.credentialId,
+          });
+          return;
+        }
+      }
+    }
+
+    const credentials = await credentialsSvc.listForAgent(agent.id);
+
     await logActivity(db, {
       companyId: agent.companyId,
       actorType: actor.actorType,
@@ -2736,7 +2833,7 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(agent);
+    res.json({ ...agent, credentials });
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
@@ -2985,6 +3082,10 @@ export function agentRoutes(
       idempotencyKey: req.body.idempotencyKey ?? null,
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
+      // A deliberate operator Retry of a failed run force-clears a stale
+      // execution lock so the agent actually runs instead of coalescing into a
+      // wedged ghost run. Scoped to the explicit retry reason + a human board actor.
+      forceClearStaleExecution: req.body.reason === "retry_failed_run" && req.actor.type !== "agent",
       contextSnapshot: {
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,

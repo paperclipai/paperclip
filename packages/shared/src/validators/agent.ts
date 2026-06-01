@@ -79,6 +79,7 @@ export const createAgentSchema = z.object({
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   credentialId: z.string().uuid().optional().nullable(),
+  credentialIds: z.array(z.string().uuid()).optional(),
   metadata: z.record(z.unknown()).optional().nullable(),
 });
 

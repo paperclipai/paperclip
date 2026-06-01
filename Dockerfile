@@ -18,9 +18,11 @@ COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/mcp-server/package.json packages/mcp-server/
 COPY packages/adapters/acpx-local/package.json packages/adapters/acpx-local/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
+COPY packages/adapters/claude-tui/package.json packages/adapters/claude-tui/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
 COPY packages/adapters/cursor-cloud/package.json packages/adapters/cursor-cloud/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
+COPY packages/adapters/deepseek-api/package.json packages/adapters/deepseek-api/
 COPY packages/adapters/gemini-local/package.json packages/adapters/gemini-local/
 COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-gateway/
 COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
@@ -45,11 +47,25 @@ COPY . .
 RUN pnpm --filter "@paperclipai/ui..." build
 RUN pnpm --filter "@paperclipai/server..." build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+RUN test -f /app/packages/adapters/claude-tui/python/cli.py \
+  || (echo "ERROR: claude-tui python CLI missing in build stage" \
+      && ls -la /app/packages/adapters/claude-tui/ \
+      && exit 1)
+# Mirror python files into dist/ so the dist-relative path resolution also works.
+RUN mkdir -p /app/packages/adapters/claude-tui/dist/python \
+  && cp /app/packages/adapters/claude-tui/python/*.py /app/packages/adapters/claude-tui/dist/python/ \
+  && chmod -R a+r /app/packages/adapters/claude-tui/python /app/packages/adapters/claude-tui/dist/python
 
 FROM base AS production
 WORKDIR /app
 COPY --from=build /app /app
-RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client bsdextrautils && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client bsdextrautils python3 python3-ptyprocess python3-pyte && rm -rf /var/lib/apt/lists/*
+RUN test -f /app/packages/adapters/claude-tui/python/cli.py \
+  && test -f /app/packages/adapters/claude-tui/dist/python/cli.py \
+  || (echo "ERROR: claude-tui python CLI missing in production stage" \
+      && ls -la /app/packages/adapters/claude-tui/ \
+      && ls -la /app/packages/adapters/claude-tui/dist/ 2>/dev/null \
+      && exit 1)
 ARG CLAUDE_CODE_VERSION=2.1.141
 ARG CODEX_VERSION=0.130.0
 ARG AGENT_BROWSER_VERSION=0.27.0

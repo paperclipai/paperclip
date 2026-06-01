@@ -62,7 +62,12 @@ import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
-import { resolveCredentialEnv } from "./credentials.js";
+import {
+  CREDENTIAL_DEFAULT_COOLDOWN_MS,
+  credentialTypesForAdapterType,
+  resolveAllCredentialEnv,
+  setCredentialCooldown,
+} from "./credentials.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
@@ -967,6 +972,15 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  /**
+   * Operator override: when an explicit manual Retry hits an issue whose
+   * execution lock is held by a wedged same-agent run (a run stuck in a
+   * non-terminal status with no live process — e.g. it errored without writing
+   * a terminal status, or a doomed scheduled_retry), forcibly cancel that ghost
+   * run and release the lock so a fresh run can start instead of coalescing into
+   * the dead one. Only set for deliberate user retries, never timer wakes.
+   */
+  forceClearStaleExecution?: boolean;
 }
 
 type UsageTotals = {
@@ -6637,6 +6651,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     result: AdapterExecutionResult,
     session: { legacySessionId: string | null },
     normalizedUsage?: UsageTotals | null,
+    usedCredentialId?: string | null,
   ) {
     await ensureRuntimeState(agent);
     const usage = normalizedUsage ?? normalizeUsageTotals(result.usage);
@@ -6671,6 +6686,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await costs.createEvent(agent.companyId, {
         heartbeatRunId: run.id,
         agentId: agent.id,
+        credentialId: usedCredentialId ?? null,
         issueId: ledgerScope.issueId,
         projectId: ledgerScope.projectId,
         provider,
@@ -7073,24 +7089,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectEnv: projectContext?.env ?? null,
       secretsSvc,
     });
-    if (agent.credentialId) {
-      try {
-        const credResolution = await resolveCredentialEnv(db, agent.id, agent.credentialId);
-        if (Object.keys(credResolution.env).length > 0) {
-          resolvedConfig.env = {
-            ...parseObject(resolvedConfig.env),
-            ...credResolution.env,
-          };
-          for (const key of Object.keys(credResolution.env)) {
-            secretKeys.add(key);
-          }
+    // Lifted out of the try so the post-run cooldown hook and per-credential
+    // usage attribution can see which credential this run actually used (the
+    // chosen pool member whose type matches the agent's adapter).
+    let runActiveCredentialId: string | null = null;
+    try {
+      const credResolution = await resolveAllCredentialEnv(db, agent.id);
+      const eligibleTypes = new Set(credentialTypesForAdapterType(agent.adapterType));
+      runActiveCredentialId =
+        (credResolution.chosen.find((c) => eligibleTypes.has(c.type)) ?? credResolution.chosen[0])
+          ?.credentialId ?? null;
+      if (Object.keys(credResolution.env).length > 0) {
+        resolvedConfig.env = {
+          ...parseObject(resolvedConfig.env),
+          ...credResolution.env,
+        };
+        for (const key of Object.keys(credResolution.env)) {
+          secretKeys.add(key);
         }
-      } catch (err) {
-        logger.error(
-          { agentId: agent.id, credentialId: agent.credentialId, err: err instanceof Error ? err.message : String(err) },
-          "failed to apply provider credential env to execution run",
-        );
       }
+    } catch (err) {
+      logger.error(
+        { agentId: agent.id, credentialId: agent.credentialId, err: err instanceof Error ? err.message : String(err) },
+        "failed to apply provider credential env to execution run",
+      );
     }
     if (secretManifest.length > 0) {
       context.paperclipSecrets = {
@@ -7646,10 +7668,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
       const onAdapterMeta = async (meta: AdapterInvocationMeta) => {
+        // Adapters typically pass their live spawnEnv into meta.env by reference
+        // (see e.g. claude-tui execute.ts:319). Redacting in place would clobber
+        // the env that's about to be passed to spawn() — silently replacing
+        // HOME/OAUTH tokens with "***REDACTED***" inside the child process.
+        // Redact a shallow copy so the logged event is sanitized but the live
+        // spawnEnv is untouched.
         if (meta.env && secretKeys.size > 0) {
+          const redactedEnv: Record<string, string> = { ...meta.env };
           for (const key of secretKeys) {
-            if (key in meta.env) meta.env[key] = "***REDACTED***";
+            if (key in redactedEnv) redactedEnv[key] = "***REDACTED***";
           }
+          meta = { ...meta, env: redactedEnv };
         }
         const modelProfileMetadata = modelProfileRunMetadata(modelProfileApplication);
         await appendRunEvent(currentRun, seq++, {
@@ -7877,6 +7907,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
       }
 
+      // Reactive credential rotation: if this run hit an upstream rate/quota
+      // limit, cool down the credential it used so the next run rotates to
+      // another bound credential of the same provider type (see
+      // resolveAllCredentialEnv / pickPoolCredential). Honor the provider's
+      // retry-after when present, else fall back to the default cooldown.
+      if (
+        runActiveCredentialId &&
+        outcome === "failed" &&
+        adapterResult.errorFamily === "transient_upstream"
+      ) {
+        const retryAt = readNonEmptyString(adapterResult.retryNotBefore);
+        const parsed = retryAt ? new Date(retryAt) : null;
+        const cooldownUntil =
+          parsed && Number.isFinite(parsed.getTime()) && parsed.getTime() > Date.now()
+            ? parsed
+            : new Date(Date.now() + CREDENTIAL_DEFAULT_COOLDOWN_MS);
+        try {
+          await setCredentialCooldown(
+            db,
+            runActiveCredentialId,
+            cooldownUntil,
+            adapterResult.errorCode ?? "transient_upstream",
+          );
+          await onLog(
+            "stderr",
+            `[paperclip] credential ${runActiveCredentialId} cooling down until ${cooldownUntil.toISOString()} after upstream limit\n`,
+          );
+        } catch (err) {
+          logger.warn(
+            {
+              agentId: agent.id,
+              credentialId: runActiveCredentialId,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "failed to set credential cooldown after upstream limit",
+          );
+        }
+      }
+
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
         error: runErrorMessage,
@@ -7938,7 +8007,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
-        await releaseIssueExecutionAndPromote(livenessRun);
+        // A deliberately cancelled run (or one killed by a signal during an
+        // active cancel) must be terminal — suppress immediate recovery so it
+        // doesn't queue an assignment-recovery run (the recovery gate explicitly
+        // treats status "cancelled" as needing recovery). Genuine failures still
+        // recover normally.
+        await releaseIssueExecutionAndPromote(livenessRun, {
+          suppressImmediateRecovery: outcome === "cancelled" || adapterResult.signal != null,
+        });
         await handleRunLivenessContinuation(livenessRun);
         await handleSuccessfulRunHandoff(
           issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
@@ -7954,7 +8030,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (finalizedRun) {
         await updateRuntimeState(agent, finalizedRun, adapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
-        }, normalizedUsage);
+        }, normalizedUsage, runActiveCredentialId);
         if (taskKey) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
@@ -8856,6 +8932,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           activeExecutionRun = null;
         }
 
+        // Operator override: an explicit manual Retry force-reaps a wedged
+        // same-agent run that is holding the execution lock but has no live
+        // process (it errored/quota-died without writing a terminal status, or
+        // is a doomed scheduled_retry). Without this, the manual wake just
+        // coalesces into the ghost and the agent never actually runs.
+        if (
+          activeExecutionRun &&
+          opts.forceClearStaleExecution &&
+          !runningProcesses.has(activeExecutionRun.id)
+        ) {
+          const now = new Date();
+          const reapReason = "Force-cancelled by manual retry: previous run was wedged without a live process";
+          const reaped = await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: reapReason,
+              errorCode: "stale_execution_reaped",
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(heartbeatRuns.id, activeExecutionRun.id),
+                inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (reaped) {
+            if (reaped.wakeupRequestId) {
+              await tx
+                .update(agentWakeupRequests)
+                .set({ status: "cancelled", finishedAt: now, error: reapReason, updatedAt: now })
+                .where(eq(agentWakeupRequests.id, reaped.wakeupRequestId));
+            }
+            activeExecutionRun = null;
+          }
+        }
+
         if (!activeExecutionRun && issue.executionRunId) {
           await tx
             .update(issues)
@@ -9365,6 +9481,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
     const agent = await getAgent(run.agentId);
 
+    // Mark the run cancelled BEFORE killing the process. terminate* awaits a
+    // SIGTERM grace period during which the killed child resolves adapter.execute
+    // and the run's own completion handler runs concurrently — if the status
+    // isn't already terminal there, it misclassifies the deliberate cancel as
+    // "failed" and schedules a doomed retry. Writing "cancelled" first makes the
+    // completion handler see a terminal status and treat the run as cancelled.
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: new Date(),
+      error: reason,
+      errorCode: "cancelled",
+      ...(agent ? {
+        resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
+          resultJson: parseObject(run.resultJson),
+          errorCode: "cancelled",
+          errorMessage: reason,
+        }),
+      } : {}),
+    });
+
     const running = runningProcesses.get(run.id);
     if (running) {
       await terminateHeartbeatRunProcess({
@@ -9378,19 +9513,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         processGroupId: run.processGroupId,
       });
     }
-
-    const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt: new Date(),
-      error: reason,
-      errorCode: "cancelled",
-      ...(agent ? {
-        resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
-          resultJson: parseObject(run.resultJson),
-          errorCode: "cancelled",
-          errorMessage: reason,
-        }),
-      } : {}),
-    });
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt: new Date(),

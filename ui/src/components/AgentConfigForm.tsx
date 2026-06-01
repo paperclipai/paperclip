@@ -125,6 +125,7 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
     Object.keys(o.heartbeat).length > 0 ||
     Object.keys(o.runtime).length > 0 ||
     o.credentialId !== undefined ||
+    o.credentialIds !== undefined ||
     o.modelProfiles?.cheap !== undefined
   );
 }
@@ -415,32 +416,78 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   });
 
   const credentialTypesForAdapter = useMemo(
-    () => credentialTypesForAdapterType(adapterType),
-    [adapterType],
+    () => credentialTypesForAdapterType(adapterType, acpxAgent),
+    [adapterType, acpxAgent],
   );
   const availableCredentials = useMemo(
     () => credentials.filter((c) => credentialTypesForAdapter.has(c.type)),
     [credentials, credentialTypesForAdapter],
   );
 
-  const selectedCredentialId = isCreate
-    ? (props.values.credentialId ?? null)
-    : overlay.credentialId !== undefined
-      ? overlay.credentialId
-      : (props.agent.credentialId ?? null);
+  const selectedCredentialIds = useMemo<string[]>(() => {
+    if (isCreate) {
+      const fromArray = props.values.credentialIds;
+      if (Array.isArray(fromArray) && fromArray.length > 0) return fromArray;
+      if (props.values.credentialId) return [props.values.credentialId];
+      return [];
+    }
+    if (overlay.credentialIds !== undefined) return overlay.credentialIds;
+    const fromAgent = (props.agent.credentials ?? []).map((c) => c.id);
+    if (fromAgent.length > 0) return fromAgent;
+    return props.agent.credentialId ? [props.agent.credentialId] : [];
+  }, [
+    isCreate,
+    isCreate ? props.values.credentialIds : null,
+    isCreate ? props.values.credentialId : null,
+    isCreate ? null : overlay.credentialIds,
+    isCreate ? null : props.agent.credentials,
+    isCreate ? null : props.agent.credentialId,
+  ]);
+
+  const toggleCredential = useCallback(
+    (credentialId: string) => {
+      const next = selectedCredentialIds.includes(credentialId)
+        ? selectedCredentialIds.filter((id) => id !== credentialId)
+        : [...selectedCredentialIds, credentialId];
+      if (isCreate) {
+        props.onChange({ credentialIds: next });
+      } else {
+        setOverlay((prev) => ({ ...prev, credentialIds: next }));
+      }
+    },
+    [isCreate, selectedCredentialIds, props],
+  );
 
   const autoSelectedCredentialRef = useRef(false);
   useEffect(() => {
     if (!isCreate) return;
     if (autoSelectedCredentialRef.current) return;
     if (availableCredentials.length === 0) return;
+    if ((props.values.credentialIds ?? []).length > 0) return;
     if (props.values.credentialId) return;
     const defaultCred = availableCredentials.find((c) => c.isDefault);
     if (defaultCred) {
       autoSelectedCredentialRef.current = true;
-      props.onChange({ credentialId: defaultCred.id });
+      props.onChange({ credentialIds: [defaultCred.id] });
     }
   }, [isCreate, availableCredentials]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Prune selected credentials that became incompatible after switching ACPX agent
+  // (claude ↔ codex). The adapter-type change handler already prunes when the
+  // adapter itself changes; this covers the narrower agent toggle within ACPX.
+  useEffect(() => {
+    if (selectedCredentialIds.length === 0) return;
+    const compatibleIds = selectedCredentialIds.filter((id) => {
+      const cred = credentials.find((c) => c.id === id);
+      return cred ? credentialTypesForAdapter.has(cred.type) : false;
+    });
+    if (compatibleIds.length === selectedCredentialIds.length) return;
+    if (isCreate) {
+      props.onChange({ credentialIds: compatibleIds });
+    } else {
+      setOverlay((prev) => ({ ...prev, credentialIds: compatibleIds }));
+    }
+  }, [credentialTypesForAdapter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Props passed to adapter-specific config field components */
   const adapterFieldProps = {
@@ -887,12 +934,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 disabledTypes={disabledTypes}
                 onChange={(t) => {
                   const nextCompatible = credentialTypesForAdapterType(t);
-                  const currentCredType = credentials.find(
-                    (c) => c.id === selectedCredentialId,
-                  )?.type;
-                  const shouldClearCred =
-                    !!selectedCredentialId &&
-                    (!currentCredType || !nextCompatible.has(currentCredType));
+                  const filteredCredentialIds = selectedCredentialIds.filter((id) => {
+                    const cred = credentials.find((c) => c.id === id);
+                    return cred ? nextCompatible.has(cred.type) : false;
+                  });
+                  const credentialsChanged =
+                    filteredCredentialIds.length !== selectedCredentialIds.length;
                   if (isCreate) {
                     // Reset all adapter-specific fields to defaults when switching adapter type
                     const { adapterType: _at, ...defaults } = defaultCreateValues;
@@ -908,7 +955,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     } else if (t === "opencode_local") {
                       nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
                     }
-                    if (shouldClearCred) nextValues.credentialId = null;
+                    nextValues.credentialIds = filteredCredentialIds;
+                    nextValues.credentialId = null;
                     set!(nextValues);
                   } else {
                     // Clear all adapter config and explicitly blank out model + effort/mode keys
@@ -916,7 +964,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
-                      ...(shouldClearCred ? { credentialId: null } : {}),
+                      ...(credentialsChanged ? { credentialIds: filteredCredentialIds } : {}),
                       modelProfiles: { cheap: { cleared: true } },
                       adapterConfig: {
                         model:
@@ -947,17 +995,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {availableCredentials.length > 0 || selectedCredentialId ? (
-            <CredentialDropdown
+          {credentialTypesForAdapter.size > 0 ||
+          availableCredentials.length > 0 ||
+          selectedCredentialIds.length > 0 ? (
+            <CredentialMultiSelect
               credentials={availableCredentials}
-              value={selectedCredentialId}
-              onChange={(id) => {
-                if (isCreate) {
-                  set!({ credentialId: id });
-                } else {
-                  setOverlay((prev) => ({ ...prev, credentialId: id }));
-                }
-              }}
+              selectedIds={selectedCredentialIds}
+              onToggle={toggleCredential}
               open={credentialOpen}
               onOpenChange={setCredentialOpen}
             />
@@ -1914,18 +1958,32 @@ const CREDENTIAL_TYPE_LABELS: Record<CredentialType, string> = {
   gemini_api_key: "Gemini API Key",
   openai_api_key: "OpenAI API Key",
   openrouter_api_key: "OpenRouter API Key",
+  deepseek_api_key: "DeepSeek API Key",
+  mimo_api_key: "MiMo (Xiaomi) API Key",
 };
 
-function credentialTypesForAdapterType(adapterType: string): Set<CredentialType> {
+function credentialTypesForAdapterType(
+  adapterType: string,
+  acpxAgent?: string,
+): Set<CredentialType> {
   switch (adapterType) {
     case "claude_local":
-      return new Set<CredentialType>(["claude_oauth", "claude_api_key"]);
+      // deepseek_api_key / mimo_api_key route the Claude Code CLI through the
+      // provider's Anthropic-compatible endpoint (the resolver injects
+      // ANTHROPIC_BASE_URL + AUTH_TOKEN + model mapping when bound here).
+      return new Set<CredentialType>(["claude_oauth", "claude_api_key", "deepseek_api_key", "mimo_api_key"]);
+    case "claude_tui":
+      // claude_tui drives the same Claude Code CLI session as claude_local,
+      // just through a TUI wrapper, so it shares the same credential set.
+      return new Set<CredentialType>(["claude_oauth", "claude_api_key", "deepseek_api_key", "mimo_api_key"]);
     case "gemini_local":
       return new Set<CredentialType>(["gemini_api_key"]);
     case "codex_local":
       return new Set<CredentialType>(["codex_oauth", "openai_api_key"]);
     case "cursor":
       return new Set<CredentialType>(["openai_api_key"]);
+    case "deepseek_api":
+      return new Set<CredentialType>(["deepseek_api_key"]);
     case "opencode_local":
       return new Set<CredentialType>([
         "openrouter_api_key",
@@ -1933,87 +1991,148 @@ function credentialTypesForAdapterType(adapterType: string): Set<CredentialType>
         "claude_api_key",
         "gemini_api_key",
       ]);
+    case "acpx_local":
+      // ACPX dispatches based on adapterConfig.agent. Narrow the credential
+      // picker to the provider that will actually be invoked so the user
+      // isn't offered creds that the runtime will ignore.
+      if (acpxAgent === "claude") {
+        return new Set<CredentialType>(["claude_oauth", "claude_api_key"]);
+      }
+      if (acpxAgent === "codex") {
+        return new Set<CredentialType>(["codex_oauth", "openai_api_key"]);
+      }
+      // custom or unset — allow both providers
+      return new Set<CredentialType>([
+        "claude_oauth",
+        "claude_api_key",
+        "codex_oauth",
+        "openai_api_key",
+      ]);
     default:
       return new Set<CredentialType>();
   }
 }
 
-function CredentialDropdown({
+function CredentialMultiSelect({
   credentials,
-  value,
-  onChange,
+  selectedIds,
+  onToggle,
   open,
   onOpenChange,
 }: {
   credentials: ProviderCredential[];
-  value: string | null;
-  onChange: (id: string | null) => void;
+  selectedIds: string[];
+  onToggle: (id: string) => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const selected = credentials.find((c) => c.id === value);
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const selectedCreds = useMemo(
+    () => selectedIds.map((id) => credentials.find((c) => c.id === id)).filter(Boolean) as ProviderCredential[],
+    [credentials, selectedIds],
+  );
+
+  const typeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const cred of selectedCreds) {
+      counts.set(cred.type, (counts.get(cred.type) ?? 0) + 1);
+    }
+    return counts;
+  }, [selectedCreds]);
+  // Same-type credentials are NOT a conflict — they form a rotation pool that
+  // the runtime cycles through least-recently-used, skipping any on cooldown.
+  const pooledTypes = useMemo(
+    () => [...typeCounts.entries()].filter(([, count]) => count > 1).map(([type]) => type),
+    [typeCounts],
+  );
 
   return (
-    <Field label="Credential" hint="Provider credential to inject into the adapter environment at run time. Manage in Company Settings.">
+    <Field
+      label="Credentials"
+      hint="Provider credentials to inject into the adapter environment at run time. Only credentials matching this adapter's selected provider are shown. Manage in Company Settings."
+    >
       <Popover open={open} onOpenChange={onOpenChange}>
         <PopoverTrigger asChild>
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-            <span className="inline-flex items-center gap-1.5">
-              <KeyRound className="h-3 w-3 text-muted-foreground" />
-              <span className={cn(!selected && "text-muted-foreground")}>
-                {selected ? selected.name : "No credential (use env vars)"}
-              </span>
-              {selected && (
-                <span className="rounded bg-muted px-1 py-0.5 text-[10px] font-medium text-muted-foreground">
-                  {CREDENTIAL_TYPE_LABELS[selected.type] ?? selected.type}
-                </span>
-              )}
-              {selected?.isDefault && (
-                <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-amber-600">
-                  default
-                </span>
+          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between min-h-[34px]">
+            <span className="inline-flex items-center gap-1.5 flex-wrap min-w-0">
+              <KeyRound className="h-3 w-3 text-muted-foreground shrink-0" />
+              {selectedCreds.length === 0 ? (
+                <span className="text-muted-foreground">No credentials (use env vars)</span>
+              ) : (
+                selectedCreds.map((cred) => (
+                  <span
+                    key={cred.id}
+                    className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs"
+                  >
+                    <span className="truncate max-w-[140px]">{cred.name}</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {CREDENTIAL_TYPE_LABELS[cred.type] ?? cred.type}
+                    </span>
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      className="rounded hover:bg-accent/50 p-0.5"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onToggle(cred.id);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onToggle(cred.id);
+                        }
+                      }}
+                    >
+                      <X className="h-3 w-3" />
+                    </span>
+                  </span>
+                ))
               )}
             </span>
-            <ChevronDown className="h-3 w-3 text-muted-foreground" />
+            <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
           </button>
         </PopoverTrigger>
         <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
-          <div className="max-h-[240px] overflow-y-auto">
-            <button
-              className={cn(
-                "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                !value && "bg-accent",
-              )}
-              onClick={() => {
-                onChange(null);
-                onOpenChange(false);
-              }}
-            >
-              No credential (use env vars)
-            </button>
-            {credentials.map((cred) => (
-              <button
-                key={cred.id}
-                className={cn(
-                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                  cred.id === value && "bg-accent",
-                )}
-                onClick={() => {
-                  onChange(cred.id);
-                  onOpenChange(false);
-                }}
-              >
-                <span className="truncate">{cred.name}</span>
-                <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] font-medium text-muted-foreground">
-                  {CREDENTIAL_TYPE_LABELS[cred.type] ?? cred.type}
-                </span>
-                {cred.isDefault && (
-                  <span className="shrink-0 rounded bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-amber-600">
-                    default
+          <div className="max-h-[280px] overflow-y-auto">
+            {credentials.map((cred) => {
+              const isSelected = selectedSet.has(cred.id);
+              const sameTypeCount = typeCounts.get(cred.type) ?? 0;
+              const wouldPoolType = !isSelected && sameTypeCount >= 1;
+              return (
+                <button
+                  key={cred.id}
+                  className={cn(
+                    "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50 text-left",
+                    isSelected && "bg-accent",
+                  )}
+                  onClick={() => onToggle(cred.id)}
+                >
+                  <span
+                    className={cn(
+                      "h-3.5 w-3.5 shrink-0 rounded border flex items-center justify-center",
+                      isSelected ? "border-primary bg-primary" : "border-border",
+                    )}
+                  >
+                    {isSelected && <span className="h-1.5 w-1.5 rounded-sm bg-primary-foreground" />}
                   </span>
-                )}
-              </button>
-            ))}
+                  <span className="truncate flex-1">{cred.name}</span>
+                  <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] font-medium text-muted-foreground">
+                    {CREDENTIAL_TYPE_LABELS[cred.type] ?? cred.type}
+                  </span>
+                  {cred.isDefault && (
+                    <span className="shrink-0 rounded bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-amber-600">
+                      default
+                    </span>
+                  )}
+                  {wouldPoolType && (
+                    <span className="shrink-0 rounded bg-sky-500/10 px-1 py-0.5 text-[10px] font-medium text-sky-600">
+                      + rotation
+                    </span>
+                  )}
+                </button>
+              );
+            })}
             {credentials.length === 0 && (
               <p className="px-2 py-1.5 text-xs text-muted-foreground">
                 No compatible credentials.{" "}
@@ -2028,6 +2147,13 @@ function CredentialDropdown({
           </div>
         </PopoverContent>
       </Popover>
+      {pooledTypes.length > 0 && (
+        <p className="text-xs text-muted-foreground mt-1">
+          Multiple {pooledTypes.join(", ")} credentials form a rotation pool — the
+          agent uses the least-recently-used one and rotates to another if one hits
+          a rate limit.
+        </p>
+      )}
     </Field>
   );
 }

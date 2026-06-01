@@ -42,6 +42,18 @@ export function credentialRoutes(db: Db) {
     res.json(rows);
   });
 
+  // Per-credential token/cost usage over a trailing window (default 30 days).
+  // Feeds the Credentials UI's usage column; aggregates cost_events.credentialId.
+  router.get("/companies/:companyId/credentials/usage", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const daysRaw = Number.parseInt(String(req.query.days ?? "30"), 10);
+    const days = Number.isFinite(daysRaw) ? Math.min(365, Math.max(1, daysRaw)) : 30;
+    const usage = await svc.usageByCredential(companyId, days * 24 * 60 * 60 * 1000);
+    res.json({ days, usage });
+  });
+
   // Create a credential
   router.post(
     "/companies/:companyId/credentials",
@@ -624,6 +636,24 @@ async function probeCredential(type: string, payload: Record<string, unknown>): 
       });
       if (res.ok) return { ok: true, message: "API key valid" };
       return { ok: false, reason: classifyStatus(res.status), message: `OpenRouter API returned ${res.status}` };
+    }
+    case "deepseek_api_key": {
+      const apiKey = typeof payload.apiKey === "string" ? payload.apiKey.trim() : "";
+      if (!apiKey) return { ok: false, reason: "invalid", message: "Missing apiKey" };
+      const res = await probeFetch("https://api.deepseek.com/v1/models", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (res.ok) return { ok: true, message: "API key valid" };
+      return { ok: false, reason: classifyStatus(res.status), message: `DeepSeek API returned ${res.status}` };
+    }
+    case "mimo_api_key": {
+      const apiKey = typeof payload.apiKey === "string" ? payload.apiKey.trim() : "";
+      if (!apiKey) return { ok: false, reason: "invalid", message: "Missing apiKey" };
+      const res = await probeFetch("https://token-plan-sgp.xiaomimimo.com/v1/models", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (res.ok) return { ok: true, message: "API key valid" };
+      return { ok: false, reason: classifyStatus(res.status), message: `MiMo API returned ${res.status}` };
     }
     case "gemini_api_key": {
       const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";

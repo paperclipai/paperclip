@@ -17,6 +17,7 @@ export interface AgentConfigOverlay {
   heartbeat: Record<string, unknown>;
   runtime: Record<string, unknown>;
   credentialId?: string | null;
+  credentialIds?: string[];
   modelProfiles?: { cheap?: AgentModelProfileOverlay };
 }
 
@@ -117,6 +118,10 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
 
   if (overlay.credentialId !== undefined) {
     patch.credentialId = overlay.credentialId;
+  }
+
+  if (overlay.credentialIds !== undefined) {
+    patch.credentialIds = overlay.credentialIds;
   }
 
   return patch;

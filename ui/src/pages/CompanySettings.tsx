@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -15,6 +15,7 @@ import { assetsApi } from "../api/assets";
 import {
   credentialsApi,
   type CodexCredDeviceAuthPollResponse,
+  type CredentialUsage,
   type ProviderCredential,
 } from "../api/credentials";
 import { queryKeys } from "../lib/queryKeys";
@@ -36,6 +37,7 @@ import {
   CheckCircle2,
   XCircle,
   Zap,
+  Clock,
 } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import { CodexDeviceAuthDialog } from "../components/CodexDeviceAuthDialog";
@@ -797,6 +799,8 @@ const CREDENTIAL_TYPE_LABELS: Record<CredentialType, string> = {
   gemini_api_key: "Gemini API Key",
   openai_api_key: "OpenAI API Key",
   openrouter_api_key: "OpenRouter API Key",
+  deepseek_api_key: "DeepSeek API Key",
+  mimo_api_key: "MiMo (Xiaomi) API Key",
 };
 
 const CREDENTIAL_TYPE_OPTIONS: CredentialType[] = [
@@ -806,6 +810,8 @@ const CREDENTIAL_TYPE_OPTIONS: CredentialType[] = [
   "gemini_api_key",
   "openai_api_key",
   "openrouter_api_key",
+  "deepseek_api_key",
+  "mimo_api_key",
 ];
 
 function credentialPlaceholder(type: CredentialType): string {
@@ -822,7 +828,29 @@ function credentialPlaceholder(type: CredentialType): string {
       return "Paste sk-... key...";
     case "openrouter_api_key":
       return "Paste sk-or-... key...";
+    case "deepseek_api_key":
+      return "Paste sk-... key...";
+    case "mimo_api_key":
+      return "Paste tp-... or sk-... key...";
   }
+}
+
+// Compact "time remaining" label for a credential parked on rotation cooldown.
+// Returns null when there is no active cooldown.
+function formatCredentialCooldown(cooldownUntil: string | null): string | null {
+  if (!cooldownUntil) return null;
+  const ms = new Date(cooldownUntil).getTime() - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const mins = Math.ceil(ms / 60000);
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  return mins % 60 > 0 ? `${hrs}h ${mins % 60}m` : `${hrs}h`;
+}
+
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
 }
 
 // Long-lived tokens from `claude setup-token` are inference-only OAuth tokens
@@ -913,6 +941,17 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     queryKey: queryKeys.credentials.list(companyId),
     queryFn: () => credentialsApi.list(companyId),
   });
+
+  // Per-credential token/cost usage (trailing 30 days) for the usage column.
+  const { data: usageResp } = useQuery({
+    queryKey: ["credentials", "usage", companyId],
+    queryFn: () => credentialsApi.usage(companyId),
+  });
+  const usageByCredential = useMemo(() => {
+    const map = new Map<string, CredentialUsage>();
+    for (const u of usageResp?.usage ?? []) map.set(u.credentialId, u);
+    return map;
+  }, [usageResp]);
 
   const [showAddForm, setShowAddForm] = useState(false);
   const [addName, setAddName] = useState("");
@@ -1320,9 +1359,32 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                           default
                         </span>
                       )}
+                      {formatCredentialCooldown(cred.cooldownUntil) && (
+                        <span
+                          className="shrink-0 flex items-center gap-0.5 rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-600"
+                          title={`Cooling down after an upstream rate/quota limit${cred.cooldownReason ? ` (${cred.cooldownReason})` : ""}. Runs rotate to another bound credential of this type until the window elapses.`}
+                        >
+                          <Clock className="h-2.5 w-2.5" />
+                          cooling {formatCredentialCooldown(cred.cooldownUntil)}
+                        </span>
+                      )}
                       <span className="shrink-0 text-[10px] text-muted-foreground">
                         {new Date(cred.createdAt).toLocaleDateString()}
                       </span>
+                      {(() => {
+                        const u = usageByCredential.get(cred.id);
+                        if (!u) return null;
+                        const tokens = u.inputTokens + u.outputTokens;
+                        if (tokens === 0 && u.costCents === 0) return null;
+                        return (
+                          <span
+                            className="shrink-0 text-[10px] text-muted-foreground"
+                            title={`${u.events} run(s) · ${u.inputTokens.toLocaleString()} in / ${u.outputTokens.toLocaleString()} out tokens · $${(u.costCents / 100).toFixed(2)} (last 30 days)`}
+                          >
+                            {formatTokenCount(tokens)} tok · ${(u.costCents / 100).toFixed(2)}
+                          </span>
+                        );
+                      })()}
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
                       <Button

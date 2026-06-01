@@ -31,7 +31,7 @@ export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
-export { credentialService, resolveCredentialEnv } from "./credentials.js";
+export { credentialService, resolveCredentialEnv, resolveAllCredentialEnv } from "./credentials.js";
 export { routineService } from "./routines.js";
 export { deadlineWardenService, shouldStartWork } from "./deadline-warden.js";
 export { costService } from "./costs.js";

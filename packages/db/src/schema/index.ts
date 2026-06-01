@@ -70,6 +70,7 @@ export { companySecretProviderConfigs } from "./company_secret_provider_configs.
 export { companySecrets } from "./company_secrets.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { providerCredentials } from "./provider_credentials.js";
+export { agentCredentials } from "./agent_credentials.js";
 export { credentialAccessGrants } from "./credential_access_grants.js";
 export { companySecretBindings } from "./company_secret_bindings.js";
 export { secretAccessEvents } from "./secret_access_events.js";

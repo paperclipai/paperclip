@@ -687,6 +687,27 @@
       "when": 1778442720000,
       "tag": "0097_heartbeat_runs_hot_path_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1779000000000,
+      "tag": "0098_agent_credentials",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1779000060000,
+      "tag": "0099_adapter_type_claude_tui",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1779000120000,
+      "tag": "0100_credential_rotation",
+      "breakpoints": true
     }
   ]
 }

@@ -466,6 +466,7 @@ export interface CLIAdapterModule {
 export interface CreateConfigValues {
   adapterType: string;
   credentialId?: string | null;
+  credentialIds?: string[];
   cwd: string;
   instructionsFilePath?: string;
   promptTemplate: string;
