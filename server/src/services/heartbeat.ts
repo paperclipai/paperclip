@@ -184,7 +184,7 @@ import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import { extractAgentMentionIds, extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
@@ -7112,10 +7112,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             };
           }
 
-          const explicitMentionedAgentIds = extractAgentMentionIds(wakeComment.body);
-          const mentionedAgentIds = explicitMentionedAgentIds.length
-            ? await issuesSvc.findMentionedAgents(run.companyId, wakeComment.body)
-            : [];
+          const mentionedAgentIds = await issuesSvc.findMentionedAgents(run.companyId, wakeComment.body);
           if (mentionedAgentIds.length > 0 && !mentionedAgentIds.includes(run.agentId)) {
             return {
               stale: true,
