@@ -207,6 +207,7 @@ export const pluginManagedRoutineDeclarationSchema = z.object({
     surfaceVisibility: z.enum(ISSUE_SURFACE_VISIBILITIES).optional(),
     originId: z.string().trim().max(255).nullable().optional(),
     billingCode: z.string().trim().max(200).nullable().optional(),
+    labelIds: z.array(z.string().uuid()).nullable().optional(),
   }).optional(),
 });
 

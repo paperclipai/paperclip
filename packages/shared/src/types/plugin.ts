@@ -274,6 +274,7 @@ export interface PluginManagedRoutineDeclaration {
     surfaceVisibility?: IssueSurfaceVisibility;
     originId?: string | null;
     billingCode?: string | null;
+    labelIds?: string[] | null;
   };
 }
 

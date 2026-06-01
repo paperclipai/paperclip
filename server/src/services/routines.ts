@@ -390,6 +390,7 @@ function readManagedRoutineIssueTemplate(defaultsJson: Record<string, unknown> |
     surfaceVisibility: typeof value.surfaceVisibility === "string" ? value.surfaceVisibility : null,
     originId: typeof value.originId === "string" && value.originId.trim() ? value.originId.trim() : null,
     billingCode: typeof value.billingCode === "string" && value.billingCode.trim() ? value.billingCode.trim() : null,
+    labelIds: Array.isArray(value.labelIds) ? value.labelIds.filter((id): id is string => typeof id === "string") : null,
   };
 }
 
