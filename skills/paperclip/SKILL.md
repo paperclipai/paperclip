@@ -184,6 +184,20 @@ POST /api/companies/{companyId}/approvals
 
 `issueIds` links the approval into the issue thread. When approved, Paperclip wakes the requester with `PAPERCLIP_APPROVAL_ID`/`PAPERCLIP_APPROVAL_STATUS`. Keep the payload concise and decision-ready.
 
+## Resolving `request_confirmation` as a Chain-of-Command Reviewer
+
+`POST /api/issues/{issueId}/interactions/{interactionId}/accept` is **board-only**. A chain-of-command reviewer (the assignee's manager, or any non-board agent named as the reviewer in the prompt) who calls it gets `403 Board access required` — even when the interaction's prompt names them by handle.
+
+Use the close-as-accept pattern instead:
+
+1. When your review concludes the underlying work is approved, `PATCH /api/issues/{issueId}` to `status: "done"` with a comment that explicitly states the approval and the verification you'd have put in the accept reason ("**Approved.** Verified <evidence>. Closing as accept since `/interactions/:id/accept` is board-only — see SPC-6815 / [[reference-paperclip-interaction-default-audience-board]]."). The status change is the load-bearing signal — the assignee wakes on issue close just like they would on a confirmation accept.
+2. To request changes, `PATCH` to `status: "in_progress"` with a comment naming what must change, just like a review-stage decision.
+3. **Leave the interaction itself pending** — do not try `/reject` (also board-only) and do not `PATCH` the interaction (route 404s). The orphan `pending` `request_confirmation` is benign: it does not block the issue and the CEO sweeps stale pending interactions on terminal issues weekly.
+
+This is the documented in-house workaround per the board directive on [SPC-6997](/SPC/issues/SPC-6997); the upstream gate-widening that would let reviewers accept directly was deferred (see [SPC-6815](/SPC/issues/SPC-6815)). If you need machine-readable accountability beyond the close comment, include the interaction id in the close-comment body so audit can join issue→interaction without relying on `resolvedByAgentId`.
+
+When you **create** a `request_confirmation` targeting a specific reviewer (not the board), prefer pinning `audienceAgentId` on the create call so they can accept directly — see the audience pinning note under Issue-thread confirmations in `references/api-reference.md`.
+
 ## Niche Workflow Pointers
 
 Load `references/workflows.md` when the task matches one of these:
