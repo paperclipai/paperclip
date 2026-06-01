@@ -3042,6 +3042,8 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
       await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([]);
     });
+  });
+
   it("gates dependents on the workspace-finalize barrier when a done blocker's execution workspace has not synced back", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
