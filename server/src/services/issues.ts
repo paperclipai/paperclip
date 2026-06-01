@@ -5855,7 +5855,7 @@ export function issueService(db: Db) {
           .update(issues)
           .set({
             status: "todo",
-            assigneeAgentId: null,
+            assigneeAgentId: existing.originKind === "routine_execution" ? existing.assigneeAgentId : null,
             checkoutRunId: null,
             executionRunId: null,
             executionAgentNameKey: null,
