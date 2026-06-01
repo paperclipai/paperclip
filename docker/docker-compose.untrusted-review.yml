@@ -3,6 +3,11 @@ services:
     build:
       context: ..
       dockerfile: docker/untrusted-review/Dockerfile
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     init: true
     tty: true
     stdin_open: true
