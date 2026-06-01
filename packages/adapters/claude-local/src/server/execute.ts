@@ -122,6 +122,61 @@ function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscri
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
 }
 
+/**
+ * Detect a third-party Anthropic-compatible gateway (DeepSeek `/anthropic`,
+ * Xiaomi MiMo `/anthropic`, LiteLLM, etc.) — i.e. an ANTHROPIC_BASE_URL that is
+ * not Anthropic's own host. On these gateways the upstream model ids are the
+ * provider's (`deepseek-*`, `mimo-*`), not `claude-*`.
+ */
+function isThirdPartyAnthropicGateway(env: Record<string, string>): boolean {
+  const base = (env.ANTHROPIC_BASE_URL ?? "").trim().toLowerCase();
+  if (!base) return false;
+  return !/(^https?:\/\/)?([a-z0-9-]+\.)*anthropic\.com(\/|$)/.test(base);
+}
+
+// Xiaomi MiMo TokenPlan is a flat subscription billed in credits, and the Claude
+// Code CLI reports total_cost_usd: 0 against it (it doesn't know MiMo's rates).
+// The user's plan is ~$6 for ~6B tokens, i.e. a flat $1 per 1M tokens, which we
+// use as a single blended ratio to surface an estimated $ value for MiMo runs.
+// This is an ESTIMATE of plan burn (all token types weighted equally), not a
+// per-call invoice.
+const MIMO_USD_PER_MILLION_TOKENS = 1.0; // $6 / 6,000M tokens
+
+function isMimoGateway(env: Record<string, string>): boolean {
+  return (env.ANTHROPIC_BASE_URL ?? "").toLowerCase().includes("xiaomimimo.com");
+}
+
+function estimateMimoCostUsd(usage: { inputTokens?: number; outputTokens?: number }): number {
+  const total = Math.max(0, usage.inputTokens ?? 0) + Math.max(0, usage.outputTokens ?? 0);
+  return (total * MIMO_USD_PER_MILLION_TOKENS) / 1_000_000;
+}
+
+/**
+ * When pointed at a third-party gateway, a `claude-*` model id selected in the
+ * agent's Model dropdown would be sent verbatim and rejected (MiMo returns
+ * 400 "Param Incorrect"; DeepSeek silently remaps). Translate such an id to the
+ * gateway's configured tier model (ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL)
+ * so the dropdown can't break a gateway-bound agent. Non-claude ids (already a
+ * provider id) and native-Anthropic runs pass through unchanged.
+ */
+function resolveGatewayModelOverride(model: string, env: Record<string, string>): string | null {
+  if (!model || !isThirdPartyAnthropicGateway(env)) return null;
+  const lower = model.toLowerCase();
+  if (!lower.startsWith("claude-")) return null;
+  const pick = (key: string) => {
+    const v = (env[key] ?? "").trim();
+    return v.length > 0 ? v : null;
+  };
+  if (lower.startsWith("claude-opus")) {
+    return pick("ANTHROPIC_DEFAULT_OPUS_MODEL") ?? pick("ANTHROPIC_MODEL");
+  }
+  if (lower.startsWith("claude-haiku")) {
+    return pick("ANTHROPIC_DEFAULT_HAIKU_MODEL") ?? pick("ANTHROPIC_MODEL");
+  }
+  // sonnet + anything else claude-* → the main/sonnet tier
+  return pick("ANTHROPIC_DEFAULT_SONNET_MODEL") ?? pick("ANTHROPIC_MODEL");
+}
+
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
   const { runId, agent, config, context, runtimeCommandSpec, executionTarget, authToken } = input;
   const onLog = input.onLog ?? (async () => {});
@@ -674,8 +729,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // For Bedrock: only pass --model when the ID is a Bedrock-native identifier
     // (e.g. "us.anthropic.*" or ARN). Anthropic-style IDs like "claude-opus-4-6" are invalid
     // on Bedrock, so skip them and let the CLI use its own configured model.
-    if (model && (!isBedrockAuth(effectiveEnv) || isBedrockModelId(model))) {
-      args.push("--model", model);
+    //
+    // For a third-party Anthropic gateway (DeepSeek/MiMo via ANTHROPIC_BASE_URL),
+    // a claude-* id from the Model dropdown is translated to the gateway's
+    // configured tier model so the run doesn't fail with the gateway's
+    // "unsupported model" 400. Native Anthropic + provider ids pass through.
+    const effectiveModel = resolveGatewayModelOverride(model, effectiveEnv) ?? model;
+    if (effectiveModel && (!isBedrockAuth(effectiveEnv) || isBedrockModelId(effectiveModel))) {
+      args.push("--model", effectiveModel);
     }
     if (effort) args.push("--effort", effort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
@@ -918,11 +979,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
-      provider: "anthropic",
+      provider: isMimoGateway(effectiveEnv) ? "mimo" : "anthropic",
       biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
       model: parsedStream.model || asString(parsed.model, model),
       billingType,
-      costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
+      // MiMo reports no cost via the CLI; estimate plan burn from the flat
+      // $6/6B-token ratio so the per-credential usage UI shows a real number.
+      costUsd: (() => {
+        const cliCost = parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0);
+        if (cliCost > 0) return cliCost;
+        if (isMimoGateway(effectiveEnv)) return estimateMimoCostUsd(usage);
+        return cliCost;
+      })(),
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
