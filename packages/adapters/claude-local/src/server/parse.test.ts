@@ -5,6 +5,7 @@ import {
   isClaudePoisonedPreviousMessageIdError,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
+  isClaudeModifiedThinkingError,
 } from "./parse.js";
 
 describe("isClaudeTransientUpstreamError", () => {
@@ -85,6 +86,17 @@ describe("isClaudeTransientUpstreamError", () => {
         parsed: {
           result: "No conversation found with session id abc-123",
           errors: [{ message: "No conversation found with session id abc-123" }],
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("does not classify modified-thinking errors as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          is_error: true,
+          errors: [{ type: "invalid_request_error", message: "API Error: 400 messages.N.content.M: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified." }],
         },
       }),
     ).toBe(false);
@@ -227,6 +239,50 @@ describe("isClaudeImageProcessingError", () => {
 
   it("returns false for empty parsed result", () => {
     expect(isClaudeImageProcessingError({})).toBe(false);
+  });
+});
+
+describe("isClaudeModifiedThinkingError", () => {
+  it("detects the modified thinking block 400 error", () => {
+    expect(
+      isClaudeModifiedThinkingError({
+        is_error: true,
+        errors: [{ type: "invalid_request_error", message: "API Error: 400 messages.N.content.M: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified." }],
+      }),
+    ).toBe(true);
+  });
+
+  it("detects the redacted_thinking modification error", () => {
+    expect(
+      isClaudeModifiedThinkingError({
+        is_error: true,
+        result: "API Error: 400 messages.N.content.M: `redacted_thinking` blocks in the latest assistant message cannot be modified.",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects the thinking modification error via result field", () => {
+    expect(
+      isClaudeModifiedThinkingError({
+        is_error: true,
+        result: "API Error: 400: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified.",
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for unrelated errors", () => {
+    expect(
+      isClaudeModifiedThinkingError({
+        is_error: true,
+        errors: [{ type: "rate_limit_error", message: "Rate limit reached." }],
+      }),
+    ).toBe(false);
+    expect(
+      isClaudeModifiedThinkingError({
+        is_error: true,
+        result: "Something went wrong.",
+      }),
+    ).toBe(false);
   });
 });
 
