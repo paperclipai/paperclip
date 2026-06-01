@@ -42,6 +42,53 @@ test('fails when Thinking Path has fewer than 3 sentences', () => {
   assert.ok(result.failures.some(f => f.includes('Thinking Path') && f.includes('sentence')));
 });
 
+test('passes Thinking Path written as a bullet list without terminal punctuation', () => {
+  const body = VALID_BODY.replace(
+    /## Thinking Path\n[\s\S]*?\n## What Changed/,
+    `## Thinking Path
+- First point about the root cause of the bug
+- Second point about how the fix addresses it
+- Third point about why this approach was chosen
+
+## What Changed`
+  );
+  const result = checkTemplate(body);
+  assert.equal(result.passed, true);
+  assert.deepEqual(result.failures, []);
+});
+
+test('passes Thinking Path written as a blockquoted bullet list', () => {
+  const body = VALID_BODY.replace(
+    /## Thinking Path\n[\s\S]*?\n## What Changed/,
+    `## Thinking Path
+> - First point in a blockquote
+> - Second point in a blockquote
+> - Third point in a blockquote
+
+## What Changed`
+  );
+  const result = checkTemplate(body);
+  assert.equal(result.passed, true);
+  assert.deepEqual(result.failures, []);
+});
+
+test('passes Thinking Path written as multiple paragraphs without terminal punctuation', () => {
+  const body = VALID_BODY.replace(
+    /## Thinking Path\n[\s\S]*?\n## What Changed/,
+    `## Thinking Path
+First paragraph explaining the situation in detail
+
+Second paragraph explaining the chosen approach in detail
+
+Third paragraph explaining the tradeoffs in detail
+
+## What Changed`
+  );
+  const result = checkTemplate(body);
+  assert.equal(result.passed, true);
+  assert.deepEqual(result.failures, []);
+});
+
 test('fails when Model Used section is missing', () => {
   const body = VALID_BODY.replace('## Model Used', '## Removed');
   const result = checkTemplate(body);

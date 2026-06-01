@@ -29,7 +29,10 @@ function extractSectionContent(body, heading) {
 }
 
 function countSentences(text) {
-  return text.split(/[.!?]+\s+/).filter(s => s.trim().length > 5).length;
+  // Split on terminal punctuation, bullet/quote line starts (`-`, `*`, `>`), or
+  // blank lines so non-prose Thinking Paths (bullet lists, blockquotes) are
+  // counted by item rather than as a single sentence.
+  return text.split(/[.!?]+\s+|\n\s*[-*>]+\s+|\n{2,}/).filter(s => s.trim().length > 5).length;
 }
 
 export function checkTemplate(body) {
