@@ -1,9 +1,17 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
+// vi.fn signature widened so .mock.calls[i]?.[0] resolves to a known shape
+// rather than the empty-tuple inferred from `async () => ({...})` — slice-3
+// (1c4d315cf) + slice-4 (#255) precedent.
 const hermesExecuteMock = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn<(ctx: AdapterExecutionContext) => Promise<{
+    exitCode: number;
+    signal: string | null;
+    timedOut: boolean;
+  }>>(async () => ({
     exitCode: 0,
     signal: null,
     timedOut: false,
@@ -318,7 +326,6 @@ describe("server adapter registry", () => {
         id: "agent-123",
         companyId: "company-123",
         name: "Hermes Agent",
-        role: "engineer",
         adapterType: "hermes_local",
         adapterConfig: {
           env: {
@@ -327,7 +334,12 @@ describe("server adapter registry", () => {
           promptTemplate: "Existing prompt",
         },
       },
-      runtime: {},
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
       config: {},
       context: {},
       onLog: async () => {},
@@ -337,7 +349,17 @@ describe("server adapter registry", () => {
     });
 
     expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
-    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    // `toHaveBeenCalledTimes(1)` above (or the explicit setup of this test)
+    // guarantees calls[0] exists, but TS doesn't track that — `!` is fine.
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0]!;
+    // adapterConfig typed `unknown` on AdapterAgent; narrow for the
+    // assertion sites below — runtime shape is the env/promptTemplate map
+    // Hermes patches with the JWT.
+    const adapterConfig = patchedCtx.agent.adapterConfig as {
+      env?: Record<string, string>;
+      promptTemplate?: string;
+      hermesCommand?: string;
+    };
     expect(patchedCtx.agent.adapterConfig).toMatchObject({
       env: {
         OPENAI_API_KEY: "llm-token",
@@ -345,13 +367,13 @@ describe("server adapter registry", () => {
         PAPERCLIP_RUN_ID: "run-123",
       },
     });
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
+    expect(adapterConfig.promptTemplate).toContain(
       "Authorization: Bearer $PAPERCLIP_API_KEY",
     );
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
+    expect(adapterConfig.promptTemplate).toContain(
       "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID",
     );
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("Existing prompt");
+    expect(adapterConfig.promptTemplate).toContain("Existing prompt");
   });
 
   it("preserves Hermes command normalization while injecting auth", async () => {
@@ -363,13 +385,17 @@ describe("server adapter registry", () => {
         id: "agent-123",
         companyId: "company-123",
         name: "Hermes Agent",
-        role: "engineer",
         adapterType: "hermes_local",
         adapterConfig: {
           command: "agent-hermes",
         },
       },
-      runtime: {},
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
       config: {
         command: "runtime-hermes",
       },
@@ -381,10 +407,20 @@ describe("server adapter registry", () => {
     });
 
     expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
-    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    // `toHaveBeenCalledTimes(1)` above (or the explicit setup of this test)
+    // guarantees calls[0] exists, but TS doesn't track that — `!` is fine.
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0]!;
+    // adapterConfig typed `unknown` on AdapterAgent; narrow for the
+    // assertion sites below — runtime shape is the env/promptTemplate map
+    // Hermes patches with the JWT.
+    const adapterConfig = patchedCtx.agent.adapterConfig as {
+      env?: Record<string, string>;
+      promptTemplate?: string;
+      hermesCommand?: string;
+    };
     expect(patchedCtx.config.hermesCommand).toBe("runtime-hermes");
-    expect(patchedCtx.agent.adapterConfig.hermesCommand).toBe("agent-hermes");
-    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+    expect(adapterConfig.hermesCommand).toBe("agent-hermes");
+    expect(adapterConfig.env!.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
   });
 
   it("passes the original Hermes context through when authToken is absent", async () => {
@@ -395,7 +431,6 @@ describe("server adapter registry", () => {
         id: "agent-123",
         companyId: "company-123",
         name: "Hermes Agent",
-        role: "engineer",
         adapterType: "hermes_local",
         adapterConfig: {
           env: {
@@ -404,7 +439,12 @@ describe("server adapter registry", () => {
           promptTemplate: "Existing prompt",
         },
       },
-      runtime: {},
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
       config: {},
       context: {},
       onLog: async () => {},
@@ -427,7 +467,6 @@ describe("server adapter registry", () => {
         id: "agent-123",
         companyId: "company-123",
         name: "Hermes Agent",
-        role: "engineer",
         adapterType: "hermes_local",
         adapterConfig: {
           env: {
@@ -436,7 +475,12 @@ describe("server adapter registry", () => {
           },
         },
       },
-      runtime: {},
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
       config: {},
       context: {},
       onLog: async () => {},
@@ -445,13 +489,23 @@ describe("server adapter registry", () => {
       authToken: "agent-run-jwt",
     });
 
-    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
-    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("explicit-agent-key");
-    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_RUN_ID).toBe("run-123");
+    // `toHaveBeenCalledTimes(1)` above (or the explicit setup of this test)
+    // guarantees calls[0] exists, but TS doesn't track that — `!` is fine.
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0]!;
+    // adapterConfig typed `unknown` on AdapterAgent; narrow for the
+    // assertion sites below — runtime shape is the env/promptTemplate map
+    // Hermes patches with the JWT.
+    const adapterConfig = patchedCtx.agent.adapterConfig as {
+      env?: Record<string, string>;
+      promptTemplate?: string;
+      hermesCommand?: string;
+    };
+    expect(adapterConfig.env!.PAPERCLIP_API_KEY).toBe("explicit-agent-key");
+    expect(adapterConfig.env!.PAPERCLIP_RUN_ID).toBe("run-123");
     // No custom promptTemplate was set — Hermes must use its built-in default.
     // Setting promptTemplate here would replace the full default with just the auth guard text,
     // stripping assigned issue / workflow instructions.
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
+    expect(adapterConfig.promptTemplate).toBeUndefined();
   });
 
   it("does not set promptTemplate when no custom template is configured, preserving Hermes default", async () => {
@@ -463,11 +517,15 @@ describe("server adapter registry", () => {
         id: "agent-123",
         companyId: "company-123",
         name: "Hermes Agent",
-        role: "engineer",
         adapterType: "hermes_local",
         adapterConfig: {},
       },
-      runtime: {},
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
       config: {},
       context: {},
       onLog: async () => {},
@@ -476,11 +534,21 @@ describe("server adapter registry", () => {
       authToken: "agent-run-jwt",
     });
 
-    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    // `toHaveBeenCalledTimes(1)` above (or the explicit setup of this test)
+    // guarantees calls[0] exists, but TS doesn't track that — `!` is fine.
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0]!;
+    // adapterConfig typed `unknown` on AdapterAgent; narrow for the
+    // assertion sites below — runtime shape is the env/promptTemplate map
+    // Hermes patches with the JWT.
+    const adapterConfig = patchedCtx.agent.adapterConfig as {
+      env?: Record<string, string>;
+      promptTemplate?: string;
+      hermesCommand?: string;
+    };
     // promptTemplate must remain unset so Hermes uses its built-in heartbeat/task prompt.
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
+    expect(adapterConfig.promptTemplate).toBeUndefined();
     // Auth token is still injected.
-    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+    expect(adapterConfig.env!.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
   });
 });
 
