@@ -26,6 +26,7 @@ import {
   issueTreeHolds,
   issueWorkProducts,
   issues,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
