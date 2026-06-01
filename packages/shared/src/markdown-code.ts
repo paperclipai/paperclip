@@ -2,6 +2,34 @@ function preserveNewlinesAsWhitespace(value: string) {
   return value.replace(/[^\n]/g, " ");
 }
 
+type FenceMatch = {
+  marker: "`" | "~";
+  length: number;
+};
+
+function matchFenceAtLineStart(markdown: string, index: number): FenceMatch | null {
+  if (index > 0 && markdown[index - 1] !== "\n") return null;
+
+  let cursor = index;
+  let indent = 0;
+  while (indent < 3 && markdown[cursor] === " ") {
+    cursor += 1;
+    indent += 1;
+  }
+
+  const marker = markdown[cursor];
+  if (marker !== "`" && marker !== "~") return null;
+
+  let length = 0;
+  while (markdown[cursor + length] === marker) {
+    length += 1;
+  }
+
+  if (length < 3) return null;
+
+  return { marker, length };
+}
+
 export function stripMarkdownCode(markdown: string): string {
   if (!markdown) return "";
 
@@ -9,21 +37,24 @@ export function stripMarkdownCode(markdown: string): string {
   let index = 0;
 
   while (index < markdown.length) {
-    const remaining = markdown.slice(index);
-    const fenceMatch = /^(?:```+|~~~+)/.exec(remaining);
-    const atLineStart = index === 0 || markdown[index - 1] === "\n";
+    const fenceMatch = matchFenceAtLineStart(markdown, index);
 
-    if (atLineStart && fenceMatch) {
-      const fence = fenceMatch[0]!;
+    if (fenceMatch) {
       const blockStart = index;
-      index += fence.length;
+      while (markdown[index] === " " && index < blockStart + 3) index += 1;
+      index += fenceMatch.length;
       while (index < markdown.length && markdown[index] !== "\n") index += 1;
       if (index < markdown.length) index += 1;
 
       while (index < markdown.length) {
-        const lineStart = index === 0 || markdown[index - 1] === "\n";
-        if (lineStart && markdown.startsWith(fence, index)) {
-          index += fence.length;
+        const closingFenceMatch = matchFenceAtLineStart(markdown, index);
+        if (
+          closingFenceMatch &&
+          closingFenceMatch.marker === fenceMatch.marker &&
+          closingFenceMatch.length >= fenceMatch.length
+        ) {
+          while (markdown[index] === " ") index += 1;
+          index += closingFenceMatch.length;
           while (index < markdown.length && markdown[index] !== "\n") index += 1;
           if (index < markdown.length) index += 1;
           break;
