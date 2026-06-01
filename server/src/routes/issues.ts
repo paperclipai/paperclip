@@ -101,6 +101,7 @@ import { executionWorkspaceService as executionWorkspaceServiceDirect } from "..
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { environmentService } from "../services/environments.js";
+import { isAgentInSubtree } from "../services/authorization.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
   createCompanySearchRateLimiter,
@@ -5238,6 +5239,59 @@ export function issueRoutes(
       details: {
         issueId: result.issue.id,
         actorUserId: req.actor.userId,
+        prevCheckoutRunId: result.previous.checkoutRunId,
+        prevExecutionRunId: result.previous.executionRunId,
+        clearAssignee,
+      },
+    });
+
+    res.json(result);
+  });
+
+  // Agent-accessible force-release for manager agents to clear stale execution locks
+  router.post("/issues/:id/force-release", async (req, res) => {
+    // Board users go through the existing /admin/force-release; this is agent-only
+    if (req.actor.type !== "agent" || !req.actor.agentId) {
+      res.status(403).json({ error: "Agent authentication required — board users should use /admin/force-release" });
+      return;
+    }
+
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    // Auth: caller must be a manager of the assignee OR the assignee is unset
+    const clearAssignee = req.query.clearAssignee === "true";
+    if (existing.assigneeAgentId && existing.assigneeAgentId !== req.actor.agentId) {
+      const isManager = await isAgentInSubtree(db, existing.companyId, req.actor.agentId, existing.assigneeAgentId);
+      if (!isManager) {
+        res.status(403).json({ error: "Forbidden — only the assignee or a manager in the reporting chain may force-release" });
+        return;
+      }
+    }
+
+    const result = await svc.forceRelease(id, { clearAssignee });
+    if (!result) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: result.issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.force_release",
+      entityType: "issue",
+      entityId: result.issue.id,
+      details: {
+        issueId: result.issue.id,
         prevCheckoutRunId: result.previous.checkoutRunId,
         prevExecutionRunId: result.previous.executionRunId,
         clearAssignee,
