@@ -1058,13 +1058,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
   }
 
-  async function finalizeAgentAfterSourceResolvedRun(run: typeof heartbeatRuns.$inferSelect, status: "succeeded" | "cancelled") {
+  async function finalizeAgentAfterSettledRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    status: "succeeded" | "cancelled" | "failed" | "timed_out",
+  ) {
     const [runningCountRow] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.status, "running")));
     const runningCount = Number(runningCountRow?.count ?? 0);
-    const nextStatus = runningCount > 0 ? "running" : status === "succeeded" || status === "cancelled" ? "idle" : "error";
+    const nextStatus = runningCount > 0
+      ? "running"
+      : status === "succeeded" || status === "cancelled"
+        ? "idle"
+        : "error";
     await db
       .update(agents)
       .set({
@@ -1125,10 +1132,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           .set({
             status: finalRunStatus === "succeeded" ? "completed" : "cancelled",
             finishedAt: input.now,
-            error: null,
-            updatedAt: input.now,
-          })
-          .where(and(eq(agentWakeupRequests.id, input.run.wakeupRequestId), eq(agentWakeupRequests.companyId, input.run.companyId)));
+        error: null,
+        updatedAt: input.now,
+      })
+      .where(and(eq(agentWakeupRequests.id, input.run.wakeupRequestId), eq(agentWakeupRequests.companyId, input.run.companyId)));
       }
 
       await tx
@@ -1214,8 +1221,155 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         cleanup,
       },
     });
-    await finalizeAgentAfterSourceResolvedRun(finalizedRun, finalRunStatus);
+    await finalizeAgentAfterSettledRun(finalizedRun, finalRunStatus);
     return { kind: "folded" as const, evaluationIssueId: input.existingEvaluation?.id ?? null };
+  }
+
+  async function finalizeDeadLocalRunFromWatchdog(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    runningAgent: typeof agents.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect | null;
+    existingEvaluation: Awaited<ReturnType<typeof findOpenStaleRunEvaluation>>;
+    now: Date;
+  }) {
+    if (!SESSIONED_LOCAL_ADAPTERS.has(input.runningAgent.adapterType)) return null;
+
+    const running = runningProcesses.get(input.run.id);
+    const pid = running?.child.pid ?? input.run.processPid ?? null;
+    const processGroupId = running?.processGroupId ?? input.run.processGroupId ?? null;
+    if (typeof pid !== "number" && typeof processGroupId !== "number") return null;
+
+    const processAlive =
+      (typeof pid === "number" && isPidAlive(pid)) ||
+      (typeof processGroupId === "number" && isProcessGroupAlive(processGroupId));
+    if (processAlive) return null;
+
+    runningProcesses.delete(input.run.id);
+    const lockReleaseNow = input.now;
+    const errorMessage = (() => {
+      if (typeof pid === "number" && typeof processGroupId === "number") {
+        return `Watchdog finalized dead local run: pid ${pid} and process group ${processGroupId} are no longer alive`;
+      }
+      if (typeof pid === "number") {
+        return `Watchdog finalized dead local run: pid ${pid} is no longer alive`;
+      }
+      return `Watchdog finalized dead local run: process group ${processGroupId} is no longer alive`;
+    })();
+
+    const resultJson = {
+      ...parseObject(input.run.resultJson),
+      deadLocalProcessWatchdogFinalization: {
+        sourceIssueId: input.sourceIssue?.id ?? null,
+        sourceIssueIdentifier: input.sourceIssue?.identifier ?? null,
+        sourceIssueStatus: input.sourceIssue?.status ?? null,
+        evaluationIssueId: input.existingEvaluation?.id ?? null,
+        evaluationIssueIdentifier: input.existingEvaluation?.identifier ?? null,
+        adapterType: input.runningAgent.adapterType,
+        processPid: pid,
+        processGroupId,
+        detectedAt: lockReleaseNow.toISOString(),
+      },
+    };
+
+    const finalized = await db.transaction(async (tx) => {
+      const [updatedRun] = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "failed",
+          finishedAt: lockReleaseNow,
+          error: errorMessage,
+          errorCode: "process_lost",
+          resultJson,
+          updatedAt: lockReleaseNow,
+        })
+        .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.status, "running")))
+        .returning();
+      if (!updatedRun) return null;
+
+      if (input.run.wakeupRequestId) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "failed",
+            finishedAt: lockReleaseNow,
+            error: errorMessage,
+            updatedAt: lockReleaseNow,
+          })
+          .where(
+            and(
+              eq(agentWakeupRequests.id, input.run.wakeupRequestId),
+              eq(agentWakeupRequests.companyId, input.run.companyId),
+            ),
+          );
+      }
+
+      const releasedLocks = await tx
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: lockReleaseNow,
+        })
+        .where(and(eq(issues.companyId, input.run.companyId), eq(issues.executionRunId, input.run.id)))
+        .returning({ id: issues.id, identifier: issues.identifier });
+
+      return {
+        run: updatedRun,
+        releasedLocks,
+      };
+    });
+    if (!finalized) return null;
+
+    if (input.existingEvaluation && !isTerminalIssueStatus(input.existingEvaluation.status)) {
+      await issuesSvc.update(input.existingEvaluation.id, { status: "done" });
+      await issuesSvc.addComment(input.existingEvaluation.id, [
+        "Watchdog finalized this stale-run evaluation automatically.",
+        "",
+        `- Run: \`${input.run.id}\``,
+        `- Detection: ${errorMessage}`,
+        `- Lock release: ${finalized.releasedLocks.length > 0 ? "cleared execution lock(s)" : "no matching issue lock found"}`,
+        "- Outcome: no further stale-run evaluation should be created for this run id.",
+      ].join("\n"), { runId: input.run.id });
+    }
+
+    await appendRecoveryRunEvent(finalized.run, {
+      level: "warn",
+      message: "Watchdog finalized dead local run and released issue execution lock",
+      payload: {
+        sourceIssueId: input.sourceIssue?.id ?? null,
+        sourceIssueIdentifier: input.sourceIssue?.identifier ?? null,
+        sourceIssueStatus: input.sourceIssue?.status ?? null,
+        evaluationIssueId: input.existingEvaluation?.id ?? null,
+        evaluationIssueIdentifier: input.existingEvaluation?.identifier ?? null,
+        processPid: pid,
+        processGroupId,
+        releasedIssueLockIds: finalized.releasedLocks.map((issue) => issue.id),
+        releasedIssueLockIdentifiers: finalized.releasedLocks.map((issue) => issue.identifier),
+      },
+    });
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      action: "heartbeat.output_stale_dead_process_finalized",
+      entityType: "heartbeat_run",
+      entityId: input.run.id,
+      details: {
+        source: "recovery.scan_silent_active_runs",
+        sourceIssueId: input.sourceIssue?.id ?? null,
+        sourceIssueIdentifier: input.sourceIssue?.identifier ?? null,
+        evaluationIssueId: input.existingEvaluation?.id ?? null,
+        processPid: pid,
+        processGroupId,
+        releasedIssueLockIds: finalized.releasedLocks.map((issue) => issue.id),
+      },
+    });
+    await finalizeAgentAfterSettledRun(finalized.run, "failed");
+
+    return { evaluationIssueId: input.existingEvaluation?.id ?? null };
   }
 
   async function resolveStaleRunOwnerAgentId(input: {
@@ -1451,6 +1605,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
+    const deadLocalFinalization = await finalizeDeadLocalRunFromWatchdog({
+      run: input.run,
+      runningAgent,
+      sourceIssue,
+      existingEvaluation: existing,
+      now: input.now,
+    });
+    if (deadLocalFinalization) {
+      return { kind: "folded" as const, evaluationIssueId: deadLocalFinalization.evaluationIssueId };
+    }
     if (sourceIssue && isRecoveryOriginIssue(sourceIssue)) {
       await logActivity(db, {
         companyId: input.run.companyId,

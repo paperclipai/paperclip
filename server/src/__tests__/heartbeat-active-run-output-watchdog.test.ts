@@ -106,6 +106,8 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     sourceStatus?: "in_progress" | "done" | "cancelled";
     sourceOriginKind?: string;
     sameRunTerminalEvidence?: "activity" | "comment";
+    processPid?: number | null;
+    processGroupId?: number | null;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
@@ -179,6 +181,8 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       contextSnapshot: { issueId },
       stdoutExcerpt: "OPENAI_API_KEY=sk-test-secret-value should not leak",
       logBytes: 0,
+      processPid: opts.processPid ?? null,
+      processGroupId: opts.processGroupId ?? null,
     });
     if (opts.logChunk) {
       const store = getRunLogStore();
@@ -387,6 +391,48 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
     expect(evaluation?.originId).toBe(runId);
     expect(evaluation?.parentId).toBeNull();
+  });
+
+  it("finalizes dead local runs and releases execution locks before creating repeat watchdog issues", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+      processPid: 999_999,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(first).toMatchObject({ created: 0, folded: 1 });
+    expect(second).toMatchObject({ scanned: 0, created: 0, folded: 0 });
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+    expect(run?.finishedAt?.toISOString()).toBe(now.toISOString());
+    expect(run?.resultJson).toMatchObject({
+      deadLocalProcessWatchdogFinalization: {
+        processPid: 999_999,
+        sourceIssueId: issueId,
+      },
+    });
+
+    const [source] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(source?.executionRunId).toBeNull();
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+
+    const [event] = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    expect(event?.message).toContain("released issue execution lock");
   });
 
   it("still escalates when a same-run comment is followed by another actor marking the source done", async () => {
