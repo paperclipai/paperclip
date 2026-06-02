@@ -919,7 +919,7 @@ describe.sequential("agent permission routes", () => {
           heartbeat: {
             enabled: false,
             intervalSec: 3600,
-            maxConcurrentRuns: 20,
+            maxConcurrentRuns: 1,
           },
         },
       }),
@@ -1029,7 +1029,7 @@ describe.sequential("agent permission routes", () => {
           heartbeat: {
             enabled: false,
             intervalSec: 3600,
-            maxConcurrentRuns: 20,
+            maxConcurrentRuns: 1,
           },
         },
       }),
@@ -1460,5 +1460,131 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  describe("adapterConfig.env.* redaction guardrail (FUL-6246)", () => {
+    it("redacts plaintext env values in GET /api/agents/{id} response", async () => {
+      const testSecret = "sk-ant-test-secret-value-12345";
+      const agentWithEnv = {
+        ...baseAgent,
+        adapterConfig: {
+          env: {
+            ANTHROPIC_KEY: { type: "plain", value: testSecret },
+            OPENAI_API_KEY: { type: "plain", value: "sk-openai-secret-12345" },
+            SAFE_VAR: "just a string",
+          },
+        },
+      };
+      mockAgentService.getById.mockResolvedValue(agentWithEnv);
+      mockAgentService.getChainOfCommand.mockResolvedValue([]);
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get(`/api/agents/${agentId}`)
+      );
+
+      expect(res.status).toBe(200);
+      // Plaintext env values should be redacted
+      expect(res.body.adapterConfig.env.ANTHROPIC_KEY).toEqual({
+        type: "plain",
+        value: "***REDACTED***",
+      });
+      expect(res.body.adapterConfig.env.OPENAI_API_KEY).toEqual({
+        type: "plain",
+        value: "***REDACTED***",
+      });
+      // Non-secret strings should pass through
+      expect(res.body.adapterConfig.env.SAFE_VAR).toBe("just a string");
+      // The plaintext secret value should not appear anywhere in the response
+      const responseJson = JSON.stringify(res.body);
+      expect(responseJson).not.toContain(testSecret);
+      expect(responseJson).not.toContain("sk-openai-secret-12345");
+    }, 20_000);
+
+    it("preserves secret_ref bindings while redacting plain bindings in GET /api/agents/{id}", async () => {
+      const testSecret = "sk-test-secret";
+      const agentWithMixedBindings = {
+        ...baseAgent,
+        adapterConfig: {
+          env: {
+            STORED_SECRET: { type: "secret_ref", secretId: "secret-123", version: 1 },
+            INLINE_SECRET: { type: "plain", value: testSecret },
+          },
+        },
+      };
+      mockAgentService.getById.mockResolvedValue(agentWithMixedBindings);
+      mockAgentService.getChainOfCommand.mockResolvedValue([]);
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get(`/api/agents/${agentId}`)
+      );
+
+      expect(res.status).toBe(200);
+      // secret_ref should be preserved as-is
+      expect(res.body.adapterConfig.env.STORED_SECRET).toEqual({
+        type: "secret_ref",
+        secretId: "secret-123",
+        version: 1,
+      });
+      // plain binding value should be redacted
+      expect(res.body.adapterConfig.env.INLINE_SECRET).toEqual({
+        type: "plain",
+        value: "***REDACTED***",
+      });
+      // The secret value must not appear anywhere
+      expect(JSON.stringify(res.body)).not.toContain(testSecret);
+    }, 20_000);
+
+    it("redacts plaintext env values in PATCH /api/agents/{id}/permissions response", async () => {
+      const testSecret = "sk-secret-for-patch";
+      const agentWithEnv = {
+        ...baseAgent,
+        adapterConfig: {
+          env: {
+            API_KEY: { type: "plain", value: testSecret },
+          },
+        },
+        permissions: { canCreateAgents: true },
+      };
+      mockAgentService.updatePermissions.mockResolvedValue(agentWithEnv);
+      mockAgentService.getChainOfCommand.mockResolvedValue([]);
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch(`/api/agents/${agentId}/permissions`)
+          .send({ canCreateAgents: true })
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body.adapterConfig.env.API_KEY).toEqual({
+        type: "plain",
+        value: "***REDACTED***",
+      });
+      const responseJson = JSON.stringify(res.body);
+      expect(responseJson).not.toContain(testSecret);
+    }, 20_000);
   });
 });
