@@ -9125,13 +9125,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       idempotencyKey: request.idempotencyKey,
     });
 
+    if (!run) {
+      // Cooldown may have re-deferred this row (updated eligibleAt). Do not mark completed.
+      return false;
+    }
+
     const now = new Date();
     await db
       .update(agentWakeupRequests)
       .set({
         status: "completed",
         finishedAt: now,
-        runId: run?.id ?? null,
+        runId: run.id,
         updatedAt: now,
       })
       .where(eq(agentWakeupRequests.id, request.id));

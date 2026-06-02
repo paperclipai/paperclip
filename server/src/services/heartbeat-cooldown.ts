@@ -5,7 +5,7 @@ import {
   heartbeatRuns,
   issues,
 } from "@paperclipai/db";
-import { and, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lte, max, sql } from "drizzle-orm";
 
 export const HEARTBEAT_COOLDOWN_DEFERRED_STATUS = "deferred_cooldown";
 export const COOLDOWN_ELIGIBLE_AT_PAYLOAD_KEY = "cooldownEligibleAt";
@@ -177,6 +177,41 @@ export async function evaluateHeartbeatCooldownGate(
   return { blocked: true, eligibleAt, bypassed: false };
 }
 
+export function buildAgentRuntimeThrottle(input: {
+  cooldownSec: number;
+  deferralEligibleAt: Date | null;
+  lastFinishedAt: Date | null;
+  now?: Date;
+}): AgentRuntimeThrottle {
+  const now = input.now ?? new Date();
+  if (input.cooldownSec <= 0) {
+    return { active: false, eligibleAt: null, cooldownSec: 0 };
+  }
+
+  if (input.deferralEligibleAt && now.getTime() < input.deferralEligibleAt.getTime()) {
+    return {
+      active: true,
+      eligibleAt: input.deferralEligibleAt.toISOString(),
+      cooldownSec: input.cooldownSec,
+    };
+  }
+
+  const eligibleAt = computeHeartbeatCooldownEligibleAt(
+    input.lastFinishedAt,
+    input.cooldownSec,
+    now,
+  );
+  if (!eligibleAt) {
+    return { active: false, eligibleAt: null, cooldownSec: input.cooldownSec };
+  }
+
+  return {
+    active: true,
+    eligibleAt: eligibleAt.toISOString(),
+    cooldownSec: input.cooldownSec,
+  };
+}
+
 export async function computeAgentRuntimeThrottle(
   db: Db,
   agent: { id: string; runtimeConfig: unknown },
@@ -188,28 +223,93 @@ export async function computeAgentRuntimeThrottle(
   }
 
   const activeDeferral = await getActiveCooldownDeferral(db, agent.id);
-  const deferralEligibleAt = activeDeferral
-    ? readEligibleAtFromPayload(activeDeferral.payload)
-    : null;
-  if (deferralEligibleAt && now.getTime() < deferralEligibleAt.getTime()) {
-    return {
-      active: true,
-      eligibleAt: deferralEligibleAt.toISOString(),
-      cooldownSec,
-    };
-  }
-
   const lastFinishedAt = await getLastThrottledHeartbeatFinishedAt(db, agent.id);
-  const eligibleAt = computeHeartbeatCooldownEligibleAt(lastFinishedAt, cooldownSec, now);
-  if (!eligibleAt) {
-    return { active: false, eligibleAt: null, cooldownSec };
+  return buildAgentRuntimeThrottle({
+    cooldownSec,
+    deferralEligibleAt: activeDeferral
+      ? readEligibleAtFromPayload(activeDeferral.payload)
+      : null,
+    lastFinishedAt,
+    now,
+  });
+}
+
+export async function computeAgentRuntimeThrottlesForAgents(
+  db: Db,
+  agentsInput: Array<{ id: string; runtimeConfig: unknown }>,
+  now = new Date(),
+): Promise<Map<string, AgentRuntimeThrottle>> {
+  const throttles = new Map<string, AgentRuntimeThrottle>();
+  const throttledAgentIds: string[] = [];
+  const cooldownSecByAgentId = new Map<string, number>();
+
+  for (const agent of agentsInput) {
+    const { cooldownSec } = parseHeartbeatCooldownPolicy(agent.runtimeConfig);
+    if (cooldownSec <= 0) {
+      throttles.set(agent.id, { active: false, eligibleAt: null, cooldownSec: 0 });
+      continue;
+    }
+    throttledAgentIds.push(agent.id);
+    cooldownSecByAgentId.set(agent.id, cooldownSec);
   }
 
-  return {
-    active: true,
-    eligibleAt: eligibleAt.toISOString(),
-    cooldownSec,
-  };
+  if (throttledAgentIds.length === 0) {
+    return throttles;
+  }
+
+  const deferralRows = await db
+    .select()
+    .from(agentWakeupRequests)
+    .where(
+      and(
+        inArray(agentWakeupRequests.agentId, throttledAgentIds),
+        eq(agentWakeupRequests.status, HEARTBEAT_COOLDOWN_DEFERRED_STATUS),
+      ),
+    )
+    .orderBy(desc(agentWakeupRequests.requestedAt));
+
+  const deferralEligibleAtByAgentId = new Map<string, Date | null>();
+  for (const row of deferralRows) {
+    if (deferralEligibleAtByAgentId.has(row.agentId)) continue;
+    deferralEligibleAtByAgentId.set(
+      row.agentId,
+      readEligibleAtFromPayload(row.payload),
+    );
+  }
+
+  const lastFinishedRows = await db
+    .select({
+      agentId: heartbeatRuns.agentId,
+      finishedAt: max(heartbeatRuns.finishedAt),
+    })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        inArray(heartbeatRuns.agentId, throttledAgentIds),
+        inArray(heartbeatRuns.invocationSource, [...COOLDOWN_THROTTLED_INVOCATION_SOURCES]),
+        sql`${heartbeatRuns.finishedAt} is not null`,
+      ),
+    )
+    .groupBy(heartbeatRuns.agentId);
+
+  const lastFinishedAtByAgentId = new Map(
+    lastFinishedRows.map((row) => [row.agentId, row.finishedAt ?? null]),
+  );
+
+  for (const agentId of throttledAgentIds) {
+    const cooldownSec = cooldownSecByAgentId.get(agentId) ?? 0;
+    throttles.set(
+      agentId,
+      buildAgentRuntimeThrottle({
+        cooldownSec,
+        deferralEligibleAt: deferralEligibleAtByAgentId.get(agentId) ?? null,
+        lastFinishedAt: lastFinishedAtByAgentId.get(agentId) ?? null,
+        now,
+      }),
+    );
+  }
+
+  return throttles;
 }
 
 export async function promoteDueCooldownDeferred(

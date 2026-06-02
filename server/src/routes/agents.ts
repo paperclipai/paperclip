@@ -32,7 +32,10 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { computeAgentRuntimeThrottle } from "../services/heartbeat-cooldown.js";
+import {
+  computeAgentRuntimeThrottle,
+  computeAgentRuntimeThrottlesForAgents,
+} from "../services/heartbeat-cooldown.js";
 import {
   agentService,
   agentInstructionsService,
@@ -1610,12 +1613,14 @@ export function agentRoutes(
       return;
     }
     const result = await svc.list(companyId);
-    const runtimeThrottles = await Promise.all(
-      result.map((agent) => computeAgentRuntimeThrottle(db, agent)),
-    );
-    const withRuntimeThrottle = result.map((agent, index) => ({
+    const runtimeThrottleByAgentId = await computeAgentRuntimeThrottlesForAgents(db, result);
+    const withRuntimeThrottle = result.map((agent) => ({
       ...agent,
-      runtimeThrottle: runtimeThrottles[index],
+      runtimeThrottle: runtimeThrottleByAgentId.get(agent.id) ?? {
+        active: false,
+        eligibleAt: null,
+        cooldownSec: 0,
+      },
     }));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildAgentRuntimeThrottle,
   computeHeartbeatCooldownEligibleAt,
   isHeartbeatCooldownThrottledSource,
   parseHeartbeatCooldownPolicy,
@@ -37,6 +38,17 @@ describe("heartbeat-cooldown policy", () => {
         requestedByActorType: "system",
       }),
     ).toBe(false);
+  });
+
+  it("builds active runtime throttle from deferral eligibleAt", () => {
+    const throttle = buildAgentRuntimeThrottle({
+      cooldownSec: 60,
+      deferralEligibleAt: new Date("2026-06-02T12:10:00.000Z"),
+      lastFinishedAt: null,
+      now: new Date("2026-06-02T12:05:00.000Z"),
+    });
+    expect(throttle.active).toBe(true);
+    expect(throttle.eligibleAt).toBe("2026-06-02T12:10:00.000Z");
   });
 
   it("computes eligibleAt from last finished run", () => {
