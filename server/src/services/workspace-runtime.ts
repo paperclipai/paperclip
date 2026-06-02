@@ -941,7 +941,7 @@ async function recordGitOperation(
 async function recordWorkspaceCommandOperation(
   recorder: WorkspaceOperationRecorder | null | undefined,
   input: {
-    phase: "workspace_provision" | "workspace_teardown";
+    phase: "workspace_provision" | "workspace_teardown" | "workspace_setup";
     command: string;
     resolvedCommand?: string;
     cwd: string;
@@ -1094,12 +1094,64 @@ async function resolveGitRepoRootForWorkspaceCleanup(
   return path.dirname(resolvedGitDir);
 }
 
+async function runProjectWorkspaceSetupCommand(
+  db: Db | undefined,
+  input: {
+    workspaceId: string | null;
+    cwd: string;
+    repoRoot: string;
+    branchName: string;
+    worktreePath: string;
+    base: ExecutionWorkspaceInput;
+    issue: ExecutionWorkspaceIssueRef | null;
+    agent: ExecutionWorkspaceAgentRef;
+    recorder: WorkspaceOperationRecorder | null | undefined;
+  },
+): Promise<string[]> {
+  if (!db || !input.workspaceId) return [];
+  const [row] = await db
+    .select({ setupCommand: projectWorkspaces.setupCommand })
+    .from(projectWorkspaces)
+    .where(eq(projectWorkspaces.id, input.workspaceId))
+    .limit(1);
+  const setupCommand = row?.setupCommand?.trim() ?? "";
+  if (!setupCommand) return [];
+
+  try {
+    await recordWorkspaceCommandOperation(input.recorder, {
+      phase: "workspace_setup",
+      command: setupCommand,
+      cwd: input.cwd,
+      env: buildWorkspaceCommandEnv({
+        base: input.base,
+        repoRoot: input.repoRoot,
+        worktreePath: input.worktreePath,
+        branchName: input.branchName,
+        issue: input.issue,
+        agent: input.agent,
+        created: false,
+      }),
+      label: `Project workspace setup command`,
+      metadata: {
+        workspaceId: input.workspaceId,
+        cwd: input.cwd,
+      },
+      successMessage: `Project workspace setup completed\n`,
+    });
+    return [];
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return [`Project workspace setup command failed (run continues): ${message}`];
+  }
+}
+
 export async function realizeExecutionWorkspace(input: {
   base: ExecutionWorkspaceInput;
   config: Record<string, unknown>;
   issue: ExecutionWorkspaceIssueRef | null;
   agent: ExecutionWorkspaceAgentRef;
   recorder?: WorkspaceOperationRecorder | null;
+  db?: Db;
 }): Promise<RealizedExecutionWorkspace> {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
   const strategyType = asString(rawStrategy.type, "project_primary");
@@ -1138,6 +1190,18 @@ export async function realizeExecutionWorkspace(input: {
     ?? "HEAD";
   const baseRefreshWarnings = await refreshRemoteTrackingBaseRef(repoRoot, baseRef);
   const currentBaseRefSha = await resolveBaseRefSha(repoRoot, baseRef);
+
+  const setupWarnings = await runProjectWorkspaceSetupCommand(input.db, {
+    workspaceId: input.base.workspaceId,
+    cwd: input.base.baseCwd,
+    repoRoot,
+    branchName,
+    worktreePath,
+    base: input.base,
+    issue: input.issue,
+    agent: input.agent,
+    recorder: input.recorder,
+  });
 
   await fs.mkdir(worktreeParentDir, { recursive: true });
 
@@ -1188,7 +1252,7 @@ export async function realizeExecutionWorkspace(input: {
       cwd: reusablePath,
       branchName,
       worktreePath: reusablePath,
-      warnings: [...baseRefreshWarnings, ...baseDrift.warnings],
+      warnings: [...baseRefreshWarnings, ...setupWarnings, ...baseDrift.warnings],
       created: false,
       baseRefSha: baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha,
     };
@@ -1288,7 +1352,7 @@ export async function realizeExecutionWorkspace(input: {
     cwd: worktreePath,
     branchName,
     worktreePath,
-    warnings: baseRefreshWarnings,
+    warnings: [...baseRefreshWarnings, ...setupWarnings],
     created: true,
     baseRefSha: currentBaseRefSha,
   };
