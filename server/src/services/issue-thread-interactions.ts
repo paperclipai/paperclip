@@ -441,6 +441,53 @@ async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
 }
 
 export function issueThreadInteractionService(db: Db) {
+  async function normalizePendingRequestConfirmationIssueStatus(
+    issue: { id: string; companyId: string },
+    actor: InteractionActor,
+    dbOrTx: any = db,
+  ) {
+    const pendingConfirmation = await dbOrTx
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, issue.companyId),
+        eq(issueThreadInteractions.issueId, issue.id),
+        eq(issueThreadInteractions.kind, "request_confirmation"),
+        eq(issueThreadInteractions.status, "pending"),
+      ))
+      .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+
+    if (!pendingConfirmation) return null;
+
+    const issueContext = await dbOrTx
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(eq(issues.id, issue.id))
+      .then((rows: Array<{ id: string; companyId: string; status: string }>) => rows[0] ?? null);
+
+    if (!issueContext || issueContext.companyId !== issue.companyId) {
+      throw notFound("Issue not found");
+    }
+    if (issueContext.status === "in_review" || isTerminalIssueStatus(issueContext.status)) {
+      return null;
+    }
+
+    const dependencyReadiness = await issueService(dbOrTx as unknown as Db).getDependencyReadiness(issue.id, dbOrTx);
+    if (dependencyReadiness.unresolvedBlockerCount > 0) {
+      return null;
+    }
+
+    return issueService(dbOrTx as unknown as Db).update(issue.id, {
+      status: "in_review",
+      actorAgentId: actor.agentId ?? null,
+      actorUserId: actor.userId ?? null,
+    }, dbOrTx);
+  }
+
   async function getIdempotentInteraction(args: {
     issueId: string;
     companyId: string;
@@ -682,6 +729,9 @@ export function issueThreadInteractionService(db: Db) {
               idempotencyKey: data.idempotencyKey,
             });
           }
+          if (data.kind === "request_confirmation") {
+            await normalizePendingRequestConfirmationIssueStatus(issue, actor);
+          }
           return hydrateInteraction(existing);
         }
       }
@@ -721,26 +771,37 @@ export function issueThreadInteractionService(db: Db) {
         });
       }
 
-      let created: IssueThreadInteractionRow;
+      let created: IssueThreadInteractionRow | null = null;
       try {
-        [created] = await db
-          .insert(issueThreadInteractions)
-          .values({
-            companyId: issue.companyId,
-            issueId: issue.id,
-            kind: data.kind,
-            status: "pending",
-            continuationPolicy: data.continuationPolicy,
-            idempotencyKey: data.idempotencyKey ?? null,
-            sourceCommentId: data.sourceCommentId ?? null,
-            sourceRunId: data.sourceRunId ?? null,
-            title: data.title ?? null,
-            summary: data.summary ?? null,
-            createdByAgentId: actor.agentId ?? null,
-            createdByUserId: actor.userId ?? null,
-            payload: data.payload,
-          })
-          .returning();
+        await db.transaction(async (tx) => {
+          [created] = await tx
+            .insert(issueThreadInteractions)
+            .values({
+              companyId: issue.companyId,
+              issueId: issue.id,
+              kind: data.kind,
+              status: "pending",
+              continuationPolicy: data.continuationPolicy,
+              idempotencyKey: data.idempotencyKey ?? null,
+              sourceCommentId: data.sourceCommentId ?? null,
+              sourceRunId: data.sourceRunId ?? null,
+              title: data.title ?? null,
+              summary: data.summary ?? null,
+              createdByAgentId: actor.agentId ?? null,
+              createdByUserId: actor.userId ?? null,
+              payload: data.payload,
+            })
+            .returning();
+
+          if (data.kind === "request_confirmation") {
+            const normalizedIssue = await normalizePendingRequestConfirmationIssueStatus(issue, actor, tx);
+            if (!normalizedIssue) {
+              await touchIssue(tx, issue.id);
+            }
+          } else {
+            await touchIssue(tx, issue.id);
+          }
+        });
       } catch (error) {
         if (!data.idempotencyKey || !isIssueThreadInteractionIdempotencyConflict(error)) {
           throw error;
@@ -756,12 +817,20 @@ export function issueThreadInteractionService(db: Db) {
             idempotencyKey: data.idempotencyKey,
           });
         }
+        if (data.kind === "request_confirmation") {
+          await normalizePendingRequestConfirmationIssueStatus(issue, actor);
+        }
         return hydrateInteraction(existing);
       }
 
-      await touchIssue(db, issue.id);
+      if (!created) {
+        throw conflict("Interaction creation did not return a created row");
+      }
+
       return hydrateInteraction(created);
     },
+
+    normalizePendingRequestConfirmationIssueStatus,
 
     acceptInteraction: async (
       issue: { id: string; companyId: string; projectId: string | null; goalId: string | null },

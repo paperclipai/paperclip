@@ -318,6 +318,8 @@ A healthy `in_review` issue has at least one valid action path:
 - an active one-shot monitor for an external service or async review loop that the assignee owns
 - an open explicit recovery action for an ambiguous review handoff
 
+Pending `request_confirmation` interactions are review state, not dispatch state. When a pending confirmation is the active gate and the issue is neither terminal nor dependency-blocked, Paperclip should normalize drifted `todo` or dependency-free `blocked` issues back to `in_review` instead of waiting for a manual board correction.
+
 Agent-assigned `in_review` with no typed participant is only healthy when one of the other paths exists. Assignment to the same agent that produced the handoff is not, by itself, a review path.
 
 An `in_review` issue is stalled when it has no typed participant, no pending interaction or approval, no user owner, no active monitor, no active run, no queued wake, and no explicit recovery action. Paperclip should surface that state as recovery work rather than silently completing the issue or leaving blocker chains parked indefinitely.
@@ -353,6 +355,8 @@ A healthy `blocked` issue has an explicit waiting path:
 - first-class blockers exist, and each unresolved leaf has a valid action path under this contract
 - the issue has an explicit recovery action that itself has a live or waiting path
 - the issue is waiting on a pending interaction, linked approval, human owner, or clearly named external owner/action
+
+If a pending `request_confirmation` is the only waiting path and `blockedByIssueIds` no longer resolve to real unresolved blockers, the issue should not remain `blocked`; it belongs in `in_review` because the next move is a review decision rather than dependency completion.
 
 A blocker chain is covered only when its unresolved leaf is live or explicitly waiting. An intermediate `blocked` issue does not make the chain healthy by itself.
 
