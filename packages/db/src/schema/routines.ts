@@ -51,6 +51,11 @@ export const routines = pgTable(
     companyStatusIdx: index("routines_company_status_idx").on(table.companyId, table.status),
     companyAssigneeIdx: index("routines_company_assignee_idx").on(table.companyId, table.assigneeAgentId),
     companyProjectIdx: index("routines_company_project_idx").on(table.companyId, table.projectId),
+    companyParentIssueStatusIdx: index("routines_company_parent_issue_status_idx").on(
+      table.companyId,
+      table.parentIssueId,
+      table.status,
+    ),
   }),
 );
 
