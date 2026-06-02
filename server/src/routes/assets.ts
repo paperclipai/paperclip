@@ -1,7 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import createDOMPurify from "dompurify";
-import { JSDOM } from "jsdom";
 import type { Db } from "@valadrien-os/db";
 import { createAssetImageMetadataSchema } from "@valadrien-os/shared";
 import type { StorageService } from "../storage/types.js";
@@ -18,7 +17,16 @@ const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
   SVG_CONTENT_TYPE,
 ]);
 
-function sanitizeSvgBuffer(input: Buffer): Buffer | null {
+type JsdomModule = typeof import("jsdom");
+let jsdomModulePromise: Promise<JsdomModule> | null = null;
+
+function loadJsdom(): Promise<JsdomModule> {
+  jsdomModulePromise ??= import("jsdom");
+  return jsdomModulePromise;
+}
+
+async function sanitizeSvgBuffer(input: Buffer): Promise<Buffer | null> {
+  const { JSDOM } = await loadJsdom();
   const raw = input.toString("utf8").trim();
   if (!raw) return null;
 
@@ -145,7 +153,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     }
     let fileBody = file.buffer;
     if (contentType === SVG_CONTENT_TYPE) {
-      const sanitized = sanitizeSvgBuffer(file.buffer);
+      const sanitized = await sanitizeSvgBuffer(file.buffer);
       if (!sanitized || sanitized.length <= 0) {
         res.status(422).json({ error: "SVG could not be sanitized" });
         return;
@@ -242,7 +250,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
     let fileBody = file.buffer;
     if (contentType === SVG_CONTENT_TYPE) {
-      const sanitized = sanitizeSvgBuffer(file.buffer);
+      const sanitized = await sanitizeSvgBuffer(file.buffer);
       if (!sanitized || sanitized.length <= 0) {
         res.status(422).json({ error: "SVG could not be sanitized" });
         return;
