@@ -193,6 +193,113 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(childrenAfterDuplicateAccept).toHaveLength(1);
   });
 
+  it("reuses existing child issues when the same suggested task bundle is accepted again", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Persist thread interactions",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+      requestDepth: 2,
+    });
+
+    const payload = {
+      version: 1 as const,
+      tasks: [
+        {
+          clientKey: "root",
+          title: "Create the root follow-up",
+        },
+        {
+          clientKey: "child",
+          parentClientKey: "root",
+          title: "Create the nested follow-up",
+        },
+      ],
+    };
+
+    const firstInteraction = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "suggest_tasks",
+      continuationPolicy: "wake_assignee",
+      payload,
+    }, {
+      userId: "local-board",
+    });
+
+    const firstAccepted = await interactionsSvc.acceptSuggestedTasks({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, firstInteraction.id, {}, {
+      userId: "local-board",
+    });
+
+    const rootChildren = await issuesSvc.list(companyId, { parentId: issueId });
+    expect(rootChildren).toHaveLength(1);
+
+    const secondInteraction = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "suggest_tasks",
+      continuationPolicy: "wake_assignee",
+      payload,
+    }, {
+      userId: "local-board",
+    });
+
+    const secondAccepted = await interactionsSvc.acceptSuggestedTasks({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, secondInteraction.id, {}, {
+      userId: "local-board",
+    });
+
+    expect(secondAccepted.interaction.result).toMatchObject({
+      version: 1,
+      createdTasks: [
+        expect.objectContaining({ clientKey: "root", issueId: firstAccepted.interaction.result.createdTasks[0]?.issueId }),
+        expect.objectContaining({ clientKey: "child", issueId: firstAccepted.interaction.result.createdTasks[1]?.issueId }),
+      ],
+    });
+    expect(firstAccepted.createdIssues).toHaveLength(2);
+    expect(secondAccepted.createdIssues).toEqual([]);
+
+    const rootChildrenAfterReplay = await issuesSvc.list(companyId, { parentId: issueId });
+    expect(rootChildrenAfterReplay).toHaveLength(1);
+    expect(rootChildrenAfterReplay[0]?.id).toBe(firstAccepted.interaction.result.createdTasks[0]?.issueId);
+
+    const nestedChildrenAfterReplay = await issuesSvc.list(companyId, { parentId: rootChildrenAfterReplay[0]!.id });
+    expect(nestedChildrenAfterReplay).toHaveLength(1);
+    expect(nestedChildrenAfterReplay[0]?.id).toBe(firstAccepted.interaction.result.createdTasks[1]?.issueId);
+  });
+
   it("accepts a selected subset of suggested tasks and records the skipped drafts", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

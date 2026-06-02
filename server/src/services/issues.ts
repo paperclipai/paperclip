@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -96,6 +97,34 @@ function applyStatusSideEffects(
     patch.cancelledAt = new Date();
   }
   return patch;
+}
+
+function normalizeSuggestedTaskFingerprintValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeSuggestedTaskFingerprintValue(item));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, childValue]) => [key, normalizeSuggestedTaskFingerprintValue(childValue)]),
+    );
+  }
+  return value;
+}
+
+function createSuggestedTaskFingerprint(input: {
+  title: string;
+  description: string | null;
+  priority: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  projectId: string | null;
+  goalId: string | null;
+  billingCode: string | null;
+}) {
+  const canonical = JSON.stringify(normalizeSuggestedTaskFingerprintValue(input));
+  return createHash("sha256").update(canonical).digest("hex");
 }
 
 export interface IssueFilters {
@@ -2347,6 +2376,70 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!parent) throw notFound("Parent issue not found");
 
+      const {
+        acceptanceCriteria,
+        blockParentUntilDone,
+        actorAgentId,
+        actorUserId,
+        ...issueData
+      } = data;
+      const normalizedTitle = issueData.title.trim();
+      const normalizedDescription = appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria) ?? null;
+      const resolvedProjectId = issueData.projectId ?? parent.projectId ?? null;
+      const resolvedGoalId = issueData.goalId ?? parent.goalId ?? null;
+      const resolvedAssigneeAgentId = issueData.assigneeAgentId ?? null;
+      const resolvedAssigneeUserId = issueData.assigneeUserId ?? null;
+      const resolvedBillingCode = issueData.billingCode ?? null;
+      const suggestedTaskFingerprint =
+        issueData.originKind === "suggested_task"
+          ? createSuggestedTaskFingerprint({
+              title: normalizedTitle,
+              description: normalizedDescription,
+              priority: issueData.priority ?? "medium",
+              assigneeAgentId: resolvedAssigneeAgentId,
+              assigneeUserId: resolvedAssigneeUserId,
+              projectId: resolvedProjectId,
+              goalId: resolvedGoalId,
+              billingCode: resolvedBillingCode,
+            })
+          : undefined;
+
+      if (issueData.originKind === "suggested_task") {
+        const existing = await db
+          .select()
+          .from(issues)
+          .where(and(
+            eq(issues.companyId, parent.companyId),
+            eq(issues.parentId, parent.id),
+            eq(issues.originKind, "suggested_task"),
+            eq(issues.originFingerprint, suggestedTaskFingerprint!),
+            isNull(issues.hiddenAt),
+          ))
+          .orderBy(asc(issues.createdAt), asc(issues.id))
+          .then((rows) => rows[0] ?? null);
+
+        if (existing) {
+          if (blockParentUntilDone) {
+            const existingBlockers = await db
+              .select({ blockerIssueId: issueRelations.issueId })
+              .from(issueRelations)
+              .where(and(eq(issueRelations.companyId, parent.companyId), eq(issueRelations.relatedIssueId, parent.id), eq(issueRelations.type, "blocks")));
+            await syncBlockedByIssueIds(
+              parent.id,
+              parent.companyId,
+              [...new Set([...existingBlockers.map((row) => row.blockerIssueId), existing.id])],
+              { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+            );
+          }
+
+          return {
+            issue: existing,
+            parentBlockerAdded: Boolean(blockParentUntilDone),
+            isReused: true,
+          };
+        }
+      }
+
       const [{ childCount }] = await db
         .select({ childCount: sql<number>`count(*)::int` })
         .from(issues)
@@ -2355,20 +2448,21 @@ export function issueService(db: Db) {
         throw unprocessable(`Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} child issues for this helper`);
       }
 
-      const {
-        acceptanceCriteria,
-        blockParentUntilDone,
-        actorAgentId,
-        actorUserId,
-        ...issueData
-      } = data;
       const child = await issueService(db).create(parent.companyId, {
         ...issueData,
+        ...(issueData.originKind === "suggested_task"
+          ? {
+              originKind: "suggested_task",
+              originId: parent.id,
+              originFingerprint: suggestedTaskFingerprint,
+            }
+          : {}),
         parentId: parent.id,
-        projectId: issueData.projectId ?? parent.projectId,
-        goalId: issueData.goalId ?? parent.goalId,
+        title: normalizedTitle,
+        description: normalizedDescription,
+        projectId: resolvedProjectId ?? undefined,
+        goalId: resolvedGoalId ?? undefined,
         requestDepth: Math.max(parent.requestDepth + 1, issueData.requestDepth ?? 0),
-        description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
         inheritExecutionWorkspaceFromIssueId: parent.id,
       });
 
@@ -2388,6 +2482,7 @@ export function issueService(db: Db) {
       return {
         issue: child,
         parentBlockerAdded: Boolean(blockParentUntilDone),
+        isReused: false,
       };
     },
 
