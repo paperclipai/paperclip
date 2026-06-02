@@ -2320,50 +2320,87 @@ export function routineService(
         .orderBy(asc(routineTriggers.nextRunAt), asc(routineTriggers.createdAt));
 
       let triggered = 0;
+      let failed = 0;
       for (const row of due) {
         if (!row.trigger.nextRunAt || !row.trigger.cronExpression || !row.trigger.timezone) continue;
 
-        let runCount = 1;
-        let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
+        // Per-trigger error isolation: a single bad cron expression or timezone
+        // would otherwise throw out of nextCronTickInTimeZone (via
+        // unprocessable()) and kill the whole batch — every other due trigger
+        // would stay frozen until the bad row is fixed. Catch and log instead.
+        try {
+          let runCount = 1;
+          let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
 
-        if (row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
-          let cursor: Date | null = row.trigger.nextRunAt;
-          runCount = 0;
-          while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
-            runCount += 1;
-            claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
-            cursor = claimedNextRunAt;
+          if (row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
+            let cursor: Date | null = row.trigger.nextRunAt;
+            runCount = 0;
+            while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
+              runCount += 1;
+              claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
+              cursor = claimedNextRunAt;
+            }
           }
-        }
 
-        const claimed = await db
-          .update(routineTriggers)
-          .set({
-            nextRunAt: claimedNextRunAt,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(routineTriggers.id, row.trigger.id),
-              eq(routineTriggers.enabled, true),
-              eq(routineTriggers.nextRunAt, row.trigger.nextRunAt),
-            ),
-          )
-          .returning({ id: routineTriggers.id })
-          .then((rows) => rows[0] ?? null);
-        if (!claimed) continue;
+          if (!claimedNextRunAt) {
+            // The cron expression validated but produced no future tick within
+            // the lookahead horizon (impossible date combination, etc.). Don't
+            // null out nextRunAt — that would silently disable the trigger and
+            // hide the misconfiguration.
+            logger.warn(
+              { triggerId: row.trigger.id, routineId: row.routine.id, cronExpression: row.trigger.cronExpression, timezone: row.trigger.timezone },
+              "routine scheduler could not compute a next tick; leaving trigger nextRunAt untouched",
+            );
+            failed += 1;
+            continue;
+          }
 
-        for (let i = 0; i < runCount; i += 1) {
-          await dispatchRoutineRun({
-            routine: row.routine,
-            trigger: row.trigger,
-            source: "schedule",
-          });
-          triggered += 1;
+          const claimed = await db
+            .update(routineTriggers)
+            .set({
+              nextRunAt: claimedNextRunAt,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(routineTriggers.id, row.trigger.id),
+                eq(routineTriggers.enabled, true),
+                eq(routineTriggers.nextRunAt, row.trigger.nextRunAt),
+              ),
+            )
+            .returning({ id: routineTriggers.id })
+            .then((rows) => rows[0] ?? null);
+          if (!claimed) continue;
+
+          for (let i = 0; i < runCount; i += 1) {
+            try {
+              await dispatchRoutineRun({
+                routine: row.routine,
+                trigger: row.trigger,
+                source: "schedule",
+              });
+              triggered += 1;
+            } catch (dispatchError) {
+              // The atomic claim above already advanced nextRunAt, so a dispatch
+              // failure here will not refire on the next tick. Surface the
+              // failure and let the next scheduled tick proceed.
+              logger.error(
+                { err: dispatchError, triggerId: row.trigger.id, routineId: row.routine.id },
+                "routine scheduler dispatch failed after advancing trigger",
+              );
+              failed += 1;
+            }
+          }
+        } catch (perTriggerError) {
+          logger.error(
+            { err: perTriggerError, triggerId: row.trigger.id, routineId: row.routine.id, cronExpression: row.trigger.cronExpression, timezone: row.trigger.timezone },
+            "routine scheduler skipped a trigger due to evaluation error",
+          );
+          failed += 1;
         }
       }
 
-      return { triggered };
+      return { triggered, failed };
     },
 
     syncRunStatusForIssue: async (issueId: string) => {

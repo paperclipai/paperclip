@@ -1510,4 +1510,80 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
   });
+
+  // Regression for #5184: a single trigger row with a corrupted cron expression
+  // (or timezone) used to throw out of nextCronTickInTimeZone, killing the
+  // whole tick loop and freezing every other due trigger.
+  it("isolates per-trigger evaluation errors so one bad cron does not freeze the rest of the batch", async () => {
+    const { routine: goodRoutine, svc } = await seedFixture();
+    const { trigger: goodTrigger } = await svc.createTrigger(
+      goodRoutine.id,
+      {
+        kind: "schedule",
+        label: "every 15",
+        cronExpression: "*/15 * * * *",
+        timezone: "UTC",
+      },
+      {},
+    );
+    const goodNextRunAt = goodTrigger.nextRunAt!;
+
+    const { trigger: badTrigger } = await svc.createTrigger(
+      goodRoutine.id,
+      {
+        kind: "schedule",
+        label: "broken",
+        cronExpression: "*/30 * * * *",
+        timezone: "UTC",
+      },
+      {},
+    );
+    const badNextRunAt = badTrigger.nextRunAt!;
+
+    // Corrupt the second trigger's cron expression directly in the DB so it
+    // bypasses createTrigger's validateCron pass — this is how user data ends
+    // up in this state when an older row predates a validation tightening or
+    // a manual SQL change is made.
+    await db
+      .update(routineTriggers)
+      .set({ cronExpression: "this is not a cron expression" })
+      .where(eq(routineTriggers.id, badTrigger.id));
+
+    // Force both triggers to be due so the tick processes them in one batch.
+    const past = new Date(Date.now() - 60_000);
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: past })
+      .where(eq(routineTriggers.id, goodTrigger.id));
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: past })
+      .where(eq(routineTriggers.id, badTrigger.id));
+
+    const tickResult = await svc.tickScheduledTriggers(new Date());
+    expect(tickResult.failed).toBeGreaterThanOrEqual(1);
+
+    const [goodAfter, badAfter] = await Promise.all([
+      db
+        .select()
+        .from(routineTriggers)
+        .where(eq(routineTriggers.id, goodTrigger.id))
+        .then((rows) => rows[0]!),
+      db
+        .select()
+        .from(routineTriggers)
+        .where(eq(routineTriggers.id, badTrigger.id))
+        .then((rows) => rows[0]!),
+    ]);
+
+    // The good trigger advanced past the manually-rewound `past` timestamp.
+    expect(goodAfter.nextRunAt!.getTime()).toBeGreaterThan(past.getTime());
+    // The bad trigger stays frozen at the past timestamp — we don't silently
+    // null it out (which would hide the bad config) and we don't crash the
+    // whole batch trying to compute its next tick.
+    expect(badAfter.nextRunAt!.getTime()).toBe(past.getTime());
+    expect(badAfter.cronExpression).toBe("this is not a cron expression");
+    void goodNextRunAt;
+    void badNextRunAt;
+  });
 });
