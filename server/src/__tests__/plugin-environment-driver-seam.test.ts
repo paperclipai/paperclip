@@ -5,6 +5,7 @@ import {
   createRequest,
   isJsonRpcErrorResponse,
   isJsonRpcSuccessResponse,
+  type JsonRpcResponse,
   parseMessage,
   serializeMessage,
 } from "../../../packages/plugins/sdk/src/protocol.js";
@@ -101,11 +102,11 @@ describe("plugin environment driver seam", () => {
     const stdin = new PassThrough();
     const stdout = new PassThrough();
     const host = startWorkerRpcHost({ plugin, stdin, stdout });
-    const responses: unknown[] = [];
+    const responses: JsonRpcResponse[] = [];
     stdout.on("data", (chunk) => {
       const lines = String(chunk).split("\n").filter(Boolean);
       for (const line of lines) {
-        responses.push(parseMessage(line));
+        responses.push(parseMessage(line) as JsonRpcResponse);
       }
     });
 
@@ -120,7 +121,7 @@ describe("plugin environment driver seam", () => {
     const initializeResponse = responses[0];
     expect(isJsonRpcSuccessResponse(initializeResponse)).toBe(true);
     if (!isJsonRpcSuccessResponse(initializeResponse)) return;
-    expect(initializeResponse.result.supportedMethods).toContain("environmentProbe");
+    expect((initializeResponse.result as { supportedMethods: string[] }).supportedMethods).toContain("environmentProbe");
 
     stdin.write(serializeMessage(createRequest("environmentProbe", {
       driverKey: "fake-plugin",
@@ -159,7 +160,7 @@ describe("plugin environment driver seam", () => {
   });
 });
 
-async function waitForResponses(responses: unknown[], count: number): Promise<void> {
+async function waitForResponses(responses: JsonRpcResponse[], count: number): Promise<void> {
   const deadline = Date.now() + 1_000;
   while (responses.length < count && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 5));

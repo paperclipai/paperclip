@@ -242,6 +242,11 @@ describe("plugin-worker-manager stderr failure context", () => {
           mode: "echo",
           requestedCompanyId: "company-a",
         },
+        // PerformActionParams (the static type) doesn't declare actorContext —
+        // runtime shape injected by the worker host. Suppressed at the offending
+        // property since wrapping the parent literal as `any` swallows the
+        // other field types.
+        // @ts-expect-error – actorContext is runtime-only on PerformActionParams
         actorContext: {
           type: "agent",
           userId: null,
@@ -264,7 +269,7 @@ describe("plugin-worker-manager stderr failure context", () => {
   });
 
   it("passes echoed invocation scope to worker-to-host handlers", async () => {
-    const companiesGet = vi.fn(async () => ({ id: "company-1" }));
+    const companiesGet = vi.fn(async () => ({ id: "company-1" })) as unknown as never;
     const handle = createPluginWorkerHandle("test.plugin", {
       entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
       manifest: TEST_MANIFEST,
@@ -381,6 +386,11 @@ describe("plugin-worker-manager stderr failure context", () => {
         params: {
           requestedCompanyId: "company-b",
         },
+        // PerformActionParams (the static type) doesn't declare actorContext —
+        // runtime shape injected by the worker host. Suppressed at the offending
+        // property since wrapping the parent literal as `any` swallows the
+        // other field types.
+        // @ts-expect-error – actorContext is runtime-only on PerformActionParams
         actorContext: {
           type: "agent",
           userId: null,
@@ -390,7 +400,7 @@ describe("plugin-worker-manager stderr failure context", () => {
         },
         renderEnvironment: null,
       })).rejects.toMatchObject({
-        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+        code: (PLUGIN_RPC_ERROR_CODES as Record<string, number>).INVOCATION_SCOPE_DENIED,
         message: expect.stringContaining("unknown invocation scope"),
       });
     } finally {
@@ -430,6 +440,11 @@ describe("plugin-worker-manager stderr failure context", () => {
           mode: "unknown",
           requestedCompanyId: "company-a",
         },
+        // PerformActionParams (the static type) doesn't declare actorContext —
+        // runtime shape injected by the worker host. Suppressed at the offending
+        // property since wrapping the parent literal as `any` swallows the
+        // other field types.
+        // @ts-expect-error – actorContext is runtime-only on PerformActionParams
         actorContext: {
           type: "agent",
           userId: null,
@@ -439,7 +454,7 @@ describe("plugin-worker-manager stderr failure context", () => {
         },
         renderEnvironment: null,
       })).rejects.toMatchObject({
-        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+        code: (PLUGIN_RPC_ERROR_CODES as Record<string, number>).INVOCATION_SCOPE_DENIED,
         message: expect.stringContaining("unknown invocation scope"),
       });
       expect(companiesGet).not.toHaveBeenCalled();
@@ -483,7 +498,7 @@ describe("plugin-worker-manager stderr failure context", () => {
             requestedCompanyId: "company-2",
           },
         } as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
-          code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+          code: (PLUGIN_RPC_ERROR_CODES as Record<string, number>).INVOCATION_SCOPE_DENIED,
         });
       }
 
