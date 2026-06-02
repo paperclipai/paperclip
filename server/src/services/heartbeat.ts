@@ -173,6 +173,16 @@ import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import {
+  COOLDOWN_DEFERRED_WAKE_CONTEXT_KEY,
+  COOLDOWN_ELIGIBLE_AT_PAYLOAD_KEY,
+  HEARTBEAT_COOLDOWN_DEFERRED_STATUS,
+  PENDING_AGENT_WAKEUP_STATUSES,
+  assertAgentInvokableForCooldownPromotion,
+  evaluateHeartbeatCooldownGate,
+  parseHeartbeatCooldownPolicy,
+  promoteDueCooldownDeferred,
+} from "./heartbeat-cooldown.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -5969,12 +5979,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
+    const cooldown = parseHeartbeatCooldownPolicy(agent.runtimeConfig);
 
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      cooldownSec: cooldown.cooldownSec,
     };
   }
 
@@ -8983,6 +8995,154 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
+  async function deferHeartbeatCooldownWakeup(input: {
+    agent: typeof agents.$inferSelect;
+    agentId: string;
+    source: string;
+    triggerDetail: WakeupOptions["triggerDetail"] | null;
+    reason: string | null;
+    payload: Record<string, unknown> | null;
+    enrichedContextSnapshot: Record<string, unknown>;
+    eligibleAt: Date;
+    opts: WakeupOptions;
+  }) {
+    const eligibleAtIso = input.eligibleAt.toISOString();
+    const deferredPayload: Record<string, unknown> = {
+      ...(input.payload ?? {}),
+      [COOLDOWN_ELIGIBLE_AT_PAYLOAD_KEY]: eligibleAtIso,
+      [COOLDOWN_DEFERRED_WAKE_CONTEXT_KEY]: input.enrichedContextSnapshot,
+    };
+    const deferredIssueId = readNonEmptyString(input.enrichedContextSnapshot.issueId);
+    if (deferredIssueId) deferredPayload.issueId = deferredIssueId;
+
+    const existingDeferred = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, input.agent.companyId),
+          eq(agentWakeupRequests.agentId, input.agentId),
+          eq(agentWakeupRequests.status, HEARTBEAT_COOLDOWN_DEFERRED_STATUS),
+        ),
+      )
+      .orderBy(asc(agentWakeupRequests.requestedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (existingDeferred) {
+      const existingPayload = parseObject(existingDeferred.payload);
+      const existingContext = parseObject(existingPayload[COOLDOWN_DEFERRED_WAKE_CONTEXT_KEY]);
+      const mergedContext = mergeCoalescedContextSnapshot(existingContext, input.enrichedContextSnapshot);
+      const existingEligibleAtRaw = existingPayload[COOLDOWN_ELIGIBLE_AT_PAYLOAD_KEY];
+      const existingEligibleAt =
+        typeof existingEligibleAtRaw === "string" ? new Date(existingEligibleAtRaw) : null;
+      const mergedEligibleAt =
+        existingEligibleAt && !Number.isNaN(existingEligibleAt.getTime())
+          ? new Date(Math.min(existingEligibleAt.getTime(), input.eligibleAt.getTime()))
+          : input.eligibleAt;
+
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          source: input.source,
+          triggerDetail: input.triggerDetail,
+          reason: input.reason ?? existingDeferred.reason,
+          payload: {
+            ...existingPayload,
+            ...(input.payload ?? {}),
+            issueId: deferredIssueId ?? existingPayload.issueId,
+            [COOLDOWN_ELIGIBLE_AT_PAYLOAD_KEY]: mergedEligibleAt.toISOString(),
+            [COOLDOWN_DEFERRED_WAKE_CONTEXT_KEY]: mergedContext,
+          },
+          coalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
+          updatedAt: new Date(),
+        })
+        .where(eq(agentWakeupRequests.id, existingDeferred.id));
+    } else {
+      await db.insert(agentWakeupRequests).values({
+        companyId: input.agent.companyId,
+        agentId: input.agentId,
+        source: input.source,
+        triggerDetail: input.triggerDetail,
+        reason: input.reason ?? "heartbeat_cooldown_deferred",
+        payload: deferredPayload,
+        status: HEARTBEAT_COOLDOWN_DEFERRED_STATUS,
+        requestedByActorType: input.opts.requestedByActorType ?? null,
+        requestedByActorId: input.opts.requestedByActorId ?? null,
+        idempotencyKey: input.opts.idempotencyKey ?? null,
+      });
+    }
+
+    await logActivity(db, {
+      companyId: input.agent.companyId,
+      actorType: "system",
+      actorId: "heartbeat",
+      agentId: input.agentId,
+      runId: null,
+      action: "agent.heartbeat_cooldown_deferred",
+      entityType: "agent",
+      entityId: input.agentId,
+      details: {
+        eligibleAt: eligibleAtIso,
+        cooldownSec: parseHeartbeatPolicy(input.agent).cooldownSec,
+        source: input.source,
+        triggerDetail: input.triggerDetail,
+        issueId: deferredIssueId,
+        reason: input.reason,
+      },
+    });
+  }
+
+  async function promoteCooldownDeferredRequest(request: typeof agentWakeupRequests.$inferSelect) {
+    const invokable = await assertAgentInvokableForCooldownPromotion(db, request.agentId);
+    if (!invokable.ok) {
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          status: "failed",
+          finishedAt: new Date(),
+          error: invokable.reason,
+          updatedAt: new Date(),
+        })
+        .where(eq(agentWakeupRequests.id, request.id));
+      return false;
+    }
+
+    const deferredPayload = parseObject(request.payload);
+    const deferredContext = parseObject(deferredPayload[COOLDOWN_DEFERRED_WAKE_CONTEXT_KEY]);
+    const promotionPayload = { ...deferredPayload };
+    delete promotionPayload[COOLDOWN_DEFERRED_WAKE_CONTEXT_KEY];
+    delete promotionPayload[COOLDOWN_ELIGIBLE_AT_PAYLOAD_KEY];
+
+    const run = await enqueueWakeup(request.agentId, {
+      source: (readNonEmptyString(request.source) as WakeupOptions["source"]) ?? "automation",
+      triggerDetail: (readNonEmptyString(request.triggerDetail) as WakeupOptions["triggerDetail"]) ?? undefined,
+      reason: readNonEmptyString(request.reason),
+      payload: Object.keys(promotionPayload).length > 0 ? promotionPayload : null,
+      contextSnapshot: deferredContext,
+      requestedByActorType: request.requestedByActorType as WakeupOptions["requestedByActorType"],
+      requestedByActorId: request.requestedByActorId,
+      idempotencyKey: request.idempotencyKey,
+    });
+
+    const now = new Date();
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        status: "completed",
+        finishedAt: now,
+        runId: run?.id ?? null,
+        updatedAt: now,
+      })
+      .where(eq(agentWakeupRequests.id, request.id));
+
+    return true;
+  }
+
+  async function promoteDueCooldownDeferredRuns(now = new Date()) {
+    return promoteDueCooldownDeferred(db, promoteCooldownDeferredRequest, now);
+  }
+
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
@@ -9106,6 +9266,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
+      return null;
+    }
+
+    const cooldownGate = await evaluateHeartbeatCooldownGate(db, {
+      agentId,
+      companyId: agent.companyId,
+      source,
+      cooldownSec: policy.cooldownSec,
+      issueId,
+      requestedByActorType: opts.requestedByActorType ?? null,
+    });
+    if (cooldownGate.blocked && cooldownGate.eligibleAt) {
+      await deferHeartbeatCooldownWakeup({
+        agent,
+        agentId,
+        source,
+        triggerDetail,
+        reason,
+        payload,
+        enrichedContextSnapshot,
+        eligibleAt: cooldownGate.eligibleAt,
+        opts,
+      });
       return null;
     }
 
@@ -9742,7 +9925,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(
         and(
           eq(agentWakeupRequests.companyId, companyId),
-          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+          inArray(agentWakeupRequests.status, [...PENDING_AGENT_WAKEUP_STATUSES]),
           sql`${agentWakeupRequests.runId} is null`,
           sql`${effectiveProjectId} = ${projectId}`,
         ),
@@ -9762,7 +9945,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(
           and(
             eq(agentWakeupRequests.companyId, scope.companyId),
-            inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+            inArray(agentWakeupRequests.status, [...PENDING_AGENT_WAKEUP_STATUSES]),
             sql`${agentWakeupRequests.runId} is null`,
           ),
         )
@@ -9775,7 +9958,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           and(
             eq(agentWakeupRequests.companyId, scope.companyId),
             eq(agentWakeupRequests.agentId, scope.scopeId),
-            inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+            inArray(agentWakeupRequests.status, [...PENDING_AGENT_WAKEUP_STATUSES]),
             sql`${agentWakeupRequests.runId} is null`,
           ),
         )
@@ -10160,6 +10343,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reapOrphanedRuns,
 
     promoteDueScheduledRetries,
+    promoteDueCooldownDeferredRuns,
     retryScheduledRetryNow,
 
     resumeQueuedRuns,

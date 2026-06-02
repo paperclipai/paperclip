@@ -617,7 +617,7 @@ const COMPANY_LOGO_CONTENT_TYPE_EXTENSIONS: Record<string, string> = {
 const COMPANY_LOGO_FILE_NAME = "company-logo";
 
 const RUNTIME_DEFAULT_RULES: Array<{ path: string[]; value: unknown }> = [
-  { path: ["heartbeat", "cooldownSec"], value: 10 },
+  { path: ["heartbeat", "cooldownSec"], value: 0 },
   { path: ["heartbeat", "intervalSec"], value: 3600 },
   { path: ["heartbeat", "wakeOnOnDemand"], value: true },
   { path: ["heartbeat", "wakeOnAssignment"], value: true },

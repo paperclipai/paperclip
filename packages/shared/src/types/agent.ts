@@ -92,8 +92,15 @@ export interface Agent {
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;
   metadata: Record<string, unknown> | null;
+  runtimeThrottle?: AgentRuntimeThrottle;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface AgentRuntimeThrottle {
+  active: boolean;
+  eligibleAt: string | null;
+  cooldownSec: number;
 }
 
 export interface AgentDetail extends Agent {

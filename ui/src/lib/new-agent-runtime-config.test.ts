@@ -10,7 +10,7 @@ describe("buildNewAgentRuntimeConfig", () => {
         enabled: false,
         intervalSec: 300,
         wakeOnDemand: true,
-        cooldownSec: 10,
+        cooldownSec: 0,
         maxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
       },
     });
@@ -27,7 +27,7 @@ describe("buildNewAgentRuntimeConfig", () => {
         enabled: true,
         intervalSec: 3600,
         wakeOnDemand: true,
-        cooldownSec: 10,
+        cooldownSec: 0,
         maxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
       },
     });

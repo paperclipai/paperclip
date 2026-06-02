@@ -380,7 +380,7 @@ Agent-level control-plane settings (not adapter-specific):
     "wakeOnAssignment": true,
     "wakeOnOnDemand": true,
     "wakeOnAutomation": true,
-    "cooldownSec": 10
+    "cooldownSec": 0
   }
 }
 ```
@@ -392,6 +392,25 @@ Defaults:
 - `wakeOnAssignment: true`
 - `wakeOnOnDemand: true`
 - `wakeOnAutomation: true`
+- `cooldownSec: 0` (disabled until explicitly set; new agents use `0` so behavior matches pre-enforcement installs)
+
+### 8.4.1 Heartbeat cooldown enforcement
+
+`cooldownSec` is enforced server-side in `enqueueWakeup` (see `server/src/services/heartbeat-cooldown.ts`).
+
+When `cooldownSec > 0`:
+
+1. **Throttled sources** — only `assignment` and `automation` wakeups are delayed.
+2. **Clock** — eligibility is `lastFinishedAt + cooldownSec`, where `lastFinishedAt` is the most recent terminal `heartbeat_runs.finished_at` for that agent with `invocation_source` in `assignment | automation`.
+3. **Deferral** — a blocked wakeup is stored as `agent_wakeup_requests.status = deferred_cooldown` (coalesced per agent), not dropped. The scheduler promotes due rows when `payload.cooldownEligibleAt <= now`.
+4. **Bypass** (no delay):
+   - `timer` heartbeats
+   - `on_demand` wakeups with `requested_by_actor_type = user` (board manual invoke: Run Heartbeat, Retry, Resume)
+   - assignment/automation wakeups for issues with `priority = critical`
+5. **Visibility** — activity `agent.heartbeat_cooldown_deferred`; agent list/detail expose `runtimeThrottle` (`active`, `eligibleAt`, `cooldownSec`) for UI “Cooling down”.
+6. **Budgets** — cooldown paces automatic churn; budget hard-stop remains the spend ceiling.
+
+`cooldownSec: 0` disables enforcement for that agent.
 
 ## 8.5 Trigger integration rules
 
@@ -468,7 +487,7 @@ Queue + audit for wakeups.
 - `trigger_detail` text null (`manual|ping|callback|system`)
 - `reason` text null
 - `payload` jsonb null
-- `status` text not null (`queued|claimed|coalesced|skipped|completed|failed|cancelled`)
+- `status` text not null (`queued|deferred_issue_execution|deferred_cooldown|claimed|coalesced|skipped|completed|failed|cancelled`)
 - `coalesced_count` int not null default `0`
 - `requested_by_actor_type` text null (`user|agent|system`)
 - `requested_by_actor_id` text null

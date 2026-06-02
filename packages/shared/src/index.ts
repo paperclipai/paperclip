@@ -336,6 +336,7 @@ export type {
   AgentAccessState,
   AgentChainOfCommandEntry,
   AgentDetail,
+  AgentRuntimeThrottle,
   AgentPermissions,
   AgentInstructionsBundleMode,
   AgentInstructionsFileSummary,
