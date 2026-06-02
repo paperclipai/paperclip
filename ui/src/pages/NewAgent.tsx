@@ -410,7 +410,11 @@ export function NewAgent() {
           <DialogHeader>
             <DialogTitle>Unusual role and adapter pairing</DialogTitle>
             <DialogDescription>
-              The Worker role is designed for chief-local agents on the openclaw_gateway adapter. You've selected {configValues.adapterType} - this pairing is unusual but allowed. Confirm to proceed.
+              The Worker role is designed for chief-local agents on the openclaw_gateway adapter. You've selected{" "}
+              <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+                {configValues.adapterType}
+              </code>{" "}
+              - this pairing is unusual but allowed. Confirm to proceed.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
