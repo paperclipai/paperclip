@@ -73,7 +73,7 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
-import { redactEventPayload } from "../redaction.js";
+import { omitAdapterConfigSecrets, redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -532,6 +532,20 @@ export function agentRoutes(
       chainOfCommand,
       access: accessState,
     };
+  }
+
+  function withSafeAdapterConfig<T extends { adapterConfig?: unknown }>(agent: T): T {
+    return {
+      ...agent,
+      adapterConfig: omitAdapterConfigSecrets(agent.adapterConfig),
+    };
+  }
+
+  async function buildSafeAgentDetail(
+    agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+  ) {
+    const detail = await buildAgentDetail(agent);
+    return withSafeAdapterConfig(detail);
   }
 
   async function applyDefaultAgentTaskAssignGrant(
@@ -1609,7 +1623,7 @@ export function agentRoutes(
     const result = await svc.list(companyId);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map(withSafeAdapterConfig));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
@@ -1727,7 +1741,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    res.json(await buildAgentDetail(agent));
+    res.json(await buildSafeAgentDetail(agent));
   });
 
   router.get("/agents/me/inbox-lite", async (req, res) => {
@@ -1804,7 +1818,7 @@ export function agentRoutes(
       res.json(await buildAgentDetail(agent, { restricted: true }));
       return;
     }
-    res.json(await buildAgentDetail(agent));
+    res.json(await buildSafeAgentDetail(agent));
   });
 
   router.get("/agents/:id/configuration", async (req, res) => {
@@ -2297,7 +2311,7 @@ export function agentRoutes(
       },
     });
 
-    res.json(await buildAgentDetail(agent));
+    res.json(await buildSafeAgentDetail(agent));
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
