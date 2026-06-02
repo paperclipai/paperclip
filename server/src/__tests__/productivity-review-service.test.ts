@@ -537,6 +537,40 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(activities[0]?.entityId).toBe(seeded.issueId);
   });
 
+  it("reaps orphaned productivity reviews (null assigneeAgentId, stuck in_review) on next reconcile", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+
+    // Insert a stuck orphaned review: originKind=productivity_review, status=in_review, assigneeAgentId=null
+    const orphanId = randomUUID();
+    await db.insert(issues).values({
+      id: orphanId,
+      companyId: seeded.companyId,
+      title: "Orphaned productivity review (no assignee)",
+      status: "in_review",
+      priority: "high",
+      originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+      originId: seeded.issueId,
+      originFingerprint: `productivity-review:${seeded.issueId}`,
+      parentId: seeded.issueId,
+      issueNumber: 99,
+      identifier: `${seeded.issuePrefix}-99`,
+      assigneeAgentId: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.reaped).toBe(1);
+
+    const [orphan] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, orphanId));
+    expect(orphan?.status).toBe("done");
+  });
+
   it("clamps poisoned requestDepth metadata instead of aborting productivity reconciliation", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
