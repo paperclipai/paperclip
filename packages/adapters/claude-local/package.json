@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/adapter-claude-local",
-  "version": "0.3.1",
+  "version": "0.4.1",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
   "bugs": {
@@ -46,18 +46,22 @@
     "skills"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && pnpm run build:shim",
+    "build:shim": "esbuild src/server/paperclip-tools-mcp-shim.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/server/paperclip-tools-mcp-shim.bundle.js --legal-comments=none --log-level=warning",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "probe:quota": "pnpm exec tsx src/cli/quota-probe.ts --json",
     "probe:quota:raw": "pnpm exec tsx src/cli/quota-probe.ts --json --raw-cli"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@paperclipai/adapter-utils": "workspace:*",
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
+    "esbuild": "^0.27.3",
     "typescript": "^5.7.3"
   }
 }
