@@ -699,9 +699,12 @@ export function agentService(db: Db) {
         .from(agents)
         .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
       const normalizedRows = rows.map(normalizeAgentRow);
+      const agentIds = new Set(normalizedRows.map((r) => r.id));
       const byManager = new Map<string | null, typeof normalizedRows>();
       for (const row of normalizedRows) {
-        const key = row.reportsTo ?? null;
+        // Treat reportsTo values that don't resolve to another agent (e.g. board
+        // user id) as roots so the org chart still renders.
+        const key = row.reportsTo && agentIds.has(row.reportsTo) ? row.reportsTo : null;
         const group = byManager.get(key) ?? [];
         group.push(row);
         byManager.set(key, group);
