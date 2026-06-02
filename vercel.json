@@ -11,11 +11,5 @@
       "source": "/((?!assets/)(?!.*\\..*).*)",
       "destination": "/index.html"
     }
-  ],
-  "functions": {
-    "src/server.ts": {
-      "maxDuration": 300,
-      "memory": 3008
-    }
-  }
+  ]
 }
