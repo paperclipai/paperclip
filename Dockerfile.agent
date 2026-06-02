@@ -202,11 +202,27 @@ ENV PATH=/home/node/.npm-global/bin:$PATH
 # so it resolves on the LAN cache without needing Docker Hub credentials in this repo.
 # Reproducibility trade-off accepted (owner note on BLO-8717: ":stable tracks latest;
 # pin @sha256 only if you want reproducible agent-image builds").
+# The agent base image is Debian trixie, but ffmpeg-publisher is built on
+# debian:bookworm-slim (FFmpeg/Dockerfile: `FROM debian:bookworm-slim AS runtime`),
+# so its ffmpeg binary is dynamically linked against the bookworm codec sonames.
+# Most are soname-stable on trixie (libx264.so.164, libaom.so.3, libopus.so.0,
+# libfreetype.so.6, libharfbuzz.so.0, libfontconfig.so.1, libgomp.so.1,
+# libssl.so.3) and resolve from trixie apt. Two drifted: trixie ships
+# libx265.so.215 / libvpx.so.9, not the .199 / .7 the binary needs (apt fails
+# with "Unable to locate package libx265-199 / libvpx7" — BLO-8790). Copy those
+# two .so files straight from the publisher image so the binary's ABI is
+# satisfied regardless of the base distro's codec versions. libnuma1 is
+# libx265.so.199's transitive dep and is not otherwise pulled in.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-       libx264-164 libx265-199 libvpx7 libaom3 libopus0 \
+       libx264-164 libaom3 libopus0 libnuma1 \
        libfreetype6 libharfbuzz0b libfontconfig1 libgomp1 libssl3 \
   && rm -rf /var/lib/apt/lists/*
+COPY --from=registry.blockcast.net/blockcast/pim-multicast-gateway/ffmpeg-publisher:stable \
+     /usr/lib/x86_64-linux-gnu/libx265.so.199* /usr/lib/x86_64-linux-gnu/
+COPY --from=registry.blockcast.net/blockcast/pim-multicast-gateway/ffmpeg-publisher:stable \
+     /usr/lib/x86_64-linux-gnu/libvpx.so.7*   /usr/lib/x86_64-linux-gnu/
+RUN ldconfig
 COPY --from=registry.blockcast.net/blockcast/pim-multicast-gateway/ffmpeg-publisher:stable \
      /usr/local/bin/ffmpeg  /usr/local/bin/ffmpeg
 COPY --from=registry.blockcast.net/blockcast/pim-multicast-gateway/ffmpeg-publisher:stable \
