@@ -33,10 +33,23 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
+          node-version: '24'
+
+      - name: Check commitperclip secret presence
+        id: check_secret
+        run: |
+          if [ -n "$COMMITPERCLIP_KEY" ]; then
+            echo "has_secret=true" >> $GITHUB_OUTPUT
+          else
+            echo "COMMITPERCLIP_KEY absent — skipping commitperclip steps"
+            echo "has_secret=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
 
       - name: Generate commitperclip token
         id: token
+        if: steps.check_secret.outputs.has_secret == 'true'
         run: |
           TOKEN=$(node .github/scripts/get-bot-token.mjs)
           echo "::add-mask::$TOKEN"
@@ -46,6 +59,7 @@ jobs:
 
       - name: Run quality gates
         id: quality
+        if: steps.check_secret.outputs.has_secret == 'true'
         run: node .github/scripts/run-quality-gates.mjs
         continue-on-error: true
         env:
@@ -56,6 +70,7 @@ jobs:
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
 
       - name: Run security gates
+        if: steps.check_secret.outputs.has_secret == 'true'
         run: node .github/scripts/check-pr-security.mjs
         env:
           GH_TOKEN: ${{ steps.token.outputs.value }}
@@ -64,7 +79,7 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
 
       - name: Fail if quality gates failed
-        if: steps.quality.outcome == 'failure'
+        if: steps.check_secret.outputs.has_secret == 'true' && steps.quality.outcome == 'failure'
         run: |
           echo "One or more quality gates failed. See commitperclip comment on the PR for details."
           exit 1
