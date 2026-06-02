@@ -8,9 +8,8 @@ import {
   type JsonRpcResponse,
   parseMessage,
   serializeMessage,
-} from "../../../packages/plugins/sdk/src/protocol.js";
-import { definePlugin } from "../../../packages/plugins/sdk/src/define-plugin.js";
-import { startWorkerRpcHost } from "../../../packages/plugins/sdk/src/worker-rpc-host.js";
+} from "@paperclipai/plugin-sdk/protocol";
+import { definePlugin, startWorkerRpcHost } from "@paperclipai/plugin-sdk";
 import { pluginManifestV1Schema, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { pluginCapabilityValidator } from "../services/plugin-capability-validator.js";
 

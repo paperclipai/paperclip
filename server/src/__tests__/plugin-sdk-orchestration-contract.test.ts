@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { Issue, PaperclipPluginManifestV1 } from "@paperclipai/shared";
-import { createTestHarness } from "../../../packages/plugins/sdk/src/testing.js";
+import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 
 function manifest(capabilities: PaperclipPluginManifestV1["capabilities"]): PaperclipPluginManifestV1 {
   return {

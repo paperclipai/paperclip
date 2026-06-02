@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { createHostClientHandlers } from "../../../packages/plugins/sdk/src/host-client-factory.js";
-import { PLUGIN_RPC_ERROR_CODES } from "../../../packages/plugins/sdk/src/protocol.js";
+import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
+import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk/protocol";
 
 describe("plugin execution workspace bridge", () => {
   it("routes metadata reads through the host client when the capability is declared", async () => {
