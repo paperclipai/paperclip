@@ -41,6 +41,7 @@ function registerModuleMocks() {
         agent: { id: raw },
       })),
     }),
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
@@ -72,6 +73,10 @@ function registerModuleMocks() {
       syncComment: async () => undefined,
       syncDocument: async () => undefined,
       syncIssue: async () => undefined,
+    }),
+    issueRecoveryActionService: () => ({
+      getActiveForIssue: vi.fn(async () => null),
+      listActiveForIssues: vi.fn(async () => new Map()),
     }),
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockIssueThreadInteractionService,
