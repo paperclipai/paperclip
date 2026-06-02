@@ -7453,6 +7453,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             companyId: agent.companyId,
           },
           recorder: workspaceOperationRecorder,
+          db,
         }) ?? buildRealizedExecutionWorkspaceFromPersisted({
           base: executionWorkspaceBase,
           workspace: existingExecutionWorkspace,

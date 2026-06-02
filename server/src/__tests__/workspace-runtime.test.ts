@@ -3721,4 +3721,80 @@ describeEmbeddedPostgres("runProjectWorkspaceSetupCommand (via realizeExecutionW
     const written = await fs.readFile(envFile, "utf8");
     expect(written).toBe(repoRoot);
   });
+
+  it("fails open on spawn error (ENOENT from non-existent cwd): run proceeds and warning is returned", async () => {
+    await setupCompanyAndProject();
+    const workspaceId = randomUUID();
+    const missingCwd = path.join(os.tmpdir(), `paperclip-missing-${randomUUID()}`);
+
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "default",
+      sourceType: "local_path",
+      cwd: missingCwd,
+      isPrimary: false,
+      setupCommand: "printf ok",
+    });
+
+    // project_primary strategy — setup runs on baseCwd directly; if cwd is missing, spawn fails
+    const result = await realizeExecutionWorkspace({
+      db,
+      base: {
+        baseCwd: missingCwd,
+        source: "project_primary",
+        projectId,
+        workspaceId,
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: { workspaceStrategy: { type: "project_primary" } },
+      issue: { id: "issue-1", identifier: "PAP-7", title: "test" },
+      agent: { id: "agent-1", name: "Test Agent", companyId },
+    });
+
+    expect(result.strategy).toBe("project_primary");
+    expect(result.warnings.some((w) => w.includes("setup command failed"))).toBe(true);
+  });
+
+  it("retries once on index.lock contention and still fails open when lock persists", async () => {
+    await setupCompanyAndProject();
+    const repoRoot = await createTempRepo();
+    const workspaceId = randomUUID();
+    const indexLockFile = path.join(repoRoot, ".git", "index.lock");
+
+    await fs.writeFile(indexLockFile, "locked");
+
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "default",
+      sourceType: "local_path",
+      cwd: repoRoot,
+      isPrimary: false,
+      setupCommand: "git checkout HEAD -- README.md",
+    });
+
+    const result = await realizeExecutionWorkspace({
+      db,
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId,
+        workspaceId,
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: { workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}-{{slug}}" } },
+      issue: { id: "issue-1", identifier: "PAP-8", title: "test" },
+      agent: { id: "agent-1", name: "Test Agent", companyId },
+    });
+
+    expect(result.worktreePath).toBeTruthy();
+    expect(result.warnings.some((w) => w.includes("setup command failed"))).toBe(true);
+
+    await fs.unlink(indexLockFile).catch(() => {});
+  });
 });

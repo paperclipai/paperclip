@@ -1117,31 +1117,45 @@ async function runProjectWorkspaceSetupCommand(
   const setupCommand = row?.setupCommand?.trim() ?? "";
   if (!setupCommand) return [];
 
-  try {
-    await recordWorkspaceCommandOperation(input.recorder, {
-      phase: "workspace_setup",
-      command: setupCommand,
+  const opts = {
+    phase: "workspace_setup" as const,
+    command: setupCommand,
+    cwd: input.cwd,
+    env: buildWorkspaceCommandEnv({
+      base: input.base,
+      repoRoot: input.repoRoot,
+      worktreePath: input.worktreePath,
+      branchName: input.branchName,
+      issue: input.issue,
+      agent: input.agent,
+      created: false,
+    }),
+    label: `Project workspace setup command`,
+    metadata: {
+      workspaceId: input.workspaceId,
       cwd: input.cwd,
-      env: buildWorkspaceCommandEnv({
-        base: input.base,
-        repoRoot: input.repoRoot,
-        worktreePath: input.worktreePath,
-        branchName: input.branchName,
-        issue: input.issue,
-        agent: input.agent,
-        created: false,
-      }),
-      label: `Project workspace setup command`,
-      metadata: {
-        workspaceId: input.workspaceId,
-        cwd: input.cwd,
-      },
-      successMessage: `Project workspace setup completed\n`,
-    });
+    },
+    successMessage: `Project workspace setup completed\n`,
+  };
+
+  const runOnce = () => recordWorkspaceCommandOperation(input.recorder, opts);
+
+  try {
+    await runOnce();
     return [];
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return [`Project workspace setup command failed (run continues): ${message}`];
+  } catch (firstError) {
+    const firstMsg = firstError instanceof Error ? firstError.message : String(firstError);
+    if (firstMsg.includes("index.lock")) {
+      await delay(100);
+      try {
+        await runOnce();
+        return [];
+      } catch (retryError) {
+        const retryMsg = retryError instanceof Error ? retryError.message : String(retryError);
+        return [`Project workspace setup command failed (run continues): ${retryMsg}`];
+      }
+    }
+    return [`Project workspace setup command failed (run continues): ${firstMsg}`];
   }
 }
 
@@ -1156,13 +1170,25 @@ export async function realizeExecutionWorkspace(input: {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
   const strategyType = asString(rawStrategy.type, "project_primary");
   if (strategyType !== "git_worktree") {
+    // Run setup on baseCwd directly — project_primary workspaces use baseCwd as the repo root.
+    const setupWarnings = await runProjectWorkspaceSetupCommand(input.db, {
+      workspaceId: input.base.workspaceId,
+      cwd: input.base.baseCwd,
+      repoRoot: input.base.baseCwd,
+      branchName: "",
+      worktreePath: input.base.baseCwd,
+      base: input.base,
+      issue: input.issue,
+      agent: input.agent,
+      recorder: input.recorder,
+    });
     return {
       ...input.base,
       strategy: "project_primary",
       cwd: input.base.baseCwd,
       branchName: null,
       worktreePath: null,
-      warnings: [],
+      warnings: setupWarnings,
       created: false,
       baseRefSha: null,
     };
@@ -1378,6 +1404,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   issue: ExecutionWorkspaceIssueRef | null;
   agent: ExecutionWorkspaceAgentRef;
   recorder?: WorkspaceOperationRecorder | null;
+  db?: Db;
 }): Promise<RealizedExecutionWorkspace | null> {
   const cwd = asString(input.workspace.cwd ?? input.workspace.providerRef, "").trim();
   if (!cwd) return null;
@@ -1400,8 +1427,20 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   };
   const provisionCommand = asString(input.workspace.config?.provisionCommand, "").trim();
 
+  const persistedSetupWarnings = await runProjectWorkspaceSetupCommand(input.db, {
+    workspaceId: realized.workspaceId,
+    cwd: input.base.baseCwd,
+    repoRoot: input.base.baseCwd,
+    branchName: realized.branchName ?? "",
+    worktreePath: realized.worktreePath ?? realized.cwd,
+    base: input.base,
+    issue: input.issue,
+    agent: input.agent,
+    recorder: input.recorder ?? null,
+  });
+
   if (strategy !== "git_worktree") {
-    return realized;
+    return { ...realized, warnings: persistedSetupWarnings };
   }
   const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
   const recordedBaseRefSha = readRecordedBaseRefSha(input.workspace.metadata);
@@ -1413,7 +1452,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
       baseRef: input.workspace.baseRef ?? input.base.repoRef ?? null,
       recordedBaseRefSha,
     });
-    realized.warnings = baseDrift.warnings;
+    realized.warnings = [...persistedSetupWarnings, ...baseDrift.warnings];
     realized.baseRefSha = recordedBaseRefSha ?? baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha;
     if (provisionCommand) {
       await provisionExecutionWorktree({
@@ -1521,7 +1560,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     ...realized,
     cwd: worktreePath,
     worktreePath,
-    warnings: [...restoreRefreshWarnings, ...baseDrift.warnings],
+    warnings: [...persistedSetupWarnings, ...restoreRefreshWarnings, ...baseDrift.warnings],
     created,
     baseRefSha:
       recordedBaseRefSha
