@@ -27,6 +27,7 @@ import {
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import type { CreateIssueThreadInteraction } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -693,7 +694,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         rejectLabel: "Keep editing",
         detailsMarkdown: "Creates follow-up work after acceptance.",
       },
-    }, {
+    } as CreateIssueThreadInteraction, {
       userId: "local-board",
     });
 
@@ -730,7 +731,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         prompt: "Decline only with a reason?",
         rejectRequiresReason: true,
       },
-    }, {
+    } as CreateIssueThreadInteraction, {
       userId: "local-board",
     });
 
@@ -795,7 +796,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         acceptLabel: "Approve plan",
         rejectLabel: "Ask for changes",
       },
-    }, {
+    } as CreateIssueThreadInteraction, {
       agentId,
     });
 
@@ -838,7 +839,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         prompt: "Proceed with the current draft?",
         supersedeOnUserComment: true,
       },
-    }, {
+    } as CreateIssueThreadInteraction, {
       userId: "local-board",
     });
 
@@ -878,7 +879,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         version: 1,
         prompt: "Proceed with the current draft?",
       },
-    }, {
+    } as CreateIssueThreadInteraction, {
       userId: "local-board",
     });
 
@@ -912,7 +913,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         prompt: "Proceed with the current draft?",
         supersedeOnUserComment: true,
       },
-    }, {
+    } as CreateIssueThreadInteraction, {
       userId: "local-board",
     });
     const createdAtMs = new Date(created.createdAt).getTime();
@@ -968,7 +969,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         prompt: "Proceed with the current draft?",
         supersedeOnUserComment: true,
       },
-    }, {
+    } as CreateIssueThreadInteraction, {
       userId: "local-board",
     });
     await db
@@ -1093,7 +1094,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           revisionNumber: 1,
         },
       },
-    }, {
+    } as CreateIssueThreadInteraction, {
       userId: "local-board",
     });
 
@@ -1214,7 +1215,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           version: 1,
           prompt: "Mark this issue done?",
         },
-      }, {
+      } as CreateIssueThreadInteraction, {
         userId: "local-board",
       });
 
@@ -1384,7 +1385,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           version: 1,
           prompt: "Mark this issue done?",
         },
-      }, {
+      } as CreateIssueThreadInteraction, {
         userId: "local-board",
       });
 
