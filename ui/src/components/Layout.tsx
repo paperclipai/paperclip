@@ -4,6 +4,7 @@ import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "
 import { Sidebar } from "./Sidebar";
 import { InstanceSidebar } from "./InstanceSidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
+import { CompanySettingsNav } from "./access/CompanySettingsNav";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
@@ -16,6 +17,7 @@ import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
+import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
 import { ResizableSidebarPane } from "./ResizableSidebarPane";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
 import { useDialogActions } from "../context/DialogContext";
@@ -73,7 +75,10 @@ export function Layout() {
     selectionSource,
     setSelectedCompanyId,
   } = useCompany();
-  const { companyPrefix } = useParams<{ companyPrefix: string }>();
+  const {
+    companyPrefix,
+    pluginRoutePath: matchedPluginRoutePath,
+  } = useParams<{ companyPrefix: string; pluginRoutePath?: string }>();
   const navigate = useNavigate();
   const location = useLocation();
   const navigationType = useNavigationType();
@@ -94,8 +99,8 @@ export function Layout() {
   const hasUnknownCompanyPrefix =
     Boolean(companyPrefix) && !companiesLoading && companies.length > 0 && !matchedCompany;
   const pluginRoutePath = useMemo(
-    () => getCompanyRouteSegment(location.pathname, companyPrefix),
-    [companyPrefix, location.pathname],
+    () => matchedPluginRoutePath?.toLowerCase() ?? getCompanyRouteSegment(location.pathname, companyPrefix),
+    [companyPrefix, location.pathname, matchedPluginRoutePath],
   );
   const routeSidebarCompanyId = matchedCompany?.id ?? null;
   const routeSidebarCompanyPrefix = matchedCompany?.issuePrefix ?? null;
@@ -420,7 +425,13 @@ export function Layout() {
               isMobile && "sticky top-0 z-20 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
             )}
           >
+            <StandaloneBrowserControls mobile={isMobile} />
             <BreadcrumbBar />
+            {isMobile && isCompanySettingsRoute ? (
+              <div className="border-b border-border px-4 pb-3">
+                <CompanySettingsNav />
+              </div>
+            ) : null}
           </div>
           <div className={cn(isMobile ? "block" : "flex flex-1 min-h-0")}>
             <main

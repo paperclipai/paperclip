@@ -53,3 +53,13 @@ export interface IssueWorkProduct {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export interface AttachmentArtifactWorkProductMetadata {
+  attachmentId: string;
+  contentType: string;
+  byteSize: number;
+  contentPath: string;
+  openPath: string;
+  downloadPath: string;
+  originalFilename?: string | null;
+}

@@ -451,6 +451,68 @@ describe("ssh env-lab fixture", () => {
     await expect(readFile(path.join(localRepo, "tracked.txt"), "utf8")).resolves.toBe("dirty remote\n");
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
+  it("propagates remote commits to the local worktree with no git remote configured (no-remote-git contract)", async () => {
+    // Locks in the architectural contract documented in
+    // packages/adapter-utils/README.md and packages/adapters/AUTHORING.md:
+    // the local execution-workspace cwd is the only persistence boundary
+    // across runs. No adapter may depend on a git remote for cross-run state.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const localRepo = path.join(rootDir, "local-workspace");
+
+    await mkdir(localRepo, { recursive: true });
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["checkout", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, "tracked.txt"), "base\n", "utf8");
+    await git(localRepo, ["add", "tracked.txt"]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+
+    // Assert there is no git remote configured before we begin, and verify
+    // that no point in the round-trip introduces one. `git remote` returns an
+    // empty string when no remotes exist (and exit code 0).
+    expect(await git(localRepo, ["remote"])).toBe("");
+
+    const started = await startSshEnvLabFixtureOrSkip(
+      statePath,
+      "no-remote-git contract test",
+    );
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = {
+      ...config,
+      remoteCwd: started.workspaceDir,
+    } as const;
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-no-remote",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+
+    // Remote commit lands a deliverable that must show up locally via
+    // sync-back alone — no `git push`, no fetch from any origin.
+    await runSshCommand(
+      config,
+      `cd ${JSON.stringify(prepared.workspaceRemoteDir)} && git config user.name "Paperclip SSH" && git config user.email "ssh@paperclip.dev" && printf "deliverable\\n" > tracked.txt && git add tracked.txt && git commit -m "remote-only commit" >/dev/null`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    await prepared.restoreWorkspace();
+
+    expect(await git(localRepo, ["log", "-1", "--pretty=%s"])).toBe(
+      "remote-only commit",
+    );
+    expect(await readFile(path.join(localRepo, "tracked.txt"), "utf8")).toBe(
+      "deliverable\n",
+    );
+    // Final assertion: still no git remote — restore did not silently add one.
+    expect(await git(localRepo, ["remote"])).toBe("");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
   it("merges concurrent remote commits through the managed runtime restore path", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
     cleanupDirs.push(rootDir);
