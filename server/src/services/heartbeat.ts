@@ -5936,8 +5936,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     unresolvedBlockerIssueIds: string[],
   ) {
     const now = new Date();
-    const reason =
-      "Cancelled because issue dependencies are still blocked; Paperclip will wake the assignee when blockers resolve";
+    // Name the actual blocker(s) so a cancelled run isn't a mystery — especially
+    // a credential-failover retry, which otherwise looks like "the failover
+    // failed" when really the issue just has an open blocker. The failover is not
+    // lost: the limited credential is cooling down, so when the blocker resolves
+    // and the issue wakes, the next run picks the healthy credential.
+    const wasFailoverRetry =
+      readNonEmptyString(parseObject(run.contextSnapshot).retryReason) === "credential_failover";
+    const blockerList =
+      unresolvedBlockerIssueIds.length > 0
+        ? ` (blocked by ${unresolvedBlockerIssueIds.length} unresolved issue${unresolvedBlockerIssueIds.length > 1 ? "s" : ""}: ${unresolvedBlockerIssueIds.join(", ")})`
+        : "";
+    const reason = wasFailoverRetry
+      ? `Credential-failover retry could not run yet: this issue is blocked${blockerList}. The credential is cooling down; the issue will run on a healthy credential once the blocker resolves.`
+      : `Cancelled because issue dependencies are still blocked${blockerList}; Paperclip will wake the assignee when blockers resolve`;
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: now,
       error: reason,

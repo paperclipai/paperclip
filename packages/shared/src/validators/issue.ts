@@ -702,7 +702,11 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     sourceRunId: z.string().uuid().nullable().optional(),
     title: z.string().trim().max(240).nullable().optional(),
     summary: z.string().trim().max(1000).nullable().optional(),
-    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("none"),
+    // Default to waking the issue's assignee on ANY decision (accept / reject /
+    // changes-requested) so a decided proposal actually resumes the work.
+    // Previously "none" — which silently woke nobody, leaving the main issue
+    // stranded after the user approved/rejected the proposal.
+    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
     payload: requestConfirmationPayloadSchema,
   }),
 ]);

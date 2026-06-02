@@ -59,6 +59,7 @@ import {
 } from "./workspace-command-authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
+import { resolveCodexAccountId } from "../services/codex-account-id.js";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -136,9 +137,18 @@ function parseCodexAuthJsonCredential(raw: string): Record<string, unknown> {
   const idToken =
     (tokens && typeof tokens.id_token === "string" ? tokens.id_token : null)
     ?? (typeof parsed.idToken === "string" ? parsed.idToken : null);
-  const accountId =
+  const literalAccountId =
     (tokens && typeof tokens.account_id === "string" ? tokens.account_id : null)
     ?? (typeof parsed.accountId === "string" ? parsed.accountId : null);
+  // Device-auth often omits a top-level account_id; it lives inside the id_token
+  // JWT. Decode it so the ChatGPT Pro entitlement is conveyed — without this,
+  // OpenAI rejects privileged models like gpt-5.3-codex as "not supported when
+  // using Codex with a ChatGPT account."
+  const accountId = resolveCodexAccountId({
+    accountId: literalAccountId,
+    idToken,
+    accessToken,
+  });
   const lastRefresh = typeof parsed.last_refresh === "string"
     ? parsed.last_refresh
     : typeof parsed.lastRefresh === "string" ? parsed.lastRefresh : null;

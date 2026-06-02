@@ -407,9 +407,14 @@ async function listIssueDependencyReadinessMap(
   for (const row of blockerRows) {
     const current = readinessMap.get(row.issueId) ?? createIssueDependencyReadiness(row.issueId);
     current.blockerIssueIds.push(row.blockerIssueId);
-    // Only done blockers resolve dependents; cancelled blockers stay unresolved
-    // until an operator removes or replaces the blocker relationship explicitly.
-    if (row.blockerStatus !== "done") {
+    // A blocker resolves its dependents once it reaches a TERMINAL state — done
+    // OR cancelled. Previously only "done" cleared a dependent, so cancelling a
+    // blocker (a normal way to say "this is no longer needed") left the dependent
+    // stranded in `blocked` forever with no obvious recourse — every run,
+    // including credential-failover retries, got cancelled by the dependency
+    // gate. A cancelled blocker is not coming back, so it should not keep a
+    // ready issue (e.g. one that's "Ready to QA") blocked.
+    if (row.blockerStatus !== "done" && row.blockerStatus !== "cancelled") {
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
       current.unresolvedBlockerCount += 1;
       current.allBlockersDone = false;
@@ -2903,7 +2908,14 @@ export function issueService(db: Db) {
           return {
             ...candidate,
             blockerIssueIds: blockers.map((blocker) => blocker.blockerIssueId),
-            allBlockersDone: blockers.length > 0 && blockers.every((blocker) => blocker.blockerStatus === "done"),
+            // A blocker in any TERMINAL state (done OR cancelled) is resolved —
+            // mirrors listDependencyReadiness, so cancelling a blocker actually
+            // wakes its dependents instead of leaving them stranded.
+            allBlockersDone:
+              blockers.length > 0 &&
+              blockers.every(
+                (blocker) => blocker.blockerStatus === "done" || blocker.blockerStatus === "cancelled",
+              ),
           };
         })
         .filter((candidate) => candidate.allBlockersDone)

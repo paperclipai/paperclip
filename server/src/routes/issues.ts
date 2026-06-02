@@ -3774,7 +3774,13 @@ export function issueRoutes(
       }
 
       const becameDone = existing.status !== "done" && issue.status === "done";
-      if (becameDone) {
+      // A blocker reaching ANY terminal state (done or cancelled) resolves its
+      // dependents — cancelling a blocker that's no longer needed should unblock
+      // and wake the dependent, not strand it.
+      const blockerBecameTerminal =
+        !["done", "cancelled"].includes(existing.status) &&
+        ["done", "cancelled"].includes(issue.status);
+      if (blockerBecameTerminal) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
           addWakeup(dependent.assigneeAgentId, {

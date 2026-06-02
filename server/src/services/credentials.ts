@@ -5,6 +5,7 @@ import type { Db } from "@paperclipai/db";
 import { agentCredentials, agents, costEvents, providerCredentials } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { logger } from "../middleware/logger.js";
+import { resolveCodexAccountId } from "./codex-account-id.js";
 import {
   decryptCredential,
   encryptCredential,
@@ -526,7 +527,16 @@ export async function resolveCredentialEnv(
       }
       const refreshToken = typeof payload.refreshToken === "string" ? payload.refreshToken : "";
       const idToken = typeof payload.idToken === "string" ? payload.idToken : "";
-      const accountId = typeof payload.accountId === "string" ? payload.accountId : "";
+      // Backfill account_id from the id_token JWT for credentials captured before
+      // JWT decoding existed (or where device-auth omitted it). Without the
+      // account_id OpenAI can't see the ChatGPT Pro entitlement and rejects
+      // privileged models (e.g. gpt-5.3-codex) as "not supported".
+      const accountId =
+        resolveCodexAccountId({
+          accountId: typeof payload.accountId === "string" ? payload.accountId : null,
+          idToken: idToken || null,
+          accessToken: accessToken || null,
+        }) ?? "";
       const lastRefresh = typeof payload.lastRefresh === "string" ? payload.lastRefresh : new Date().toISOString();
       const tokens: Record<string, string> = { access_token: accessToken };
       if (idToken) tokens.id_token = idToken;
