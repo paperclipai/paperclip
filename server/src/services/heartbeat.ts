@@ -6841,7 +6841,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
-      await finalizeAgentStatus(run.agentId, "failed");
+      // Process loss is an external event (OOM kill, SIGKILL, crash) — treat as
+      // cancelled so the agent returns to idle rather than error state, allowing
+      // immediate re-dispatch without manual intervention.
+      await finalizeAgentStatus(run.agentId, "cancelled");
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
@@ -10254,6 +10257,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } catch (err) {
         // Quota check failure must not block agent wakes — log and proceed.
         logger.warn({ err }, "heartbeat_timer_quota_check_failed: proceeding without quota guard");
+      }
+
+      // Auto-recover agents stuck in error state with no active runs after 5 min.
+      // Covers cases where process_lost reaper didn't clear the status (e.g. the
+      // agent errored mid-heartbeat for a transient reason unrelated to process loss).
+      const ERROR_AUTO_RECOVER_MS = 5 * 60 * 1000;
+      for (const agent of allAgents) {
+        if (agent.status === "error") {
+          const stuckMs = now.getTime() - new Date(agent.updatedAt ?? agent.createdAt).getTime();
+          if (stuckMs > ERROR_AUTO_RECOVER_MS) {
+            const runningCount = await countRunningRunsForAgent(agent.id);
+            if (runningCount === 0) {
+              await db.update(agents).set({ status: "idle", updatedAt: new Date() }).where(eq(agents.id, agent.id));
+              logger.info({ agentId: agent.id, agentName: agent.name, stuckMs }, "auto-recovered agent from error state");
+            }
+          }
+        }
       }
 
       for (const agent of allAgents) {
