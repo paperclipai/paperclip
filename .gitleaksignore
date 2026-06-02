@@ -41,3 +41,8 @@ f25753053749d42fa808a9d92132467d2d75dcd0:server/src/routes/access.ts:generic-api
 22595699d6679d2968abb5a64f73383a71ba0c72:lib/safecheck/phase1.ts:generic-api-key:122
 22595699d6679d2968abb5a64f73383a71ba0c72:lib/safecheck/phase1.ts:generic-api-key:131
 22595699d6679d2968abb5a64f73383a71ba0c72:tests/safecheck-phase1.test.ts:generic-api-key:22
+
+# .gitleaksignore comment lines 28+31 themselves — explanatory comments reference fake ghp_ token
+# The comments name the fake PAT value for clarity; that triggers the github-pat rule on this file
+91a1ba4bf1dec000dfe804c4d9d3250d396d7308:.gitleaksignore:github-pat:28
+91a1ba4bf1dec000dfe804c4d9d3250d396d7308:.gitleaksignore:github-pat:31
