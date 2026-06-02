@@ -30,6 +30,7 @@ import {
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
   formatQBankItemCard,
+  formatQBankMediaBrief,
   upsertIssueFeedbackVoteSchema,
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
@@ -2475,6 +2476,73 @@ export function issueRoutes(
       created: result.created,
       document: doc,
       sourceRef: card.summary.sourceRef,
+    });
+  });
+
+  router.post("/issues/:id/qbank-media-brief", validate(importQBankItemDocumentSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+
+    const actor = getActorInfo(req);
+    const brief = formatQBankMediaBrief({
+      appId: req.body.appId,
+      item: req.body.item as QBankPartnerItem,
+    });
+    const referenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+    const result = await documentsSvc.upsertIssueDocument({
+      issueId: issue.id,
+      key: brief.documentKey,
+      title: brief.title,
+      format: "markdown",
+      body: brief.markdown,
+      changeSummary: `Created review-only MMM2 visual brief from ${brief.summary.sourceRef}.`,
+      baseRevisionId: null,
+      createdByAgentId: actor.agentId ?? null,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      createdByRunId: actor.runId ?? null,
+    });
+    const doc = result.document;
+    await issueReferencesSvc.syncDocument(doc.id);
+    const referenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+    const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(referenceSummaryBefore, referenceSummaryAfter);
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: result.created ? "issue.qbank_media_brief_document_created" : "issue.qbank_media_brief_document_updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        key: doc.key,
+        documentId: doc.id,
+        title: doc.title,
+        format: doc.format,
+        revisionNumber: doc.latestRevisionNumber,
+        sourceRef: brief.summary.sourceRef,
+        qbankAppId: brief.summary.appId,
+        qbankQuestionId: brief.summary.questionId,
+        reviewMode: "plan_only",
+        ...summarizeIssueReferenceActivityDetails({
+          addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
+          removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
+          currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
+        }),
+      },
+    });
+
+    res.status(result.created ? 201 : 200).json({
+      created: result.created,
+      document: doc,
+      sourceRef: brief.summary.sourceRef,
     });
   });
 

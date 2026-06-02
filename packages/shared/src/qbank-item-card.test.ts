@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   formatQBankItemCard,
+  formatQBankMediaBrief,
   getQBankSourceRef,
   summarizeQBankItem,
   type QBankPartnerItem,
@@ -82,6 +83,22 @@ describe("QBank item card formatting", () => {
     expect(card.markdown).toContain("Create MMM2 visual rationale plan");
     expect(card.markdown).not.toContain("<p>");
     expect(card.markdown).not.toMatch(/x-mcp-token|PARTNER_API_KEY|cffefcae/i);
+  });
+
+  it("formats a review-only MMM2 visual brief grounded in the QBank item", () => {
+    const brief = formatQBankMediaBrief({ appId: 3, item: item50067 });
+
+    expect(brief.documentKey).toBe("qbank-media-brief");
+    expect(brief.title).toBe("Visual brief for QBank item 50067");
+    expect(brief.markdown).toContain("# QBank visual brief");
+    expect(brief.markdown).toContain("Source ref: `qbank:app-3/question-50067`");
+    expect(brief.markdown).toContain("Review mode: plan only — no image generation or publishing approved.");
+    expect(brief.markdown).toContain("Teaching objective: Explain why the correct answer is Liver");
+    expect(brief.markdown).toContain("Preserve answer grounding: Bone, Liver");
+    expect(brief.markdown).toContain("Visual direction: liver/bilirubin pathway or organ-metastasis map");
+    expect(brief.markdown).toContain("https://cdn-1.hltcorp.com/attachments/contents/000/026/921/large/Liver_and_Bile_Duct_Anatomy.jpg?1675957897");
+    expect(brief.markdown).not.toContain("<p>");
+    expect(brief.markdown).not.toMatch(/x-mcp-token|PARTNER_API_KEY|cffefcae/i);
   });
 
   it("strips entity-encoded HTML before rendering markdown", () => {

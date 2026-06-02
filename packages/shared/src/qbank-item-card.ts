@@ -1,4 +1,5 @@
 export const QBANK_ITEM_DOCUMENT_KEY = "qbank-item" as const;
+export const QBANK_MEDIA_BRIEF_DOCUMENT_KEY = "qbank-media-brief" as const;
 
 export interface QBankAnswer {
   id?: number | string | null;
@@ -94,6 +95,13 @@ export interface FormatQBankItemCardInput {
 
 export interface FormattedQBankItemCard {
   documentKey: typeof QBANK_ITEM_DOCUMENT_KEY;
+  title: string;
+  markdown: string;
+  summary: QBankItemSummary;
+}
+
+export interface FormattedQBankMediaBrief {
+  documentKey: typeof QBANK_MEDIA_BRIEF_DOCUMENT_KEY;
   title: string;
   markdown: string;
   summary: QBankItemSummary;
@@ -240,6 +248,69 @@ export function formatQBankItemCard(input: FormatQBankItemCardInput): FormattedQ
   };
 }
 
+export function formatQBankMediaBrief(input: FormatQBankItemCardInput): FormattedQBankMediaBrief {
+  const summary = summarizeQBankItem(input);
+  const correct = summary.correctAnswers.join(", ") || "the correct answer";
+  const answerGrounding = summary.answers.map((answer) => answer.text).filter(Boolean).join(", ") || "not returned";
+  const categoryHint = summary.categoryNames.join(", ") || summary.questionType || "clinical reasoning";
+  const visualDirection = inferVisualDirection(summary);
+  const lines: string[] = [
+    "# QBank visual brief",
+    "",
+    `Source ref: \`${summary.sourceRef}\``,
+    `Review mode: plan only — no image generation or publishing approved.`,
+    `Document source: QBank item ${summary.questionId}`,
+    `Apps: ${summary.appIds.length ? summary.appIds.join(", ") : String(input.appId)}`,
+    `Category/context: ${categoryHint}`,
+    "",
+    "## Teaching objective",
+    "",
+    `Teaching objective: Explain why the correct answer is ${correct} using the item rationale and key takeaway.`,
+    "",
+    "## Grounding to preserve",
+    "",
+    `- Source question: ${summary.questionText || "No question text returned."}`,
+    `- Preserve answer grounding: ${answerGrounding}`,
+    `- Correct answer: ${correct}`,
+  ];
+
+  if (summary.rationale) {
+    lines.push(`- Published rationale: ${summary.rationale}`);
+  }
+  if (summary.keyTakeaway) {
+    lines.push(`- Key takeaway: ${summary.keyTakeaway}`);
+  }
+  if (summary.hasDraftRevision) {
+    lines.push(`- Draft revision present: use for reviewer context only, not public copy by default.`);
+  }
+
+  lines.push("", "## Visual plan", "", `Visual direction: ${visualDirection}`);
+  lines.push("- Recommended artifact: MMM2 visual rationale brief / diagram plan.");
+  lines.push("- Public-safety boundary: teach the concept without publishing raw proprietary QBank wording unless explicitly approved.");
+  lines.push("- Preserve clinical accuracy and answer-choice grounding for reviewer validation.");
+
+  if (summary.mediaCandidates.length) {
+    lines.push("", "## Source media candidates", "");
+    for (const src of summary.mediaCandidates) {
+      lines.push(`- ${src}`);
+    }
+  }
+
+  lines.push(
+    "",
+    "## Next action",
+    "",
+    "Send this brief to MMM2 in review-only/planning mode. Stop before Cloudinary upload, image generation, publishing, or public reuse until an approver explicitly chooses that next step.",
+  );
+
+  return {
+    documentKey: QBANK_MEDIA_BRIEF_DOCUMENT_KEY,
+    title: `Visual brief for QBank item ${summary.questionId}`,
+    markdown: lines.join("\n").trimEnd(),
+    summary,
+  };
+}
+
 function buildTitle(questionId: number | string, questionText: string): string {
   const cleaned = questionText.toLowerCase();
   if (cleaned.includes("ovarian cancer") && cleaned.includes("spread")) {
@@ -251,6 +322,20 @@ function buildTitle(questionId: number | string, questionText: string): string {
     .slice(0, 6)
     .join(" ");
   return `QBank item ${questionId}${words ? `: ${words}` : ""}`;
+}
+
+function inferVisualDirection(summary: QBankItemSummary): string {
+  const text = [summary.questionText, summary.rationale, summary.keyTakeaway, summary.categoryNames.join(" ")].join(" ").toLowerCase();
+  if (text.includes("bilirubin") || text.includes("jaundice") || text.includes("liver")) {
+    return "liver/bilirubin pathway or organ-metastasis map";
+  }
+  if (text.includes("dose") || text.includes("dosage") || text.includes("calculate") || text.includes("calculation")) {
+    return "step-by-step dosage calculation scaffold";
+  }
+  if (summary.mediaCandidates.length) {
+    return "source-image anchored visual rationale with labeled teaching callouts";
+  }
+  return "concept map that shows the clinical cue, reasoning path, correct answer, and common wrong-answer trap";
 }
 
 function cleanHtml(value: string): string {

@@ -5,10 +5,13 @@ export {
 } from "./onboarding-starter-context.js";
 export {
   QBANK_ITEM_DOCUMENT_KEY,
+  QBANK_MEDIA_BRIEF_DOCUMENT_KEY,
   formatQBankItemCard,
+  formatQBankMediaBrief,
   getQBankSourceRef,
   summarizeQBankItem,
   type FormattedQBankItemCard,
+  type FormattedQBankMediaBrief,
   type FormatQBankItemCardInput,
   type QBankAnswer,
   type QBankCategory,

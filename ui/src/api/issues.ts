@@ -241,6 +241,8 @@ export const issuesApi = {
     api.delete<{ ok: true }>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   importQBankItem: (id: string, data: { appId: number | string; item: Record<string, unknown> }) =>
     api.post<{ created: boolean; document: IssueDocument; sourceRef: string }>(`/issues/${id}/qbank-item`, data),
+  createQBankMediaBrief: (id: string, data: { appId: number | string; item: Record<string, unknown> }) =>
+    api.post<{ created: boolean; document: IssueDocument; sourceRef: string }>(`/issues/${id}/qbank-media-brief`, data),
   fetchQBankItemSource: (id: string, data: { appId: number | string; questionId: number | string; includeDiscussions?: boolean }) => {
     const params = new URLSearchParams({
       appId: String(data.appId),

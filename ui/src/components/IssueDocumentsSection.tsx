@@ -348,21 +348,10 @@ export function IssueDocumentsSection({
   const importQBankItem = useMutation({
     mutationFn: async () => {
       const trimmedAppId = qbankAppId.trim();
-      if (!trimmedAppId) {
-        throw new Error("QBank app ID is required");
-      }
-      let parsedPayload: unknown;
-      try {
-        parsedPayload = JSON.parse(qbankPayloadText);
-      } catch {
-        throw new Error("Paste a valid QBank item JSON object");
-      }
-      if (!parsedPayload || typeof parsedPayload !== "object" || Array.isArray(parsedPayload)) {
-        throw new Error("Paste a single QBank item JSON object");
-      }
+      const parsedPayload = parseQBankPayload(trimmedAppId);
       return issuesApi.importQBankItem(issue.id, {
         appId: trimmedAppId,
-        item: parsedPayload as Record<string, unknown>,
+        item: parsedPayload,
       });
     },
     onSuccess: ({ document, sourceRef }) => {
@@ -381,6 +370,46 @@ export function IssueDocumentsSection({
       setError(err instanceof Error ? err.message : "Failed to import QBank item");
     },
   });
+
+  const createQBankMediaBrief = useMutation({
+    mutationFn: async () => {
+      const trimmedAppId = qbankAppId.trim();
+      const parsedPayload = parseQBankPayload(trimmedAppId);
+      return issuesApi.createQBankMediaBrief(issue.id, {
+        appId: trimmedAppId,
+        item: parsedPayload,
+      });
+    },
+    onSuccess: ({ document, sourceRef }) => {
+      syncDocumentCaches(document);
+      invalidateIssueDocuments();
+      setDraft((current) => current?.key === document.key ? null : current);
+      setDocumentConflict((current) => current?.key === document.key ? null : current);
+      setFoldedDocumentKeys((current) => current.filter((key) => key !== document.key));
+      setQBankImportMessage(`Visual brief created from ${sourceRef}. Review-only; MMM2 generation is not approved yet.`);
+      setError(null);
+    },
+    onError: (err) => {
+      setQBankImportMessage(null);
+      setError(err instanceof Error ? err.message : "Failed to create QBank media brief");
+    },
+  });
+
+  function parseQBankPayload(trimmedAppId: string): Record<string, unknown> {
+    if (!trimmedAppId) {
+      throw new Error("QBank app ID is required");
+    }
+    let parsedPayload: unknown;
+    try {
+      parsedPayload = JSON.parse(qbankPayloadText);
+    } catch {
+      throw new Error("Paste a valid QBank item JSON object");
+    }
+    if (!parsedPayload || typeof parsedPayload !== "object" || Array.isArray(parsedPayload)) {
+      throw new Error("Paste a single QBank item JSON object");
+    }
+    return parsedPayload as Record<string, unknown>;
+  }
 
   const sortedDocuments = useMemo(() => {
     return (documents ?? []).filter((doc) => !isSystemIssueDocumentKey(doc.key)).sort((a, b) => {
@@ -927,6 +956,14 @@ export function IssueDocumentsSection({
               }}
             >
               Cancel
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => createQBankMediaBrief.mutate()}
+              disabled={createQBankMediaBrief.isPending}
+            >
+              {createQBankMediaBrief.isPending ? "Creating..." : "Make visual brief"}
             </Button>
             <Button
               size="sm"

@@ -51,7 +51,31 @@ describeEmbeddedPostgres("QBank item import routes", () => {
     return app;
   }
 
-  it("imports a Partner API QBank item as a visible qbank-item issue document", async () => {
+  function qbankPayload() {
+    return {
+      appId: 3,
+      item: {
+        id: 50067,
+        question_type: "Multiple Choice",
+        question:
+          "<p>A client diagnosed with ovarian cancer has been informed that the cancer has spread. The client has an elevated bilirubin and jaundice. Which organ likely has metastatic disease?</p>",
+        rationale:
+          '<p>The liver processes bilirubin.</p><p><img src="https://cdn-1.hltcorp.com/attachments/contents/000/026/921/large/Liver_and_Bile_Duct_Anatomy.jpg?1675957897" /></p>',
+        key_takeaway: "<p>When you see jaundice, think liver or bile duct problems.</p>",
+        draft_rationale: "<p><strong>Ovarian Cancer Metastasis</strong></p><p>Liver involvement can cause jaundice.</p>",
+        difficulty: "Easy",
+        state: "published",
+        answers: [
+          { text: "Bone", correct: false, rationale: "Less likely for ovarian cancer." },
+          { text: "Liver&nbsp;", correct: true, rationale: "Liver disease can impair bilirubin clearance." },
+        ],
+        product_associations: [{ app_id: 3, category_id: 1068753933, visibility: true, deleted: false }],
+        categories: [{ id: 1068753933, app_id: 3, name: "Anatomy and Physiology", published: true }],
+      },
+    };
+  }
+
+  async function seedIssue() {
     const companyId = randomUUID();
     const issueId = randomUUID();
 
@@ -72,30 +96,12 @@ describeEmbeddedPostgres("QBank item import routes", () => {
       createdByUserId: "cloud-user-1",
     });
 
-    const app = createApp(companyId);
-    const response = await request(app)
-      .post(`/api/issues/${issueId}/qbank-item`)
-      .send({
-        appId: 3,
-        item: {
-          id: 50067,
-          question_type: "Multiple Choice",
-          question:
-            "<p>A client diagnosed with ovarian cancer has been informed that the cancer has spread. The client has an elevated bilirubin and jaundice. Which organ likely has metastatic disease?</p>",
-          rationale:
-            '<p>The liver processes bilirubin.</p><p><img src="https://cdn-1.hltcorp.com/attachments/contents/000/026/921/large/Liver_and_Bile_Duct_Anatomy.jpg?1675957897" /></p>',
-          key_takeaway: "<p>When you see jaundice, think liver or bile duct problems.</p>",
-          draft_rationale: "<p><strong>Ovarian Cancer Metastasis</strong></p><p>Liver involvement can cause jaundice.</p>",
-          difficulty: "Easy",
-          state: "published",
-          answers: [
-            { text: "Bone", correct: false, rationale: "Less likely for ovarian cancer." },
-            { text: "Liver&nbsp;", correct: true, rationale: "Liver disease can impair bilirubin clearance." },
-          ],
-          product_associations: [{ app_id: 3, category_id: 1068753933, visibility: true, deleted: false }],
-          categories: [{ id: 1068753933, app_id: 3, name: "Anatomy and Physiology", published: true }],
-        },
-      });
+    return { app: createApp(companyId), issueId };
+  }
+
+  it("imports a Partner API QBank item as a visible qbank-item issue document", async () => {
+    const { app, issueId } = await seedIssue();
+    const response = await request(app).post(`/api/issues/${issueId}/qbank-item`).send(qbankPayload());
 
     expect(response.status, JSON.stringify(response.body)).toBe(201);
     expect(response.body.created).toBe(true);
@@ -113,6 +119,31 @@ describeEmbeddedPostgres("QBank item import routes", () => {
     expect(response.body.document.body).not.toMatch(/x-mcp-token|PARTNER_API_KEY|cffefcae/i);
 
     const readBack = await request(app).get(`/api/issues/${issueId}/documents/qbank-item`);
+    expect(readBack.status, JSON.stringify(readBack.body)).toBe(200);
+    expect(readBack.body.body).toBe(response.body.document.body);
+  });
+
+  it("creates a review-only qbank-media-brief document from a QBank item", async () => {
+    const { app, issueId } = await seedIssue();
+    const response = await request(app).post(`/api/issues/${issueId}/qbank-media-brief`).send(qbankPayload());
+
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(response.body.created).toBe(true);
+    expect(response.body.document).toMatchObject({
+      issueId,
+      key: "qbank-media-brief",
+      title: "Visual brief for QBank item 50067",
+      format: "markdown",
+    });
+    expect(response.body.sourceRef).toBe("qbank:app-3/question-50067");
+    expect(response.body.document.body).toContain("Review mode: plan only — no image generation or publishing approved.");
+    expect(response.body.document.body).toContain("Teaching objective: Explain why the correct answer is Liver");
+    expect(response.body.document.body).toContain("Preserve answer grounding: Bone, Liver");
+    expect(response.body.document.body).toContain("Public-safety boundary");
+    expect(response.body.document.body).not.toContain("<p>");
+    expect(response.body.document.body).not.toMatch(/x-mcp-token|PARTNER_API_KEY|cffefcae/i);
+
+    const readBack = await request(app).get(`/api/issues/${issueId}/documents/qbank-media-brief`);
     expect(readBack.status, JSON.stringify(readBack.body)).toBe(200);
     expect(readBack.body.body).toBe(response.body.document.body);
   });
