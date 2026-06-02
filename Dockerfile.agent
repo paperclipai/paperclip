@@ -185,26 +185,31 @@ ENV PATH=/home/node/.npm-global/bin:$PATH
 # (BLO-8707). /usr/local/bin precedes /usr/bin on PATH, so this shadows any stock
 # ffmpeg already present.
 #
-# Source host is registry.blockcast.net (BLO-8719): the digest below is published
-# to the LAN-local cache registry registry.blockcast.net and to Docker Hub, but it
-# is NOT replicated to harbor.blockcast.net — a `COPY --from=harbor.blockcast.net/
-# blockcast/pim-multicast-gateway/ffmpeg-publisher@sha256:...` resolves to a 404
-# `not found` at build time (the harbor login succeeds; the manifest just is not
-# there). The pim-multicast-gateway e2e-codec-matrix.yml pulls this exact digest
-# from registry.blockcast.net (FF_IMAGE_LOCAL), so docker-agent.yml now logs into
-# registry.blockcast.net (same HARBOR_USERNAME/HARBOR_PASSWORD) to make this COPY
-# resolve.
+# Source host is registry.blockcast.net (BLO-8719), the LAN-local cache registry
+# the self-hosted runner can reach (docker-agent.yml logs in with the same
+# HARBOR_USERNAME/HARBOR_PASSWORD pair). NOT harbor.blockcast.net — ffmpeg-publisher
+# is not replicated there, so a harbor COPY 404s.
 #
-# Digest-pinned (matches pim-multicast-gateway e2e-codec-matrix.yml FF_IMAGE_LOCAL)
-# for reproducible agent-image builds.
+# Use the floating :stable tag, NOT a digest pin. pim-multicast-gateway's
+# docker-build.yml pushes ffmpeg-publisher to BOTH registry.blockcast.net and
+# docker.io/blockcast/ffmpeg-publisher (external: true), but its registry.blockcast.net
+# push intermittently 503s and is retried independently (see that workflow's login
+# retry loop). As a result an individual build's manifest digest is only guaranteed
+# on docker.io — e.g. sha256:cba732a2…, which e2e-codec-matrix.yml pulls via its
+# FF_IMAGE (docker.io) fallback, not FF_IMAGE_LOCAL — and is NOT guaranteed on the
+# LAN cache. Pinning that digest here 404'd on registry.blockcast.net (BLO-8719).
+# :stable is a moving pointer to the latest *successful* registry.blockcast.net push,
+# so it resolves on the LAN cache without needing Docker Hub credentials in this repo.
+# Reproducibility trade-off accepted (owner note on BLO-8717: ":stable tracks latest;
+# pin @sha256 only if you want reproducible agent-image builds").
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        libx264-164 libx265-199 libvpx7 libaom3 libopus0 \
        libfreetype6 libharfbuzz0b libfontconfig1 libgomp1 libssl3 \
   && rm -rf /var/lib/apt/lists/*
-COPY --from=registry.blockcast.net/blockcast/pim-multicast-gateway/ffmpeg-publisher@sha256:cba732a28503331264394d7259001e0db66a6503293f8384886f158f1d484bae \
+COPY --from=registry.blockcast.net/blockcast/pim-multicast-gateway/ffmpeg-publisher:stable \
      /usr/local/bin/ffmpeg  /usr/local/bin/ffmpeg
-COPY --from=registry.blockcast.net/blockcast/pim-multicast-gateway/ffmpeg-publisher@sha256:cba732a28503331264394d7259001e0db66a6503293f8384886f158f1d484bae \
+COPY --from=registry.blockcast.net/blockcast/pim-multicast-gateway/ffmpeg-publisher:stable \
      /usr/local/bin/ffprobe /usr/local/bin/ffprobe
 RUN ffmpeg -hide_banner -muxers 2>&1 | grep -qE '(^|[[:space:]])moq_mmt([[:space:]]|$)' \
   || (echo 'ERROR: moq_mmt muxer missing from copied ffmpeg' && exit 1)
