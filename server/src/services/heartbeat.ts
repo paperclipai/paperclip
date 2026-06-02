@@ -1031,8 +1031,14 @@ export function compactRunLogChunk(chunk: string, maxChars = MAX_PERSISTED_LOG_C
 }
 
 function normalizeMaxConcurrentRuns(value: unknown) {
-  const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
-  if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
+  const envDefault = process.env.PAPERCLIP_DEFAULT_MAX_CONCURRENT_RUNS
+    ? Math.floor(Number(process.env.PAPERCLIP_DEFAULT_MAX_CONCURRENT_RUNS))
+    : null;
+  const effectiveDefault = envDefault && Number.isFinite(envDefault) && envDefault >= HEARTBEAT_MAX_CONCURRENT_RUNS_MIN && envDefault <= HEARTBEAT_MAX_CONCURRENT_RUNS_MAX
+    ? envDefault
+    : HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
+  const parsed = Math.floor(asNumber(value, effectiveDefault));
+  if (!Number.isFinite(parsed)) return effectiveDefault;
   return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_MIN, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
 }
 
@@ -5970,11 +5976,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
 
+    const envCap = process.env.PAPERCLIP_MAX_CONCURRENT_RUNS_HARD_CAP
+      ? Math.floor(Number(process.env.PAPERCLIP_MAX_CONCURRENT_RUNS_HARD_CAP))
+      : null;
+    const normalizedMax = normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns);
+    const effectiveMax = envCap && Number.isFinite(envCap) && envCap >= 1
+      ? Math.min(normalizedMax, envCap)
+      : normalizedMax;
+
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
-      maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      maxConcurrentRuns: effectiveMax,
     };
   }
 
