@@ -20,7 +20,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents, formatTokens } from "../lib/utils";
-import { Bot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Eye } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { AnimatedNumber, DotMatrixText } from "../components/NothingAesthetic";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -82,6 +82,17 @@ export function Dashboard() {
     queryKey: ["issues", selectedCompanyId, "awaiting-decision", "me"],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, { awaitingDecisionForUserId: "me", includeRoutineExecutions: true }),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 30_000,
+  });
+
+  // "In review": the broader "what's in flight on me" view — issues assigned to
+  // the current user currently in_review. Distinct from "Needs you" (those
+  // strictly awaiting your decision); an in_review issue may be under review by
+  // an agent and not require your action yet.
+  const { data: inReviewMine } = useQuery({
+    queryKey: ["issues", selectedCompanyId, "in-review", "me"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { assigneeUserId: "me", status: "in_review" }),
     enabled: !!selectedCompanyId,
     refetchInterval: 30_000,
   });
@@ -303,10 +314,11 @@ export function Dashboard() {
             // list, which carries blockerAttention).
             const waitingCount = waitingOnYou?.length ?? 0;
             const waitingTone: "default" | "danger" = waitingCount > 0 ? "danger" : "default";
+            const inReviewCount = inReviewMine?.length ?? 0;
             const stalledCount = stalledIssues.length;
             const stalledTone: "default" | "danger" = stalledCount > 0 ? "danger" : "default";
             return (
-              <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
+              <div className="grid grid-cols-2 xl:grid-cols-5 gap-3 sm:gap-4">
                 <CircularStatWidget
                   icon={Bot}
                   value={waitingCount}
@@ -317,6 +329,19 @@ export function Dashboard() {
                   description={
                     <span>
                       {waitingCount > 0 ? "awaiting your decision" : "nothing waiting"}
+                    </span>
+                  }
+                />
+                <CircularStatWidget
+                  icon={Eye}
+                  value={inReviewCount}
+                  label="In review"
+                  percent={Math.min(inReviewCount / 10, 1)}
+                  tone="info"
+                  to="/issues"
+                  description={
+                    <span>
+                      {inReviewCount > 0 ? "in flight, assigned to you" : "nothing in review"}
                     </span>
                   }
                 />
