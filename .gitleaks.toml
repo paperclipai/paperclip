@@ -1,9 +1,27 @@
 [extend]
 useDefault = true
 
-[[allowedPaths]]
-description = "safecheck test fixtures contain intentional fake secrets"
+# Path-based allowlist — all entries are confirmed false-positives (test fixtures, data
+# snapshots, documentation). No real credentials in these paths.
+# FUL-6461 (PR #112 scan RCA) + FUL-6668 (full-history push scan fix).
+#
+# NOTE: [[allowedPaths]] is NOT a valid gitleaks v8 config key (silently ignored).
+# Use [allowlist] paths for path-based suppression; use .gitleaksignore for
+# commit-SHA-specific fingerprints on production source files.
+[allowlist]
+description = "Test fixtures, data snapshots, and documentation — intentional fake secrets, never real credentials"
 paths = [
+  # safecheck test fixtures — synthetic API keys (FUL-6461, FUL-6482)
   "tests/safecheck-phase1.test.ts",
   "lib/safecheck/phase1.ts",
+  # server unit tests — intentional fake PATs, JWTs, and API keys for testing redaction/detection
+  "server/src/__tests__/",
+  # package test directories and .test.ts files — fake keys in unit test fixtures
+  "packages/.+/test/",
+  "\\.test\\.ts$",
+  # data snapshot files — run IDs and UUIDs that match the generic-api-key pattern
+  "^runs\\.json$",
+  "^done_issues\\.json$",
+  # documentation files — example/placeholder values, never real credentials
+  "^docs/",
 ]

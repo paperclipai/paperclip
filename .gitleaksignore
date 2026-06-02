@@ -46,3 +46,8 @@ f25753053749d42fa808a9d92132467d2d75dcd0:server/src/routes/access.ts:generic-api
 # The comments name the fake PAT value for clarity; that triggers the github-pat rule on this file
 91a1ba4bf1dec000dfe804c4d9d3250d396d7308:.gitleaksignore:github-pat:28
 91a1ba4bf1dec000dfe804c4d9d3250d396d7308:.gitleaksignore:github-pat:31
+
+# FUL-6668: full-history push scan — same TOKEN_ALPHABET constant at earlier commit SHAs
+# (path allowlists in .gitleaks.toml cover test/docs/data files; these two entries handle source files)
+ce5f52059cec9759041ee15dae55ea54cbae84c9:server/src/services/plugin-host-services.ts:generic-api-key:848
+38b855e4955c3fa7deb2c7e59631528c1aa4cd23:server/src/routes/access.ts:generic-api-key:36
