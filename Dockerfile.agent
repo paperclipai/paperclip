@@ -176,6 +176,38 @@ ENV NPM_CONFIG_PREFIX=/home/node/.npm-global
 ENV NPM_CONFIG_CACHE=/home/node/.npm-cache
 ENV PATH=/home/node/.npm-global/bin:$PATH
 
+# ---------------------------------------------------------------------------
+# Blockcast FFmpeg with the moq_mmt muxer (MMTP container + RaptorQ FEC) — BLO-8717
+# ---------------------------------------------------------------------------
+# The CI-prepared build from Harbor, NOT stock apt ffmpeg (which has no moq_mmt
+# muxer). Lets technical agents generate/verify MMTP captures and run live-publish
+# E2E in their workspace pods instead of towering on in-pod toolchain provisioning
+# (BLO-8707). /usr/local/bin precedes /usr/bin on PATH, so this shadows any stock
+# ffmpeg already present.
+#
+# Source host is harbor.blockcast.net (not the registry.blockcast.net alias the
+# source diff named): both names front the same Harbor backend, but the
+# docker-agent.yml build only `docker login`s harbor.blockcast.net. A
+# `COPY --from=registry.blockcast.net/...` would 401 at build time unless the
+# runner happened to hold a stale registry.blockcast.net login (the
+# pim-multicast-gateway e2e workflow logs in there explicitly for exactly this
+# reason). Pulling via harbor.blockcast.net reuses the workflow's existing login.
+#
+# Digest-pinned (matches pim-multicast-gateway e2e-codec-matrix.yml FF_IMAGE_LOCAL)
+# for reproducible agent-image builds; content-addressed, so it is identical on
+# either Harbor hostname.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       libx264-164 libx265-199 libvpx7 libaom3 libopus0 \
+       libfreetype6 libharfbuzz0b libfontconfig1 libgomp1 libssl3 \
+  && rm -rf /var/lib/apt/lists/*
+COPY --from=harbor.blockcast.net/blockcast/pim-multicast-gateway/ffmpeg-publisher@sha256:cba732a28503331264394d7259001e0db66a6503293f8384886f158f1d484bae \
+     /usr/local/bin/ffmpeg  /usr/local/bin/ffmpeg
+COPY --from=harbor.blockcast.net/blockcast/pim-multicast-gateway/ffmpeg-publisher@sha256:cba732a28503331264394d7259001e0db66a6503293f8384886f158f1d484bae \
+     /usr/local/bin/ffprobe /usr/local/bin/ffprobe
+RUN ffmpeg -hide_banner -muxers 2>&1 | grep -qE '(^|[[:space:]])moq_mmt([[:space:]]|$)' \
+  || (echo 'ERROR: moq_mmt muxer missing from copied ffmpeg' && exit 1)
+
 # Hand back to the non-root `node` user — paperclip's docker-entrypoint.sh
 # runs as that uid (matches the host user mapping established in the base
 # image's USER_UID/USER_GID args).
