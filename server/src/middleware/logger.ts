@@ -49,12 +49,17 @@ function createLogTargets(): pino.TransportTargetOptions[] {
   ];
 }
 
-export const logger = pino({
-  level: "debug",
-  redact: ["req.headers.authorization"],
-}, pino.transport({
-  targets: createLogTargets(),
-}));
+export const logger = process.env.VERCEL
+  ? pino({
+      level: "debug",
+      redact: ["req.headers.authorization"],
+    })
+  : pino({
+      level: "debug",
+      redact: ["req.headers.authorization"],
+    }, pino.transport({
+      targets: createLogTargets(),
+    }));
 
 export const httpLogger = pinoHttp({
   logger,
