@@ -107,6 +107,8 @@ export function OnboardingWizard() {
   // Step 1
   const [companyName, setCompanyName] = useState("");
   const [companyGoal, setCompanyGoal] = useState("");
+  const [websiteUrl, setWebsiteUrl] = useState("");
+  const [founderUrl, setFounderUrl] = useState("");
 
   // Step 2
   const [agentName, setAgentName] = useState("CEO");
@@ -307,6 +309,8 @@ export function OnboardingWizard() {
     setTaskTitle("Hire your first engineer and create a hiring plan");
     setTaskDescription(DEFAULT_TASK_DESCRIPTION);
     setExistingRepo("");
+    setWebsiteUrl("");
+    setFounderUrl("");
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
     setCreatedCompanyGoalId(null);
@@ -393,7 +397,11 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
-      const company = await companiesApi.create({ name: companyName.trim() });
+      const company = await companiesApi.create({
+        name: companyName.trim(),
+        ...(websiteUrl.trim() ? { websiteUrl: websiteUrl.trim() } : {}),
+        ...(founderUrl.trim() ? { founderUrl: founderUrl.trim() } : {}),
+      });
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
@@ -558,11 +566,21 @@ export function OnboardingWizard() {
         const repoBlock = existingRepo.trim()
           ? `\n\n**Existing repo:** ${existingRepo.trim()}\n\nLoad the \`onboarding-specialist\` skill on your first heartbeat and follow it.`
           : "";
+        // Surface onboarding context so the founding agent learns from what
+        // already exists (validate/enrich during environment setup) instead of
+        // asking. Infra is provided (ValAdrien Cloud) when infraMode=managed.
+        const contextLines = [
+          websiteUrl.trim() ? `**Company website:** ${websiteUrl.trim()}` : "",
+          founderUrl.trim() ? `**Founder / client:** ${founderUrl.trim()}` : "",
+        ].filter(Boolean);
+        const contextBlock = contextLines.length
+          ? `\n\n${contextLines.join("\n")}\n\nReview these while setting up the environment. Check \`GET /api/companies/{companyId}/infra-entitlements\` — provided infrastructure does not need provisioning approvals.`
+          : "";
         const issue = await issuesApi.create(
           createdCompanyId,
           buildOnboardingIssuePayload({
             title: taskTitle,
-            description: `${taskDescription}${repoBlock}`,
+            description: `${taskDescription}${contextBlock}${repoBlock}`,
             assigneeAgentId: createdAgentId,
             projectId,
             goalId
@@ -729,6 +747,40 @@ export function OnboardingWizard() {
                       local path. Your first agent will run the Onboarding
                       Specialist skill to derive the stack, mission, and starter
                       roster before doing any other work.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-1 block">
+                      Website{" "}
+                      <span className="text-muted-foreground/60">(optional)</span>
+                    </label>
+                    <input
+                      type="url"
+                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                      placeholder="https://acme.com"
+                      value={websiteUrl}
+                      onChange={(e) => setWebsiteUrl(e.target.value)}
+                    />
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      If a marketing site already exists, your first agent
+                      reads it to learn the thesis and positioning.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-1 block">
+                      Founder / client LinkedIn{" "}
+                      <span className="text-muted-foreground/60">(optional)</span>
+                    </label>
+                    <input
+                      type="url"
+                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                      placeholder="https://www.linkedin.com/in/your-name"
+                      value={founderUrl}
+                      onChange={(e) => setFounderUrl(e.target.value)}
+                    />
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      Helps the founding agent understand who it is building
+                      for.
                     </p>
                   </div>
                 </div>

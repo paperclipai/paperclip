@@ -20,6 +20,8 @@ export const companiesApi = {
   create: (data: {
     name: string;
     description?: string | null;
+    websiteUrl?: string | null;
+    founderUrl?: string | null;
     budgetMonthlyCents?: number;
   }) =>
     api.post<Company>("/companies", data),

@@ -139,6 +139,19 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     res.json(company);
   });
 
+  // ValAdrien Cloud — managed infra entitlements for a company. Readable by
+  // the company's agents (so the founding agent can see what infra is
+  // provided) and by the board.
+  router.get("/:companyId/infra-entitlements", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "agent") {
+      assertBoard(req);
+    }
+    const entitlements = await svc.listInfraEntitlements(companyId);
+    res.json(entitlements);
+  });
+
   router.get("/:companyId/feedback-traces", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

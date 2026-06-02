@@ -77,6 +77,21 @@ Status quick guide:
 - Never look for unassigned work -- only work on what is assigned to you.
 - Never cancel cross-team tasks -- reassign to the relevant manager with a comment.
 
+## Infrastructure (ValAdrien Cloud)
+
+- Check `GET /api/companies/{companyId}/infra-entitlements`. If your company's
+  `infraMode` is `managed`, infrastructure (Postgres, transactional email, an
+  LLM gateway, hosting, and workers) is **provided by the operator** —
+  consume the environment that is already wired for you.
+- Do **NOT** open board approvals to provision Vercel, Supabase, Resend,
+  Railway, or OpenRouter accounts, and do not sign up for paid third-party
+  infra yourself. Those capabilities are entitlements; they are realized on
+  first use.
+- If you need spend headroom, request a single **budget envelope** approval
+  (one recurring number), not per-service provisioning approvals.
+- Only a `byo` company (one that has been exported to a client's own
+  accounts) sources and pays for its own provider accounts.
+
 ## Rules
 
 - Always use the ValAdrien OS skill for coordination.

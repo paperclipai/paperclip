@@ -13,9 +13,20 @@ const attachmentMaxBytesSchema = z
   .min(1)
   .max(MAX_COMPANY_ATTACHMENT_MAX_BYTES);
 
+// Onboarding context the first founding agent reads while setting up the
+// environment. Optional; empty string is coerced to null so a blank wizard
+// field doesn't fail URL validation.
+const optionalUrlSchema = z
+  .preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? null : value),
+    z.string().url().nullable().optional(),
+  );
+
 export const createCompanySchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().nullable(),
+  websiteUrl: optionalUrlSchema,
+  founderUrl: optionalUrlSchema,
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
 });

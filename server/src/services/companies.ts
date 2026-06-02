@@ -27,8 +27,10 @@ import {
   principalPermissionGrants,
   companyMemberships,
   companySkills,
+  companyInfraEntitlements,
   documents,
 } from "@valadrien-os/db";
+import { DEFAULT_MANAGED_INFRA_ENTITLEMENTS } from "@valadrien-os/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
 
@@ -43,6 +45,9 @@ export function companyService(db: Db) {
     status: companies.status,
     issuePrefix: companies.issuePrefix,
     issueCounter: companies.issueCounter,
+    websiteUrl: companies.websiteUrl,
+    founderUrl: companies.founderUrl,
+    infraMode: companies.infraMode,
     budgetMonthlyCents: companies.budgetMonthlyCents,
     spentMonthlyCents: companies.spentMonthlyCents,
     attachmentMaxBytes: companies.attachmentMaxBytes,
@@ -177,12 +182,35 @@ export function companyService(db: Db) {
     create: async (data: typeof companies.$inferInsert) => {
       const created = await createCompanyWithUniquePrefix(data);
       await environmentsSvc.ensureLocalEnvironment(created.id);
+      // ValAdrien Cloud: a managed company is born "infra: provided". Seed the
+      // default entitlement set (lazy — status "entitled", nothing provisioned
+      // yet). See doc/plans/2026-06-01-valadrien-cloud-managed-infra.md.
+      if ((created.infraMode ?? "managed") === "managed") {
+        await db
+          .insert(companyInfraEntitlements)
+          .values(
+            DEFAULT_MANAGED_INFRA_ENTITLEMENTS.map((entitlement) => ({
+              companyId: created.id,
+              capability: entitlement.capability,
+              mode: entitlement.mode,
+            })),
+          )
+          .onConflictDoNothing();
+      }
       const row = await getCompanyQuery(db)
         .where(eq(companies.id, created.id))
         .then((rows) => rows[0] ?? null);
       if (!row) throw notFound("Company not found after creation");
       const [hydrated] = await hydrateCompanySpend([row], db);
       return enrichCompany(hydrated);
+    },
+
+    listInfraEntitlements: async (companyId: string) => {
+      return db
+        .select()
+        .from(companyInfraEntitlements)
+        .where(eq(companyInfraEntitlements.companyId, companyId))
+        .orderBy(companyInfraEntitlements.capability);
     },
 
     update: (

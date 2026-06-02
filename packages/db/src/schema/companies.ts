@@ -11,6 +11,13 @@ export const companies = pgTable(
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     issuePrefix: text("issue_prefix").notNull().default("PAP"),
     issueCounter: integer("issue_counter").notNull().default(0),
+    // Onboarding context the first founding agent reads while setting up the
+    // environment (validation/enrichment happens during onboarding).
+    websiteUrl: text("website_url"),
+    founderUrl: text("founder_url"),
+    // "managed" = infra is provided by the operator (ValAdrien Cloud); "byo" =
+    // the client brings/owns their own provider accounts (set on export).
+    infraMode: text("infra_mode").notNull().default("managed"),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
     attachmentMaxBytes: integer("attachment_max_bytes")

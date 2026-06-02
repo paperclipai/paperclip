@@ -1,6 +1,51 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
+// ValAdrien Cloud — managed infrastructure model.
+// See doc/plans/2026-06-01-valadrien-cloud-managed-infra.md.
+export const COMPANY_INFRA_MODES = ["managed", "byo"] as const;
+export type CompanyInfraMode = (typeof COMPANY_INFRA_MODES)[number];
+
+export const INFRA_CAPABILITIES = [
+  "postgres",
+  "email",
+  "llm",
+  "hosting",
+  "worker",
+] as const;
+export type InfraCapability = (typeof INFRA_CAPABILITIES)[number];
+
+export const INFRA_ENTITLEMENT_MODES = [
+  "managed_shared",
+  "managed_dedicated",
+  "byo",
+] as const;
+export type InfraEntitlementMode = (typeof INFRA_ENTITLEMENT_MODES)[number];
+
+export const INFRA_ENTITLEMENT_STATUSES = [
+  "entitled",
+  "provisioned",
+  "exported",
+  "disabled",
+] as const;
+export type InfraEntitlementStatus = (typeof INFRA_ENTITLEMENT_STATUSES)[number];
+
+/**
+ * Default entitlement set seeded for a managed company at onboarding.
+ * Lazy: status is "entitled" (recorded, not yet provisioned). Hosting defaults
+ * to dedicated (cheap to isolate per the plan); everything else shared.
+ */
+export const DEFAULT_MANAGED_INFRA_ENTITLEMENTS: ReadonlyArray<{
+  capability: InfraCapability;
+  mode: InfraEntitlementMode;
+}> = [
+  { capability: "postgres", mode: "managed_shared" },
+  { capability: "email", mode: "managed_shared" },
+  { capability: "llm", mode: "managed_shared" },
+  { capability: "hosting", mode: "managed_dedicated" },
+  { capability: "worker", mode: "managed_shared" },
+];
+
 export const DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const MAX_COMPANY_ATTACHMENT_MAX_BYTES = 1024 * 1024 * 1024;
 

@@ -1,4 +1,11 @@
-import type { CompanyStatus, PauseReason } from "../constants.js";
+import type {
+  CompanyInfraMode,
+  CompanyStatus,
+  InfraCapability,
+  InfraEntitlementMode,
+  InfraEntitlementStatus,
+  PauseReason,
+} from "../constants.js";
 
 export interface Company {
   id: string;
@@ -9,6 +16,9 @@ export interface Company {
   pausedAt: Date | null;
   issuePrefix: string;
   issueCounter: number;
+  websiteUrl: string | null;
+  founderUrl: string | null;
+  infraMode: CompanyInfraMode;
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   attachmentMaxBytes: number;
@@ -20,6 +30,20 @@ export interface Company {
   brandColor: string | null;
   logoAssetId: string | null;
   logoUrl: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CompanyInfraEntitlement {
+  id: string;
+  companyId: string;
+  capability: InfraCapability;
+  mode: InfraEntitlementMode;
+  status: InfraEntitlementStatus;
+  provider: string | null;
+  bindingRef: string | null;
+  provisionedAt: Date | null;
+  metadata: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
 }

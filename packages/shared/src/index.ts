@@ -1,6 +1,11 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   COMPANY_STATUSES,
+  COMPANY_INFRA_MODES,
+  INFRA_CAPABILITIES,
+  INFRA_ENTITLEMENT_MODES,
+  INFRA_ENTITLEMENT_STATUSES,
+  DEFAULT_MANAGED_INFRA_ENTITLEMENTS,
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
   DEPLOYMENT_MODES,
@@ -133,6 +138,10 @@ export {
   PLUGIN_EVENT_TYPES,
   PLUGIN_BRIDGE_ERROR_CODES,
   type CompanyStatus,
+  type CompanyInfraMode,
+  type InfraCapability,
+  type InfraEntitlementMode,
+  type InfraEntitlementStatus,
   type DeploymentMode,
   type DeploymentExposure,
   type BindMode,
@@ -263,6 +272,7 @@ export {
 
 export type {
   Company,
+  CompanyInfraEntitlement,
   Environment,
   EnvironmentLease,
   EnvironmentProbeResult,
