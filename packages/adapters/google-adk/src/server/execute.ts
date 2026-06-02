@@ -24,6 +24,7 @@ import {
   DEFAULT_GOOGLE_ADK_COMMAND,
   DEFAULT_GOOGLE_ADK_MODEL,
 } from "../index.js";
+import { buildInstructionsPrefix, splitInstructionsMarkdown } from "./instructions.js";
 import { parseGoogleAdkJsonl } from "./parse.js";
 
 function paperclipHome(): string {
@@ -39,19 +40,15 @@ function artifactUri(dirPath: string): string {
   return pathToFileURL(path.resolve(dirPath)).toString();
 }
 
-async function readInstructionsPrefix(
+export async function readInstructionsPrefix(
   instructionsFilePath: string,
   onLog: AdapterExecutionContext["onLog"],
 ): Promise<string> {
   if (!instructionsFilePath) return "";
   try {
     const contents = await fs.readFile(instructionsFilePath, "utf8");
-    const instructionsDir = `${path.dirname(instructionsFilePath)}/`;
-    return (
-      `${contents}\n\n` +
-      `The above agent instructions were loaded from ${instructionsFilePath}. ` +
-      `Resolve any relative file references from ${instructionsDir}.\n`
-    );
+    const instructionsMarkdown = splitInstructionsMarkdown(contents);
+    return buildInstructionsPrefix(instructionsMarkdown.body, instructionsFilePath);
   } catch (err) {
     await onLog(
       "stdout",

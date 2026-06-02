@@ -7,6 +7,7 @@ export default defineConfig({
       "packages/db",
       "packages/adapter-utils",
       "packages/adapters/codex-local",
+      "packages/adapters/google-adk",
       "packages/adapters/opencode-local",
       "server",
       "ui",
