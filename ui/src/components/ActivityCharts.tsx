@@ -1,11 +1,14 @@
 import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import type { HeartbeatRunStats } from "../api/heartbeats";
 
 /* ---- Utilities ---- */
 
 export function getLast14Days(): string[] {
   return Array.from({ length: 14 }, (_, i) => {
-    const d = new Date();
-    d.setDate(d.getDate() - (13 - i));
+    const now = new Date();
+    // Use UTC arithmetic so day keys match the server's UTC YYYY-MM-DD strings.
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    d.setUTCDate(d.getUTCDate() - (13 - i));
     return d.toISOString().slice(0, 10);
   });
 }
@@ -59,8 +62,9 @@ export function ChartCard({ title, subtitle, children }: { title: string; subtit
 /* ---- Chart Components ---- */
 
 type RunChartProps =
-  | { activity?: DashboardRunActivityDay[] | null; runs?: never }
-  | { runs?: HeartbeatRun[] | null; activity?: never };
+  | { activity?: DashboardRunActivityDay[] | null; runs?: never; stats?: never }
+  | { runs?: HeartbeatRun[] | null; activity?: never; stats?: never }
+  | { stats?: HeartbeatRunStats[] | null; activity?: never; runs?: never };
 
 function aggregateRuns(runs: readonly HeartbeatRun[] = []): DashboardRunActivityDay[] {
   const days = getLast14Days();
@@ -78,9 +82,25 @@ function aggregateRuns(runs: readonly HeartbeatRun[] = []): DashboardRunActivity
   return Array.from(grouped.values());
 }
 
+function aggregateStats(stats: readonly HeartbeatRunStats[] = []): DashboardRunActivityDay[] {
+  const days = getLast14Days();
+  const grouped = new Map<string, DashboardRunActivityDay>();
+  for (const day of days) grouped.set(day, { date: day, succeeded: 0, failed: 0, other: 0, total: 0 });
+  for (const stat of stats) {
+    const entry = grouped.get(stat.date);
+    if (!entry) continue;
+    if (stat.status === "succeeded") entry.succeeded += stat.count;
+    else if (stat.status === "failed" || stat.status === "timed_out") entry.failed += stat.count;
+    else entry.other += stat.count;
+    entry.total += stat.count;
+  }
+  return Array.from(grouped.values());
+}
+
 function resolveRunActivity(props: RunChartProps): DashboardRunActivityDay[] {
   if (Array.isArray(props.activity)) return props.activity;
   if (Array.isArray(props.runs)) return aggregateRuns(props.runs);
+  if (Array.isArray(props.stats)) return aggregateStats(props.stats);
   return [];
 }
 
