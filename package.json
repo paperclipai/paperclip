@@ -52,6 +52,9 @@
     "metrics:valadrien-os-commits": "tsx scripts/valadrien-os-commit-metrics.ts",
     "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs"
   },
+  "dependencies": {
+    "express": "^5.1.0"
+  },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
     "cross-env": "^10.1.0",
