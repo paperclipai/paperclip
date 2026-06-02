@@ -771,6 +771,37 @@ export async function startServer(): Promise<StartedServer> {
   }
   copyWorkspaceSdkFiles();
 
+  // The npm-installed @paperclipai/shared on the plugins side can lag the
+  // workspace fork (its registry publish is date-versioned and is not
+  // refreshed on every deploy). When it does, the fork plugin-SDK we vendor
+  // above re-exports symbols (e.g. PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS)
+  // that the stale registry shared does not provide, and plugin workers crash
+  // with "does not provide an export named ...". Vendor the workspace shared
+  // *dist* over the stale one so the SDK and shared are a matched fork pair.
+  //
+  // dist ONLY — do NOT copy the workspace shared package.json: its top-level
+  // `exports` map points at ./src/*.ts (raw TS), whereas the registry copy's
+  // `exports` already points at ./dist/*.js. Overwriting it would swap the
+  // missing-export crash for ERR_MODULE_NOT_FOUND on the same plugins.
+  function copyWorkspaceSharedDist() {
+    try {
+      const pluginsSharedDir = path.join(os.homedir(), ".paperclip", "plugins", "node_modules", "@paperclipai", "shared");
+      const thisDir = path.dirname(new URL(import.meta.url).pathname);
+      const workspaceSharedDist = path.resolve(thisDir, "../../packages/shared/dist");
+      // Only act when both the workspace source and the installed target exist;
+      // never create the package from nothing (mirrors the SDK copy guard).
+      if (!fs.existsSync(workspaceSharedDist) || !fs.existsSync(pluginsSharedDir)) return;
+      if (fs.lstatSync(pluginsSharedDir).isSymbolicLink()) {
+        fs.unlinkSync(pluginsSharedDir);
+        fs.mkdirSync(pluginsSharedDir, { recursive: true });
+      }
+      fs.cpSync(workspaceSharedDist, path.join(pluginsSharedDir, "dist"), { recursive: true });
+      logger.info("Copied workspace @paperclipai/shared dist to local plugins directory");
+    } catch (err) {
+      logger.warn({ err }, "Failed to copy workspace shared dist (non-fatal)");
+    }
+  }
+
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
   const feedback = feedbackService(db as any, {
@@ -1177,6 +1208,8 @@ export async function startServer(): Promise<StartedServer> {
   } catch (err) {
     logger.warn({ err }, "Failed to copy workspace SDK (non-fatal)");
   }
+  // Keep shared in lockstep with the vendored fork SDK (see note above).
+  copyWorkspaceSharedDist();
 
   // Auto-install bundled plugins (idempotent — skips if already installed).
   // Skipped on the API tier: /api/plugins/install hits pluginWorkerManager
@@ -1185,6 +1218,8 @@ export async function startServer(): Promise<StartedServer> {
     void autoInstallBundledPlugins(db as any, internalBootstrapToken).then(() => {
       // Re-patch workspace SDK after plugin installs — npm install pulls the upstream SDK.
       copyWorkspaceSdkFiles();
+      // …and the upstream shared it dragged in, so the matched fork pair survives.
+      copyWorkspaceSharedDist();
     }).catch((err) => {
       logger.warn({ err }, "auto-install of bundled plugins failed (non-fatal)");
     });
