@@ -137,7 +137,9 @@ describeEmbeddedPostgres("heartbeat preflight + retry-policy wiring (FUL-6386)",
     await tempDb?.cleanup();
   });
 
-  async function seedRunnableIssue(): Promise<{
+  async function seedRunnableIssue(
+    adapterConfig: Record<string, unknown> = {},
+  ): Promise<{
     companyId: string;
     agentId: string;
     issueId: string;
@@ -161,9 +163,11 @@ describeEmbeddedPostgres("heartbeat preflight + retry-policy wiring (FUL-6386)",
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      // No `env` bindings -> empty secret manifest -> preflight has nothing to
-      // block on (the reachable clean path).
-      adapterConfig: {},
+      // Default: no `env` bindings -> empty secret manifest -> preflight has
+      // nothing to block on (the reachable clean path). Tests that exercise a
+      // secret-resolution hard-fail pass an `adapterConfig` with a secret_ref
+      // env binding.
+      adapterConfig,
       runtimeConfig: {
         heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
       },
@@ -201,6 +205,58 @@ describeEmbeddedPostgres("heartbeat preflight + retry-policy wiring (FUL-6386)",
       .where(eq(heartbeatRuns.agentId, agentId));
     return rows.filter((row) => row.status === "scheduled_retry");
   }
+
+  it("hard-fails preflight (secret unbound) and blocks WITHOUT spawning the adapter (FUL-6404)", async () => {
+    // Agent requires an env secret bound to a secret_ref that does not exist.
+    // resolveExecutionRunAdapterConfig -> resolveAdapterConfigForRuntime then
+    // throws on resolution; the G2 preflight wiring must translate that into a
+    // `preflight_secret_unbound` hard-fail (block, no spawn, no retry) instead
+    // of letting it fall through to a generic adapter_failed setup error.
+    const { agentId, issueId } = await seedRunnableIssue({
+      env: {
+        REQUIRED_API_KEY: { type: "secret_ref", secretId: randomUUID(), version: "latest" },
+      },
+    });
+
+    const queued = await heartbeat.invoke(agentId, "assignment", { issueId }, "manual");
+    expect(queued).not.toBeNull();
+    const finished = await waitForRunToFinish(heartbeat, queued!.id);
+    expect(finished?.status).toBe("failed");
+
+    // The block happens in the async post-failure handler that runs after the
+    // run row reaches its terminal status. NOTE: we deliberately do NOT use
+    // waitForRunSettled here — that waits for a Local environment lease to
+    // release, but the hard-fail preflight blocks the run UPSTREAM of any lease
+    // acquisition, so no lease is ever created. Poll the issue status instead.
+    const deadline = Date.now() + 5_000;
+    let issueStatus: string | null = null;
+    while (Date.now() < deadline) {
+      issueStatus = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]?.status ?? null);
+      if (issueStatus === "blocked") break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    // The adapter child must never be spawned: the run is blocked at preflight,
+    // upstream of any adapter.execute() call.
+    expect(adapterExecute).not.toHaveBeenCalled();
+
+    const failedRun = await db
+      .select({ errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, finished!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(failedRun?.errorCode).toBe("preflight_secret_unbound");
+
+    expect(issueStatus).toBe("blocked");
+
+    // Hard-fail is non-retryable: no bounded retry is scheduled.
+    const retries = await scheduledRetryRunsForAgent(agentId);
+    expect(retries).toHaveLength(0);
+  }, 15_000);
 
   it("blocks the issue after one deterministic (auth) adapter failure and schedules no retry", async () => {
     const { agentId, issueId } = await seedRunnableIssue();

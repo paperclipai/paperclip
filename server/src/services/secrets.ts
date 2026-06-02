@@ -279,6 +279,40 @@ function secretResolutionErrorCode(error: unknown): SecretResolutionErrorCode {
   return "provider_error";
 }
 
+/**
+ * Marker attached to an error re-thrown out of runtime secret resolution so a
+ * downstream caller (the heartbeat G2 preflight) can reliably recognize a
+ * secret-resolution failure and translate it into a `preflight_secret_unbound`
+ * hard-fail. A non-enumerable Symbol property is used so the original error
+ * instance, message, status, and details are unchanged for every other caller
+ * (e.g. the API-facing `resolveSecretValue` path). (FUL-6404)
+ */
+const SECRET_RESOLUTION_FAILURE_MARKER = Symbol.for("paperclip.secrets.resolutionFailure");
+
+export function markSecretResolutionFailure(
+  error: unknown,
+  code: SecretResolutionErrorCode,
+): void {
+  if (!error || typeof error !== "object") return;
+  try {
+    Object.defineProperty(error, SECRET_RESOLUTION_FAILURE_MARKER, {
+      value: code,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  } catch {
+    // Frozen/sealed error object: detection falls back to null, which the
+    // caller treats as "not a secret-resolution failure" and rethrows. Safe.
+  }
+}
+
+export function getSecretResolutionFailureCode(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const code = (error as Record<symbol, unknown>)[SECRET_RESOLUTION_FAILURE_MARKER];
+  return typeof code === "string" ? code : null;
+}
+
 function assertSelectableProviderConfig(config: {
   provider: string;
   status: string;
@@ -651,6 +685,29 @@ export function secretService(db: Db) {
     context?: SecretConsumerContext,
   ): Promise<string> {
     return (await resolveSecretValueInternal(companyId, secretId, version, context)).value;
+  }
+
+  /**
+   * Runtime (heartbeat) secret resolution. Identical to
+   * {@link resolveSecretValueInternal} but tags any thrown resolution failure
+   * with {@link markSecretResolutionFailure} so the heartbeat G2 preflight can
+   * translate it into a `preflight_secret_unbound` hard-fail (block, no retry)
+   * instead of letting it surface as a generic `adapter_failed` setup error
+   * that the bounded-retry policy would re-spawn. The API-facing
+   * `resolveSecretValue` path is intentionally NOT routed through here. (FUL-6404)
+   */
+  async function resolveRuntimeSecretResolution(
+    companyId: string,
+    secretId: string,
+    version: number | "latest",
+    context?: SecretConsumerContext,
+  ): Promise<RuntimeSecretResolution> {
+    try {
+      return await resolveSecretValueInternal(companyId, secretId, version, context);
+    } catch (err) {
+      markSecretResolutionFailure(err, secretResolutionErrorCode(err));
+      throw err;
+    }
   }
 
   async function normalizeEnvConfig(
@@ -2271,7 +2328,7 @@ export function secretService(db: Db) {
         if (binding.type === "plain") {
           resolved[key] = binding.value;
         } else {
-          const secretResolution = await resolveSecretValueInternal(
+          const secretResolution = await resolveRuntimeSecretResolution(
             companyId,
             binding.secretId,
             binding.version,
@@ -2314,7 +2371,7 @@ export function secretService(db: Db) {
         if (binding.type === "plain") {
           env[key] = binding.value;
         } else {
-          const secretResolution = await resolveSecretValueInternal(
+          const secretResolution = await resolveRuntimeSecretResolution(
             companyId,
             binding.secretId,
             binding.version,

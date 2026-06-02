@@ -62,7 +62,7 @@ import {
   classifyFailureRetryability,
   shouldRetryProcessLoss,
 } from "./run-retry-policy.js";
-import { evaluatePreflight } from "./run-preflight.js";
+import { evaluatePreflight, type PreflightResult } from "./run-preflight.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
@@ -78,7 +78,11 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
-import { secretService } from "./secrets.js";
+import {
+  secretService,
+  getSecretResolutionFailureCode,
+  type RuntimeSecretManifestEntry,
+} from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
@@ -8942,28 +8946,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
-    const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
-      companyId: agent.companyId,
-      agentId: agent.id,
-      issueId,
-      heartbeatRunId: run.id,
-      projectId: projectContext?.id ?? null,
-      routineId: routineEnvContext.routineId,
-      executionRunConfig,
-      projectEnv: projectContext?.env ?? null,
-      routineEnv: routineEnvContext.env,
-      secretsSvc,
-      trustPreset,
-    });
-    if (secretManifest.length > 0) {
-      context.paperclipSecrets = {
-        manifest: secretManifest,
-      };
-    } else {
-      delete context.paperclipSecrets;
-    }
+    let resolvedConfig: Record<string, unknown> = {};
+    let secretKeys: Set<string> = new Set<string>();
+    let secretManifest: RuntimeSecretManifestEntry[] = [];
 
-    // G2 — Run preflight (FUL-6364 / FUL-6386 / ADR FUL-6348).
+    // G2 — Run preflight (FUL-6364 / FUL-6386 / FUL-6404 / ADR FUL-6348).
     // Evaluate deterministic, locally-knowable failure conditions BEFORE the
     // expensive workspace/environment realization and adapter spawn below, so a
     // run that can never succeed by itself (e.g. a required secret failed to
@@ -8977,23 +8964,72 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // it. The soft-defer branch here remains wired for forward-compatibility if
     // a cheap, cached quota signal is later supplied via PreflightContext.
     {
-      const preflight = evaluatePreflight({
-        adapterType: agent.adapterType,
-        // Adapter config already resolved without throwing; deeper config and
-        // model-allow-list validation is deferred to G3 post-failure
-        // classification to avoid hot-path false positives.
-        adapterConfigured: true,
-        requestedModel: modelProfileApplication.requested ?? null,
-        allowedModels: null,
-        requiredSecretNames: secretManifest.map((entry) => entry.secretKey),
-        boundSecretNames: secretManifest
-          .filter((entry) => entry.outcome === "success")
-          .map((entry) => entry.secretKey),
-        routineId: routineEnvContext.routineId ?? null,
-        routineDeniedSecretNames: [],
-        quota: null,
-        rate: null,
-      });
+      let preflight: PreflightResult;
+      try {
+        const resolved = await resolveExecutionRunAdapterConfig({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          issueId,
+          heartbeatRunId: run.id,
+          projectId: projectContext?.id ?? null,
+          routineId: routineEnvContext.routineId,
+          executionRunConfig,
+          projectEnv: projectContext?.env ?? null,
+          routineEnv: routineEnvContext.env,
+          secretsSvc,
+        });
+        resolvedConfig = resolved.resolvedConfig;
+        secretKeys = resolved.secretKeys;
+        secretManifest = resolved.secretManifest;
+        if (secretManifest.length > 0) {
+          context.paperclipSecrets = {
+            manifest: secretManifest,
+          };
+        } else {
+          delete context.paperclipSecrets;
+        }
+        preflight = evaluatePreflight({
+          adapterType: agent.adapterType,
+          // Adapter config already resolved without throwing; deeper config and
+          // model-allow-list validation is deferred to G3 post-failure
+          // classification to avoid hot-path false positives.
+          adapterConfigured: true,
+          requestedModel: modelProfileApplication.requested ?? null,
+          allowedModels: null,
+          requiredSecretNames: secretManifest.map((entry) => entry.secretKey),
+          boundSecretNames: secretManifest
+            .filter((entry) => entry.outcome === "success")
+            .map((entry) => entry.secretKey),
+          routineId: routineEnvContext.routineId ?? null,
+          routineDeniedSecretNames: [],
+          quota: null,
+          rate: null,
+        });
+      } catch (err) {
+        // resolveExecutionRunAdapterConfig -> resolveAdapterConfigForRuntime /
+        // resolveEnvBindings re-throw on ANY secret-resolution failure (missing
+        // binding, deleted/inactive secret, version problem, provider error).
+        // That throw is upstream of the preflight call, so checkSecretsBound
+        // never sees a failure -- historically the throw fell through to the
+        // outer setup handler as a generic `adapter_failed`: the run failed but
+        // the issue was NOT blocked, so the bounded-retry policy would re-spawn
+        // the same doomed run. Translate a recognized secret-resolution failure
+        // (tagged by the secrets service) into a `preflight_secret_unbound`
+        // hard-fail here so the issue is blocked exactly once and never retried,
+        // WITHOUT ever spawning the adapter child. Non-secret failures are
+        // rethrown to preserve the existing outer setup-failure behavior.
+        const secretFailureCode = getSecretResolutionFailureCode(err);
+        if (secretFailureCode === null) throw err;
+        delete context.paperclipSecrets;
+        preflight = {
+          ok: false,
+          reason: "preflight_secret_unbound",
+          disposition: "hard-fail",
+          retryable: false,
+          block: true,
+          message: `Required secret(s) failed to resolve at run time (${secretFailureCode}); blocking before adapter spawn.`,
+        };
+      }
       if (!preflight.ok) {
         const preflightNow = new Date();
         let preflightRun = await setRunStatus(run.id, "failed", {
