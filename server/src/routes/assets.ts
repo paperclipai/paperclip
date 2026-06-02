@@ -18,6 +18,7 @@ const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
 ]);
 
 type JsdomModule = typeof import("jsdom");
+type JsdomInstance = InstanceType<JsdomModule["JSDOM"]>;
 let jsdomModulePromise: Promise<JsdomModule> | null = null;
 
 function loadJsdom(): Promise<JsdomModule> {
@@ -48,7 +49,7 @@ async function sanitizeSvgBuffer(input: Buffer): Promise<Buffer | null> {
     }
   });
 
-  let parsedDom: JSDOM | null = null;
+  let parsedDom: JsdomInstance | null = null;
   try {
     const sanitized = domPurify.sanitize(raw, {
       USE_PROFILES: { svg: true, svgFilters: true, html: false },
@@ -62,11 +63,11 @@ async function sanitizeSvgBuffer(input: Buffer): Promise<Buffer | null> {
     const root = document.documentElement;
     if (!root || root.tagName.toLowerCase() !== "svg") return null;
 
-    for (const el of Array.from(root.querySelectorAll("script, foreignObject"))) {
+    for (const el of Array.from(root.querySelectorAll("script, foreignObject")) as Element[]) {
       el.remove();
     }
-    for (const el of Array.from(root.querySelectorAll("*"))) {
-      for (const attr of Array.from(el.attributes)) {
+    for (const el of Array.from(root.querySelectorAll("*")) as Element[]) {
+      for (const attr of Array.from(el.attributes) as Attr[]) {
         const attrName = attr.name.toLowerCase();
         const attrValue = attr.value.trim();
         if (attrName.startsWith("on")) {
