@@ -5406,17 +5406,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
-
     // Sustained-outage fallback. Only applies to the default transient-retry
     // path (no caller-supplied delayMs / maxAttempts override and the default
-    // retry reason). Callers that pass their own retryReason or delayMs —
+    // retry reason) AND the error actually has a transient error family.
+    // Callers that pass their own retryReason or delayMs —
     // e.g. max-turn continuation — still see retry_exhausted at their cap.
+    const hasCallerRetryOverrides = opts?.delayMs != null || opts?.maxAttempts != null;
+    const boundedRetryExhausted = !baseSchedule && !hasCallerRetryOverrides;
     const isSustainedTransientFallback =
-      !baseSchedule
-      && opts?.delayMs == null
-      && opts?.maxAttempts == null
-      && retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
-    let sustainedFallbackAttempt = 0;
+      boundedRetryExhausted
+      && retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+      && transientRecovery != null;
+    let sustainedFallbackAttempt: number;
     if (isSustainedTransientFallback) {
       sustainedFallbackAttempt = nextAttempt - maxAttempts;
       const random = opts?.random ?? Math.random;

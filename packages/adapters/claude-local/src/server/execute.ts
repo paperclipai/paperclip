@@ -65,13 +65,6 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-function retryJitter(currentMs: number): number {
-  return Math.floor(Math.random() * currentMs * 0.2);
-}
-
-
 interface ClaudeExecutionInput {
   runId: string;
   agent: AdapterExecutionContext["agent"];
@@ -969,51 +962,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
 
-    let currentAttempt = baseAttempt;
-    let retryCount = 0;
-    while (retryCount < rateLimitMaxRetries && !currentAttempt.proc.timedOut) {
-      const transient = isClaudeTransientUpstreamError({
-        parsed: currentAttempt.parsed,
-        stdout: currentAttempt.proc.stdout,
-        stderr: currentAttempt.proc.stderr,
-      });
-      if (!transient) break;
-
-      const retryNotBefore = extractClaudeRetryNotBefore({
-        parsed: currentAttempt.parsed,
-        stdout: currentAttempt.proc.stdout,
-        stderr: currentAttempt.proc.stderr,
-      });
-      const exponentialDelay = rateLimitBackoffBaseMs * (2 ** retryCount);
-      const waitMs = retryNotBefore
-        ? Math.max(0, retryNotBefore.getTime() - Date.now())
-        : Math.min(exponentialDelay + retryJitter(exponentialDelay), rateLimitBackoffCeilingMs);
-
-      if (waitMs > rateLimitBackoffCeilingMs) break;
-
-      await onLog(
-        "stdout",
-        `[paperclip] Transient API error (rate limit/overload); backing off ${Math.round(waitMs / 1_000)}s before retry ${retryCount + 1}/${rateLimitMaxRetries}.\n`,
-      );
-      await sleep(waitMs);
-      currentAttempt = await runAttempt(baseFallbackSessionId ?? null);
-      retryCount++;
-    }
-
-    const result = toAdapterResult(currentAttempt, {
-      fallbackSessionId: baseFallbackSessionId,
-      clearSessionOnMissingSession: baseClearSession,
-    });
-
-    if (retryCount > 0 && retryCount >= rateLimitMaxRetries && result.errorFamily === "transient_upstream") {
-      return {
-        ...result,
-        errorCode: "rate_limit_exhausted",
-        errorMessage: `Rate limit exhausted after ${retryCount} ${retryCount === 1 ? "retry" : "retries"}: ${result.errorMessage ?? "transient upstream error"}`,
-      };
-    }
-
-    return result;
+    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
     if (paperclipBridge) {
       await paperclipBridge.stop();
