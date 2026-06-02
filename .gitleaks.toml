@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[allowedPaths]]
+description = "safecheck test fixtures contain intentional fake secrets"
+paths = [
+  "tests/safecheck-phase1.test.ts",
+  "lib/safecheck/phase1.ts",
+]
