@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { PaperclipConfig } from "@paperclipai/shared";
 import {
   applyRuntimePortSelectionToConfig,
   maybePersistWorktreeRuntimePorts,
@@ -24,7 +25,7 @@ afterEach(() => {
   }
 });
 
-function buildLegacyConfig(sharedRoot: string, publicBaseUrl = "http://127.0.0.1:3100") {
+function buildLegacyConfig(sharedRoot: string, publicBaseUrl = "http://127.0.0.1:3100"): PaperclipConfig {
   return {
     $meta: {
       version: 1,
@@ -53,6 +54,9 @@ function buildLegacyConfig(sharedRoot: string, publicBaseUrl = "http://127.0.0.1
       port: 3100,
       allowedHostnames: [],
       serveUi: true,
+    },
+    telemetry: {
+      enabled: true,
     },
     auth: {
       baseUrlMode: "explicit" as const,

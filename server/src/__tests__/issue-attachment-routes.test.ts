@@ -2,7 +2,7 @@ import { Readable } from "node:stream";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { StorageService } from "../storage/types.js";
+import type { PutFileInput, StorageService } from "../storage/types.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -103,13 +103,7 @@ function registerRouteMocks() {
 
 type TestStorageService = StorageService & {
   __calls: {
-    putFile?: {
-      companyId: string;
-      namespace: string;
-      originalFilename?: string;
-      contentType: string;
-      body: Buffer;
-    };
+    putFile?: PutFileInput;
   };
 };
 

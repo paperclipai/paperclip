@@ -15,7 +15,16 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
  *    applies translateTime to a known epoch under different TZ values.
  */
 
-const mockTransport = vi.hoisted(() => vi.fn(() => ({ write: vi.fn() })));
+// pino-pretty's `transport()` is called with `{ targets: [{ options: { ... } }, ...] }`.
+// Typing the mock parameter lets the assertions on mock.calls[0][0] resolve to a
+// concrete shape instead of falling back to `[]` and forcing a cast through `unknown`.
+type PinoTransportOptions = { targets: Array<{ options: Record<string, unknown> }> };
+
+const mockTransport = vi.hoisted(() =>
+  vi.fn<(options: PinoTransportOptions) => { write: ReturnType<typeof vi.fn> }>(
+    () => ({ write: vi.fn() }),
+  ),
+);
 const mockPino = vi.hoisted(() => {
   const fn = vi.fn(() => ({
     info: vi.fn(),
@@ -57,9 +66,7 @@ describe("logger translateTime respects TZ environment variable", () => {
     await import("../middleware/logger.js");
 
     expect(mockTransport).toHaveBeenCalledOnce();
-    const { targets } = mockTransport.mock.calls[0][0] as {
-      targets: Array<{ options: Record<string, unknown> }>;
-    };
+    const { targets } = mockTransport.mock.calls[0][0];
     for (const target of targets) {
       expect(target.options.translateTime).toBe("SYS:HH:MM:ss");
     }

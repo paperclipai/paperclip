@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { HeartbeatRun } from "@paperclipai/shared";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -14,9 +15,16 @@ const mockAccessService = vi.hoisted(() => ({
   hasPermission: vi.fn(),
 }));
 
+// The route only inspects identity + lifecycle fields on the heartbeat run, so
+// the mock can return a narrow Pick of HeartbeatRun rather than a full row.
+type HeartbeatRunFixture = Pick<
+  HeartbeatRun,
+  "id" | "companyId" | "agentId" | "status" | "startedAt" | "createdAt"
+>;
+
 const mockHeartbeatService = vi.hoisted(() => ({
-  getRun: vi.fn(async () => null),
-  getActiveRunForAgent: vi.fn(async () => null),
+  getRun: vi.fn<(runId: string) => Promise<HeartbeatRunFixture | null>>(async () => null),
+  getActiveRunForAgent: vi.fn<(agentId: string) => Promise<HeartbeatRunFixture | null>>(async () => null),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));

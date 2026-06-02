@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { companyService } from "../services/companies.js";
 import { agentService } from "../services/agents.js";
 
-function createSelectSequenceDb(results: unknown[]) {
+// Each entry in `results` is one query's row-set, popped in FIFO order as the
+// chain's then() resolves. Typing the outer container as unknown[][] (not
+// unknown[]) lets `pending.shift() ?? []` keep its row-array shape.
+function createSelectSequenceDb(results: unknown[][]) {
   const pending = [...results];
   const chain = {
     from: vi.fn(() => chain),

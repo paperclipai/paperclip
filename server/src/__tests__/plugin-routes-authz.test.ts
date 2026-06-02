@@ -145,9 +145,10 @@ describe.sequential("plugin install and upgrade authz", () => {
     const res = await request(app).get("/api/plugins/examples");
 
     expect(res.status).toBe(200);
-    const packageNames = res.body.map((plugin: { packageName: string }) => plugin.packageName);
-    const byPackageName = new Map(
-      res.body.map((plugin: { packageName: string; experimental: boolean }) => [plugin.packageName, plugin]),
+    type PluginExample = { packageName: string; experimental: boolean };
+    const packageNames = res.body.map((plugin: PluginExample) => plugin.packageName);
+    const byPackageName = new Map<string, PluginExample>(
+      res.body.map((plugin: PluginExample) => [plugin.packageName, plugin]),
     );
     expect(packageNames).toContain("@paperclipai/plugin-workspace-diff");
     expect(packageNames).toContain("@paperclipai/plugin-llm-wiki");
