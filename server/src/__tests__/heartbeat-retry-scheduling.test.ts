@@ -20,6 +20,8 @@ import {
 } from "./helpers/embedded-postgres.js";
 import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
+  BOUNDED_TRANSIENT_HEARTBEAT_SUSTAINED_RETRY_INTERVAL_MS,
+  BOUNDED_TRANSIENT_HEARTBEAT_SUSTAINED_RETRY_LOG_EVERY,
   MAX_TURN_CONTINUATION_RETRY_REASON,
   MAX_TURN_CONTINUATION_WAKE_REASON,
   heartbeatService,
@@ -1091,7 +1093,11 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(issue?.executionRunId).toBeNull();
   });
 
-  it("exhausts bounded retries after the hard cap", async () => {
+  it("queues sustained-outage retries at a flat 15m interval after the bounded cap", async () => {
+    // STOA-181b: a sustained Anthropic outage must never strand the customer
+    // past the self-healing SLA, so the default transient-retry path stays in
+    // a 15m retry cycle (with jitter) past the bounded cap instead of returning
+    // retry_exhausted.
     const companyId = randomUUID();
     const agentId = randomUUID();
     const cappedRunId = randomUUID();
@@ -1139,40 +1145,184 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       createdAt: now,
     });
 
-    const exhausted = await heartbeat.scheduleBoundedRetry(cappedRunId, {
+    const scheduled = await heartbeat.scheduleBoundedRetry(cappedRunId, {
       now,
       random: () => 0.5,
     });
 
-    expect(exhausted).toEqual({
-      outcome: "retry_exhausted",
-      attempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length + 1,
-      maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
-    });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+    expect(scheduled.attempt).toBe(BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length + 1);
+    expect(scheduled.dueAt.toISOString()).toBe(
+      new Date(now.getTime() + BOUNDED_TRANSIENT_HEARTBEAT_SUSTAINED_RETRY_INTERVAL_MS).toISOString(),
+    );
 
-    const runCount = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.companyId, companyId))
-      .then((rows) => rows[0]?.count ?? 0);
-    expect(runCount).toBe(1);
-
-    const exhaustionEvent = await db
+    const sustainedEvent = await db
       .select({
         message: heartbeatRunEvents.message,
         payload: heartbeatRunEvents.payload,
       })
       .from(heartbeatRunEvents)
-      .where(eq(heartbeatRunEvents.runId, cappedRunId))
+      .where(
+        and(
+          eq(heartbeatRunEvents.runId, cappedRunId),
+          sql`${heartbeatRunEvents.message} like 'Sustained transient-upstream outage:%'`,
+        ),
+      )
       .orderBy(sql`${heartbeatRunEvents.id} desc`)
       .then((rows) => rows[0] ?? null);
 
-    expect(exhaustionEvent?.message).toContain("Bounded retry exhausted");
-    expect(exhaustionEvent?.payload).toMatchObject({
+    expect(sustainedEvent?.message).toContain("Sustained transient-upstream outage");
+    expect(sustainedEvent?.payload).toMatchObject({
       retryReason: "transient_failure",
-      scheduledRetryAttempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
+      scheduledRetryAttempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length + 1,
+      sustainedFallbackAttempt: 1,
       maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
+      circuitBreakerLogEvery: BOUNDED_TRANSIENT_HEARTBEAT_SUSTAINED_RETRY_LOG_EVERY,
+      sustainedIntervalMs: BOUNDED_TRANSIENT_HEARTBEAT_SUSTAINED_RETRY_INTERVAL_MS,
     });
+  });
+
+  it("only emits the sustained-outage circuit-breaker warning on the first sustained attempt and every Nth thereafter", async () => {
+    // STOA-181b: log spam guard — observability without flooding events.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const now = new Date("2026-04-20T18:30:00.000Z");
+    const maxBounded = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+      },
+      permissions: {},
+    });
+
+    async function scheduleAt(sustainedAttempt: number) {
+      const runId = randomUUID();
+      const scheduledRetryAttempt = maxBounded + sustainedAttempt - 1;
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        status: "failed",
+        error: "still transient",
+        errorCode: "adapter_failed",
+        finishedAt: now,
+        scheduledRetryAttempt,
+        scheduledRetryReason: "transient_failure",
+        contextSnapshot: { wakeReason: "transient_failure_retry" },
+        updatedAt: now,
+        createdAt: now,
+      });
+      const result = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0.5 });
+      const sustainedEvents = await db
+        .select({ message: heartbeatRunEvents.message })
+        .from(heartbeatRunEvents)
+        .where(
+          and(
+            eq(heartbeatRunEvents.runId, runId),
+            sql`${heartbeatRunEvents.message} like 'Sustained transient-upstream outage:%'`,
+          ),
+        );
+      return { result, sustainedLogCount: sustainedEvents.length };
+    }
+
+    // First sustained attempt → logs once.
+    const first = await scheduleAt(1);
+    expect(first.result.outcome).toBe("scheduled");
+    expect(first.sustainedLogCount).toBe(1);
+
+    // Second sustained attempt → still scheduled, no new log (between cadence ticks).
+    const second = await scheduleAt(2);
+    expect(second.result.outcome).toBe("scheduled");
+    expect(second.sustainedLogCount).toBe(0);
+
+    // 12th sustained attempt → logs again (circuit-breaker cadence).
+    const twelfth = await scheduleAt(BOUNDED_TRANSIENT_HEARTBEAT_SUSTAINED_RETRY_LOG_EVERY);
+    expect(twelfth.result.outcome).toBe("scheduled");
+    expect(twelfth.sustainedLogCount).toBe(1);
+  });
+
+  it("still exhausts retries at the cap when callers pass an explicit maxAttempts override", async () => {
+    // Sustained-outage fallback is scoped to the default transient-retry path.
+    // Callers like max-turn continuation, which pass their own maxAttempts and
+    // delayMs, must still receive retry_exhausted at their configured cap.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const cappedRunId = randomUUID();
+    const now = new Date("2026-04-20T19:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ClaudeCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+      },
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: cappedRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "max-turns wall",
+      errorCode: "adapter_failed",
+      finishedAt: now,
+      scheduledRetryAttempt: 2,
+      scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      resultJson: { stopReason: "max_turns_exhausted" },
+      contextSnapshot: { wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON },
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    const exhausted = await heartbeat.scheduleBoundedRetry(cappedRunId, {
+      now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 1_000,
+    });
+
+    expect(exhausted).toEqual({
+      outcome: "retry_exhausted",
+      attempt: 3,
+      maxAttempts: 2,
+    });
+
+    const exhaustionEvent = await db
+      .select({ message: heartbeatRunEvents.message })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, cappedRunId))
+      .orderBy(sql`${heartbeatRunEvents.id} desc`)
+      .then((rows) => rows[0] ?? null);
+    expect(exhaustionEvent?.message).toContain("Bounded retry exhausted");
   });
 
   it("advances codex transient fallback stages across bounded retry attempts", async () => {
