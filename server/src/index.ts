@@ -690,6 +690,14 @@ export async function startServer(): Promise<StartedServer> {
     resolveSessionFromHeaders,
   });
 
+  // AGNB ported worker jobs (Phase 5). Opt-in via PAPERCLIP_AGNB_JOBS=true.
+  if (process.env.PAPERCLIP_AGNB_JOBS === "true") {
+    const { createAgnbScheduler, setAgnbScheduler } = await import("./agnb/scheduler.js");
+    const agnbScheduler = createAgnbScheduler(db as any);
+    setAgnbScheduler(agnbScheduler);
+    agnbScheduler.start();
+  }
+
   void reconcilePersistedRuntimeServicesOnStartup(db as any)
     .then((result) => {
       if (result.reconciled > 0) {
