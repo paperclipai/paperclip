@@ -3482,3 +3482,243 @@ describe("normalizeAdapterManagedRuntimeServices", () => {
     });
   });
 });
+
+describeEmbeddedPostgres("runProjectWorkspaceSetupCommand (via realizeExecutionWorkspace)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let companyId!: string;
+  let projectId!: string;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-setup-command-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  afterEach(async () => {
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(companies);
+  });
+
+  async function setupCompanyAndProject() {
+    companyId = randomUUID();
+    projectId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Test Company",
+      issuePrefix: `TC${companyId.replace(/-/g, "").slice(0, 4).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Test Project",
+      status: "in_progress",
+    });
+  }
+
+  it("fires when setup_command is set on the project workspace", async () => {
+    await setupCompanyAndProject();
+    const repoRoot = await createTempRepo();
+    const workspaceId = randomUUID();
+    const markerFile = path.join(repoRoot, "setup-ran.txt");
+
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "default",
+      sourceType: "local_path",
+      cwd: repoRoot,
+      isPrimary: false,
+      setupCommand: `printf 'setup ok' > ${markerFile}`,
+    });
+
+    await realizeExecutionWorkspace({
+      db,
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId,
+        workspaceId,
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: { workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}-{{slug}}" } },
+      issue: { id: "issue-1", identifier: "PAP-1", title: "test" },
+      agent: { id: "agent-1", name: "Test Agent", companyId },
+    });
+
+    await expect(fs.readFile(markerFile, "utf8")).resolves.toBe("setup ok");
+  });
+
+  it("is a no-op when setup_command is null on the project workspace", async () => {
+    await setupCompanyAndProject();
+    const repoRoot = await createTempRepo();
+    const workspaceId = randomUUID();
+    const markerFile = path.join(repoRoot, "setup-ran.txt");
+
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "default",
+      sourceType: "local_path",
+      cwd: repoRoot,
+      isPrimary: false,
+    });
+
+    await realizeExecutionWorkspace({
+      db,
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId,
+        workspaceId,
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: { workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}-{{slug}}" } },
+      issue: { id: "issue-1", identifier: "PAP-2", title: "test" },
+      agent: { id: "agent-1", name: "Test Agent", companyId },
+    });
+
+    await expect(fs.stat(markerFile)).rejects.toThrow();
+  });
+
+  it("is a no-op when db is not provided", async () => {
+    const repoRoot = await createTempRepo();
+    const markerFile = path.join(repoRoot, "setup-ran.txt");
+
+    const result = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: { workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}-{{slug}}" } },
+      issue: { id: "issue-1", identifier: "PAP-3", title: "test" },
+      agent: { id: "agent-1", name: "Test Agent", companyId: "company-1" },
+    });
+
+    expect(result.warnings).toHaveLength(0);
+    await expect(fs.stat(markerFile)).rejects.toThrow();
+  });
+
+  it("fails open on non-zero exit: run proceeds and warning is returned", async () => {
+    await setupCompanyAndProject();
+    const repoRoot = await createTempRepo();
+    const workspaceId = randomUUID();
+
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "default",
+      sourceType: "local_path",
+      cwd: repoRoot,
+      isPrimary: false,
+      setupCommand: "exit 1",
+    });
+
+    const result = await realizeExecutionWorkspace({
+      db,
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId,
+        workspaceId,
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: { workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}-{{slug}}" } },
+      issue: { id: "issue-1", identifier: "PAP-4", title: "test" },
+      agent: { id: "agent-1", name: "Test Agent", companyId },
+    });
+
+    expect(result.worktreePath).toBeTruthy();
+    expect(result.warnings.some((w) => w.includes("setup command failed"))).toBe(true);
+  });
+
+  it("records a workspace_setup phase in the operation recorder", async () => {
+    await setupCompanyAndProject();
+    const repoRoot = await createTempRepo();
+    const workspaceId = randomUUID();
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "default",
+      sourceType: "local_path",
+      cwd: repoRoot,
+      isPrimary: false,
+      setupCommand: "printf 'ok'",
+    });
+
+    await realizeExecutionWorkspace({
+      db,
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId,
+        workspaceId,
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: { workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}-{{slug}}" } },
+      issue: { id: "issue-1", identifier: "PAP-5", title: "test" },
+      agent: { id: "agent-1", name: "Test Agent", companyId },
+      recorder,
+    });
+
+    expect(operations.some((op) => op.phase === "workspace_setup")).toBe(true);
+    const setupOp = operations.find((op) => op.phase === "workspace_setup");
+    expect(setupOp?.command).toBe("printf 'ok'");
+    expect(setupOp?.result.status).toBe("succeeded");
+  });
+
+  it("exposes PAPERCLIP_WORKSPACE_BASE_CWD in the setup command environment", async () => {
+    await setupCompanyAndProject();
+    const repoRoot = await createTempRepo();
+    const workspaceId = randomUUID();
+    const envFile = path.join(repoRoot, "env-dump.txt");
+
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "default",
+      sourceType: "local_path",
+      cwd: repoRoot,
+      isPrimary: false,
+      setupCommand: `printf '%s' "$PAPERCLIP_WORKSPACE_BASE_CWD" > ${envFile}`,
+    });
+
+    await realizeExecutionWorkspace({
+      db,
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId,
+        workspaceId,
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: { workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}-{{slug}}" } },
+      issue: { id: "issue-1", identifier: "PAP-6", title: "test" },
+      agent: { id: "agent-1", name: "Test Agent", companyId },
+    });
+
+    const written = await fs.readFile(envFile, "utf8");
+    expect(written).toBe(repoRoot);
+  });
+});
