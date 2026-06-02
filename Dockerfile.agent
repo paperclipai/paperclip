@@ -185,25 +185,26 @@ ENV PATH=/home/node/.npm-global/bin:$PATH
 # (BLO-8707). /usr/local/bin precedes /usr/bin on PATH, so this shadows any stock
 # ffmpeg already present.
 #
-# Source host is harbor.blockcast.net (not the registry.blockcast.net alias the
-# source diff named): both names front the same Harbor backend, but the
-# docker-agent.yml build only `docker login`s harbor.blockcast.net. A
-# `COPY --from=registry.blockcast.net/...` would 401 at build time unless the
-# runner happened to hold a stale registry.blockcast.net login (the
-# pim-multicast-gateway e2e workflow logs in there explicitly for exactly this
-# reason). Pulling via harbor.blockcast.net reuses the workflow's existing login.
+# Source host is registry.blockcast.net (BLO-8719): the digest below is published
+# to the LAN-local cache registry registry.blockcast.net and to Docker Hub, but it
+# is NOT replicated to harbor.blockcast.net — a `COPY --from=harbor.blockcast.net/
+# blockcast/pim-multicast-gateway/ffmpeg-publisher@sha256:...` resolves to a 404
+# `not found` at build time (the harbor login succeeds; the manifest just is not
+# there). The pim-multicast-gateway e2e-codec-matrix.yml pulls this exact digest
+# from registry.blockcast.net (FF_IMAGE_LOCAL), so docker-agent.yml now logs into
+# registry.blockcast.net (same HARBOR_USERNAME/HARBOR_PASSWORD) to make this COPY
+# resolve.
 #
 # Digest-pinned (matches pim-multicast-gateway e2e-codec-matrix.yml FF_IMAGE_LOCAL)
-# for reproducible agent-image builds; content-addressed, so it is identical on
-# either Harbor hostname.
+# for reproducible agent-image builds.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        libx264-164 libx265-199 libvpx7 libaom3 libopus0 \
        libfreetype6 libharfbuzz0b libfontconfig1 libgomp1 libssl3 \
   && rm -rf /var/lib/apt/lists/*
-COPY --from=harbor.blockcast.net/blockcast/pim-multicast-gateway/ffmpeg-publisher@sha256:cba732a28503331264394d7259001e0db66a6503293f8384886f158f1d484bae \
+COPY --from=registry.blockcast.net/blockcast/pim-multicast-gateway/ffmpeg-publisher@sha256:cba732a28503331264394d7259001e0db66a6503293f8384886f158f1d484bae \
      /usr/local/bin/ffmpeg  /usr/local/bin/ffmpeg
-COPY --from=harbor.blockcast.net/blockcast/pim-multicast-gateway/ffmpeg-publisher@sha256:cba732a28503331264394d7259001e0db66a6503293f8384886f158f1d484bae \
+COPY --from=registry.blockcast.net/blockcast/pim-multicast-gateway/ffmpeg-publisher@sha256:cba732a28503331264394d7259001e0db66a6503293f8384886f158f1d484bae \
      /usr/local/bin/ffprobe /usr/local/bin/ffprobe
 RUN ffmpeg -hide_banner -muxers 2>&1 | grep -qE '(^|[[:space:]])moq_mmt([[:space:]]|$)' \
   || (echo 'ERROR: moq_mmt muxer missing from copied ffmpeg' && exit 1)
