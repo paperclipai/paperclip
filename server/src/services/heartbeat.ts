@@ -319,6 +319,23 @@ function mergeAdapterRecoveryMetadata(input: {
   };
 }
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set(["approval_approved"]);
+// Retry-class wake reasons. When a wake arrives with one of these reasons, no
+// PAPERCLIP_TASK_ID on the payload, AND the assignee has nothing actionable in
+// the inbox, the scheduler drops the wake instead of enqueuing another retry.
+// See STO-838 (sibling of STO-267) for background — without this guard, any
+// failure that does not terminate the originating run cleanly can leave the
+// scheduler retrying forever against an agent that has no work.
+//
+// `heartbeat_timer` is intentionally NOT in this set: original heartbeat ticks
+// are legitimate even when the inbox is empty (they may discover newly assigned
+// issues mid-tick).
+const RETRY_CLASS_WAKE_REASONS = new Set([
+  "process_lost_retry",
+  "transient_failure_retry",
+  "bounded_transient_heartbeat_retry",
+  "retry_failed_run",
+]);
+const ACTIONABLE_INBOX_STATUSES = ["todo", "in_progress", "in_review", "blocked"] as const;
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -9043,6 +9060,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     };
 
+    // STO-838: explicit "cancelled" disposition for retry-class wakes that have
+    // no work to do. We do not call the adapter and do not enqueue a follow-up
+    // retry. Distinct from "skipped" so audits can separate "I refused this"
+    // (skipped) from "I dropped this defensively to prevent a runaway loop"
+    // (cancelled).
+    const writeCancelledRequest = async (cancelReason: string) => {
+      await db.insert(agentWakeupRequests).values({
+        companyId: agent.companyId,
+        agentId,
+        source,
+        triggerDetail,
+        reason: cancelReason,
+        payload,
+        status: "cancelled",
+        requestedByActorType: opts.requestedByActorType ?? null,
+        requestedByActorId: opts.requestedByActorId ?? null,
+        idempotencyKey: opts.idempotencyKey ?? null,
+        finishedAt: new Date(),
+      });
+    };
+
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
     if (!projectId && issueId) {
       // Look up by either UUID or identifier (e.g. "ENV-13"), but always scope
@@ -9107,6 +9145,51 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+
+    // STO-838: drop retry-class wakes that have no work to do. Three conditions
+    // must all hold:
+    //   (1) issueId is null on payload + contextSnapshot (no PAPERCLIP_TASK_ID)
+    //   (2) reason is in RETRY_CLASS_WAKE_REASONS (heartbeat_timer is exempt;
+    //       original ticks are legitimate even with empty inboxes)
+    //   (3) the assignee's actionable inbox is empty (no issue in
+    //       todo/in_progress/in_review/blocked assigned to this agent)
+    // Sibling of STO-267. Without this guard, a failure mode that does not
+    // terminate the originating run cleanly (schema-validation rejection,
+    // adapter pre-claim crash, etc.) can leave the scheduler retrying forever.
+    if (!issueId && reason && RETRY_CLASS_WAKE_REASONS.has(reason)) {
+      const actionableRow = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, agent.companyId),
+            eq(issues.assigneeAgentId, agentId),
+            inArray(issues.status, ACTIONABLE_INBOX_STATUSES as unknown as string[]),
+          ),
+        )
+        .limit(1);
+      if (actionableRow.length === 0) {
+        const dropReason = "dropped_no_task_empty_inbox";
+        await writeCancelledRequest(dropReason);
+        await logActivity(db, {
+          companyId: agent.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId,
+          runId: null,
+          action: "agent.wakeup_dropped_no_task_empty_inbox",
+          entityType: "agent",
+          entityId: agentId,
+          details: {
+            requestedReason: reason,
+            source,
+            triggerDetail,
+            securityPrinciples: ["Fail Securely", "Secure Defaults"],
+          },
+        });
+        return null;
+      }
     }
 
     if (issueId) {
