@@ -1,5 +1,27 @@
 import { agnb, unwrap } from "./agnbClient";
 
+/**
+ * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * server (under /api/agnb/*). As each route group migrates off the standalone
+ * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
+ */
+async function ported<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
+  const res = await fetch(`/api/agnb${path}`, {
+    method: init?.method ?? "GET",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
+    ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `AGNB request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export interface ApiToken {
   id: string; name: string; scopes: string[] | null; active: boolean; created_at: string; created_by: string;
   last_used_at: string | null; request_count: number; requests_per_minute: number | null;
@@ -10,19 +32,24 @@ export interface Recipe { id: string; name: string; trigger_event: string; trigg
 export interface ContentComment { id: string; platform: string; author: string | null; body: string; sentiment: string | null; is_question: boolean | null; replied: boolean; reply_draft: string | null; created_at: string | null; ingested_at: string }
 
 export const miscApi = {
-  tokens: () => agnb.get<{ ok: boolean; error?: string; tokens: ApiToken[] }>("/tokens").then((r) => unwrap(r).tokens),
+  // Ported to Paperclip server (misc group) — same-origin /api/agnb/tokens.
+  tokens: () => ported<{ ok: boolean; error?: string; tokens: ApiToken[] }>("/tokens").then((r) => unwrap(r).tokens),
   createToken: (b: { name: string; scopes: string[]; requests_per_minute?: number }) =>
-    agnb.post<{ ok: boolean; error?: string; token?: string }>("/tokens", b).then((r) => unwrap(r)),
-  deleteToken: (id: string) => agnb.delete(`/tokens?id=${id}`),
+    ported<{ ok: boolean; error?: string; token?: string }>("/tokens", { method: "POST", body: b }).then((r) => unwrap(r)),
+  deleteToken: (id: string) => ported(`/tokens?id=${id}`, { method: "DELETE" }),
 
-  quota: () => agnb.get<{ ok: boolean; error?: string; usage: QuotaRow[] }>("/quota").then((r) => unwrap(r).usage),
+  // Ported to Paperclip server (misc group) — same-origin /api/agnb/quota.
+  quota: () => ported<{ ok: boolean; error?: string; usage: QuotaRow[] }>("/quota").then((r) => unwrap(r).usage),
+  // PHASE 5: content-performance reads a Supabase VIEW not migrated — left cross-origin.
   contentPerformance: (days = 30) => agnb.get<{ ok: boolean; error?: string; rows: PerfRow[] }>(`/content-performance?days=${days}`).then((r) => unwrap(r).rows),
 
-  workflows: () => agnb.get<{ ok: boolean; error?: string; recipes: Recipe[] }>("/workflow-recipes").then((r) => unwrap(r).recipes),
-  toggleWorkflow: (id: string, active: boolean) => agnb.patch("/workflow-recipes", { id, active }),
-  deleteWorkflow: (id: string) => agnb.delete(`/workflow-recipes?id=${id}`),
+  // Ported to Paperclip server (misc group) — same-origin /api/agnb/workflow-recipes.
+  workflows: () => ported<{ ok: boolean; error?: string; recipes: Recipe[] }>("/workflow-recipes").then((r) => unwrap(r).recipes),
+  toggleWorkflow: (id: string, active: boolean) => ported("/workflow-recipes", { method: "PATCH", body: { id, active } }),
+  deleteWorkflow: (id: string) => ported(`/workflow-recipes?id=${id}`, { method: "DELETE" }),
 
   comments: (filter?: string) => agnb.get<{ ok: boolean; error?: string; comments: ContentComment[] }>(`/comments${filter ? `?filter=${filter}` : ""}`).then((r) => unwrap(r).comments),
   markReplied: (id: string) => agnb.patch(`/comments?id=${id}&replied=1`, {}),
+  // PHASE 5: comments/draft-reply calls Gemini (LLM) — left cross-origin.
   draftReply: (id: string) => agnb.post(`/comments/draft-reply?id=${id}`, {}),
 };

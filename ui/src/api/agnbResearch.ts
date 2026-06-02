@@ -1,4 +1,30 @@
-import { agnb, unwrap } from "./agnbClient";
+/**
+ * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * server (under /api/agnb/*). As each route group migrates off the standalone
+ * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
+ */
+async function ported<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
+  const res = await fetch(`/api/agnb${path}`, {
+    method: init?.method ?? "GET",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
+    ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `AGNB request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+/** Unwrap AGNB's { ok, ...payload } envelope or throw on { ok:false, error }. */
+function unwrap<T>(r: { ok: boolean; error?: string } & T): T {
+  if (!r.ok) throw new Error(r.error ?? "AGNB error");
+  return r;
+}
 
 export interface Competitor {
   id: string; name: string; domain: string; sitemap_url: string; status: string;
@@ -27,33 +53,34 @@ export interface ContentBrief {
 }
 
 export const researchApi = {
+  // Ported to Paperclip server — same-origin /api/agnb/*.
   competitors: () =>
-    agnb.get<{ ok: boolean; error?: string; competitors: Competitor[]; gaps: ContentGap[] }>("/competitors").then((r) => unwrap(r)),
+    ported<{ ok: boolean; error?: string; competitors: Competitor[]; gaps: ContentGap[] }>("/competitors").then((r) => unwrap(r)),
   ideaInbox: () =>
-    agnb.get<{ ok: boolean; error?: string; ideas: BlogIdea[] }>("/idea-inbox").then((r) => unwrap(r).ideas),
+    ported<{ ok: boolean; error?: string; ideas: BlogIdea[] }>("/idea-inbox").then((r) => unwrap(r).ideas),
   rssFeeds: () =>
-    agnb.get<{ ok: boolean; error?: string; feeds: RssFeed[]; items: RssItem[] }>("/rss-feeds").then((r) => unwrap(r)),
+    ported<{ ok: boolean; error?: string; feeds: RssFeed[]; items: RssItem[] }>("/rss-feeds").then((r) => unwrap(r)),
   bofu: () =>
-    agnb.get<{ ok: boolean; error?: string; pages: BofuPage[] }>("/bofu").then((r) => unwrap(r).pages),
+    ported<{ ok: boolean; error?: string; pages: BofuPage[] }>("/bofu").then((r) => unwrap(r).pages),
   content: () =>
-    agnb.get<{ ok: boolean; error?: string; briefs: ContentBrief[] }>("/content").then((r) => unwrap(r).briefs),
+    ported<{ ok: boolean; error?: string; briefs: ContentBrief[] }>("/content").then((r) => unwrap(r).briefs),
 
   // --- competitors CRUD ---
-  addCompetitor: (b: { name: string; domain: string; sitemap_url: string }) => agnb.post("/competitors", b),
-  patchCompetitor: (id: string, b: Record<string, unknown>) => agnb.patch(`/competitors?id=${id}`, b),
-  deleteCompetitor: (id: string) => agnb.delete(`/competitors?id=${id}`),
+  addCompetitor: (b: { name: string; domain: string; sitemap_url: string }) => ported("/competitors", { method: "POST", body: b }),
+  patchCompetitor: (id: string, b: Record<string, unknown>) => ported(`/competitors?id=${id}`, { method: "PATCH", body: b }),
+  deleteCompetitor: (id: string) => ported(`/competitors?id=${id}`, { method: "DELETE" }),
   // --- idea inbox ---
-  captureIdea: (b: { raw_text: string; source?: string }) => agnb.post("/idea-inbox", b),
-  patchIdea: (id: string, b: { status?: string }) => agnb.patch(`/idea-inbox?id=${id}`, b),
-  deleteIdea: (id: string) => agnb.delete(`/idea-inbox?id=${id}`),
+  captureIdea: (b: { raw_text: string; source?: string }) => ported("/idea-inbox", { method: "POST", body: b }),
+  patchIdea: (id: string, b: { status?: string }) => ported(`/idea-inbox?id=${id}`, { method: "PATCH", body: b }),
+  deleteIdea: (id: string) => ported(`/idea-inbox?id=${id}`, { method: "DELETE" }),
   // --- rss ---
-  addFeed: (b: { name: string; url: string; category?: string }) => agnb.post("/rss-feeds", b),
-  deleteFeed: (id: string) => agnb.delete(`/rss-feeds?id=${id}`),
+  addFeed: (b: { name: string; url: string; category?: string }) => ported("/rss-feeds", { method: "POST", body: b }),
+  deleteFeed: (id: string) => ported(`/rss-feeds?id=${id}`, { method: "DELETE" }),
   // --- bofu ---
-  addBofu: (b: { url: string; title: string; content_type?: string; competitor?: string; primary_keyword?: string }) => agnb.post("/bofu", b),
-  deleteBofu: (id: string) => agnb.delete(`/bofu?id=${id}`),
+  addBofu: (b: { url: string; title: string; content_type?: string; competitor?: string; primary_keyword?: string }) => ported("/bofu", { method: "POST", body: b }),
+  deleteBofu: (id: string) => ported(`/bofu?id=${id}`, { method: "DELETE" }),
   // --- content briefs ---
-  createBrief: (b: { title: string; content_type?: string; stage?: string; primary_keyword?: string }) => agnb.post("/content", b),
-  patchBrief: (id: string, b: { stage?: string }) => agnb.patch(`/content?id=${id}`, b),
-  deleteBrief: (id: string) => agnb.delete(`/content?id=${id}`),
+  createBrief: (b: { title: string; content_type?: string; stage?: string; primary_keyword?: string }) => ported("/content", { method: "POST", body: b }),
+  patchBrief: (id: string, b: { stage?: string }) => ported(`/content?id=${id}`, { method: "PATCH", body: b }),
+  deleteBrief: (id: string) => ported(`/content?id=${id}`, { method: "DELETE" }),
 };

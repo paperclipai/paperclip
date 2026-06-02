@@ -1,5 +1,27 @@
 import { agnb, unwrap } from "./agnbClient";
 
+/**
+ * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * server (under /api/agnb/*). As each route group migrates off the standalone
+ * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
+ */
+async function ported<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
+  const res = await fetch(`/api/agnb${path}`, {
+    method: init?.method ?? "GET",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
+    ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `AGNB request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 /** Mirrors AGNB's Card (app/.../pipeline/pipeline-board.tsx). */
 export interface PipelineCard {
   id: string;
@@ -62,6 +84,8 @@ export interface PipelineBoard {
 }
 
 export const pipelineApi = {
+  // PHASE 5: GET /pipeline (loadPipelineBoard) reads live HubSpot deals/
+  // pipelines/owners/contacts + funnel — external CRM, left cross-origin.
   /** GET /pipeline → kanban board (columns + cards), funnel, last sync. */
   board: () =>
     agnb
@@ -75,6 +99,7 @@ export const pipelineApi = {
           errors: u.errors,
         } as PipelineBoard;
       }),
+  // PHASE 5: POST /pipeline/move calls HubSpot updateDealStage — cross-origin.
   /** POST /pipeline/move — change a deal's stage. */
   move: (deal_id: string, stage_id: string, lost_reason?: string) =>
     agnb.post<{ ok: boolean; error?: string }>("/pipeline/move", {
@@ -82,25 +107,31 @@ export const pipelineApi = {
       stage_id,
       ...(lost_reason ? { lost_reason } : {}),
     }),
+  // PHASE 5: POST /pipeline/create calls HubSpot createDeal — cross-origin.
   /** POST /pipeline/create — new deal in a stage. */
   createDeal: (body: { dealname: string; dealstage: string; amount?: number; closedate?: string }) =>
     agnb.post<{ ok: boolean; error?: string }>("/pipeline/create", body),
 
+  // Ported to Paperclip server — same-origin /api/agnb/pipeline/comments.
   comments: (dealId: string) =>
-    agnb.get<{ ok: boolean; error?: string; comments: PipelineComment[] }>(`/pipeline/comments?deal_id=${dealId}`).then((r) => unwrap(r).comments),
+    ported<{ ok: boolean; error?: string; comments: PipelineComment[] }>(`/pipeline/comments?deal_id=${dealId}`).then((r) => unwrap(r).comments),
   addComment: (deal_id: string, body: string) =>
-    agnb.post<{ ok: boolean; error?: string; comment: PipelineComment }>("/pipeline/comments", { deal_id, body }).then((r) => unwrap(r).comment),
+    ported<{ ok: boolean; error?: string; comment: PipelineComment }>("/pipeline/comments", { method: "POST", body: { deal_id, body } }).then((r) => unwrap(r).comment),
   deleteComment: (id: string) =>
-    agnb.delete<{ ok: boolean; error?: string }>(`/pipeline/comments?id=${id}`),
+    ported<{ ok: boolean; error?: string }>(`/pipeline/comments?id=${id}`, { method: "DELETE" }),
 
+  // PHASE 5: GET/PATCH /pipeline/tasks are HubSpot task reads/writes — cross-origin.
   tasks: (dealId: string) =>
     agnb.get<{ ok: boolean; error?: string; tasks: PipelineTask[] }>(`/pipeline/tasks?deal_id=${dealId}`).then((r) => unwrap(r).tasks),
   toggleTask: (task_id: string, status: "COMPLETED" | "NOT_STARTED") =>
     agnb.patch<{ ok: boolean; error?: string }>("/pipeline/tasks", { task_id, status }),
 
+  // Ported to Paperclip server — same-origin /api/agnb/pipeline/activity.
+  // NOTE: server feed is comments-only (pipeline_move_log not yet migrated).
   activity: (dealId: string) =>
-    agnb.get<{ ok: boolean; error?: string; activity: ActivityItem[] }>(`/pipeline/activity?deal_id=${dealId}`).then((r) => unwrap(r).activity),
+    ported<{ ok: boolean; error?: string; activity: ActivityItem[] }>(`/pipeline/activity?deal_id=${dealId}`).then((r) => unwrap(r).activity),
 
+  // PHASE 5: GET /pipeline/details reads HubSpot line items/quotes/tickets — cross-origin.
   details: (dealId: string) =>
     agnb.get<{ ok: boolean; error?: string } & DealDetails>(`/pipeline/details?deal_id=${dealId}`).then((r) => {
       const u = unwrap(r);

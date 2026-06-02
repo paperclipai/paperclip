@@ -1,5 +1,27 @@
 import { agnb, unwrap } from "./agnbClient";
 
+/**
+ * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * server (under /api/agnb/*). As each route group migrates off the standalone
+ * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
+ */
+async function ported<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
+  const res = await fetch(`/api/agnb${path}`, {
+    method: init?.method ?? "GET",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
+    ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `AGNB request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export interface InboxThread {
   thread_id: string; subject: string | null; status: string | null;
   lead_email: string | null; lead_name: string | null; campaign_name: string | null;
@@ -21,10 +43,11 @@ export interface ReplyLog {
 }
 
 export const inboxApi = {
+  // Ported to Paperclip server — same-origin /api/agnb/inbox.
   threads: (status?: string) =>
-    agnb.get<{ ok: boolean; error?: string; threads: InboxThread[] }>(`/inbox${status && status !== "all" ? `?status=${status}` : ""}`).then((r) => unwrap(r).threads),
+    ported<{ ok: boolean; error?: string; threads: InboxThread[] }>(`/inbox${status && status !== "all" ? `?status=${status}` : ""}`).then((r) => unwrap(r).threads),
   threadAction: (id: string, action: "archive" | "unarchive" | "mark_positive") =>
-    agnb.post(`/inbox/${id}/action`, { action }),
+    ported(`/inbox/${id}/action`, { method: "POST", body: { action } }),
 
   approvals: () => agnb.get<{ ok: boolean; error?: string; drafts: CampaignDraft[] }>("/approval").then((r) => unwrap(r).drafts),
   approvalAction: (id: string, action: "approve" | "reject" | "finalize") =>

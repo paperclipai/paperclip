@@ -1,5 +1,22 @@
 import { agnb, unwrap } from "./agnbClient";
 
+/**
+ * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * server (under /api/agnb/*). As each route group migrates off the standalone
+ * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
+ */
+async function ported<T>(path: string): Promise<T> {
+  const res = await fetch(`/api/agnb${path}`, {
+    credentials: "include",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `AGNB request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export interface YtIdea { id: string; title: string; source: string | null; source_url: string | null; est_views: number | null; score: number | null; status: string; notes: string | null; created_at: string }
 export interface YtScript { id: string; title: string; status: string; duration_sec: number | null; hook_text: string | null; publish_at: string | null; published_url: string | null; views: number; watch_time_pct: number | null; ctr_pct: number | null; updated_at: string }
 export interface YtTitle { id: string; script_id: string; title: string; is_winner: boolean; ctr_pct: number | null; votes: number | null; created_at: string }
@@ -14,7 +31,8 @@ export interface YoutubeData {
 export interface Trend { title: string; source: string; angle: string; score: number; source_url?: string }
 
 export const youtubeApi = {
-  all: () => agnb.get<{ ok: boolean; error?: string } & YoutubeData>("/youtube").then((r) => {
+  // Ported to Paperclip server — same-origin /api/agnb/youtube.
+  all: () => ported<{ ok: boolean; error?: string } & YoutubeData>("/youtube").then((r) => {
     const u = unwrap(r);
     return { ideas: u.ideas, scripts: u.scripts, titles: u.titles, thumbnails: u.thumbnails, shorts: u.shorts, performance: u.performance } as YoutubeData;
   }),

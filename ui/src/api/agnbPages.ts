@@ -1,5 +1,22 @@
 import { agnb, unwrap } from "./agnbClient";
 
+/**
+ * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * server (under /api/agnb/*). As each route group migrates off the standalone
+ * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
+ */
+async function ported<T>(path: string): Promise<T> {
+  const res = await fetch(`/api/agnb${path}`, {
+    credentials: "include",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `AGNB request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 // ---- Forecast ----
 export interface ForecastRow {
   bucket_id: string | null;
@@ -128,33 +145,34 @@ export interface InvoiceRow {
 export const agnbPagesApi = {
   forecast: () =>
     agnb.get<{ ok: boolean; error?: string } & ForecastResp>("/forecast").then((r) => unwrap(r)),
+  // Ported to Paperclip server — same-origin /api/agnb/demos.
   demos: () =>
-    agnb
-      .get<{ ok: boolean; error?: string; upcoming: DemoRow[]; past: DemoRow[] }>("/demos")
+    ported<{ ok: boolean; error?: string; upcoming: DemoRow[]; past: DemoRow[] }>("/demos")
       .then((r) => unwrap(r)),
+  // /channels not yet ported — external (left cross-origin).
   channels: (days = 90) =>
     agnb
       .get<{ ok: boolean; error?: string; days: number; channels: ChannelRow[] }>(`/channels?days=${days}`)
       .then((r) => unwrap(r)),
+  // Ported to Paperclip server — same-origin /api/agnb/attribution.
   attribution: () =>
-    agnb
-      .get<{ ok: boolean; error?: string; matched: number; unmatched: number; recent_unmatched: UnmatchedEvent[] }>("/attribution")
+    ported<{ ok: boolean; error?: string; matched: number; unmatched: number; recent_unmatched: UnmatchedEvent[] }>("/attribution")
       .then((r) => unwrap(r)),
+  // Ported to Paperclip server — same-origin /api/agnb/funnel.
   funnel: () =>
-    agnb
-      .get<{ ok: boolean; error?: string; snapshot_date: string | null; steps: FunnelStep[]; sources?: PageviewSource[]; pages?: TopPage[] }>("/funnel")
+    ported<{ ok: boolean; error?: string; snapshot_date: string | null; steps: FunnelStep[]; sources?: PageviewSource[]; pages?: TopPage[] }>("/funnel")
       .then((r) => unwrap(r)),
+  // Ported to Paperclip server — same-origin /api/agnb/crm-hygiene.
   crmHygiene: () =>
-    agnb
-      .get<{ ok: boolean; error?: string; issues: HygieneIssue[] }>("/crm-hygiene")
+    ported<{ ok: boolean; error?: string; issues: HygieneIssue[] }>("/crm-hygiene")
       .then((r) => unwrap(r).issues),
+  // Ported to Paperclip server — same-origin /api/agnb/win-loss (GET read).
   winLoss: (outcome = "all") =>
-    agnb
-      .get<{ ok: boolean; error?: string; interviews: Interview[] }>(`/win-loss${outcome !== "all" ? `?outcome=${outcome}` : ""}`)
+    ported<{ ok: boolean; error?: string; interviews: Interview[] }>(`/win-loss${outcome !== "all" ? `?outcome=${outcome}` : ""}`)
       .then((r) => unwrap(r).interviews),
+  // Ported to Paperclip server — same-origin /api/agnb/invoices (GET read).
   invoices: () =>
-    agnb
-      .get<{ ok: boolean; error?: string; invoices: InvoiceRow[] }>("/invoices")
+    ported<{ ok: boolean; error?: string; invoices: InvoiceRow[] }>("/invoices")
       .then((r) => unwrap(r).invoices),
   createInvoice: (body: {
     customer_name: string;

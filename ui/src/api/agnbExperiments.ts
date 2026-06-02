@@ -1,5 +1,22 @@
 import { agnb, unwrap } from "./agnbClient";
 
+/**
+ * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * server (under /api/agnb/*). As each route group migrates off the standalone
+ * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
+ */
+async function ported<T>(path: string): Promise<T> {
+  const res = await fetch(`/api/agnb${path}`, {
+    credentials: "include",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `AGNB request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export interface CsvUpload {
   id: string; filename: string; rows_total: number | null; rows_kept: number | null; rows_dedup: number | null; rows_suppressed: number | null; status: string; rocket_file_id: string | null; uploaded_at: string;
 }
@@ -16,6 +33,8 @@ export interface CohortIcp { id: string; name: string; tier: string }
 export const experimentsApi = {
   csv: () => agnb.get<{ ok: boolean; error?: string; uploads: CsvUpload[] }>("/csv").then((r) => unwrap(r).uploads),
   subjects: () => agnb.get<{ ok: boolean; error?: string; subjects: SubjectLine[] }>("/subjects").then((r) => unwrap(r).subjects),
-  experiments: () => agnb.get<{ ok: boolean; error?: string; experiments: Experiment[] }>("/experiments").then((r) => unwrap(r).experiments),
-  cohorts: () => agnb.get<{ ok: boolean; error?: string; snapshots: CohortSnapshot[]; buckets: CohortBucket[]; icps: CohortIcp[] }>("/cohorts").then((r) => unwrap(r)),
+  // Ported to Paperclip server — same-origin /api/agnb/experiments.
+  experiments: () => ported<{ ok: boolean; error?: string; experiments: Experiment[] }>("/experiments").then((r) => unwrap(r).experiments),
+  // Ported to Paperclip server — same-origin /api/agnb/cohorts.
+  cohorts: () => ported<{ ok: boolean; error?: string; snapshots: CohortSnapshot[]; buckets: CohortBucket[]; icps: CohortIcp[] }>("/cohorts").then((r) => unwrap(r)),
 };

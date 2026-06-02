@@ -1,5 +1,22 @@
 import { agnb, unwrap } from "./agnbClient";
 
+/**
+ * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * server (under /api/agnb/*). As each route group migrates off the standalone
+ * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
+ */
+async function ported<T>(path: string): Promise<T> {
+  const res = await fetch(`/api/agnb${path}`, {
+    credentials: "include",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `AGNB request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export interface Campaign {
   id: string;
   name: string | null;
@@ -91,22 +108,24 @@ export interface IcpRow {
 }
 
 export const campaignsApi = {
+  // Ported to Paperclip server (Phase 4 group 1) — same-origin /api/agnb/campaigns.
   campaigns: () =>
-    agnb.get<{ ok: boolean; error?: string; campaigns: Campaign[]; senders: Sender[] }>("/campaigns").then((r) => unwrap(r)),
+    ported<{ ok: boolean; error?: string; campaigns: Campaign[]; senders: Sender[] }>("/campaigns").then((r) => unwrap(r)),
+  // Ported to Paperclip server (Phase 4 group: catalog) — same-origin /api/agnb/*.
   targeting: () =>
-    agnb.get<{ ok: boolean; error?: string; targetings: SavedTargeting[] }>("/targeting").then((r) => unwrap(r).targetings),
+    ported<{ ok: boolean; error?: string; targetings: SavedTargeting[] }>("/targeting").then((r) => unwrap(r).targetings),
   personas: () =>
-    agnb.get<{ ok: boolean; error?: string; personas: Persona[] }>("/studio/personas").then((r) => unwrap(r).personas),
+    ported<{ ok: boolean; error?: string; personas: Persona[] }>("/studio/personas").then((r) => unwrap(r).personas),
   products: () =>
-    agnb.get<{ ok: boolean; error?: string; products: Product[] }>("/studio/products").then((r) => unwrap(r).products),
+    ported<{ ok: boolean; error?: string; products: Product[] }>("/studio/products").then((r) => unwrap(r).products),
   justdial: () =>
-    agnb.get<{ ok: boolean; error?: string; jobs: JustdialJob[] }>("/leads/justdial").then((r) => unwrap(r).jobs),
+    ported<{ ok: boolean; error?: string; jobs: JustdialJob[] }>("/leads/justdial").then((r) => unwrap(r).jobs),
   linkedin: () =>
-    agnb.get<{ ok: boolean; error?: string; profiles: LinkedinProfile[] }>("/linkedin").then((r) => unwrap(r).profiles),
+    ported<{ ok: boolean; error?: string; profiles: LinkedinProfile[] }>("/linkedin").then((r) => unwrap(r).profiles),
   buckets: () =>
-    agnb.get<{ ok: boolean; error?: string; buckets: BucketRow[] }>("/buckets").then((r) => unwrap(r).buckets),
+    ported<{ ok: boolean; error?: string; buckets: BucketRow[] }>("/buckets").then((r) => unwrap(r).buckets),
   icps: () =>
-    agnb.get<{ ok: boolean; error?: string; icps: IcpRow[] }>("/icps").then((r) => unwrap(r).icps),
+    ported<{ ok: boolean; error?: string; icps: IcpRow[] }>("/icps").then((r) => unwrap(r).icps),
 
   // --- write actions ---
   createPersona: (body: { name: string; title?: string; description?: string }) =>
