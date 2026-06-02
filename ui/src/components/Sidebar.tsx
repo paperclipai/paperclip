@@ -24,6 +24,7 @@ import {
   CalendarClock,
   HeartPulse,
   UsersRound,
+  Beaker,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -108,6 +109,7 @@ export function Sidebar() {
         <SidebarSection label="AGNB">
           <SidebarNavItem to="/rocket-inbox" label="Inbox" icon={Mails} />
           <SidebarNavItem to="/campaigns" label="Campaigns" icon={Megaphone} />
+          <SidebarNavItem to="/experiments" label="Experiments" icon={Beaker} />
           <SidebarNavItem to="/pipeline" label="Pipeline" icon={LayoutGrid} />
           <SidebarNavItem to="/assets" label="Assets" icon={Package} />
           <SidebarNavItem to="/competitors" label="Research" icon={FlaskConical} />

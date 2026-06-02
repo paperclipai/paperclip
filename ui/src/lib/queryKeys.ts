@@ -261,5 +261,9 @@ export const queryKeys = {
     team: ["agnb", "team"] as const,
     work: (q: string) => ["agnb", "work", q] as const,
     rules: ["agnb", "team-rules"] as const,
+    csv: ["agnb", "csv"] as const,
+    subjects: ["agnb", "subjects"] as const,
+    experiments: ["agnb", "experiments"] as const,
+    cohorts: ["agnb", "cohorts"] as const,
   },
 };

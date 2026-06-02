@@ -24,8 +24,18 @@ export const AGNB_SUBNAV = {
     { to: "/products", label: "Products" },
     { to: "/justdial", label: "JustDial" },
     { to: "/linkedin", label: "LinkedIn scraper" },
+    { to: "/csv", label: "CSV leads" },
+    { to: "/rocket", label: "Rocket ↗" },
     { to: "/buckets", label: "Buckets" },
     { to: "/icps", label: "ICPs" },
+  ],
+  experiments: [
+    { to: "/buckets", label: "Buckets" },
+    { to: "/icps", label: "ICPs" },
+    { to: "/bucket-compare", label: "Compare" },
+    { to: "/cohorts", label: "Cohorts" },
+    { to: "/subjects", label: "Subjects" },
+    { to: "/experiments", label: "Auto-experiments" },
   ],
   research: [
     { to: "/competitors", label: "Competition" },

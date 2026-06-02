@@ -120,6 +120,12 @@ import { MyQueue } from "./pages/MyQueue";
 import { Backlog } from "./pages/Backlog";
 import { RoutingRules } from "./pages/RoutingRules";
 import { Throughput } from "./pages/Throughput";
+import { Csv } from "./pages/Csv";
+import { Rocket } from "./pages/Rocket";
+import { Subjects } from "./pages/Subjects";
+import { Experiments } from "./pages/Experiments";
+import { BucketCompare } from "./pages/BucketCompare";
+import { Cohorts } from "./pages/Cohorts";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
@@ -225,6 +231,12 @@ function boardRoutes() {
       <Route path="backlog" element={<Backlog />} />
       <Route path="routing-rules" element={<RoutingRules />} />
       <Route path="throughput" element={<Throughput />} />
+      <Route path="csv" element={<Csv />} />
+      <Route path="rocket" element={<Rocket />} />
+      <Route path="subjects" element={<Subjects />} />
+      <Route path="experiments" element={<Experiments />} />
+      <Route path="bucket-compare" element={<BucketCompare />} />
+      <Route path="cohorts" element={<Cohorts />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />
@@ -516,6 +528,12 @@ export function App() {
           <Route path="backlog" element={<UnprefixedBoardRedirect />} />
           <Route path="routing-rules" element={<UnprefixedBoardRedirect />} />
           <Route path="throughput" element={<UnprefixedBoardRedirect />} />
+          <Route path="csv" element={<UnprefixedBoardRedirect />} />
+          <Route path="rocket" element={<UnprefixedBoardRedirect />} />
+          <Route path="subjects" element={<UnprefixedBoardRedirect />} />
+          <Route path="experiments" element={<UnprefixedBoardRedirect />} />
+          <Route path="bucket-compare" element={<UnprefixedBoardRedirect />} />
+          <Route path="cohorts" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
           <Route path="agents" element={<UnprefixedBoardRedirect />} />
