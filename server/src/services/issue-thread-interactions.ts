@@ -1345,6 +1345,9 @@ export function issueThreadInteractionService(db: Db) {
 }
 
 const SATISFACTION_EXCERPT_MAX = 200;
+// Truncate bodies before regex eval — limits worst-case ReDoS exposure.
+// Pending proper re2 adoption; 500 chars is sufficient for approval-phrase detection.
+const SATISFACTION_EVAL_BODY_MAX = 500;
 
 type EvalResult = { matched: true; expressionType: string; matchedExcerpt: string } | { matched: false };
 
@@ -1359,10 +1362,11 @@ function evaluateCommentContainsExpression(args: {
     return { matched: false };
   }
   for (const body of args.commentBodies) {
-    const match = regex.exec(body);
+    const truncated = body.length > SATISFACTION_EVAL_BODY_MAX ? body.slice(0, SATISFACTION_EVAL_BODY_MAX) : body;
+    const match = regex.exec(truncated);
     if (match) {
       const start = Math.max(0, match.index - 40);
-      const raw = body.slice(start, start + SATISFACTION_EXCERPT_MAX);
+      const raw = truncated.slice(start, start + SATISFACTION_EXCERPT_MAX);
       const excerpt = start > 0 ? `…${raw}` : raw;
       return { matched: true, expressionType: "comment_contains", matchedExcerpt: excerpt };
     }

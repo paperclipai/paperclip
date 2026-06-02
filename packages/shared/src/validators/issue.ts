@@ -720,7 +720,11 @@ export const requestConfirmationTargetSchema = z.discriminatedUnion("type", [
 export const requestConfirmationSatisfactionExpressionSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("comment_contains"),
-    pattern: z.string().trim().min(1).max(500),
+    // Reject nested-quantifier patterns (e.g. (\w+)+ or (.+)+) that cause catastrophic backtracking.
+    pattern: z.string().trim().min(1).max(500).refine(
+      (p) => !/\([^)]*[+*][^)]*\)[+*]/.test(p),
+      { message: "pattern must not contain nested quantifiers (ReDoS risk)" },
+    ),
     description: z.string().trim().min(1).max(500).nullable().optional(),
   }),
   z.object({
