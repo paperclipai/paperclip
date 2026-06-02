@@ -1,9 +1,10 @@
 # Plan: ValAdrien Cloud — Managed Infrastructure for Companies
 
-**Status:** Phases 0–2 implemented (2026-06-01); Phases 3–5 pending
+**Status:** Phases 0–2 implemented (2026-06-01); backfill migration 0091 added; Phases 3–5 pending
 **Owner:** Platform / ValAdrien.DEV operator
 **Created:** 2026-06-01
 **Related:**
+- `doc/plans/2026-06-02-valadrien-cloud-blitz-go-live.md` (blitz go/no-go + hosted URL runbook)
 - `doc/plans/2026-05-28-founding-role-instruction-bundles.md` (founding agents)
 - `doc/plans/2026-05-28-plugin-openrouter-consult.md` (OpenRouter as a tool)
 - `Architecture.md` §13 (Tenancy / ValAdrien.DEV bootstrap)
@@ -206,3 +207,27 @@ capability is provided; here's the binding once realized."
    managed by itself. Confirm the operator's pool credentials live at
    instance scope (not inside the ValAdrien.DEV company), so the company
    row stays a normal tenant.
+
+## Legacy `mgmt-os-shared` capability mapping (reference only)
+
+Salvage inventory from the old `ValDola-stack/management-os` fork maps
+**environment variable names** (never commit values) to ValAdrien Cloud
+entitlements. Canonical provider slugs live in
+`MANAGED_INFRA_CAPABILITY_PROVIDERS` (`packages/shared/src/constants.ts`).
+
+| Legacy env keys (names only) | Entitlement `capability` | Provider slug | Notes |
+| ---------------------------- | ------------------------ | ------------- | ----- |
+| `SUPABASE_*` | `postgres` | `supabase` | Shared pool project; company-scoped schema/RLS at provision time |
+| `RESEND_*`, `DIGEST_FROM_EMAIL` | `email` | `resend` | Shared Resend account; subdomain or scoped key per company |
+| `OPENROUTER_API_KEY` | `llm` | `openrouter` | Sub-key with budget cap; distinct from adapter-level model keys |
+| `VERCEL_*` (legacy project id) | `hosting` | `vercel` | Default `managed_dedicated` per company project |
+| `RAILWAY_TOKEN` | `worker` | `railway` | Long-running services / workers |
+
+**Not infra entitlements** (adapter / agent layer, not operator pool):
+
+- `ANTHROPIC_*`, `GEMINI_*`, `PERPLEXITY_*` — model adapters, billed via agent runs
+
+**Backfill:** migration `0091_backfill_managed_infra_entitlements.sql` seeds
+the default entitlement set for any `infra_mode = 'managed'` company that
+predates migration 0090 (e.g. existing ValAdrien.DEV). New companies still
+seed at create time in `companyService.create`.

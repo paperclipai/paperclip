@@ -46,6 +46,17 @@ export const DEFAULT_MANAGED_INFRA_ENTITLEMENTS: ReadonlyArray<{
   { capability: "worker", mode: "managed_shared" },
 ];
 
+/** Expected upstream provider slug per capability (operator pool). No secrets. */
+export const MANAGED_INFRA_CAPABILITY_PROVIDERS: Readonly<
+  Record<InfraCapability, string>
+> = {
+  postgres: "supabase",
+  email: "resend",
+  llm: "openrouter",
+  hosting: "vercel",
+  worker: "railway",
+};
+
 export const DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const MAX_COMPANY_ATTACHMENT_MAX_BYTES = 1024 * 1024 * 1024;
 
