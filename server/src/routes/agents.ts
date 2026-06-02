@@ -3572,7 +3572,10 @@ export function agentRoutes(
     if (existing) {
       assertCompanyAccess(req, existing.companyId);
     }
-    const run = await heartbeat.cancelRun(runId);
+    // `force` (SIGKILL immediately, no SIGTERM grace) for an explicit operator
+    // Cancel; pause/interrupt callers omit it and get the graceful path.
+    const force = (req.body && (req.body as Record<string, unknown>).force) === true;
+    const run = await heartbeat.cancelRun(runId, force ? { force: true } : undefined);
 
     if (run) {
       await logActivity(db, {

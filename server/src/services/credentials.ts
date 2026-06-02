@@ -895,6 +895,78 @@ export async function recordCredentialSuccess(db: Db, credentialId: string): Pro
 }
 
 /**
+ * After a codex run, the Codex CLI may have refreshed the OAuth token in place at
+ * `agent-homes/<agentId>/.codex/auth.json`. Persist the refreshed access/refresh
+ * tokens back to the DB credential so the next run uses a live token instead of
+ * the stored-and-stale one (the intermittent "works then stops working" cause).
+ *
+ * OpenAI drops chatgpt_account_id from the refreshed access_token, so we preserve
+ * the stored account_id (and re-derive from the id_token if needed). Only writes
+ * when the access_token actually changed, to avoid needless churn. Best-effort:
+ * any error is swallowed by the caller.
+ */
+export async function persistCodexRefreshedTokens(
+  db: Db,
+  agentId: string,
+  credentialId: string,
+): Promise<{ updated: boolean }> {
+  const [cred] = await db
+    .select()
+    .from(providerCredentials)
+    .where(eq(providerCredentials.id, credentialId))
+    .limit(1);
+  if (!cred || cred.type !== "codex_oauth") return { updated: false };
+
+  const authPath = path.join(resolvePaperclipInstanceRoot(), "agent-homes", agentId, ".codex", "auth.json");
+  let raw: string;
+  try {
+    raw = await fs.readFile(authPath, "utf-8");
+  } catch {
+    return { updated: false }; // no on-disk auth.json (e.g. override CODEX_HOME) — nothing to persist
+  }
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return { updated: false };
+  }
+  const tokens =
+    parsed.tokens && typeof parsed.tokens === "object" && !Array.isArray(parsed.tokens)
+      ? (parsed.tokens as Record<string, unknown>)
+      : {};
+  const diskAccess = typeof tokens.access_token === "string" ? tokens.access_token : "";
+  if (!diskAccess) return { updated: false };
+
+  const stored = decryptPayload(cred);
+  const storedAccess = typeof stored.accessToken === "string" ? stored.accessToken : "";
+  if (diskAccess === storedAccess) return { updated: false }; // CLI didn't refresh — nothing to do
+
+  const diskRefresh = typeof tokens.refresh_token === "string" ? tokens.refresh_token : "";
+  const diskId = typeof tokens.id_token === "string" ? tokens.id_token : "";
+  const storedId = typeof stored.idToken === "string" ? stored.idToken : "";
+  // Keep the id_token (and thus account_id source) if the refresh dropped it.
+  const effectiveIdToken = diskId || storedId;
+  const accountId = resolveCodexAccountId({
+    accountId: typeof stored.accountId === "string" ? stored.accountId : null,
+    idToken: effectiveIdToken || null,
+    accessToken: diskAccess || null,
+  });
+
+  const nextPayload: Record<string, unknown> = { ...stored, accessToken: diskAccess };
+  if (diskRefresh) nextPayload.refreshToken = diskRefresh;
+  if (effectiveIdToken) nextPayload.idToken = effectiveIdToken;
+  if (accountId) nextPayload.accountId = accountId;
+  nextPayload.lastRefresh = new Date().toISOString();
+
+  await db
+    .update(providerCredentials)
+    .set({ credential: encryptCredential(nextPayload), updatedAt: new Date() })
+    .where(eq(providerCredentials.id, credentialId));
+  return { updated: true };
+}
+
+/**
  * Resolve env for an agent's bound credentials, ONE per provider type. When an
  * agent binds several credentials of the same type they form a rotation pool;
  * the least-recently-used non-cooling member is selected (see pickPoolCredential)

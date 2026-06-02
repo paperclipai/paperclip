@@ -3530,6 +3530,22 @@ export function IssueDetail() {
                   Resume work
                 </button>
               ) : null}
+              {canManageTreeControl && childIssues.length === 0 && !isTerminalIssue ? (
+                <button
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                  onClick={() => {
+                    setMoreOpen(false);
+                    if (window.confirm("Cancel this issue? The running agent (if any) is stopped and the issue is moved to Cancelled — it won't be picked up again. Reopen by changing its status.")) {
+                      // PATCH status=cancelled cancels the active run AND parks the
+                      // issue terminal, so the recovery sweep won't re-pick it.
+                      updateIssue.mutate({ status: "cancelled" });
+                    }
+                  }}
+                >
+                  <XCircle className="h-3 w-3" />
+                  Cancel issue...
+                </button>
+              ) : null}
               {canShowSubtreeControls ? (
                 <>
                   <button
