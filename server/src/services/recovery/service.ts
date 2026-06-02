@@ -22,6 +22,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -574,6 +575,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(agentWakeupRequests.companyId, companyId),
           eq(agentWakeupRequests.status, "queued"),
           sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  // A long-lived issue whose continuation is driven by an active routine (e.g. a
+  // weekly analysis issue) has no running run or deferred wake between fires, so
+  // it looks "stranded" to the sweep. The active routine parent IS its live
+  // continuation path, so treat it as such and skip recovery escalation. Keyed on
+  // routine status only (not the trigger's nextRunAt) so cron- and webhook-driven
+  // routines are both covered and the check stays clock-independent.
+  async function hasActiveRoutineContinuation(companyId: string, issueId: string) {
+    return db
+      .select({ id: routines.id })
+      .from(routines)
+      .where(
+        and(
+          eq(routines.companyId, companyId),
+          eq(routines.parentIssueId, issueId),
+          eq(routines.status, "active"),
         ),
       )
       .limit(1)
@@ -2473,6 +2495,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (await hasActiveRoutineContinuation(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
       }
