@@ -8,6 +8,7 @@ import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  ISSUE_RATE_LIMIT_PAUSE_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
@@ -32,6 +33,7 @@ import {
   documentAnnotationComments,
   documentAnnotationThreads,
   documentRevisions,
+  documents,
   issueDocuments,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -100,6 +102,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { documentService } from "./documents.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -2515,6 +2518,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
+  const documentsSvc = documentService(db);
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentsSvc = environmentService(db);
@@ -5354,6 +5358,221 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { outcome: "promoted", run: promoted };
   }
 
+  const RATE_LIMIT_PAUSE_FALLBACK_MS = 60 * 60 * 1000;
+  const RATE_LIMIT_PAUSE_MAX_MS = 24 * 60 * 60 * 1000;
+
+  type RateLimitPauseDocBody = {
+    pauseUntil: string;
+    previousStatus: string;
+    retryNotBefore: string | null;
+    lastRunId: string;
+    lastAgentId: string;
+    reason: string;
+  };
+
+  function parseRateLimitPauseBody(body: string | null | undefined): RateLimitPauseDocBody | null {
+    if (!body) return null;
+    try {
+      const parsed = JSON.parse(body) as Partial<RateLimitPauseDocBody>;
+      if (
+        typeof parsed.pauseUntil === "string" &&
+        typeof parsed.previousStatus === "string" &&
+        typeof parsed.lastRunId === "string" &&
+        typeof parsed.lastAgentId === "string"
+      ) {
+        return {
+          pauseUntil: parsed.pauseUntil,
+          previousStatus: parsed.previousStatus,
+          retryNotBefore: typeof parsed.retryNotBefore === "string" ? parsed.retryNotBefore : null,
+          lastRunId: parsed.lastRunId,
+          lastAgentId: parsed.lastAgentId,
+          reason: typeof parsed.reason === "string" ? parsed.reason : "transient_failure_retry",
+        };
+      }
+    } catch {
+      // Fall through to null below.
+    }
+    return null;
+  }
+
+  async function readRateLimitPauseForIssue(issueId: string): Promise<{
+    body: RateLimitPauseDocBody;
+    revisionId: string;
+  } | null> {
+    const doc = await documentsSvc.getIssueDocumentByKey(issueId, ISSUE_RATE_LIMIT_PAUSE_DOCUMENT_KEY);
+    if (!doc) return null;
+    const body = parseRateLimitPauseBody(doc.body ?? null);
+    if (!body) return null;
+    return { body, revisionId: doc.latestRevisionId ?? "" };
+  }
+
+  async function applyRateLimitPause(input: {
+    issueId: string;
+    companyId: string;
+    runId: string;
+    agentId: string;
+    pauseUntil: Date;
+    retryNotBefore: Date | null;
+    now?: Date;
+  }) {
+    const now = input.now ?? new Date();
+    const cap = new Date(now.getTime() + RATE_LIMIT_PAUSE_MAX_MS);
+    const clampedPauseUntil = input.pauseUntil.getTime() > cap.getTime() ? cap : input.pauseUntil;
+    if (clampedPauseUntil.getTime() <= now.getTime()) {
+      return { outcome: "skipped" as const, reason: "pause_in_past" };
+    }
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        companyId: issues.companyId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue) {
+      return { outcome: "skipped" as const, reason: "issue_not_found" };
+    }
+    if (issue.status === "done" || issue.status === "cancelled") {
+      return { outcome: "skipped" as const, reason: `issue_terminal_${issue.status}` };
+    }
+
+    const existing = await readRateLimitPauseForIssue(input.issueId);
+    const previousStatus = existing?.body.previousStatus ?? issue.status;
+    const nextPauseUntilIso = (() => {
+      if (!existing) return clampedPauseUntil.toISOString();
+      const existingPauseAt = Date.parse(existing.body.pauseUntil);
+      return Number.isFinite(existingPauseAt) && existingPauseAt > clampedPauseUntil.getTime()
+        ? existing.body.pauseUntil
+        : clampedPauseUntil.toISOString();
+    })();
+
+    const docBody: RateLimitPauseDocBody = {
+      pauseUntil: nextPauseUntilIso,
+      previousStatus,
+      retryNotBefore: input.retryNotBefore ? input.retryNotBefore.toISOString() : null,
+      lastRunId: input.runId,
+      lastAgentId: input.agentId,
+      reason: "transient_failure_retry_exhausted",
+    };
+    await documentsSvc.upsertIssueDocument({
+      issueId: input.issueId,
+      key: ISSUE_RATE_LIMIT_PAUSE_DOCUMENT_KEY,
+      title: "Rate-limit pause",
+      format: "json",
+      body: JSON.stringify(docBody),
+      changeSummary: existing ? "Extend rate-limit pause" : "Auto-pause after transient retry exhaustion",
+      baseRevisionId: existing?.revisionId ? existing.revisionId : null,
+      createdByAgentId: input.agentId,
+      createdByRunId: input.runId,
+    });
+
+    if (issue.status !== "blocked") {
+      await issuesSvc.update(input.issueId, { status: "blocked" });
+    }
+
+    return { outcome: "applied" as const, pauseUntil: nextPauseUntilIso, previousStatus };
+  }
+
+  async function clearRateLimitPauseForIssue(issueId: string, now: Date = new Date()) {
+    const existing = await readRateLimitPauseForIssue(issueId);
+    if (!existing) {
+      return { outcome: "missing" as const };
+    }
+    const pauseAt = Date.parse(existing.body.pauseUntil);
+    if (Number.isFinite(pauseAt) && pauseAt > now.getTime()) {
+      return { outcome: "still_paused" as const, pauseUntil: existing.body.pauseUntil };
+    }
+
+    const issue = await db
+      .select({ id: issues.id, status: issues.status, companyId: issues.companyId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    if (!issue) {
+      await documentsSvc.deleteIssueDocument(issueId, ISSUE_RATE_LIMIT_PAUSE_DOCUMENT_KEY);
+      return { outcome: "issue_missing" as const };
+    }
+
+    const targetStatus = (() => {
+      const previous = existing.body.previousStatus;
+      if (previous === "in_progress" || previous === "todo" || previous === "in_review") {
+        return previous;
+      }
+      return "in_progress";
+    })();
+
+    if (issue.status === "blocked") {
+      try {
+        await issuesSvc.update(issueId, { status: targetStatus });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn(
+          { issueId, targetStatus, error: message },
+          "Failed to restore issue status after rate-limit pause expired",
+        );
+      }
+    }
+    await documentsSvc.deleteIssueDocument(issueId, ISSUE_RATE_LIMIT_PAUSE_DOCUMENT_KEY);
+    return {
+      outcome: "cleared" as const,
+      restoredStatus: targetStatus,
+      lastAgentId: existing.body.lastAgentId,
+    };
+  }
+
+  async function processDueRateLimitPauses(now: Date = new Date()) {
+    const dueRows = await db
+      .select({
+        issueId: issueDocuments.issueId,
+        companyId: issueDocuments.companyId,
+        body: documents.latestBody,
+      })
+      .from(issueDocuments)
+      .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+      .where(eq(issueDocuments.key, ISSUE_RATE_LIMIT_PAUSE_DOCUMENT_KEY))
+      .limit(200);
+
+    let cleared = 0;
+    let stillPaused = 0;
+    for (const row of dueRows) {
+      const parsed = parseRateLimitPauseBody(row.body ?? null);
+      if (!parsed) {
+        await documentsSvc.deleteIssueDocument(row.issueId, ISSUE_RATE_LIMIT_PAUSE_DOCUMENT_KEY);
+        continue;
+      }
+      const pauseAt = Date.parse(parsed.pauseUntil);
+      if (!Number.isFinite(pauseAt) || pauseAt <= now.getTime()) {
+        const result = await clearRateLimitPauseForIssue(row.issueId, now);
+        if (result.outcome === "cleared") {
+          cleared += 1;
+          await enqueueWakeup(parsed.lastAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "rate_limit_pause_resumed",
+            requestedByActorType: "system",
+            requestedByActorId: "rate_limit_pause_scheduler",
+            contextSnapshot: {
+              source: "rate_limit_pause_scheduler",
+              issueId: row.issueId,
+              now: now.toISOString(),
+            },
+          }).catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn(
+              { issueId: row.issueId, agentId: parsed.lastAgentId, error: message },
+              "Failed to enqueue wake after rate-limit pause expired",
+            );
+          });
+        }
+      } else {
+        stillPaused += 1;
+      }
+    }
+    return { scanned: dueRows.length, cleared, stillPaused };
+  }
+
   async function scheduleBoundedRetryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -5406,10 +5625,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           maxAttempts,
         },
       });
+
+      let pauseResult: Awaited<ReturnType<typeof applyRateLimitPause>> | null = null;
+      if (
+        retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON &&
+        transientRecovery
+      ) {
+        const exhaustionContextSnapshot = parseObject(run.contextSnapshot);
+        const exhaustionIssueId = readNonEmptyString(exhaustionContextSnapshot.issueId);
+        if (exhaustionIssueId) {
+          try {
+            const pauseUntilCandidate =
+              transientRecovery.retryNotBefore ?? new Date(now.getTime() + RATE_LIMIT_PAUSE_FALLBACK_MS);
+            pauseResult = await applyRateLimitPause({
+              issueId: exhaustionIssueId,
+              companyId: run.companyId,
+              runId: run.id,
+              agentId: run.agentId,
+              pauseUntil: pauseUntilCandidate,
+              retryNotBefore: transientRecovery.retryNotBefore ?? null,
+              now,
+            });
+            if (pauseResult.outcome === "applied") {
+              await appendRunEvent(run, await nextRunEventSeq(run.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "warn",
+                message: `Issue auto-paused after rate-limit retry exhaustion until ${pauseResult.pauseUntil}`,
+                payload: {
+                  issueId: exhaustionIssueId,
+                  pauseUntil: pauseResult.pauseUntil,
+                  previousStatus: pauseResult.previousStatus,
+                  retryNotBefore: transientRecovery.retryNotBefore?.toISOString() ?? null,
+                  fallbackUsed: !transientRecovery.retryNotBefore,
+                },
+              });
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn(
+              { issueId: exhaustionIssueId, runId: run.id, error: message },
+              "Failed to apply rate-limit pause after retry exhaustion",
+            );
+          }
+        }
+      }
+
       return {
         outcome: "retry_exhausted" as const,
         attempt: nextAttempt,
         maxAttempts,
+        rateLimitPause: pauseResult?.outcome === "applied"
+          ? { pauseUntil: pauseResult.pauseUntil, previousStatus: pauseResult.previousStatus }
+          : null,
       };
     }
     const schedule =
@@ -9156,6 +9424,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
+    if (issueId && reason !== "rate_limit_pause_resumed") {
+      const ratePause = await readRateLimitPauseForIssue(issueId);
+      if (ratePause) {
+        const pauseAt = Date.parse(ratePause.body.pauseUntil);
+        if (Number.isFinite(pauseAt) && pauseAt > Date.now()) {
+          await writeSkippedRequest("rate_limit_pause");
+          return null;
+        }
+      }
+    }
+
     if (issueId) {
       // Mention-triggered wakes can request input from another agent, but they must
       // still respect the issue execution lock so a second agent cannot start on the
@@ -10227,13 +10506,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const issueMonitors = await tickDueIssueMonitors(now);
+      const ratePauses = await processDueRateLimitPauses(now).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn({ error: message }, "processDueRateLimitPauses failed during tickTimers");
+        return { scanned: 0, cleared: 0, stillPaused: 0 };
+      });
 
       return {
         checked: checked + issueMonitors.checked,
-        enqueued: enqueued + issueMonitors.triggered,
-        skipped: skipped + issueMonitors.skipped,
+        enqueued: enqueued + issueMonitors.triggered + ratePauses.cleared,
+        skipped: skipped + issueMonitors.skipped + ratePauses.stillPaused,
       };
     },
+
+    processDueRateLimitPauses,
 
     cancelRun: (runId: string) => cancelRunInternal(runId),
 

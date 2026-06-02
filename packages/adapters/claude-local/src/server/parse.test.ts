@@ -120,4 +120,65 @@ describe("extractClaudeRetryNotBefore", () => {
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
   });
+
+  it("parses an Anthropic API rate-limit ISO reset timestamp with Z suffix", () => {
+    const now = new Date("2026-05-09T07:30:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      {
+        errorMessage:
+          "This request would exceed your organization's rate limit of 80,000 input tokens per minute · resets at 2026-05-09T08:00:00Z. Please wait or contact support.",
+      },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2026-05-09T08:00:00.000Z");
+  });
+
+  it("parses an ISO reset timestamp with explicit offset", () => {
+    const now = new Date("2026-05-09T07:30:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      {
+        errorMessage:
+          "rate_limit_error: Too many requests. Resets at 2026-05-09T11:00:00+03:00.",
+      },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2026-05-09T08:00:00.000Z");
+  });
+
+  it("falls back to retry-after seconds when no ISO is present", () => {
+    const now = new Date("2026-05-09T07:30:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { errorMessage: "rate_limit_error: 429 Too Many Requests; retry-after: 600" },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2026-05-09T07:40:00.000Z");
+  });
+
+  it("rejects ISO reset timestamps farther than a week in the future", () => {
+    const now = new Date("2026-05-09T07:30:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      {
+        errorMessage:
+          "rate_limit_error · resets at 2027-01-01T00:00:00Z (likely garbage from upstream)",
+      },
+      now,
+    );
+    expect(extracted).toBeNull();
+  });
+
+  it("ignores retry-after values outside the 1s..24h window", () => {
+    const now = new Date("2026-05-09T07:30:00.000Z");
+    expect(
+      extractClaudeRetryNotBefore(
+        { errorMessage: "rate_limit_error 429 retry-after: 0" },
+        now,
+      ),
+    ).toBeNull();
+    expect(
+      extractClaudeRetryNotBefore(
+        { errorMessage: "rate_limit_error 429 retry-after: 999999" },
+        now,
+      ),
+    ).toBeNull();
+  });
 });
