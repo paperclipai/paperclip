@@ -427,8 +427,9 @@ export function adapterRoutes() {
       return;
     }
 
-    // Prevent removal of built-in adapters
-    if (BUILTIN_ADAPTER_TYPES.has(adapterType)) {
+    // Prevent removal of built-in adapters, unless this built-in type is
+    // currently backed by an external adapter plugin override.
+    if (BUILTIN_ADAPTER_TYPES.has(adapterType) && !getAdapterPluginByType(adapterType)) {
       res.status(403).json({
         error: `Cannot remove built-in adapter "${adapterType}".`,
       });
