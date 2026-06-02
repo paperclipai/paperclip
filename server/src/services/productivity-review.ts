@@ -617,6 +617,23 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       "- Close as productive if this pattern is expected.",
       "- Continue with a snooze window if the current work should keep running without repeat review spam.",
       "- Request decomposition, reroute, block with an unblock owner, or stop/cancel the source work if the work is inefficient.",
+      ...(evidence.trigger === "no_comment_streak" ? [
+        "",
+        "## Rule-3 Heartbeat Template",
+        "",
+        "If this issue is still live and should continue, the assignee must post a heartbeat comment using this template (Silent-Run Policy Rule 3):",
+        "",
+        "```",
+        "Status: still active / blocked / ready for review",
+        "Current step:",
+        "Last completed step:",
+        "Next step:",
+        "Blockers:",
+        "Evidence/logs:",
+        "```",
+        "",
+        "No heartbeat in a 30-45 min window = stale by policy. Silent `in_progress` is a Rule-3 violation, not a valid state.",
+      ] : []),
     ].join("\n");
   }
 
