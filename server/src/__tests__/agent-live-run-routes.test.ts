@@ -700,6 +700,40 @@ describe("agent live run routes", () => {
     }));
   });
 
+  it("rejects Scrum wakeups for closed issues", async () => {
+    mockIssueService.getById.mockImplementation(async (id: string) => {
+      if (id === "issue-1") {
+        return {
+          id: "issue-1",
+          companyId: "company-1",
+          assigneeAgentId: routeAgentId,
+          status: "done",
+        };
+      }
+      return null;
+    });
+
+    const denied = await requestApp(
+      await createAgentApp({
+        type: "agent",
+        agentId: scrumAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "scrum-run-1",
+      }),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup?companyId=company-1`)
+        .send({
+          reason: "scrum_coordination",
+          payload: { issueId: "issue-1" },
+        }),
+    );
+
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+    expect(denied.body.error).toBe("Agent can only invoke itself");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("rejects Scrum wakeups without an issue-scoped assignee or manager target", async () => {
     const unrelatedTarget = "44444444-4444-4444-8444-444444444444";
     mockAgentService.getById.mockImplementation(async (id: string) => {

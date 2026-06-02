@@ -32,6 +32,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
+import { isActiveCoordinationIssueStatus, isScrumCoordinatorAgent } from "./scrum-coordination.js";
 import {
   agentService,
   agentInstructionsService,
@@ -114,13 +115,6 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   if (!Number.isFinite(parsed)) return fallback;
   if (parsed <= 0) return fallback;
   return Math.min(max, Math.trunc(parsed));
-}
-
-function isScrumCoordinatorAgent(agent: { name?: string | null; urlKey?: string | null; role?: string | null } | null | undefined) {
-  if (!agent) return false;
-  const name = (agent.name ?? "").trim().toLowerCase();
-  const urlKey = (agent.urlKey ?? "").trim().toLowerCase();
-  return agent.role === "pm" && (name === "scrum" || urlKey === "scrum");
 }
 
 function readPayloadIssueId(payload: unknown) {
@@ -2949,6 +2943,7 @@ export function agentRoutes(
           isScrumCoordinatorAgent(actorAgent) &&
           !!issue &&
           issue.companyId === agent.companyId &&
+          isActiveCoordinationIssueStatus(issue.status) &&
           issue.assigneeAgentId &&
           (id === issue.assigneeAgentId || id === assignee?.reportsTo);
         if (!scrumIssueWakeAllowed) {

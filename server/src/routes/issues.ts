@@ -118,6 +118,7 @@ import {
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { isActiveCoordinationIssueStatus, isScrumCoordinatorAgent } from "./scrum-coordination.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -615,19 +616,8 @@ function assertCanManageIssueMonitor(req: Request, assigneeAgentId: string | nul
   throw forbidden("Only the assignee agent or a board user can manage issue monitors");
 }
 
-function isScrumCoordinatorAgent(agent: { name?: string | null; urlKey?: string | null; role?: string | null } | null | undefined) {
-  if (!agent) return false;
-  const name = (agent.name ?? "").trim().toLowerCase();
-  const urlKey = (agent.urlKey ?? "").trim().toLowerCase();
-  return agent.role === "pm" && (name === "scrum" || urlKey === "scrum");
-}
-
-function isActiveCoordinationIssueStatus(status: string) {
-  return status === "todo" || status === "in_progress" || status === "blocked" || status === "in_review";
-}
-
 const SCRUM_COORDINATION_COMMENT_RE =
-  /\b(?:routing|route|reassign|assignee|owner|blocked|blocker|stale|waiting path|recovery|recover|resume|handoff|review path)\b/i;
+  /\b(?:routing|reassign(?:ment)?|assignee|blocker|waiting path|recovery|handoff|review path)\b/i;
 const SCRUM_COORDINATION_PATCH_KEYS = new Set(["status", "assigneeAgentId", "comment"]);
 const SCRUM_COORDINATION_STATUSES = new Set(["blocked", "in_review", "todo", "in_progress"]);
 
@@ -635,12 +625,13 @@ function isScrumCoordinationComment(body: unknown) {
   return typeof body === "string" && SCRUM_COORDINATION_COMMENT_RE.test(body);
 }
 
-function isScrumCoordinationIssueUpdate(body: Record<string, unknown>) {
+function isScrumCoordinationIssueUpdate(body: Record<string, unknown>, issue: { assigneeAgentId: string | null }) {
   const changedKeys = Object.keys(body).filter((key) => body[key] !== undefined);
   if (changedKeys.length === 0) return false;
   if (changedKeys.some((key) => !SCRUM_COORDINATION_PATCH_KEYS.has(key))) return false;
   if (body.status !== undefined && !SCRUM_COORDINATION_STATUSES.has(String(body.status))) return false;
   if (body.comment !== undefined && !isScrumCoordinationComment(body.comment)) return false;
+  if (body.assigneeAgentId !== undefined && body.assigneeAgentId !== issue.assigneeAgentId) return false;
   return body.status !== undefined || body.assigneeAgentId !== undefined;
 }
 
@@ -1545,7 +1536,7 @@ export function issueRoutes(
         isActiveCoordinationIssueStatus(issue.status) &&
         (
           (options.kind === "comment" && isScrumCoordinationComment(options.body?.body)) ||
-          (options.kind === "issue_update" && options.body && isScrumCoordinationIssueUpdate(options.body))
+          (options.kind === "issue_update" && options.body && isScrumCoordinationIssueUpdate(options.body, issue))
         );
       if (scrumCoordinationAllowed) {
         return true;
