@@ -62,6 +62,16 @@ export const AGNB_SUBNAV = {
     { to: "/newsletter", label: "Newsletter" },
     { to: "/press-releases", label: "Press releases" },
   ],
+  ops: [
+    { to: "/agnb-health", label: "Health" },
+    { to: "/agnb-sync", label: "Sync" },
+    { to: "/events", label: "Events" },
+    { to: "/webhooks-catalog", label: "Event catalog" },
+    { to: "/audit", label: "API audit" },
+    { to: "/entity-audit", label: "Entity audit" },
+    { to: "/pending-actions", label: "Pending actions" },
+    { to: "/agnb-notifications", label: "Notifications" },
+  ],
   inbox: [
     { to: "/rocket-inbox", label: "Threads" },
     { to: "/rocket-approval", label: "Approval queue" },

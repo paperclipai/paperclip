@@ -251,5 +251,12 @@ export const queryKeys = {
     changelog: ["agnb", "changelog"] as const,
     newsletter: ["agnb", "newsletter"] as const,
     pressReleases: ["agnb", "press-releases"] as const,
+    health: ["agnb", "health"] as const,
+    syncStatus: ["agnb", "sync-status"] as const,
+    events: ["agnb", "events"] as const,
+    audit: ["agnb", "audit"] as const,
+    entityAudit: ["agnb", "entity-audit"] as const,
+    pending: ["agnb", "pending-actions"] as const,
+    notifications: ["agnb", "notifications"] as const,
   },
 };

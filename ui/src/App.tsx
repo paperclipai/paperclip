@@ -107,6 +107,14 @@ import { Renewals } from "./pages/Renewals";
 import { ChangelogQueue } from "./pages/ChangelogQueue";
 import { Newsletter } from "./pages/Newsletter";
 import { PressReleases } from "./pages/PressReleases";
+import { AgnbHealth } from "./pages/AgnbHealth";
+import { AgnbSync } from "./pages/AgnbSync";
+import { AgnbEvents } from "./pages/AgnbEvents";
+import { WebhooksCatalog } from "./pages/WebhooksCatalog";
+import { ApiAudit } from "./pages/ApiAudit";
+import { EntityAudit } from "./pages/EntityAudit";
+import { PendingActions } from "./pages/PendingActions";
+import { AgnbNotifications } from "./pages/AgnbNotifications";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
@@ -199,6 +207,14 @@ function boardRoutes() {
       <Route path="changelog-queue" element={<ChangelogQueue />} />
       <Route path="newsletter" element={<Newsletter />} />
       <Route path="press-releases" element={<PressReleases />} />
+      <Route path="agnb-health" element={<AgnbHealth />} />
+      <Route path="agnb-sync" element={<AgnbSync />} />
+      <Route path="events" element={<AgnbEvents />} />
+      <Route path="webhooks-catalog" element={<WebhooksCatalog />} />
+      <Route path="audit" element={<ApiAudit />} />
+      <Route path="entity-audit" element={<EntityAudit />} />
+      <Route path="pending-actions" element={<PendingActions />} />
+      <Route path="agnb-notifications" element={<AgnbNotifications />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />
@@ -477,6 +493,14 @@ export function App() {
           <Route path="changelog-queue" element={<UnprefixedBoardRedirect />} />
           <Route path="newsletter" element={<UnprefixedBoardRedirect />} />
           <Route path="press-releases" element={<UnprefixedBoardRedirect />} />
+          <Route path="agnb-health" element={<UnprefixedBoardRedirect />} />
+          <Route path="agnb-sync" element={<UnprefixedBoardRedirect />} />
+          <Route path="events" element={<UnprefixedBoardRedirect />} />
+          <Route path="webhooks-catalog" element={<UnprefixedBoardRedirect />} />
+          <Route path="audit" element={<UnprefixedBoardRedirect />} />
+          <Route path="entity-audit" element={<UnprefixedBoardRedirect />} />
+          <Route path="pending-actions" element={<UnprefixedBoardRedirect />} />
+          <Route path="agnb-notifications" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
           <Route path="agents" element={<UnprefixedBoardRedirect />} />
