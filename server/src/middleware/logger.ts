@@ -17,9 +17,6 @@ function resolveServerLogDir(): string {
 }
 
 const logDir = resolveServerLogDir();
-fs.mkdirSync(logDir, { recursive: true });
-
-const logFile = path.join(logDir, "server.log");
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
@@ -27,22 +24,32 @@ const sharedOpts = {
   singleLine: true,
 };
 
-export const logger = pino({
-  level: "debug",
-  redact: ["req.headers.authorization"],
-}, pino.transport({
-  targets: [
-    {
-      target: "pino-pretty",
-      options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
-      level: "info",
-    },
+const vercelLogTargets: pino.TransportTargetOptions[] = [
+  {
+    target: "pino-pretty",
+    options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
+    level: "info",
+  },
+];
+
+const localLogTargets: pino.TransportTargetOptions[] = (() => {
+  fs.mkdirSync(logDir, { recursive: true });
+  const logFile = path.join(logDir, "server.log");
+  return [
+    ...vercelLogTargets,
     {
       target: "pino-pretty",
       options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
       level: "debug",
     },
-  ],
+  ];
+})();
+
+export const logger = pino({
+  level: "debug",
+  redact: ["req.headers.authorization"],
+}, pino.transport({
+  targets: process.env.VERCEL ? vercelLogTargets : localLogTargets,
 }));
 
 export const httpLogger = pinoHttp({
