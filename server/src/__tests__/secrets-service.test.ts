@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
+  activityLog,
   agents,
   companies,
   companySecretBindings,
@@ -45,6 +46,7 @@ describeEmbeddedPostgres("secretService", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    await db.delete(activityLog);
     await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
@@ -125,6 +127,71 @@ describeEmbeddedPostgres("secretService", () => {
         configPath: "env.API_KEY",
       }),
     ).rejects.toThrow(/already exists/i);
+  });
+
+  it("attributes binding rows and logs discrete binding audit events", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const actorAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: actorAgentId,
+      companyId,
+      name: "Infra Lead",
+      role: "infrastructure",
+      adapterType: "codex_local",
+      adapterConfig: {},
+    });
+    const firstSecret = await svc.create(companyId, {
+      name: `bound-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "first-runtime-value",
+    });
+    const secondSecret = await svc.create(companyId, {
+      name: `replacement-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "second-runtime-value",
+    });
+
+    await svc.syncEnvBindingsForTarget(
+      companyId,
+      { targetType: "agent", targetId: actorAgentId },
+      {
+        API_KEY: { type: "secret_ref" as const, secretId: firstSecret.id, version: "latest" as const },
+      },
+      { actor: { actorType: "agent", actorId: actorAgentId, agentId: actorAgentId } },
+    );
+    await svc.syncEnvBindingsForTarget(
+      companyId,
+      { targetType: "agent", targetId: actorAgentId },
+      {
+        API_KEY: { type: "secret_ref" as const, secretId: secondSecret.id, version: "latest" as const },
+      },
+      { actor: { actorType: "agent", actorId: actorAgentId, agentId: actorAgentId } },
+    );
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, actorAgentId));
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]).toMatchObject({
+      secretId: secondSecret.id,
+      createdByAgentId: actorAgentId,
+      createdByUserId: null,
+    });
+
+    const events = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityType, "secret_binding"));
+    expect(events.map((event) => event.action).sort()).toEqual([
+      "secret.binding_created",
+      "secret.binding_created",
+      "secret.binding_removed",
+    ]);
+    expect(events.every((event) => event.agentId === actorAgentId)).toBe(true);
+    expect(JSON.stringify(events)).not.toContain("first-runtime-value");
+    expect(JSON.stringify(events)).not.toContain("second-runtime-value");
   });
 
   it("reports reference counts and resolves binding target labels", async () => {
@@ -811,6 +878,33 @@ describeEmbeddedPostgres("secretService", () => {
       providerVersionRef: "aws-version-2",
     }));
     expect(JSON.stringify(resolveSpy.mock.calls[0]?.[0])).not.toContain("resolved-secret");
+  });
+
+  it("restores a previous secret version as current without exposing values in audit metadata", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `restore-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "original-runtime-value",
+    });
+    await svc.rotate(secret.id, { value: "rotated-runtime-value" });
+
+    const restored = await svc.restoreVersion(secret.id, 1);
+    expect(restored.previousLatestVersion).toBe(2);
+    expect(restored.restoredVersion).toBe(1);
+    expect(restored.secret.latestVersion).toBe(1);
+
+    const versions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, secret.id));
+    expect(versions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ version: 1, status: "current" }),
+      expect.objectContaining({ version: 2, status: "previous" }),
+    ]));
+    expect(JSON.stringify(restored)).not.toContain("original-runtime-value");
+    expect(JSON.stringify(restored)).not.toContain("rotated-runtime-value");
   });
 
   it("cleans up managed provider secrets when create persistence fails", async () => {

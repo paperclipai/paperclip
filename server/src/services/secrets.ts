@@ -45,6 +45,7 @@ import {
   getSecretProvider,
   listSecretProviders,
 } from "../secrets/provider-registry.js";
+import { logActivity } from "./activity-log.js";
 import type {
   PreparedSecretVersion,
   RemoteSecretListResult,
@@ -65,6 +66,84 @@ const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
 ]);
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type SecretBindingDb = Pick<Db | DbTransaction, "select" | "delete" | "insert">;
+
+type SecretMutationActor = {
+  actorType?: "agent" | "user" | "system" | "plugin";
+  actorId?: string | null;
+  agentId?: string | null;
+  userId?: string | null;
+  runId?: string | null;
+};
+
+function normalizeSecretMutationActor(actor?: SecretMutationActor | null): {
+  actorType: "agent" | "user" | "system" | "plugin";
+  actorId: string;
+  agentId: string | null;
+  runId: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+} {
+  const actorType = actor?.actorType ?? (actor?.agentId ? "agent" : actor?.userId ? "user" : "system");
+  const actorId = actor?.actorId ?? actor?.agentId ?? actor?.userId ?? actorType;
+  return {
+    actorType,
+    actorId,
+    agentId: actor?.agentId ?? null,
+    runId: actor?.runId ?? null,
+    createdByAgentId: actor?.agentId ?? null,
+    createdByUserId: actorType === "user" ? (actor?.actorId ?? actor?.userId ?? null) : (actor?.userId ?? null),
+  };
+}
+
+function bindingActivityDetails(binding: {
+  secretId: string;
+  targetType: string;
+  targetId: string;
+  configPath: string;
+  versionSelector: string;
+  required?: boolean | null;
+  label?: string | null;
+}) {
+  return {
+    secretId: binding.secretId,
+    targetType: binding.targetType,
+    targetId: binding.targetId,
+    configPath: binding.configPath,
+    versionSelector: binding.versionSelector,
+    required: binding.required ?? null,
+    hasLabel: binding.label != null,
+  };
+}
+
+async function logSecretBindingActivity(input: {
+  db: Db;
+  companyId: string;
+  action: "secret.binding_created" | "secret.binding_removed";
+  bindingId: string;
+  binding: {
+    secretId: string;
+    targetType: string;
+    targetId: string;
+    configPath: string;
+    versionSelector: string;
+    required?: boolean | null;
+    label?: string | null;
+  };
+  actor?: SecretMutationActor | null;
+}) {
+  const activityActor = normalizeSecretMutationActor(input.actor);
+  await logActivity(input.db, {
+    companyId: input.companyId,
+    actorType: activityActor.actorType,
+    actorId: activityActor.actorId,
+    agentId: activityActor.agentId,
+    runId: activityActor.runId,
+    action: input.action,
+    entityType: "secret_binding",
+    entityId: input.bindingId,
+    details: bindingActivityDetails(input.binding),
+  });
+}
 
 function remoteProviderHttpError(error: unknown, context: {
   companyId: string;
@@ -1939,6 +2018,71 @@ export function secretService(db: Db) {
       }
     },
 
+    restoreVersion: async (
+      secretId: string,
+      version: number,
+    ) => {
+      const secret = await getById(secretId);
+      if (!secret) throw notFound("Secret not found");
+      if (secret.status === "deleted") throw notFound("Secret not found");
+      if (secret.status !== "active") throw unprocessable("Cannot restore a non-active secret");
+      if (!Number.isInteger(version) || version < 1) throw unprocessable("Secret version must be a positive integer");
+      if (version === secret.latestVersion) {
+        throw unprocessable("Secret version is already current");
+      }
+      const versionRow = await getSecretVersion(secret.id, version);
+      if (!versionRow) throw notFound("Secret version not found");
+      if (versionRow.status !== "previous") {
+        throw unprocessable("Only previous secret versions can be restored");
+      }
+
+      const material = asRecord(versionRow.material);
+      const restoredExternalRef =
+        typeof material?.externalRef === "string"
+          ? material.externalRef
+          : typeof material?.secretId === "string"
+            ? material.secretId
+            : secret.externalRef;
+
+      const restored = await db.transaction(async (tx) => {
+        await tx
+          .update(companySecretVersions)
+          .set({ status: "previous" })
+          .where(and(
+            eq(companySecretVersions.secretId, secret.id),
+            ne(companySecretVersions.version, version),
+          ));
+        await tx
+          .update(companySecretVersions)
+          .set({ status: "current" })
+          .where(and(
+            eq(companySecretVersions.secretId, secret.id),
+            eq(companySecretVersions.version, version),
+          ));
+
+        const updated = await tx
+          .update(companySecrets)
+          .set({
+            latestVersion: version,
+            externalRef: restoredExternalRef,
+            lastRotatedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(companySecrets.id, secret.id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+
+        if (!updated) throw notFound("Secret not found");
+        return updated;
+      });
+
+      return {
+        secret: restored,
+        restoredVersion: version,
+        previousLatestVersion: secret.latestVersion,
+      };
+    },
+
     update: async (
       secretId: string,
       patch: {
@@ -2050,7 +2194,7 @@ export function secretService(db: Db) {
       versionSelector?: SecretVersionSelector;
       required?: boolean;
       label?: string | null;
-    }) => {
+    }, actor?: SecretMutationActor | null) => {
       await assertSecretInCompany(input.companyId, input.secretId);
       const existing = await db
         .select()
@@ -2065,7 +2209,8 @@ export function secretService(db: Db) {
         )
         .then((rows) => rows[0] ?? null);
       if (existing) throw conflict(`Secret binding already exists at ${input.configPath}`);
-      return db
+      const activityActor = normalizeSecretMutationActor(actor);
+      const created = await db
         .insert(companySecretBindings)
         .values({
           companyId: input.companyId,
@@ -2076,9 +2221,20 @@ export function secretService(db: Db) {
           versionSelector: String(input.versionSelector ?? "latest"),
           required: input.required ?? true,
           label: input.label ?? null,
+          createdByAgentId: activityActor.createdByAgentId,
+          createdByUserId: activityActor.createdByUserId,
         })
         .returning()
         .then((rows) => rows[0]);
+      await logSecretBindingActivity({
+        db,
+        companyId: input.companyId,
+        action: "secret.binding_created",
+        bindingId: created.id,
+        binding: created,
+        actor,
+      });
+      return created;
     },
 
     syncSecretRefsForTarget: async (
@@ -2091,6 +2247,7 @@ export function secretService(db: Db) {
         required?: boolean;
         label?: string | null;
       }>,
+      actor?: SecretMutationActor | null,
     ) => {
       const normalizedRefs: Array<{
         secretId: string;
@@ -2111,10 +2268,37 @@ export function secretService(db: Db) {
       }
 
       const pathPrefixes = [...new Set(normalizedRefs.map((ref) => ref.configPath.split(".")[0]))];
+      const activityActor = normalizeSecretMutationActor(actor);
+      const bindingKey = (binding: {
+        secretId: string;
+        configPath: string;
+        versionSelector: string;
+        required?: boolean | null;
+        label?: string | null;
+      }) => [
+        binding.secretId,
+        binding.configPath,
+        binding.versionSelector,
+        String(binding.required ?? true),
+        binding.label ?? "",
+      ].join("\u0000");
 
-      await db.transaction(async (tx) => {
+      const changeSet = await db.transaction(async (tx) => {
+        let existingBindings: Array<typeof companySecretBindings.$inferSelect> = [];
         if (pathPrefixes.length > 0) {
           for (const pathPrefix of pathPrefixes) {
+            const existingForPrefix = await tx
+              .select()
+              .from(companySecretBindings)
+              .where(
+                and(
+                  eq(companySecretBindings.companyId, companyId),
+                  eq(companySecretBindings.targetType, target.targetType),
+                  eq(companySecretBindings.targetId, target.targetId),
+                  like(companySecretBindings.configPath, `${pathPrefix}.%`),
+                ),
+              );
+            existingBindings.push(...existingForPrefix);
             await tx
               .delete(companySecretBindings)
               .where(
@@ -2127,6 +2311,16 @@ export function secretService(db: Db) {
               );
           }
         } else {
+          existingBindings = await tx
+            .select()
+            .from(companySecretBindings)
+            .where(
+              and(
+                eq(companySecretBindings.companyId, companyId),
+                eq(companySecretBindings.targetType, target.targetType),
+                eq(companySecretBindings.targetId, target.targetId),
+              ),
+            );
           await tx
             .delete(companySecretBindings)
             .where(
@@ -2137,8 +2331,17 @@ export function secretService(db: Db) {
               ),
             );
         }
-        if (normalizedRefs.length === 0) return;
-        await tx.insert(companySecretBindings).values(
+        const existingByKey = new Map(existingBindings.map((binding) => [bindingKey(binding), binding]));
+        const nextKeys = new Set(normalizedRefs.map((ref) => bindingKey({
+          secretId: ref.secretId,
+          configPath: ref.configPath,
+          versionSelector: String(ref.versionSelector),
+          required: ref.required,
+          label: ref.label,
+        })));
+        const removed = existingBindings.filter((binding) => !nextKeys.has(bindingKey(binding)));
+        if (normalizedRefs.length === 0) return { created: [], removed };
+        const inserted = await tx.insert(companySecretBindings).values(
           normalizedRefs.map((ref) => ({
             companyId,
             secretId: ref.secretId,
@@ -2148,9 +2351,45 @@ export function secretService(db: Db) {
             versionSelector: String(ref.versionSelector),
             required: ref.required,
             label: ref.label,
+            createdByAgentId: existingByKey.get(bindingKey({
+              secretId: ref.secretId,
+              configPath: ref.configPath,
+              versionSelector: String(ref.versionSelector),
+              required: ref.required,
+              label: ref.label,
+            }))?.createdByAgentId ?? activityActor.createdByAgentId,
+            createdByUserId: existingByKey.get(bindingKey({
+              secretId: ref.secretId,
+              configPath: ref.configPath,
+              versionSelector: String(ref.versionSelector),
+              required: ref.required,
+              label: ref.label,
+            }))?.createdByUserId ?? activityActor.createdByUserId,
           })),
-        );
+        ).returning();
+        const created = inserted.filter((binding) => !existingByKey.has(bindingKey(binding)));
+        return { created, removed };
       });
+      for (const binding of changeSet.removed) {
+        await logSecretBindingActivity({
+          db,
+          companyId,
+          action: "secret.binding_removed",
+          bindingId: binding.id,
+          binding,
+          actor,
+        });
+      }
+      for (const binding of changeSet.created) {
+        await logSecretBindingActivity({
+          db,
+          companyId,
+          action: "secret.binding_created",
+          bindingId: binding.id,
+          binding,
+          actor,
+        });
+      }
       return normalizedRefs;
     },
 
@@ -2158,7 +2397,7 @@ export function secretService(db: Db) {
       companyId: string,
       target: { targetType: SecretBindingTargetType; targetId: string; pathPrefix?: string },
       envValue: unknown,
-      options?: { db?: SecretBindingDb },
+      options?: { db?: SecretBindingDb; actor?: SecretMutationActor | null },
     ) => {
       const record = asRecord(envValue) ?? {};
       const refs: Array<{
@@ -2182,6 +2421,37 @@ export function secretService(db: Db) {
       }
 
       const writeBindings = async (targetDb: SecretBindingDb) => {
+        const activityActor = normalizeSecretMutationActor(options?.actor);
+        const bindingKey = (binding: {
+          secretId: string;
+          configPath: string;
+          versionSelector: string;
+          required?: boolean | null;
+        }) => [
+          binding.secretId,
+          binding.configPath,
+          binding.versionSelector,
+          String(binding.required ?? true),
+        ].join("\u0000");
+        const existingBindings = await targetDb
+          .select()
+          .from(companySecretBindings)
+          .where(
+            and(
+              eq(companySecretBindings.companyId, companyId),
+              eq(companySecretBindings.targetType, target.targetType),
+              eq(companySecretBindings.targetId, target.targetId),
+              like(companySecretBindings.configPath, `${pathPrefix}.%`),
+            ),
+          );
+        const existingByKey = new Map(existingBindings.map((binding) => [bindingKey(binding), binding]));
+        const nextKeys = new Set(refs.map((ref) => bindingKey({
+          secretId: ref.secretId,
+          configPath: ref.configPath,
+          versionSelector: String(ref.versionSelector),
+          required: true,
+        })));
+        const removed = existingBindings.filter((binding) => !nextKeys.has(bindingKey(binding)));
         await targetDb
           .delete(companySecretBindings)
           .where(
@@ -2192,8 +2462,8 @@ export function secretService(db: Db) {
               like(companySecretBindings.configPath, `${pathPrefix}.%`),
             ),
           );
-        if (refs.length === 0) return;
-        await targetDb.insert(companySecretBindings).values(
+        if (refs.length === 0) return { created: [], removed };
+        const inserted = await targetDb.insert(companySecretBindings).values(
           refs.map((ref) => ({
             companyId,
             secretId: ref.secretId,
@@ -2202,14 +2472,53 @@ export function secretService(db: Db) {
             configPath: ref.configPath,
             versionSelector: String(ref.versionSelector),
             required: true,
+            createdByAgentId: existingByKey.get(bindingKey({
+              secretId: ref.secretId,
+              configPath: ref.configPath,
+              versionSelector: String(ref.versionSelector),
+              required: true,
+            }))?.createdByAgentId ?? activityActor.createdByAgentId,
+            createdByUserId: existingByKey.get(bindingKey({
+              secretId: ref.secretId,
+              configPath: ref.configPath,
+              versionSelector: String(ref.versionSelector),
+              required: true,
+            }))?.createdByUserId ?? activityActor.createdByUserId,
           })),
-        );
+        ).returning();
+        const created = inserted.filter((binding) => !existingByKey.has(bindingKey(binding)));
+        return { created, removed };
       };
 
+      let changeSet: {
+        created: Array<typeof companySecretBindings.$inferSelect>;
+        removed: Array<typeof companySecretBindings.$inferSelect>;
+      };
       if (options?.db) {
         await writeBindings(options.db);
+        return refs;
       } else {
-        await db.transaction(async (tx) => writeBindings(tx));
+        changeSet = await db.transaction(async (tx) => writeBindings(tx));
+      }
+      for (const binding of changeSet.removed) {
+        await logSecretBindingActivity({
+          db,
+          companyId,
+          action: "secret.binding_removed",
+          bindingId: binding.id,
+          binding,
+          actor: options?.actor,
+        });
+      }
+      for (const binding of changeSet.created) {
+        await logSecretBindingActivity({
+          db,
+          companyId,
+          action: "secret.binding_created",
+          bindingId: binding.id,
+          binding,
+          actor: options?.actor,
+        });
       }
       return refs;
     },

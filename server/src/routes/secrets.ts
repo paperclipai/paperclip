@@ -11,7 +11,7 @@ import {
   updateSecretSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 
@@ -411,6 +411,42 @@ export function secretRoutes(db: Db) {
     });
 
     res.json(rotated);
+  });
+
+  router.post("/secrets/:id/versions/:version/restore", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const version = Number(req.params.version);
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Secret not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    if (existing.status === "deleted") {
+      res.status(404).json({ error: "Secret not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const restored = await svc.restoreVersion(id, version);
+
+    await logActivity(db, {
+      companyId: restored.secret.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "secret.version_restored",
+      entityType: "secret",
+      entityId: restored.secret.id,
+      details: {
+        restoredVersion: restored.restoredVersion,
+        previousLatestVersion: restored.previousLatestVersion,
+      },
+    });
+
+    res.json(restored.secret);
   });
 
   router.patch("/secrets/:id", validate(updateSecretSchema), async (req, res) => {

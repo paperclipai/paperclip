@@ -19,6 +19,7 @@ const mockSecretService = vi.hoisted(() => ({
   checkProviderConfigHealth: vi.fn(),
   getById: vi.fn(),
   create: vi.fn(),
+  restoreVersion: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
   previewRemoteImport: vi.fn(),
@@ -564,6 +565,47 @@ describe("secret routes", () => {
     );
     expect(mockLogActivity).not.toHaveBeenCalled();
     expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("shared/repointed");
+  });
+
+  it("restores a previous secret version and logs value-free audit metadata", async () => {
+    const secret = {
+      id: "44444444-4444-4444-8444-444444444444",
+      companyId: "company-1",
+      name: "OpenAI API Key",
+      key: "openai-api-key",
+      provider: "local_encrypted",
+      managedMode: "paperclip_managed",
+      status: "active",
+      latestVersion: 2,
+    };
+    const restoredSecret = { ...secret, latestVersion: 1 };
+    mockSecretService.getById.mockResolvedValue(secret);
+    mockSecretService.restoreVersion.mockResolvedValue({
+      secret: restoredSecret,
+      restoredVersion: 1,
+      previousLatestVersion: 2,
+    });
+
+    const res = await request(createApp())
+      .post("/api/secrets/44444444-4444-4444-8444-444444444444/versions/1/restore")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(restoredSecret);
+    expect(mockSecretService.restoreVersion).toHaveBeenCalledWith(
+      "44444444-4444-4444-8444-444444444444",
+      1,
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "secret.version_restored",
+      companyId: "company-1",
+      entityId: secret.id,
+      details: {
+        restoredVersion: 1,
+        previousLatestVersion: 2,
+      },
+    }));
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("secret-value");
   });
 
   it("allows DELETE to retry cleanup for already soft-deleted secrets", async () => {

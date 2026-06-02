@@ -8,6 +8,14 @@ This document is the authoritative reference for secret handling rules (SH-*) th
 
 ---
 
+## SH-4 — Rotate before closing
+
+Secret rotation evidence must name the system updated, the timestamp, and the confirming run or ticket ID without including old or new credential values.
+
+Secret version restore is only for reactivating retained previous versions. Deleting a Paperclip-managed secret is permanent: the provider material is deleted or archived according to provider semantics, database metadata is removed, and deleted secrets must not be treated as restorable through the version-restore endpoint.
+
+---
+
 ## SH-10 — No credentials in process args (ps-exposure prevention)
 
 **Source:** [FUL-4346](/FUL/issues/FUL-4346)  
