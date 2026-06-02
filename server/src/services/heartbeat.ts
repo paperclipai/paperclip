@@ -57,6 +57,7 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import { shouldRetryProcessLoss } from "./run-retry-policy.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
@@ -7994,7 +7995,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      // G1 (FUL-6364): also retry a pid-less `running` run that had already
+      // started (early-start kill window) where pid/pgid was never persisted,
+      // still bounded by processLossRetryCount < 1. See run-retry-policy.ts.
+      const shouldRetry = shouldRetryProcessLoss({
+        tracksLocalChild,
+        processPid: run.processPid,
+        processGroupId: run.processGroupId,
+        startedAt: run.startedAt,
+        processLossRetryCount: run.processLossRetryCount,
+      });
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
