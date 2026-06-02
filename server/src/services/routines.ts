@@ -887,6 +887,47 @@ export function routineService(
     );
   }
 
+  // Find open issues whose execution_run_id is non-null but whose heartbeat run is no
+  // longer live (terminal or missing). These "stranded" issues satisfy the
+  // issues_open_routine_execution_uq partial-index condition, which means any attempt
+  // to INSERT a new sibling with the same key will throw 23505. Callers should close
+  // stranded siblings before creating a fresh dispatch issue.
+  async function findStrandedExecutionIssue(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+    dispatchFingerprint?: string | null,
+    origin?: { kind: string; id: string | null },
+  ) {
+    const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint);
+    const originKind = origin?.kind ?? "routine_execution";
+    const originId = origin?.id ?? routine.id;
+    return executor
+      .select()
+      .from(issues)
+      .leftJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.id, issues.executionRunId),
+          inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
+        ),
+      )
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, originKind),
+          eq(issues.originId, originId),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
+          isNull(heartbeatRuns.id),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0]?.issues ?? null);
+  }
+
   async function findLiveExecutionIssue(
     routine: typeof routines.$inferSelect,
     executor: Db = db,
@@ -1234,6 +1275,35 @@ export function routineService(
             nextRunAt,
           }, txDb);
           return updated ?? createdRun;
+        }
+
+        // Proactively close any stranded sibling (open, non-null executionRunId, no live
+        // heartbeat run) before inserting the new issue. Without this, the stranded row
+        // satisfies the issues_open_routine_execution_uq partial-index condition and the
+        // INSERT below would throw 23505.
+        const strandedSibling = await findStrandedExecutionIssue(
+          input.routine,
+          txDb,
+          dispatchFingerprint,
+          { kind: issueOriginKind, id: issueOriginId },
+        );
+        if (strandedSibling) {
+          await txDb
+            .update(issues)
+            .set({
+              status: "done",
+              completedAt: triggeredAt,
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: triggeredAt,
+            })
+            .where(
+              and(
+                eq(issues.id, strandedSibling.id),
+                inArray(issues.status, OPEN_ISSUE_STATUSES),
+              ),
+            );
         }
 
         try {

@@ -164,6 +164,17 @@ type SuccessfulRunHandoffActivityRow = {
   createdAt: Date;
 };
 
+function isOpenRoutineExecutionIndexConflict(error: unknown): boolean {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code?: string }).code === "23505" &&
+    "constraint" in error &&
+    (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq"
+  );
+}
+
 function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => void) {
   if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
     next();
@@ -4342,6 +4353,13 @@ export function issueRoutes(
         });
       }
     } catch (err) {
+      if (isOpenRoutineExecutionIndexConflict(err)) {
+        res.status(409).json({
+          error:
+            "Cannot update this issue: another open routine execution with the same fingerprint already holds the index slot. Wait for the active sibling to complete or close the stranded issue first.",
+        });
+        return;
+      }
       if (err instanceof HttpError && err.status === 422) {
         logger.warn(
           {
@@ -5087,7 +5105,19 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
-    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+    let updated;
+    try {
+      updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+    } catch (err) {
+      if (isOpenRoutineExecutionIndexConflict(err)) {
+        res.status(409).json({
+          error:
+            "Cannot check out this issue: another open routine execution with the same fingerprint already holds the index slot. Wait for the active sibling to complete or close the stranded issue first.",
+        });
+        return;
+      }
+      throw err;
+    }
     const actor = getActorInfo(req);
 
     await logActivity(db, {
@@ -5879,15 +5909,27 @@ export function issueRoutes(
       }
     }
 
-    const comment = await svc.addComment(id, req.body.body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
-      runId: actor.runId,
-    }, {
-      authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-      presentation: req.body.presentation ?? null,
-      metadata: req.body.metadata ?? null,
-    });
+    let comment;
+    try {
+      comment = await svc.addComment(id, req.body.body, {
+        agentId: actor.agentId ?? undefined,
+        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        runId: actor.runId,
+      }, {
+        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        presentation: req.body.presentation ?? null,
+        metadata: req.body.metadata ?? null,
+      });
+    } catch (err) {
+      if (isOpenRoutineExecutionIndexConflict(err)) {
+        res.status(409).json({
+          error:
+            "Cannot comment on this issue: another open routine execution with the same fingerprint already holds the index slot. Wait for the active sibling to complete or close the stranded issue first.",
+        });
+        return;
+      }
+      throw err;
+    }
     await issueReferencesSvc.syncComment(comment.id);
     const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
     const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(

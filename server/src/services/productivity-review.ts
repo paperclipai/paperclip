@@ -30,6 +30,8 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 3;
+// Billing cascade guard: suppress reviews when this fraction of terminal runs are billing/quota errors.
+export const DEFAULT_PRODUCTIVITY_REVIEW_BILLING_CASCADE_THRESHOLD = 0.5;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -53,6 +55,8 @@ type ProductivityReviewThresholds = {
   maxRefreshComments: number;
   creationWindowMs: number;
   maxCreationsPerWindow: number;
+  // Fraction [0,1] of terminal runs that must match a billing/quota error to suppress the review.
+  billingCascadeThreshold: number;
 };
 
 type ProductivityReviewEvidence = {
@@ -91,6 +95,23 @@ type EnqueueWakeup = (
     contextSnapshot?: Record<string, unknown>;
   },
 ) => Promise<unknown | null>;
+
+// Error text patterns that indicate a billing or quota exhaustion run rather than unproductive work.
+const BILLING_CASCADE_PATTERNS = [
+  /out of extra usage/i,
+  /resets \d/i,
+  /try again at /i,
+  /upgrade to pro/i,
+  /usage limit/i,
+  /plan.{0,20}cap/i,
+  /claude_plan_cap_exhausted/i,
+];
+
+function isBillingCascadeRun(run: HeartbeatRunRow): boolean {
+  if (run.errorCode === "claude_plan_cap_exhausted") return true;
+  const errorText = [run.error, run.stderrExcerpt, run.stdoutExcerpt].filter(Boolean).join(" ");
+  return errorText.length > 0 && BILLING_CASCADE_PATTERNS.some((p) => p.test(errorText));
+}
 
 function productivityReviewFingerprint(sourceIssueId: string) {
   return `productivity-review:${sourceIssueId}`;
@@ -176,6 +197,10 @@ function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): Pro
       overrides?.maxCreationsPerWindow ?? DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW,
       DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW,
     ),
+    billingCascadeThreshold: (() => {
+      const v = overrides?.billingCascadeThreshold ?? DEFAULT_PRODUCTIVITY_REVIEW_BILLING_CASCADE_THRESHOLD;
+      return Number.isFinite(v) && v >= 0 && v <= 1 ? v : DEFAULT_PRODUCTIVITY_REVIEW_BILLING_CASCADE_THRESHOLD;
+    })(),
   };
 }
 
@@ -423,6 +448,29 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const terminalRuns = latestRuns.filter((run) =>
       TERMINAL_RUN_STATUSES.includes(run.status as (typeof TERMINAL_RUN_STATUSES)[number]),
     );
+
+    // Billing cascade guard: if enough terminal runs are billing/quota errors, suppress the review.
+    if (terminalRuns.length > 0) {
+      const billingCount = terminalRuns.filter(isBillingCascadeRun).length;
+      const billingRatio = billingCount / terminalRuns.length;
+      if (billingRatio >= thresholds.billingCascadeThreshold) {
+        logger.info(
+          {
+            metric: "productivity_review.suppressed_billing_cascade",
+            companyId: sourceIssue.companyId,
+            issueId: sourceIssue.id,
+            agentId: sourceAgent.id,
+            billingCascadeRatio: billingRatio,
+            billingCascadeCount: billingCount,
+            totalTerminalRuns: terminalRuns.length,
+            billingCascadeThreshold: thresholds.billingCascadeThreshold,
+          },
+          "productivity_review.suppressed_billing_cascade",
+        );
+        return null;
+      }
+    }
+
     let noCommentStreak = 0;
     for (const run of terminalRuns) {
       if (commentRunIds.has(run.id)) break;
