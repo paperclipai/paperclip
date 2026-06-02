@@ -5406,17 +5406,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
-
     // Sustained-outage fallback. Only applies to the default transient-retry
     // path (no caller-supplied delayMs / maxAttempts override and the default
-    // retry reason). Callers that pass their own retryReason or delayMs —
+    // retry reason) AND the error actually has a transient error family.
+    // Callers that pass their own retryReason or delayMs —
     // e.g. max-turn continuation — still see retry_exhausted at their cap.
+    const hasCallerRetryOverrides = opts?.delayMs != null || opts?.maxAttempts != null;
+    const boundedRetryExhausted = !baseSchedule && !hasCallerRetryOverrides;
     const isSustainedTransientFallback =
-      !baseSchedule
-      && opts?.delayMs == null
-      && opts?.maxAttempts == null
-      && retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
-    let sustainedFallbackAttempt = 0;
+      boundedRetryExhausted
+      && retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+      && transientRecovery != null;
+    let sustainedFallbackAttempt: number;
     if (isSustainedTransientFallback) {
       sustainedFallbackAttempt = nextAttempt - maxAttempts;
       const random = opts?.random ?? Math.random;
@@ -8118,6 +8119,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+
+      // --- resolveRunContext: let plugins inject context before execution ---
+      if (options.pluginWorkerManager) {
+        const taskContext = issueRef
+          ? `${issueRef.title}\n${issueRef.description ?? ""}`
+          : String(context.paperclipTaskMarkdown ?? "");
+        if (taskContext) {
+          try {
+            const workers = options.pluginWorkerManager.diagnostics();
+            for (const diag of workers) {
+              const worker = options.pluginWorkerManager.getWorker(diag.pluginId);
+              if (!worker || worker.status !== "running") continue;
+              if (!worker.supportedMethods.includes("resolveRunContext")) continue;
+              try {
+                const result = await options.pluginWorkerManager.call(
+                  diag.pluginId,
+                  "resolveRunContext",
+                  { agentId: agent.id, companyId: agent.companyId, taskContext },
+                );
+                if (result?.context) {
+                  context.paperclipTaskMarkdown =
+                    result.context + "\n\n" + (context.paperclipTaskMarkdown ?? "");
+                }
+              } catch (err) {
+                logger.warn(
+                  { pluginId: diag.pluginId, err: err instanceof Error ? err.message : String(err) },
+                  "resolveRunContext hook failed; skipping plugin context injection",
+                );
+              }
+            }
+          } catch (outerErr) {
+            logger.warn(
+              { err: outerErr instanceof Error ? outerErr.message : String(outerErr) },
+              "resolveRunContext setup failed; skipping context injection",
+            );
+          }
+        }
+      }
+
       let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
       const recordWorkspaceFinalize = async (
         status: "succeeded" | "failed",
