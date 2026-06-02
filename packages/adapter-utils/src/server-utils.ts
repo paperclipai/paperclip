@@ -2134,6 +2134,18 @@ export async function runChildProcess(
             })
             : Promise.resolve();
 
+        // Set OOM score to 500 (more likely to be killed under memory pressure)
+        // This is a best-effort operation to protect the host system
+        if (typeof child.pid === "number" && child.pid > 0) {
+          fs.writeFile(`/proc/${child.pid}/oom_score_adj`, "500")
+            .then(() => {
+              console.debug(`oom_score_adj set to 500 for pid ${child.pid}`);
+            })
+            .catch((err) => {
+              onLogError(err, runId, `oom_score_adj write failed for pid ${child.pid}`);
+            });
+        }
+
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
 
         let timedOut = false;
