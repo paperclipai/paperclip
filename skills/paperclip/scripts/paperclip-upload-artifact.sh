@@ -95,7 +95,7 @@ request_json() {
     status_code="$(
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
         "$url" \
-        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+        --config <(printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY") \
         -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
         -H 'Content-Type: application/json' \
         --data-binary "$body"
@@ -104,7 +104,7 @@ request_json() {
     status_code="$(
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
         "$url" \
-        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+        --config <(printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY") \
         -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"
     )"
   fi
@@ -135,7 +135,7 @@ upload_file() {
   status_code="$(
     curl -sS -X POST -w '%{http_code}' -o "$response_file" \
       "$url" \
-      -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+      --config <(printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY") \
       -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
       -F "file=@\"${escaped_path}\";type=${content_type}"
   )"

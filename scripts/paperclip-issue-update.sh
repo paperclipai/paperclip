@@ -104,7 +104,7 @@ fi
 
 curl -sS -X PATCH \
   "$PAPERCLIP_API_URL/api/issues/$issue_id" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  --config <(printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY") \
   -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
   -H 'Content-Type: application/json' \
   --data-binary "$payload"

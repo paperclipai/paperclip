@@ -51,6 +51,12 @@ jobs:
       - name: Test no-git-push check
         run: node --test ./scripts/check-no-git-push.test.mjs
 
+      - name: Check SH-10 argv credential exposure
+        run: node ./scripts/check-sh10-argv-exposure.mjs
+
+      - name: Test SH-10 argv exposure check
+        run: node --test ./scripts/check-sh10-argv-exposure.test.mjs
+
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
 
