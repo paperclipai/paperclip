@@ -21,7 +21,7 @@ function main() {
     console.log(`Building ${packageJson.name ?? packageDir}`);
 
     if (packageDir.startsWith("packages/plugins/sandbox-providers/")) {
-      run("npm", ["ci", "--no-audit", "--no-fund"], packageRoot);
+      run("npm", ["install", "--no-audit", "--no-fund", "--package-lock=false"], packageRoot);
       run("npm", ["run", "build"], packageRoot);
       continue;
     }
