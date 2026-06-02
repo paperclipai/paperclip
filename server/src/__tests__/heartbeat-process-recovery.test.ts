@@ -32,6 +32,7 @@ import {
   issueTreeHolds,
   issueWorkProducts,
   issues,
+  routines,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -325,6 +326,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await waitForHeartbeatIdle(db, 5_000);
     await new Promise((resolve) => setTimeout(resolve, 100));
     await db.delete(activityLog);
+    await db.delete(routines);
     await db.delete(agentRuntimeState);
     await db.delete(companySkills);
     await db.delete(costEvents);
@@ -2134,6 +2136,61 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+  });
+
+  it("skips an assigned issue that is the parent of an active routine instead of escalating to blocked", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+      runErrorCode: "process_lost",
+      runError: "run failed before issue advanced",
+    });
+    await db.insert(routines).values({
+      companyId,
+      parentIssueId: issueId,
+      assigneeAgentId: agentId,
+      title: "Weekly market analysis",
+      status: "active",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
+
+  it("still escalates an assigned issue whose only routine parent is paused", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+      runErrorCode: "process_lost",
+      runError: "run failed before issue advanced",
+    });
+    await db.insert(routines).values({
+      companyId,
+      parentIssueId: issueId,
+      assigneeAgentId: agentId,
+      title: "Paused analysis routine",
+      status: "paused",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
   });
 
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {
