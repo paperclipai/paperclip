@@ -26,8 +26,23 @@ function parseFrontmatterValue(rawValue: string): unknown {
 
 export function splitInstructionsMarkdown(markdown: string): InstructionsMarkdown {
   const normalized = markdown.replace(/\r\n/g, "\n");
-  const match = normalized.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!match) {
+  const lines = normalized.split("\n");
+  if (lines[0] !== "---") {
+    return {
+      frontmatter: {},
+      body: normalized,
+    };
+  }
+
+  let endIndex = -1;
+  for (let index = 1; index < lines.length; index += 1) {
+    if (lines[index] === "---") {
+      endIndex = index;
+      break;
+    }
+  }
+
+  if (endIndex === -1) {
     return {
       frontmatter: {},
       body: normalized,
@@ -35,13 +50,13 @@ export function splitInstructionsMarkdown(markdown: string): InstructionsMarkdow
   }
 
   const frontmatter: Record<string, unknown> = {};
-  const rawFrontmatter = match[1];
-  const body = match[2].trimStart();
+  const rawFrontmatter = lines.slice(1, endIndex);
+  const body = lines.slice(endIndex + 1).join("\n").trimStart();
 
   let currentKey: string | null = null;
   let currentList: unknown[] | null = null;
 
-  for (const line of rawFrontmatter.split("\n")) {
+  for (const line of rawFrontmatter) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
 
@@ -82,9 +97,11 @@ export function splitInstructionsMarkdown(markdown: string): InstructionsMarkdow
 }
 
 export function buildInstructionsPrefix(body: string, instructionsFilePath: string): string {
+  const trimmedBody = body.trim();
+  if (!trimmedBody) return "";
   const instructionsDir = `${path.dirname(instructionsFilePath)}/`;
-  return [body, `The above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsDir}.`]
-    .map((value) => (typeof value === "string" ? value.trim() : ""))
-    .filter(Boolean)
-    .join("\n\n");
+  return [
+    trimmedBody,
+    `The above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsDir}.`,
+  ].join("\n\n");
 }
