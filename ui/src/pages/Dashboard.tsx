@@ -20,7 +20,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents, formatTokens } from "../lib/utils";
-import { Bot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Eye } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { AnimatedNumber, DotMatrixText } from "../components/NothingAesthetic";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -73,14 +73,26 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
-  // "Waiting on you": issues assigned to the current user that need their
-  // action — in_review (needs your review) or blocked (needs you to unblock).
-  // Server resolves the literal "me" to the board user and accepts the status
-  // list, so no backend change is needed.
+  // "Needs you": issues genuinely awaiting THIS user's decision — the same
+  // strict signal the Inbox "Needs you" tab uses (awaitingDecisionForUserId),
+  // so the dashboard count matches the Inbox instead of over-counting every
+  // in_review item (those may be under review by an agent, not waiting on you).
+  // The metric deep-links to /inbox/decisions, which renders this exact set.
   const { data: waitingOnYou } = useQuery({
-    queryKey: [...queryKeys.issues.list(selectedCompanyId!), { waitingOnYou: true }],
+    queryKey: ["issues", selectedCompanyId, "awaiting-decision", "me"],
     queryFn: () =>
-      issuesApi.list(selectedCompanyId!, { assigneeUserId: "me", status: "in_review,blocked" }),
+      issuesApi.list(selectedCompanyId!, { awaitingDecisionForUserId: "me", includeRoutineExecutions: true }),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 30_000,
+  });
+
+  // "In review": the broader "what's in flight on me" view — issues assigned to
+  // the current user currently in_review. Distinct from "Needs you" (those
+  // strictly awaiting your decision); an in_review issue may be under review by
+  // an agent and not require your action yet.
+  const { data: inReviewMine } = useQuery({
+    queryKey: ["issues", selectedCompanyId, "in-review", "me"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { assigneeUserId: "me", status: "in_review" }),
     enabled: !!selectedCompanyId,
     refetchInterval: 30_000,
   });
@@ -296,29 +308,40 @@ export function Dashboard() {
             const approvalsCount = data.pendingApprovals + data.budgets.pendingApprovals;
             const approvalsPercent = Math.min(approvalsCount / 10, 1);
             const approvalsTone: "default" | "danger" = approvalsCount > 0 ? "danger" : "default";
-            // "Waiting on you" + "Stalled" counts are derived client-side from
-            // data already fetched (no backend change). waitingOnYou = my
-            // in_review/blocked issues; stalled = issues whose blockerAttention
-            // says they're stalled or need attention.
+            // "Needs you" = issues awaiting this user's decision (same set as the
+            // Inbox "Needs you" tab). "Stalled" = issues whose blockerAttention
+            // says they're stalled or need attention (client-side from the issues
+            // list, which carries blockerAttention).
             const waitingCount = waitingOnYou?.length ?? 0;
-            const waitingReview = waitingOnYou?.filter((i) => i.status === "in_review").length ?? 0;
-            const waitingBlocked = waitingOnYou?.filter((i) => i.status === "blocked").length ?? 0;
             const waitingTone: "default" | "danger" = waitingCount > 0 ? "danger" : "default";
+            const inReviewCount = inReviewMine?.length ?? 0;
             const stalledCount = stalledIssues.length;
             const stalledTone: "default" | "danger" = stalledCount > 0 ? "danger" : "default";
             return (
-              <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
+              <div className="grid grid-cols-2 xl:grid-cols-5 gap-3 sm:gap-4">
                 <CircularStatWidget
                   icon={Bot}
                   value={waitingCount}
-                  label="Waiting on you"
+                  label="Needs you"
                   percent={Math.min(waitingCount / 10, 1)}
                   tone={waitingTone}
-                  to="/inbox"
+                  to="/inbox/decisions"
                   description={
                     <span>
-                      {waitingReview} to review{", "}
-                      {waitingBlocked} blocked
+                      {waitingCount > 0 ? "awaiting your decision" : "nothing waiting"}
+                    </span>
+                  }
+                />
+                <CircularStatWidget
+                  icon={Eye}
+                  value={inReviewCount}
+                  label="In review"
+                  percent={Math.min(inReviewCount / 10, 1)}
+                  tone="info"
+                  to="/issues"
+                  description={
+                    <span>
+                      {inReviewCount > 0 ? "in flight, assigned to you" : "nothing in review"}
                     </span>
                   }
                 />
@@ -428,11 +451,14 @@ export function Dashboard() {
               </div>
             )}
 
-            {/* Waiting on you — issues assigned to you needing review/unblock */}
+            {/* Needs you — issues awaiting your decision (same set as Inbox) */}
             {waitingOnYou && waitingOnYou.length > 0 && (
               <div className="min-w-0">
-                <h3 className="text-xs font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3 px-1">
-                  Waiting on you ({waitingOnYou.length})
+                <h3 className="text-xs font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3 px-1 flex items-center justify-between">
+                  <span>Needs you ({waitingOnYou.length})</span>
+                  <Link to="/inbox/decisions" className="text-[10px] font-normal normal-case tracking-normal text-blue-600 dark:text-blue-400 no-underline hover:underline">
+                    Open inbox
+                  </Link>
                 </h3>
                 <div className="rounded-2xl border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm divide-y divide-border/50 overflow-hidden">
                   {waitingOnYou.slice(0, 10).map((issue) => (
@@ -454,13 +480,8 @@ export function Dashboard() {
                             <span className="text-xs font-mono text-muted-foreground">
                               {issue.identifier ?? issue.id.slice(0, 8)}
                             </span>
-                            <span className={cn(
-                              "text-[10px] font-medium rounded px-1.5 py-0.5 shrink-0",
-                              issue.status === "in_review"
-                                ? "bg-sky-500/10 text-sky-600"
-                                : "bg-amber-500/10 text-amber-600",
-                            )}>
-                              {issue.status === "in_review" ? "review" : "blocked"}
+                            <span className="text-[10px] font-medium rounded px-1.5 py-0.5 shrink-0 bg-amber-500/10 text-amber-600">
+                              needs decision
                             </span>
                             <span className="text-xs text-muted-foreground shrink-0 sm:order-last">
                               {timeAgo(issue.updatedAt)}
