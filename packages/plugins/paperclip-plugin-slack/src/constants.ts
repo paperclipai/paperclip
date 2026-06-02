@@ -1,7 +1,7 @@
 import type { SlackPluginConfig } from "./types.js";
 
 export const PLUGIN_ID = "paperclip-plugin-slack";
-export const PLUGIN_VERSION = "2.2.0";
+export const PLUGIN_VERSION = "2.2.1";
 
 export const ESCALATION_NEEDS_HUMAN_DECISION_EVENT =
   "issue.escalation.needs_human_decision" as const;

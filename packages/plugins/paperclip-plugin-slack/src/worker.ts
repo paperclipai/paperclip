@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import {
   definePlugin,
   startWorkerRpcHost,
@@ -98,11 +98,60 @@ let slackAdapter: SlackAdapter;
 // --- Slack signature verification ---
 let slackSigningSecret: string | null = null;
 
+/** Why a webhook signature check failed (for diagnostic logging only). */
+type SigFailReason =
+  | "missing_headers"
+  | "stale_timestamp"
+  | "length_mismatch"
+  | "hmac_mismatch";
+
+/**
+ * Result of a signature check. On failure, `meta` carries SAFE diagnostic
+ * fields only — never the signing secret, the computed HMAC, or the full
+ * received signature.
+ */
+interface SigCheckResult {
+  ok: boolean;
+  reason?: SigFailReason;
+  meta?: Record<string, unknown>;
+}
+
+// Throttle for rejection warnings: the webhook endpoint is publicly reachable,
+// so a hostile sender could otherwise spam the logs. Mirrors the
+// lastDropWarnAt/droppedSinceWarn pattern in server plugin-worker-manager.ts.
+let lastSigWarnAt = 0;
+let suppressedSigWarns = 0;
+
+/** True at most once per 5s; counts suppressed warns in between. */
+function shouldEmitSigWarn(): boolean {
+  const now = Date.now();
+  if (now - lastSigWarnAt > 5_000) {
+    lastSigWarnAt = now;
+    return true;
+  }
+  suppressedSigWarns += 1;
+  return false;
+}
+
+/** Reads and resets the suppressed-warning counter for inclusion in a log. */
+function takeSuppressedSigCount(): number {
+  const n = suppressedSigWarns;
+  suppressedSigWarns = 0;
+  return n;
+}
+
+/**
+ * Verify a Slack request signature. Returns a discriminated result so the
+ * caller can emit one structured diagnostic log on failure. The accept/reject
+ * decision and branch order are identical to the original boolean version, and
+ * no extra work runs on the success path (fingerprints are computed only on
+ * failure branches; `timingSafeEqual` is retained).
+ */
 function verifySlackSignature(
   headers: Record<string, string | string[]>,
   rawBody: string,
-): boolean {
-  if (!slackSigningSecret) return true; // skip if not configured
+): SigCheckResult {
+  if (!slackSigningSecret) return { ok: true }; // skip if not configured
   const timestamp = String(
     headers["x-slack-request-timestamp"] ??
       headers["X-Slack-Request-Timestamp"] ??
@@ -111,17 +160,65 @@ function verifySlackSignature(
   const signature = String(
     headers["x-slack-signature"] ?? headers["X-Slack-Signature"] ?? "",
   );
-  if (!timestamp || !signature) return false;
+  if (!timestamp || !signature) {
+    return {
+      ok: false,
+      reason: "missing_headers",
+      meta: {
+        hasTimestamp: timestamp !== "",
+        hasSignature: signature !== "",
+        bodyBytes: Buffer.byteLength(rawBody, "utf8"),
+      },
+    };
+  }
   // Reject requests older than 5 minutes to prevent replay attacks
   const now = Math.floor(Date.now() / 1000);
-  if (Math.abs(now - Number(timestamp)) > 300) return false;
+  if (Math.abs(now - Number(timestamp)) > 300) {
+    const tsNum = Number(timestamp);
+    return {
+      ok: false,
+      reason: "stale_timestamp",
+      meta: {
+        skewSeconds: Number.isFinite(tsNum) ? now - tsNum : null,
+        bodyBytes: Buffer.byteLength(rawBody, "utf8"),
+      },
+    };
+  }
   const baseString = `v0:${timestamp}:${rawBody}`;
   const hmac = createHmac("sha256", slackSigningSecret)
     .update(baseString)
     .digest("hex");
   const expected = `v0=${hmac}`;
-  if (expected.length !== signature.length) return false;
-  return timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+  // Non-reversible fingerprint of the body: lets a future investigator confirm
+  // whether two deliveries carried identical bytes (the Slack-side divergence
+  // signal) without exposing content. Computed only on the failure paths below.
+  const bodyFp = (): string =>
+    createHash("sha256").update(rawBody).digest("hex").slice(0, 12);
+  if (expected.length !== signature.length) {
+    return {
+      ok: false,
+      reason: "length_mismatch",
+      meta: {
+        expectedLen: expected.length,
+        receivedLen: signature.length,
+        sigPrefix: signature.slice(0, 8), // received sig only; public
+        bodyBytes: Buffer.byteLength(rawBody, "utf8"),
+        bodyFp: bodyFp(),
+      },
+    };
+  }
+  if (timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    reason: "hmac_mismatch",
+    meta: {
+      sigPrefix: signature.slice(0, 8), // received sig only; public
+      bodyBytes: Buffer.byteLength(rawBody, "utf8"),
+      bodyFp: bodyFp(),
+    },
+  };
 }
 
 function canProcessMutatingApprovalWebhook(source: string): boolean {
@@ -1840,12 +1937,21 @@ const plugin = definePlugin({
     // Verify Slack request signature (skip for url_verification challenge)
     const body = input.parsedBody as Record<string, unknown> | undefined;
     const isVerificationChallenge = body?.type === "url_verification";
-    if (
-      !isVerificationChallenge &&
-      !verifySlackSignature(input.headers, input.rawBody)
-    ) {
-      pluginCtx.logger.warn("Rejected webhook: invalid Slack signature");
-      return;
+    if (!isVerificationChallenge) {
+      const sig = verifySlackSignature(input.headers, input.rawBody);
+      if (!sig.ok) {
+        // Throttle: at most one rejection warn per 5s (public endpoint).
+        if (shouldEmitSigWarn()) {
+          pluginCtx.logger.warn("Rejected webhook: invalid Slack signature", {
+            reason: sig.reason,
+            endpointKey: input.endpointKey,
+            requestId: input.requestId,
+            suppressedSince: takeSuppressedSigCount(),
+            ...sig.meta,
+          });
+        }
+        return;
+      }
     }
     // Slack Events API (url_verification + event callbacks)
     if (input.endpointKey === WEBHOOK_KEYS.slackEvents) {
