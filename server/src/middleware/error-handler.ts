@@ -62,6 +62,12 @@ export function errorHandler(
     return;
   }
 
+  // JSON body-parser errors (malformed JSON payloads) — map to 400 instead of 500.
+  if (err instanceof SyntaxError && (err as any).status === 400 && "body" in (err as any)) {
+    res.status(400).json({ error: "Bad Request", message: err.message });
+    return;
+  }
+
   const rootError = err instanceof Error ? err : new Error(String(err));
   attachErrorContext(
     req,
