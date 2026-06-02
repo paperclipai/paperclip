@@ -275,6 +275,92 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
+  it("allows explicit same-company worker host calls without invocation id during an active invocation", async () => {
+    const companiesGet = vi.fn(async (params: { companyId: string }) => ({ id: params.companyId }));
+    const handlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["companies.read"],
+      services: {
+        companies: {
+          get: companiesGet,
+        },
+      } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: handlers,
+    });
+
+    try {
+      await handle.start();
+
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-1",
+        params: {
+          mode: "omit",
+          requestedCompanyId: "company-1",
+        },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({ id: "company-1" });
+
+      expect(companiesGet).toHaveBeenCalledWith({ companyId: "company-1" });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("allows same-company state calls without invocation id during an active invocation", async () => {
+    const stateGet = vi.fn(async () => ({ ok: true }));
+    const handlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["plugin.state.read"],
+      services: {
+        state: {
+          get: stateGet,
+        },
+      } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: handlers,
+    });
+
+    try {
+      await handle.start();
+
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-1",
+        params: {
+          mode: "stateCompany",
+          requestedCompanyId: "company-1",
+        },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({ ok: true });
+
+      expect(stateGet).toHaveBeenCalledWith({
+        scopeKind: "company",
+        scopeId: "company-1",
+        stateKey: "probe",
+      });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("rejects performAction nested host calls that omit the invocation id", async () => {
     const handlers = createHostClientHandlers({
       pluginId: "test.plugin",
@@ -368,6 +454,96 @@ describe("plugin-worker-manager stderr failure context", () => {
         message: expect.stringContaining("unknown invocation scope"),
       });
       expect(companiesGet).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("allows stale invocation ids for explicitly scoped background config and plugin state calls", async () => {
+    const configGet = vi.fn(async (params: { companyId?: string | null }) => ({
+      companyId: params.companyId,
+    }));
+    const stateGet = vi.fn(async (params: { scopeKind: string; scopeId?: string | null; stateKey: string }) => ({
+      scopeKind: params.scopeKind,
+      scopeId: params.scopeId ?? null,
+    }));
+    const companiesGet = vi.fn(async () => ({ id: "company-a" }));
+    const hostHandlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["companies.read", "plugin.state.read"],
+      services: {
+        companies: {
+          get: companiesGet,
+        },
+        config: {
+          get: configGet,
+        },
+        state: {
+          get: stateGet,
+        },
+      } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers,
+    });
+
+    try {
+      await handle.start();
+
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-a",
+        params: {
+          mode: "unknown",
+          requestedCompanyId: "company-a",
+        },
+      } as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+      expect(companiesGet).not.toHaveBeenCalled();
+
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-a",
+        params: {
+          mode: "configCompany",
+          requestedCompanyId: "company-a",
+        },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({
+        companyId: "company-a",
+      });
+
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-a",
+        params: {
+          mode: "stateCompany",
+          requestedCompanyId: "company-a",
+        },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({
+        scopeKind: "company",
+        scopeId: "company-a",
+      });
+
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-a",
+        params: {
+          mode: "stateInstance",
+          requestedCompanyId: "company-a",
+        },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({
+        scopeKind: "instance",
+        scopeId: null,
+      });
     } finally {
       await handle.stop().catch(() => undefined);
     }
