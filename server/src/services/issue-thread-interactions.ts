@@ -1341,5 +1341,21 @@ export function issueThreadInteractionService(db: Db) {
       await touchIssue(db, issue.id);
       return hydrateInteraction(updated);
     },
+
+    cancelPendingOnIssueClose: async (issueId: string) => {
+      await db
+        .update(issueThreadInteractions)
+        .set({
+          status: "cancelled",
+          resolvedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(issueThreadInteractions.issueId, issueId),
+            eq(issueThreadInteractions.status, "pending"),
+          ),
+        );
+    },
   };
 }

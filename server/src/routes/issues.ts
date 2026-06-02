@@ -5068,6 +5068,10 @@ export function issueRoutes(
         }
       }
 
+      if (becameTerminal) {
+        await issueThreadInteractionsSvc.cancelPendingOnIssueClose(issue.id);
+      }
+
       for (const { agentId, wakeup } of wakeups.values()) {
         heartbeat
           .wakeup(agentId, wakeup)
