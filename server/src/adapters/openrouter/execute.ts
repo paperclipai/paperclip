@@ -168,7 +168,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "update_issue",
-      description: "Update a Paperclip issue's status, title, or description. Use this to mark issues as done, in_progress, blocked, etc. You MUST call this when completing or updating a task.",
+      description: "Update a Paperclip issue's status, title, or description. Include comment when changing status in a review/approval stage, especially for approvals or requested changes.",
       parameters: {
         type: "object",
         properties: {
@@ -176,6 +176,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
           status: { type: "string", description: "New status: todo, in_progress, done, blocked, cancelled" },
           title: { type: "string", description: "Updated title (optional)" },
           description: { type: "string", description: "Updated description (optional)" },
+          comment: { type: "string", description: "Optional comment to attach atomically with the update. Required when approving or requesting changes for an in-review issue." },
         },
         required: ["issue_identifier"],
       },
@@ -398,6 +399,7 @@ async function executeToolCall(
       if (args.status) patch.status = args.status;
       if (args.title) patch.title = args.title;
       if (args.description) patch.description = args.description;
+      if (args.comment) patch.comment = args.comment;
 
       const res = await fetch(
         `http://localhost:${apiContext.port}/api/issues/${issue.id}`,
@@ -695,7 +697,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "RULES:",
     "- ONLY operate within your workspace directory. Do NOT explore /app or other system directories.",
     "- Stay focused on the assigned task. Do not start unrelated work.",
-    "- Use update_issue to mark tasks as done/in_progress/blocked. Use add_comment for progress updates.",
+    "- Use update_issue to mark tasks as done/in_progress/blocked. Include a comment in the same update when approving or requesting changes for review/approval stages; a separate add_comment call is not enough for those transitions.",
     "- Use minimal tool calls. When done, summarize what you accomplished and STOP.",
     "- For heartbeats without a task, report status briefly and stop.",
     "- To delegate work (e.g., sending email), create a sub-issue via create_issue and assign it to the appropriate agent.",

@@ -97,6 +97,7 @@ Update an existing issue.
 | `title`       | string   | no       |                                              |
 | `description` | string   | no       |                                              |
 | `status`     | string   | no       | Transition to a new workflow state           |
+| `comment`     | string   | no       | Comment to attach atomically with the update; required when approving or requesting changes in a review/approval stage |
 | `priority`    | number   | no       | 0-4                                          |
 | `estimate`    | number   | no       |                                              |
 | `dueDate`     | string   | no       | ISO date, or `null` to clear                 |
@@ -118,6 +119,7 @@ Update an existing issue.
 - Changing `status` to `cancelled` sets `cancelledAt`
 - Moving to `completed`/`cancelled` with sub-issue auto-close enabled completes open sub-issues
 - Changing `teamId` re-assigns the identifier (e.g. `ENG-42` → `DES-18`); old identifier preserved in `previousIdentifiers`
+- Review/approval decisions are normal issue updates: approve with `status: done` plus `comment`, or request changes with a non-`done` status such as `in_progress` plus `comment`.
 
 ---
 

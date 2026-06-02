@@ -52,6 +52,26 @@ describe("paperclip MCP tools", () => {
     );
   });
 
+  it("passes update comments in the issue patch body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "PAP-1135", status: "in_progress" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipUpdateIssue");
+    await tool.execute({
+      issueId: "PAP-1135",
+      status: "in_progress",
+      comment: "Changes requested: add a regression test.",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      status: "in_progress",
+      comment: "Changes requested: add a regression test.",
+    });
+  });
+
   it("uses default company id for company-scoped list tools", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse([{ id: "issue-1" }]),
