@@ -8945,27 +8945,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ? `${issueRef.title}\n${issueRef.description ?? ""}`
           : String(context.paperclipTaskMarkdown ?? "");
         if (taskContext) {
-          const workers = options.pluginWorkerManager.diagnostics();
-          for (const diag of workers) {
-            const worker = options.pluginWorkerManager.getWorker(diag.pluginId);
-            if (!worker || worker.status !== "running") continue;
-            if (!worker.supportedMethods.includes("resolveRunContext")) continue;
-            try {
-              const result = await options.pluginWorkerManager.call(
-                diag.pluginId,
-                "resolveRunContext",
-                { agentId: agent.id, companyId: agent.companyId, taskContext },
-              );
-              if (result?.context) {
-                context.paperclipTaskMarkdown =
-                  result.context + "\n\n" + (context.paperclipTaskMarkdown ?? "");
+          try {
+            const workers = options.pluginWorkerManager.diagnostics();
+            for (const diag of workers) {
+              const worker = options.pluginWorkerManager.getWorker(diag.pluginId);
+              if (!worker || worker.status !== "running") continue;
+              if (!worker.supportedMethods.includes("resolveRunContext")) continue;
+              try {
+                const result = await options.pluginWorkerManager.call(
+                  diag.pluginId,
+                  "resolveRunContext",
+                  { agentId: agent.id, companyId: agent.companyId, taskContext },
+                );
+                if (result?.context) {
+                  context.paperclipTaskMarkdown =
+                    result.context + "\n\n" + (context.paperclipTaskMarkdown ?? "");
+                }
+              } catch (err) {
+                logger.warn(
+                  { pluginId: diag.pluginId, err: err instanceof Error ? err.message : String(err) },
+                  "resolveRunContext hook failed; skipping plugin context injection",
+                );
               }
-            } catch (err) {
-              logger.warn(
-                { pluginId: diag.pluginId, err: err instanceof Error ? err.message : String(err) },
-                "resolveRunContext hook failed; skipping plugin context injection",
-              );
             }
+          } catch (outerErr) {
+            logger.warn(
+              { err: outerErr instanceof Error ? outerErr.message : String(outerErr) },
+              "resolveRunContext setup failed; skipping context injection",
+            );
           }
         }
       }
