@@ -1,0 +1,7 @@
+{
+  "compilerOptions": {
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "files": []
+}
