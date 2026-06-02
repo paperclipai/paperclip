@@ -4606,21 +4606,24 @@ export function issueRoutes(
     const runWorkspaceInheritanceSourceIssueId = hasExplicitIssueWorkspaceCreateSelection(req.body)
       ? null
       : await resolveRunIssueWorkspaceInheritanceSource(companyId, actor);
+    // Inherit projectId from parent when omitted — prevents child issues losing project attribution.
+    const resolvedProjectId = await resolveAssignmentProjectId({
+      companyId,
+      projectId: req.body.projectId,
+      parentIssueId: req.body.parentId,
+    });
     const createBody = {
       ...req.body,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
       ...(runWorkspaceInheritanceSourceIssueId
         ? { inheritExecutionWorkspaceFromIssueId: runWorkspaceInheritanceSourceIssueId }
         : {}),
+      ...(resolvedProjectId !== undefined ? { projectId: resolvedProjectId } : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId, {
-        projectId: await resolveAssignmentProjectId({
-          companyId,
-          projectId: req.body.projectId,
-          parentIssueId: req.body.parentId,
-        }),
+        projectId: resolvedProjectId,
         parentIssueId: req.body.parentId ?? null,
         assigneeAgentId: createBody.assigneeAgentId ?? null,
         assigneeUserId: req.body.assigneeUserId ?? null,
