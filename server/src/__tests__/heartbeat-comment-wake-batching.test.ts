@@ -768,6 +768,9 @@ describe("heartbeat comment wake batching", () => {
         return Boolean(deferred);
       });
 
+      // Wait for the first run to connect to the gateway before marking the issue done.
+      await waitFor(() => gateway.getAgentPayloads().length >= 1);
+
       await db
         .update(issues)
         .set({
@@ -973,6 +976,11 @@ describe("heartbeat comment wake batching", () => {
           .then((rows) => rows[0] ?? null);
         return Boolean(deferred);
       });
+
+      // Wait for the first run to connect to the gateway before marking the issue done.
+      // This ensures checkout + adapter.execute() have already run, avoiding a race where
+      // checkout sees "done" status and fails before the adapter even starts.
+      await waitFor(() => gateway.getAgentPayloads().length >= 1);
 
       await db
         .update(issues)

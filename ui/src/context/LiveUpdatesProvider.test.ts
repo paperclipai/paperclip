@@ -10,7 +10,7 @@ vi.mock("../api/issues", () => ({
   },
 }));
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
@@ -20,13 +20,9 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   });
 
   afterEach(() => {
-    vi.runOnlyPendingTimers();
     vi.useRealTimers();
   });
 
-  function flushScheduledInvalidations() {
-    vi.advanceTimersByTime(500);
-  }
 
   it("refreshes touched inbox queries and only the changed issue data for issue updates", () => {
     const invalidations: unknown[] = [];
@@ -50,7 +46,9 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     );
     flushScheduledInvalidations();
 
-    expect(invalidations).toContainEqual(expect.objectContaining({
+    vi.runAllTimers();
+
+    expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.listMineByMe("company-1"),
     }));
     expect(invalidations).toContainEqual(expect.objectContaining({
@@ -110,7 +108,9 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     );
     flushScheduledInvalidations();
 
-    expect(invalidations).toContainEqual(expect.objectContaining({
+    vi.runAllTimers();
+
+    expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.comments("issue-1"),
     }));
   });
@@ -143,7 +143,9 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     );
     flushScheduledInvalidations();
 
-    expect(invalidations).toContainEqual(expect.objectContaining({
+    vi.runAllTimers();
+
+    expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.detail("issue-1"),
     }));
     expect(invalidations).toContainEqual(expect.objectContaining({
@@ -194,7 +196,9 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     );
     flushScheduledInvalidations();
 
-    expect(invalidations).toContainEqual(expect.objectContaining({
+    vi.runAllTimers();
+
+    expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.documents("issue-1"),
     }));
     expect(invalidations).toContainEqual(expect.objectContaining({
@@ -228,6 +232,8 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       { userId: "user-1", agentId: null },
     );
     flushScheduledInvalidations();
+
+    vi.runAllTimers();
 
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.detail("issue-1"),
@@ -266,6 +272,8 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       { userId: "user-1", agentId: null },
     );
     flushScheduledInvalidations();
+
+    vi.runAllTimers();
 
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.detail("issue-1"),
@@ -318,6 +326,8 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     );
     flushScheduledInvalidations();
 
+    vi.runAllTimers();
+
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.detail("issue-1"),
       refetchType: "inactive",
@@ -365,7 +375,9 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     );
     flushScheduledInvalidations();
 
-    expect(invalidations).toContainEqual(expect.objectContaining({
+    vi.runAllTimers();
+
+    expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.detail("issue-1"),
     }));
     expect(invalidations).toContainEqual(expect.objectContaining({
@@ -414,6 +426,8 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       { pathname: "/PAP/issues/PAP-759", isForegrounded: true },
     );
     flushScheduledInvalidations();
+
+    vi.runAllTimers();
 
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.detail("issue-1"),
