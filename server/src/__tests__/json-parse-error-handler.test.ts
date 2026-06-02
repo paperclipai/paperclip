@@ -159,15 +159,16 @@ describe.sequential("JSON parse error handler", () => {
     expect(res.body.error).toBe("Bad Request");
   });
 
-  it("still returns 201 for valid JSON body", async () => {
+  it("does not intercept valid JSON body", async () => {
     const app = await createApp();
     const res = await request(app)
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/comments")
       .set("Content-Type", "application/json")
       .send('{"body": "valid comment"}');
 
-    // The route handler may fail for other reasons (missing mocks), but it
-    // must NOT be a 400 Bad Request from the JSON parser.
+    // The route handler may return other statuses (e.g. 404, 500 from mocks),
+    // but the response must NOT be the 400 Bad Request produced by our
+    // JSON-parse-error guard.
     expect(res.status).not.toBe(400);
     expect(res.body.error).not.toBe("Bad Request");
   });
