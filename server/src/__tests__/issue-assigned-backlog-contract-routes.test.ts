@@ -22,6 +22,12 @@ const mockIssueService = vi.hoisted(() => ({
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: vi.fn(async () => true),
+    decide: vi.fn(async (input: { action?: string }) => ({
+      allowed: true,
+      action: input.action,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant.",
+    })),
     hasPermission: vi.fn(async () => true),
   }),
   agentService: () => ({
@@ -30,6 +36,7 @@ vi.mock("../services/index.js", () => ({
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
   }),
+  documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   documentService: () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
   }),

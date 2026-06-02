@@ -16,6 +16,7 @@ const mockInteractionService = vi.hoisted(() => ({
   acceptSuggestedTasks: vi.fn(),
   rejectInteraction: vi.fn(),
   rejectSuggestedTasks: vi.fn(),
+  expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(),
   answerQuestions: vi.fn(),
   cancelQuestions: vi.fn(),
 }));
@@ -42,6 +43,12 @@ function registerModuleMocks() {
     }),
     accessService: () => ({
       canUser: vi.fn(async () => true),
+      decide: vi.fn(async (input: { action?: string }) => ({
+        allowed: true,
+        action: input.action,
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by test grant.",
+      })),
       hasPermission: vi.fn(async () => true),
     }),
     agentService: () => ({
@@ -54,6 +61,7 @@ function registerModuleMocks() {
     clampIssueListLimit: (value: number) => value,
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     ISSUE_LIST_MAX_LIMIT: 1000,
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
@@ -156,6 +164,7 @@ describe.sequential("issue thread interaction routes", () => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(createIssue());
     mockInteractionService.listForIssue.mockResolvedValue([]);
+    mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
     mockInteractionService.create.mockResolvedValue({
       id: "interaction-1",
       companyId: "company-1",
@@ -288,6 +297,18 @@ describe.sequential("issue thread interaction routes", () => {
   });
 
   it("lists and creates board-authored interactions", async () => {
+    mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValueOnce([
+      {
+        id: "interaction-expired",
+        kind: "request_confirmation",
+        status: "expired",
+        result: {
+          version: 1,
+          outcome: "superseded_by_comment",
+          commentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        },
+      },
+    ]);
     mockInteractionService.listForIssue.mockResolvedValue([
       { id: "interaction-1", kind: "suggest_tasks", status: "pending" },
     ]);
@@ -298,6 +319,24 @@ describe.sequential("issue thread interaction routes", () => {
     expect(listRes.body).toEqual([
       { id: "interaction-1", kind: "suggest_tasks", status: "pending" },
     ]);
+    expect(mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_expired",
+        details: expect.objectContaining({
+          interactionId: "interaction-expired",
+          interactionKind: "request_confirmation",
+          source: "issue.interactions.catchup_superseded_by_comment",
+          result: expect.objectContaining({
+            outcome: "superseded_by_comment",
+            commentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          }),
+        }),
+      }),
+    );
 
     const createRes = await request(app)
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
@@ -498,6 +537,14 @@ describe.sequential("issue thread interaction routes", () => {
         payload: {
           version: 1,
           prompt: "Approve this plan?",
+          target: {
+            type: "issue_document",
+            issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            documentId: "document-plan",
+            key: "plan",
+            revisionId: "revision-plan",
+            revisionNumber: 1,
+          },
         },
         result: {
           version: 1,
@@ -524,6 +571,65 @@ describe.sequential("issue thread interaction routes", () => {
         contextSnapshot: expect.objectContaining({
           issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           interactionId: "interaction-plan",
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+          forceFreshSession: true,
+          workspaceRefreshReason: "accepted_plan_confirmation",
+        }),
+      }),
+    );
+  });
+
+  it("forces a fresh workspace-aware session when accepting a plan document confirmation on a standard-work issue", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ workMode: "standard" }));
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-standard-plan",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        idempotencyKey: "confirmation:issue:plan:revision-standard",
+        sourceCommentId: null,
+        sourceRunId: "run-standard-plan",
+        payload: {
+          version: 1,
+          prompt: "Approve this plan?",
+          target: {
+            type: "issue_document",
+            issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            documentId: "document-plan",
+            key: "plan",
+            revisionId: "revision-standard",
+            revisionNumber: 2,
+          },
+        },
+        result: {
+          version: 1,
+          outcome: "accepted",
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      createdIssues: [],
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-standard-plan/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        reason: "issue_commented",
+        contextSnapshot: expect.objectContaining({
+          issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          interactionId: "interaction-standard-plan",
           interactionKind: "request_confirmation",
           interactionStatus: "accepted",
           forceFreshSession: true,

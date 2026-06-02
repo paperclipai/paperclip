@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -7,6 +7,7 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
+import { isUuidLike } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -20,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { SecretBindingPicker, type SecretBindingValue } from "./SecretBindingPicker";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -74,6 +76,19 @@ export interface JsonSchemaNode {
   readOnly?: boolean;
   writeOnly?: boolean;
 
+  // Paperclip extensions
+  /**
+   * When true, the field is hidden behind an "Advanced options" disclosure
+   * in the top-level `JsonSchemaForm`. Defaults to false (essential).
+   */
+  "x-paperclip-advanced"?: boolean;
+  /**
+   * Optional sub-section name used to group advanced fields under headings
+   * inside the disclosure (e.g. "SSH access", "VM resources"). Ignored when
+   * `x-paperclip-advanced` is not true.
+   */
+  "x-paperclip-group"?: string;
+
   // Allow extra keys
   [key: string]: unknown;
 }
@@ -119,7 +134,14 @@ export function labelFromKey(key: string, schema: JsonSchemaNode): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Produce a sensible default value for a schema node. */
+/**
+ * Produce a sensible default value for a schema node.
+ *
+ * Optional scalar fields (string, number, integer, secret-ref) without an
+ * explicit `default` return `undefined` so they stay out of the submitted
+ * payload — otherwise an empty field would round-trip as `""` or `0` and
+ * trip server-side "X must be greater than 0 when provided" style validators.
+ */
 export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
   if (schema.default !== undefined) return schema.default;
 
@@ -127,10 +149,9 @@ export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
   switch (type) {
     case "string":
     case "secret-ref":
-      return "";
     case "number":
     case "integer":
-      return schema.minimum ?? 0;
+      return undefined;
     case "boolean":
       return false;
     case "enum":
@@ -141,12 +162,13 @@ export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
       if (!schema.properties) return {};
       const obj: Record<string, unknown> = {};
       for (const [key, propSchema] of Object.entries(schema.properties)) {
-        obj[key] = getDefaultForSchema(propSchema);
+        const def = getDefaultForSchema(propSchema);
+        if (def !== undefined) obj[key] = def;
       }
       return obj;
     }
     default:
-      return "";
+      return undefined;
   }
 }
 
@@ -467,7 +489,10 @@ const EnumField = React.memo(({
 EnumField.displayName = "EnumField";
 
 /**
- * Specialized field for secret-ref values, providing a toggleable password input.
+ * Specialized field for secret-ref values. Renders a picker for existing
+ * company secrets plus a raw-value fallback. A UUID-shaped value is treated
+ * as a bound secret reference; anything else is a raw value that the server
+ * converts to a stored secret on save.
  */
 const SecretField = React.memo(({
   value,
@@ -492,94 +517,168 @@ const SecretField = React.memo(({
 }) => {
   const [isVisible, setIsVisible] = useState(false);
   const isTextArea = maxLength != null && maxLength > TEXTAREA_THRESHOLD;
+
+  const stringValue = typeof value === "string" ? value : "";
+  const trimmed = stringValue.trim();
+  const isBoundToSecret = trimmed.length > 0 && isUuidLike(trimmed);
+  const hasRawValue = stringValue.length > 0 && !isBoundToSecret;
+
+  const [showRawInput, setShowRawInput] = useState(hasRawValue);
+
+  // Keep the raw-input panel open when the parent loads a raw value after
+  // mount (e.g. an environment-config form rendering with empty defaults
+  // before its API response arrives). We only promote to `true` here; manual
+  // toggles off are still preserved as long as `hasRawValue` is false.
+  useEffect(() => {
+    if (hasRawValue) setShowRawInput(true);
+  }, [hasRawValue]);
+
+  const bindingValue: SecretBindingValue | null = isBoundToSecret
+    ? { secretId: trimmed }
+    : null;
+
+  const handlePickerChange = useCallback(
+    (next: SecretBindingValue | null) => {
+      if (next) {
+        onChange(next.secretId);
+        setShowRawInput(false);
+        setIsVisible(false);
+      } else {
+        onChange("");
+      }
+    },
+    [onChange],
+  );
+
+  const rawInput = isTextArea ? (
+    <div className="relative">
+      {isVisible ? (
+        <Textarea
+          value={stringValue}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={String(defaultValue ?? "")}
+          disabled={disabled}
+          className="min-h-[140px] pr-10 font-mono text-xs"
+          aria-invalid={!!error}
+        />
+      ) : (
+        <Textarea
+          // Render a placeholder summary instead of the secret content while
+          // hidden. This avoids exposing multi-line secrets (e.g. SSH
+          // private keys) on screen-shares; clicking the eye toggle reveals
+          // the editable textarea above.
+          value={
+            stringValue.length === 0
+              ? ""
+              : `Sensitive — ${stringValue.length} characters hidden. Click the eye to reveal.`
+          }
+          readOnly
+          placeholder={String(defaultValue ?? "")}
+          disabled={disabled}
+          className="min-h-[140px] pr-10 font-mono text-xs italic text-muted-foreground"
+          aria-invalid={!!error}
+        />
+      )}
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="absolute right-0 top-0 px-3 py-2 hover:bg-transparent"
+        onClick={() => setIsVisible(!isVisible)}
+        disabled={disabled}
+      >
+        {isVisible ? (
+          <EyeOff className="h-4 w-4 text-muted-foreground" />
+        ) : (
+          <Eye className="h-4 w-4 text-muted-foreground" />
+        )}
+        <span className="sr-only">
+          {isVisible ? "Hide secret" : "Show secret"}
+        </span>
+      </Button>
+    </div>
+  ) : (
+    <div className="relative">
+      <Input
+        type={isVisible ? "text" : "password"}
+        value={stringValue}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={String(defaultValue ?? "")}
+        disabled={disabled}
+        className="pr-10"
+        aria-invalid={!!error}
+      />
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
+        onClick={() => setIsVisible(!isVisible)}
+        disabled={disabled}
+      >
+        {isVisible ? (
+          <EyeOff className="h-4 w-4 text-muted-foreground" />
+        ) : (
+          <Eye className="h-4 w-4 text-muted-foreground" />
+        )}
+        <span className="sr-only">
+          {isVisible ? "Hide secret" : "Show secret"}
+        </span>
+      </Button>
+    </div>
+  );
+
   return (
     <FieldWrapper
       label={label}
       description={
         description ||
-        "This secret is stored securely via the Paperclip secret provider."
+        "Pick an existing company secret, or paste a raw value (Paperclip will store it as a secret on save)."
       }
       required={isRequired}
       error={error}
       disabled={disabled}
     >
-      {isTextArea ? (
-        <div className="relative">
-          {isVisible ? (
-            <Textarea
-              value={String(value ?? "")}
-              onChange={(e) => onChange(e.target.value)}
-              placeholder={String(defaultValue ?? "")}
-              disabled={disabled}
-              className="min-h-[140px] pr-10 font-mono text-xs"
-              aria-invalid={!!error}
-            />
+      <div className="space-y-2">
+        <SecretBindingPicker
+          value={bindingValue}
+          onChange={handlePickerChange}
+          label=""
+          placeholder="Select an existing secret"
+          allowVersionSelector={false}
+          emptyHint="No active secrets yet. Create one or paste a raw value below."
+          disabled={disabled}
+        />
+        {!isBoundToSecret ? (
+          showRawInput ? (
+            <div className="space-y-1">
+              {rawInput}
+              {!hasRawValue ? (
+                <button
+                  type="button"
+                  className="text-[11px] text-muted-foreground hover:text-foreground"
+                  onClick={() => {
+                    setShowRawInput(false);
+                    setIsVisible(false);
+                  }}
+                  disabled={disabled}
+                >
+                  Hide raw value input
+                </button>
+              ) : null}
+            </div>
           ) : (
-            <Textarea
-              // Render a placeholder summary instead of the secret content while
-              // hidden. This avoids exposing multi-line secrets (e.g. SSH
-              // private keys) on screen-shares; clicking the eye toggle reveals
-              // the editable textarea above.
-              value={
-                String(value ?? "").length === 0
-                  ? ""
-                  : `Sensitive — ${String(value ?? "").length} characters hidden. Click the eye to reveal.`
-              }
-              readOnly
-              placeholder={String(defaultValue ?? "")}
+            <button
+              type="button"
+              className="text-[11px] text-muted-foreground hover:text-foreground"
+              onClick={() => setShowRawInput(true)}
               disabled={disabled}
-              className="min-h-[140px] pr-10 font-mono text-xs italic text-muted-foreground"
-              aria-invalid={!!error}
-            />
-          )}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="absolute right-0 top-0 px-3 py-2 hover:bg-transparent"
-            onClick={() => setIsVisible(!isVisible)}
-            disabled={disabled}
-          >
-            {isVisible ? (
-              <EyeOff className="h-4 w-4 text-muted-foreground" />
-            ) : (
-              <Eye className="h-4 w-4 text-muted-foreground" />
-            )}
-            <span className="sr-only">
-              {isVisible ? "Hide secret" : "Show secret"}
-            </span>
-          </Button>
-        </div>
-      ) : (
-        <div className="relative">
-          <Input
-            type={isVisible ? "text" : "password"}
-            value={String(value ?? "")}
-            onChange={(e) => onChange(e.target.value)}
-            placeholder={String(defaultValue ?? "")}
-            disabled={disabled}
-            className="pr-10"
-            aria-invalid={!!error}
-          />
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
-            onClick={() => setIsVisible(!isVisible)}
-            disabled={disabled}
-          >
-            {isVisible ? (
-              <EyeOff className="h-4 w-4 text-muted-foreground" />
-            ) : (
-              <Eye className="h-4 w-4 text-muted-foreground" />
-            )}
-            <span className="sr-only">
-              {isVisible ? "Hide secret" : "Show secret"}
-            </span>
-          </Button>
-        </div>
-      )}
+            >
+              Or paste a raw value
+            </button>
+          )
+        ) : null}
+      </div>
     </FieldWrapper>
   );
 });
@@ -1059,6 +1158,64 @@ export function JsonSchemaForm({
     [onChange, values],
   );
 
+  const { essentials, advancedGroups, advancedKeys } = useMemo(() => {
+    const essentials: Array<[string, JsonSchemaNode]> = [];
+    // Preserve original key order while bucketing into groups.
+    const groupOrder: string[] = [];
+    const groups = new Map<string, Array<[string, JsonSchemaNode]>>();
+    const advancedKeys = new Set<string>();
+    const DEFAULT_GROUP = "More options";
+
+    for (const entry of Object.entries(properties)) {
+      const [key, propSchema] = entry;
+      if (propSchema["x-paperclip-advanced"] === true) {
+        advancedKeys.add(key);
+        const rawGroup = propSchema["x-paperclip-group"];
+        const group = typeof rawGroup === "string" && rawGroup.length > 0
+          ? rawGroup
+          : DEFAULT_GROUP;
+        if (!groups.has(group)) {
+          groups.set(group, []);
+          groupOrder.push(group);
+        }
+        groups.get(group)!.push(entry);
+      } else {
+        essentials.push(entry);
+      }
+    }
+
+    return {
+      essentials,
+      advancedGroups: groupOrder.map((group) => ({
+        group,
+        fields: groups.get(group)!,
+      })),
+      advancedKeys,
+    };
+  }, [properties]);
+
+  const hasAdvanced = advancedGroups.length > 0;
+
+  const hasAdvancedError = useMemo(() => {
+    if (!hasAdvanced) return false;
+    for (const errorKey of Object.keys(errors)) {
+      // Top-level errors arrive as "/<key>" or "/<key>/<...>".
+      const stripped = errorKey.startsWith("/") ? errorKey.slice(1) : errorKey;
+      const topKey = stripped.split("/")[0];
+      if (advancedKeys.has(topKey)) return true;
+    }
+    return false;
+  }, [errors, advancedKeys, hasAdvanced]);
+
+  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
+
+  // Force the disclosure open when a validation error lands on a hidden field
+  // so the user can see and fix it. Never auto-close — once open, the user
+  // controls collapse.
+  useEffect(() => {
+    if (hasAdvancedError) setIsAdvancedOpen(true);
+  }, [hasAdvancedError]);
+
   if (Object.keys(properties).length === 0) {
     return (
       <div
@@ -1072,30 +1229,65 @@ export function JsonSchemaForm({
     );
   }
 
+  const renderField = ([key, propSchema]: [string, JsonSchemaNode]) => {
+    const value = values[key];
+    const isRequired = requiredFields.has(key);
+    const error = errors[`/${key}`];
+    const label = labelFromKey(key, propSchema);
+    const path = `/${key}`;
+
+    return (
+      <FormField
+        key={key}
+        propSchema={propSchema}
+        value={value}
+        onChange={(val) => handleFieldChange(key, val)}
+        error={error}
+        disabled={disabled}
+        label={label}
+        isRequired={isRequired}
+        errors={errors}
+        path={path}
+      />
+    );
+  };
+
   return (
     <div className={cn("space-y-6", className)}>
-      {Object.entries(properties).map(([key, propSchema]) => {
-        const value = values[key];
-        const isRequired = requiredFields.has(key);
-        const error = errors[`/${key}`];
-        const label = labelFromKey(key, propSchema);
-        const path = `/${key}`;
+      {essentials.map(renderField)}
 
-        return (
-          <FormField
-            key={key}
-            propSchema={propSchema}
-            value={value}
-            onChange={(val) => handleFieldChange(key, val)}
-            error={error}
-            disabled={disabled}
-            label={label}
-            isRequired={isRequired}
-            errors={errors}
-            path={path}
-          />
-        );
-      })}
+      {hasAdvanced && (
+        <div className="space-y-3 rounded-lg border border-dashed">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between px-4 py-3 text-left"
+            onClick={() => setIsAdvancedOpen((open) => !open)}
+            aria-expanded={isAdvancedOpen}
+          >
+            <span className="text-sm font-medium">Advanced options</span>
+            {isAdvancedOpen ? (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            )}
+          </button>
+
+          {isAdvancedOpen && (
+            <div className="space-y-6 px-4 pb-4">
+              {advancedGroups.map(({ group, fields }) => (
+                <div key={group} className="space-y-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {group}
+                  </div>
+                  <div className="space-y-6">
+                    {fields.map(renderField)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

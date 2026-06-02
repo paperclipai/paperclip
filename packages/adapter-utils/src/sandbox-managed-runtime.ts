@@ -138,6 +138,13 @@ async function createTarballFromDirectory(input: {
   const excludeArgs = ["._*", ...(input.exclude ?? [])].flatMap((entry) => ["--exclude", entry]);
   await execTar([
     "-c",
+    // Prevent macOS bsdtar from embedding LIBARCHIVE.xattr.* PAX extended
+    // headers for extended attributes (e.g. com.apple.provenance). GNU tar on
+    // Linux does not recognise these proprietary headers and fails extraction
+    // with "This does not look like a tar archive". COPYFILE_DISABLE=1 (set in
+    // execTar) already suppresses AppleDouble ._* sidecar files; --no-xattrs
+    // additionally suppresses the inline PAX xattr entries.
+    "--no-xattrs",
     ...(input.followSymlinks ? ["-h"] : []),
     "-f",
     input.archivePath,

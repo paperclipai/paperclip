@@ -81,6 +81,7 @@ function registerServiceMocks() {
     agentService: () => ({
       getById: vi.fn(async () => null),
     }),
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     feedbackService: () => ({
