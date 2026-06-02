@@ -16,7 +16,7 @@
     "api/index.mjs": {
       "maxDuration": 300,
       "memory": 3008,
-      "excludeFiles": "{ui/**,.claude/**,**/*.test.ts,**/*.test.tsx,**/*.spec.ts,**/*.spec.tsx,ui/storybook/**,packages/**/tests/**}"
+      "excludeFiles": "{ui/**,.claude/**,.agents/**,packages/**/src/**,**/*.test.ts,**/*.test.tsx,**/*.spec.ts,**/*.spec.tsx,ui/storybook/**,packages/**/tests/**}"
     }
   }
 }

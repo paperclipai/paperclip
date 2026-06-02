@@ -1467,11 +1467,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             `[openclaw-gateway] auto-approved pairing request ${pairResult.requestId}; retrying\n`,
           );
           continue;
+        } else {
+          await ctx.onLog(
+            "stderr",
+            `[openclaw-gateway] auto-pairing failed: ${pairResult.reason}\n`,
+          );
         }
-        await ctx.onLog(
-          "stderr",
-          `[openclaw-gateway] auto-pairing failed: ${pairResult.reason}\n`,
-        );
       }
 
       const detailedMessage = pairingRequired
