@@ -116,6 +116,19 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   return Math.min(max, Math.trunc(parsed));
 }
 
+function isScrumCoordinatorAgent(agent: { name?: string | null; urlKey?: string | null; role?: string | null } | null | undefined) {
+  if (!agent) return false;
+  const name = (agent.name ?? "").trim().toLowerCase();
+  const urlKey = (agent.urlKey ?? "").trim().toLowerCase();
+  return agent.role === "pm" && (name === "scrum" || urlKey === "scrum");
+}
+
+function readPayloadIssueId(payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const value = (payload as Record<string, unknown>).issueId;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
 export function agentRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -161,6 +174,7 @@ export function agentRoutes(
 
   const router = Router();
   const svc = agentService(db);
+  const issuesSvc = issueService(db);
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
@@ -2927,8 +2941,20 @@ export function agentRoutes(
 
     if (req.actor.type === "agent") {
       if (req.actor.agentId !== id) {
-        res.status(403).json({ error: "Agent can only invoke itself" });
-        return;
+        const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
+        const issueId = readPayloadIssueId(req.body.payload);
+        const issue = issueId ? await issuesSvc.getById(issueId) : null;
+        const assignee = issue?.assigneeAgentId ? await svc.getById(issue.assigneeAgentId) : null;
+        const scrumIssueWakeAllowed =
+          isScrumCoordinatorAgent(actorAgent) &&
+          !!issue &&
+          issue.companyId === agent.companyId &&
+          issue.assigneeAgentId &&
+          (id === issue.assigneeAgentId || id === assignee?.reportsTo);
+        if (!scrumIssueWakeAllowed) {
+          res.status(403).json({ error: "Agent can only invoke itself" });
+          return;
+        }
       }
     } else {
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
