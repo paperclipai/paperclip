@@ -2139,7 +2139,9 @@ export async function runChildProcess(
         // Mark spawned agent processes as high-priority OOM candidates so the
         // kernel kills them before the Paperclip server when memory is tight.
         if (process.platform !== "win32" && typeof child.pid === "number" && child.pid > 0) {
-          fs.writeFile(`/proc/${child.pid}/oom_score_adj`, "500").catch(() => {/* best-effort */});
+          fs.writeFile(`/proc/${child.pid}/oom_score_adj`, "500")
+            .then(() => { console.debug(`oom_score_adj set to 500 for pid ${child.pid}`); })
+            .catch((err) => { onLogError(err, runId, `oom_score_adj write failed for pid ${child.pid}`); });
         }
 
         let timedOut = false;
