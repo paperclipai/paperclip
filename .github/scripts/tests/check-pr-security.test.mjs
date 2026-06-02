@@ -161,7 +161,10 @@ test('syncDraftAdvisory: patches an existing advisory with the latest flags', as
   assert.equal(calls.length, 2);
   assert.equal(calls[1].path, '/repos/paperclipai/paperclip/security-advisories/GHSA-test-1234');
   assert.equal(calls[1].options.method, 'PATCH');
-  assert.deepEqual(JSON.parse(calls[1].options.body), buildAdvisoryPayload(6469, 'My PR', flags));
+  const patchPayload = JSON.parse(calls[1].options.body);
+  const { vulnerabilities: _vulnerabilities, ...expectedPatchPayload } = buildAdvisoryPayload(6469, 'My PR', flags);
+  assert.deepEqual(patchPayload, expectedPatchPayload);
+  assert.ok(!Object.hasOwn(patchPayload, 'vulnerabilities'));
 });
 
 test('syncDraftAdvisory: creates a new advisory when none exists', async () => {

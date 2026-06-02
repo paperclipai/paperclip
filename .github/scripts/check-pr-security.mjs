@@ -220,6 +220,7 @@ export async function syncDraftAdvisory(fetchImpl, token, repo, prNumber, prTitl
   const payload = buildAdvisoryPayload(prNumber, prTitle, flags);
 
   if (existing) {
+    const { vulnerabilities: _vulnerabilities, ...patchPayload } = payload;
     const advisoryId = existing.ghsa_id ?? existing.id;
     if (!advisoryId) {
       throw new Error(`Existing advisory for PR #${prNumber} is missing both ghsa_id and id.`);
@@ -228,7 +229,7 @@ export async function syncDraftAdvisory(fetchImpl, token, repo, prNumber, prTitl
     return fetchImpl(`/repos/${repo}/security-advisories/${advisoryId}`, token, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(patchPayload),
     });
   }
 
