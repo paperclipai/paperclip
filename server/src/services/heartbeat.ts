@@ -53,6 +53,12 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import {
+  classifyErrorClass,
+  classifyFailureRetryability,
+  shouldRetryProcessLoss,
+} from "./run-retry-policy.js";
+import { evaluatePreflight, type PreflightResult } from "./run-preflight.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
@@ -68,7 +74,11 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
-import { secretService } from "./secrets.js";
+import {
+  secretService,
+  getSecretResolutionFailureCode,
+  type RuntimeSecretManifestEntry,
+} from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
@@ -6757,7 +6767,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      // G1 (FUL-6364): also retry a pid-less `running` run that had already
+      // started (early-start kill window) where pid/pgid was never persisted,
+      // still bounded by processLossRetryCount < 1. See run-retry-policy.ts.
+      const shouldRetry = shouldRetryProcessLoss({
+        tracksLocalChild,
+        processPid: run.processPid,
+        processGroupId: run.processGroupId,
+        startedAt: run.startedAt,
+        processLossRetryCount: run.processLossRetryCount,
+      });
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
@@ -7379,24 +7398,151 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
-    const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
-      companyId: agent.companyId,
-      agentId: agent.id,
-      issueId,
-      heartbeatRunId: run.id,
-      projectId: projectContext?.id ?? null,
-      routineId: routineEnvContext.routineId,
-      executionRunConfig,
-      projectEnv: projectContext?.env ?? null,
-      routineEnv: routineEnvContext.env,
-      secretsSvc,
-    });
-    if (secretManifest.length > 0) {
-      context.paperclipSecrets = {
-        manifest: secretManifest,
-      };
-    } else {
-      delete context.paperclipSecrets;
+    let resolvedConfig: Record<string, unknown> = {};
+    let secretKeys: Set<string> = new Set<string>();
+    let secretManifest: RuntimeSecretManifestEntry[] = [];
+
+    // G2 — Run preflight (FUL-6364 / FUL-6386 / FUL-6404 / ADR FUL-6348).
+    // Evaluate deterministic, locally-knowable failure conditions BEFORE the
+    // expensive workspace/environment realization and adapter spawn below, so a
+    // run that can never succeed by itself (e.g. a required secret failed to
+    // resolve) is blocked instead of spawning a doomed child process.
+    //
+    // Provider quota/rate state is intentionally NOT polled here:
+    // fetchAllQuotaWindows() performs live, per-adapter network calls (20s
+    // timeouts each) and must not run on the hot path of every run. Quota/rate
+    // cooldown is handled post-failure by the G3 retry policy (see the
+    // outcome === "failed" branch below), where the provider actually reports
+    // it. The soft-defer branch here remains wired for forward-compatibility if
+    // a cheap, cached quota signal is later supplied via PreflightContext.
+    {
+      let preflight: PreflightResult;
+      try {
+        const resolved = await resolveExecutionRunAdapterConfig({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          issueId,
+          heartbeatRunId: run.id,
+          projectId: projectContext?.id ?? null,
+          routineId: routineEnvContext.routineId,
+          executionRunConfig,
+          projectEnv: projectContext?.env ?? null,
+          routineEnv: routineEnvContext.env,
+          secretsSvc,
+        });
+        resolvedConfig = resolved.resolvedConfig;
+        secretKeys = resolved.secretKeys;
+        secretManifest = resolved.secretManifest;
+        if (secretManifest.length > 0) {
+          context.paperclipSecrets = {
+            manifest: secretManifest,
+          };
+        } else {
+          delete context.paperclipSecrets;
+        }
+        preflight = evaluatePreflight({
+          adapterType: agent.adapterType,
+          // Adapter config already resolved without throwing; deeper config and
+          // model-allow-list validation is deferred to G3 post-failure
+          // classification to avoid hot-path false positives.
+          adapterConfigured: true,
+          requestedModel: modelProfileApplication.requested ?? null,
+          allowedModels: null,
+          requiredSecretNames: secretManifest.map((entry) => entry.secretKey),
+          boundSecretNames: secretManifest
+            .filter((entry) => entry.outcome === "success")
+            .map((entry) => entry.secretKey),
+          routineId: routineEnvContext.routineId ?? null,
+          routineDeniedSecretNames: [],
+          quota: null,
+          rate: null,
+        });
+      } catch (err) {
+        // resolveExecutionRunAdapterConfig -> resolveAdapterConfigForRuntime /
+        // resolveEnvBindings re-throw on ANY secret-resolution failure (missing
+        // binding, deleted/inactive secret, version problem, provider error).
+        // That throw is upstream of the preflight call, so checkSecretsBound
+        // never sees a failure -- historically the throw fell through to the
+        // outer setup handler as a generic `adapter_failed`: the run failed but
+        // the issue was NOT blocked, so the bounded-retry policy would re-spawn
+        // the same doomed run. Translate a recognized secret-resolution failure
+        // (tagged by the secrets service) into a `preflight_secret_unbound`
+        // hard-fail here so the issue is blocked exactly once and never retried,
+        // WITHOUT ever spawning the adapter child. Non-secret failures are
+        // rethrown to preserve the existing outer setup-failure behavior.
+        const secretFailureCode = getSecretResolutionFailureCode(err);
+        if (secretFailureCode === null) throw err;
+        delete context.paperclipSecrets;
+        preflight = {
+          ok: false,
+          reason: "preflight_secret_unbound",
+          disposition: "hard-fail",
+          retryable: false,
+          block: true,
+          message: `Required secret(s) failed to resolve at run time (${secretFailureCode}); blocking before adapter spawn.`,
+        };
+      }
+      if (!preflight.ok) {
+        const preflightNow = new Date();
+        let preflightRun = await setRunStatus(run.id, "failed", {
+          error: preflight.message,
+          errorCode: preflight.reason,
+          finishedAt: preflightNow,
+          resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
+            errorCode: preflight.reason,
+            errorMessage: preflight.message,
+          }),
+        });
+        await setWakeupStatus(run.wakeupRequestId, "failed", {
+          finishedAt: preflightNow,
+          error: preflight.message,
+        });
+        if (!preflightRun) preflightRun = await getRun(run.id);
+        if (preflightRun) {
+          await appendRunEvent(preflightRun, await nextRunEventSeq(preflightRun.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: preflight.block ? "error" : "warn",
+            message: `preflight ${preflight.disposition}: ${preflight.message}`,
+            payload: { reason: preflight.reason, disposition: preflight.disposition },
+          });
+          if (preflight.block && issueId) {
+            try {
+              const blockedIssue = await issuesSvc.update(issueId, { status: "blocked" });
+              if (blockedIssue) {
+                await issuesSvc.addComment(
+                  issueId,
+                  [
+                    "Paperclip blocked this issue before starting the run (preflight hard-fail).",
+                    "",
+                    `- Reason: \`${preflight.reason}\``,
+                    `- Detail: ${preflight.message}`,
+                    "",
+                    "This condition cannot be resolved by retrying the same run. Resolve the underlying configuration/secret problem, then move this issue out of `blocked`.",
+                  ].join("\n"),
+                  { agentId: agent.id, runId: preflightRun.id },
+                );
+              }
+            } catch (err) {
+              logger.warn({ err, runId: run.id, issueId }, "preflight failed to block issue");
+            }
+          }
+          await releaseIssueExecutionAndPromote(preflightRun);
+          if (!preflight.block && preflight.retryable) {
+            // Soft-defer: reschedule after the suggested cooldown rather than fail.
+            await scheduleBoundedRetryForRun(preflightRun, agent, {
+              now: preflightNow,
+              delayMs: preflight.deferMs,
+              retryReason: preflight.reason,
+              wakeReason: preflight.reason,
+            });
+          }
+        }
+        await finalizeAgentStatus(agent.id, "failed");
+        // The outer finally releases env/runtime leases (none acquired yet) and
+        // promotes the next queued run for this agent.
+        return;
+      }
     }
     const runScopedMentionedSkillKeys = await resolveRunScopedMentionedSkillKeys({
       db,
@@ -8290,29 +8436,81 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             );
           }
         }
-        if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
-          const policy = parseMaxTurnContinuationPolicy(agent);
-          if (policy.enabled && policy.maxAttempts > 0) {
-            await scheduleBoundedRetryForRun(livenessRun, agent, {
-              retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
-              wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
-              maxAttempts: policy.maxAttempts,
-              delayMs: policy.delayMs,
-            });
-          } else {
+        if (outcome === "failed") {
+          // G3 — Retry suppression policy (FUL-6364 / FUL-6386 / ADR FUL-6348).
+          // Classify the failure: deterministic classes (bad config / auth /
+          // unsupported model / missing secret) can never be fixed by retrying
+          // the identical run, so block the issue after the FIRST failure.
+          // Cooldown classes (quota / rate-limit) are deferred (rescheduled)
+          // rather than failed out — generalizing the FUL-5634 quota quarantine
+          // to all deterministic adapter/model/secret failures. All other
+          // classes (transient / process-lost / unknown) keep the existing
+          // max-turn and transient-recovery retry behavior below.
+          const g3 = classifyFailureRetryability(
+            agent.adapterType,
+            readNonEmptyString(adapterResult.model) ?? null,
+            classifyErrorClass(runErrorCode, runErrorMessage),
+          );
+          if (g3.action === "suppress-block") {
             await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
               eventType: "lifecycle",
               stream: "system",
-              level: "warn",
-              message: "Max-turn continuation suppressed because the policy is disabled",
-              payload: {
-                retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
-                policy,
-              },
+              level: "error",
+              message: `retry suppressed (${g3.errorClass}); blocking issue after first failure`,
+              payload: { reason: g3.reason, errorClass: g3.errorClass },
             });
+            if (g3.block && issueId) {
+              try {
+                const blockedIssue = await issuesSvc.update(issueId, { status: "blocked" });
+                if (blockedIssue) {
+                  await issuesSvc.addComment(
+                    issueId,
+                    [
+                      "Paperclip blocked this issue after a deterministic run failure (retry suppressed).",
+                      "",
+                      `- Failure class: \`${g3.errorClass}\``,
+                      `- Reason: \`${g3.reason}\``,
+                      "",
+                      "Retrying the identical run cannot succeed for this failure class. Resolve the underlying configuration/credential/model problem, then move this issue out of `blocked`.",
+                    ].join("\n"),
+                    { agentId: agent.id, runId: livenessRun.id },
+                  );
+                }
+              } catch (err) {
+                logger.warn({ err, runId: livenessRun.id, issueId }, "retry-suppression failed to block issue");
+              }
+            }
+          } else if (g3.action === "defer") {
+            // Quota / rate-limit: reschedule after a bounded cooldown instead of
+            // failing the issue out.
+            await scheduleBoundedRetryForRun(livenessRun, agent, {
+              retryReason: g3.reason,
+              wakeReason: g3.reason,
+            });
+          } else if (isMaxTurnExhaustionRun(livenessRun)) {
+            const policy = parseMaxTurnContinuationPolicy(agent);
+            if (policy.enabled && policy.maxAttempts > 0) {
+              await scheduleBoundedRetryForRun(livenessRun, agent, {
+                retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+                wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+                maxAttempts: policy.maxAttempts,
+                delayMs: policy.delayMs,
+              });
+            } else {
+              await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "warn",
+                message: "Max-turn continuation suppressed because the policy is disabled",
+                payload: {
+                  retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+                  policy,
+                },
+              });
+            }
+          } else if (readTransientRecoveryContractFromRun(livenessRun)) {
+            await scheduleBoundedRetryForRun(livenessRun, agent);
           }
-        } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
-          await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
