@@ -639,6 +639,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
     continuationPolicy: string;
     sourceCommentId?: string | null;
     sourceRunId?: string | null;
+    result?: unknown;
   };
   actor: { actorType: "user" | "agent"; actorId: string };
   source: string;
@@ -675,6 +676,10 @@ function queueResolvedInteractionContinuationWakeup(input: {
       interactionId: input.interaction.id,
       interactionKind: input.interaction.kind,
       interactionStatus: input.interaction.status,
+      // Carry the resolution result (e.g. the user's rejection reason or
+      // answers) so the woken agent actually sees the feedback it must act on,
+      // instead of only learning the interaction was rejected/answered.
+      interactionResult: input.interaction.result ?? null,
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
       wakeReason: "issue_commented",

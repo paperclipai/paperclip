@@ -432,6 +432,7 @@ type PaperclipWakePayload = {
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
   interactionKind: string | null;
   interactionStatus: string | null;
+  interactionResult: Record<string, unknown> | null;
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
   commentIds: string[];
@@ -643,6 +644,10 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     livenessContinuation,
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
+    interactionResult: (() => {
+      const r = parseObject(payload.interactionResult);
+      return Object.keys(r).length > 0 ? r : null;
+    })(),
     childIssueSummaries,
     childIssueSummaryTruncated: asBoolean(payload.childIssueSummaryTruncated, false),
     commentIds,
@@ -746,6 +751,41 @@ export function renderPaperclipWakePrompt(
       lines.push(
         "- accepted-plan continuation: you may create child implementation issues from the approved plan, but must not start implementation work on the planning issue itself",
       );
+    }
+  }
+  // Surface the user's decision on a confirmation/question so the woken agent
+  // acts on the feedback — not just the fact that it was resolved. Without this,
+  // a declined confirmation woke the agent but dropped the reason the user gave.
+  if (normalized.interactionKind && normalized.interactionStatus) {
+    const result = normalized.interactionResult;
+    const kindLabel =
+      normalized.interactionKind === "request_confirmation"
+        ? "confirmation"
+        : normalized.interactionKind === "ask_user_questions"
+          ? "question"
+          : normalized.interactionKind === "suggest_tasks"
+            ? "task suggestion"
+            : normalized.interactionKind;
+    if (normalized.interactionStatus === "rejected") {
+      const reason =
+        asString(result?.reason, "").trim() ||
+        asString(result?.rejectionReason, "").trim();
+      lines.push(
+        reason
+          ? `- the user DECLINED your ${kindLabel} with this feedback: "${reason}". Address it before proceeding — do not just retry the same thing.`
+          : `- the user DECLINED your ${kindLabel} (no reason given). Reconsider your approach before proceeding.`,
+      );
+    } else if (normalized.interactionStatus === "answered") {
+      // result.answers carries optionIds only; summaryMarkdown is the
+      // human-readable version, so prefer it for the agent.
+      const summary = asString(result?.summaryMarkdown, "").trim();
+      lines.push(
+        summary
+          ? `- the user answered your ${kindLabel}: ${summary}. Use these answers.`
+          : `- the user answered your ${kindLabel} — read the latest comment/interaction for their selections and use them.`,
+      );
+    } else if (normalized.interactionStatus === "accepted" && normalized.interactionKind === "request_confirmation") {
+      lines.push(`- the user APPROVED your ${kindLabel}. Proceed.`);
     }
   }
   if (normalized.checkedOutByHarness) {
