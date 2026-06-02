@@ -691,6 +691,12 @@ async function isGitCheckout(cwd: string): Promise<boolean> {
 }
 
 async function detectDefaultBranch(repoRoot: string): Promise<string | null> {
+  const originMasterRef = "origin/master";
+  await refreshRemoteTrackingBaseRef(repoRoot, originMasterRef);
+  if (await resolveBaseRefSha(repoRoot, originMasterRef)) {
+    return originMasterRef;
+  }
+
   // Try the explicit remote HEAD first (set by git clone or git remote set-head)
   try {
     const remoteHead = await runGit(

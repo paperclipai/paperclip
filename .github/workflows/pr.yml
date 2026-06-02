@@ -45,6 +45,12 @@ jobs:
       - name: Validate Dockerfile deps stage
         run: node ./scripts/check-docker-deps-stage.mjs
 
+      - name: Reject git push in adapter/runtime code
+        run: node ./scripts/check-no-git-push.mjs
+
+      - name: Test no-git-push check
+        run: node --test ./scripts/check-no-git-push.test.mjs
+
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
 
@@ -273,8 +279,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Playwright
-        run: npx playwright install --with-deps chromium
+      - name: Verify runner Chrome
+        # GitHub's Ubuntu runner image already ships Google Chrome, so use that
+        # directly for the headless e2e lane instead of downloading Playwright
+        # browser bundles inside the 30 minute job budget.
+        run: google-chrome --version
 
       - name: Generate Paperclip config
         run: |
@@ -294,6 +303,7 @@ jobs:
       - name: Run e2e tests
         env:
           PAPERCLIP_E2E_SKIP_LLM: "true"
+          PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
         run: pnpm run test:e2e
 
       - name: Upload Playwright report
