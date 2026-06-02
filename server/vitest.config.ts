@@ -19,6 +19,7 @@ export default defineConfig({
       concurrent: false,
       hooks: "list",
     },
+    globalSetup: ["./vitest.global-setup.ts"],
     setupFiles: ["./src/__tests__/setup-supertest.ts"],
 
     // Bumped above vitest defaults (5s test / 10s hook / 10s teardown)
