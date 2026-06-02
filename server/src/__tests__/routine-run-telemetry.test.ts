@@ -142,6 +142,7 @@ describeEmbeddedPostgres("routine run telemetry", () => {
         status: "active",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        variables: [],
       },
       {},
     );

@@ -66,7 +66,7 @@ describe("GET /health", () => {
 
   it("redacts detailed metadata for anonymous requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
-    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
@@ -105,7 +105,7 @@ describe("GET /health", () => {
 
   it("redacts detailed metadata when authenticated mode is reached without auth middleware", async () => {
     const devServerStatus = await import("../dev-server-status.js");
-    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
@@ -140,7 +140,7 @@ describe("GET /health", () => {
 
   it("keeps detailed metadata for authenticated requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
-    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),

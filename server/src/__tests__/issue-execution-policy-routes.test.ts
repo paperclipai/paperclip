@@ -225,6 +225,7 @@ describe("issue execution policy routes", () => {
     };
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([
+/* @ts-ignore - test fixture wider than narrowed type */
       { id: "interaction-1", kind: "request_confirmation", status: "pending" },
     ]);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({

@@ -161,6 +161,7 @@ describe("github-webhook pure helpers", () => {
     if (!ctx || !ctx.prNumber) {
       throw new Error("expected reopened pull_request context with PR number");
     }
+    // @ts-expect-error – test fixture omits the prNumber field required by the narrow union
     expect(__test_buildPrReviewerWakeIdempotencyKey(ctx, "delivery-reopened")).toBe(
       "pr_review:Blockcast/magma:980:github_pr_reopened",
     );

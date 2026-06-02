@@ -252,6 +252,7 @@ describeEmbeddedPostgres("cloud upstream persistence", () => {
       if (path.endsWith("/events")) {
         return jsonResponse({ events: [] });
       }
+    // @ts-expect-error – test calls helper with debug arg that's been removed from prod signature
       return jsonResponse({ error: "not_found" }, 404);
     }) as typeof fetch;
 

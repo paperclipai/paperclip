@@ -38,7 +38,7 @@ describe("plugin telemetry bridge", () => {
     const handlers = createHostClientHandlers({
       pluginId: "linear",
       capabilities: ["telemetry.track"],
-      services,
+      services: services as never,
     });
 
     await handlers["telemetry.track"]({
@@ -79,7 +79,7 @@ describe("plugin telemetry bridge", () => {
     const handlers = createHostClientHandlers({
       pluginId: "linear",
       capabilities: [],
-      services,
+      services: services as never,
     });
 
     await expect(
@@ -101,7 +101,7 @@ describe("plugin telemetry bridge", () => {
     const handlers = createHostClientHandlers({
       pluginId: "linear",
       capabilities: ["telemetry.track"],
-      services,
+      services: services as never,
     });
 
     await handlers["telemetry.track"]({

@@ -213,8 +213,8 @@ describe("resolveEnvironmentExecutionTarget — k8s", () => {
     if (target == null || target.kind !== "remote" || target.transport !== "k8s") {
       throw new Error(`unexpected target shape: ${JSON.stringify(target)}`);
     }
-    expect((target.config as Record<string, unknown>).maliciousField).toBeUndefined();
-    expect((target.config as Record<string, unknown>).anotherUnknown).toBeUndefined();
+    expect((target.config as unknown as Record<string, unknown>).maliciousField).toBeUndefined();
+    expect((target.config as unknown as Record<string, unknown>).anotherUnknown).toBeUndefined();
     // Whitelisted keys still pass through.
     expect(target.config.namespace).toBe("paperclip");
   });

@@ -609,6 +609,7 @@ describe("openclaw gateway adapter execute", () => {
 
 describe("openclaw gateway ui build config", () => {
   it("parses payload template and runtime services json", () => {
+      // @ts-expect-error – test fixture shape predates CreateConfigValues schema additions
     const config = buildOpenClawGatewayConfig({
       adapterType: "openclaw_gateway",
       cwd: "",

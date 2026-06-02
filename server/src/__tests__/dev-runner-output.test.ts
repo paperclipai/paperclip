@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+// @ts-ignore
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "../../../scripts/dev-runner-output.mjs";
 
 describe("createCapturedOutputBuffer", () => {

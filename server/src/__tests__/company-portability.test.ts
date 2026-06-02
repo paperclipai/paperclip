@@ -385,9 +385,9 @@ describe("company portability", () => {
       adapterConfig: {
         ...agent.adapterConfig,
         instructionsBundleMode: "managed",
-        instructionsRootPath: `/tmp/${agent.id}`,
+        instructionsRootPath: `/tmp/${(agent as unknown as { id: string }).id}`,
         instructionsEntryFile: "AGENTS.md",
-        instructionsFilePath: `/tmp/${agent.id}/AGENTS.md`,
+        instructionsFilePath: `/tmp/${(agent as unknown as { id: string }).id}/AGENTS.md`,
       },
     }));
   });

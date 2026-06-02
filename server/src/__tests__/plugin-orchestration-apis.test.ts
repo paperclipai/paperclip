@@ -291,7 +291,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       },
     ]);
     setPluginEventBus({
-      emit: async (event) => {
+      emit: async (event: any) => {
         emitted.push(event);
         return { delivered: 1, errors: [] };
       },

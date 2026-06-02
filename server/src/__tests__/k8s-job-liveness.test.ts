@@ -12,7 +12,7 @@ describe("classifyAgentJobRunStatus", () => {
         succeeded: 1,
         conditions: [],
       },
-    } satisfies V1Job;
+    } as unknown as V1Job satisfies V1Job;
 
     expect(classifyAgentJobRunStatus(job)).toEqual({
       phase: "active",

@@ -33,7 +33,7 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : 
 describeEmbeddedPostgres("allocateFromLinear (linkedLinearIssue passthrough)", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-  let fetchSpy: ReturnType<typeof vi.spyOn> | null = null;
+  let fetchSpy: any = null;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-allocate-linked-");

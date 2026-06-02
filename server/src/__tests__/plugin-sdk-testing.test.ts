@@ -97,13 +97,13 @@ describe("plugin SDK test harness", () => {
     };
     const harness = createTestHarness({ manifest });
 
-    await expect(harness.ctx.access.members.list({ companyId: "company-1" })).rejects.toThrow(
+    await expect((harness.ctx as any).access.members.list({ companyId: "company-1" })).rejects.toThrow(
       "missing required capability 'access.members.read'",
     );
-    await expect(harness.ctx.authorization.grants.list({ companyId: "company-1" })).rejects.toThrow(
+    await expect((harness.ctx as any).authorization.grants.list({ companyId: "company-1" })).rejects.toThrow(
       "missing required capability 'authorization.grants.read'",
     );
-    await expect(harness.ctx.authorization.audit.search({ companyId: "company-1" })).rejects.toThrow(
+    await expect((harness.ctx as any).authorization.audit.search({ companyId: "company-1" })).rejects.toThrow(
       "missing required capability 'authorization.audit.read'",
     );
   });

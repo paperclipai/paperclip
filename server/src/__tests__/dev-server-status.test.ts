@@ -9,7 +9,7 @@ import {
   writeDevServerRestartRequest,
 } from "../dev-server-status.js";
 
-const tempDirs = [];
+const tempDirs: string[] = [];
 
 function createTempStatusFile(payload: unknown) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "paperclip-dev-status-"));

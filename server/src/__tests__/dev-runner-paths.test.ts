@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+// @ts-ignore
 import { shouldTrackDevServerPath } from "../../../scripts/dev-runner-paths.mjs";
 
 describe("shouldTrackDevServerPath", () => {

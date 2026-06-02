@@ -44,7 +44,7 @@ function agentActor(companyId: string, agentId: string): Express.Request["actor"
     type: "agent",
     agentId,
     companyId,
-    runId: null,
+    runId: undefined,
     source: "agent_jwt",
   };
 }

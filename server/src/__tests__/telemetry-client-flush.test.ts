@@ -16,7 +16,7 @@ function makeClient(config?: Partial<TelemetryConfig>) {
 describe("TelemetryClient periodic flush", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true } as unknown as Response));
   });
 
   afterEach(() => {
@@ -79,7 +79,7 @@ describe("TelemetryClient periodic flush", () => {
   it("falls back to the api gateway ingest url when the default hostname fails", async () => {
     vi.mocked(fetch)
       .mockRejectedValueOnce(new TypeError("getaddrinfo ENOTFOUND telemetry.paperclip.ing"))
-      .mockResolvedValueOnce({ ok: true });
+      .mockResolvedValueOnce({ ok: true } as unknown as Response);
 
     const client = makeClient({ endpoint: undefined });
     client.track("install.started");

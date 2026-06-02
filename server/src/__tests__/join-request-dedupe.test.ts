@@ -28,7 +28,7 @@ describe("findReusableHumanJoinRequest", () => {
         requestingUserId: "user-2",
         requestEmailSnapshot: "other@example.com",
       },
-    ] as const;
+    ];
 
     expect(
       findReusableHumanJoinRequest(rows, {
@@ -54,7 +54,7 @@ describe("findReusableHumanJoinRequest", () => {
         requestingUserId: null,
         requestEmailSnapshot: null,
       },
-    ] as const;
+    ];
 
     expect(
       findReusableHumanJoinRequest(rows, {
@@ -96,7 +96,7 @@ describe("collapseDuplicatePendingHumanJoinRequests", () => {
         requestingUserId: null,
         requestEmailSnapshot: null,
       },
-    ] as const;
+    ];
 
     expect(collapseDuplicatePendingHumanJoinRequests(rows).map((row) => row.id))
       .toEqual(["human-new", "approved-history", "agent-pending"]);

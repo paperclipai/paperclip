@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadWakePreflightContent } from "../services/default-agent-instructions";
+import { loadWakePreflightContent } from "../services/default-agent-instructions.js";
 
 describe("_shared/WAKE-PREFLIGHT.md (BLO-6151)", () => {
   it("contains the Wake Pre-flight heading and canonical slug pattern", async () => {
@@ -50,7 +50,7 @@ describe("_shared/WAKE-PREFLIGHT.md (BLO-6151)", () => {
 describe("default bundle composition (BLO-6151)", () => {
   it("default role: bundle composes Wake Pre-flight + body so new agents materialize with preflight on disk", async () => {
     const { loadDefaultAgentInstructionsBundle } = await import(
-      "../services/default-agent-instructions"
+      "../services/default-agent-instructions.js"
     );
     const bundle = await loadDefaultAgentInstructionsBundle("default");
     const agentsMd = bundle["AGENTS.md"];
@@ -69,7 +69,7 @@ describe("default bundle composition (BLO-6151)", () => {
 
   it("ceo role: bundle does NOT compose Wake Pre-flight (CEO has its own multi-file bundle, not in sweep population)", async () => {
     const { loadDefaultAgentInstructionsBundle } = await import(
-      "../services/default-agent-instructions"
+      "../services/default-agent-instructions.js"
     );
     const bundle = await loadDefaultAgentInstructionsBundle("ceo");
     expect(bundle["AGENTS.md"]).not.toContain("## Wake Pre-flight");
@@ -78,7 +78,7 @@ describe("default bundle composition (BLO-6151)", () => {
 
   it("composition is idempotent: an already-prefixed body is not double-prepended", async () => {
     const { composeAgentsMdWithPreflight, loadWakePreflightContent } = await import(
-      "../services/default-agent-instructions"
+      "../services/default-agent-instructions.js"
     );
     const preflight = await loadWakePreflightContent();
     const alreadyComposed = `## Wake Pre-flight ...\n\nrest of file\n`;
