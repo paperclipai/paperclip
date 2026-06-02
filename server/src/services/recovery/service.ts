@@ -2434,20 +2434,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
-  async function agentHasPendingRuns(agentId: string) {
-    const [run] = await db
-      .select({ id: heartbeatRuns.id })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.agentId, agentId),
-          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
-        ),
-      )
-      .limit(1);
-    return Boolean(run);
-  }
-
   async function reconcileStrandedAssignedIssues() {
     const candidates = await db
       .select()
@@ -2459,6 +2445,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           sql`${issues.assigneeAgentId} is not null`,
         ),
       );
+
+    // Pre-fetch all agents with pending runs to avoid N+1 queries in the loop below
+    const agentsWithPendingRunsInDb = await db
+      .select({ agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]))
+      .groupBy(heartbeatRuns.agentId);
+
+    const agentsWithPendingRuns = new Set(agentsWithPendingRunsInDb.map((row) => row.agentId));
 
     // Track agents that already have a recovery run queued this sweep so we
     // don't create one queued run per stranded issue (an agent with 35 assigned
@@ -2501,7 +2496,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       // One pending run per agent is enough — a running heartbeat handles all
       // assigned work from the inbox. Skip if we already queued a recovery run
       // for this agent this sweep, or if one is already pending in the DB.
-      if (agentsWithPendingRecovery.has(agentId) || await agentHasPendingRuns(agentId)) {
+      if (agentsWithPendingRecovery.has(agentId) || agentsWithPendingRuns.has(agentId)) {
         result.skipped += 1;
         continue;
       }
