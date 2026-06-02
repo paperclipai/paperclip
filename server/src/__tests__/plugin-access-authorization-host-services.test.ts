@@ -18,6 +18,15 @@ import {
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const pluginId = "plugin-record-id";
+// HostServices (from @paperclipai/sdk) doesn't declare the runtime-only
+// `authorization` / `access` namespaces that buildHostServices attaches.
+// Cast through this alias keeps the test assertions readable without
+// editing the SDK type (production change, separate scope).
+type HostServicesWithRuntimeExtras = ReturnType<typeof buildHostServices> & {
+  authorization: any;
+  access: any;
+};
+
 
 function createEventBusStub() {
   return {
@@ -79,7 +88,7 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
       })
       .returning()
       .then((rows) => rows[0]!);
-    const services = buildHostServices(db, pluginId, "permissions-extension", createEventBusStub());
+    const services = buildHostServices(db, pluginId, "permissions-extension", createEventBusStub()) as HostServicesWithRuntimeExtras;
 
     await expect(
       services.authorization.setGrants({
@@ -97,7 +106,7 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
 
   it("redacts invite token hashes and sensitive defaults from plugin invite reads", async () => {
     const company = await createCompany(db, "PAZ");
-    const services = buildHostServices(db, pluginId, "permissions-extension", createEventBusStub());
+    const services = buildHostServices(db, pluginId, "permissions-extension", createEventBusStub()) as HostServicesWithRuntimeExtras;
 
     const created = await services.access.createInvite({
       companyId: company.id,
@@ -124,7 +133,7 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
 
   it("filters authorization audit entries by allow or deny decision details", async () => {
     const company = await createCompany(db, "PAU");
-    const services = buildHostServices(db, pluginId, "permissions-extension", createEventBusStub());
+    const services = buildHostServices(db, pluginId, "permissions-extension", createEventBusStub()) as HostServicesWithRuntimeExtras;
     await db.insert(activityLog).values([
       {
         companyId: company.id,
@@ -201,7 +210,7 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
       membershipRole: "member",
     });
 
-    const services = buildHostServices(db, pluginId, "permissions-extension", createEventBusStub());
+    const services = buildHostServices(db, pluginId, "permissions-extension", createEventBusStub()) as HostServicesWithRuntimeExtras;
     const updatedPolicy = await services.authorization.updatePolicy({
       companyId: company.id,
       resourceType: "agent",
@@ -275,7 +284,7 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
       })
       .returning()
       .then((rows) => rows[0]!);
-    const services = buildHostServices(db, pluginId, "permissions-extension", createEventBusStub());
+    const services = buildHostServices(db, pluginId, "permissions-extension", createEventBusStub()) as HostServicesWithRuntimeExtras;
 
     const updatedPolicy = await services.authorization.updatePolicy({
       companyId: company.id,

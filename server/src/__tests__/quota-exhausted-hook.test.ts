@@ -53,6 +53,7 @@ describe("runQuotaExhaustedHook", () => {
       companyId: "c1",
       runId: "r1",
       errorCode: "provider_quota_exhausted",
+      adapterType: "test",
       onSuccess,
     });
 
@@ -71,6 +72,7 @@ describe("runQuotaExhaustedHook", () => {
       companyId: "c1",
       runId: null,
       errorCode: "provider_quota_exhausted",
+      adapterType: "test",
     });
 
     expect(result.status).toBe("skipped");
@@ -89,6 +91,7 @@ describe("runQuotaExhaustedHook", () => {
       companyId: "c1",
       runId: "r1",
       errorCode: "provider_quota_exhausted",
+      adapterType: "test",
       onSuccess,
     });
 
@@ -118,6 +121,7 @@ describe("runQuotaExhaustedHook", () => {
       companyId: "c1",
       runId: null,
       errorCode: "provider_quota_exhausted",
+      adapterType: "test",
     });
 
     expect(result.status).toBe("ran");
@@ -139,6 +143,7 @@ describe("runQuotaExhaustedHook", () => {
       companyId: "c1",
       runId: null,
       errorCode: "provider_quota_exhausted",
+      adapterType: "test",
     });
     expect(first.status).toBe("ran");
     expect(logActivity).toHaveBeenCalledTimes(1);
@@ -150,6 +155,7 @@ describe("runQuotaExhaustedHook", () => {
       companyId: "c1",
       runId: null,
       errorCode: "provider_quota_exhausted",
+      adapterType: "test",
       onSuccess,
     });
 
@@ -170,6 +176,7 @@ describe("runQuotaExhaustedHook", () => {
       companyId: "c1",
       runId: null,
       errorCode: "provider_quota_exhausted",
+      adapterType: "test",
       onSuccess,
     });
 
