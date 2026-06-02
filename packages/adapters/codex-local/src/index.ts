@@ -70,7 +70,7 @@ Core fields:
 - modelReasoningEffort (string, optional): reasoning effort override (minimal|low|medium|high|xhigh) passed via -c model_reasoning_effort=...
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
-- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.4 and passed through for manual model IDs
+- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.4 and passed through for manual model IDs. **Set \`fastMode: false\` explicitly when the underlying Codex endpoint is Azure AI Foundry** (any \`*.openai.azure.com\` or \`*.cognitiveservices.azure.com\` base URL). Azure rejects the remote-compaction request that fast mode relies on (\`/openai/v1/responses/compact\` → 404 / \`Unknown parameter 'service_tier'\`), so leaving fast mode on can silently break long sessions once Codex hits its auto-compaction token threshold.
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
@@ -90,5 +90,6 @@ Notes:
 - Unless explicitly overridden in adapter config, Paperclip runs Codex with a per-company managed CODEX_HOME under the active Paperclip instance and seeds auth/config from the shared Codex home (the CODEX_HOME env var, when set, or ~/.codex).
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
 - Fast mode is supported on GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
+- Azure AI Foundry caveat: when the Codex endpoint is Azure (\`*.openai.azure.com\` or \`*.cognitiveservices.azure.com\`), hire agents with \`fastMode: false\` in \`adapterConfig\`. Azure does not support remote response compaction, so any session that crosses the auto-compaction token threshold can fail silently. This applies even when no \`model\` is pinned — declaring the intent in config protects you against later model swaps.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 `;

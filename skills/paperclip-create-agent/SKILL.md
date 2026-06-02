@@ -88,6 +88,10 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 - instruction text such as `AGENTS.md` built from step 4; for local managed-bundle adapters, send this as top-level `instructionsBundle.files["AGENTS.md"]`. Do not set `adapterConfig.promptTemplate` or `bootstrapPromptTemplate` for new agents.
 - source issue linkage (`sourceIssueId` or `sourceIssueIds`) when this hire came from an issue
 
+#### Adapter-specific pitfalls
+
+- **`codex_local` on Azure AI Foundry** — when the Codex endpoint resolves to `*.openai.azure.com` or `*.cognitiveservices.azure.com` (check the active Codex home config), set `"fastMode": false` explicitly in `adapterConfig` for every new hire, even if no `model` is pinned. Azure does not support the remote response-compaction call (`/openai/v1/responses/compact` → 404 / `Unknown parameter 'service_tier'`) that fast mode relies on, so sessions silently break the first time Codex auto-compacts past its token threshold. Declaring `fastMode: false` at hire time documents the intent and survives later model swaps. See `/llms/agent-configuration/codex_local.txt` for the canonical adapter caveat.
+
 ### 7. Review the draft against the quality checklist
 
 Before submitting, walk the draft-review checklist end-to-end and fix any item that does not pass:
