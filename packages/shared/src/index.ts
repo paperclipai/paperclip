@@ -1161,6 +1161,32 @@ export {
   type ListPluginState,
 } from "./validators/index.js";
 
+export {
+  CHANNEL_PLATFORMS,
+  CHANNEL_STATUSES,
+  CHANNEL_DIRECTIONS,
+  CHANNEL_MESSAGE_STATUSES,
+  CHANNEL_MESSAGE_DIRECTIONS,
+  createChannelSchema,
+  updateChannelSchema,
+  createChannelRouteSchema,
+  updateChannelRouteSchema,
+  listChannelMessagesQuerySchema,
+  type ChannelPlatform,
+  type ChannelStatus,
+  type ChannelDirection,
+  type ChannelMessageStatus,
+  type ChannelMessageDirection,
+  type CreateChannel,
+  type UpdateChannel,
+  type CreateChannelRoute,
+  type UpdateChannelRoute,
+  type ListChannelMessagesQuery,
+  type Channel,
+  type ChannelRoute,
+  type ChannelMessage,
+} from "./validators/index.js";
+
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "./project-url-key.js";
