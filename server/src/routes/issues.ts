@@ -1512,6 +1512,26 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  async function assertAgentIssueCommentAllowed(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+  ) {
+    // Any authenticated agent from the same company may comment on open issues.
+    // For closed issues (done/cancelled), preserve the full mutation guard so
+    // only the assignee (or a checkout-management override) can reopen via comment.
+    if (req.actor.type !== "agent") return true;
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    if (isClosedIssueStatus(issue.status)) {
+      return assertAgentIssueMutationAllowed(req, res, issue);
+    }
+    return true;
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -5878,7 +5898,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertAgentIssueCommentAllowed(req, res, issue))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
