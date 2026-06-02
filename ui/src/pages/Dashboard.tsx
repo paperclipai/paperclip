@@ -20,7 +20,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents, formatTokens } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { AnimatedNumber, DotMatrixText } from "../components/NothingAesthetic";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -104,6 +104,21 @@ export function Dashboard() {
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
+
+  // Stalled tasks: open issues whose blocker-attention says they're stalled or
+  // need attention (computed server-side and returned on the list). Most-recent
+  // first so the drill-down shows what to investigate.
+  const stalledIssues = useMemo(
+    () =>
+      getRecentIssues(
+        (issues ?? []).filter(
+          (i) =>
+            i.blockerAttention?.state === "stalled" ||
+            i.blockerAttention?.state === "needs_attention",
+        ),
+      ),
+    [issues],
+  );
 
   useEffect(() => {
     for (const timer of activityAnimationTimersRef.current) {
@@ -272,11 +287,6 @@ export function Dashboard() {
           ) : null}
 
           {(() => {
-            const agentsTotal =
-              data.agents.active + data.agents.running + data.agents.paused + data.agents.error;
-            const agentsPercent = agentsTotal > 0 ? data.agents.running / agentsTotal : 0;
-            const tasksDenom = data.tasks.inProgress + data.tasks.open + data.tasks.blocked;
-            const tasksPercent = tasksDenom > 0 ? data.tasks.inProgress / tasksDenom : 0;
             const costsPercent =
               data.costs.monthBudgetCents > 0 ? data.costs.monthUtilizationPercent / 100 : 0;
             const costsTone: "default" | "danger" =
@@ -286,34 +296,42 @@ export function Dashboard() {
             const approvalsCount = data.pendingApprovals + data.budgets.pendingApprovals;
             const approvalsPercent = Math.min(approvalsCount / 10, 1);
             const approvalsTone: "default" | "danger" = approvalsCount > 0 ? "danger" : "default";
+            // "Waiting on you" + "Stalled" counts are derived client-side from
+            // data already fetched (no backend change). waitingOnYou = my
+            // in_review/blocked issues; stalled = issues whose blockerAttention
+            // says they're stalled or need attention.
+            const waitingCount = waitingOnYou?.length ?? 0;
+            const waitingReview = waitingOnYou?.filter((i) => i.status === "in_review").length ?? 0;
+            const waitingBlocked = waitingOnYou?.filter((i) => i.status === "blocked").length ?? 0;
+            const waitingTone: "default" | "danger" = waitingCount > 0 ? "danger" : "default";
+            const stalledCount = stalledIssues.length;
+            const stalledTone: "default" | "danger" = stalledCount > 0 ? "danger" : "default";
             return (
               <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
                 <CircularStatWidget
                   icon={Bot}
-                  value={agentsTotal}
-                  label="Agents Enabled"
-                  percent={agentsPercent}
-                  tone="info"
-                  to="/agents"
+                  value={waitingCount}
+                  label="Waiting on you"
+                  percent={Math.min(waitingCount / 10, 1)}
+                  tone={waitingTone}
+                  to="/inbox"
                   description={
                     <span>
-                      {data.agents.running} running{", "}
-                      {data.agents.paused} paused{", "}
-                      {data.agents.error} errors
+                      {waitingReview} to review{", "}
+                      {waitingBlocked} blocked
                     </span>
                   }
                 />
                 <CircularStatWidget
-                  icon={CircleDot}
-                  value={data.tasks.inProgress}
-                  label="Tasks In Progress"
-                  percent={tasksPercent}
-                  tone="info"
+                  icon={PauseCircle}
+                  value={stalledCount}
+                  label="Stalled tasks"
+                  percent={Math.min(stalledCount / 10, 1)}
+                  tone={stalledTone}
                   to="/issues"
                   description={
                     <span>
-                      {data.tasks.open} open{", "}
-                      {data.tasks.blocked} blocked
+                      {stalledCount > 0 ? "needs attention" : "none stalled"}
                     </span>
                   }
                 />
@@ -444,6 +462,49 @@ export function Dashboard() {
                             )}>
                               {issue.status === "in_review" ? "review" : "blocked"}
                             </span>
+                            <span className="text-xs text-muted-foreground shrink-0 sm:order-last">
+                              {timeAgo(issue.updatedAt)}
+                            </span>
+                          </span>
+                        </span>
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Stalled tasks — drill-down for the "Stalled tasks" metric */}
+            {stalledIssues.length > 0 && (
+              <div className="min-w-0">
+                <h3 className="text-xs font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3 px-1">
+                  Stalled tasks ({stalledIssues.length})
+                </h3>
+                <div className="rounded-2xl border border-amber-500/20 bg-background/70 backdrop-blur-sm shadow-sm divide-y divide-border/50 overflow-hidden">
+                  {stalledIssues.slice(0, 10).map((issue) => (
+                    <Link
+                      key={issue.id}
+                      to={`/issues/${issue.identifier ?? issue.id}`}
+                      className="px-5 py-4 text-sm cursor-pointer hover:bg-accent/40 transition-colors no-underline text-inherit block"
+                    >
+                      <div className="flex items-start gap-2 sm:items-center sm:gap-3">
+                        <span className="shrink-0 sm:hidden">
+                          <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
+                        </span>
+                        <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
+                          <span className="line-clamp-2 text-sm sm:order-2 sm:flex-1 sm:min-w-0 sm:line-clamp-none sm:truncate">
+                            {issue.title}
+                          </span>
+                          <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
+                            <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} /></span>
+                            <span className="text-xs font-mono text-muted-foreground">
+                              {issue.identifier ?? issue.id.slice(0, 8)}
+                            </span>
+                            {issue.blockerAttention?.reason && (
+                              <span className="text-[10px] font-medium rounded px-1.5 py-0.5 shrink-0 bg-amber-500/10 text-amber-600">
+                                {issue.blockerAttention.reason.replace(/_/g, " ")}
+                              </span>
+                            )}
                             <span className="text-xs text-muted-foreground shrink-0 sm:order-last">
                               {timeAgo(issue.updatedAt)}
                             </span>
