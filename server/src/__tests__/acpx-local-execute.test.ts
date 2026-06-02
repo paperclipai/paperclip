@@ -186,7 +186,11 @@ describe("acpx_local execute", () => {
         createRuntime: () => runtime,
       });
       const result = await execute(buildContext(root, {
-        onLog: async (stream, chunk) => logs.push({ stream, chunk }),
+        onLog: async (stream, chunk) => {
+          // Wrapped to discard Array.push's return — onLog signature is
+          // Promise<void>, inline-arrow inferred Promise<number>.
+          logs.push({ stream, chunk });
+        },
         onMeta: async (meta) => {
           metaPermissionNote = meta.commandNotes?.join("\n") ?? "";
         },
@@ -290,7 +294,11 @@ describe("acpx_local execute", () => {
           promptTemplate: "Do the assigned work.",
           model: "gpt-5.4",
         },
-        onLog: async (stream, chunk) => logs.push({ stream, chunk }),
+        onLog: async (stream, chunk) => {
+          // Wrapped to discard Array.push's return — onLog signature is
+          // Promise<void>, inline-arrow inferred Promise<number>.
+          logs.push({ stream, chunk });
+        },
       }));
 
       expect(result.exitCode).toBe(1);
@@ -487,7 +495,11 @@ describe("acpx_local execute", () => {
           sessionDisplayId: "acp-old",
           taskKey: "PAP-1",
         },
-        onLog: async (stream, chunk) => logs.push({ stream, chunk }),
+        onLog: async (stream, chunk) => {
+          // Wrapped to discard Array.push's return — onLog signature is
+          // Promise<void>, inline-arrow inferred Promise<number>.
+          logs.push({ stream, chunk });
+        },
       }));
 
       expect(result.exitCode).toBe(0);
@@ -609,12 +621,12 @@ describe("acpx_local execute", () => {
           },
         },
         onMeta: async (payload) => {
-          meta = payload as Record<string, unknown>;
+          meta = payload as unknown as Record<string, unknown>;
         },
       }));
 
       expect(result.exitCode).toBe(0);
-      expect(runtime?.options).not.toHaveProperty("sessionOptions");
+      expect((runtime as FakeRuntime | null)?.options).not.toHaveProperty("sessionOptions");
       const skillRoot = result.sessionParams?.skills && typeof result.sessionParams.skills === "object"
         ? (result.sessionParams.skills as { skillRoot?: string | null }).skillRoot
         : null;
@@ -624,8 +636,8 @@ describe("acpx_local execute", () => {
         mode: "claude",
         selectedSkills: [skill.runtimeName],
       });
-      expect(String(meta?.prompt ?? "")).toContain(`Skill root: ${skillRoot}`);
-      expect((meta?.commandNotes as string[]).join("\n")).toContain("Materialized 1 Paperclip skill");
+      expect(String((meta as Record<string, unknown> | null)?.prompt ?? "")).toContain(`Skill root: ${skillRoot}`);
+      expect(((meta as Record<string, unknown> | null)?.commandNotes as string[]).join("\n")).toContain("Materialized 1 Paperclip skill");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -702,17 +714,17 @@ describe("acpx_local execute", () => {
           },
         },
         onMeta: async (payload) => {
-          meta = payload as Record<string, unknown>;
+          meta = payload as unknown as Record<string, unknown>;
         },
       }));
 
       expect(result.exitCode).toBe(0);
       await expect(fs.lstat(path.join(codexHome, "skills", skill.runtimeName))).resolves.toMatchObject({});
-      const wrapperPath = runtime?.options.agentRegistry.resolve("codex");
+      const wrapperPath = (runtime as FakeRuntime | null)?.options.agentRegistry.resolve("codex");
       const wrapper = await fs.readFile(wrapperPath!, "utf8");
       expect(wrapper).not.toContain("CODEX_HOME");
       expect(wrapper).not.toContain(codexHome);
-      expect((meta?.env as Record<string, string>).CODEX_HOME).toBe(codexHome);
+      expect(((meta as Record<string, unknown> | null)?.env as Record<string, string>).CODEX_HOME).toBe(codexHome);
       expect(result.sessionParams?.skills).toMatchObject({
         mode: "codex",
         codexHome,
@@ -749,18 +761,18 @@ describe("acpx_local execute", () => {
           },
         },
         onMeta: async (payload) => {
-          meta = payload as Record<string, unknown>;
+          meta = payload as unknown as Record<string, unknown>;
         },
       }));
 
       expect(result.exitCode).toBe(0);
-      expect(runtime?.options.sessionOptions).toBeUndefined();
+      expect((runtime as FakeRuntime | null)?.options.sessionOptions).toBeUndefined();
       await expect(fs.lstat(path.join(root, "state", "runtime-skills"))).rejects.toMatchObject({ code: "ENOENT" });
       expect(result.sessionParams?.skills).toMatchObject({
         mode: "custom_unsupported",
         desiredSkillNames: [skill.key],
       });
-      expect((meta?.commandNotes as string[]).join("\n")).toContain("tracked only");
+      expect(((meta as Record<string, unknown> | null)?.commandNotes as string[]).join("\n")).toContain("tracked only");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

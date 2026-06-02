@@ -29,6 +29,7 @@ import {
 import { issueService } from "../services/issues.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import * as providerRegistry from "../secrets/provider-registry.js";
+import type { SecretProviderModule } from "../secrets/types.js";
 import { routineService } from "../services/routines.js";
 import { secretService } from "../services/secrets.js";
 
@@ -183,6 +184,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         status: "active",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        variables: [],
       },
       {},
     );
@@ -212,6 +214,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         status: "active",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        variables: [],
       },
       {},
     );
@@ -286,6 +289,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         status: "active",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        variables: [],
       },
       {},
     );
@@ -358,6 +362,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         status: "active",
         concurrencyPolicy: "always_enqueue",
         catchUpPolicy: "skip_missed",
+        variables: [],
         env: {
           ROUTINE_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
           ROUTINE_PLAIN: { type: "plain", value: "plain-value" },
@@ -473,6 +478,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const { routine, svc } = await seedFixture();
     const created = await svc.createTrigger(routine.id, {
       kind: "webhook",
+      enabled: true,
       signingMode: "bearer",
       replayWindowSec: 300,
     }, {});
@@ -548,6 +554,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const { routine, svc } = await seedFixture();
     const created = await svc.createTrigger(routine.id, {
       kind: "webhook",
+      enabled: true,
       signingMode: "bearer",
       replayWindowSec: 300,
     }, {});
@@ -1131,6 +1138,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         status: "paused",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        variables: [],
       },
       {},
     );
@@ -1174,6 +1182,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         status: "paused",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        variables: [],
       },
       {},
     );
@@ -1208,6 +1217,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await expect(
       svc.createTrigger(variableRoutine.id, {
         kind: "schedule",
+        enabled: true,
         label: "daily",
         cronExpression: "0 10 * * *",
         timezone: "UTC",
@@ -1256,6 +1266,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await expect(
       svc.createTrigger(variableRoutine.id, {
         kind: "schedule",
+        enabled: true,
         label: "daily",
         cronExpression: "0 10 * * *",
         timezone: "UTC",
@@ -1338,6 +1349,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       routine.id,
       {
         kind: "webhook",
+        enabled: true,
         signingMode: "hmac_sha256",
         replayWindowSec: 300,
       },
@@ -1383,21 +1395,27 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
           supportsExternalReference: true,
         }),
         validateConfig: async () => ({ ok: true, warnings: [] }),
-        createSecret: async ({ value }) => ({
+        // Param types annotated explicitly: the outer `as unknown as
+        // SecretProviderModule` cast below severs structural inference for
+        // these inner callbacks, so destructured args would otherwise widen
+        // to `any` (TS7031).
+        createSecret: async ({ value }: { value: string }) => ({
           material: { source: "managed", secretId: "arn:aws:secretsmanager:stub", versionId: "v1" },
           valueSha256: `sha:${value}`,
           fingerprintSha256: `sha:${value}`,
           externalRef: "arn:aws:secretsmanager:stub",
           providerVersionRef: "v1",
         }),
-        createVersion: async ({ value }) => ({
+        createVersion: async ({ value }: { value: string }) => ({
           material: { source: "managed", secretId: "arn:aws:secretsmanager:stub", versionId: "v2" },
           valueSha256: `sha:${value}`,
           fingerprintSha256: `sha:${value}`,
           externalRef: "arn:aws:secretsmanager:stub",
           providerVersionRef: "v2",
         }),
-        linkExternalSecret: async ({ externalRef, providerVersionRef }) => ({
+        linkExternalSecret: async (
+          { externalRef, providerVersionRef }: { externalRef: string; providerVersionRef?: string | null },
+        ) => ({
           material: { source: "external", secretId: externalRef, versionId: providerVersionRef ?? null },
           valueSha256: "external",
           fingerprintSha256: "external",
@@ -1411,7 +1429,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
           status: "ok",
           message: "stubbed",
         }),
-      };
+        // The inline mock descriptor() omits `requiresExternalRef` (along with
+        // other optional fields the stub doesn't need). Two-step cast via
+        // `unknown` keeps the literal minimal while resolving the
+        // NormalizedProcedure<…> return-type union vitest expects from a spy.
+      } as unknown as SecretProviderModule;
     });
 
     try {
@@ -1420,6 +1442,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         routine.id,
         {
           kind: "webhook",
+          enabled: true,
           signingMode: "hmac_sha256",
           replayWindowSec: 300,
         },
@@ -1449,7 +1472,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       routine.id,
       {
         kind: "webhook",
+        enabled: true,
         signingMode: "github_hmac",
+        replayWindowSec: 300,
       },
       {},
     );
@@ -1476,7 +1501,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       routine.id,
       {
         kind: "webhook",
+        enabled: true,
         signingMode: "github_hmac",
+        replayWindowSec: 300,
       },
       {},
     );
@@ -1498,7 +1525,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       routine.id,
       {
         kind: "webhook",
+        enabled: true,
         signingMode: "none",
+        replayWindowSec: 300,
       },
       {},
     );
