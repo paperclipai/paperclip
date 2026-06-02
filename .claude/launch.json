@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "UI (Vite)",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@paperclipai/ui", "dev"],
+      "port": 5174
+    },
+    {
+      "name": "Server (watch)",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@paperclipai/server", "dev:watch"],
+      "port": 3100
+    },
+    {
+      "name": "Full Stack Dev",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev"],
+      "port": 3100
+    }
+  ]
+}
