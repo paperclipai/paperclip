@@ -46,6 +46,7 @@ const overridingConfigSchemaAdapter: ServerAdapterModule = {
 let registerServerAdapter: typeof import("../adapters/registry.js").registerServerAdapter;
 let unregisterServerAdapter: typeof import("../adapters/registry.js").unregisterServerAdapter;
 let findServerAdapter: typeof import("../adapters/registry.js").findServerAdapter;
+let findActiveServerAdapter: typeof import("../adapters/registry.js").findActiveServerAdapter;
 let setOverridePaused: typeof import("../adapters/registry.js").setOverridePaused;
 let adapterRoutes: typeof import("../routes/adapters.js").adapterRoutes;
 let errorHandler: typeof import("../middleware/index.js").errorHandler;
@@ -109,6 +110,7 @@ describe("adapter routes", () => {
     registerServerAdapter = registry.registerServerAdapter;
     unregisterServerAdapter = registry.unregisterServerAdapter;
     findServerAdapter = registry.findServerAdapter;
+    findActiveServerAdapter = registry.findActiveServerAdapter;
     setOverridePaused = registry.setOverridePaused;
     adapterRoutes = routes.adapterRoutes;
     errorHandler = middleware.errorHandler;
@@ -371,7 +373,19 @@ describe("adapter routes", () => {
     });
 
     setOverridePaused("codex_local", true);
-    expect(findServerAdapter("codex_local")).toBe(registeredOverride);
+    expect(findActiveServerAdapter("codex_local")).toBe(builtin);
+
+    mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue({
+      type: "codex_local",
+      packageName: undefined,
+      localPath: "/tmp/fake-codex-override",
+      installedAt: new Date(0).toISOString(),
+    });
+    mockAdapterPluginStore.removeAdapterPlugin.mockReturnValue(true);
+
+    const removed = await request(app).delete("/api/adapters/codex_local");
+    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+    expect(removed.body).toMatchObject({ type: "codex_local", removed: true });
 
     unregisterServerAdapter("codex_local");
     expect(findServerAdapter("codex_local")).toBe(builtin);
