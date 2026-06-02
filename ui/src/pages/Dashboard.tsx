@@ -73,6 +73,18 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
+  // "Waiting on you": issues assigned to the current user that need their
+  // action — in_review (needs your review) or blocked (needs you to unblock).
+  // Server resolves the literal "me" to the board user and accepts the status
+  // list, so no backend change is needed.
+  const { data: waitingOnYou } = useQuery({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), { waitingOnYou: true }],
+    queryFn: () =>
+      issuesApi.list(selectedCompanyId!, { assigneeUserId: "me", status: "in_review,blocked" }),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 30_000,
+  });
+
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
@@ -393,6 +405,52 @@ export function Dashboard() {
                       entityTitleMap={entityTitleMap}
                       className={animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined}
                     />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Waiting on you — issues assigned to you needing review/unblock */}
+            {waitingOnYou && waitingOnYou.length > 0 && (
+              <div className="min-w-0">
+                <h3 className="text-xs font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3 px-1">
+                  Waiting on you ({waitingOnYou.length})
+                </h3>
+                <div className="rounded-2xl border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm divide-y divide-border/50 overflow-hidden">
+                  {waitingOnYou.slice(0, 10).map((issue) => (
+                    <Link
+                      key={issue.id}
+                      to={`/issues/${issue.identifier ?? issue.id}`}
+                      className="px-5 py-4 text-sm cursor-pointer hover:bg-accent/40 transition-colors no-underline text-inherit block"
+                    >
+                      <div className="flex items-start gap-2 sm:items-center sm:gap-3">
+                        <span className="shrink-0 sm:hidden">
+                          <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
+                        </span>
+                        <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
+                          <span className="line-clamp-2 text-sm sm:order-2 sm:flex-1 sm:min-w-0 sm:line-clamp-none sm:truncate">
+                            {issue.title}
+                          </span>
+                          <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
+                            <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} /></span>
+                            <span className="text-xs font-mono text-muted-foreground">
+                              {issue.identifier ?? issue.id.slice(0, 8)}
+                            </span>
+                            <span className={cn(
+                              "text-[10px] font-medium rounded px-1.5 py-0.5 shrink-0",
+                              issue.status === "in_review"
+                                ? "bg-sky-500/10 text-sky-600"
+                                : "bg-amber-500/10 text-amber-600",
+                            )}>
+                              {issue.status === "in_review" ? "review" : "blocked"}
+                            </span>
+                            <span className="text-xs text-muted-foreground shrink-0 sm:order-last">
+                              {timeAgo(issue.updatedAt)}
+                            </span>
+                          </span>
+                        </span>
+                      </div>
+                    </Link>
                   ))}
                 </div>
               </div>

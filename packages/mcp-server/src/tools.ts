@@ -140,7 +140,9 @@ const createRequestConfirmationToolSchema = z.object({
   sourceRunId: z.string().uuid().nullable().optional(),
   title: z.string().trim().max(240).nullable().optional(),
   summary: z.string().trim().max(1000).nullable().optional(),
-  continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("none"),
+  // Default to waking the issue assignee on any decision so a decided proposal
+  // resumes the work (was "none" — which woke nobody, stranding the issue).
+  continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
   payload: requestConfirmationPayloadSchema,
 });
 
