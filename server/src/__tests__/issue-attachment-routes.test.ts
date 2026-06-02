@@ -412,6 +412,25 @@ describe("issue attachment routes", () => {
     );
   });
 
+  it("serves mp4 attachments inline when stored with a generic binary content type", async () => {
+    const storage = createStorageService(Buffer.from("abcdef"));
+    mockIssueService.getAttachmentById.mockResolvedValue({
+      ...makeAttachment("application/octet-stream", "clip.mp4"),
+      byteSize: 6,
+    });
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .get("/api/attachments/attachment-1/content")
+      .set("Range", "bytes=1-3");
+
+    expect(res.status).toBe(206);
+    expect(res.headers["content-type"]).toContain("video/mp4");
+    expect(res.headers["content-disposition"]).toBe('inline; filename="clip.mp4"');
+    expect(res.headers["content-range"]).toBe("bytes 1-3/6");
+    expect(Buffer.from(res.body).toString("utf8")).toBe("bcd");
+  });
+
   it("forces video downloads when the download path is requested", async () => {
     const storage = createStorageService();
     mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("video/webm", "clip.webm"));
