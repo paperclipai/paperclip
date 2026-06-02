@@ -1306,18 +1306,37 @@ export async function restoreWorkspaceFromSshExecution(input: {
   const gitSnapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
 
   if (gitSnapshot) {
-    await exportGitWorkspaceFromSsh({
-      spec: input.spec,
-      remoteDir,
-      localDir: input.localDir,
-    });
-    await syncDirectoryFromSsh({
-      spec: input.spec,
-      remoteDir,
-      localDir: input.localDir,
-      exclude: [".git", ".paperclip-runtime"],
-      preserveLocalEntries: [".git"],
-    });
+    // Fetch remote git state without resetting HEAD so any concurrent restore's
+    // merge commit (already in local .git) survives.  Sync files excluding .git
+    // so the local git objects are not clobbered by the remote's .git directory.
+    // integrateImportedGitHead then creates a merge commit (or updates refs
+    // atomically) which becomes the new HEAD.
+    const importedRef = `refs/paperclip/ssh-sync/imported/${randomUUID()}`;
+    try {
+      const importedHead = await exportGitWorkspaceFromSsh({
+        spec: input.spec,
+        remoteDir,
+        localDir: input.localDir,
+        importedRef,
+        resetLocalWorkspace: false,
+      });
+      await syncDirectoryFromSsh({
+        spec: input.spec,
+        remoteDir,
+        localDir: input.localDir,
+        exclude: [".git", ".paperclip-runtime"],
+        preserveLocalEntries: [".git"],
+      });
+      await integrateImportedGitHead({
+        localDir: input.localDir,
+        importedHead,
+      });
+    } finally {
+      await runLocalGit(input.localDir, ["update-ref", "-d", importedRef], {
+        timeout: 10_000,
+        maxBuffer: 16 * 1024,
+      }).catch(() => undefined);
+    }
     return;
   }
 

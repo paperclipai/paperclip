@@ -150,6 +150,9 @@ export function detectClaudeLoginRequired(input: {
 
 export function describeClaudeFailure(parsed: Record<string, unknown>): string | null {
   const subtype = asString(parsed.subtype, "");
+  const isError = parsed.is_error === true || asString(parsed.is_error, "").trim().toLowerCase() === "true";
+  // A successful result is NOT a failure: don't mislabel subtype="success" (or empty) turns.
+  if (!isError && (subtype === "" || subtype === "success")) return null;
   const resultText = asString(parsed.result, "").trim();
   const errors = extractClaudeErrorMessages(parsed);
 
