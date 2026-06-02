@@ -171,6 +171,7 @@ afterEach(async () => {
   delete process.env.PAPERCLIP_CONFIG;
   delete process.env.PAPERCLIP_HOME;
   delete process.env.PAPERCLIP_INSTANCE_ID;
+  delete process.env.PAPERCLIP_PROVISION_WORKTREE_SKIP_CLI_INIT;
   delete process.env.PAPERCLIP_WORKTREES_DIR;
   delete process.env.DATABASE_URL;
   await resetRuntimeServicesForTests();
@@ -1187,6 +1188,7 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(repoRoot, ["add", "."]);
     await runGit(repoRoot, ["commit", "-m", "Add pnpm workspace fixture"]);
 
+    process.env.PAPERCLIP_PROVISION_WORKTREE_SKIP_CLI_INIT = "1";
     const workspace = await realizeExecutionWorkspace({
       base: {
         baseCwd: repoRoot,
@@ -1267,6 +1269,7 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(repoRoot, ["add", "package.json", "pnpm-lock.yaml", "scripts/provision-worktree.sh"]);
     await runGit(repoRoot, ["commit", "-m", "Add minimal provision fixture"]);
 
+    process.env.PAPERCLIP_PROVISION_WORKTREE_SKIP_CLI_INIT = "1";
     const workspace = await realizeExecutionWorkspace({
       base: {
         baseCwd: repoRoot,
@@ -1416,6 +1419,7 @@ describe("realizeExecutionWorkspace", () => {
         env: {
           ...process.env,
           PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+          PAPERCLIP_PROVISION_WORKTREE_SKIP_CLI_INIT: "1",
           PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
           PAPERCLIP_WORKSPACE_CWD: worktreeRoot,
         },
@@ -1495,6 +1499,7 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(repoRoot, ["add", "."]);
     await runGit(repoRoot, ["commit", "-m", "Add pnpm workspace fixture"]);
 
+    process.env.PAPERCLIP_PROVISION_WORKTREE_SKIP_CLI_INIT = "1";
     const workspace = await realizeExecutionWorkspace({
       base: {
         baseCwd: repoRoot,

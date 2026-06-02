@@ -459,8 +459,8 @@ function useIssueCreateErrorMock(enabled: boolean) {
   useLayoutEffect(() => {
     if (!enabled || typeof window === "undefined") return undefined;
 
-    const originalFetch = window.fetch.bind(window);
-    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const originalFetch = window.fetch;
+    window.fetch = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
       const rawUrl =
         typeof input === "string"
           ? input
@@ -475,7 +475,7 @@ function useIssueCreateErrorMock(enabled: boolean) {
         );
       }
       return originalFetch(input, init);
-    };
+    }, originalFetch);
 
     return () => {
       window.fetch = originalFetch;

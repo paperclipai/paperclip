@@ -53,11 +53,11 @@
     "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.58.2",
+    "@playwright/test": "^1.60.0",
     "cross-env": "^10.1.0",
-    "esbuild": "^0.27.3",
-    "typescript": "^5.7.3",
-    "vitest": "^3.0.5"
+    "esbuild": "^0.28.0",
+    "typescript": "^6.0.3",
+    "vitest": "^3.2.4"
   },
   "engines": {
     "node": ">=20"
