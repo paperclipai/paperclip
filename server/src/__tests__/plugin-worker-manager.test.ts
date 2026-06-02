@@ -242,11 +242,6 @@ describe("plugin-worker-manager stderr failure context", () => {
           mode: "echo",
           requestedCompanyId: "company-a",
         },
-        // PerformActionParams (the static type) doesn't declare actorContext —
-        // runtime shape injected by the worker host. Suppressed at the offending
-        // property since wrapping the parent literal as `any` swallows the
-        // other field types.
-        // @ts-expect-error – actorContext is runtime-only on PerformActionParams
         actorContext: {
           type: "agent",
           userId: null,
@@ -386,11 +381,6 @@ describe("plugin-worker-manager stderr failure context", () => {
         params: {
           requestedCompanyId: "company-b",
         },
-        // PerformActionParams (the static type) doesn't declare actorContext —
-        // runtime shape injected by the worker host. Suppressed at the offending
-        // property since wrapping the parent literal as `any` swallows the
-        // other field types.
-        // @ts-expect-error – actorContext is runtime-only on PerformActionParams
         actorContext: {
           type: "agent",
           userId: null,
@@ -440,11 +430,6 @@ describe("plugin-worker-manager stderr failure context", () => {
           mode: "unknown",
           requestedCompanyId: "company-a",
         },
-        // PerformActionParams (the static type) doesn't declare actorContext —
-        // runtime shape injected by the worker host. Suppressed at the offending
-        // property since wrapping the parent literal as `any` swallows the
-        // other field types.
-        // @ts-expect-error – actorContext is runtime-only on PerformActionParams
         actorContext: {
           type: "agent",
           userId: null,
