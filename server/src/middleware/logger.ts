@@ -32,7 +32,11 @@ const vercelLogTargets: pino.TransportTargetOptions[] = [
   },
 ];
 
-const localLogTargets: pino.TransportTargetOptions[] = (() => {
+function createLogTargets(): pino.TransportTargetOptions[] {
+  if (process.env.VERCEL) {
+    return vercelLogTargets;
+  }
+
   fs.mkdirSync(logDir, { recursive: true });
   const logFile = path.join(logDir, "server.log");
   return [
@@ -43,13 +47,13 @@ const localLogTargets: pino.TransportTargetOptions[] = (() => {
       level: "debug",
     },
   ];
-})();
+}
 
 export const logger = pino({
   level: "debug",
   redact: ["req.headers.authorization"],
 }, pino.transport({
-  targets: process.env.VERCEL ? vercelLogTargets : localLogTargets,
+  targets: createLogTargets(),
 }));
 
 export const httpLogger = pinoHttp({
