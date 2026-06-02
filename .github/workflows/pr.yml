@@ -28,8 +28,11 @@ jobs:
           changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
           if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
             # Allow lockfile changes if all commits touching pnpm-lock.yaml are from lockfile-bot
-            lockfile_authors="$(git log --pretty=format:'%ae' "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" -- pnpm-lock.yaml)"
-            non_bot="$(printf '%s\n' "$lockfile_authors" | grep -v 'lockfile-bot@users.noreply.github.com')"
+            # Use two-dot (..) not three-dot (...) for git log: three-dot symmetric difference
+            # would include master commits not in the PR, incorrectly flagging non-bot master
+            # lockfile refreshes as violations.
+            lockfile_authors="$(git log --pretty=format:'%ae' "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" -- pnpm-lock.yaml)"
+            non_bot="$(printf '%s\n' "$lockfile_authors" | grep -v 'lockfile-bot@users.noreply.github.com' || true)"
             if [ -n "$non_bot" ]; then
               echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
               exit 1
