@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
-import type { Request as ExpressRequest, RequestHandler } from "express";
+import type { Express, Request as ExpressRequest, RequestHandler } from "express";
 import { and, eq } from "drizzle-orm";
 import {
   createDb,
@@ -83,6 +83,7 @@ type EmbeddedPostgresCtor = new (opts: {
 
 export interface StartedServer {
   server: ReturnType<typeof createServer>;
+  app: Express;
   host: string;
   listenPort: number;
   apiUrl: string;
@@ -856,6 +857,38 @@ export async function startServer(): Promise<StartedServer> {
   const { waitForExternalAdapters } = await import("./adapters/registry.js");
   await waitForExternalAdapters();
 
+  const startedServer = {
+    server,
+    app,
+    host: config.host,
+    listenPort,
+    apiUrl: configuredApiUrl,
+    databaseUrl: activeDatabaseConnectionString,
+  };
+
+  if (process.env.VERCEL) {
+    printStartupBanner({
+      bind: config.bind,
+      host: config.host,
+      deploymentMode: config.deploymentMode,
+      deploymentExposure: config.deploymentExposure,
+      authReady,
+      requestedPort: requestedListenPort,
+      listenPort,
+      uiMode,
+      db: startupDbInfo,
+      migrationSummary,
+      heartbeatSchedulerEnabled: config.heartbeatSchedulerEnabled,
+      heartbeatSchedulerIntervalMs: config.heartbeatSchedulerIntervalMs,
+      databaseBackupEnabled: config.databaseBackupEnabled,
+      databaseBackupIntervalMinutes: config.databaseBackupIntervalMinutes,
+      databaseBackupRetentionDays: config.databaseBackupRetentionDays,
+      databaseBackupDir: config.databaseBackupDir,
+    });
+    logger.info("Running on Vercel — Express app exported without listen()");
+    return startedServer;
+  }
+
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
       server.off("error", onError);
@@ -948,13 +981,7 @@ export async function startServer(): Promise<StartedServer> {
     });
   }
 
-  return {
-    server,
-    host: config.host,
-    listenPort,
-    apiUrl: configuredApiUrl,
-    databaseUrl: activeDatabaseConnectionString,
-  };
+  return startedServer;
 }
 
 function isMainModule(metaUrl: string): boolean {

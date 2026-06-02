@@ -4,5 +4,18 @@
   "outputDirectory": "public",
   "installCommand": "pnpm install --frozen-lockfile",
   "buildCommand": "pnpm run build:vercel",
-  "fluid": true
+  "fluid": true,
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/src/server.ts" },
+    {
+      "source": "/((?!assets/)(?!.*\\..*).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "functions": {
+    "src/server.ts": {
+      "maxDuration": 300,
+      "memory": 3008
+    }
+  }
 }
