@@ -1005,7 +1005,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       clearSessionOnMissingSession: baseClearSession,
     });
 
-    if (retryCount >= rateLimitMaxRetries && result.errorFamily === "transient_upstream") {
+    if (retryCount > 0 && retryCount >= rateLimitMaxRetries && result.errorFamily === "transient_upstream") {
       return {
         ...result,
         errorCode: "rate_limit_exhausted",

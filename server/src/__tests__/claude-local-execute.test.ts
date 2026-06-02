@@ -1045,6 +1045,7 @@ describe("claude execute", () => {
           command: commandPath,
           cwd: workspace,
           promptTemplate: "Follow the paperclip heartbeat.",
+          rateLimitMaxRetries: 0,
         },
         context: {},
         authToken: "run-jwt-token",
