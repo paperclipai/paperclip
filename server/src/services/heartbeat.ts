@@ -5906,11 +5906,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
 
+    const intervalSec = Math.max(0, asNumber(heartbeat.intervalSec, 0));
     return {
       enabled: asBoolean(heartbeat.enabled, false),
-      intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
+      intervalSec,
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
-      maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      maxConcurrentRuns: normalizeMaxConcurrentRuns(
+        heartbeat.maxConcurrentRuns ?? (intervalSec > 0 ? 1 : HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT),
+      ),
     };
   }
 
@@ -10069,5 +10072,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .limit(1);
       return run ?? null;
     },
+
+    parseHeartbeatPolicy,
   };
 }
