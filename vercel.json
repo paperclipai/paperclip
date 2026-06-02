@@ -13,7 +13,7 @@
     }
   ],
   "functions": {
-    "api/index.ts": {
+    "api/index.mjs": {
       "maxDuration": 300,
       "memory": 3008
     }
