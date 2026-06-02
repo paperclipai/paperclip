@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createHostClientHandlers } from "../../../packages/plugins/sdk/src/host-client-factory.js";
-import { PLUGIN_RPC_ERROR_CODES } from "../../../packages/plugins/sdk/src/protocol.js";
+import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
+import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk/protocol";
 import { buildHostServices } from "../services/plugin-host-services.js";
 
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());

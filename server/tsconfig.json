@@ -2,8 +2,13 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "disableSourceOfProjectReferenceRedirect": true
   },
   "include": ["src"],
-  "exclude": ["src/__tests__"]
+  "exclude": ["src/__tests__"],
+  "references": [
+    { "path": "../packages/shared" },
+    { "path": "../packages/plugins/sdk" }
+  ]
 }

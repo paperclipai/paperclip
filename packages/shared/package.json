@@ -14,7 +14,10 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./telemetry": "./src/telemetry/index.ts",
+    "./telemetry": {
+      "types": "./dist/telemetry/index.d.ts",
+      "default": "./src/telemetry/index.ts"
+    },
     "./*": "./src/*.ts"
   },
   "publishConfig": {

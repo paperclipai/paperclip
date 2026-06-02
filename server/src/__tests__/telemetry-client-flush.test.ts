@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { TelemetryClient } from "../../../packages/shared/src/telemetry/client.js";
-import type { TelemetryConfig, TelemetryState } from "../../../packages/shared/src/telemetry/types.js";
+import { TelemetryClient } from "@paperclipai/shared/telemetry";
+import type { TelemetryConfig, TelemetryState } from "@paperclipai/shared/telemetry";
 
 function makeClient(config?: Partial<TelemetryConfig>) {
   const merged: TelemetryConfig = { enabled: true, endpoint: "http://localhost:9999/ingest", ...config };
