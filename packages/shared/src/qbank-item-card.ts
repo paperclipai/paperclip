@@ -24,6 +24,19 @@ export interface QBankCategory {
   deleted?: boolean | null;
 }
 
+export interface QBankDiscussionThread {
+  id?: number | string | null;
+  title?: string | null;
+  subject?: string | null;
+  body?: string | null;
+  content?: string | null;
+  comment?: string | null;
+  comments_count?: number | null;
+  posts_count?: number | null;
+  created_at?: number | string | null;
+  updated_at?: number | string | null;
+}
+
 export interface QBankPartnerItem {
   id: number | string;
   type?: string | null;
@@ -44,6 +57,7 @@ export interface QBankPartnerItem {
   answers?: QBankAnswer[] | null;
   product_associations?: QBankProductAssociation[] | null;
   categories?: QBankCategory[] | null;
+  discussion_threads?: QBankDiscussionThread[] | null;
 }
 
 export interface QBankSourceRefInput {
@@ -67,6 +81,7 @@ export interface QBankItemSummary {
   draftRationale: string;
   draftKeyTakeaway: string;
   hasDraftRevision: boolean;
+  discussions: Array<{ id: string; title: string; body: string; commentsCount: number | null }>;
   appIds: number[];
   categoryNames: string[];
   mediaCandidates: string[];
@@ -112,6 +127,12 @@ export function summarizeQBankItem(input: FormatQBankItemCardInput): QBankItemSu
   const mediaCandidates = uniqueStrings(extractImageSources(rationaleSource));
   const draftRationale = cleanHtml(input.item.draft_rationale ?? "");
   const draftKeyTakeaway = cleanHtml(input.item.draft_key_takeaway ?? "");
+  const discussions = (input.item.discussion_threads ?? []).map((discussion) => ({
+    id: String(discussion.id ?? "unknown"),
+    title: cleanHtml(discussion.title ?? discussion.subject ?? ""),
+    body: cleanHtml(discussion.body ?? discussion.content ?? discussion.comment ?? ""),
+    commentsCount: discussion.comments_count ?? discussion.posts_count ?? null,
+  }));
 
   return {
     sourceRef,
@@ -129,6 +150,7 @@ export function summarizeQBankItem(input: FormatQBankItemCardInput): QBankItemSu
     draftRationale,
     draftKeyTakeaway,
     hasDraftRevision: Boolean(cleanHtml(input.item.draft_question ?? "") || draftRationale || draftKeyTakeaway),
+    discussions,
     appIds,
     categoryNames,
     mediaCandidates,
@@ -187,6 +209,16 @@ export function formatQBankItemCard(input: FormatQBankItemCardInput): FormattedQ
     lines.push("## Media candidates", "");
     for (const src of summary.mediaCandidates) {
       lines.push(`- Media candidate: ${src}`);
+    }
+    lines.push("");
+  }
+
+  if (summary.discussions.length) {
+    lines.push("## Discussions and comments", "");
+    for (const discussion of summary.discussions) {
+      const title = discussion.title || `Discussion ${discussion.id}`;
+      const count = discussion.commentsCount == null ? "" : ` (${discussion.commentsCount} comments/posts)`;
+      lines.push(`- ${title}${count}${discussion.body ? ` — ${discussion.body}` : ""}`);
     }
     lines.push("");
   }

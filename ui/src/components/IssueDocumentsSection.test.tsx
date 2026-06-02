@@ -19,6 +19,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   getDocument: vi.fn(),
   importQBankItem: vi.fn(),
   fetchQBankItemSource: vi.fn(),
+  searchQBankItems: vi.fn(),
 }));
 
 const markdownEditorMockState = vi.hoisted(() => ({
@@ -719,9 +720,87 @@ describe("IssueDocumentsSection", () => {
     expect(mockIssuesApi.fetchQBankItemSource).toHaveBeenCalledWith("issue-1", {
       appId: "3",
       questionId: "50067",
+      includeDiscussions: true,
     });
     expect(payloadTextarea!.value).toContain('"id": 50067');
     expect(payloadTextarea!.value).toContain("Ovarian cancer spread");
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("searches QBank payloads by concept and loads a match", async () => {
+    const issue = createIssue();
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    mockIssuesApi.listDocuments.mockResolvedValue([createIssueDocument({ body: "# Plan" })]);
+    mockIssuesApi.searchQBankItems.mockResolvedValue({
+      appId: 3,
+      query: "jaundice liver",
+      results: [{
+        sourceRef: "qbank:app-3/question-50067",
+        score: 34,
+        matchedFields: ["question", "rationale"],
+        item: { id: 50067, question: "<p>jaundice liver metastasis</p>", rationale: "bilirubin" },
+      }],
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection issue={issue} canDeleteDocuments={false} />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const openImportButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Import QBank"));
+    await act(async () => {
+      openImportButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const searchInput = container.querySelector('input[aria-label="QBank search text"]') as HTMLInputElement | null;
+    expect(searchInput).toBeTruthy();
+    await act(async () => {
+      const inputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      inputValueSetter?.call(searchInput, "jaundice liver");
+      searchInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const searchButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Search QBank"));
+    await act(async () => {
+      searchButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.searchQBankItems).toHaveBeenCalledWith("issue-1", expect.objectContaining({
+      appId: "3",
+      q: "jaundice liver",
+      scanLimit: 120,
+    }));
+    expect(container.textContent).toContain("qbank:app-3/question-50067");
+
+    const resultButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("qbank:app-3/question-50067"));
+    await act(async () => {
+      resultButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const questionIdInput = container.querySelector('input[aria-label="QBank question ID"]') as HTMLInputElement | null;
+    const payloadTextarea = container.querySelector('textarea[aria-label="QBank item JSON"]') as HTMLTextAreaElement | null;
+    expect(questionIdInput!.value).toBe("50067");
+    expect(payloadTextarea!.value).toContain("jaundice liver metastasis");
 
     await act(async () => {
       root.unmount();

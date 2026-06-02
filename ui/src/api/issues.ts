@@ -241,12 +241,23 @@ export const issuesApi = {
     api.delete<{ ok: true }>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   importQBankItem: (id: string, data: { appId: number | string; item: Record<string, unknown> }) =>
     api.post<{ created: boolean; document: IssueDocument; sourceRef: string }>(`/issues/${id}/qbank-item`, data),
-  fetchQBankItemSource: (id: string, data: { appId: number | string; questionId: number | string }) => {
+  fetchQBankItemSource: (id: string, data: { appId: number | string; questionId: number | string; includeDiscussions?: boolean }) => {
     const params = new URLSearchParams({
       appId: String(data.appId),
       questionId: String(data.questionId),
+      includeDiscussions: String(data.includeDiscussions ?? true),
     });
     return api.get<{ appId: number; item: Record<string, unknown> }>(`/issues/${id}/qbank-item/source?${params.toString()}`);
+  },
+  searchQBankItems: (id: string, data: { appId: number | string; q: string; limit?: number; scanLimit?: number; includeDiscussions?: boolean }) => {
+    const params = new URLSearchParams({
+      appId: String(data.appId),
+      q: data.q,
+      limit: String(data.limit ?? 8),
+      scanLimit: String(data.scanLimit ?? 80),
+      includeDiscussions: String(data.includeDiscussions ?? false),
+    });
+    return api.get<{ appId: number; query: string; results: Array<{ item: Record<string, unknown>; score: number; matchedFields: string[]; sourceRef: string }> }>(`/issues/${id}/qbank-item/search?${params.toString()}`);
   },
   listAttachments: (id: string) => api.get<IssueAttachment[]>(`/issues/${id}/attachments`),
   uploadAttachment: (

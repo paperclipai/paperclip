@@ -113,7 +113,7 @@ import {
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
-import { fetchPartnerQBankQuestion, getConfiguredPartnerApiKey } from "../services/hlt-partner-qbank.js";
+import { fetchPartnerQBankQuestion, getConfiguredPartnerApiKey, searchPartnerQBankQuestions } from "../services/hlt-partner-qbank.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const CHAT_ATTACHMENT_READ_DEFAULT_MAX_BYTES = 128 * 1024;
@@ -136,6 +136,16 @@ const importQBankItemDocumentSchema = z.object({
 const fetchQBankItemQuerySchema = z.object({
   appId: z.coerce.number().int().positive(),
   questionId: z.string().trim().min(1),
+  includeDiscussions: z.coerce.boolean().optional().default(true),
+});
+
+const searchQBankItemsQuerySchema = z.object({
+  appId: z.coerce.number().int().positive(),
+  q: z.string().trim().min(1),
+  limit: z.coerce.number().int().positive().max(25).optional().default(8),
+  scanLimit: z.coerce.number().int().positive().max(250).optional().default(80),
+  categoryId: z.coerce.number().int().positive().optional(),
+  includeDiscussions: z.coerce.boolean().optional().default(false),
 });
 
 const chatAttachmentsReadQuerySchema = z.object({
@@ -2369,8 +2379,37 @@ export function issueRoutes(
       appId: parsedQuery.data.appId,
       questionId: parsedQuery.data.questionId,
       apiKey: getConfiguredPartnerApiKey(),
+      includeDiscussions: parsedQuery.data.includeDiscussions,
     });
     res.json({ appId: parsedQuery.data.appId, item });
+  });
+
+  router.get("/issues/:id/qbank-item/search", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+
+    const parsedQuery = searchQBankItemsQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      res.status(400).json({ error: "Invalid QBank search query", details: parsedQuery.error.flatten() });
+      return;
+    }
+
+    const results = await searchPartnerQBankQuestions({
+      appId: parsedQuery.data.appId,
+      query: parsedQuery.data.q,
+      apiKey: getConfiguredPartnerApiKey(),
+      limit: parsedQuery.data.limit,
+      scanLimit: parsedQuery.data.scanLimit,
+      categoryId: parsedQuery.data.categoryId,
+      includeDiscussions: parsedQuery.data.includeDiscussions,
+    });
+    res.json({ appId: parsedQuery.data.appId, query: parsedQuery.data.q, results });
   });
 
   router.post("/issues/:id/qbank-item", validate(importQBankItemDocumentSchema), async (req, res) => {

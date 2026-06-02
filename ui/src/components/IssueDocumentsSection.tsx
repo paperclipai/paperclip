@@ -174,6 +174,8 @@ export function IssueDocumentsSection({
   const [qbankImportOpen, setQBankImportOpen] = useState(false);
   const [qbankAppId, setQBankAppId] = useState("3");
   const [qbankQuestionId, setQBankQuestionId] = useState("");
+  const [qbankSearchQuery, setQBankSearchQuery] = useState("");
+  const [qbankSearchResults, setQBankSearchResults] = useState<Array<{ item: Record<string, unknown>; score: number; matchedFields: string[]; sourceRef: string }>>([]);
   const [qbankPayloadText, setQBankPayloadText] = useState("");
   const [qbankImportMessage, setQBankImportMessage] = useState<string | null>(null);
   const autosaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -293,12 +295,13 @@ export function IssueDocumentsSection({
       return issuesApi.fetchQBankItemSource(issue.id, {
         appId: trimmedAppId,
         questionId: trimmedQuestionId,
+        includeDiscussions: true,
       });
     },
     onSuccess: ({ appId, item }) => {
       setQBankAppId(String(appId));
       setQBankPayloadText(JSON.stringify(item, null, 2));
-      setQBankImportMessage("QBank item fetched. Review, then create the card.");
+      setQBankImportMessage("QBank item fetched with rationales and discussions. Review, then create the card.");
       setError(null);
     },
     onError: (err) => {
@@ -306,6 +309,41 @@ export function IssueDocumentsSection({
       setError(err instanceof Error ? err.message : "Failed to fetch QBank item");
     },
   });
+
+  const searchQBankItems = useMutation({
+    mutationFn: async () => {
+      const trimmedAppId = qbankAppId.trim();
+      const trimmedQuery = qbankSearchQuery.trim();
+      if (!trimmedAppId) throw new Error("QBank app ID is required");
+      if (!trimmedQuery) throw new Error("Search text is required");
+      return issuesApi.searchQBankItems(issue.id, {
+        appId: trimmedAppId,
+        q: trimmedQuery,
+        limit: 8,
+        scanLimit: 120,
+        includeDiscussions: false,
+      });
+    },
+    onSuccess: ({ results }) => {
+      setQBankSearchResults(results);
+      setQBankImportMessage(results.length ? `Found ${results.length} QBank matches. Pick one to load full rationales/comments.` : "No QBank matches found in the scanned set.");
+      setError(null);
+    },
+    onError: (err) => {
+      setQBankImportMessage(null);
+      setError(err instanceof Error ? err.message : "Failed to search QBank items");
+    },
+  });
+
+  const loadQBankSearchResult = (result: { item: Record<string, unknown>; sourceRef: string }) => {
+    const itemId = result.item.id;
+    if (itemId !== undefined && itemId !== null) {
+      setQBankQuestionId(String(itemId));
+    }
+    setQBankPayloadText(JSON.stringify(result.item, null, 2));
+    setQBankImportMessage(`Loaded ${result.sourceRef}. Use Fetch item for full comments, or create the card now.`);
+    setError(null);
+  };
 
   const importQBankItem = useMutation({
     mutationFn: async () => {
@@ -813,7 +851,7 @@ export function IssueDocumentsSection({
           <div>
             <p className="text-sm font-medium">Import QBank item</p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Paste one read-only Partner API item payload. Paperclip will render it into the qbank-item document.
+              Search the QBank by concept, or fetch a known item. Paperclip pulls rationales, answer rationales, media, and discussions into a readable card.
             </p>
           </div>
           <Input
@@ -822,6 +860,38 @@ export function IssueDocumentsSection({
             onChange={(event) => setQBankAppId(event.target.value)}
             placeholder="App ID"
           />
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Input
+              aria-label="QBank search text"
+              value={qbankSearchQuery}
+              onChange={(event) => setQBankSearchQuery(event.target.value)}
+              placeholder="Search by concept, symptom, rationale, category..."
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => searchQBankItems.mutate()}
+              disabled={searchQBankItems.isPending}
+              className="shrink-0"
+            >
+              {searchQBankItems.isPending ? "Searching..." : "Search QBank"}
+            </Button>
+          </div>
+          {qbankSearchResults.length > 0 && (
+            <div className="space-y-2 rounded-md border border-border bg-background p-2">
+              {qbankSearchResults.map((result) => (
+                <button
+                  key={result.sourceRef}
+                  type="button"
+                  className="block w-full rounded border border-border px-2 py-1 text-left text-xs hover:bg-muted"
+                  onClick={() => loadQBankSearchResult(result)}
+                >
+                  <span className="font-medium">{result.sourceRef}</span>
+                  <span className="ml-2 text-muted-foreground">score {result.score}; {result.matchedFields.join(", ")}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex flex-col gap-2 sm:flex-row">
             <Input
               aria-label="QBank question ID"
