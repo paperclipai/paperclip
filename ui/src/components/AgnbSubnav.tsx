@@ -81,6 +81,11 @@ export const AGNB_SUBNAV = {
     { to: "/entity-audit", label: "Entity audit" },
     { to: "/pending-actions", label: "Pending actions" },
     { to: "/agnb-notifications", label: "Notifications" },
+    { to: "/comment-triage", label: "Comments" },
+    { to: "/content-performance", label: "Content perf" },
+    { to: "/workflows", label: "Workflows" },
+    { to: "/quota", label: "Quota" },
+    { to: "/tokens", label: "API tokens" },
   ],
   team: [
     { to: "/human-team", label: "Team" },

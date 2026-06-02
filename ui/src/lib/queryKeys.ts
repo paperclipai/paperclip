@@ -265,5 +265,10 @@ export const queryKeys = {
     subjects: ["agnb", "subjects"] as const,
     experiments: ["agnb", "experiments"] as const,
     cohorts: ["agnb", "cohorts"] as const,
+    tokens: ["agnb", "tokens"] as const,
+    quota: ["agnb", "quota"] as const,
+    contentPerf: (d: number) => ["agnb", "content-perf", d] as const,
+    workflows: ["agnb", "workflows"] as const,
+    comments: (f: string) => ["agnb", "comments", f] as const,
   },
 };
