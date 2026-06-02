@@ -133,6 +133,7 @@ import { Workflows } from "./pages/Workflows";
 import { CommentTriage } from "./pages/CommentTriage";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
+import { LandingPage } from "./pages/Landing";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
@@ -439,7 +440,8 @@ export function App() {
   return (
     <>
       <Routes>
-        <Route path="auth" element={<AuthPage />} />
+        <Route path="auth" element={<LandingPage />} />
+        <Route path="auth/login" element={<AuthPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
