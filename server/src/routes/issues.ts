@@ -1725,6 +1725,22 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  async function assertAgentIssueCommentAllowed(
+    req: Request,
+    res: Response,
+  ) {
+    // Board users and any authenticated agent from the same company may comment.
+    // The company access check is enforced at the route level via assertCompanyAccess.
+    // Reserve the strict mutation guard (assertAgentIssueMutationAllowed) for
+    // state/field changes only — comments are communication, not mutation.
+    if (req.actor.type !== "agent") return true;
+    if (!req.actor.agentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    return true;
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -6440,7 +6456,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertAgentIssueCommentAllowed(req, res))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
