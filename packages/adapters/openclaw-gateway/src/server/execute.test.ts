@@ -162,10 +162,8 @@ describe("execute", () => {
 
       expect(result.exitCode).toBe(0);
       expect(agentParams).not.toHaveProperty("paperclip");
-      expect(agentParams).toMatchObject({
-        idempotencyKey: "run-1",
-        sessionKey: "agent:agent-1:paperclip:issue:issue-1",
-      });
+      expect(agentParams).toMatchObject({ idempotencyKey: "run-1" });
+      expect(agentParams.sessionKey).toBe(["agent:agent-1", "paperclip:issue:issue-1"].join(":"));
       expect(logs.join("")).toContain("run completed");
     } finally {
       await new Promise<void>((resolve, reject) => {
