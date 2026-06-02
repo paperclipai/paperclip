@@ -405,8 +405,8 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   modelProfiles: openCodeModelProfiles,
   sessionManagement: getAdapterSessionManagement("opencode_local") ?? undefined,
   listModels: listOpenCodeModels,
-  supportsLocalAgentJwt: true,
-  supportsInstructionsBundle: true,
+<<<<<<< HEAD
+=======
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
   getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "opencode", "opencode-ai"),
