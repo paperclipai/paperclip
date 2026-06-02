@@ -10325,7 +10325,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const run = typeof runOrLookup === "string" ? await getRunLogAccess(runOrLookup) : runOrLookup;
       const runId = typeof runOrLookup === "string" ? runOrLookup : runOrLookup.id;
       if (!run) throw notFound("Heartbeat run not found");
-      if (!run.logStore || !run.logRef) throw notFound("Run log not found");
+      if (!run.logStore || !run.logRef) {
+        return {
+          runId,
+          store: run.logStore,
+          logRef: run.logRef,
+          content: "",
+          pending: true,
+        };
+      }
 
       const result = await runLogStore.read(
         {
