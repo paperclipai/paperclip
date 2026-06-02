@@ -125,6 +125,76 @@ import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { MembershipAction } from "@/components/MembershipAction";
+import { IssueOutputSection } from "@/components/issue-output/IssueOutputSection";
+import type { IssueWorkProduct } from "@paperclipai/shared";
+
+/* ------------------------------------------------------------------ */
+/*  Sample data for the Issue Output surface showcase                  */
+/* ------------------------------------------------------------------ */
+
+function sampleOutput(
+  id: string,
+  attachmentId: string,
+  contentType: string,
+  filename: string,
+  opts: { byteSize: number; isPrimary?: boolean; createdAt: string },
+): IssueWorkProduct {
+  const contentPath = `/api/attachments/${attachmentId}/content`;
+  return {
+    id,
+    companyId: "demo-company",
+    projectId: null,
+    issueId: "demo-issue",
+    executionWorkspaceId: null,
+    runtimeServiceId: null,
+    type: "artifact",
+    provider: "paperclip",
+    externalId: null,
+    title: filename,
+    url: null,
+    status: "active",
+    reviewState: "none",
+    isPrimary: Boolean(opts.isPrimary),
+    healthStatus: "unknown",
+    summary: null,
+    createdByRunId: null,
+    createdAt: new Date(opts.createdAt),
+    updatedAt: new Date(opts.createdAt),
+    metadata: {
+      attachmentId,
+      contentType,
+      byteSize: opts.byteSize,
+      contentPath,
+      openPath: contentPath,
+      downloadPath: `${contentPath}?download=1`,
+      originalFilename: filename,
+    },
+  } as IssueWorkProduct;
+}
+
+const DESIGN_GUIDE_OUTPUTS: IssueWorkProduct[] = [
+  sampleOutput("wp-vid", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "video/mp4", "q3-summary.mp4", {
+    byteSize: 19_293_798,
+    isPrimary: true,
+    createdAt: "2026-05-30T12:00:00Z",
+  }),
+  sampleOutput("wp-pdf", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "application/pdf", "talking-points.pdf", {
+    byteSize: 421_888,
+    createdAt: "2026-05-30T11:52:00Z",
+  }),
+];
+
+const DESIGN_GUIDE_DEGRADED_OUTPUTS: IssueWorkProduct[] = [
+  {
+    ...sampleOutput("wp-broken", "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "video/mp4", "corrupt-output.mp4", {
+      byteSize: 0,
+      isPrimary: true,
+      createdAt: "2026-05-30T12:01:00Z",
+    }),
+    // Strip the path metadata so it fails the shared artifact schema.
+    metadata: { attachmentId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", contentType: "video/mp4" },
+  } as IssueWorkProduct,
+];
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -1401,6 +1471,21 @@ export function DesignGuide() {
             </div>
           ))}
         </div>
+      </Section>
+
+      <Section title="Issue Output Surface">
+        <SubSection title="Multiple outputs (primary video + 'Also produced')">
+          <IssueOutputSection workProducts={DESIGN_GUIDE_OUTPUTS} />
+        </SubSection>
+        <SubSection title="Degraded output (invalid / failed attachment metadata)">
+          <IssueOutputSection workProducts={DESIGN_GUIDE_DEGRADED_OUTPUTS} />
+        </SubSection>
+        <SubSection title="Empty state">
+          <p className="text-xs text-muted-foreground">
+            When an issue has produced no artifact work products, the Output section renders nothing
+            at all (no placeholder card).
+          </p>
+        </SubSection>
       </Section>
     </div>
   );
