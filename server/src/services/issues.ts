@@ -5591,21 +5591,21 @@ export function issueService(db: Db) {
         if (!anchor) return [];
         const anchorCreatedAt =
           anchor.createdAt instanceof Date
-            ? anchor.createdAt.toISOString()
-            : String(anchor.createdAt);
+            ? anchor.createdAt
+            : new Date(String(anchor.createdAt));
         conditions.push(
           order === "asc"
             ? or(
-                gt(issueComments.createdAt, new Date(anchorCreatedAt)),
+                gt(issueComments.createdAt, anchorCreatedAt),
                 and(
-                  eq(issueComments.createdAt, new Date(anchorCreatedAt)),
+                  eq(issueComments.createdAt, anchorCreatedAt),
                   gt(issueComments.id, anchor.id),
                 ),
               )!
             : or(
-                lt(issueComments.createdAt, new Date(anchorCreatedAt)),
+                lt(issueComments.createdAt, anchorCreatedAt),
                 and(
-                  eq(issueComments.createdAt, new Date(anchorCreatedAt)),
+                  eq(issueComments.createdAt, anchorCreatedAt),
                   lt(issueComments.id, anchor.id),
                 ),
               )!,
