@@ -21,6 +21,7 @@ import {
   Linkedin as LinkedinIcon,
   Youtube as YoutubeIcon,
   Mails,
+  CalendarClock,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -112,6 +113,7 @@ export function Sidebar() {
           <SidebarNavItem to="/blog-automation" label="Blog" icon={PenLine} />
           <SidebarNavItem to="/linkedin-queue" label="LinkedIn" icon={LinkedinIcon} />
           <SidebarNavItem to="/youtube" label="YouTube" icon={YoutubeIcon} />
+          <SidebarNavItem to="/renewals" label="Renewals" icon={CalendarClock} />
         </SidebarSection>
 
         <SidebarSection label="Work">

@@ -103,6 +103,10 @@ import { RocketInbox } from "./pages/RocketInbox";
 import { Approval } from "./pages/Approval";
 import { ReplyDrafts } from "./pages/ReplyDrafts";
 import { ReplyMining } from "./pages/ReplyMining";
+import { Renewals } from "./pages/Renewals";
+import { ChangelogQueue } from "./pages/ChangelogQueue";
+import { Newsletter } from "./pages/Newsletter";
+import { PressReleases } from "./pages/PressReleases";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
@@ -191,6 +195,10 @@ function boardRoutes() {
       <Route path="rocket-approval" element={<Approval />} />
       <Route path="reply-drafts" element={<ReplyDrafts />} />
       <Route path="reply-mining" element={<ReplyMining />} />
+      <Route path="renewals" element={<Renewals />} />
+      <Route path="changelog-queue" element={<ChangelogQueue />} />
+      <Route path="newsletter" element={<Newsletter />} />
+      <Route path="press-releases" element={<PressReleases />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />
@@ -465,6 +473,10 @@ export function App() {
           <Route path="rocket-approval" element={<UnprefixedBoardRedirect />} />
           <Route path="reply-drafts" element={<UnprefixedBoardRedirect />} />
           <Route path="reply-mining" element={<UnprefixedBoardRedirect />} />
+          <Route path="renewals" element={<UnprefixedBoardRedirect />} />
+          <Route path="changelog-queue" element={<UnprefixedBoardRedirect />} />
+          <Route path="newsletter" element={<UnprefixedBoardRedirect />} />
+          <Route path="press-releases" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
           <Route path="agents" element={<UnprefixedBoardRedirect />} />

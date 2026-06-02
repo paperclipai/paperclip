@@ -247,5 +247,9 @@ export const queryKeys = {
     approvals: ["agnb", "approvals"] as const,
     replyDrafts: (s: string) => ["agnb", "reply-drafts", s] as const,
     replies: ["agnb", "replies"] as const,
+    renewals: ["agnb", "renewals"] as const,
+    changelog: ["agnb", "changelog"] as const,
+    newsletter: ["agnb", "newsletter"] as const,
+    pressReleases: ["agnb", "press-releases"] as const,
   },
 };
