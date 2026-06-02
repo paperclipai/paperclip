@@ -1517,15 +1517,17 @@ export function issueRoutes(
     res: Response,
     issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
   ) {
-    // Board users and any authenticated agent from the same company may comment.
-    // The company access check is enforced at the route level via assertCompanyAccess.
-    // Reserve the strict mutation guard (assertAgentIssueMutationAllowed) for
-    // state/field changes only — comments are communication, not mutation.
+    // Any authenticated agent from the same company may comment on open issues.
+    // For closed issues (done/cancelled), preserve the full mutation guard so
+    // only the assignee (or a checkout-management override) can reopen via comment.
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
       return false;
+    }
+    if (isClosedIssueStatus(issue.status)) {
+      return assertAgentIssueMutationAllowed(req, res, issue);
     }
     return true;
   }
