@@ -101,6 +101,7 @@ import {
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
 } from "../services/recovery/index.ts";
+import { PROCESS_LOSS_CHAIN_CAP } from "../services/run-retry-policy.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -581,6 +582,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runErrorCode?: string | null;
     runError?: string | null;
     executionPolicy?: Record<string, unknown> | null;
+    processLossChainCount?: number | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -643,6 +645,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           : input.retryReason ?? "issue_assigned",
         ...(input.retryReason ? { retryReason: input.retryReason } : {}),
         ...(input.runSource ? { source: input.runSource } : {}),
+        ...(input.processLossChainCount != null ? { processLossChainCount: input.processLossChainCount } : {}),
       },
       startedAt: now,
       finishedAt: new Date("2026-03-19T00:05:00.000Z"),
@@ -3627,5 +3630,147 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
+  });
+
+  // FUL-6592 — process-loss ancestry chain cap tests
+  it("reaper propagates processLossChainCount in contextSnapshot of the retry run", async () => {
+    const { runId, issueId, agentId } = await seedRunFixture({
+      processPid: 999_999_999,
+      processLossRetryCount: 0,
+      contextSnapshot: { processLossChainCount: 2 },
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reapOrphanedRuns();
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const retryRun = runs.find((r) => r.id !== runId);
+    expect(retryRun?.status).toBe("queued");
+    expect((retryRun?.contextSnapshot as Record<string, unknown>).processLossChainCount).toBe(3);
+  });
+
+  it("reaper records processLossChainCount in resultJson of the finalized run", async () => {
+    const { runId } = await seedRunFixture({
+      processPid: 999_999_999,
+      processLossRetryCount: 0,
+      contextSnapshot: { processLossChainCount: 1 },
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reapOrphanedRuns();
+
+    const run = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+    const resultJson = run?.resultJson as Record<string, unknown> | null;
+    expect(resultJson?.processLossChainCount).toBe(1);
+  });
+
+  it("reaper suppresses retry and sets processLossChainCapReached=true when ancestry cap is reached", async () => {
+    const { runId, agentId, issueId } = await seedRunFixture({
+      processPid: 999_999_999,
+      processLossRetryCount: 0,
+      // Already at the cap — no further retry should be enqueued.
+      contextSnapshot: { processLossChainCount: PROCESS_LOSS_CHAIN_CAP },
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reapOrphanedRuns();
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    // No retry run should have been created.
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.errorCode).toBe("process_lost");
+
+    const resultJson = runs[0]?.resultJson as Record<string, unknown> | null;
+    expect(resultJson?.processLossChainCount).toBe(PROCESS_LOSS_CHAIN_CAP);
+    expect(resultJson?.processLossChainCapReached).toBe(true);
+    expect(runs[0]?.error).toContain("retry ancestry cap reached");
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+  });
+
+  it("reconciler escalates to blocked when latest run has process_lost errorCode at ancestry cap", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+      processLossChainCount: PROCESS_LOSS_CHAIN_CAP,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.length).toBeGreaterThan(0);
+    expect(comments[0]?.body).toContain("process_lost");
+    expect(comments[0]?.body).toContain("retry ancestry");
+  });
+
+  it("reconciler propagates processLossChainCount when creating a continuation run for process_lost below cap", async () => {
+    const chainCount = PROCESS_LOSS_CHAIN_CAP - 1;
+    const { issueId, agentId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+      processLossChainCount: chainCount,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    // The original failed run plus the new continuation run.
+    expect(runs.length).toBeGreaterThanOrEqual(2);
+
+    const continuationRun = runs.find((r) => r.id !== runId);
+    expect(continuationRun).toBeDefined();
+    const ctxSnapshot = continuationRun?.contextSnapshot as Record<string, unknown> | null;
+    expect(ctxSnapshot?.processLossChainCount).toBe(chainCount);
+  });
+
+  it("synthetic chain: cannot schedule unlimited replacement runs across reaper+reconciler boundary", async () => {
+    // Seed an issue with a process_lost run whose chain count is already at the cap.
+    const { issueId, agentId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+      processLossChainCount: PROCESS_LOSS_CHAIN_CAP,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // Reconciler should escalate, not create another continuation run.
+    const reconcileResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(reconcileResult.escalated).toBe(1);
+    expect(reconcileResult.continuationRequeued).toBe(0);
+
+    // No new PROCESS-LOSS retry or continuation run should have been enqueued.
+    // (escalateStrandedAssignedIssue may create a recovery run for the same agent,
+    // so we filter to runs scoped to the original issue and verify none are queued.)
+    const runsAfter = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const queuedRunsForIssue = runsAfter.filter(
+      (r) =>
+        r.status === "queued" &&
+        (r.contextSnapshot as Record<string, unknown> | null)?.issueId === issueId,
+    );
+    expect(queuedRunsForIssue).toHaveLength(0);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
   });
 });

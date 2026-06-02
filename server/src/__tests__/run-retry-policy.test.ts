@@ -3,6 +3,7 @@ import {
   classifyErrorClass,
   classifyFailureRetryability,
   shouldRetryProcessLoss,
+  PROCESS_LOSS_CHAIN_CAP,
   type FailureErrorClass,
 } from "../services/run-retry-policy.ts";
 
@@ -121,5 +122,36 @@ describe("shouldRetryProcessLoss (G1 reaper robustness)", () => {
     expect(
       shouldRetryProcessLoss({ ...base, tracksLocalChild: false, startedAt: new Date() }),
     ).toBe(false);
+  });
+
+  it("retries when chain count is below the ancestry cap", () => {
+    const run = { ...base, processPid: 4242, processLossChainCount: PROCESS_LOSS_CHAIN_CAP - 1 };
+    expect(shouldRetryProcessLoss(run)).toBe(true);
+  });
+
+  it("suppresses retry when chain count equals the ancestry cap", () => {
+    const run = { ...base, processPid: 4242, processLossChainCount: PROCESS_LOSS_CHAIN_CAP };
+    expect(shouldRetryProcessLoss(run)).toBe(false);
+  });
+
+  it("suppresses retry when chain count exceeds the ancestry cap", () => {
+    const run = { ...base, processPid: 4242, processLossChainCount: PROCESS_LOSS_CHAIN_CAP + 2 };
+    expect(shouldRetryProcessLoss(run)).toBe(false);
+  });
+
+  it("ancestry cap takes precedence over per-run count=0", () => {
+    // Even if this run's own count is 0 (never retried), the chain cap prevents a new retry.
+    const run = { ...base, processPid: 4242, processLossRetryCount: 0, processLossChainCount: PROCESS_LOSS_CHAIN_CAP };
+    expect(shouldRetryProcessLoss(run)).toBe(false);
+  });
+
+  it("treats missing processLossChainCount as 0 (below cap)", () => {
+    const run = { ...base, processPid: 4242 }; // processLossChainCount omitted
+    expect(shouldRetryProcessLoss(run)).toBe(true);
+  });
+
+  it("treats null processLossChainCount as 0 (below cap)", () => {
+    const run = { ...base, processPid: 4242, processLossChainCount: null };
+    expect(shouldRetryProcessLoss(run)).toBe(true);
   });
 });

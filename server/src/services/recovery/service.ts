@@ -62,6 +62,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { PROCESS_LOSS_CHAIN_CAP } from "../run-retry-policy.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -693,6 +694,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
     retryReason: "assignment_recovery" | "issue_continuation_needed";
     source: string;
     retryOfRunId?: string | null;
+    /** Propagated ancestry count from the previous run's contextSnapshot. */
+    processLossChainCount?: number | null;
   }) {
     const queued = await deps.enqueueWakeup(input.agentId, {
       source: "automation",
@@ -711,6 +714,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         retryReason: input.retryReason,
         source: input.source,
         ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+        ...(input.processLossChainCount != null && input.processLossChainCount > 0
+          ? { processLossChainCount: input.processLossChainCount }
+          : {}),
       }, "normal_model"),
     });
 
@@ -3220,6 +3226,38 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
           continue;
         }
 
+        // FUL-6592: enforce the process-loss ancestry chain cap so the reaper's
+        // per-run "retry once" rule cannot be reset indefinitely by the reconciler
+        // spawning fresh continuation runs. If the chain count in the latest run's
+        // contextSnapshot has reached PROCESS_LOSS_CHAIN_CAP, escalate instead of
+        // creating another continuation run.
+        if (classification.errorCode === "process_lost") {
+          const latestRunCtx = parseObject(latestRun?.contextSnapshot);
+          const chainCount = asNumber(latestRunCtx.processLossChainCount, 0);
+          if (chainCount >= PROCESS_LOSS_CHAIN_CAP) {
+            const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+            const updated = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: "in_progress",
+              latestRun,
+              comment:
+                "Paperclip detected repeated `process_lost` failures on this issue " +
+                `(${chainCount}/${PROCESS_LOSS_CHAIN_CAP} failures in the retry ancestry). ` +
+                `Suppressing further automatic retries to prevent an unbounded chain.${failureSummary ?? ""} ` +
+                "Moving it to `blocked` so it is visible for intervention.",
+            });
+            if (updated) {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
+          }
+          // Chain count within cap; fall through so the continuation run is
+          // enqueued with the chain count propagated (see the call below).
+        }
+
         if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
           const { consecutive, latestFinishedAt } = await summarizeRecentContinuationRetries(
             issue.companyId,
@@ -3267,6 +3305,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         continue;
       }
 
+      // Propagate the process-loss ancestry count so the reaper can enforce the
+      // cap even after the reconciler spawns a new continuation run.
+      const latestRunCtxForEnqueue = latestRun ? parseObject(latestRun.contextSnapshot) : null;
+      const propagatedChainCount = latestRun?.errorCode === "process_lost" && latestRunCtxForEnqueue
+        ? asNumber(latestRunCtxForEnqueue.processLossChainCount, 0)
+        : undefined;
+
       const queued = await enqueueStrandedIssueRecovery({
         issueId: issue.id,
         agentId,
@@ -3274,6 +3319,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         retryReason: "issue_continuation_needed",
         source: "issue.continuation_recovery",
         retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
+        processLossChainCount: propagatedChainCount,
       });
       if (queued) {
         result.continuationRequeued += 1;

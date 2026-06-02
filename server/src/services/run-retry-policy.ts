@@ -195,7 +195,18 @@ export function classifyErrorClass(
  * either (a) a pid/pgid was persisted, or (b) it had started (`startedAt` set)
  * but was killed before the pid/pgid was ever persisted — the "early-start kill
  * window". Both are bounded by `processLossRetryCount < 1`.
+ *
+ * Ancestry cap: the reaper retries at most once per run, but a flapping host can
+ * cause the reconciler to create fresh continuation runs after each exhausted
+ * reaper pair. `processLossChainCount` is propagated through the contextSnapshot
+ * across both the reaper and the reconciler so that the total number of
+ * process-loss failures in a chain is bounded by `PROCESS_LOSS_CHAIN_CAP`
+ * regardless of which subsystem spawned each run.
  */
+
+/** Maximum number of process-loss failures across the entire retry ancestry. */
+export const PROCESS_LOSS_CHAIN_CAP = 5;
+
 export interface ProcessLossRetryInput {
   tracksLocalChild: boolean;
   processPid: number | null | undefined;
@@ -203,11 +214,20 @@ export interface ProcessLossRetryInput {
   /** Set once the run actually began executing. */
   startedAt: Date | string | null | undefined;
   processLossRetryCount: number | null | undefined;
+  /**
+   * Total number of process-loss failures across the entire `retryOfRunId`
+   * ancestry for this issue, propagated via contextSnapshot. When this reaches
+   * `PROCESS_LOSS_CHAIN_CAP` no further retries are allowed regardless of the
+   * per-run `processLossRetryCount`.
+   */
+  processLossChainCount?: number | null | undefined;
 }
 
 export function shouldRetryProcessLoss(input: ProcessLossRetryInput): boolean {
   if (!input.tracksLocalChild) return false;
   if ((input.processLossRetryCount ?? 0) >= 1) return false;
+  // Ancestry cap: suppress if the chain has already seen too many losses.
+  if ((input.processLossChainCount ?? 0) >= PROCESS_LOSS_CHAIN_CAP) return false;
   const hasTrackedHandle = !!input.processPid || !!input.processGroupId;
   // Early-start kill window: process was started but died before pid/pgid was
   // ever persisted, so there is no handle to observe — still a once-retryable

@@ -61,6 +61,7 @@ import {
   classifyErrorClass,
   classifyFailureRetryability,
   shouldRetryProcessLoss,
+  PROCESS_LOSS_CHAIN_CAP,
 } from "./run-retry-policy.js";
 import { evaluatePreflight, type PreflightResult } from "./run-preflight.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
@@ -5956,11 +5957,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    // Increment the ancestry chain count so every subsequent reap/reconciler step
+    // can enforce PROCESS_LOSS_CHAIN_CAP without a full ancestor walk.
+    const processLossChainCount = asNumber(contextSnapshot.processLossChainCount, 0) + 1;
     const retryContextSnapshot = withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason: "process_lost_retry",
       retryReason: "process_lost",
+      processLossChainCount,
     }, "normal_model");
 
     const queued = await db.transaction(async (tx) => {
@@ -8007,32 +8012,48 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // G1 (FUL-6364): also retry a pid-less `running` run that had already
       // started (early-start kill window) where pid/pgid was never persisted,
       // still bounded by processLossRetryCount < 1. See run-retry-policy.ts.
+      //
+      // FUL-6592: additionally bound by processLossChainCount propagated through
+      // contextSnapshot so the cap is enforced across reaper+reconciler cycles.
+      const runContext = parseObject(run.contextSnapshot);
+      const processLossChainCount = asNumber(runContext.processLossChainCount, 0);
       const shouldRetry = shouldRetryProcessLoss({
         tracksLocalChild,
         processPid: run.processPid,
         processGroupId: run.processGroupId,
         startedAt: run.startedAt,
         processLossRetryCount: run.processLossRetryCount,
+        processLossChainCount,
       });
+      const chainCapReached = !shouldRetry && processLossChainCount >= PROCESS_LOSS_CHAIN_CAP;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const finalError = shouldRetry
+        ? `${baseMessage}; retrying once`
+        : chainCapReached
+          ? `${baseMessage}; retry ancestry cap reached (${processLossChainCount}/${PROCESS_LOSS_CHAIN_CAP} failures in chain)`
+          : baseMessage;
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: finalError,
         errorCode: "process_lost",
         finishedAt: now,
         resultJson: mergeRunStopMetadataForAgent(
           { adapterType, adapterConfig },
           "failed",
           {
-            resultJson: parseObject(run.resultJson),
+            resultJson: {
+              ...parseObject(run.resultJson),
+              processLossChainCount,
+              ...(chainCapReached ? { processLossChainCapReached: true } : {}),
+            },
             errorCode: "process_lost",
-            errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+            errorMessage: finalError,
           },
         ),
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: finalError,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
@@ -8061,12 +8082,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         level: "error",
         message: shouldRetry
           ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
-          : baseMessage,
+          : finalError,
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+          processLossChainCount,
+          ...(chainCapReached ? { processLossChainCapReached: true } : {}),
         },
       });
 
