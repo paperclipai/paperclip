@@ -14,7 +14,7 @@
     "storybook": "pnpm --filter @valadrien-os/ui storybook",
     "build-storybook": "pnpm --filter @valadrien-os/ui build-storybook",
     "build": "pnpm run preflight:workspace-links && pnpm -r build",
-    "build:vercel": "pnpm run preflight:workspace-links && pnpm --filter @valadrien-os/ui build && pnpm --filter @valadrien-os/server build",
+    "build:vercel": "pnpm run preflight:workspace-links && pnpm --filter @valadrien-os/ui build && pnpm --filter @valadrien-os/server build && node scripts/prepare-vercel-public.mjs",
     "start:vercel": "pnpm --filter @valadrien-os/server start",
     "typecheck": "pnpm run preflight:workspace-links && pnpm -r typecheck",
     "typecheck:build-gaps": "pnpm run preflight:workspace-links && node scripts/run-typecheck-build-gaps.mjs",

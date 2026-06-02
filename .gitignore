@@ -3,6 +3,7 @@ node_modules/
 **/node_modules
 **/node_modules/
 dist/
+public/
 ui/storybook-static/
 .env
 *.tsbuildinfo
