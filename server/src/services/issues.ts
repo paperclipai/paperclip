@@ -1781,7 +1781,10 @@ async function listIssueBlockerAttentionMap(
       return { covered: false, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
 
-    const downstream = (edgesByIssueId.get(node.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
+    const downstream = (edgesByIssueId.get(node.id) ?? []).filter((edge) => {
+      const blockerStatus = nodesById.get(edge.blockerIssueId)?.status;
+      return blockerStatus !== "done" && blockerStatus !== "cancelled";
+    });
     if (downstream.length > 0) {
       const nextSeen = new Set(seen);
       nextSeen.add(nodeId);
@@ -1825,7 +1828,10 @@ async function listIssueBlockerAttentionMap(
   };
 
   for (const root of roots) {
-    const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
+    const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => {
+      const blockerStatus = nodesById.get(edge.blockerIssueId)?.status;
+      return blockerStatus !== "done" && blockerStatus !== "cancelled";
+    });
     if (topLevelEdges.length === 0) {
       attentionMap.set(root.id, createIssueBlockerAttention({
         state: "needs_attention",
