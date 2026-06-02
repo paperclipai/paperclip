@@ -6,10 +6,16 @@
   "buildCommand": "pnpm run build:vercel",
   "fluid": true,
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/src/server.ts" },
+    { "source": "/api/(.*)", "destination": "/api" },
     {
-      "source": "/((?!assets/)(?!.*\\..*).*)",
+      "source": "/((?!api/)(?!assets/)(?!.*\\..*).*)",
       "destination": "/index.html"
     }
-  ]
+  ],
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 300,
+      "memory": 3008
+    }
+  }
 }
