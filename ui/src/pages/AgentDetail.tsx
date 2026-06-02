@@ -436,6 +436,56 @@ export function RunInvocationCard({
   );
 }
 
+export function OpenClawPairingCard({
+  gatewayUrl,
+  onRetry,
+  isRetrying,
+  retryError,
+}: {
+  gatewayUrl: string | null;
+  onRetry: () => void;
+  isRetrying: boolean;
+  retryError: string | null;
+}) {
+  return (
+    <div className="rounded-md border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/30 px-3 py-2 space-y-2 text-xs">
+      <div className="flex items-center gap-1.5 font-medium text-amber-800 dark:text-amber-300">
+        <span>⚠ Device pairing required</span>
+      </div>
+      <p className="text-amber-700 dark:text-amber-400 leading-4">
+        This gateway agent&apos;s device key is not yet approved. Approve the pending pairing request
+        in the OpenClaw admin panel or CLI, then retry the run.
+      </p>
+      {gatewayUrl && (
+        <div className="space-y-1">
+          <p className="text-muted-foreground">Gateway URL:</p>
+          <code className="block bg-neutral-100 dark:bg-neutral-900 rounded px-2 py-1 font-mono text-[11px] break-all">
+            {gatewayUrl}
+          </code>
+          <p className="text-muted-foreground leading-4">
+            Approve via CLI:{" "}
+            <code className="bg-neutral-100 dark:bg-neutral-900 rounded px-1 font-mono text-[11px]">
+              openclaw devices approve --latest --url {gatewayUrl}
+            </code>
+          </p>
+        </div>
+      )}
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-7 px-2 text-xs border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+        onClick={onRetry}
+        disabled={isRetrying}
+      >
+        {isRetrying ? "Retrying…" : "Retry after approve"}
+      </Button>
+      {retryError && (
+        <p className="text-xs text-destructive">{retryError}</p>
+      )}
+    </div>
+  );
+}
+
 function parseStoredLogContent(content: string): RunLogChunk[] {
   const parsed: RunLogChunk[] = [];
   for (const line of content.split("\n")) {
@@ -3365,6 +3415,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   const sessionId = run.sessionIdAfter || run.sessionIdBefore;
   const hasNonZeroExit = run.exitCode !== null && run.exitCode !== 0;
   const retryState = describeRunRetryState(run);
+  const gatewayUrl = typeof adapterConfig.url === "string" && adapterConfig.url ? adapterConfig.url : null;
 
   return (
     <div className="space-y-4 min-w-0">
@@ -3512,6 +3563,14 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   </>
                 )}
               </div>
+            )}
+            {run.errorCode === "openclaw_gateway_pairing_required" && adapterType === "openclaw_gateway" && (
+              <OpenClawPairingCard
+                gatewayUrl={gatewayUrl}
+                onRetry={() => retryRun.mutate()}
+                isRetrying={retryRun.isPending}
+                retryError={retryRun.isError ? (retryRun.error instanceof Error ? retryRun.error.message : "Failed to retry run") : null}
+              />
             )}
             {hasNonZeroExit && (
               <div className="text-xs text-red-600 dark:text-red-400">
