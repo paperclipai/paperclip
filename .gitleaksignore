@@ -1,0 +1,43 @@
+# .gitleaksignore — fingerprints for known test fixtures / synthetic keys
+# Authorizing ticket: FUL-6461 (gitleaks scan RCA for PR #112)
+# All entries below are test fixtures — synthetic/example values, never real credentials.
+# Any new real credential must be rotated + escalated per SH-3/SH-4 before being added here.
+
+# check-pr-security test suite — AWS example key from AWS documentation
+96feaa331ab8d398cf420873d6085b69b69f6b85:.github/scripts/tests/check-pr-security.test.mjs:aws-access-token:25
+
+# check-pr-security test suite — synthetic sk-* API key for secret-pattern tests
+96feaa331ab8d398cf420873d6085b69b69f6b85:.github/scripts/tests/check-pr-security.test.mjs:generic-api-key:20
+96feaa331ab8d398cf420873d6085b69b69f6b85:.github/scripts/tests/check-pr-security.test.mjs:generic-api-key:30
+
+# exe-dev plugin tests — synthetic OPENSSH and RSA keys for SSH validation test cases
+aea35fe695672061918af10e5493c9d890e44d13:packages/plugins/sandbox-providers/exe-dev/src/plugin.test.ts:private-key:170
+
+# exe-dev plugin source — error message string containing key-format header literal
+aea35fe695672061918af10e5493c9d890e44d13:packages/plugins/sandbox-providers/exe-dev/src/plugin.ts:private-key:170
+
+# plugin-host-services — TOKEN_ALPHABET constant (lowercase letters + digits, not a real key)
+38c185fb8b50f909d29c0b62783731a3b326d021:server/src/services/plugin-host-services.ts:generic-api-key:859
+
+# docs/deploy/secrets.md — secretId UUID used as a documentation example
+f25753053749d42fa808a9d92132467d2d75dcd0:docs/deploy/secrets.md:generic-api-key:394
+
+# exe-dev plugin tests — "-----BEGIN PRIVATE KEY-----\npretend" dummy value for test error path
+f25753053749d42fa808a9d92132467d2d75dcd0:packages/plugins/sandbox-providers/exe-dev/src/plugin.test.ts:private-key:229
+
+# heartbeat watchdog test — ghp_1234567890abcdefghijklmnopqrstuvwxyz (obviously fake GitHub PAT)
+f25753053749d42fa808a9d92132467d2d75dcd0:server/src/__tests__/heartbeat-active-run-output-watchdog.test.ts:github-pat:268
+
+# redaction test — ghp_1234567890abcdefghijklmnopqrstuvwxyz (same fake PAT for redaction tests)
+f25753053749d42fa808a9d92132467d2d75dcd0:server/src/__tests__/redaction.test.ts:github-pat:69
+
+# access route — TOKEN_ALPHABET constant (same alphabet string, not a real key)
+f25753053749d42fa808a9d92132467d2d75dcd0:server/src/routes/access.ts:generic-api-key:89
+
+# safecheck phase1 — synthetic API keys used in safecheck test fixtures (FUL-6482)
+7235385b26305627f7d113f7ff9cb2f0a464da09:lib/safecheck/phase1.ts:generic-api-key:122
+7235385b26305627f7d113f7ff9cb2f0a464da09:lib/safecheck/phase1.ts:generic-api-key:131
+7235385b26305627f7d113f7ff9cb2f0a464da09:tests/safecheck-phase1.test.ts:generic-api-key:22
+22595699d6679d2968abb5a64f73383a71ba0c72:lib/safecheck/phase1.ts:generic-api-key:122
+22595699d6679d2968abb5a64f73383a71ba0c72:lib/safecheck/phase1.ts:generic-api-key:131
+22595699d6679d2968abb5a64f73383a71ba0c72:tests/safecheck-phase1.test.ts:generic-api-key:22
