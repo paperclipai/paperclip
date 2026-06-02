@@ -68,7 +68,10 @@
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
     },
     "overrides": {
-      "rollup": ">=4.59.0"
+      "rollup": ">=4.59.0",
+      "drizzle-orm": ">=0.45.2",
+      "kysely": ">=0.28.17",
+      "picomatch": ">=4.0.4"
     }
   }
 }
