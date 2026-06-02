@@ -56,6 +56,12 @@ export const AGNB_SUBNAV = {
     { to: "/linkedin-series", label: "Series" },
     { to: "/linkedin-performance", label: "Performance" },
   ],
+  inbox: [
+    { to: "/rocket-inbox", label: "Threads" },
+    { to: "/rocket-approval", label: "Approval queue" },
+    { to: "/reply-drafts", label: "Reply drafts" },
+    { to: "/reply-mining", label: "Reply mining" },
+  ],
   youtube: [
     { to: "/youtube", label: "Ideas" },
     { to: "/youtube-trends", label: "Trends" },

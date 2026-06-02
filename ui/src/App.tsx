@@ -99,6 +99,10 @@ import { YoutubeTitles } from "./pages/YoutubeTitles";
 import { YoutubeThumbnails } from "./pages/YoutubeThumbnails";
 import { YoutubeShorts } from "./pages/YoutubeShorts";
 import { YoutubePerformance } from "./pages/YoutubePerformance";
+import { RocketInbox } from "./pages/RocketInbox";
+import { Approval } from "./pages/Approval";
+import { ReplyDrafts } from "./pages/ReplyDrafts";
+import { ReplyMining } from "./pages/ReplyMining";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
@@ -183,6 +187,10 @@ function boardRoutes() {
       <Route path="youtube-thumbnails" element={<YoutubeThumbnails />} />
       <Route path="youtube-shorts" element={<YoutubeShorts />} />
       <Route path="youtube-performance" element={<YoutubePerformance />} />
+      <Route path="rocket-inbox" element={<RocketInbox />} />
+      <Route path="rocket-approval" element={<Approval />} />
+      <Route path="reply-drafts" element={<ReplyDrafts />} />
+      <Route path="reply-mining" element={<ReplyMining />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />
@@ -453,6 +461,10 @@ export function App() {
           <Route path="youtube-thumbnails" element={<UnprefixedBoardRedirect />} />
           <Route path="youtube-shorts" element={<UnprefixedBoardRedirect />} />
           <Route path="youtube-performance" element={<UnprefixedBoardRedirect />} />
+          <Route path="rocket-inbox" element={<UnprefixedBoardRedirect />} />
+          <Route path="rocket-approval" element={<UnprefixedBoardRedirect />} />
+          <Route path="reply-drafts" element={<UnprefixedBoardRedirect />} />
+          <Route path="reply-mining" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
           <Route path="agents" element={<UnprefixedBoardRedirect />} />

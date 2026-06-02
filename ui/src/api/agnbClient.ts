@@ -50,6 +50,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
+/** Request against an origin-relative AGNB path (no /api/agnb prefix) — e.g. /all-gas-no-brakes/api/internal/*. */
+async function requestAbs<T>(originPath: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers ?? undefined);
+  if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const res = await fetch(`${AGNB_BASE}${originPath}`, { headers, credentials: "include", ...init });
+  if (!res.ok) {
+    const errorBody = await res.json().catch(() => null);
+    throw new AgnbApiError((errorBody as { error?: string } | null)?.error ?? `AGNB request failed: ${res.status}`, res.status, errorBody);
+  }
+  if (res.status === 204) return undefined as T;
+  return res.json();
+}
+
 export const agnb = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body: unknown) =>
@@ -57,6 +70,9 @@ export const agnb = {
   patch: <T>(path: string, body: unknown) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+  /** POST to an origin-relative path (e.g. /all-gas-no-brakes/api/internal/...). */
+  postAbs: <T>(originPath: string, body: unknown) =>
+    requestAbs<T>(originPath, { method: "POST", body: JSON.stringify(body) }),
 };
 
 /** Unwrap AGNB's { ok, ...payload } envelope or throw on { ok:false, error }. */

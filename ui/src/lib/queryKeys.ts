@@ -243,5 +243,9 @@ export const queryKeys = {
     liHooks: ["agnb", "li-hooks"] as const,
     liSeries: ["agnb", "li-series"] as const,
     youtube: ["agnb", "youtube"] as const,
+    inboxThreads: (s: string) => ["agnb", "inbox-threads", s] as const,
+    approvals: ["agnb", "approvals"] as const,
+    replyDrafts: (s: string) => ["agnb", "reply-drafts", s] as const,
+    replies: ["agnb", "replies"] as const,
   },
 };

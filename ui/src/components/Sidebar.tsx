@@ -20,6 +20,7 @@ import {
   PenLine,
   Linkedin as LinkedinIcon,
   Youtube as YoutubeIcon,
+  Mails,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -102,6 +103,7 @@ export function Sidebar() {
         </div>
 
         <SidebarSection label="AGNB">
+          <SidebarNavItem to="/rocket-inbox" label="Inbox" icon={Mails} />
           <SidebarNavItem to="/campaigns" label="Campaigns" icon={Megaphone} />
           <SidebarNavItem to="/pipeline" label="Pipeline" icon={LayoutGrid} />
           <SidebarNavItem to="/assets" label="Assets" icon={Package} />
