@@ -37,6 +37,7 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { issueService } from "../issues.js";
 import { getRunLogStore } from "../run-log-store.js";
+import { CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS } from "../process-lifecycle-constants.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -177,7 +178,6 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
-const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 
 type ContinuationRetryClassification = {
   kind: "transient_infra" | "non_retryable" | "default";
