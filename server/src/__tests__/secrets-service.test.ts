@@ -294,7 +294,7 @@ describeEmbeddedPostgres("secretService", () => {
       .update(companySecretVersions)
       .set({ status: "current" })
       .where(eq(companySecretVersions.secretId, secret.id));
-    vi.spyOn(localEncryptedProvider, "resolveVersion").mockRejectedValueOnce(
+    (vi.spyOn(localEncryptedProvider, "resolveVersion") as any).mockRejectedValueOnce(
       new Error("provider leaked value routine-super-secret"),
     );
     await expect(svc.resolveEnvBindings(companyId, env, context)).rejects.toThrow(/provider leaked value/i);
@@ -369,12 +369,12 @@ describeEmbeddedPostgres("secretService", () => {
     };
     await svc.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: "agent-1" }, env);
 
-    vi.spyOn(db, "update").mockImplementationOnce(
+    (vi.spyOn(db, "update") as any).mockImplementationOnce(
       () => ({
         set: () => ({
           where: () => Promise.reject(new Error("metadata write failed")),
         }),
-      }) as ReturnType<typeof db.update>,
+      }) as unknown as ReturnType<typeof db.update>,
     );
 
     const resolved = await svc.resolveEnvBindings(companyId, env, {
@@ -441,7 +441,7 @@ describeEmbeddedPostgres("secretService", () => {
       targetId: "system",
       configPath: "env.API_KEY",
     });
-    vi.spyOn(localEncryptedProvider, "resolveVersion").mockRejectedValueOnce(
+    (vi.spyOn(localEncryptedProvider, "resolveVersion") as any).mockRejectedValueOnce(
       new Error("provider resolution failed"),
     );
 
@@ -507,7 +507,7 @@ describeEmbeddedPostgres("secretService", () => {
       managedMode: "external_reference",
       externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/external",
     });
-    const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+    const deleteSpy = (vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive") as any).mockResolvedValue();
 
     const removed = await svc.removeProviderConfig(vault.id);
 
@@ -624,7 +624,7 @@ describeEmbeddedPostgres("secretService", () => {
     });
 
     await svc.update(deleted.id, { status: "deleted" });
-    vi.spyOn(awsSecretsManagerProvider, "listRemoteSecrets").mockResolvedValue({
+    (vi.spyOn(awsSecretsManagerProvider, "listRemoteSecrets") as any).mockResolvedValue({
       secrets: [
         {
           externalRef,
@@ -674,7 +674,7 @@ describeEmbeddedPostgres("secretService", () => {
       externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/deleted-old",
     });
     await svc.update(deleted.id, { status: "deleted" });
-    vi.spyOn(awsSecretsManagerProvider, "listRemoteSecrets").mockResolvedValue({
+    (vi.spyOn(awsSecretsManagerProvider, "listRemoteSecrets") as any).mockResolvedValue({
       secrets: [
         {
           externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/deleted-new",
@@ -760,7 +760,7 @@ describeEmbeddedPostgres("secretService", () => {
       },
     });
 
-    const createSpy = vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
+    const createSpy = (vi.spyOn(awsSecretsManagerProvider, "createSecret") as any).mockResolvedValue({
       material: {
         scheme: "aws_secrets_manager_v1",
         secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/openai-api-key",
@@ -772,7 +772,7 @@ describeEmbeddedPostgres("secretService", () => {
       externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/openai-api-key",
       providerVersionRef: "aws-version-1",
     });
-    const createVersionSpy = vi.spyOn(awsSecretsManagerProvider, "createVersion").mockResolvedValue({
+    const createVersionSpy = (vi.spyOn(awsSecretsManagerProvider, "createVersion") as any).mockResolvedValue({
       material: {
         scheme: "aws_secrets_manager_v1",
         secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/openai-api-key",
@@ -784,7 +784,7 @@ describeEmbeddedPostgres("secretService", () => {
       externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/openai-api-key",
       providerVersionRef: "aws-version-2",
     });
-    const resolveSpy = vi.spyOn(awsSecretsManagerProvider, "resolveVersion").mockResolvedValue("resolved-secret");
+    const resolveSpy = (vi.spyOn(awsSecretsManagerProvider, "resolveVersion") as any).mockResolvedValue("resolved-secret");
 
     const secret = await svc.create(companyId, {
       name: `aws-managed-${randomUUID()}`,
@@ -835,9 +835,9 @@ describeEmbeddedPostgres("secretService", () => {
         "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/create-rollback",
       providerVersionRef: "aws-version-1",
     };
-    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue(prepared);
-    const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
-    vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db insert failed"));
+    (vi.spyOn(awsSecretsManagerProvider, "createSecret") as any).mockResolvedValue(prepared);
+    const deleteSpy = (vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive") as any).mockResolvedValue();
+    (vi.spyOn(db, "transaction") as any).mockRejectedValueOnce(new Error("db insert failed"));
 
     await expect(
       svc.create(companyId, {
@@ -885,11 +885,11 @@ describeEmbeddedPostgres("secretService", () => {
         "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/create-cleanup-handle",
       providerVersionRef: "aws-version-1",
     };
-    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue(prepared);
-    vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockRejectedValue(
+    (vi.spyOn(awsSecretsManagerProvider, "createSecret") as any).mockResolvedValue(prepared);
+    (vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive") as any).mockRejectedValue(
       new Error("cleanup failed"),
     );
-    vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db activate failed"));
+    (vi.spyOn(db, "transaction") as any).mockRejectedValueOnce(new Error("db activate failed"));
 
     await expect(
       svc.create(companyId, {
@@ -929,7 +929,7 @@ describeEmbeddedPostgres("secretService", () => {
       displayName: "AWS production",
       config: { region: "us-east-1", namespace: "prod-use1" },
     });
-    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
+    (vi.spyOn(awsSecretsManagerProvider, "createSecret") as any).mockResolvedValue({
       material: {
         scheme: "aws_secrets_manager_v1",
         secretId:
@@ -964,9 +964,9 @@ describeEmbeddedPostgres("secretService", () => {
         "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/rotate-rollback",
       providerVersionRef: "aws-version-2",
     };
-    vi.spyOn(awsSecretsManagerProvider, "createVersion").mockResolvedValue(prepared);
-    const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
-    vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db rotate failed"));
+    (vi.spyOn(awsSecretsManagerProvider, "createVersion") as any).mockResolvedValue(prepared);
+    const deleteSpy = (vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive") as any).mockResolvedValue();
+    (vi.spyOn(db, "transaction") as any).mockRejectedValueOnce(new Error("db rotate failed"));
 
     await expect(svc.rotate(secret.id, { value: "rotated-runtime-secret" })).rejects.toThrow(
       "db rotate failed",
@@ -994,7 +994,7 @@ describeEmbeddedPostgres("secretService", () => {
       displayName: "AWS production",
       config: { region: "us-east-1", namespace: "prod-use1" },
     });
-    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
+    (vi.spyOn(awsSecretsManagerProvider, "createSecret") as any).mockResolvedValue({
       material: {
         scheme: "aws_secrets_manager_v1",
         secretId:
@@ -1029,11 +1029,11 @@ describeEmbeddedPostgres("secretService", () => {
         "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/rotate-cleanup-handle",
       providerVersionRef: "aws-version-2",
     };
-    vi.spyOn(awsSecretsManagerProvider, "createVersion").mockResolvedValue(prepared);
-    vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockRejectedValue(
+    (vi.spyOn(awsSecretsManagerProvider, "createVersion") as any).mockResolvedValue(prepared);
+    (vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive") as any).mockRejectedValue(
       new Error("cleanup failed"),
     );
-    vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db rotate failed"));
+    (vi.spyOn(db, "transaction") as any).mockRejectedValueOnce(new Error("db rotate failed"));
 
     await expect(svc.rotate(secret.id, { value: "rotated-runtime-secret" })).rejects.toThrow(
       "db rotate failed",
@@ -1069,7 +1069,7 @@ describeEmbeddedPostgres("secretService", () => {
       displayName: "AWS secondary",
       config: { region: "us-west-2", namespace: "prod-usw2" },
     });
-    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
+    (vi.spyOn(awsSecretsManagerProvider, "createSecret") as any).mockResolvedValue({
       material: {
         scheme: "aws_secrets_manager_v1",
         secretId:
@@ -1141,7 +1141,7 @@ describeEmbeddedPostgres("secretService", () => {
       value: "runtime-secret",
     });
 
-    const listSpy = vi.spyOn(awsSecretsManagerProvider, "listRemoteSecrets").mockResolvedValue({
+    const listSpy = (vi.spyOn(awsSecretsManagerProvider, "listRemoteSecrets") as any).mockResolvedValue({
       nextToken: "next-page",
       secrets: [
         {
@@ -1209,7 +1209,7 @@ describeEmbeddedPostgres("secretService", () => {
     const rawProviderMessage =
       "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized to perform secretsmanager:ListSecrets";
 
-    vi.spyOn(awsSecretsManagerProvider, "listRemoteSecrets").mockRejectedValueOnce(
+    (vi.spyOn(awsSecretsManagerProvider, "listRemoteSecrets") as any).mockRejectedValueOnce(
       new SecretProviderClientError({
         code: "access_denied",
         provider: "aws_secrets_manager",
@@ -1239,7 +1239,7 @@ describeEmbeddedPostgres("secretService", () => {
   it("previews AWS provider vault discovery from draft config without persisting a provider vault", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const discoverSpy = vi.spyOn(awsSecretsManagerProvider, "discoverProviderConfigs").mockResolvedValue({
+    const discoverSpy = (vi.spyOn(awsSecretsManagerProvider, "discoverProviderConfigs") as any).mockResolvedValue({
       provider: "aws_secrets_manager",
       nextToken: null,
       sampledSecretCount: 1,
@@ -1311,7 +1311,7 @@ describeEmbeddedPostgres("secretService", () => {
     const rawProviderMessage =
       "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized to perform secretsmanager:ListSecrets";
 
-    vi.spyOn(awsSecretsManagerProvider, "discoverProviderConfigs").mockRejectedValueOnce(
+    (vi.spyOn(awsSecretsManagerProvider, "discoverProviderConfigs") as any).mockRejectedValueOnce(
       new SecretProviderClientError({
         code: "access_denied",
         provider: "aws_secrets_manager",
@@ -1424,7 +1424,7 @@ describeEmbeddedPostgres("secretService", () => {
     });
     const rawProviderMessage =
       "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized to perform secretsmanager:DescribeSecret on arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai";
-    vi.spyOn(awsSecretsManagerProvider, "linkExternalSecret").mockRejectedValueOnce(
+    (vi.spyOn(awsSecretsManagerProvider, "linkExternalSecret") as any).mockRejectedValueOnce(
       new SecretProviderClientError({
         code: "access_denied",
         provider: "aws_secrets_manager",
@@ -1470,7 +1470,7 @@ describeEmbeddedPostgres("secretService", () => {
       config: { region: "us-east-1", namespace: "prod-use1" },
     });
 
-    vi.spyOn(awsSecretsManagerProvider, "listRemoteSecrets").mockResolvedValue({
+    (vi.spyOn(awsSecretsManagerProvider, "listRemoteSecrets") as any).mockResolvedValue({
       secrets: [
         {
           externalRef:
@@ -1695,7 +1695,7 @@ describeEmbeddedPostgres("secretService", () => {
       status: "current",
     });
 
-    const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+    const deleteSpy = (vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive") as any).mockResolvedValue();
 
     const removed = await svc.remove(secret.id);
     const persisted = await db
@@ -1760,7 +1760,7 @@ describeEmbeddedPostgres("secretService", () => {
       providerVersionRef: "aws-version-1",
       status: "current",
     });
-    vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockRejectedValueOnce(
+    (vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive") as any).mockRejectedValueOnce(
       new Error("provider delete failed"),
     );
 
@@ -1817,7 +1817,7 @@ describeEmbeddedPostgres("secretService", () => {
       providerVersionRef: "aws-version-1",
       status: "current",
     });
-    const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockRejectedValueOnce(
+    const deleteSpy = (vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive") as any).mockRejectedValueOnce(
       new SecretProviderClientError({
         code: "not_found",
         provider: "aws_secrets_manager",
@@ -1881,7 +1881,7 @@ describeEmbeddedPostgres("secretService", () => {
       status: "current",
     });
     await svc.disableProviderConfig(vault.id);
-    const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+    const deleteSpy = (vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive") as any).mockResolvedValue();
 
     await expect(svc.remove(secret.id)).resolves.toMatchObject({ id: secret.id });
     const persisted = await db

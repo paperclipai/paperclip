@@ -130,6 +130,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
         status: "active",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        variables: [],
         env: {
           SHARED: { type: "plain", value: "routine-overrides" },
           ROUTINE_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
@@ -218,6 +219,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
           status: "paused",
           concurrencyPolicy: "coalesce_if_active",
           catchUpPolicy: "skip_missed",
+          variables: [],
           env: {
             BAD: { type: "secret_ref", secretId: foreignSecret.id, version: "latest" },
           },
@@ -251,6 +253,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
         status: "active",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        variables: [],
         env: {
           DOOMED: { type: "secret_ref", secretId: secret.id, version: "latest" },
         },
@@ -313,6 +316,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
         status: "active",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        variables: [],
         env: {
           ALPHA: { type: "secret_ref", secretId: secretA.id, version: "latest" },
         },
@@ -372,6 +376,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
         status: "active",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        variables: [],
         env: {
           LEGACY: { type: "secret_ref", secretId: secret.id, version: "latest" },
         },
@@ -428,6 +433,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
         status: "active",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        variables: [],
       },
       {},
     );

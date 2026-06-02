@@ -50,7 +50,10 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : 
 describeEmbeddedPostgres("allocateFromLinear (happy path, mocked fetch + secrets)", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-  let fetchSpy: ReturnType<typeof vi.spyOn> | null = null;
+  // `vi.spyOn(globalThis, "fetch")` returns a Mock with the full fetch signature.
+  // `ReturnType<typeof vi.spyOn>` strips the generics and produces a wider Mock
+  // that doesn't accept the specific spy back. Use any for the local handle.
+  let fetchSpy: any = null;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-allocate-linear-");

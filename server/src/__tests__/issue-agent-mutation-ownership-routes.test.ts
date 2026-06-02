@@ -338,7 +338,7 @@ describe("agent issue mutation checkout ownership", () => {
       resolvedAt: new Date("2026-05-13T18:05:00.000Z"),
       createdAt: new Date("2026-05-13T17:55:00.000Z"),
       updatedAt: new Date("2026-05-13T18:05:00.000Z"),
-    });
+    } as never);
     mockHeartbeatService.wakeup.mockReset();
     mockHeartbeatService.wakeup.mockResolvedValue(undefined);
     mockHeartbeatService.reportRunActivity.mockReset();
@@ -835,7 +835,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
       id: recoveryActionId,
       ownerAgentId,
-    });
+    } as never);
 
     const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ status: "todo" });
 
@@ -851,7 +851,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
       id: recoveryActionId,
       ownerAgentId,
-    });
+    } as never);
 
     const res = await request(await createApp(peerActor()))
       .post(`/api/issues/${issueId}/recovery-actions/resolve`)
@@ -877,7 +877,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
       id: recoveryActionId,
       ownerAgentId,
-    });
+    } as never);
 
     const res = await request(await createApp(ownerActor()))
       .post(`/api/issues/${issueId}/recovery-actions/resolve`)
@@ -903,7 +903,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
       id: recoveryActionId,
       ownerAgentId,
-    });
+    } as never);
 
     const res = await request(await createApp(ownerActor()))
       .post(`/api/issues/${issueId}/recovery-actions/resolve`)
