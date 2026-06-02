@@ -13,6 +13,7 @@ import {
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  resolveProjectWorkspaceQuerySource,
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
@@ -540,6 +541,60 @@ describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
     expect(
       prioritizeProjectWorkspaceCandidatesForRun(rows, "workspace-9").map((row) => row.id),
     ).toEqual(["workspace-1", "workspace-2"]);
+  });
+});
+
+describe("resolveProjectWorkspaceQuerySource", () => {
+  it("queries by project id when workspaceProjectId is set", () => {
+    expect(
+      resolveProjectWorkspaceQuerySource({
+        workspaceProjectId: "project-1",
+        preferredProjectWorkspaceId: null,
+        useProjectWorkspace: true,
+      }),
+    ).toEqual({ type: "by_project_id", projectId: "project-1" });
+  });
+
+  it("queries by workspace id when projectId is null but projectWorkspaceId is set (regression: BRA-500)", () => {
+    // Previously this returned { type: "none" }, causing a silent fallback to the agent home
+    // directory and a fatal: not a git repository error on the next git command.
+    expect(
+      resolveProjectWorkspaceQuerySource({
+        workspaceProjectId: null,
+        preferredProjectWorkspaceId: "workspace-1",
+        useProjectWorkspace: true,
+      }),
+    ).toEqual({ type: "by_workspace_id", workspaceId: "workspace-1" });
+  });
+
+  it("prefers by_project_id when both projectId and workspaceId are set", () => {
+    expect(
+      resolveProjectWorkspaceQuerySource({
+        workspaceProjectId: "project-1",
+        preferredProjectWorkspaceId: "workspace-1",
+        useProjectWorkspace: true,
+      }),
+    ).toEqual({ type: "by_project_id", projectId: "project-1" });
+  });
+
+  it("returns none when both are null", () => {
+    expect(
+      resolveProjectWorkspaceQuerySource({
+        workspaceProjectId: null,
+        preferredProjectWorkspaceId: null,
+        useProjectWorkspace: true,
+      }),
+    ).toEqual({ type: "none" });
+  });
+
+  it("returns none when useProjectWorkspace is false even if workspaceId is set", () => {
+    expect(
+      resolveProjectWorkspaceQuerySource({
+        workspaceProjectId: null,
+        preferredProjectWorkspaceId: "workspace-1",
+        useProjectWorkspace: false,
+      }),
+    ).toEqual({ type: "none" });
   });
 });
 
