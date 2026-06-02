@@ -72,6 +72,13 @@ export const AGNB_SUBNAV = {
     { to: "/pending-actions", label: "Pending actions" },
     { to: "/agnb-notifications", label: "Notifications" },
   ],
+  team: [
+    { to: "/human-team", label: "Team" },
+    { to: "/my-queue", label: "My queue" },
+    { to: "/backlog", label: "Backlog" },
+    { to: "/routing-rules", label: "Routing rules" },
+    { to: "/throughput", label: "Throughput" },
+  ],
   inbox: [
     { to: "/rocket-inbox", label: "Threads" },
     { to: "/rocket-approval", label: "Approval queue" },

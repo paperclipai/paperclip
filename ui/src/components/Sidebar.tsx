@@ -23,6 +23,7 @@ import {
   Mails,
   CalendarClock,
   HeartPulse,
+  UsersRound,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -115,6 +116,7 @@ export function Sidebar() {
           <SidebarNavItem to="/linkedin-queue" label="LinkedIn" icon={LinkedinIcon} />
           <SidebarNavItem to="/youtube" label="YouTube" icon={YoutubeIcon} />
           <SidebarNavItem to="/renewals" label="Renewals" icon={CalendarClock} />
+          <SidebarNavItem to="/human-team" label="Team" icon={UsersRound} />
           <SidebarNavItem to="/agnb-health" label="Ops" icon={HeartPulse} />
         </SidebarSection>
 

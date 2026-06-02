@@ -258,5 +258,8 @@ export const queryKeys = {
     entityAudit: ["agnb", "entity-audit"] as const,
     pending: ["agnb", "pending-actions"] as const,
     notifications: ["agnb", "notifications"] as const,
+    team: ["agnb", "team"] as const,
+    work: (q: string) => ["agnb", "work", q] as const,
+    rules: ["agnb", "team-rules"] as const,
   },
 };

@@ -115,6 +115,11 @@ import { ApiAudit } from "./pages/ApiAudit";
 import { EntityAudit } from "./pages/EntityAudit";
 import { PendingActions } from "./pages/PendingActions";
 import { AgnbNotifications } from "./pages/AgnbNotifications";
+import { HumanTeam } from "./pages/HumanTeam";
+import { MyQueue } from "./pages/MyQueue";
+import { Backlog } from "./pages/Backlog";
+import { RoutingRules } from "./pages/RoutingRules";
+import { Throughput } from "./pages/Throughput";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
@@ -215,6 +220,11 @@ function boardRoutes() {
       <Route path="entity-audit" element={<EntityAudit />} />
       <Route path="pending-actions" element={<PendingActions />} />
       <Route path="agnb-notifications" element={<AgnbNotifications />} />
+      <Route path="human-team" element={<HumanTeam />} />
+      <Route path="my-queue" element={<MyQueue />} />
+      <Route path="backlog" element={<Backlog />} />
+      <Route path="routing-rules" element={<RoutingRules />} />
+      <Route path="throughput" element={<Throughput />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />
@@ -501,6 +511,11 @@ export function App() {
           <Route path="entity-audit" element={<UnprefixedBoardRedirect />} />
           <Route path="pending-actions" element={<UnprefixedBoardRedirect />} />
           <Route path="agnb-notifications" element={<UnprefixedBoardRedirect />} />
+          <Route path="human-team" element={<UnprefixedBoardRedirect />} />
+          <Route path="my-queue" element={<UnprefixedBoardRedirect />} />
+          <Route path="backlog" element={<UnprefixedBoardRedirect />} />
+          <Route path="routing-rules" element={<UnprefixedBoardRedirect />} />
+          <Route path="throughput" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
           <Route path="agents" element={<UnprefixedBoardRedirect />} />
