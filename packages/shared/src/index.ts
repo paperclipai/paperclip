@@ -667,6 +667,8 @@ export type {
   PoolState,
   AccountPoolListResponse,
   AddPoolAccountRequest,
+  OauthStartResponse,
+  OauthCompleteRequest,
 } from "./types/index.js";
 export { COMPANY_SEARCH_SCOPES, POOL_ACCOUNT_TYPE } from "./types/index.js";
 export {

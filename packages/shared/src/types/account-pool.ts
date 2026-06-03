@@ -36,6 +36,10 @@ export interface AccountWithHealth extends PoolAccount {
   capped: boolean;
   /** set when the health fetch failed */
   error?: string;
+  /** account email, when known (OAuth-added accounts; best-effort for default) */
+  email?: string;
+  /** subscription tier label, e.g. "Claude Team" / "Claude Max" */
+  subscriptionType?: string;
 }
 
 /** current load-balancer state for a company (one row in account_pool_state) */
@@ -60,4 +64,24 @@ export interface AddPoolAccountRequest {
   name: string;
   /** raw .credentials.json blob content */
   credentialsJson: string;
+}
+
+/** POST /api/account-pool/oauth/start response — begin "Login with Claude" */
+export interface OauthStartResponse {
+  /** open this in any browser, log in, copy the shown CODE#STATE back */
+  authorizeUrl: string;
+  /** echoed back on complete to bind the request (CSRF) */
+  state: string;
+  /** PKCE verifier held by the client and sent back on complete */
+  codeVerifier: string;
+}
+
+/** POST /api/account-pool/oauth/complete request — finish "Login with Claude" */
+export interface OauthCompleteRequest {
+  /** the authorization code (the part before '#' in the pasted CODE#STATE) */
+  code: string;
+  /** the state (the part after '#'), must match the start response */
+  state: string;
+  /** the PKCE verifier returned by start */
+  codeVerifier: string;
 }

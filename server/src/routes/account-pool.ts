@@ -7,6 +7,8 @@ import {
   type AccountPoolListResponse,
   type AccountWithHealth,
   type AddPoolAccountRequest,
+  type OauthCompleteRequest,
+  type OauthStartResponse,
   type PoolAccount,
   type PoolState,
   type RotationReason,
@@ -20,6 +22,13 @@ import {
   readPoolAccountHealth,
 } from "../services/account-pool.js";
 import { accountPoolBalancer } from "../services/account-pool-balancer.js";
+import {
+  buildAuthorizeUrl,
+  buildCredentialsBlob,
+  exchangeCode,
+  generatePkce,
+  parsePastedCode,
+} from "../services/claude-oauth.js";
 
 /**
  * Account Pool & Rotation — Slice 4 API.
@@ -52,6 +61,12 @@ export function accountPoolRoutes(db: Db) {
     if (!metadata || typeof metadata !== "object") return null;
     const value = (metadata as Record<string, unknown>).poolType;
     return typeof value === "string" ? value : null;
+  }
+
+  function metaString(metadata: unknown, key: string): string | undefined {
+    if (!metadata || typeof metadata !== "object") return undefined;
+    const value = (metadata as Record<string, unknown>)[key];
+    return typeof value === "string" && value.length > 0 ? value : undefined;
   }
 
   async function listPoolSecrets(companyId: string) {
@@ -113,6 +128,8 @@ export function accountPoolRoutes(db: Db) {
       resetsAt: defaultSnapshot?.resetsAt ?? null,
       capped: defaultSnapshot?.capped ?? false,
       error: defaultSnapshot?.error ?? undefined,
+      email: defaultSnapshot?.email ?? undefined,
+      subscriptionType: defaultSnapshot?.subscriptionType ?? undefined,
     };
 
     const pooled: AccountWithHealth[] = secrets.map((secret) => {
@@ -126,6 +143,8 @@ export function accountPoolRoutes(db: Db) {
         // surface the most-recent probe error (e.g. 429) without hiding the
         // last-good metrics — the snapshot preserves both.
         error: snapshot?.error ?? undefined,
+        email: metaString(secret.providerMetadata, "email"),
+        subscriptionType: metaString(secret.providerMetadata, "subscriptionType"),
       };
     });
 
@@ -151,6 +170,85 @@ export function accountPoolRoutes(db: Db) {
     const companyId = requireCompanyId(req);
     const state = await readState(companyId);
     res.json(state);
+  });
+
+  // POST /api/account-pool/oauth/start — begin "Login with Claude".
+  // Returns an authorize URL + the PKCE verifier (the client holds it and sends
+  // it back on complete — no server-side challenge storage / migration needed).
+  router.post("/account-pool/oauth/start", async (req, res) => {
+    requireCompanyId(req);
+    const pkce = generatePkce();
+    const response: OauthStartResponse = {
+      authorizeUrl: buildAuthorizeUrl(pkce.codeChallenge, pkce.state),
+      state: pkce.state,
+      codeVerifier: pkce.codeVerifier,
+    };
+    res.json(response);
+  });
+
+  // POST /api/account-pool/oauth/complete — exchange the pasted code for tokens,
+  // capture the account email, and store the account as a pool secret.
+  router.post("/account-pool/oauth/complete", async (req, res) => {
+    const companyId = requireCompanyId(req);
+    const body = req.body as Partial<OauthCompleteRequest>;
+    const rawCode = typeof body.code === "string" ? body.code.trim() : "";
+    const expectedState = typeof body.state === "string" ? body.state.trim() : "";
+    const codeVerifier = typeof body.codeVerifier === "string" ? body.codeVerifier.trim() : "";
+    if (!rawCode || !codeVerifier) {
+      res.status(400).json({ error: "code and codeVerifier are required" });
+      return;
+    }
+    // The pasted value may be "CODE#STATE"; split and validate state if present.
+    const { code, state: pastedState } = parsePastedCode(rawCode);
+    if (pastedState && expectedState && pastedState !== expectedState) {
+      res.status(400).json({ error: "state mismatch — restart the login and try again" });
+      return;
+    }
+
+    let token;
+    try {
+      token = await exchangeCode(code, codeVerifier);
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : "token exchange failed" });
+      return;
+    }
+
+    const name = token.email ?? `Claude account ${new Date().toISOString().slice(0, 10)}`;
+    if (await svc.getByName(companyId, name).catch(() => null)) {
+      res.status(409).json({ error: `Account "${name}" is already in the pool` });
+      return;
+    }
+
+    const created = await svc.create(
+      companyId,
+      {
+        name,
+        provider: defaultProvider,
+        managedMode: "paperclip_managed",
+        value: buildCredentialsBlob(token),
+        description: "Claude account added via Login with Claude",
+        providerMetadata: {
+          poolType: POOL_ACCOUNT_TYPE,
+          ...(token.email ? { email: token.email } : {}),
+          ...(token.organizationName ? { organizationName: token.organizationName } : {}),
+        },
+      },
+      { userId: req.actor.userId ?? "board", agentId: null },
+    );
+
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "account_pool.account_added",
+      entityType: "secret",
+      entityId: created.id,
+      details: { name: created.name, via: "oauth", email: token.email },
+    });
+
+    // Probe immediately so the new card shows health without waiting for a tick.
+    await accountPoolBalancer(db).probeCompany(companyId).catch(() => undefined);
+    res.status(201).json(toPoolAccount(created));
   });
 
   // POST /api/account-pool — add an account to the pool (stored as a marked secret)

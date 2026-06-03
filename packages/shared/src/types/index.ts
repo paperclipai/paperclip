@@ -381,6 +381,8 @@ export type {
   PoolState,
   AccountPoolListResponse,
   AddPoolAccountRequest,
+  OauthStartResponse,
+  OauthCompleteRequest,
 } from "./account-pool.js";
 export type {
   CompanyPortabilityInclude,

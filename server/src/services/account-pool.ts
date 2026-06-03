@@ -3,6 +3,8 @@ import type { Db } from "@paperclipai/db";
 import { accountPoolState, companySecrets } from "@paperclipai/db";
 import { POOL_ACCOUNT_TYPE } from "@paperclipai/shared";
 import type { PoolAccount, PoolState, QuotaWindow, RotationReason } from "@paperclipai/shared";
+import { secretService } from "./secrets.js";
+import { refreshToken as oauthRefreshToken } from "./claude-oauth.js";
 
 /**
  * Data-access helpers for the Account Pool & Rotation feature.
@@ -159,6 +161,10 @@ export interface PoolAccountHealthSnapshot {
   error: string | null;
   /** iso timestamp of the most recent failed probe */
   erroredAt: string | null;
+  /** account email when known (used by the default-account snapshot) */
+  email?: string | null;
+  /** subscription tier label when known */
+  subscriptionType?: string | null;
 }
 
 /** the raw result of probing one account, as produced by the Balancer */
@@ -171,10 +177,13 @@ export interface PoolAccountProbe {
   error: string | null;
   /** iso timestamp of this probe attempt */
   at: string;
+  /** identity (default-account probe): preserved on error like the metrics */
+  email?: string | null;
+  subscriptionType?: string | null;
 }
 
 function defaultSnapshot(): PoolAccountHealthSnapshot {
-  return { usedPercent: null, resetsAt: null, capped: false, windows: [], checkedAt: "", error: null, erroredAt: null };
+  return { usedPercent: null, resetsAt: null, capped: false, windows: [], checkedAt: "", error: null, erroredAt: null, email: null, subscriptionType: null };
 }
 
 /**
@@ -244,6 +253,8 @@ export function readPoolAccountHealth(providerMetadata: unknown): PoolAccountHea
     checkedAt: typeof h.checkedAt === "string" ? h.checkedAt : "",
     error: typeof h.error === "string" ? h.error : null,
     erroredAt: typeof h.erroredAt === "string" ? h.erroredAt : null,
+    email: typeof h.email === "string" ? h.email : null,
+    subscriptionType: typeof h.subscriptionType === "string" ? h.subscriptionType : null,
   };
 }
 
@@ -267,6 +278,10 @@ export async function saveDefaultAccountHealth(
     .then((rows) => rows[0] ?? null);
   const prev = readPoolAccountHealth(existing?.defaultHealth) ?? defaultSnapshot();
 
+  // Identity (email/tier) is preserved across probes — keep the last-known value
+  // when the current probe didn't resolve it.
+  const email = probe.email ?? prev.email ?? null;
+  const subscriptionType = probe.subscriptionType ?? prev.subscriptionType ?? null;
   const next: PoolAccountHealthSnapshot = probe.error
     ? {
         usedPercent: prev.usedPercent,
@@ -276,6 +291,8 @@ export async function saveDefaultAccountHealth(
         checkedAt: prev.checkedAt,
         error: probe.error,
         erroredAt: probe.at,
+        email,
+        subscriptionType,
       }
     : {
         usedPercent: probe.usedPercent,
@@ -285,6 +302,8 @@ export async function saveDefaultAccountHealth(
         checkedAt: probe.at,
         error: null,
         erroredAt: null,
+        email,
+        subscriptionType,
       };
 
   const now = new Date();
@@ -308,6 +327,69 @@ export async function getDefaultAccountHealth(
     .where(eq(accountPoolState.companyId, companyId))
     .then((rows) => rows[0] ?? null);
   return readPoolAccountHealth(row?.defaultHealth);
+}
+
+/** refresh when the access token has < this long left (or is already expired) */
+const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
+
+export interface FreshPoolToken {
+  /** a non-expired access token, or null when unavailable */
+  accessToken: string | null;
+  /** the current (possibly just-refreshed) full credentials blob */
+  credentialsJson: string;
+  refreshed: boolean;
+  error: string | null;
+}
+
+/**
+ * Return a non-expired access token for a pooled OAuth account, refreshing via
+ * the stored refresh_token when the access token is near/over expiry (Claude
+ * OAuth tokens last ~8h). On refresh the secret value is rotated (new version)
+ * so the fresh token persists. Best-effort: any failure falls back to the
+ * existing token/blob so a transient refresh error never breaks a run.
+ */
+export async function ensureFreshPoolToken(
+  db: Db,
+  companyId: string,
+  accountId: string,
+): Promise<FreshPoolToken> {
+  const svc = secretService(db);
+  const blob = await svc.resolveSecretValue(companyId, accountId, "latest");
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(blob) as Record<string, unknown>;
+  } catch {
+    return { accessToken: null, credentialsJson: blob, refreshed: false, error: "invalid credentials json" };
+  }
+  const oauth = (parsed.claudeAiOauth ?? {}) as Record<string, unknown>;
+  const accessToken = typeof oauth.accessToken === "string" ? oauth.accessToken : null;
+  const refreshTok = typeof oauth.refreshToken === "string" ? oauth.refreshToken : null;
+  const expiresAt = typeof oauth.expiresAt === "number" ? oauth.expiresAt : null;
+
+  const needsRefresh = !!refreshTok && expiresAt != null && expiresAt - Date.now() < TOKEN_REFRESH_BUFFER_MS;
+  if (!needsRefresh) {
+    return { accessToken, credentialsJson: blob, refreshed: false, error: null };
+  }
+
+  try {
+    const fresh = await oauthRefreshToken(refreshTok);
+    const nextBlob = JSON.stringify({
+      ...parsed,
+      claudeAiOauth: {
+        ...oauth,
+        accessToken: fresh.accessToken,
+        // Anthropic may rotate the refresh token — persist the new one.
+        refreshToken: fresh.refreshToken ?? refreshTok,
+        expiresAt: fresh.expiresAt,
+        scopes: fresh.scopes.length > 0 ? fresh.scopes : oauth.scopes,
+      },
+    });
+    await svc.rotate(accountId, { value: nextBlob });
+    return { accessToken: fresh.accessToken, credentialsJson: nextBlob, refreshed: true, error: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { accessToken, credentialsJson: blob, refreshed: false, error: message };
+  }
 }
 
 /** Read the global STOP switch (D3) for a company. Defaults to not-stopped. */

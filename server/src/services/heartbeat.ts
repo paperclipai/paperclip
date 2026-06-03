@@ -71,6 +71,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
+import { ensureFreshPoolToken } from "./account-pool.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
@@ -352,8 +353,7 @@ type RuntimeConfigSecretResolver = Pick<
 type PoolAccountSeed = { accountId: string; credentialsJson: string };
 
 async function resolveActivePoolAccountSeed(input: {
-  db: Pick<Db, "select">;
-  secretsSvc: Pick<ReturnType<typeof secretService>, "resolveSecretValue">;
+  db: Db;
   companyId: string;
 }): Promise<PoolAccountSeed | null> {
   const stateRow = await input.db
@@ -384,11 +384,10 @@ async function resolveActivePoolAccountSeed(input: {
     return null;
   }
 
-  const credentialsJson = await input.secretsSvc.resolveSecretValue(
-    input.companyId,
-    activeAccountId,
-    "latest",
-  );
+  // Refresh-before-seed: rotate the token if it's near expiry so the agent run
+  // never starts with an expired OAuth access token. Returns the current blob.
+  const fresh = await ensureFreshPoolToken(input.db, input.companyId, activeAccountId);
+  const credentialsJson = fresh.credentialsJson;
   if (typeof credentialsJson !== "string" || credentialsJson.trim().length === 0) {
     return null;
   }
@@ -7355,7 +7354,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       try {
         const poolAccountSeed = await resolveActivePoolAccountSeed({
           db,
-          secretsSvc,
           companyId: agent.companyId,
         });
         if (poolAccountSeed) {

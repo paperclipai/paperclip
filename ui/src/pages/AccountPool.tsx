@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   CheckCircle2,
+  ExternalLink,
   Layers,
   Loader2,
   Plus,
@@ -138,8 +139,14 @@ function AccountCard(props: {
             {account.capped ? (
               <Badge variant="destructive">Capped</Badge>
             ) : null}
+            {account.subscriptionType ? (
+              <Badge variant="outline">{account.subscriptionType}</Badge>
+            ) : null}
           </div>
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">{account.key}</p>
+          {/* email when known (the account identity), else the key/source line */}
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">
+            {account.email ?? account.key}
+          </p>
         </div>
         {removable ? (
           <Button
@@ -209,6 +216,10 @@ export function AccountPool() {
   const [addCredentials, setAddCredentials] = useState("");
   const [addError, setAddError] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<AccountWithHealth | null>(null);
+  // "Login with Claude" OAuth flow state
+  const [oauth, setOauth] = useState<{ authorizeUrl: string; state: string; codeVerifier: string } | null>(null);
+  const [pastedCode, setPastedCode] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Account Pool" }]);
@@ -242,6 +253,39 @@ export function AccountPool() {
     },
     onError: (error) => {
       setAddError(error instanceof ApiError ? error.message : "Failed to add account");
+    },
+  });
+
+  const oauthStartMutation = useMutation({
+    mutationFn: () => accountPoolApi.oauthStart(selectedCompanyId!),
+    onSuccess: (data) => {
+      setOauth(data);
+      setAddError(null);
+      // open the authorize URL in a new tab for convenience
+      window.open(data.authorizeUrl, "_blank", "noopener,noreferrer");
+    },
+    onError: (error) => {
+      setAddError(error instanceof ApiError ? error.message : "Failed to start login");
+    },
+  });
+
+  const oauthCompleteMutation = useMutation({
+    mutationFn: () =>
+      accountPoolApi.oauthComplete(selectedCompanyId!, {
+        code: pastedCode.trim(),
+        state: oauth?.state ?? "",
+        codeVerifier: oauth?.codeVerifier ?? "",
+      }),
+    onSuccess: (account) => {
+      setAddOpen(false);
+      setOauth(null);
+      setPastedCode("");
+      setAddError(null);
+      invalidatePool();
+      pushToast({ title: `Added ${account.name}`, tone: "success" });
+    },
+    onError: (error) => {
+      setAddError(error instanceof ApiError ? error.message : "Failed to complete login");
     },
   });
 
@@ -322,6 +366,9 @@ export function AccountPool() {
     setAddName("");
     setAddCredentials("");
     setAddError(null);
+    setOauth(null);
+    setPastedCode("");
+    setShowAdvanced(false);
     setAddOpen(true);
   }
 
@@ -445,37 +492,91 @@ export function AccountPool() {
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Add account to pool</DialogTitle>
+            <DialogTitle>Add a Claude account</DialogTitle>
             <DialogDescription>
-              Paste the raw contents of the account&apos;s <code>.credentials.json</code> file. It is
-              stored encrypted in the company secret store.
+              Log in with Claude in any browser, then paste the code it shows you back here. The
+              account is stored encrypted in the company secret store.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex flex-col gap-3">
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-foreground" htmlFor="pool-account-name">
-                Name
-              </label>
-              <Input
-                id="pool-account-name"
-                value={addName}
-                onChange={(event) => setAddName(event.target.value)}
-                placeholder="Claude Max #1"
-              />
+
+          <div className="flex flex-col gap-4">
+            {/* Step 1: get the login link */}
+            {!oauth ? (
+              <Button
+                onClick={() => oauthStartMutation.mutate()}
+                disabled={!selectedCompanyId || oauthStartMutation.isPending}
+              >
+                {oauthStartMutation.isPending ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <ExternalLink className="mr-1.5 h-4 w-4" />
+                )}
+                Login with Claude
+              </Button>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <p className="text-xs text-muted-foreground">
+                  A Claude login tab was opened. Didn&apos;t open?{" "}
+                  <a
+                    href={oauth.authorizeUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary underline"
+                  >
+                    Open the login link
+                  </a>
+                  . After approving, copy the code Claude shows and paste it below.
+                </p>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-foreground" htmlFor="pool-oauth-code">
+                    Authorization code
+                  </label>
+                  <Input
+                    id="pool-oauth-code"
+                    value={pastedCode}
+                    onChange={(event) => setPastedCode(event.target.value)}
+                    placeholder="paste the CODE#STATE shown by Claude"
+                    className="font-mono text-xs"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Advanced fallback: paste raw .credentials.json */}
+            <div className="border-t border-border/60 pt-3">
+              <button
+                type="button"
+                className="text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => setShowAdvanced((v) => !v)}
+              >
+                {showAdvanced ? "▾" : "▸"} Advanced: paste .credentials.json
+              </button>
+              {showAdvanced ? (
+                <div className="mt-2 flex flex-col gap-3">
+                  <Input
+                    value={addName}
+                    onChange={(event) => setAddName(event.target.value)}
+                    placeholder="Account name (e.g. Claude Max #1)"
+                  />
+                  <Textarea
+                    value={addCredentials}
+                    onChange={(event) => setAddCredentials(event.target.value)}
+                    placeholder='{"claudeAiOauth":{ ... }}'
+                    rows={6}
+                    className="font-mono text-xs"
+                  />
+                  <Button variant="outline" onClick={submitAdd} disabled={addMutation.isPending}>
+                    {addMutation.isPending ? (
+                      <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="mr-1.5 h-4 w-4" />
+                    )}
+                    Add from JSON
+                  </Button>
+                </div>
+              ) : null}
             </div>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-foreground" htmlFor="pool-account-creds">
-                .credentials.json
-              </label>
-              <Textarea
-                id="pool-account-creds"
-                value={addCredentials}
-                onChange={(event) => setAddCredentials(event.target.value)}
-                placeholder='{"claudeAiOauth":{ ... }}'
-                rows={8}
-                className="font-mono text-xs"
-              />
-            </div>
+
             {addError ? (
               <p className="flex items-center gap-1 text-xs text-destructive">
                 <AlertCircle className="h-3.5 w-3.5 shrink-0" />
@@ -483,18 +584,28 @@ export function AccountPool() {
               </p>
             ) : null}
           </div>
+
           <DialogFooter>
-            <Button variant="outline" onClick={() => setAddOpen(false)} disabled={addMutation.isPending}>
+            <Button
+              variant="outline"
+              onClick={() => setAddOpen(false)}
+              disabled={oauthCompleteMutation.isPending}
+            >
               Cancel
             </Button>
-            <Button onClick={submitAdd} disabled={addMutation.isPending}>
-              {addMutation.isPending ? (
-                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-              ) : (
-                <CheckCircle2 className="mr-1.5 h-4 w-4" />
-              )}
-              Add account
-            </Button>
+            {oauth ? (
+              <Button
+                onClick={() => oauthCompleteMutation.mutate()}
+                disabled={!pastedCode.trim() || oauthCompleteMutation.isPending}
+              >
+                {oauthCompleteMutation.isPending ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="mr-1.5 h-4 w-4" />
+                )}
+                Finish adding account
+              </Button>
+            ) : null}
           </DialogFooter>
         </DialogContent>
       </Dialog>

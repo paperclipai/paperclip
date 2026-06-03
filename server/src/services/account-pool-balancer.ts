@@ -1,14 +1,14 @@
 import { eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, companies } from "@paperclipai/db";
-import { fetchClaudeQuota, readClaudeToken } from "@paperclipai/adapter-claude-local/server";
+import { fetchClaudeQuota, readClaudeToken, readClaudeAuthStatus } from "@paperclipai/adapter-claude-local/server";
 import type { AccountWithHealth, PoolAccount, QuotaWindow } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
-import { secretService } from "./secrets.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import {
   DEFAULT_ACCOUNT_ID,
+  ensureFreshPoolToken,
   getPoolState,
   getStopSwitch,
   listPoolAccounts,
@@ -103,7 +103,6 @@ function toAccountWithHealth(account: PoolAccount, windows: QuotaWindow[]): Acco
 }
 
 export function accountPoolBalancer(db: Db, deps: BalancerDeps = {}) {
-  const secrets = secretService(db);
 
   /**
    * Fetch live health for one pool account. The account's encrypted secret is
@@ -112,12 +111,13 @@ export function accountPoolBalancer(db: Db, deps: BalancerDeps = {}) {
    */
   async function fetchAccountHealth(companyId: string, account: PoolAccount): Promise<AccountWithHealth> {
     try {
-      const blob = await secrets.resolveSecretValue(companyId, account.id, "latest");
-      const token = extractAccessToken(blob);
-      if (!token) {
-        return { ...account, windows: [], usedPercent: null, resetsAt: null, capped: false, error: "no oauth accessToken in credentials" };
+      // Refresh-on-use: returns a non-expired access token (rotates the stored
+      // secret when the old one is near expiry).
+      const { accessToken, error: refreshError } = await ensureFreshPoolToken(db, companyId, account.id);
+      if (!accessToken) {
+        return { ...account, windows: [], usedPercent: null, resetsAt: null, capped: false, error: refreshError ?? "no oauth accessToken in credentials" };
       }
-      const windows = await fetchClaudeQuota(token);
+      const windows = await fetchClaudeQuota(accessToken);
       return toAccountWithHealth(account, windows);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -158,6 +158,10 @@ export function accountPoolBalancer(db: Db, deps: BalancerDeps = {}) {
    * shape (does not throw, does not block rotation).
    */
   async function fetchDefaultAccountHealth(): Promise<AccountWithHealth> {
+    // subscriptionType is reliably available from `claude auth status` even when
+    // quota polling fails; email is not reliably obtainable for the local login.
+    const status = await readClaudeAuthStatus().catch(() => null);
+    const subscriptionType = status?.subscriptionType ?? undefined;
     const base: PoolAccount = {
       id: DEFAULT_ACCOUNT_ID,
       name: "Default — this machine",
@@ -167,13 +171,13 @@ export function accountPoolBalancer(db: Db, deps: BalancerDeps = {}) {
     try {
       const token = await readClaudeToken();
       if (!token) {
-        return { ...base, windows: [], usedPercent: null, resetsAt: null, capped: false, error: "no local Claude login found on this machine" };
+        return { ...base, windows: [], usedPercent: null, resetsAt: null, capped: false, subscriptionType, error: "no local Claude login found on this machine" };
       }
       const windows = await fetchClaudeQuota(token);
-      return toAccountWithHealth(base, windows);
+      return { ...toAccountWithHealth(base, windows), subscriptionType };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return { ...base, windows: [], usedPercent: null, resetsAt: null, capped: false, error: message };
+      return { ...base, windows: [], usedPercent: null, resetsAt: null, capped: false, subscriptionType, error: message };
     }
   }
 
@@ -187,6 +191,8 @@ export function accountPoolBalancer(db: Db, deps: BalancerDeps = {}) {
       windows: health.windows,
       error: health.error ?? null,
       at: new Date().toISOString(),
+      email: health.email ?? null,
+      subscriptionType: health.subscriptionType ?? null,
     }).catch((err) => logger.warn({ err, companyId }, "failed to persist default account health"));
     return health;
   }
@@ -366,19 +372,4 @@ export function accountPoolBalancer(db: Db, deps: BalancerDeps = {}) {
   }
 
   return { tick, runForCompany, fetchAccountHealth, probeCompany };
-}
-
-/** Pull the OAuth accessToken out of a stored `.credentials.json` blob. */
-function extractAccessToken(blob: string): string | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(blob);
-  } catch {
-    return null;
-  }
-  if (typeof parsed !== "object" || parsed === null) return null;
-  const oauth = (parsed as Record<string, unknown>).claudeAiOauth;
-  if (typeof oauth !== "object" || oauth === null) return null;
-  const token = (oauth as Record<string, unknown>).accessToken;
-  return typeof token === "string" && token.length > 0 ? token : null;
 }
