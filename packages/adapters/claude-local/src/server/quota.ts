@@ -110,6 +110,10 @@ interface ClaudeAuthStatus {
   loggedIn: boolean;
   authMethod: string | null;
   subscriptionType: string | null;
+  /** the logged-in account email (`claude auth status` reports this) */
+  email: string | null;
+  /** organization display name, when present */
+  orgName: string | null;
 }
 
 export async function readClaudeAuthStatus(): Promise<ClaudeAuthStatus | null> {
@@ -124,6 +128,8 @@ export async function readClaudeAuthStatus(): Promise<ClaudeAuthStatus | null> {
       loggedIn: parsed.loggedIn === true,
       authMethod: typeof parsed.authMethod === "string" ? parsed.authMethod : null,
       subscriptionType: typeof parsed.subscriptionType === "string" ? parsed.subscriptionType : null,
+      email: typeof parsed.email === "string" ? parsed.email : null,
+      orgName: typeof parsed.orgName === "string" ? parsed.orgName : null,
     };
   } catch {
     return null;

@@ -158,10 +158,11 @@ export function accountPoolBalancer(db: Db, deps: BalancerDeps = {}) {
    * shape (does not throw, does not block rotation).
    */
   async function fetchDefaultAccountHealth(): Promise<AccountWithHealth> {
-    // subscriptionType is reliably available from `claude auth status` even when
-    // quota polling fails; email is not reliably obtainable for the local login.
+    // `claude auth status` reports email + subscriptionType for the local login,
+    // even when quota polling itself fails.
     const status = await readClaudeAuthStatus().catch(() => null);
     const subscriptionType = status?.subscriptionType ?? undefined;
+    const email = status?.email ?? undefined;
     const base: PoolAccount = {
       id: DEFAULT_ACCOUNT_ID,
       name: "Default — this machine",
@@ -171,13 +172,13 @@ export function accountPoolBalancer(db: Db, deps: BalancerDeps = {}) {
     try {
       const token = await readClaudeToken();
       if (!token) {
-        return { ...base, windows: [], usedPercent: null, resetsAt: null, capped: false, subscriptionType, error: "no local Claude login found on this machine" };
+        return { ...base, windows: [], usedPercent: null, resetsAt: null, capped: false, subscriptionType, email, error: "no local Claude login found on this machine" };
       }
       const windows = await fetchClaudeQuota(token);
-      return { ...toAccountWithHealth(base, windows), subscriptionType };
+      return { ...toAccountWithHealth(base, windows), subscriptionType, email };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return { ...base, windows: [], usedPercent: null, resetsAt: null, capped: false, subscriptionType, error: message };
+      return { ...base, windows: [], usedPercent: null, resetsAt: null, capped: false, subscriptionType, email, error: message };
     }
   }
 
