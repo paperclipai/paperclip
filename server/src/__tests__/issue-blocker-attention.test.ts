@@ -282,6 +282,40 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("ignores cancelled child-only edges when classifying blocker attention", async () => {
+    const { companyId, agentId } = await createCompany("PBT");
+    const parentId = await insertIssue({ companyId, identifier: "PBT-1", title: "Parent", status: "blocked" });
+    const activeBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBT-2",
+      title: "Running blocker",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    await insertIssue({
+      companyId,
+      identifier: "PBT-3",
+      title: "Cancelled child",
+      status: "cancelled",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: activeBlockerId, blockedIssueId: parentId });
+    await activeRun({ companyId, agentId, issueId: activeBlockerId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBT-2",
+    });
+  });
+
   it("does not let another company's active run cover the blocker", async () => {
     const { companyId, agentId } = await createCompany("PBS");
     const other = await createCompany("PBT");
