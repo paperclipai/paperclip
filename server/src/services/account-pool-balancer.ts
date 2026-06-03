@@ -123,6 +123,36 @@ export function accountPoolBalancer(db: Db, deps: BalancerDeps = {}) {
     }
   }
 
+  /**
+   * Probe every given account's live health and persist a snapshot for each.
+   * Snapshots let the API serve health cheaply (no live Anthropic call per poll);
+   * a failed probe (e.g. 429) preserves the last-good metrics — see
+   * savePoolAccountHealth. Returns the freshly-probed health.
+   */
+  async function probeAndPersist(companyId: string, accounts: PoolAccount[]): Promise<AccountWithHealth[]> {
+    const health = await Promise.all(accounts.map((a) => fetchAccountHealth(companyId, a)));
+    const at = new Date().toISOString();
+    await Promise.allSettled(
+      health.map((h) =>
+        savePoolAccountHealth(db, h.id, {
+          usedPercent: h.usedPercent,
+          resetsAt: h.resetsAt,
+          capped: h.capped,
+          windows: h.windows,
+          error: h.error ?? null,
+          at,
+        }),
+      ),
+    );
+    return health;
+  }
+
+  /** On-demand probe of all of a company's pool accounts (the UI "Reload" button). */
+  async function probeCompany(companyId: string): Promise<AccountWithHealth[]> {
+    const accounts = await listPoolAccounts(db, companyId);
+    return probeAndPersist(companyId, accounts);
+  }
+
   /** Wake every agent in the company so they re-seed on the new account. */
   async function wakeAllAgents(companyId: string, fromAccountId: string | null, toAccountId: string) {
     const wakeup = deps.heartbeat?.wakeup;
@@ -197,23 +227,7 @@ export function accountPoolBalancer(db: Db, deps: BalancerDeps = {}) {
       return { companyId, activeAccountId: null, rotated: false, stopped: false, note: "no_pool_accounts" };
     }
 
-    const health = await Promise.all(poolAccounts.map((a) => fetchAccountHealth(companyId, a)));
-
-    // Persist last-known health per account so the API/UI can show every account's
-    // % (not just the active one) without re-probing Anthropic on each poll.
-    const checkedAt = new Date().toISOString();
-    await Promise.allSettled(
-      health.map((h) =>
-        savePoolAccountHealth(db, h.id, {
-          usedPercent: h.usedPercent,
-          resetsAt: h.resetsAt,
-          capped: h.capped,
-          error: h.error ?? null,
-          checkedAt,
-        }),
-      ),
-    );
-
+    const health = await probeAndPersist(companyId, poolAccounts);
     const best = pickBestAccount(health);
     const state = await getPoolState(db, companyId);
     const currentId = state?.activeAccountId ?? null;
@@ -285,7 +299,7 @@ export function accountPoolBalancer(db: Db, deps: BalancerDeps = {}) {
     };
   }
 
-  return { tick, runForCompany, fetchAccountHealth };
+  return { tick, runForCompany, fetchAccountHealth, probeCompany };
 }
 
 /** Pull the OAuth accessToken out of a stored `.credentials.json` blob. */

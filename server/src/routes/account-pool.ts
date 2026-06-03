@@ -9,15 +9,13 @@ import {
   type AddPoolAccountRequest,
   type PoolAccount,
   type PoolState,
-  type ProviderQuotaResult,
-  type QuotaWindow,
   type RotationReason,
 } from "@paperclipai/shared";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
-import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { readPoolAccountHealth } from "../services/account-pool.js";
+import { accountPoolBalancer } from "../services/account-pool-balancer.js";
 
 /**
  * Account Pool & Rotation — Slice 4 API.
@@ -66,29 +64,6 @@ export function accountPoolRoutes(db: Db) {
     return { id: secret.id, name: secret.name, key: secret.key, status: secret.status };
   }
 
-  /** collapse a provider's quota windows into the highest usedPercent + earliest reset of a capped window */
-  function summarizeWindows(windows: QuotaWindow[]): {
-    usedPercent: number | null;
-    resetsAt: string | null;
-    capped: boolean;
-  } {
-    let usedPercent: number | null = null;
-    let resetsAt: string | null = null;
-    let capped = false;
-    for (const window of windows) {
-      if (window.usedPercent != null) {
-        usedPercent = usedPercent == null ? window.usedPercent : Math.max(usedPercent, window.usedPercent);
-        if (window.usedPercent >= 100) {
-          capped = true;
-          if (window.resetsAt && (!resetsAt || window.resetsAt < resetsAt)) {
-            resetsAt = window.resetsAt;
-          }
-        }
-      }
-    }
-    return { usedPercent, resetsAt, capped };
-  }
-
   async function readState(companyId: string): Promise<PoolState | null> {
     const row = await db
       .select()
@@ -108,59 +83,42 @@ export function accountPoolRoutes(db: Db) {
   }
 
   /**
-   * Live quota only exists for the account whose .credentials.json is currently
-   * loaded locally (the active account in the load-balancer model). We surface the
-   * Anthropic provider windows on the active account and leave the rest unknown
-   * until the Balancer (Slice 2/3) probes each account directly.
+   * Build the account list from the LAST-KNOWN health snapshots (persisted by the
+   * Balancer Brain). This intentionally does NOT call the Anthropic usage API —
+   * doing that on every 30s UI poll is what got us rate-limited (429). Live
+   * re-probing happens on the 5-min Balancer tick and on the explicit Reload
+   * endpoint below.
    */
-  function anthropicWindows(quota: ProviderQuotaResult[]): {
-    windows: QuotaWindow[];
-    error?: string;
-  } {
-    const result = quota.find((entry) => entry.provider === "anthropic");
-    if (!result) return { windows: [] };
-    if (!result.ok) return { windows: [], error: result.error };
-    return { windows: result.windows };
-  }
-
-  // GET /api/account-pool — list pooled accounts enriched with live health + current state
-  router.get("/account-pool", async (req, res) => {
-    const companyId = requireCompanyId(req);
-    const [secrets, state, quota] = await Promise.all([
-      listPoolSecrets(companyId),
-      readState(companyId),
-      fetchAllQuotaWindows().catch((): ProviderQuotaResult[] => []),
-    ]);
-    const live = anthropicWindows(quota);
+  async function buildAccountList(companyId: string): Promise<AccountPoolListResponse> {
+    const [secrets, state] = await Promise.all([listPoolSecrets(companyId), readState(companyId)]);
     const accounts: AccountWithHealth[] = secrets.map((secret) => {
-      const base = toPoolAccount(secret);
-      const isActive = state?.activeAccountId === secret.id;
-      // Active account: prefer the freshest LIVE windows from the locally-loaded
-      // creds. Everyone else (and the active account when no live data): fall back
-      // to the last-known health snapshot persisted by the Balancer Brain.
-      if (isActive && live.windows.length > 0) {
-        const summary = summarizeWindows(live.windows);
-        return {
-          ...base,
-          windows: live.windows,
-          usedPercent: summary.usedPercent,
-          resetsAt: summary.resetsAt,
-          capped: summary.capped,
-          error: live.error,
-        };
-      }
       const snapshot = readPoolAccountHealth(secret.providerMetadata);
       return {
-        ...base,
-        windows: [],
+        ...toPoolAccount(secret),
+        windows: snapshot?.windows ?? [],
         usedPercent: snapshot?.usedPercent ?? null,
         resetsAt: snapshot?.resetsAt ?? null,
         capped: snapshot?.capped ?? false,
+        // surface the most-recent probe error (e.g. 429) without hiding the
+        // last-good metrics — the snapshot preserves both.
         error: snapshot?.error ?? undefined,
       };
     });
-    const response: AccountPoolListResponse = { accounts, state };
-    res.json(response);
+    return { accounts, state };
+  }
+
+  // GET /api/account-pool — list pooled accounts with last-known health + current state
+  router.get("/account-pool", async (req, res) => {
+    const companyId = requireCompanyId(req);
+    res.json(await buildAccountList(companyId));
+  });
+
+  // POST /api/account-pool/refresh — on-demand: re-probe every account's live
+  // health NOW (the UI "Reload" button), persist fresh snapshots, return the list.
+  router.post("/account-pool/refresh", async (req, res) => {
+    const companyId = requireCompanyId(req);
+    await accountPoolBalancer(db).probeCompany(companyId);
+    res.json(await buildAccountList(companyId));
   });
 
   // GET /api/account-pool/state — current active account + last rotation

@@ -13,6 +13,11 @@ import { api } from "./client";
 export const accountPoolApi = {
   list: (companyId: string) =>
     api.get<AccountPoolListResponse>(`/account-pool?companyId=${encodeURIComponent(companyId)}`),
+  refresh: (companyId: string) =>
+    api.post<AccountPoolListResponse>(
+      `/account-pool/refresh?companyId=${encodeURIComponent(companyId)}`,
+      {},
+    ),
   state: (companyId: string) =>
     api.get<PoolState | null>(`/account-pool/state?companyId=${encodeURIComponent(companyId)}`),
   add: (companyId: string, input: AddPoolAccountRequest) =>

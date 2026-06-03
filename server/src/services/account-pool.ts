@@ -2,7 +2,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { accountPoolState, companySecrets } from "@paperclipai/db";
 import { POOL_ACCOUNT_TYPE } from "@paperclipai/shared";
-import type { PoolAccount, PoolState, RotationReason } from "@paperclipai/shared";
+import type { PoolAccount, PoolState, QuotaWindow, RotationReason } from "@paperclipai/shared";
 
 /**
  * Data-access helpers for the Account Pool & Rotation feature.
@@ -133,29 +133,86 @@ export async function setActiveAccount(
 
 /**
  * Last-known health probe for a pool account, persisted by the Balancer Brain so
- * the API can show health for EVERY account (not just the active one) without
- * re-probing the Anthropic usage API on each UI poll.
+ * the API can show health for EVERY account (not just the active one) WITHOUT
+ * re-probing the Anthropic usage API on each UI poll (that polling is what got us
+ * rate-limited — 429). The metric fields (usedPercent/resetsAt/capped/windows)
+ * always hold the last SUCCESSFUL probe; `error`/`erroredAt` record the most
+ * recent failure without clobbering the known-good metrics.
  */
 export interface PoolAccountHealthSnapshot {
   usedPercent: number | null;
   resetsAt: string | null;
   capped: boolean;
-  error: string | null;
-  /** iso timestamp of the probe */
+  /** per-window detail (session / week / …) from the last successful probe */
+  windows: QuotaWindow[];
+  /** iso timestamp of the last SUCCESSFUL probe */
   checkedAt: string;
+  /** message from the most recent failed probe (e.g. "anthropic usage api returned 429"), else null */
+  error: string | null;
+  /** iso timestamp of the most recent failed probe */
+  erroredAt: string | null;
+}
+
+/** the raw result of probing one account, as produced by the Balancer */
+export interface PoolAccountProbe {
+  usedPercent: number | null;
+  resetsAt: string | null;
+  capped: boolean;
+  windows: QuotaWindow[];
+  /** set when the probe failed; when present the last-good metrics are preserved */
+  error: string | null;
+  /** iso timestamp of this probe attempt */
+  at: string;
+}
+
+function defaultSnapshot(): PoolAccountHealthSnapshot {
+  return { usedPercent: null, resetsAt: null, capped: false, windows: [], checkedAt: "", error: null, erroredAt: null };
 }
 
 /**
- * Persist a health snapshot into the pool account's `providerMetadata.poolHealth`.
- * Uses a direct jsonb merge (`||`) so the `poolType` marker is preserved and NO
- * new secret version is created (this is metadata, not a credential rotation).
+ * Persist a probe result into `providerMetadata.poolHealth`.
+ *
+ * On SUCCESS: replace the metrics and clear any prior error.
+ * On FAILURE (e.g. 429): keep the last-good metrics intact and only record the
+ * error + timestamp, so a transient rate-limit never wipes known-good health.
+ *
+ * Uses a jsonb merge (`||`) so the `poolType` marker is preserved and NO new
+ * secret version is created (this is metadata, not a credential rotation).
  */
 export async function savePoolAccountHealth(
   db: Db,
   accountId: string,
-  snapshot: PoolAccountHealthSnapshot,
+  probe: PoolAccountProbe,
 ): Promise<void> {
-  const patch = JSON.stringify({ poolHealth: snapshot });
+  const row = await db
+    .select({ providerMetadata: companySecrets.providerMetadata })
+    .from(companySecrets)
+    .where(eq(companySecrets.id, accountId))
+    .then((rows) => rows[0] ?? null);
+  const prev = readPoolAccountHealth(row?.providerMetadata) ?? defaultSnapshot();
+
+  const next: PoolAccountHealthSnapshot = probe.error
+    ? {
+        // preserve last-good metrics; only stamp the failure
+        usedPercent: prev.usedPercent,
+        resetsAt: prev.resetsAt,
+        capped: prev.capped,
+        windows: prev.windows,
+        checkedAt: prev.checkedAt,
+        error: probe.error,
+        erroredAt: probe.at,
+      }
+    : {
+        usedPercent: probe.usedPercent,
+        resetsAt: probe.resetsAt,
+        capped: probe.capped,
+        windows: probe.windows,
+        checkedAt: probe.at,
+        error: null,
+        erroredAt: null,
+      };
+
+  const patch = JSON.stringify({ poolHealth: next });
   await db
     .update(companySecrets)
     .set({
@@ -175,8 +232,10 @@ export function readPoolAccountHealth(providerMetadata: unknown): PoolAccountHea
     usedPercent: typeof h.usedPercent === "number" ? h.usedPercent : null,
     resetsAt: typeof h.resetsAt === "string" ? h.resetsAt : null,
     capped: h.capped === true,
-    error: typeof h.error === "string" ? h.error : null,
+    windows: Array.isArray(h.windows) ? (h.windows as QuotaWindow[]) : [],
     checkedAt: typeof h.checkedAt === "string" ? h.checkedAt : "",
+    error: typeof h.error === "string" ? h.error : null,
+    erroredAt: typeof h.erroredAt === "string" ? h.erroredAt : null,
   };
 }
 

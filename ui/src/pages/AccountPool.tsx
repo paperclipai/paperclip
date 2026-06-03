@@ -6,6 +6,7 @@ import {
   Layers,
   Loader2,
   Plus,
+  RefreshCw,
   ShieldAlert,
   Trash2,
 } from "lucide-react";
@@ -240,6 +241,29 @@ export function AccountPool() {
     },
   });
 
+  const refreshMutation = useMutation({
+    mutationFn: () => accountPoolApi.refresh(selectedCompanyId!),
+    onSuccess: (data) => {
+      // write the freshly-probed list straight into the cache so the bars update now
+      if (selectedCompanyId) {
+        queryClient.setQueryData(queryKeys.accountPool.list(selectedCompanyId), data);
+      }
+      const erroredCount = data.accounts.filter((a) => a.error).length;
+      pushToast({
+        title: "Health refreshed",
+        body: erroredCount > 0 ? `${erroredCount} account(s) couldn't be reached (showing last known).` : undefined,
+        tone: erroredCount > 0 ? "warn" : "success",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Failed to refresh health",
+        body: error instanceof ApiError ? error.message : undefined,
+        tone: "error",
+      });
+    },
+  });
+
   const stopMutation = useMutation({
     mutationFn: (next: boolean) =>
       next ? accountPoolApi.engageStop(selectedCompanyId!) : accountPoolApi.releaseStop(selectedCompanyId!),
@@ -300,10 +324,21 @@ export function AccountPool() {
             Balancer rotates automatically when one hits its quota.
           </p>
         </div>
-        <Button onClick={openAdd} disabled={!selectedCompanyId}>
-          <Plus className="mr-1.5 h-4 w-4" />
-          Add account
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => refreshMutation.mutate()}
+            disabled={!selectedCompanyId || refreshMutation.isPending}
+            title="Re-probe live quota for every account now"
+          >
+            <RefreshCw className={cn("mr-1.5 h-4 w-4", refreshMutation.isPending && "animate-spin")} />
+            Reload
+          </Button>
+          <Button onClick={openAdd} disabled={!selectedCompanyId}>
+            <Plus className="mr-1.5 h-4 w-4" />
+            Add account
+          </Button>
+        </div>
       </header>
 
       {/* STOP switch + last rotation */}
@@ -316,8 +351,8 @@ export function AccountPool() {
             <p className="text-sm font-medium text-foreground">Automatic rotation STOP switch</p>
             <p className="text-xs text-muted-foreground">
               {rotationStopped
-                ? `Rotation is halted${state?.stopReason ? ` — ${state.stopReason}` : ""}.`
-                : "Rotation is active. Engage to freeze the team on the current account."}
+                ? `Frozen — the team stays on the current account even if it hits its quota${state?.stopReason ? ` (${state.stopReason})` : ""}.`
+                : "Auto-rotate is on — when the active account hits its quota, the Balancer moves the whole team to the healthiest one. (Only takes effect with 2+ accounts.)"}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
               Last assignment: {formatTimestamp(state?.assignedAt ?? null)}
