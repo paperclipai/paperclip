@@ -1,0 +1,33 @@
+# Project-scoped Codex MCP configuration for Paperclip.
+# Phase 1 is discovery-only: no generation tools are exposed here.
+
+[mcp_servers.comfyui_cloud]
+url = "https://cloud.comfy.org/mcp"
+env_http_headers = { "X-API-Key" = "COMFY_CLOUD_API_KEY" }
+enabled = true
+required = false
+default_tools_approval_mode = "prompt"
+enabled_tools = [
+  "search_templates",
+  "search_models",
+  "search_nodes",
+  "cql",
+  "get_queue",
+]
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+
+[mcp_servers.comfyui_cloud.tools.search_templates]
+approval_mode = "approve"
+
+[mcp_servers.comfyui_cloud.tools.search_models]
+approval_mode = "approve"
+
+[mcp_servers.comfyui_cloud.tools.search_nodes]
+approval_mode = "approve"
+
+[mcp_servers.comfyui_cloud.tools.cql]
+approval_mode = "approve"
+
+[mcp_servers.comfyui_cloud.tools.get_queue]
+approval_mode = "approve"
