@@ -217,46 +217,6 @@ export function accountPoolRoutes(db: Db) {
     res.status(201).json(toPoolAccount(created));
   });
 
-  // DELETE /api/account-pool/:id — remove an account from the pool
-  router.delete("/account-pool/:id", async (req, res) => {
-    const companyId = requireCompanyId(req);
-    const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing || existing.companyId !== companyId || existing.status === "deleted") {
-      res.status(404).json({ error: "Pool account not found" });
-      return;
-    }
-    if (poolTypeOf(existing.providerMetadata) !== POOL_ACCOUNT_TYPE) {
-      res.status(404).json({ error: "Pool account not found" });
-      return;
-    }
-
-    const removed = await svc.remove(id);
-    if (!removed) {
-      res.status(404).json({ error: "Pool account not found" });
-      return;
-    }
-
-    // If the removed account was the active one, clear the pointer so the next
-    // Balancer tick rebalances onto a healthy account.
-    await db
-      .update(accountPoolState)
-      .set({ activeAccountId: null, reason: "rotation", assignedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(accountPoolState.companyId, companyId), eq(accountPoolState.activeAccountId, id)));
-
-    await logActivity(db, {
-      companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "account_pool.account_removed",
-      entityType: "secret",
-      entityId: id,
-      details: { name: removed.name },
-    });
-
-    res.json({ ok: true });
-  });
-
   /** ensure a state row exists for the company, then return it */
   async function ensureStateRow(companyId: string) {
     const existing = await db
@@ -273,6 +233,8 @@ export function accountPoolRoutes(db: Db) {
   }
 
   // POST /api/account-pool/stop — engage the global STOP switch
+  // NOTE: the /stop routes MUST be registered before "/account-pool/:id" or
+  // Express captures "stop" as :id and the uuid lookup throws.
   router.post("/account-pool/stop", async (req, res) => {
     const companyId = requireCompanyId(req);
     const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : null;
@@ -315,6 +277,46 @@ export function accountPoolRoutes(db: Db) {
     });
 
     res.json(await readState(companyId));
+  });
+
+  // DELETE /api/account-pool/:id — remove an account from the pool
+  router.delete("/account-pool/:id", async (req, res) => {
+    const companyId = requireCompanyId(req);
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing || existing.companyId !== companyId || existing.status === "deleted") {
+      res.status(404).json({ error: "Pool account not found" });
+      return;
+    }
+    if (poolTypeOf(existing.providerMetadata) !== POOL_ACCOUNT_TYPE) {
+      res.status(404).json({ error: "Pool account not found" });
+      return;
+    }
+
+    const removed = await svc.remove(id);
+    if (!removed) {
+      res.status(404).json({ error: "Pool account not found" });
+      return;
+    }
+
+    // If the removed account was the active one, clear the pointer so the next
+    // Balancer tick rebalances onto a healthy account.
+    await db
+      .update(accountPoolState)
+      .set({ activeAccountId: null, reason: "rotation", assignedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(accountPoolState.companyId, companyId), eq(accountPoolState.activeAccountId, id)));
+
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "account_pool.account_removed",
+      entityType: "secret",
+      entityId: id,
+      details: { name: removed.name },
+    });
+
+    res.json({ ok: true });
   });
 
   return router;
