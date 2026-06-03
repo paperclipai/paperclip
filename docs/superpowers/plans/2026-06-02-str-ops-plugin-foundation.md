@@ -1522,11 +1522,52 @@ function summarize(result: { created: unknown[]; skippedDuplicate: number; skipp
 Run: `pnpm --filter @paperclipai/plugin-str-ops test -- src/register.spec.ts`
 Expected: PASS (3 tests).
 
+- [ ] **Step 5.5: Write `src/store/couch-http.ts`** — production `CouchHttp` adapter over `ctx.http`
+
+> Confirm `ctx.http`'s real method/shape from the SDK first (Task 6R Step 1 /
+> `packages/plugins/sdk/src/types.ts`, README "http.outbound"). The adapter below assumes
+> a `fetch(url, init)`-style call returning `{ status, json() }`. **Adjust only the one
+> call site** to the real `ctx.http` signature; keep the returned `CouchHttp` shape. This
+> thin host-binding has no unit test (verified live in Task 8); `CouchStore` is already
+> tested via the fake.
+
+```ts
+import type { CouchHttp, CouchResponse } from "./couch-store.js";
+
+/** Minimal shape of the host `ctx.http` we rely on — adjust to the real SDK surface. */
+export interface CtxHttpLike {
+  fetch(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }): Promise<{ status: number; json: () => Promise<unknown> }>;
+}
+
+export function createCtxCouchHttp(
+  http: CtxHttpLike,
+  cfg: { baseUrl: string; user?: string; password?: string },
+): CouchHttp {
+  const base = cfg.baseUrl.replace(/\/+$/, "");
+  const auth: Record<string, string> = cfg.user
+    ? { Authorization: `Basic ${Buffer.from(`${cfg.user}:${cfg.password ?? ""}`).toString("base64")}` }
+    : {};
+  return {
+    async request(method, path, body): Promise<CouchResponse> {
+      const res = await http.fetch(`${base}${path}`, {
+        method,
+        headers: { "Content-Type": "application/json", ...auth },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      let parsed: unknown = null;
+      try { parsed = await res.json(); } catch { parsed = null; }
+      return { status: res.status, body: parsed };
+    },
+  };
+}
+```
+
 - [ ] **Step 6: Update `src/worker.ts`** to build prod deps and call `registerStrOps`
 
 ```ts
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
-import { PgStore } from "./store/pg-store.js";
+import { CouchStore } from "./store/couch-store.js";
+import { createCtxCouchHttp } from "./store/couch-http.js";
 import { MockChannelProvider } from "./providers/mock-channel.js";
 import { registerStrOps } from "./register.js";
 import { readFileSync } from "node:fs";
@@ -1545,7 +1586,17 @@ const plugin = definePlugin({
     // PoC: single company. Resolve the first company as the default scope.
     const companies = await ctx.companies.list();
     const defaultCompanyId = companies[0]?.id ?? "";
-    const store = new PgStore(ctx.db);
+    // CouchDB record store (reuse existing instance). Config from env; default localhost.
+    const couchUrl = process.env.STR_OPS_COUCHDB_URL ?? "http://127.0.0.1:5984";
+    const couchDb = process.env.STR_OPS_COUCHDB_DB ?? "str_ops";
+    const http = createCtxCouchHttp(ctx.http, {
+      baseUrl: couchUrl,
+      user: process.env.STR_OPS_COUCHDB_USER,
+      password: process.env.STR_OPS_COUCHDB_PASSWORD,
+    });
+    const store = new CouchStore(http, couchDb);
+    await store.ensure();
+
     const channelProvider = new MockChannelProvider(loadSeedBookings());
     registerStrOps(ctx, { defaultCompanyId, store, channelProvider });
 
@@ -1581,9 +1632,8 @@ const manifest: PaperclipPluginManifestV1 = {
   author: "Oleg",
   categories: ["automation"],
   capabilities: [
-    "database.namespace.migrate",
-    "database.namespace.read",
-    "database.namespace.write",
+    "http.outbound",
+    "secrets.read-ref",
     "companies.read",
     "jobs.schedule",
     "agent.tools.register",
@@ -1594,11 +1644,8 @@ const manifest: PaperclipPluginManifestV1 = {
   entrypoints: {
     worker: "./dist/worker.js",
   },
-  database: {
-    namespaceSlug: DB_NAMESPACE_SLUG,
-    migrationsDir: "migrations",
-    coreReadTables: ["companies"],
-  },
+  // No `database` block — records live in CouchDB (reached via ctx.http), not the
+  // SDK Postgres namespace. `DB_NAMESPACE_SLUG` is kept only as the default Couch db name.
   jobs: [
     { jobKey: "channel-poll", displayName: "Channel poll (mock)", description: "Ingest new bookings from the mock channel provider.", schedule: "*/15 * * * *" },
   ],
@@ -1622,8 +1669,8 @@ Expected: build emits `dist/worker.js` + `dist/manifest.js`; typecheck 0; all sp
 - [ ] **Step 9: Commit**
 
 ```bash
-git add packages/plugins/plugin-str-ops/src packages/plugins/plugin-str-ops/migrations
-git commit -m "feat(str-ops): wire worker tools + channel-poll job + demo seed (S1)"
+git add packages/plugins/plugin-str-ops/src
+git commit -m "feat(str-ops): wire worker (CouchDB store) + tools + channel-poll job + demo seed (S1)"
 ```
 
 ---
@@ -1642,7 +1689,8 @@ Run: `pnpm dev:once` (repo root) — starts API at `http://localhost:3100` with 
 Expected: server logs "Server listening"; `curl http://localhost:3100/api/health` returns ok.
 
 - [ ] **Step 3: Install + activate the `str-ops` plugin** via the path confirmed in Step 1.
-Expected: plugin loads; the host runs `migrations/001_str_ops.sql` and creates schema `plugin_str_ops_3eae1efbf8` with tables `owner`, `property`, `guest`, `booking`. Health data handler reports `{ status: "ok" }`.
+Set `STR_OPS_COUCHDB_URL` / `STR_OPS_COUCHDB_USER` / `STR_OPS_COUCHDB_PASSWORD` (default URL `http://127.0.0.1:5984`, db `str_ops`) so the worker can reach your CouchDB.
+Expected: plugin loads; on `setup()` the worker calls `store.ensure()`, which creates the CouchDB database `str_ops` + the two Mango indexes on your CouchDB instance (idempotent). Health data handler reports `{ status: "ok" }`.
 
 - [ ] **Step 4: Seed demo data.** Trigger the `seed-demo` action (from the plugin admin UI action, or the documented action-invoke API).
 Expected: returns `{ owners: 1, properties: 2 }`.
@@ -1651,7 +1699,7 @@ Expected: returns `{ owners: 1, properties: 2 }`.
 Expected: job result `{ created: 2, skippedDuplicate: 0, skippedUnknownProperty: 0, skippedConflict: 0 }` (both fixture bookings ingest because `VILLA-SUD` and `STUDIO-PORT` were seeded).
 
 - [ ] **Step 6: Verify persistence.** Trigger `channel-poll` again.
-Expected: `{ created: 0, skippedDuplicate: 0, ... }` — the mock provider's queue is drained, so no duplicates; bookings remain in the table (verify via the `list_bookings` tool or a DB query on `plugin_str_ops_3eae1efbf8.booking`).
+Expected: `{ created: 0, skippedDuplicate: 0, ... }` — the mock provider's queue is drained, so no duplicates; bookings remain (verify via the `list_bookings` tool, or `curl "$STR_OPS_COUCHDB_URL/str_ops/_find" -H 'Content-Type: application/json' -d '{"selector":{"type":"booking"}}'`).
 
 - [ ] **Step 7: Repo-wide guard.**
 
