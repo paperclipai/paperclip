@@ -210,6 +210,8 @@ export type SystemIssueDocumentKey = (typeof SYSTEM_ISSUE_DOCUMENT_KEYS)[number]
 
 export const DELIVERABLE_AUDIENCES = ["human", "internal"] as const;
 export type DeliverableAudience = (typeof DELIVERABLE_AUDIENCES)[number];
+export const DELIVERABLE_SOURCE_KINDS = ["issue", "workflow"] as const;
+export type DeliverableSourceKind = (typeof DELIVERABLE_SOURCE_KINDS)[number];
 
 const SYSTEM_ISSUE_DOCUMENT_KEY_SET = new Set<string>(SYSTEM_ISSUE_DOCUMENT_KEYS);
 
@@ -298,6 +300,17 @@ export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 
 export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
 export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
+
+export const WORKFLOW_STATUSES = ["active", "paused", "archived"] as const;
+export type WorkflowStatus = (typeof WORKFLOW_STATUSES)[number];
+export const WORKFLOW_RUN_STATUSES = ["queued", "running", "awaiting_human", "succeeded", "failed", "cancelled"] as const;
+export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
+export const WORKFLOW_PHASE_STATUSES = ["idle", "running", "awaiting_human", "succeeded", "failed", "cancelled"] as const;
+export type WorkflowPhaseStatus = (typeof WORKFLOW_PHASE_STATUSES)[number];
+export const WORKFLOW_HANDOFF_KINDS = ["approval", "response"] as const;
+export type WorkflowHandoffKind = (typeof WORKFLOW_HANDOFF_KINDS)[number];
+export const WORKFLOW_HANDOFF_STATUSES = ["pending", "approved", "rejected", "responded", "cancelled"] as const;
+export type WorkflowHandoffStatus = (typeof WORKFLOW_HANDOFF_STATUSES)[number];
 
 export const PAUSE_REASONS = ["manual", "budget", "system"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];

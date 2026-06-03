@@ -1,4 +1,5 @@
 import express from "express";
+import { Readable } from "node:stream";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
@@ -15,8 +16,11 @@ const runId = "77777777-7777-4777-8777-777777777777";
 const mockWorkProductService = vi.hoisted(() => ({
   listDeliverablesForCompany: vi.fn(),
   getDeliverableById: vi.fn(),
+  getWorkflowDeliverableById: vi.fn(),
   getDeliverableDocumentContentById: vi.fn(),
+  getWorkflowDeliverableContentById: vi.fn(),
 }));
+const mockGetObject = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   workProductService: () => mockWorkProductService,
@@ -25,6 +29,12 @@ vi.mock("../services/index.js", () => ({
     if (!Number.isFinite(n) || n <= 0) return 50;
     return Math.min(Math.floor(n), 200);
   },
+}));
+
+vi.mock("../storage/index.js", () => ({
+  getStorageService: () => ({
+    getObject: mockGetObject,
+  }),
 }));
 
 import { deliverableRoutes } from "../routes/deliverables.js";
@@ -60,10 +70,12 @@ function sampleDeliverable(overrides: Record<string, unknown> = {}) {
     contentType: "application/pdf",
     byteSize: 1024,
     originalFilename: "report.pdf",
+    sourceKind: "issue",
     childIssue: { id: childIssueId, identifier: "PAP-12", title: "Write report", status: "done" },
     rootIssue: { id: rootIssueId, identifier: "PAP-1", title: "Quarterly review", status: "in_progress" },
     agent: { id: agentId, name: "Astro", urlKey: "astro", icon: null },
     runId,
+    workflow: null,
     ...overrides,
   };
 }
@@ -142,14 +154,57 @@ describe("deliverables routes", () => {
 
     it("returns 404 when the deliverable does not exist", async () => {
       mockWorkProductService.getDeliverableById.mockResolvedValue(null);
+      mockWorkProductService.getWorkflowDeliverableById.mockResolvedValue(null);
 
       const res = await request(createApp()).get(`/api/deliverables/${deliverableId}`);
       expect(res.status).toBe(404);
     });
 
+    it("returns workflow-backed deliverables when issue deliverable lookup misses", async () => {
+      mockWorkProductService.getDeliverableById.mockResolvedValue(null);
+      mockWorkProductService.getWorkflowDeliverableById.mockResolvedValue({
+        ...sampleDeliverable({
+          sourceKind: "workflow",
+          childIssue: null,
+          rootIssue: null,
+          agent: null,
+          workflow: {
+            id: "workflow-1",
+            title: "Customer report generator",
+            runId,
+          },
+        }),
+        ancestors: [],
+      });
+
+      const res = await request(createApp()).get(`/api/deliverables/${deliverableId}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.sourceKind).toBe("workflow");
+      expect(res.body.workflow.title).toBe("Customer report generator");
+    });
+
     it("forbids access when the deliverable belongs to another company", async () => {
       mockWorkProductService.getDeliverableById.mockResolvedValue({
         ...sampleDeliverable({ companyId: otherCompanyId }),
+        ancestors: [],
+      });
+
+      const res = await request(createApp()).get(`/api/deliverables/${deliverableId}`);
+      expect(res.status).toBe(403);
+    });
+
+    it("forbids access when the workflow deliverable belongs to another company", async () => {
+      mockWorkProductService.getDeliverableById.mockResolvedValue(null);
+      mockWorkProductService.getWorkflowDeliverableById.mockResolvedValue({
+        ...sampleDeliverable({
+          companyId: otherCompanyId,
+          sourceKind: "workflow",
+          childIssue: null,
+          rootIssue: null,
+          agent: null,
+          workflow: { id: "workflow-1", title: "Report generator", runId },
+        }),
         ancestors: [],
       });
 
@@ -213,6 +268,7 @@ describe("deliverables routes", () => {
 
     it("redirects to artifact content path when deliverable is artifact", async () => {
       mockWorkProductService.getDeliverableDocumentContentById.mockResolvedValue(null);
+      mockWorkProductService.getWorkflowDeliverableContentById.mockResolvedValue(null);
       mockWorkProductService.getDeliverableById.mockResolvedValue({
         ...sampleDeliverable(),
         ancestors: [],
@@ -222,6 +278,49 @@ describe("deliverables routes", () => {
 
       expect(res.status).toBe(302);
       expect(res.headers.location).toBe("/api/attachments/abc/content");
+    });
+
+    it("returns inline workflow deliverable content when present", async () => {
+      mockWorkProductService.getDeliverableDocumentContentById.mockResolvedValue(null);
+      mockWorkProductService.getWorkflowDeliverableContentById.mockResolvedValue({
+        id: deliverableId,
+        companyId,
+        filename: "workflow-output.md",
+        contentType: "text/markdown; charset=utf-8",
+        body: "# Workflow Output",
+        objectKey: null,
+      });
+
+      const res = await request(createApp()).get(`/api/deliverables/${deliverableId}/content`);
+
+      expect(res.status).toBe(200);
+      expect(res.text).toContain("Workflow Output");
+      expect(res.headers["content-disposition"]).toContain("workflow-output.md");
+    });
+
+    it("streams object-backed workflow deliverable content", async () => {
+      mockWorkProductService.getDeliverableDocumentContentById.mockResolvedValue(null);
+      mockWorkProductService.getWorkflowDeliverableContentById.mockResolvedValue({
+        id: deliverableId,
+        companyId,
+        filename: "workflow-output.md",
+        contentType: "text/markdown; charset=utf-8",
+        body: null,
+        objectKey: `${companyId}/workflow-deliverables/object.md`,
+      });
+      mockGetObject.mockResolvedValue({
+        stream: Readable.from(["# Stored Workflow Output"]),
+        contentType: "text/markdown; charset=utf-8",
+        contentLength: 24,
+      });
+
+      const res = await request(createApp()).get(`/api/deliverables/${deliverableId}/content`);
+
+      expect(res.status).toBe(200);
+      expect(res.text).toContain("Stored Workflow Output");
+      expect(res.headers["content-disposition"]).toContain("workflow-output.md");
+      expect(res.headers["content-length"]).toBe("24");
+      expect(mockGetObject).toHaveBeenCalledWith(companyId, `${companyId}/workflow-deliverables/object.md`);
     });
   });
 });

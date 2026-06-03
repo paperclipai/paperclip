@@ -1,4 +1,4 @@
-import type { DeliverableAudience } from "../constants.js";
+import type { DeliverableAudience, DeliverableSourceKind } from "../constants.js";
 
 /**
  * Cross-issue deliverable view: a rolled-up presentation of an
@@ -26,6 +26,12 @@ export interface DeliverableAgentRef {
   icon: string | null;
 }
 
+export interface DeliverableWorkflowRef {
+  id: string;
+  title: string;
+  runId: string;
+}
+
 export interface DeliverablePreview {
   kind: "markdown" | "text";
   body: string;
@@ -37,6 +43,7 @@ export interface DeliverableListItem {
   id: string;
   companyId: string;
   projectId: string | null;
+  sourceKind: DeliverableSourceKind;
   title: string;
   summary: string | null;
   audience: DeliverableAudience;
@@ -50,7 +57,7 @@ export interface DeliverableListItem {
   originalFilename: string | null;
 
   /** The issue the agent actually worked on when producing the artifact. */
-  childIssue: DeliverableIssueRef;
+  childIssue: DeliverableIssueRef | null;
   /**
    * The topmost ancestor in the issue's parent chain. `null` when `childIssue`
    * itself has no parent (i.e. it is the root).
@@ -59,6 +66,7 @@ export interface DeliverableListItem {
   /** The agent that generated the artifact (resolved via createdByRunId). */
   agent: DeliverableAgentRef | null;
   runId: string | null;
+  workflow: DeliverableWorkflowRef | null;
 }
 
 export interface DeliverableDetail extends DeliverableListItem {

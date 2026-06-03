@@ -9,6 +9,7 @@ import {
   Network,
   Boxes,
   Repeat,
+  Workflow,
   GitBranch,
   Package,
   Settings,
@@ -98,6 +99,7 @@ export function Sidebar() {
             label="Deliverables"
             icon={Package}
           />
+          <SidebarNavItem to="/workflows" label="Workflows" icon={Workflow} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
           {showWorkspacesLink ? (

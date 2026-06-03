@@ -74,6 +74,12 @@ export const queryKeys = {
     runs: (id: string) => ["routines", "runs", id] as const,
     activity: (companyId: string, id: string) => ["routines", "activity", companyId, id] as const,
   },
+  workflows: {
+    list: (companyId: string) => ["workflows", companyId] as const,
+    detail: (id: string) => ["workflows", "detail", id] as const,
+    run: (id: string) => ["workflow-runs", id] as const,
+    activity: (companyId: string, id: string) => ["workflows", "activity", companyId, id] as const,
+  },
   executionWorkspaces: {
     list: (companyId: string, filters?: Record<string, string | boolean | undefined>) =>
       ["execution-workspaces", companyId, filters ?? {}] as const,

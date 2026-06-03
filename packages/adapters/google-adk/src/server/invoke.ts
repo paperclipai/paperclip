@@ -3,10 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
+  AdapterAgent,
   AdapterExecutionContext,
   AdapterExecutionResult,
+  AdapterInvocationMeta,
 } from "@paperclipai/adapter-utils";
-import { invokeGoogleAdk } from "./invoke.js";
 import {
   asNumber,
   asString,
@@ -17,25 +18,18 @@ import {
   ensureCommandResolvable,
   ensurePathInEnv,
   joinPromptSections,
-  parseObject,
   renderPaperclipWakePrompt,
   renderTemplate,
   resolveCommandForLogs,
   runChildProcess,
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
-import {
-  DEFAULT_GOOGLE_ADK_COMMAND,
-  DEFAULT_GOOGLE_ADK_MODEL,
-} from "../index.js";
-import { buildInstructionsPrefix, splitInstructionsMarkdown } from "./instructions.js";
+import { DEFAULT_GOOGLE_ADK_COMMAND, DEFAULT_GOOGLE_ADK_MODEL } from "../index.js";
 import { parseGoogleAdkJsonl } from "./parse.js";
 
 function paperclipHome(): string {
   const configured = process.env.BIZBOX_HOME?.trim();
-  return configured && configured.length > 0
-    ? configured
-    : path.join(os.homedir(), ".paperclip");
+  return configured && configured.length > 0 ? configured : path.join(os.homedir(), ".paperclip");
 }
 
 function sqliteUri(filePath: string): string {
@@ -46,15 +40,19 @@ function artifactUri(dirPath: string): string {
   return pathToFileURL(path.resolve(dirPath)).toString();
 }
 
-export async function readInstructionsPrefix(
+async function readInstructionsPrefix(
   instructionsFilePath: string,
   onLog: AdapterExecutionContext["onLog"],
 ): Promise<string> {
   if (!instructionsFilePath) return "";
   try {
     const contents = await fs.readFile(instructionsFilePath, "utf8");
-    const instructionsMarkdown = splitInstructionsMarkdown(contents);
-    return buildInstructionsPrefix(instructionsMarkdown.body, instructionsFilePath);
+    const instructionsDir = `${path.dirname(instructionsFilePath)}/`;
+    return (
+      `${contents}\n\n` +
+      `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+      `Resolve any relative file references from ${instructionsDir}.\n`
+    );
   } catch (err) {
     await onLog(
       "stdout",
@@ -64,11 +62,21 @@ export async function readInstructionsPrefix(
   }
 }
 
-export async function execute(
-  ctx: AdapterExecutionContext,
-): Promise<AdapterExecutionResult> {
-  const { runId, agent, config, context, onLog, onMeta, onSpawn, authToken } =
-    ctx;
+export interface InvokeGoogleAdkInput {
+  runId: string;
+  agent: AdapterAgent;
+  config: Record<string, unknown>;
+  context: Record<string, unknown>;
+  onLog: AdapterExecutionContext["onLog"];
+  onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
+  onSpawn?: AdapterExecutionContext["onSpawn"];
+  authToken?: string;
+  queryOverride?: string;
+  runtimeRootOverride?: string;
+}
+
+export async function invokeGoogleAdk(input: InvokeGoogleAdkInput): Promise<AdapterExecutionResult> {
+  const { runId, agent, config, context, onLog, onMeta, onSpawn, authToken, queryOverride, runtimeRootOverride } = input;
   const command = asString(config.command, DEFAULT_GOOGLE_ADK_COMMAND);
   const agentPath = asString(config.agentPath, "").trim();
   if (!agentPath) {
@@ -78,24 +86,14 @@ export async function execute(
   const resolvedAgentPath = path.resolve(agentPath);
   const stat = await fs.stat(resolvedAgentPath).catch(() => null);
   if (!stat) {
-    throw new Error(
-      `google_adk agentPath does not exist: ${resolvedAgentPath}`,
-    );
+    throw new Error(`google_adk agentPath does not exist: ${resolvedAgentPath}`);
   }
 
   const configuredCwd = asString(config.cwd, "").trim();
-  const cwd =
-    configuredCwd ||
-    (stat.isDirectory() ? resolvedAgentPath : path.dirname(resolvedAgentPath));
-  const promptTemplate = asString(
-    config.promptTemplate,
-    DEFAULT_BIZBOX_AGENT_PROMPT_TEMPLATE,
-  );
+  const cwd = configuredCwd || (stat.isDirectory() ? resolvedAgentPath : path.dirname(resolvedAgentPath));
+  const promptTemplate = asString(config.promptTemplate, DEFAULT_BIZBOX_AGENT_PROMPT_TEMPLATE);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-  const instructionsPrefix = await readInstructionsPrefix(
-    instructionsFilePath,
-    onLog,
-  );
+  const instructionsPrefix = await readInstructionsPrefix(instructionsFilePath, onLog);
   const renderedPrompt = renderTemplate(promptTemplate, {
     agentId: agent.id,
     companyId: agent.companyId,
@@ -105,48 +103,27 @@ export async function execute(
     run: { id: runId, source: "on_demand" },
     context,
   });
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
-    resumedSession: false,
-  });
-  const sessionHandoffNote = asString(
-    context.paperclipSessionHandoffMarkdown,
-    "",
-  ).trim();
-  const query = joinPromptSections([
-    instructionsPrefix,
-    wakePrompt,
-    sessionHandoffNote,
-    renderedPrompt,
-  ]);
+  const wakePrompt = renderPaperclipWakePrompt((context as { paperclipWake?: unknown }).paperclipWake, { resumedSession: false });
+  const sessionHandoffNote = asString((context as { paperclipSessionHandoffMarkdown?: unknown }).paperclipSessionHandoffMarkdown, "").trim();
+  const query = queryOverride ?? joinPromptSections([instructionsPrefix, wakePrompt, sessionHandoffNote, renderedPrompt]);
 
-  const envConfig = parseObject(config.env);
+  const envConfig = typeof config.env === "object" && config.env !== null ? (config.env as Record<string, unknown>) : {};
   const hasExplicitApiKey =
-    typeof envConfig.BIZBOX_API_KEY === "string" &&
-    envConfig.BIZBOX_API_KEY.trim().length > 0;
+    typeof envConfig.BIZBOX_API_KEY === "string" && envConfig.BIZBOX_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   env.BIZBOX_RUN_ID = runId;
   const wakeTaskId =
-    (typeof context.taskId === "string" &&
-      context.taskId.trim().length > 0 &&
-      context.taskId.trim()) ||
-    (typeof context.issueId === "string" &&
-      context.issueId.trim().length > 0 &&
-      context.issueId.trim()) ||
+    ((context as { taskId?: string }).taskId?.trim()) ||
+    ((context as { issueId?: string }).issueId?.trim()) ||
     null;
-  const wakeReason =
-    typeof context.wakeReason === "string" &&
-    context.wakeReason.trim().length > 0
-      ? context.wakeReason.trim()
-      : null;
+  const wakeReason = typeof (context as { wakeReason?: unknown }).wakeReason === "string"
+    ? (context as { wakeReason: string }).wakeReason.trim() || null
+    : null;
   const wakeCommentId =
-    (typeof context.wakeCommentId === "string" &&
-      context.wakeCommentId.trim().length > 0 &&
-      context.wakeCommentId.trim()) ||
-    (typeof context.commentId === "string" &&
-      context.commentId.trim().length > 0 &&
-      context.commentId.trim()) ||
+    ((context as { wakeCommentId?: string }).wakeCommentId?.trim()) ||
+    ((context as { commentId?: string }).commentId?.trim()) ||
     null;
-  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
+  const wakePayloadJson = stringifyPaperclipWakePayload((context as { paperclipWake?: unknown }).paperclipWake);
   if (wakeTaskId) env.BIZBOX_TASK_ID = wakeTaskId;
   if (wakeReason) env.BIZBOX_WAKE_REASON = wakeReason;
   if (wakeCommentId) env.BIZBOX_WAKE_COMMENT_ID = wakeCommentId;
@@ -176,14 +153,9 @@ export async function execute(
   })();
   const model = asString(config.model, DEFAULT_GOOGLE_ADK_MODEL).trim();
 
-  const adkRoot = path.join(
-    paperclipHome(),
-    "adk",
-    "companies",
-    agent.companyId,
-    "agents",
-    agent.id,
-  );
+  const adkRoot = runtimeRootOverride
+    ? path.resolve(runtimeRootOverride)
+    : path.join(paperclipHome(), "adk", "companies", agent.companyId, "agents", agent.id);
   const sessionDbPath = path.join(adkRoot, "sessions.sqlite");
   const artifactDir = path.join(adkRoot, "artifacts");
   await fs.mkdir(path.dirname(sessionDbPath), { recursive: true });
@@ -215,7 +187,7 @@ export async function execute(
       commandArgs: args,
       env: buildInvocationEnvForLogs(env, {
         runtimeEnv,
-        includeRuntimeKeys: ["HOME"],
+        includeRuntimeKeys: ["HOME", "PYTHONPATH"],
         resolvedCommand,
       }),
     });
@@ -253,9 +225,7 @@ export async function execute(
       exitCode: proc.exitCode,
       signal: proc.signal,
       timedOut: false,
-      errorMessage:
-        parsed.errorMessage ??
-        `google_adk exited with code ${proc.exitCode ?? -1}`,
+      errorMessage: parsed.errorMessage ?? `google_adk exited with code ${proc.exitCode ?? -1}`,
       summary: parsed.summary || null,
       usage: parsed.usage,
       model: model || null,

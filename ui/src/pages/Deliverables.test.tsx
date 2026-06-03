@@ -68,10 +68,12 @@ function sampleItem(overrides: Record<string, unknown> = {}) {
     contentType: "application/pdf",
     byteSize: 2048,
     originalFilename: "report.pdf",
+    sourceKind: "issue",
     childIssue: { id: "child-1", identifier: "PAP-12", title: "Write report", status: "done" },
     rootIssue: { id: "root-1", identifier: "PAP-1", title: "Quarterly review", status: "in_progress" },
     agent: { id: "agent-1", name: "Astro", urlKey: "astro", icon: null },
     runId: "run-1",
+    workflow: null,
     ...overrides,
   };
 }
@@ -121,6 +123,32 @@ describe("Deliverables page", () => {
     expect(downloadLinks.length).toBeGreaterThan(0);
     const firstDownload = downloadLinks[0]!;
     expect(firstDownload.getAttribute("download")).toBe("report.pdf");
+  });
+
+  it("renders workflow deliverables without issue lineage", async () => {
+    listMock.mockResolvedValue({
+      items: [
+        sampleItem({
+          id: "workflow-deliverable-1",
+          sourceKind: "workflow",
+          title: "Workflow brief",
+          childIssue: null,
+          rootIssue: null,
+          agent: null,
+          workflow: { id: "workflow-1", title: "Brief generator", runId: "run-2" },
+        }),
+      ],
+      limit: 50,
+      offset: 0,
+    });
+
+    await renderDeliverables(container);
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Brief generator");
+    expect(container.textContent).toContain("Workflow");
+    expect(container.textContent).toContain("Run run-2");
   });
 
   it("uses server-side search query parameter and audience filter", async () => {

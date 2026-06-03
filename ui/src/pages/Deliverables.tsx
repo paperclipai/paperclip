@@ -77,7 +77,7 @@ export function Deliverables() {
         <div>
           <h1 className="text-xl font-semibold">Deliverables</h1>
           <p className="text-sm text-muted-foreground">
-            Downloadable artifacts produced by agents while working on issues.
+            Downloadable outputs produced by issue work and workflows.
             {items.length > 0 ? ` (${items.length})` : null}
           </p>
         </div>
@@ -137,8 +137,8 @@ export function Deliverables() {
               <tr>
                 <th className="px-3 py-2 text-left font-medium">Title</th>
                 <th className="px-3 py-2 text-left font-medium">Audience</th>
-                <th className="px-3 py-2 text-left font-medium">Issue</th>
-                <th className="px-3 py-2 text-left font-medium">Agent</th>
+                <th className="px-3 py-2 text-left font-medium">Source</th>
+                <th className="px-3 py-2 text-left font-medium">Producer</th>
                 <th className="px-3 py-2 text-right font-medium">Size</th>
                 <th className="px-3 py-2 text-left font-medium">Created</th>
                 <th className="px-3 py-2 text-right font-medium">Download</th>
@@ -157,8 +157,8 @@ export function Deliverables() {
 }
 
 function DeliverableRow({ item }: { item: DeliverableListItem }) {
-  const rootIssue = item.rootIssue ?? item.childIssue;
-  const showChildSeparately = item.rootIssue !== null && item.rootIssue.id !== item.childIssue.id;
+  const rootIssue = item.childIssue ? (item.rootIssue ?? item.childIssue) : null;
+  const showChildSeparately = item.childIssue !== null && item.rootIssue !== null && item.rootIssue.id !== item.childIssue.id;
 
   return (
     <tr className={`border-t border-border hover:bg-muted/30 ${item.audience === "internal" ? "bg-muted/10" : ""}`}>
@@ -179,25 +179,44 @@ function DeliverableRow({ item }: { item: DeliverableListItem }) {
         <AudienceBadge audience={item.audience} />
       </td>
       <td className="px-3 py-2 align-top">
-        <Link
-          to={issueUrl(rootIssue)}
-          className="text-foreground hover:underline"
-          onClick={(event) => event.stopPropagation()}
-        >
-          {rootIssue.identifier ?? rootIssue.title}
-        </Link>
-        {showChildSeparately ? (
-          <div className="text-[11px] text-muted-foreground">
-            from{" "}
+        {item.sourceKind === "workflow" && item.workflow ? (
+          <>
             <Link
-              to={issueUrl(item.childIssue)}
+              to={`/workflows/${item.workflow.id}`}
               className="hover:underline"
               onClick={(event) => event.stopPropagation()}
             >
-              {item.childIssue.identifier ?? item.childIssue.title}
+              {item.workflow.title}
             </Link>
-          </div>
-        ) : null}
+            <div className="text-[11px] text-muted-foreground">
+              Run {item.workflow.runId.slice(0, 8)}
+            </div>
+          </>
+        ) : rootIssue ? (
+          <>
+            <Link
+              to={issueUrl(rootIssue)}
+              className="text-foreground hover:underline"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {rootIssue.identifier ?? rootIssue.title}
+            </Link>
+            {showChildSeparately && item.childIssue ? (
+              <div className="text-[11px] text-muted-foreground">
+                from{" "}
+                <Link
+                  to={issueUrl(item.childIssue)}
+                  className="hover:underline"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  {item.childIssue.identifier ?? item.childIssue.title}
+                </Link>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <span className="text-muted-foreground">Unknown</span>
+        )}
       </td>
       <td className="px-3 py-2 align-top">
         {item.agent ? (
@@ -208,6 +227,8 @@ function DeliverableRow({ item }: { item: DeliverableListItem }) {
           >
             {item.agent.name}
           </Link>
+        ) : item.workflow ? (
+          <span className="text-muted-foreground">Workflow</span>
         ) : (
           <span className="text-muted-foreground">Unknown</span>
         )}

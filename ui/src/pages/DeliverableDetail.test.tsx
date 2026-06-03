@@ -69,12 +69,15 @@ const baseDetail = {
   createdAt: "2026-05-01T00:00:00.000Z",
   updatedAt: "2026-05-01T00:00:00.000Z",
   contentPath: "/api/attachments/abc/content",
+  contentType: "application/pdf",
   byteSize: 2048,
   originalFilename: "report.pdf",
+  sourceKind: "issue",
   childIssue: { id: "child-1", identifier: "PAP-12", title: "Write report", status: "done" },
   rootIssue: { id: "root-1", identifier: "PAP-1", title: "Quarterly review", status: "in_progress" },
   agent: { id: "agent-1", name: "Astro", urlKey: "astro", icon: null },
   runId: "run-1",
+  workflow: null,
   ancestors: [
     { id: "root-1", identifier: "PAP-1", title: "Quarterly review", status: "in_progress" },
   ],
@@ -169,5 +172,36 @@ describe("DeliverableDetail page", () => {
 
     expect(container.textContent).not.toContain("Original request");
     expect(container.textContent).toContain("Worked on");
+  });
+
+  it("renders workflow provenance for workflow-backed deliverables", async () => {
+    getMock.mockResolvedValue({
+      ...baseDetail,
+      sourceKind: "workflow",
+      contentType: "text/markdown; charset=utf-8",
+      childIssue: null,
+      rootIssue: null,
+      agent: null,
+      workflow: {
+        id: "workflow-1",
+        title: "Brief generator",
+        runId: "run-2",
+      },
+      ancestors: [],
+      preview: {
+        kind: "markdown",
+        body: "# Workflow brief",
+        truncated: false,
+      },
+    });
+
+    await renderAt(container, "/deliverables/deliverable-1");
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Workflow");
+    expect(container.textContent).toContain("Brief generator");
+    expect(container.textContent).toContain("Workflow run");
+    expect(container.textContent).not.toContain("Worked on");
   });
 });

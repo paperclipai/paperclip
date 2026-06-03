@@ -23,7 +23,7 @@ function asErrorText(value: unknown): string {
 }
 
 export function parseGoogleAdkJsonl(stdout: string) {
-  const assistantLines: string[] = [];
+  let lastAssistantText = "";
   const toolCalls: Array<{ name: string; input: unknown }> = [];
   const toolResults: Array<{ name: string; output: unknown }> = [];
   let errorMessage: string | null = null;
@@ -38,12 +38,13 @@ export function parseGoogleAdkJsonl(stdout: string) {
     const content = parseObject(parsed.content);
     const role = asString(content.role, "");
     const parts = Array.isArray(content.parts) ? content.parts : [];
+    const modelTexts: string[] = [];
 
     for (const partRaw of parts) {
       const part = parseObject(partRaw);
       const text = asString(part.text, "").trim();
       if (text && role === "model") {
-        assistantLines.push(text);
+        modelTexts.push(text);
       }
 
       const functionCall = parseObject(part.functionCall);
@@ -61,6 +62,10 @@ export function parseGoogleAdkJsonl(stdout: string) {
           output: functionResponse.response ?? functionResponse,
         });
       }
+    }
+
+    if (role === "model" && modelTexts.length > 0) {
+      lastAssistantText = modelTexts.join("\n\n").trim();
     }
 
     const explicitError = asErrorText(parsed.error ?? parsed.message ?? parsed.detail);
@@ -84,7 +89,7 @@ export function parseGoogleAdkJsonl(stdout: string) {
   }
 
   return {
-    summary: assistantLines.join("\n\n").trim(),
+    summary: lastAssistantText,
     toolCalls,
     toolResults,
     usage,

@@ -127,7 +127,22 @@ export type {
   DeliverableIssueRef,
   DeliverableListItem,
   DeliverablePreview,
+  DeliverableWorkflowRef,
 } from "./deliverable.js";
+export type {
+  Workflow,
+  WorkflowPipelineDefinition,
+  WorkflowPipelinePhase,
+  WorkflowRunUsage,
+  WorkflowRunConsoleChunk,
+  WorkflowRun,
+  WorkflowPhase,
+  WorkflowHandoff,
+  WorkflowDeliverableSummary,
+  WorkflowRunDetail,
+  WorkflowListItem,
+  WorkflowDetail,
+} from "./workflow.js";
 export type {
   Issue,
   IssueAssigneeAdapterOverrides,

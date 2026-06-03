@@ -18,6 +18,8 @@ import { Deliverables } from "./pages/Deliverables";
 import { DeliverableDetail } from "./pages/DeliverableDetail";
 import { Routines } from "./pages/Routines";
 import { RoutineDetail } from "./pages/RoutineDetail";
+import { Workflows } from "./pages/Workflows";
+import { WorkflowDetail } from "./pages/WorkflowDetail";
 import { UserProfile } from "./pages/UserProfile";
 import { ExecutionWorkspaceDetail } from "./pages/ExecutionWorkspaceDetail";
 import { Goals } from "./pages/Goals";
@@ -109,6 +111,8 @@ function boardRoutes() {
       <Route path="deliverables/:deliverableId" element={<DeliverableDetail />} />
       <Route path="routines" element={<Routines />} />
       <Route path="routines/:routineId" element={<RoutineDetail />} />
+      <Route path="workflows" element={<Workflows />} />
+      <Route path="workflows/:workflowId" element={<WorkflowDetail />} />
       <Route path="builder" element={<CompanyBuilder />}/>
       <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
       <Route path="execution-workspaces/:workspaceId/configuration" element={<ExecutionWorkspaceDetail />} />

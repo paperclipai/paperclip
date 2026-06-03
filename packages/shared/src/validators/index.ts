@@ -252,6 +252,31 @@ export {
   type CreateGoal,
   type UpdateGoal,
 } from "./goal.js";
+export {
+  workflowRunnerTypeSchema,
+  workflowStatusSchema,
+  workflowRunStatusSchema,
+  workflowPhaseStatusSchema,
+  workflowHandoffKindSchema,
+  workflowHandoffStatusSchema,
+  workflowPipelinePhaseSchema,
+  workflowPipelineDefinitionSchema,
+  createWorkflowSchema,
+  updateWorkflowSchema,
+  runWorkflowSchema,
+  workflowCallbackAuthSchema,
+  workflowPhaseEventSchema,
+  createWorkflowHandoffSchema,
+  resolveWorkflowHandoffSchema,
+  createWorkflowDeliverableSchema,
+  type CreateWorkflow,
+  type UpdateWorkflow,
+  type RunWorkflow,
+  type WorkflowPhaseEvent,
+  type CreateWorkflowHandoff,
+  type ResolveWorkflowHandoff,
+  type CreateWorkflowDeliverable,
+} from "./workflow.js";
 
 export {
   createApprovalSchema,

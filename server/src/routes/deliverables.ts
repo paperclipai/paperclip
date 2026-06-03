@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { DELIVERABLE_AUDIENCES, type DeliverableAudience } from "@paperclipai/shared";
 import { workProductService, clampDeliverableLimit } from "../services/index.js";
+import { getStorageService } from "../storage/index.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 
 function sanitizeDispositionFilename(filename: string): string {
@@ -48,7 +49,8 @@ export function deliverableRoutes(db: Db) {
   router.get("/deliverables/:id", async (req, res) => {
     const id = req.params.id as string;
     assertBoard(req);
-    const deliverable = await workProductsSvc.getDeliverableById(id);
+    const deliverable = await workProductsSvc.getDeliverableById(id)
+      ?? await workProductsSvc.getWorkflowDeliverableById(id);
     if (!deliverable) {
       res.status(404).json({ error: "Deliverable not found" });
       return;
@@ -57,7 +59,7 @@ export function deliverableRoutes(db: Db) {
     res.json(deliverable);
   });
 
-  router.get("/deliverables/:id/content", async (req, res) => {
+  router.get("/deliverables/:id/content", async (req, res, next) => {
     const id = req.params.id as string;
     assertBoard(req);
 
@@ -68,6 +70,32 @@ export function deliverableRoutes(db: Db) {
       const filename = sanitizeDispositionFilename(document.filename);
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
       res.status(200).send(document.body);
+      return;
+    }
+
+    const workflowContent = await workProductsSvc.getWorkflowDeliverableContentById(id);
+    if (workflowContent) {
+      assertCompanyAccess(req, workflowContent.companyId);
+      res.setHeader("Content-Type", workflowContent.contentType);
+      const filename = sanitizeDispositionFilename(workflowContent.filename);
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      if (workflowContent.body != null) {
+        res.status(200).send(workflowContent.body);
+        return;
+      }
+      if (workflowContent.objectKey) {
+        const object = await getStorageService().getObject(workflowContent.companyId, workflowContent.objectKey);
+        if (object.contentLength != null) {
+          res.setHeader("Content-Length", String(object.contentLength));
+        }
+        object.stream.on("error", (err) => {
+          next(err);
+        });
+        object.stream.pipe(res);
+        return;
+      }
+      // Deliverable row exists but has no content — respond explicitly rather than falling through.
+      res.status(404).json({ error: "Deliverable content not available" });
       return;
     }
 
