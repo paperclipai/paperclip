@@ -1,5 +1,6 @@
 import type { RfpMartRawOpportunity } from "./rfpmart-client.js";
 import type { NormalizedOpportunity } from "./types.js";
+import { stateAbbrFromText } from "./state.js";
 
 /**
  * US state ID → abbreviation lookup for RFPMart.
@@ -41,12 +42,18 @@ export function normalizeRfpMartOpportunity(
   const budget = parseBudget(raw.rfpmart_budget, raw.rfpmart_budget_2);
   const { title, agency } = parseTitleAndAgency(raw.rfpmart_title, raw.rfpmart_scope_1);
 
+  // US-1: the `USA (Texas) - ...` title prefix (now in `agency`) is the source of
+  // truth for location. The numeric STATE_MAP code is unreliable (observed a Texas
+  // RFP coded "UT"). Prefer the title-derived state; fall back to the numeric code.
+  const state =
+    stateAbbrFromText(agency) ?? STATE_MAP[raw.rfpmart_state] ?? null;
+
   return {
     id: `rfpmart-${raw.rfpmart_rfp_id}`,
     title,
     description: raw.rfpmart_scope_1 || raw.rfpmart_scope_2 || "",
     agency,
-    state: STATE_MAP[raw.rfpmart_state] ?? null,
+    state,
     naicsCode: CATEGORY_TO_NAICS[raw.rfpmart_category] ?? null,
     pscCode: null,
     estimatedValue: budget,
@@ -56,7 +63,7 @@ export function normalizeRfpMartOpportunity(
     type: "Solicitation", // RFPMart only lists RFPs
     setAsideType: null,
     sourceUrl: raw.rfpmart_link || raw.rfpmart_rfp_pub_url || null,
-    placeOfPerformance: STATE_MAP[raw.rfpmart_state] ?? null,
+    placeOfPerformance: state,
   };
 }
 

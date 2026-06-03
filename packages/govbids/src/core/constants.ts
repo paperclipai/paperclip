@@ -110,6 +110,30 @@ export const NON_BIDDABLE_TYPES = [
 ] as const;
 
 /**
+ * US-4: agencies/issuers ConsultAdd cannot pursue — international bodies whose
+ * work is outside US jurisdiction and follows non-US procurement rules. Matched
+ * case-insensitively as whole phrases against the agency name. Observed ~41 UN
+ * solicitations/day leaking in, all coerced to a US state (NY) by the region
+ * parser. Word-boundary matching avoids false positives (e.g. "Union County").
+ */
+export const EXCLUDED_AGENCY_PATTERNS = [
+  "united nations",
+  "unicef",
+  "unicc",
+  "undp",
+  "unfpa",
+  "unhcr",
+  "unesco",
+  "unops",
+  "unrwa",
+  "world bank",
+  "world health organization",
+  "european union",
+  "interpol",
+  "organization of american states",
+] as const;
+
+/**
  * Contract value range sweet spot for ConsultAdd.
  */
 export const VALUE_RANGE = {

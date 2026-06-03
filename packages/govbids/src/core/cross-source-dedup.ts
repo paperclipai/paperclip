@@ -1,4 +1,5 @@
 import type { NormalizedOpportunity } from "./types.js";
+import { stateAbbrFromText } from "./state.js";
 
 /**
  * Normalize a title for fuzzy matching across sources.
@@ -53,13 +54,22 @@ export function crossSourceDedup(
     for (let i = 0; i < kept.length; i++) {
       const existing = kept[i];
 
-      // Quick check: must be same state (or both null)
-      if (opp.state !== existing.state) continue;
+      // US-2: states must be compatible, but a NULL state is a wildcard.
+      // OpenText Support Services arrives as BidPrime(state=PA) and
+      // RFPMart(state=null) — same solicitation, different state completeness.
+      // Requiring an exact state match let both survive. Null-matches-any fixes it,
+      // while the title-similarity gate below still prevents two different RFPs that
+      // merely share a state from collapsing.
+      const statesCompatible =
+        opp.state === existing.state ||
+        opp.state === null ||
+        existing.state === null;
+      if (!statesCompatible) continue;
 
       // Title similarity check
       const sim = titleSimilarity(opp.title, existing.title);
       if (sim >= similarityThreshold) {
-        // Duplicate found — keep the one with more data
+        // Duplicate found — keep the one with more data (richer record wins).
         const oppScore = dataRichness(opp);
         const existingScore = dataRichness(existing);
 
@@ -88,9 +98,27 @@ function dataRichness(opp: NormalizedOpportunity): number {
   if (opp.description.length > 100) score += 3;
   if (opp.estimatedValue !== null) score += 2;
   if (opp.dueDate !== null) score += 2;
+  // US-2: a known state is a strong completeness signal. For the OpenText pair,
+  // this lets the BidPrime record (state=PA, specific agency "Philadelphia Gas
+  // Works") win over the RFPMart record (state=null, bare "Pennsylvania").
+  if (opp.state !== null) score += 2;
   if (opp.naicsCode !== null) score += 1;
   if (opp.pscCode !== null) score += 1;
   if (opp.sourceUrl !== null) score += 1;
-  if (opp.agency && opp.agency !== "RFPMart Source") score += 1;
+  // A specific agency beats a bare state name. RFPMart often sets agency to the
+  // state name ("Pennsylvania"); don't reward that as a "real" agency.
+  if (
+    opp.agency &&
+    opp.agency !== "RFPMart Source" &&
+    !isBareStateName(opp.agency)
+  ) {
+    score += 1;
+  }
   return score;
+}
+
+/** True when the agency string is just a US state/territory name (RFPMart quirk). */
+function isBareStateName(agency: string): boolean {
+  return stateAbbrFromText(agency.trim()) !== null && /^[A-Za-z .]+$/.test(agency.trim()) &&
+    agency.trim().split(/\s+/).length <= 3 && !/county|city|district|department|authority|university|board|office|agency|state of/i.test(agency);
 }

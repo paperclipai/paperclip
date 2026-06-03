@@ -37,6 +37,31 @@ describe("applyHardFilters", () => {
     expect(dropped[0].reason).toContain("Non-biddable type");
   });
 
+  // US-4: non-US / UN issuers
+  it("drops UN-body and international issuers", () => {
+    for (const agency of [
+      "United Nations Population Fund",
+      "United Nations High Commissioner for Refugees",
+      "UNICC",
+      "World Bank Group",
+    ]) {
+      const { kept, dropped } = applyHardFilters([makeOpp({ agency })]);
+      expect(kept, `${agency} should be dropped`).toHaveLength(0);
+      expect(dropped[0].reason).toContain("Excluded non-US issuer");
+    }
+  });
+
+  it("does NOT drop US agencies whose name merely contains a UN-like substring", () => {
+    for (const agency of [
+      "Union County",
+      "Unicoi County Government",
+      "City of Unionville",
+    ]) {
+      const { kept } = applyHardFilters([makeOpp({ agency })]);
+      expect(kept, `${agency} should pass`).toHaveLength(1);
+    }
+  });
+
   it("drops non-biddable types: RFI", () => {
     const { dropped } = applyHardFilters([
       makeOpp({ type: "Request for Information" }),

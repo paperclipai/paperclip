@@ -3,6 +3,7 @@ import {
   NAICS_CODES,
   VALUE_RANGE,
   DUE_DATE_RANGE,
+  EXCLUDED_AGENCY_PATTERNS,
 } from "./constants.js";
 import type {
   NormalizedOpportunity,
@@ -78,7 +79,26 @@ const filterByDueDate: FilterFn = (opp, config) => {
   return null;
 };
 
+/**
+ * US-4: drop international / non-US-jurisdiction issuers (UN bodies, World Bank,
+ * etc.). These follow non-US procurement rules and the work is rarely US-located,
+ * so ConsultAdd cannot pursue them. Whole-word match on the agency name to avoid
+ * false positives like "Union County" or "Unicoi".
+ */
+const filterExcludedAgency: FilterFn = (opp) => {
+  const agency = ` ${opp.agency.toLowerCase()} `;
+  for (const pattern of EXCLUDED_AGENCY_PATTERNS) {
+    // Match as a whole phrase bounded by non-alphanumerics on each side.
+    const re = new RegExp(`(^|[^a-z])${pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z]|$)`);
+    if (re.test(agency)) {
+      return `Excluded non-US issuer: "${opp.agency}"`;
+    }
+  }
+  return null;
+};
+
 const FILTER_CHAIN: FilterFn[] = [
+  filterExcludedAgency,
   filterNonBiddableTypes,
   filterByNaics,
   filterByValueRange,
