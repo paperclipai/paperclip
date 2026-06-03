@@ -85,6 +85,7 @@ import {
   type ActiveIssueTreePauseHoldGate,
 } from "./issue-tree-control.js";
 import { runEvidenceGate, type EvidenceFetchResult } from "./evidence-gate-wiring.js";
+import { shouldBlockNarratedDone } from "./done-gate.js";
 import {
   parseIssueGraphLivenessIncidentKey,
   RECOVERY_ORIGIN_KINDS,
@@ -5616,7 +5617,8 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
-      const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+      const experimental = await instanceSettings.getExperimental();
+      const isolatedWorkspacesEnabled = experimental.enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
         delete issueData.executionWorkspacePreference;
@@ -5644,6 +5646,28 @@ export function issueService(db: Db) {
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
+      }
+
+      // Done-execution gate (narrated-completion hardening, instance flag
+      // `enableDoneExecutionGate`, default off). Blocks an agent self-marking
+      // an issue `done` when no real execution run ever occurred and no
+      // pr-link evidence was recorded — the failure mode where agents post
+      // "## Done" via the board API without shipping code. Never gates human
+      // actors. See server/src/services/done-gate.ts.
+      if (
+        experimental.enableDoneExecutionGate &&
+        shouldBlockNarratedDone({
+          fromStatus: existing.status,
+          toStatus: issueData.status,
+          existingExecutionRunId: existing.executionRunId,
+          lastEvidenceVerdict: existing.lastEvidenceVerdict,
+          isAgentActor: actorAgentId != null,
+        })
+      ) {
+        throw unprocessable(
+          "Issue cannot be marked done without execution evidence (no execution run and no pr-link evidence)",
+          { reason: "no_execution_run_and_no_pr_evidence", issueId: id },
+        );
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {

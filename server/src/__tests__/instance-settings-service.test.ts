@@ -17,6 +17,7 @@ describe("instance settings service", () => {
       enableIsolatedWorkspaces: true,
       enableIssuePlanDecompositions: true,
       enableCloudSync: true,
+      enableDoneExecutionGate: false,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,

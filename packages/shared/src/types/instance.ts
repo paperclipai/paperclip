@@ -59,6 +59,7 @@ export interface InstanceExperimentalSettings {
   enableIsolatedWorkspaces: boolean;
   enableIssuePlanDecompositions: boolean;
   enableCloudSync: boolean;
+  enableDoneExecutionGate: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
