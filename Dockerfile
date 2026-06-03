@@ -106,8 +106,15 @@ ARG CCROTATE_REF=7cf84fccd07dd3bc8b11845cb0630ae825a008f9
 #    quarantine/clear Claude sessions rejected for immutable thinking
 #    blocks.
 #  - opencode-k8s unchanged — already at master tip.
+# Re-pinned 2026-06-03 (BLO-8909) to kkroo/paperclip-adapter-opencode-k8s
+# master 3bbc0b3 (was 7415df5): default agentDbMode to workspace_subpath so
+# the agent DB lives on a per-(agent, task) subPath of the shared RWX
+# workspace data PVC instead of a per-agent RWO ceph-rbd PVC. Makes durable
+# the BLO-8906 mitigation for the recurring opencode_k8s Multi-Attach on
+# cross-node retry; dedicated_pvc remains explicit opt-in. Verified in
+# cluster via BLO-8908.
 ARG CLAUDE_K8S_REF=1d6a08f7c814208caa3bf2333dd7c35ca50b95ae
-ARG OPENCODE_K8S_REF=7415df50682ff7308a330a156c7cc38996b3b840
+ARG OPENCODE_K8S_REF=3bbc0b39f79ce2d9ac08c93001780a495a37cafc
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
