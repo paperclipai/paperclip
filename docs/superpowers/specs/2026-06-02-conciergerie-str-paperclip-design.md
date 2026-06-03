@@ -470,3 +470,18 @@ Human Adapter (#3010, proposal-only) + per-owner human agents + owner cockpit +
 supervisor/president seat + outsourcing bridge → Future Tooling; v1 uses board user +
 approval gates; single DB (no per-owner/per-agent DB). **Plan Task 6 rewritten as Task 6R
 (CouchStore) — the Postgres migration + pg-store are superseded.**
+
+**2026-06-03 — live Task 8 acceptance: PASS (end-to-end).** Installed str-ops into a
+running Paperclip (`pnpm dev:once`, local_trusted) against CouchDB v3.4.3 (Docker,
+loopback). Results: `ensure()` created DB `str_ops` + 3 Mango indexes; `seed-demo` →
+owner 1 + properties 2; `channel-poll` → 2 bookings + 2 guests ingested under company
+"Conciergerie Deborah.net"; re-poll → still 2 (deterministic-`_id` dedupe holds). Three
+integration findings handled: (1) the plugin `ctx.http` egress gate blocks loopback with
+no allowlist (`plugin-host-services.ts`) → the Couch adapter uses Node global `fetch`
+[`21825588`]; (2) the plugin worker env is host-scrubbed (`plugin-worker-manager.ts:717`,
+"Do NOT spread process.env") → CouchDB creds are delivered via **`ctx.config`**
+(`instanceConfigSchema` + `POST /api/plugins/:id/config`) [`2a9023b9`], not env; (3)
+`MockChannelProvider` drains its queue once — re-init the worker (disable→enable) to
+replay (PoC mock quirk, irrelevant to a real channel provider). **Setup note:** set
+plugin config `couchUrl/couchDb/couchUser/couchPassword` (a CouchDB admin or
+db-create-capable user); move the password to a Paperclip secret-ref in a later pass.
