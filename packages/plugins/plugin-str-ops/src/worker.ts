@@ -20,13 +20,19 @@ const plugin = definePlugin({
     const companies = await ctx.companies.list();
     const defaultCompanyId = companies[0]?.id ?? "";
 
-    // CouchDB record store. Config from env; default localhost.
-    const couchUrl = process.env.STR_OPS_COUCHDB_URL ?? "http://127.0.0.1:5984";
-    const couchDb = process.env.STR_OPS_COUCHDB_DB ?? "str_ops";
+    // CouchDB record store. Config from ctx.config (operator-set via POST /api/plugins/:id/config),
+    // falling back to env vars (useful in dev when env is not scrubbed).
+    const cfg = (await ctx.config.get()) as Record<string, unknown>;
+    const s = (v: unknown): string | undefined =>
+      typeof v === "string" && v.trim() ? v.trim() : undefined;
+    const couchUrl      = s(cfg.couchUrl)      ?? process.env.STR_OPS_COUCHDB_URL      ?? "http://127.0.0.1:5984";
+    const couchDb       = s(cfg.couchDb)       ?? process.env.STR_OPS_COUCHDB_DB       ?? "str_ops";
+    const couchUser     = s(cfg.couchUser)     ?? process.env.STR_OPS_COUCHDB_USER;
+    const couchPassword = s(cfg.couchPassword) ?? process.env.STR_OPS_COUCHDB_PASSWORD;
     const http = createCouchHttp({
       baseUrl: couchUrl,
-      user: process.env.STR_OPS_COUCHDB_USER,
-      password: process.env.STR_OPS_COUCHDB_PASSWORD,
+      user: couchUser,
+      password: couchPassword,
     });
     const store = new CouchStore(http, couchDb);
     await store.ensure();

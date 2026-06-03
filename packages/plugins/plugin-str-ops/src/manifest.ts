@@ -25,6 +25,16 @@ const manifest: PaperclipPluginManifestV1 = {
   entrypoints: {
     worker: "./dist/worker.js",
   },
+  /** CouchDB connection config — set via POST /api/plugins/:id/config. */
+  instanceConfigSchema: {
+    type: "object",
+    properties: {
+      couchUrl:      { type: "string", description: "CouchDB base URL (e.g. http://127.0.0.1:5984)" },
+      couchDb:       { type: "string", description: "CouchDB database name (default: str_ops)" },
+      couchUser:     { type: "string", description: "CouchDB username" },
+      couchPassword: { type: "string", description: "CouchDB password" },
+    },
+  },
   // No `database` block — records live in CouchDB (reached via ctx.http), not the
   // SDK Postgres namespace. DB_NAMESPACE_SLUG is kept only as the default Couch db name.
   jobs: [
