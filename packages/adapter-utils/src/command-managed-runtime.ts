@@ -6,7 +6,7 @@ import {
   type SandboxManagedRuntimeClient,
   type SandboxRemoteExecutionSpec,
 } from "./sandbox-managed-runtime.js";
-import { preferredShellForSandbox } from "./sandbox-shell.js";
+import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
 
 export interface CommandManagedRuntimeRunner {
@@ -57,7 +57,7 @@ function requireSuccessfulResult(result: RunProcessResult, action: string): void
 
 export function createCommandManagedRuntimeClient(input: {
   runner: CommandManagedRuntimeRunner;
-  remoteCwd: string;
+  commandCwd: string;
   timeoutMs: number;
   shellCommand?: "bash" | "sh" | null;
 }): SandboxManagedRuntimeClient {
@@ -65,8 +65,8 @@ export function createCommandManagedRuntimeClient(input: {
   const runShell = async (script: string, opts: { stdin?: string; timeoutMs?: number } = {}) => {
     const result = await input.runner.execute({
       command: shellCommand,
-      args: ["-lc", script],
-      cwd: input.remoteCwd,
+      args: shellCommandArgs(script),
+      cwd: input.commandCwd,
       stdin: opts.stdin,
       timeoutMs: opts.timeoutMs ?? input.timeoutMs,
     });
@@ -116,8 +116,8 @@ export function createCommandManagedRuntimeClient(input: {
     remove: async (remotePath) => {
       const result = await input.runner.execute({
         command: shellCommand,
-        args: ["-lc", `rm -rf ${shellQuote(remotePath)}`],
-        cwd: input.remoteCwd,
+        args: shellCommandArgs(`rm -rf ${shellQuote(remotePath)}`),
+        cwd: input.commandCwd,
         timeoutMs: input.timeoutMs,
       });
       requireSuccessfulResult(result, `remove ${remotePath}`);
@@ -125,8 +125,8 @@ export function createCommandManagedRuntimeClient(input: {
     run: async (command, options) => {
       const result = await input.runner.execute({
         command: shellCommand,
-        args: ["-lc", command],
-        cwd: input.remoteCwd,
+        args: shellCommandArgs(command),
+        cwd: input.commandCwd,
         timeoutMs: options.timeoutMs,
       });
       requireSuccessfulResult(result, command);
@@ -149,6 +149,10 @@ export async function prepareCommandManagedRuntime(input: {
 }): Promise<PreparedSandboxManagedRuntime> {
   const timeoutMs = input.spec.timeoutMs && input.spec.timeoutMs > 0 ? input.spec.timeoutMs : 300_000;
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
+  // Managed-runtime sync/restore scripts use absolute paths throughout, so
+  // run them from a stable cwd. The target workspace itself may be removed or
+  // recreated during a run, which breaks shell startup if we chdir into it.
+  const commandCwd = "/";
   const runtimeSpec: SandboxRemoteExecutionSpec = {
     transport: "sandbox",
     provider: input.spec.providerKey ?? "sandbox",
@@ -159,7 +163,7 @@ export async function prepareCommandManagedRuntime(input: {
   };
   const client = createCommandManagedRuntimeClient({
     runner: input.runner,
-    remoteCwd: workspaceRemoteDir,
+    commandCwd,
     timeoutMs,
     shellCommand: input.spec.shellCommand,
   });
@@ -175,8 +179,8 @@ export async function prepareCommandManagedRuntime(input: {
     if (detectCommand) {
       const probe = await input.runner.execute({
         command: shellCommand,
-        args: ["-lc", `command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`],
-        cwd: workspaceRemoteDir,
+        args: shellCommandArgs(`command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`),
+        cwd: commandCwd,
         timeoutMs,
       });
       if (!probe.timedOut && (probe.exitCode ?? 1) === 0) {
@@ -194,8 +198,8 @@ export async function prepareCommandManagedRuntime(input: {
     }
     const result = await input.runner.execute({
       command: shellCommand,
-      args: ["-lc", installCommand],
-      cwd: workspaceRemoteDir,
+      args: shellCommandArgs(installCommand),
+      cwd: commandCwd,
       timeoutMs,
     });
     // A failed install is not always fatal: the CLI may already be on PATH

@@ -21,7 +21,7 @@ import {
   usePluginStream,
   usePluginToast,
 } from "./bridge.js";
-import { createElement, useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
+import { Component, createElement, useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { User } from "lucide-react";
 import {
@@ -524,6 +524,127 @@ function FragmentSafe({ children }: { children?: ReactNode }) {
   return createElement("span", { className: "contents" }, children);
 }
 
+type PluginStatusBadgeProps = {
+  label: string;
+  status: "ok" | "warning" | "error" | "info" | "pending";
+};
+
+function PluginSdkStatusBadge({ label, status }: PluginStatusBadgeProps) {
+  const className = {
+    ok: "border-emerald-300 bg-emerald-50 text-emerald-700",
+    warning: "border-amber-300 bg-amber-50 text-amber-800",
+    error: "border-red-300 bg-red-50 text-red-700",
+    info: "border-slate-300 bg-slate-50 text-slate-700",
+    pending: "border-slate-300 bg-slate-50 text-slate-600",
+  }[status];
+  return createElement(
+    "span",
+    { className: `inline-flex w-fit items-center rounded-full border px-2 py-0.5 text-xs font-medium ${className}` },
+    label,
+  );
+}
+
+type PluginDataTableColumn = {
+  key: string;
+  header: string;
+  render?: (value: unknown, row: Record<string, unknown>) => ReactNode;
+  width?: string;
+};
+
+type PluginDataTableProps = {
+  columns: PluginDataTableColumn[];
+  rows: Array<Record<string, unknown> & { id?: string }>;
+  loading?: boolean;
+  emptyMessage?: string;
+};
+
+function PluginSdkDataTable({ columns, rows, loading, emptyMessage = "No rows." }: PluginDataTableProps) {
+  if (loading) return createElement("div", { className: "text-sm text-muted-foreground" }, "Loading...");
+  if (!rows.length) return createElement("div", { className: "text-sm text-muted-foreground" }, emptyMessage);
+  const gridColumns = columns.map((column) => column.width ?? "minmax(0, 1fr)").join(" ");
+  return createElement(
+    "div",
+    { className: "overflow-hidden rounded-md border" },
+    createElement(
+      "div",
+      {
+        className: "hidden border-b bg-muted/35 px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground md:grid md:[grid-template-columns:var(--plugin-grid-cols)]",
+        style: { "--plugin-grid-cols": gridColumns },
+      },
+      columns.map((column) => createElement("div", { key: column.key }, column.header)),
+    ),
+    createElement(
+      "div",
+      { className: "divide-y" },
+      rows.map((row, index) => createElement(
+        "div",
+        {
+          key: String(row.id ?? index),
+          className: "grid gap-2 px-3 py-3 md:items-center md:[grid-template-columns:var(--plugin-grid-cols)]",
+          style: { "--plugin-grid-cols": gridColumns },
+        },
+        columns.map((column) => createElement(
+          "div",
+          { key: column.key, className: "min-w-0 text-sm" },
+          createElement("div", { className: "mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground md:hidden" }, column.header),
+          column.render ? column.render(row[column.key], row) : String(row[column.key] ?? ""),
+        )),
+      )),
+    ),
+  );
+}
+
+type PluginKeyValueListProps = {
+  pairs: Array<{ label: string; value: ReactNode }>;
+};
+
+function PluginSdkKeyValueList({ pairs }: PluginKeyValueListProps) {
+  return createElement(
+    "dl",
+    { className: "grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[max-content_minmax(0,1fr)]" },
+    pairs.flatMap((pair) => [
+      createElement("dt", { key: `${pair.label}:label`, className: "text-muted-foreground" }, pair.label),
+      createElement("dd", { key: `${pair.label}:value`, className: "min-w-0" }, pair.value),
+    ]),
+  );
+}
+
+function PluginSdkMetricCard({ label, value, unit }: { label: string; value: string | number; unit?: string }) {
+  return createElement(
+    "div",
+    { className: "rounded-md border bg-card p-3" },
+    createElement("div", { className: "text-xs font-medium uppercase tracking-wide text-muted-foreground" }, label),
+    createElement("div", { className: "mt-1 text-lg font-semibold" }, `${value}${unit ?? ""}`),
+  );
+}
+
+function PluginSdkJsonTree({ data }: { data: unknown }) {
+  return createElement("pre", { className: "max-h-80 overflow-auto rounded-md border bg-muted/30 p-2 text-xs" }, JSON.stringify(data, null, 2));
+}
+
+function PluginSdkSpinner({ label = "Loading" }: { size?: "sm" | "md" | "lg"; label?: string }) {
+  return createElement("span", {
+    className: "inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground align-middle",
+    role: "status",
+    "aria-label": label,
+  });
+}
+
+class PluginSdkErrorBoundary extends Component<{ children: ReactNode; fallback?: ReactNode }, { hasError: boolean }> {
+  override state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  override render() {
+    if (this.state.hasError) {
+      return this.props.fallback ?? createElement("div", { className: "rounded-md border border-destructive/30 p-3 text-sm text-destructive" }, "Plugin UI failed to render.");
+    }
+    return this.props.children;
+  }
+}
+
 /**
  * Initialize the plugin bridge global registry.
  *
@@ -564,6 +685,13 @@ export function initPluginBridge(
           resolveWikiLinkHref,
           children: content,
         }),
+      MetricCard: PluginSdkMetricCard,
+      StatusBadge: PluginSdkStatusBadge,
+      DataTable: PluginSdkDataTable,
+      KeyValueList: PluginSdkKeyValueList,
+      JsonTree: PluginSdkJsonTree,
+      Spinner: PluginSdkSpinner,
+      ErrorBoundary: PluginSdkErrorBoundary,
       MarkdownEditor: PluginSdkMarkdownEditor,
       FileTree: PluginSdkFileTree,
       IssuesList: PluginSdkIssuesList,

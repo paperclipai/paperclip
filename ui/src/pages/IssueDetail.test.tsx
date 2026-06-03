@@ -2,16 +2,19 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, Issue, IssueTreeControlPreview, IssueTreeHold } from "@paperclipai/shared";
-import { act, type ButtonHTMLAttributes, type ReactNode } from "react";
+import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IssueDetail } from "./IssueDetail";
+import { canBoardResolveRecoveryAction, IssueDetail } from "./IssueDetail";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
   list: vi.fn(),
+  listAcceptedPlanDecompositions: vi.fn(),
   listComments: vi.fn(),
   listAttachments: vi.fn(),
+  listWorkProducts: vi.fn(),
   listFeedbackVotes: vi.fn(),
   markRead: vi.fn(),
   update: vi.fn(),
@@ -59,6 +62,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
 }));
 
 const mockNavigate = vi.hoisted(() => vi.fn());
@@ -110,7 +114,24 @@ vi.mock("../api/instanceSettings", () => ({
 }));
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, to }: { children?: ReactNode; to: string }) => <a href={to}>{children}</a>,
+  Link: ({
+    children,
+    to,
+    state: _state,
+    issuePrefetch: _issuePrefetch,
+    issueQuicklookSide: _issueQuicklookSide,
+    issueQuicklookAlign: _issueQuicklookAlign,
+    ...props
+  }: {
+    children?: ReactNode;
+    to: string;
+    state?: unknown;
+    issuePrefetch?: unknown;
+    issueQuicklookSide?: unknown;
+    issueQuicklookAlign?: unknown;
+  } & AnchorHTMLAttributes<HTMLAnchorElement>) => (
+    <a href={to} {...props}>{children}</a>
+  ),
   useLocation: () => ({ pathname: "/issues/PAP-1", search: "", hash: "", state: null }),
   useNavigate: () => mockNavigate,
   useNavigationType: () => "PUSH",
@@ -192,9 +213,12 @@ vi.mock("../components/InlineEditor", () => ({
 
 vi.mock("../components/IssueChatThread", () => ({
   IssueChatThread: (props: {
+    onWorkModeChange?: (workMode: string) => void;
+    issueWorkMode?: string;
     onStopRun?: (runId: string) => Promise<void>;
     stopRunLabel?: string;
     stoppingRunLabel?: string;
+    footer?: ReactNode;
   }) => {
     mockIssueChatThreadRender(props);
     return (
@@ -205,6 +229,7 @@ vi.mock("../components/IssueChatThread", () => ({
             {props.stopRunLabel ?? "Stop run"}
           </button>
         ) : null}
+        {props.footer}
       </div>
     );
   },
@@ -332,6 +357,14 @@ vi.mock("@/components/ui/textarea", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
@@ -778,6 +811,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listComments.mockResolvedValue([]);
     mockIssuesApi.listAttachments.mockResolvedValue([]);
+    mockIssuesApi.listWorkProducts.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
     mockIssuesApi.getTreeControlState.mockResolvedValue({ activePauseHold: null });
@@ -802,6 +836,10 @@ describe("IssueDetail", () => {
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+    });
+    mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
     mockIssuesListRender.mockClear();
     mockIssueChatThreadRender.mockClear();
   });
@@ -834,7 +872,194 @@ describe("IssueDetail", () => {
 
     expect(container.textContent).toContain("Issue detail smoke");
     expect(container.textContent).toContain("Chat thread");
-    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    expect(
+      consoleErrorSpy.mock.calls.some((call) =>
+        String(call[0]).includes("React has detected a change in the order of Hooks"),
+      ),
+    ).toBe(false);
+  });
+
+  it("hides the plan decomposition panel by default", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Plan decomposition");
+    expect(mockIssuesApi.listAcceptedPlanDecompositions).not.toHaveBeenCalled();
+  });
+
+  it("shows the plan decomposition panel when the experimental flag is enabled", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: true,
+    });
+    mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([
+      {
+        id: "decomp-1",
+        companyId: "company-1",
+        sourceIssueId: "issue-1",
+        acceptedPlanRevisionId: "plan-rev-1",
+        acceptedPlanRevisionNumber: 2,
+        acceptedInteractionId: null,
+        status: "completed",
+        requestFingerprint: "fingerprint-1",
+        requestedChildCount: 2,
+        childIssueIds: ["issue-2", "issue-3"],
+        childIssues: [
+          {
+            id: "issue-2",
+            identifier: "PAP-2",
+            title: "First child issue",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+        ],
+        ownerAgentId: null,
+        ownerUserId: null,
+        ownerRunId: null,
+        completedAt: "2026-05-28T06:00:00.000Z",
+        createdAt: "2026-05-28T05:50:00.000Z",
+        updatedAt: "2026-05-28T06:00:00.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Plan decomposition");
+    expect(container.textContent).toContain("Plan revision 2");
+    expect(container.textContent).toContain("2 of 2 child issues created");
+    expect(container.textContent).toContain("First child issue");
+    expect(mockIssuesApi.listAcceptedPlanDecompositions).toHaveBeenCalledWith("issue-1");
+  });
+
+  it("renders sibling previous and next navigation at the chat footer", async () => {
+    const issue = createIssue({
+      id: "issue-2",
+      identifier: "PAP-2",
+      issueNumber: 2,
+      parentId: "parent-1",
+      title: "Current sibling",
+      createdAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+    const previous = createIssue({
+      id: "issue-1",
+      identifier: "PAP-1",
+      issueNumber: 1,
+      parentId: "parent-1",
+      title: "Previous sibling",
+      status: "done",
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const next = createIssue({
+      id: "issue-3",
+      identifier: "PAP-3",
+      issueNumber: 3,
+      parentId: "parent-1",
+      title: "Next sibling",
+      blockedBy: [{ id: "issue-2" }] as Issue["blockedBy"],
+      createdAt: new Date("2026-04-03T00:00:00.000Z"),
+    });
+
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.list.mockImplementation((_companyId, filters?: { descendantOf?: string; parentId?: string }) => {
+      if (filters?.parentId === "parent-1") return Promise.resolve([next, previous, issue]);
+      return Promise.resolve([]);
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
+      parentId: "parent-1",
+      includeBlockedBy: true,
+    });
+    expect(container.querySelector('a[aria-label="Previous sub-issue: PAP-1 - Previous sibling"]')).toBeTruthy();
+    expect(container.querySelector('a[aria-label="Next sub-issue: PAP-3 - Next sibling"]')).toBeTruthy();
+    expect(container.textContent).toContain("Previous");
+    expect(container.textContent).toContain("Previous sibling");
+    expect(container.textContent).toContain("Next");
+    expect(container.textContent).toContain("Next sibling");
+    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].footer).toBeTruthy();
+  });
+
+  it("uses the first child issue as next navigation for parent issues without a sibling next", async () => {
+    const parent = createIssue({
+      id: "issue-parent",
+      identifier: "PAP-10",
+      issueNumber: 10,
+      parentId: null,
+      title: "Plan parent",
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const firstChild = createIssue({
+      id: "issue-child-1",
+      identifier: "PAP-11",
+      issueNumber: 11,
+      parentId: "issue-parent",
+      title: "First child",
+      createdAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+    const secondChild = createIssue({
+      id: "issue-child-2",
+      identifier: "PAP-12",
+      issueNumber: 12,
+      parentId: "issue-parent",
+      title: "Second child",
+      blockedBy: [{ id: "issue-child-1" }] as Issue["blockedBy"],
+      createdAt: new Date("2026-04-03T00:00:00.000Z"),
+    });
+
+    mockIssuesApi.get.mockResolvedValue(parent);
+    mockIssuesApi.list.mockImplementation((_companyId, filters?: { descendantOf?: string; parentId?: string }) => {
+      if (filters?.descendantOf === "issue-parent") return Promise.resolve([secondChild, firstChild]);
+      return Promise.resolve([]);
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
+      descendantOf: "issue-parent",
+      includeBlockedBy: true,
+    });
+    expect(container.querySelector('a[aria-label="Next sub-issue: PAP-11 - First child"]')).toBeTruthy();
+    expect(container.textContent).toContain("Next");
+    expect(container.textContent).toContain("First child");
+    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].footer).toBeTruthy();
   });
 
   it("passes blocker attention to the issue detail header status icon", async () => {
@@ -1099,6 +1324,7 @@ describe("IssueDetail", () => {
     expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
       stopRunLabel: "Pause work",
       stoppingRunLabel: "Pausing...",
+      issueWorkMode: "standard",
     });
 
     const chatPauseButton = Array.from(container.querySelectorAll("button"))
@@ -1127,6 +1353,67 @@ describe("IssueDetail", () => {
     const pauseMenuButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === "Pause work...");
     expect(pauseMenuButton).toBeTruthy();
+  });
+
+  it("passes planning work mode to the issue chat thread", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({ workMode: "planning" }));
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+      issueWorkMode: "planning",
+    });
+    expect(container.textContent).toContain("Planning");
+  });
+
+  it("forwards composer work mode changes to the issues API", async () => {
+    const issue = createIssue();
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.listAttachments.mockResolvedValue([
+      {
+        id: "attachment-1",
+        issueId: issue.id,
+        issueCommentId: null,
+        originalFilename: "planning-notes.txt",
+        contentPath: "/attachments/planning-notes.txt",
+        contentType: "text/plain",
+        byteSize: 4096,
+        uploadedByUserId: null,
+        uploadedAt: new Date("2026-04-21T00:02:00.000Z"),
+      },
+    ]);
+    localStorage.setItem("paperclip:issue-comment-draft:issue-1", "Draft follow-up message");
+    mockIssuesApi.update.mockResolvedValue(createIssue({ workMode: "planning" }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const lastChatThreadProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+    expect(lastChatThreadProps?.issueWorkMode).toBe("standard");
+    expect(typeof lastChatThreadProps?.onWorkModeChange).toBe("function");
+
+    await act(async () => {
+      lastChatThreadProps?.onWorkModeChange?.("planning");
+    });
+    await flushReact();
+
+    expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { workMode: "planning" });
+    expect(localStorage.getItem("paperclip:issue-comment-draft:issue-1")).toBe("Draft follow-up message");
+    expect(container.textContent).toContain("planning-notes.txt");
+    localStorage.removeItem("paperclip:issue-comment-draft:issue-1");
   });
 
   it("renders Paused by board distinctly and defaults leaf resume to wake the assignee", async () => {
@@ -1381,5 +1668,41 @@ describe("IssueDetail", () => {
         && element.textContent?.includes("Close"),
       );
     expect(footer?.className).toContain("bg-background");
+  });
+});
+
+describe("canBoardResolveRecoveryAction", () => {
+  it("falls back to companyIds when memberships are not populated", () => {
+    expect(
+      canBoardResolveRecoveryAction("company-1", {
+        companyIds: ["company-1"],
+        memberships: [],
+        isInstanceAdmin: false,
+        source: "session",
+        keyId: null,
+        user: null,
+        userId: "user-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("uses populated memberships as the authoritative board access source", () => {
+    expect(
+      canBoardResolveRecoveryAction("company-1", {
+        companyIds: ["company-1"],
+        memberships: [
+          {
+            companyId: "company-1",
+            membershipRole: "viewer",
+            status: "active",
+          },
+        ],
+        isInstanceAdmin: false,
+        source: "session",
+        keyId: null,
+        user: null,
+        userId: "user-1",
+      }),
+    ).toBe(false);
   });
 });

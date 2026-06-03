@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 const hermesExecuteMock = vi.hoisted(() =>
@@ -230,6 +231,34 @@ describe("server adapter registry", () => {
       }),
     ]);
     await expect(listAdapterModelProfiles("pi_local")).resolves.toEqual([]);
+  });
+
+  it("wraps built-in npm runtime installs with the sandbox-aware install helper", () => {
+    const expectedClaudeInstall = `if ! command -v 'claude' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@anthropic-ai/claude-code")}; fi`;
+    const expectedCodexInstall = `if ! command -v 'codex' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@openai/codex")}; fi`;
+    const expectedGeminiInstall = `if ! command -v 'gemini' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@google/gemini-cli")}; fi`;
+    const expectedOpenCodeInstall = `if ! command -v 'opencode' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("opencode-ai")}; fi`;
+
+    expect(findActiveServerAdapter("claude_local")?.getRuntimeCommandSpec?.({})).toEqual({
+      command: "claude",
+      detectCommand: "claude",
+      installCommand: expectedClaudeInstall,
+    });
+    expect(findActiveServerAdapter("codex_local")?.getRuntimeCommandSpec?.({})).toEqual({
+      command: "codex",
+      detectCommand: "codex",
+      installCommand: expectedCodexInstall,
+    });
+    expect(findActiveServerAdapter("gemini_local")?.getRuntimeCommandSpec?.({})).toEqual({
+      command: "gemini",
+      detectCommand: "gemini",
+      installCommand: expectedGeminiInstall,
+    });
+    expect(findActiveServerAdapter("opencode_local")?.getRuntimeCommandSpec?.({})).toEqual({
+      command: "opencode",
+      detectCommand: "opencode",
+      installCommand: expectedOpenCodeInstall,
+    });
   });
 
   it("switches active adapter behavior back to the builtin when an override is paused", async () => {

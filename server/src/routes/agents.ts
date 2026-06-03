@@ -42,6 +42,7 @@ import {
   heartbeatService,
   ISSUE_LIST_DEFAULT_LIMIT,
   issueApprovalService,
+  issueRecoveryActionService,
   issueService,
   logActivity,
   syncInstructionsBundleConfigFromFilePath,
@@ -500,6 +501,15 @@ export function agentRoutes(
       };
     }
 
+    if (membership?.status === "active") {
+      return {
+        canAssignTasks: true,
+        taskAssignSource: "simple_default" as const,
+        membership,
+        grants,
+      };
+    }
+
     return {
       canAssignTasks: false,
       taskAssignSource: "none" as const,
@@ -542,22 +552,18 @@ export function agentRoutes(
 
   async function assertCanCreateAgentsForCompany(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
-    if (req.actor.type === "board") {
-      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return null;
-      const allowed = await access.canUser(companyId, req.actor.userId, "agents:create");
-      if (!allowed) {
-        throw forbidden("Missing permission: agents:create");
-      }
-      return null;
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agents:create",
+      resource: { type: "company", companyId },
+    });
+    if (!decision.allowed) {
+      throw forbidden(decision.explanation);
     }
-    if (!req.actor.agentId) throw forbidden("Agent authentication required");
-    const actorAgent = await svc.getById(req.actor.agentId);
+    if (req.actor.type !== "agent") return null;
+    const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
     if (!actorAgent || actorAgent.companyId !== companyId) {
       throw forbidden("Agent key cannot access another company");
-    }
-    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "agents:create");
-    if (!allowedByGrant && !canCreateAgents(actorAgent)) {
-      throw forbidden("Missing permission: can create agents");
     }
     return actorAgent;
   }
@@ -565,11 +571,13 @@ export function agentRoutes(
   async function assertBoardCanManageAgentsForCompany(req: Request, companyId: string) {
     assertBoard(req);
     assertCompanyAccess(req, companyId);
-    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-    const allowed = await access.canUser(companyId, req.actor.userId, "agents:create");
-    if (!allowed) {
-      throw forbidden("Missing permission: agents:create");
-    }
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agents:create",
+      resource: { type: "company", companyId },
+    });
+    if (decision.allowed) return;
+    throw forbidden(decision.explanation);
   }
 
   async function assertCanReadConfigurations(req: Request, companyId: string) {
@@ -591,15 +599,12 @@ export function agentRoutes(
 
   async function actorCanReadConfigurationsForCompany(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
-    if (req.actor.type === "board") {
-      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
-      return access.canUser(companyId, req.actor.userId, "agents:create");
-    }
-    if (!req.actor.agentId) return false;
-    const actorAgent = await svc.getById(req.actor.agentId);
-    if (!actorAgent || actorAgent.companyId !== companyId) return false;
-    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "agents:create");
-    return allowedByGrant || canCreateAgents(actorAgent);
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agent_config:read",
+      resource: { type: "company", companyId },
+    });
+    return decision.allowed;
   }
 
   async function buildSkippedWakeupResponse(
@@ -671,27 +676,13 @@ export function agentRoutes(
 
   async function assertCanUpdateAgent(req: Request, targetAgent: { id: string; companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
-    if (req.actor.type === "board") {
-      await assertBoardCanManageAgentsForCompany(req, targetAgent.companyId);
-      return;
-    }
-    if (!req.actor.agentId) throw forbidden("Agent authentication required");
-
-    const actorAgent = await svc.getById(req.actor.agentId);
-    if (!actorAgent || actorAgent.companyId !== targetAgent.companyId) {
-      throw forbidden("Agent key cannot access another company");
-    }
-
-    if (actorAgent.id === targetAgent.id) return;
-    if (actorAgent.role === "ceo") return;
-    const allowedByGrant = await access.hasPermission(
-      targetAgent.companyId,
-      "agent",
-      actorAgent.id,
-      "agents:create",
-    );
-    if (allowedByGrant || canCreateAgents(actorAgent)) return;
-    throw forbidden("Only CEO or agent creators can modify other agents");
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agent_config:update",
+      resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
+    });
+    if (decision.allowed) return;
+    throw forbidden(decision.explanation);
   }
 
   async function assertCanReadAgent(req: Request, targetAgent: { companyId: string }) {
@@ -1226,9 +1217,13 @@ export function agentRoutes(
     companyId: string,
     adapterType: string,
     config: Record<string, unknown>,
+    options: {
+      materializeMissing?: boolean;
+    } = {},
   ) {
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
-      materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
+      materializeMissing: options.materializeMissing
+        ?? shouldMaterializeRuntimeSkillsForAdapter(adapterType),
     });
     return {
       ...config,
@@ -1495,6 +1490,7 @@ export function agentRoutes(
       agent.companyId,
       agent.adapterType,
       runtimeConfig,
+      { materializeMissing: false },
     );
     const snapshot = await adapter.listSkills({
       agentId: agent.id,
@@ -1741,16 +1737,18 @@ export function agentRoutes(
     }
 
     const issuesSvc = issueService(db);
+    const recoveryActionsSvc = issueRecoveryActionService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
       assigneeAgentId: req.actor.agentId,
       status: "todo,in_progress,blocked",
       includeRoutineExecutions: true,
       limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
-    const dependencyReadiness = await issuesSvc.listDependencyReadiness(
-      req.actor.companyId,
-      rows.map((issue) => issue.id),
-    );
+    const issueIds = rows.map((issue) => issue.id);
+    const [dependencyReadiness, recoveryActionByIssue] = await Promise.all([
+      issuesSvc.listDependencyReadiness(req.actor.companyId, issueIds),
+      recoveryActionsSvc.listActiveForIssues(req.actor.companyId, issueIds),
+    ]);
 
     res.json(
       rows.map((issue) => ({
@@ -1764,6 +1762,7 @@ export function agentRoutes(
         parentId: issue.parentId,
         updatedAt: issue.updatedAt,
         activeRun: issue.activeRun,
+        activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
         dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
         unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
         unresolvedBlockerIssueIds: dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [],
@@ -2189,6 +2188,14 @@ export function agentRoutes(
       lastHeartbeatAt: null,
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
+    const agentEnv = asRecord(agent.adapterConfig)?.env;
+    if (agentEnv) {
+      await secretsSvc.syncEnvBindingsForTarget?.(
+        companyId,
+        { targetType: "agent", targetId: agent.id },
+        agentEnv,
+      );
+    }
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -2664,6 +2671,14 @@ export function agentRoutes(
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
+    }
+    if (touchesAdapterConfiguration) {
+      const agentEnv = asRecord(agent.adapterConfig)?.env;
+      await secretsSvc.syncEnvBindingsForTarget?.(
+        agent.companyId,
+        { targetType: "agent", targetId: agent.id },
+        agentEnv,
+      );
     }
 
     await logActivity(db, {

@@ -54,6 +54,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     createdAt: now,
     updatedAt: now,
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 

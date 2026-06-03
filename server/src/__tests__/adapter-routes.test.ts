@@ -174,6 +174,15 @@ describe("adapter routes", () => {
     expect(cursorAdapter.capabilities.requiresMaterializedRuntimeSkills).toBe(true);
     expect(cursorAdapter.capabilities.supportsInstructionsBundle).toBe(true);
 
+    const grokAdapter = res.body.find((a: any) => a.type === "grok_local");
+    expect(grokAdapter).toBeDefined();
+    expect(grokAdapter.capabilities).toMatchObject({
+      supportsInstructionsBundle: true,
+      supportsSkills: true,
+      supportsLocalAgentJwt: true,
+      requiresMaterializedRuntimeSkills: true,
+    });
+
     // hermes_local currently supports skills + local JWT, but not the managed
     // instructions bundle flow because the bundled adapter does not consume
     // instructionsFilePath at runtime.
@@ -248,11 +257,33 @@ describe("adapter routes", () => {
           ]),
         }),
         expect.objectContaining({
-          key: "permissionMode",
-          default: "approve-all",
+          key: "fastMode",
+          default: false,
+          meta: { visibleWhen: { key: "agent", values: ["codex"] } },
+        }),
+        expect.objectContaining({
+          key: "warmHandleIdleMs",
+          default: 0,
         }),
       ]),
     );
+    const keys = res.body.fields.map((field: { key: string }) => field.key);
+    expect(keys).not.toContain("mode");
+    expect(keys).not.toContain("permissionMode");
+    expect(keys).not.toContain("instructionsFilePath");
+    expect(keys).not.toContain("promptTemplate");
+    expect(keys).not.toContain("bootstrapPromptTemplate");
+  });
+
+  it("GET /api/adapters includes ACPX model availability", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const acpxLocal = res.body.find((a: any) => a.type === "acpx_local");
+    expect(acpxLocal).toBeDefined();
+    expect(acpxLocal.modelsCount).toBeGreaterThan(0);
   });
 
   it("rejects signed-in users without org access", async () => {

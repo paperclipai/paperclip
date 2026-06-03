@@ -28,9 +28,17 @@ import {
   History,
   SquarePen,
   Plus,
+  Search,
 } from "lucide-react";
 import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
+
+const SEARCH_ALL_VALUE = "__paperclip-search-all__";
+
+export function buildFullSearchPath(query: string) {
+  const trimmed = query.trim();
+  return trimmed.length === 0 ? "/search" : `/search?q=${encodeURIComponent(trimmed)}`;
+}
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
@@ -90,6 +98,10 @@ export function CommandPalette() {
     navigate(path);
   }
 
+  function goFullSearch() {
+    go(buildFullSearchPath(searchQuery));
+  }
+
   const agentName = (id: string | null) => {
     if (!id) return null;
     return agents.find((a) => a.id === id)?.name ?? null;
@@ -100,6 +112,9 @@ export function CommandPalette() {
     [issues, searchedIssues, searchQuery],
   );
 
+  const showSearchAll = searchQuery.length > 0;
+  const showEmptyHint = showSearchAll && visibleIssues.length === 0;
+
   return (
     <CommandDialog open={open} onOpenChange={(v) => {
         setOpen(v);
@@ -109,9 +124,47 @@ export function CommandPalette() {
         placeholder="Search issues, agents, projects..."
         value={query}
         onValueChange={setQuery}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && showEmptyHint) {
+            event.preventDefault();
+            goFullSearch();
+          }
+        }}
       />
       <CommandList>
-        <CommandEmpty>No results found.</CommandEmpty>
+        <CommandEmpty>
+          {showSearchAll ? (
+            <span>
+              No quick issue matches. Press{" "}
+              <kbd className="rounded border border-border bg-muted px-1 py-0.5 text-[10px]">↵</kbd>{" "}
+              to <span className="font-medium">search all</span> or keep typing to refine.
+            </span>
+          ) : (
+            "No results found."
+          )}
+        </CommandEmpty>
+
+        {showSearchAll ? (
+          <CommandGroup heading="Search">
+            <CommandItem
+              value={`${SEARCH_ALL_VALUE} ${searchQuery}`}
+              onSelect={goFullSearch}
+              className="bg-accent/40 border border-accent data-[selected=true]:bg-accent/60"
+              data-testid="command-search-all"
+            >
+              <Search className="mr-2 h-4 w-4" />
+              <span className="flex-1 truncate">
+                Search all for <span className="font-semibold">&ldquo;{searchQuery}&rdquo;</span>
+              </span>
+              <span className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground">
+                <span>open full search</span>
+                <kbd className="rounded border border-border bg-background px-1 py-0.5 text-[10px]">↵</kbd>
+              </span>
+            </CommandItem>
+          </CommandGroup>
+        ) : null}
+
+        {showSearchAll ? <CommandSeparator /> : null}
 
         <CommandGroup heading="Actions">
           <CommandItem

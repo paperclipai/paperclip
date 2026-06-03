@@ -18,7 +18,7 @@
  * @see doc/plugins/PLUGIN_SPEC.md for the full plugin specification
  */
 
-import { existsSync } from "node:fs";
+import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -55,7 +55,7 @@ import type { PluginJobStore } from "../services/plugin-job-store.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import type { PluginStreamBus } from "../services/plugin-stream-bus.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
-import type { ToolRunContext } from "@paperclipai/plugin-sdk";
+import type { PluginPerformActionActorContext, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import {
   assertAuthenticated,
@@ -73,6 +73,10 @@ import {
   requireLocalFolderDeclaration,
   setStoredLocalFolder,
 } from "../services/plugin-local-folders.js";
+import {
+  extractSecretRefPathsFromConfig,
+  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
+} from "../services/plugin-secrets-handler.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -110,13 +114,14 @@ interface PluginInstallRequest {
   isLocalPath?: boolean;
 }
 
-interface AvailablePluginExample {
+interface AvailableBundledPlugin {
   packageName: string;
   pluginKey: string;
   displayName: string;
   description: string;
   localPath: string;
-  tag: "example";
+  tag: "example" | "first-party";
+  experimental: boolean;
 }
 
 /** Response body for GET /api/plugins/:pluginId/health */
@@ -146,48 +151,164 @@ const PLUGIN_SCOPED_API_RESPONSE_HEADER_ALLOWLIST = new Set([
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
+const EXPERIMENTAL_BUNDLED_PLUGIN_PACKAGE_NAMES = new Set([
+  "@paperclipai/plugin-llm-wiki",
+  "@paperclipai/plugin-modal",
+  "@paperclipai/plugin-workspace-diff",
+]);
+let bundledPluginsCache: Promise<AvailableBundledPlugin[]> | null = null;
 
-const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
-  {
-    packageName: "@paperclipai/plugin-hello-world-example",
-    pluginKey: "paperclip.hello-world-example",
-    displayName: "Hello World Widget (Example)",
-    description: "Reference UI plugin that adds a simple Hello World widget to the Paperclip dashboard.",
-    localPath: "packages/plugins/examples/plugin-hello-world-example",
-    tag: "example",
-  },
-  {
-    packageName: "@paperclipai/plugin-file-browser-example",
-    pluginKey: "paperclip-file-browser-example",
-    displayName: "File Browser (Example)",
-    description: "Example plugin that adds a Files link in project navigation plus a project detail file browser.",
-    localPath: "packages/plugins/examples/plugin-file-browser-example",
-    tag: "example",
-  },
-  {
-    packageName: "@paperclipai/plugin-kitchen-sink-example",
-    pluginKey: "paperclip-kitchen-sink-example",
-    displayName: "Kitchen Sink (Example)",
-    description: "Reference plugin that demonstrates the current Paperclip plugin API surface, bridge flows, UI extension surfaces, jobs, webhooks, tools, streams, and trusted local workspace/process demos.",
-    localPath: "packages/plugins/examples/plugin-kitchen-sink-example",
-    tag: "example",
-  },
-  {
-    packageName: "@paperclipai/plugin-orchestration-smoke-example",
-    pluginKey: "paperclipai.plugin-orchestration-smoke-example",
-    displayName: "Orchestration Smoke (Example)",
-    description: "Acceptance fixture for scoped plugin routes, restricted database namespaces, issue orchestration, documents, wakeups, summaries, and UI status surfaces.",
-    localPath: "packages/plugins/examples/plugin-orchestration-smoke-example",
-    tag: "example",
-  },
-];
+function titleCasePluginName(packageName: string): string {
+  const localName = packageName.split("/").pop() ?? packageName;
+  return localName
+    .replace(/^paperclip-plugin-/, "")
+    .replace(/^plugin-/, "")
+    .split("-")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
 
-function listBundledPluginExamples(): AvailablePluginExample[] {
-  return BUNDLED_PLUGIN_EXAMPLES.flatMap((plugin) => {
-    const absoluteLocalPath = path.resolve(REPO_ROOT, plugin.localPath);
-    if (!existsSync(absoluteLocalPath)) return [];
-    return [{ ...plugin, localPath: absoluteLocalPath }];
+async function fileExists(filePath: string): Promise<boolean> {
+  return access(filePath).then(() => true, () => false);
+}
+
+async function readJsonFile(filePath: string): Promise<Record<string, unknown> | null> {
+  try {
+    return JSON.parse(await readFile(filePath, "utf8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+async function findPackageJsonFiles(root: string, maxDepth = 4): Promise<string[]> {
+  if (!(await fileExists(root))) return [];
+
+  const packageJsonFiles: string[] = [];
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (depth > maxDepth) return;
+
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.name === "node_modules" || entry.name === "dist") continue;
+      const entryPath = path.join(dir, entry.name);
+
+      if (entry.isFile() && entry.name === "package.json") {
+        packageJsonFiles.push(entryPath);
+      } else if (entry.isDirectory()) {
+        await walk(entryPath, depth + 1);
+      }
+    }
+  };
+
+  await walk(root, 0);
+  return packageJsonFiles;
+}
+
+function manifestSourcePath(packageRoot: string, pkgJson: Record<string, unknown>): string | null {
+  const paperclipPlugin = pkgJson.paperclipPlugin;
+  if (
+    !paperclipPlugin
+    || typeof paperclipPlugin !== "object"
+    || Array.isArray(paperclipPlugin)
+  ) {
+    return null;
+  }
+
+  const manifestPath = (paperclipPlugin as Record<string, unknown>).manifest;
+  if (typeof manifestPath !== "string") return null;
+
+  const sourcePath = manifestPath
+    .replace(/^\.\/dist\//, "./src/")
+    .replace(/\.js$/, ".ts");
+  return path.resolve(packageRoot, sourcePath);
+}
+
+function firstStringLiteral(source: string, key: string): string | null {
+  const match = source.match(
+    new RegExp(`${key}:\\s*(?:"([^"]*)"|'([^']*)'|\`([^\`]*)\`)`, "s"),
+  );
+  return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
+}
+
+async function bundledPluginMetadata(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+): Promise<{ pluginKey?: string; displayName?: string; description?: string }> {
+  const sourcePath = manifestSourcePath(packageRoot, pkgJson);
+  if (!sourcePath || !(await fileExists(sourcePath))) return {};
+
+  try {
+    const source = await readFile(sourcePath, "utf8");
+    const pluginId = source
+      .match(/(?:export\s+)?const\s+PLUGIN_ID\s*=\s*(?:"([^"]*)"|'([^']*)'|`([^`]*)`)/)
+      ?.slice(1)
+      .find(Boolean)
+      ?? firstStringLiteral(source, "id")
+      ?? null;
+    return {
+      pluginKey: pluginId ?? undefined,
+      displayName: firstStringLiteral(source, "displayName") ?? undefined,
+      description: firstStringLiteral(source, "description") ?? undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function isExperimentalBundledPlugin(packageRoot: string, packageName: string): boolean {
+  return (
+    EXPERIMENTAL_BUNDLED_PLUGIN_PACKAGE_NAMES.has(packageName)
+    || packageRoot.includes(`${path.sep}sandbox-providers${path.sep}`)
+    || packageName.includes("sandbox")
+  );
+}
+
+async function discoverBundledPlugins(): Promise<AvailableBundledPlugin[]> {
+  const pluginRoot = path.resolve(REPO_ROOT, "packages/plugins");
+  const bundledPlugins: AvailableBundledPlugin[] = [];
+  for (const packageJsonPath of await findPackageJsonFiles(pluginRoot)) {
+    const packageRoot = path.dirname(packageJsonPath);
+    const pkgJson = await readJsonFile(packageJsonPath);
+    const paperclipPlugin = pkgJson?.paperclipPlugin;
+    if (
+      !pkgJson
+      || !paperclipPlugin
+      || typeof paperclipPlugin !== "object"
+      || Array.isArray(paperclipPlugin)
+    ) {
+      continue;
+    }
+
+    const packageName = pkgJson.name;
+    if (typeof packageName !== "string" || packageName.length === 0) continue;
+
+    const metadata = await bundledPluginMetadata(packageRoot, pkgJson);
+    const tag = packageRoot.includes(`${path.sep}examples${path.sep}`) ? "example" : "first-party";
+    bundledPlugins.push({
+      packageName,
+      pluginKey: metadata.pluginKey ?? packageName,
+      displayName: metadata.displayName ?? titleCasePluginName(packageName),
+      description: metadata.description
+        ?? `Bundled Paperclip plugin from ${path.relative(REPO_ROOT, packageRoot)}.`,
+      localPath: packageRoot,
+      tag,
+      experimental: isExperimentalBundledPlugin(packageRoot, packageName),
+    });
+  }
+
+  return bundledPlugins.sort((left, right) => {
+    if (left.tag !== right.tag) return left.tag === "first-party" ? -1 : 1;
+    return left.displayName.localeCompare(right.displayName);
   });
+}
+
+async function listBundledPlugins(): Promise<AvailableBundledPlugin[]> {
+  bundledPluginsCache ??= discoverBundledPlugins().catch((error: unknown) => {
+    bundledPluginsCache = null;
+    throw error;
+  });
+  return bundledPluginsCache;
 }
 
 /**
@@ -195,9 +316,9 @@ function listBundledPluginExamples(): AvailablePluginExample[] {
  *
  * Lookup order:
  * - UUID-like IDs: getById first, then getByKey.
- * - Scoped package keys (e.g. "@scope/name"): getByKey only, never getById.
- * - Other non-UUID IDs: try getById first (test/memory registries may allow this),
- *   then fallback to getByKey. Any UUID parse error from getById is ignored.
+ * - All non-UUID values: getByKey only, never getById. The persisted plugin
+ *   ID column is a PostgreSQL UUID, so probing it with keys such as
+ *   "acme.plugin" raises a database cast error before a key lookup can happen.
  *
  * @param registry - The plugin registry service instance
  * @param pluginId - Either a database UUID or plugin key (manifest id)
@@ -208,27 +329,13 @@ async function resolvePlugin(
   pluginId: string,
 ) {
   const isUuid = UUID_REGEX.test(pluginId);
-  const isScopedPackageKey = pluginId.startsWith("@") || pluginId.includes("/");
 
-  // Scoped package IDs are valid plugin keys but invalid UUIDs.
-  // Skip getById() entirely to avoid Postgres uuid parse errors.
-  if (isScopedPackageKey && !isUuid) {
+  if (!isUuid) {
     return registry.getByKey(pluginId);
   }
 
-  try {
-    const byId = await registry.getById(pluginId);
-    if (byId) return byId;
-  } catch (error) {
-    const maybeCode =
-      typeof error === "object" && error !== null && "code" in error
-        ? (error as { code?: unknown }).code
-        : undefined;
-    // Ignore invalid UUID cast errors and continue with key lookup.
-    if (maybeCode !== "22P02") {
-      throw error;
-    }
-  }
+  const byId = await registry.getById(pluginId);
+  if (byId) return byId;
 
   return registry.getByKey(pluginId);
 }
@@ -574,6 +681,43 @@ export function pluginRoutes(
     return companyId;
   }
 
+  function performActionActorContext(req: Request, companyId: string | undefined): PluginPerformActionActorContext {
+    const scopedCompanyId = companyId ?? null;
+    if (req.actor.type === "agent") {
+      return {
+        type: "agent",
+        userId: null,
+        agentId: req.actor.agentId ?? null,
+        runId: req.actor.runId ?? null,
+        companyId: scopedCompanyId,
+      };
+    }
+    if (req.actor.type === "board") {
+      return {
+        type: "user",
+        userId: req.actor.userId ?? null,
+        agentId: null,
+        runId: req.actor.runId ?? null,
+        companyId: scopedCompanyId,
+      };
+    }
+    return {
+      type: "system",
+      userId: null,
+      agentId: null,
+      runId: req.actor.runId ?? null,
+      companyId: scopedCompanyId,
+    };
+  }
+
+  function actionParamsWithAuthorizedCompanyScope(
+    params: Record<string, unknown> | undefined,
+    companyId: string | undefined,
+  ): Record<string, unknown> {
+    const base = params ?? {};
+    return companyId === undefined ? base : { ...base, companyId };
+  }
+
   async function validateToolRunContextScope(runContext: ToolRunContext): Promise<string | null> {
     const [agent] = await db
       .select({ companyId: agents.companyId })
@@ -642,12 +786,12 @@ export function pluginRoutes(
   /**
    * GET /api/plugins/examples
    *
-   * Return first-party example plugins bundled in this repo, if present.
+   * Return plugin packages bundled in this repo, if present.
    * These can be installed through the normal local-path install flow.
    */
   router.get("/plugins/examples", async (req, res) => {
     assertBoardOrgAccess(req);
-    res.json(listBundledPluginExamples());
+    res.json(await listBundledPlugins());
   });
 
   // IMPORTANT: Static routes must come before parameterized routes
@@ -986,6 +1130,12 @@ export function pluginRoutes(
             message: err.message,
             details: err.data,
           };
+        case PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED:
+          return {
+            code: "INVOCATION_SCOPE_DENIED",
+            message: err.message,
+            details: err.data,
+          };
         case PLUGIN_RPC_ERROR_CODES.TIMEOUT:
           return {
             code: "TIMEOUT",
@@ -1021,6 +1171,34 @@ export function pluginRoutes(
       code: "UNKNOWN",
       message,
     };
+  }
+
+  function attachPluginBridgeErrorContext(
+    req: Request,
+    res: Response,
+    err: unknown,
+    bridgeError: PluginBridgeErrorResponse,
+    metadata: Record<string, unknown>,
+  ): void {
+    const rootError = err instanceof Error ? err : new Error(String(err));
+    (res as any).__errorContext = {
+      error: {
+        message: bridgeError.message,
+        stack: rootError.stack,
+        name: rootError.name,
+        details: {
+          ...metadata,
+          bridgeCode: bridgeError.code,
+          bridgeDetails: bridgeError.details,
+        },
+      },
+      method: req.method,
+      url: req.originalUrl,
+      reqBody: req.body,
+      reqParams: req.params,
+      reqQuery: req.query,
+    };
+    (res as any).err = rootError;
   }
 
   /**
@@ -1074,6 +1252,11 @@ export function pluginRoutes(
         code: "WORKER_UNAVAILABLE",
         message: `Plugin is not ready (current status: ${plugin.status})`,
       };
+      attachPluginBridgeErrorContext(req, res, new Error(bridgeError.message), bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "getData",
+      });
       res.status(502).json(bridgeError);
       return;
     }
@@ -1085,7 +1268,7 @@ export function pluginRoutes(
       return;
     }
 
-    assertPluginBridgeScope(req, body.companyId);
+    const companyId = assertPluginBridgeScope(req, body.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1093,6 +1276,7 @@ export function pluginRoutes(
         "getData",
         {
           key: body.key,
+          ...(companyId ? { companyId } : {}),
           params: body.params ?? {},
           renderEnvironment: body.renderEnvironment ?? null,
         },
@@ -1100,6 +1284,12 @@ export function pluginRoutes(
       res.json({ data: result });
     } catch (err) {
       const bridgeError = mapRpcErrorToBridgeError(err);
+      attachPluginBridgeErrorContext(req, res, err, bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "getData",
+        dataKey: body.key,
+      });
       res.status(502).json(bridgeError);
     }
   });
@@ -1133,7 +1323,7 @@ export function pluginRoutes(
    * @see PLUGIN_SPEC.md §19.7 — Error Propagation Through The Bridge
    */
   router.post("/plugins/:pluginId/bridge/action", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAuthenticated(req);
 
     if (!bridgeDeps) {
       res.status(501).json({ error: "Plugin bridge is not enabled" });
@@ -1155,6 +1345,11 @@ export function pluginRoutes(
         code: "WORKER_UNAVAILABLE",
         message: `Plugin is not ready (current status: ${plugin.status})`,
       };
+      attachPluginBridgeErrorContext(req, res, new Error(bridgeError.message), bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "performAction",
+      });
       res.status(502).json(bridgeError);
       return;
     }
@@ -1166,7 +1361,7 @@ export function pluginRoutes(
       return;
     }
 
-    assertPluginBridgeScope(req, body.companyId);
+    const companyId = assertPluginBridgeScope(req, body.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1174,13 +1369,20 @@ export function pluginRoutes(
         "performAction",
         {
           key: body.key,
-          params: body.params ?? {},
+          params: actionParamsWithAuthorizedCompanyScope(body.params, companyId),
+          actorContext: performActionActorContext(req, companyId),
           renderEnvironment: body.renderEnvironment ?? null,
         },
       );
       res.json({ data: result });
     } catch (err) {
       const bridgeError = mapRpcErrorToBridgeError(err);
+      attachPluginBridgeErrorContext(req, res, err, bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "performAction",
+        actionKey: body.key,
+      });
       res.status(502).json(bridgeError);
     }
   });
@@ -1237,6 +1439,12 @@ export function pluginRoutes(
         code: "WORKER_UNAVAILABLE",
         message: `Plugin is not ready (current status: ${plugin.status})`,
       };
+      attachPluginBridgeErrorContext(req, res, new Error(bridgeError.message), bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "getData",
+        dataKey: key,
+      });
       res.status(502).json(bridgeError);
       return;
     }
@@ -1247,7 +1455,7 @@ export function pluginRoutes(
       renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
     } | undefined;
 
-    assertPluginBridgeScope(req, body?.companyId);
+    const companyId = assertPluginBridgeScope(req, body?.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1255,6 +1463,7 @@ export function pluginRoutes(
         "getData",
         {
           key,
+          ...(companyId ? { companyId } : {}),
           params: body?.params ?? {},
           renderEnvironment: body?.renderEnvironment ?? null,
         },
@@ -1262,6 +1471,12 @@ export function pluginRoutes(
       res.json({ data: result });
     } catch (err) {
       const bridgeError = mapRpcErrorToBridgeError(err);
+      attachPluginBridgeErrorContext(req, res, err, bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "getData",
+        dataKey: key,
+      });
       res.status(502).json(bridgeError);
     }
   });
@@ -1292,7 +1507,7 @@ export function pluginRoutes(
    * @see PLUGIN_SPEC.md §19.7 — Error Propagation Through The Bridge
    */
   router.post("/plugins/:pluginId/actions/:key", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAuthenticated(req);
 
     if (!bridgeDeps) {
       res.status(501).json({ error: "Plugin bridge is not enabled" });
@@ -1314,6 +1529,12 @@ export function pluginRoutes(
         code: "WORKER_UNAVAILABLE",
         message: `Plugin is not ready (current status: ${plugin.status})`,
       };
+      attachPluginBridgeErrorContext(req, res, new Error(bridgeError.message), bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "performAction",
+        actionKey: key,
+      });
       res.status(502).json(bridgeError);
       return;
     }
@@ -1324,7 +1545,7 @@ export function pluginRoutes(
       renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
     } | undefined;
 
-    assertPluginBridgeScope(req, body?.companyId);
+    const companyId = assertPluginBridgeScope(req, body?.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1332,13 +1553,20 @@ export function pluginRoutes(
         "performAction",
         {
           key,
-          params: body?.params ?? {},
+          params: actionParamsWithAuthorizedCompanyScope(body?.params, companyId),
+          actorContext: performActionActorContext(req, companyId),
           renderEnvironment: body?.renderEnvironment ?? null,
         },
       );
       res.json({ data: result });
     } catch (err) {
       const bridgeError = mapRpcErrorToBridgeError(err);
+      attachPluginBridgeErrorContext(req, res, err, bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "performAction",
+        actionKey: key,
+      });
       res.status(502).json(bridgeError);
     }
   });
@@ -1530,7 +1758,10 @@ export function pluginRoutes(
     } catch (err) {
       const status = typeof (err as { status?: unknown }).status === "number"
         ? (err as { status: number }).status
-        : err instanceof JsonRpcCallError && err.code === PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED
+        : err instanceof JsonRpcCallError && (
+          err.code === PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED ||
+          err.code === PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED
+        )
           ? 403
           : err instanceof JsonRpcCallError && err.code === PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED
             ? 501
@@ -1941,6 +2172,12 @@ export function pluginRoutes(
     }
 
     try {
+      const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
+      if (secretRefsByPath.size > 0) {
+        res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
+        return;
+      }
+
       const result = await registry.upsertConfig(plugin.id, {
         configJson: body.configJson,
       });

@@ -21,6 +21,7 @@ const mockAgentInstructionsService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(),
   hasPermission: vi.fn(),
 }));
 
@@ -53,6 +54,14 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => ({}),
 }));
 
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => mockSecretService,
+}));
+
+vi.mock("../services/environments.js", () => ({
+  environmentService: () => mockEnvironmentService,
+}));
+
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: mockFindServerAdapter,
   listAdapterModels: vi.fn(),
@@ -73,6 +82,14 @@ function registerModuleMocks() {
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
     workspaceOperationService: () => ({}),
+  }));
+
+  vi.doMock("../services/secrets.js", () => ({
+    secretService: () => mockSecretService,
+  }));
+
+  vi.doMock("../services/environments.js", () => ({
+    environmentService: () => mockEnvironmentService,
   }));
 
   vi.doMock("../adapters/index.js", () => ({
@@ -159,6 +176,11 @@ describe("agent instructions bundle routes", () => {
     vi.clearAllMocks();
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockFindServerAdapter.mockImplementation((_type: string) => ({ type: _type }));
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant",
+    });
     mockAgentService.getById.mockResolvedValue(makeAgent());
     mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeAgent(),

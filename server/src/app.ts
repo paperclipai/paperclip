@@ -1,5 +1,4 @@
 import express, { Router, type Request as ExpressRequest } from "express";
-import { buildOpenApiSpec } from "./openapi.js";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -29,8 +28,10 @@ import { dashboardRoutes } from "./routes/dashboard.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
+import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
+import { openApiRoutes } from "./routes/openapi.js";
 import {
   instanceDatabaseBackupRoutes,
   type InstanceDatabaseBackupService,
@@ -42,6 +43,7 @@ import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
@@ -60,6 +62,8 @@ import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
+import { DEFAULT_JSON_BODY_LIMIT, PORTABLE_JSON_BODY_LIMIT } from "./http/body-limits.js";
+import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -82,11 +86,23 @@ const VITE_DEV_STATIC_PATHS = new Set([
   "/sw.js",
 ]);
 
+export function isDatabaseConnectionUnavailableError(err: unknown): boolean {
+  const error = err as { code?: unknown; message?: unknown; cause?: unknown };
+  if (error?.code === "ECONNREFUSED") return true;
+  return Boolean(error?.cause && isDatabaseConnectionUnavailableError(error.cause));
+}
+
 export function resolveViteHmrPort(serverPort: number): number {
   if (serverPort <= 55_535) {
     return serverPort + 10_000;
   }
   return Math.max(1_024, serverPort - 10_000);
+}
+
+export function resolveViteHmrHost(bindHost: string): string | undefined {
+  const normalized = bindHost.trim().toLowerCase();
+  if (normalized === "0.0.0.0" || normalized === "::") return undefined;
+  return bindHost;
 }
 
 export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
@@ -137,13 +153,17 @@ export async function createApp(
   },
 ) {
   const app = express();
+  const captureRawBody = (req: express.Request, _res: express.Response, buf: Buffer) => {
+    (req as unknown as { rawBody: Buffer }).rawBody = buf;
+  };
 
+  app.use(COMPANY_IMPORT_API_PATH, express.json({
+    limit: PORTABLE_JSON_BODY_LIMIT,
+    verify: captureRawBody,
+  }));
   app.use(express.json({
-    // Company import/export payloads can inline full portable packages.
-    limit: "10mb",
-    verify: (req, _res, buf) => {
-      (req as unknown as { rawBody: Buffer }).rawBody = buf;
-    },
+    limit: DEFAULT_JSON_BODY_LIMIT,
+    verify: captureRawBody,
   }));
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
@@ -188,7 +208,9 @@ export async function createApp(
       companyDeletionEnabled: opts.companyDeletionEnabled,
     }),
   );
+  api.use(openApiRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));
+  api.use(llmRoutes(db));
   api.use(companySkillRoutes(db));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
@@ -210,6 +232,7 @@ export async function createApp(
   api.use(userProfileRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
+  api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
   if (opts.databaseBackupService) {
@@ -295,9 +318,6 @@ export async function createApp(
     }),
   );
   app.use("/api", api);
-  app.get("/api/openapi.json", (_req, res) => {
-    res.json(buildOpenApiSpec());
-  });
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
   });
@@ -314,7 +334,6 @@ export async function createApp(
     ];
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
-      const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8"));
       // Hashed asset files (Vite emits them under /assets/<name>.<hash>.<ext>)
       // never change once built, so they can be cached aggressively.
       app.use(
@@ -354,7 +373,7 @@ export async function createApp(
           .status(200)
           .set("Content-Type", "text/html")
           .set("Cache-Control", "no-cache")
-          .end(indexHtml);
+          .end(readBrandedStaticIndexHtml(uiDist));
       });
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");
@@ -365,6 +384,7 @@ export async function createApp(
     const uiRoot = path.resolve(__dirname, "../../ui");
     const publicUiRoot = path.resolve(uiRoot, "public");
     const hmrPort = resolveViteHmrPort(opts.serverPort);
+    const hmrHost = resolveViteHmrHost(opts.bindHost);
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       root: uiRoot,
@@ -372,7 +392,7 @@ export async function createApp(
       server: {
         middlewareMode: true,
         hmr: {
-          host: opts.bindHost,
+          ...(hmrHost ? { host: hmrHost } : {}),
           port: hmrPort,
           clientPort: hmrPort,
         },
@@ -408,28 +428,45 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
-  const feedbackExportTimer = opts.feedbackExportService
+  let feedbackExportShuttingDown = false;
+  let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
+  const disableFeedbackExportFlushes = () => {
+    feedbackExportShuttingDown = true;
+    if (feedbackExportTimer) {
+      clearInterval(feedbackExportTimer);
+      feedbackExportTimer = null;
+    }
+  };
+  const flushPendingFeedbackExports = async () => {
+    if (feedbackExportShuttingDown) return;
+    try {
+      await opts.feedbackExportService?.flushPendingFeedbackTraces();
+    } catch (err) {
+      if (isDatabaseConnectionUnavailableError(err)) {
+        disableFeedbackExportFlushes();
+        logger.warn({ err }, "Disabling pending feedback export flushes because the database is unavailable");
+        return;
+      }
+      logger.error({ err }, "Failed to flush pending feedback exports");
+    }
+  };
+
+  feedbackExportTimer = opts.feedbackExportService
     ? setInterval(() => {
-      void opts.feedbackExportService?.flushPendingFeedbackTraces().catch((err) => {
-        logger.error({ err }, "Failed to flush pending feedback exports");
-      });
+      void flushPendingFeedbackExports();
     }, FEEDBACK_EXPORT_FLUSH_INTERVAL_MS)
     : null;
   feedbackExportTimer?.unref?.();
   if (opts.feedbackExportService) {
-    void opts.feedbackExportService.flushPendingFeedbackTraces().catch((err) => {
-      logger.error({ err }, "Failed to flush pending feedback exports");
-    });
+    void flushPendingFeedbackExports();
   }
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
   });
-  const devWatcher = opts.uiMode === "vite-dev"
-    ? createPluginDevWatcher(
-      lifecycle,
-      async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
-    )
-    : null;
+  const devWatcher = createPluginDevWatcher(
+    lifecycle,
+    async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
+  );
   void loader.loadAll().then((result) => {
     if (!result) return;
     for (const loaded of result.results) {
@@ -440,13 +477,19 @@ export async function createApp(
   }).catch((err) => {
     logger.error({ err }, "Failed to load ready plugins on startup");
   });
-  process.once("exit", () => {
-    if (feedbackExportTimer) clearInterval(feedbackExportTimer);
+  let appServicesShutdown = false;
+  const shutdownAppServices = () => {
+    if (appServicesShutdown) return;
+    appServicesShutdown = true;
+    disableFeedbackExportFlushes();
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();
-  });
+  };
+  app.locals.paperclipShutdown = shutdownAppServices;
+
+  process.once("exit", shutdownAppServices);
   process.once("beforeExit", () => {
     void flushPluginLogBuffer();
   });

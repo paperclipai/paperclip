@@ -20,7 +20,7 @@ import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { ApprovalCard } from "./ApprovalCard";
 import { AgentIcon } from "./AgentIconPicker";
 import { formatAssigneeUserLabel } from "../lib/assignees";
-import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
+import { formatTimelineWorkspaceLabel, type IssueTimelineAssignee, type IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatDateTime } from "../lib/utils";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
@@ -532,6 +532,21 @@ function TimelineEventCard({
             <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="font-medium text-foreground">
               {formatTimelineAssigneeLabel(event.assigneeChange.to, agentMap, currentUserId)}
+            </span>
+          </div>
+        ) : null}
+
+        {event.workspaceChange ? (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="w-14 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              Workspace
+            </span>
+            <span className="text-muted-foreground">
+              {formatTimelineWorkspaceLabel(event.workspaceChange.from)}
+            </span>
+            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="font-medium text-foreground">
+              {formatTimelineWorkspaceLabel(event.workspaceChange.to)}
             </span>
           </div>
         ) : null}

@@ -89,6 +89,11 @@ type MessageWithOrder = {
   message: ThreadMessage;
 };
 
+type SortBoundaryItem = {
+  createdAtMs: number;
+  runId?: string | null;
+};
+
 export interface StableThreadMessageCacheEntry {
   fingerprint: string;
   message: ThreadMessage;
@@ -143,6 +148,64 @@ function sortByCreated<T extends { createdAt: Date | string; id: string }>(items
     if (diff !== 0) return diff;
     return a.id.localeCompare(b.id);
   });
+}
+
+function latestSameRunHandoffTimestamp(args: {
+  interactionCreatedAtMs: number;
+  sourceRunId: string;
+  comments: readonly IssueChatComment[];
+  timelineEvents: readonly IssueTimelineEvent[];
+  linkedRuns: readonly IssueChatLinkedRun[];
+  liveRuns: readonly LiveRunForIssue[];
+}) {
+  const {
+    interactionCreatedAtMs,
+    sourceRunId,
+    comments,
+    timelineEvents,
+    linkedRuns,
+    liveRuns,
+  } = args;
+  const handoffItems: SortBoundaryItem[] = [
+    ...comments.map((comment) => ({
+      createdAtMs: toTimestamp(comment.createdAt),
+      runId: comment.runId ?? null,
+    })),
+    ...timelineEvents.map((event) => ({
+      createdAtMs: toTimestamp(event.createdAt),
+      runId: event.runId ?? null,
+    })),
+  ];
+  const barrierItems: SortBoundaryItem[] = [
+    ...handoffItems,
+    ...linkedRuns.map((run) => ({
+      createdAtMs: toTimestamp(runTimestamp(run)),
+      runId: run.runId,
+    })),
+    ...liveRuns.map((run) => ({
+      createdAtMs: toTimestamp(run.startedAt ?? run.createdAt),
+      runId: run.id,
+    })),
+  ];
+  const barrierAtMs = barrierItems
+    .filter((item) => item.createdAtMs > interactionCreatedAtMs && item.runId !== sourceRunId)
+    .reduce<number | null>(
+      (earliest, item) =>
+        earliest === null ? item.createdAtMs : Math.min(earliest, item.createdAtMs),
+      null,
+    );
+
+  return handoffItems
+    .filter((item) =>
+      item.createdAtMs > interactionCreatedAtMs
+      && item.runId === sourceRunId
+      && (barrierAtMs === null || item.createdAtMs < barrierAtMs)
+    )
+    .reduce<number | null>(
+      (latest, item) =>
+        latest === null ? item.createdAtMs : Math.max(latest, item.createdAtMs),
+      null,
+    );
 }
 
 function normalizeJsonValue(input: unknown): JsonValue {
@@ -274,14 +337,32 @@ function createAssistantMetadata(custom: Record<string, unknown>) {
   } as const;
 }
 
+function effectiveCommentAuthorAgentId(comment: IssueChatComment) {
+  return comment.authorAgentId ?? comment.runAgentId ?? comment.derivedAuthorAgentId ?? null;
+}
+
+function effectiveCommentRunId(comment: IssueChatComment) {
+  return comment.runId ?? comment.derivedCreatedByRunId ?? null;
+}
+
+function effectiveCommentRunAgentId(comment: IssueChatComment) {
+  return comment.runAgentId ?? effectiveCommentAuthorAgentId(comment);
+}
+
+function effectiveCommentAuthorType(comment: IssueChatComment) {
+  return effectiveCommentAuthorAgentId(comment) ? "agent" : comment.authorType;
+}
+
 function authorNameForComment(
   comment: IssueChatComment,
   agentMap?: Map<string, Agent>,
   currentUserId?: string | null,
   userLabelMap?: ReadonlyMap<string, string> | null,
+  options?: { isSystemNotice?: boolean },
 ) {
-  if (comment.authorAgentId) {
-    return agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8);
+  const authorAgentId = effectiveCommentAuthorAgentId(comment);
+  if (authorAgentId) {
+    return agentMap?.get(authorAgentId)?.name ?? (options?.isSystemNotice ? "Paperclip" : authorAgentId.slice(0, 8));
   }
   const authorUserId = comment.authorUserId ?? null;
   if (!authorUserId) return "You";
@@ -304,27 +385,43 @@ function createCommentMessage(args: {
 }): ThreadMessage {
   const { comment, agentMap, currentUserId, userLabelMap, companyId, projectId } = args;
   const createdAt = toDate(comment.createdAt);
-  const authorName = authorNameForComment(comment, agentMap, currentUserId, userLabelMap);
+  const isSystemNotice = comment.authorType === "system";
+  const authorAgentId = effectiveCommentAuthorAgentId(comment);
+  const authorName = authorNameForComment(comment, agentMap, currentUserId, userLabelMap, { isSystemNotice });
   const custom = {
-    kind: "comment",
+    kind: isSystemNotice ? "system_notice" : "comment",
     commentId: comment.id,
     anchorId: `comment-${comment.id}`,
     authorName,
-    authorAgentId: comment.authorAgentId,
+    authorType: effectiveCommentAuthorType(comment),
+    authorAgentId,
     authorUserId: comment.authorUserId,
     companyId: companyId ?? comment.companyId,
     projectId: projectId ?? null,
-    runId: comment.runId ?? null,
-    runAgentId: comment.runAgentId ?? null,
+    runId: effectiveCommentRunId(comment),
+    runAgentId: effectiveCommentRunAgentId(comment),
     clientStatus: comment.clientStatus ?? null,
     queueState: comment.queueState ?? null,
     queueTargetRunId: comment.queueTargetRunId ?? null,
     queueReason: comment.queueReason ?? null,
     interruptedRunId: comment.interruptedRunId ?? null,
     followUpRequested: comment.followUpRequested === true,
+    presentation: comment.presentation ?? null,
+    commentMetadata: comment.metadata ?? null,
   };
 
-  if (comment.authorAgentId) {
+  if (isSystemNotice) {
+    const message: ThreadSystemMessage = {
+      id: comment.id,
+      role: "system",
+      createdAt,
+      content: [{ type: "text", text: comment.body }],
+      metadata: { custom },
+    };
+    return message;
+  }
+
+  if (authorAgentId) {
     const message: ThreadAssistantMessage = {
       id: comment.id,
       role: "assistant",
@@ -377,6 +474,11 @@ function createTimelineEventMessage(args: {
       : (formatAssigneeUserLabel(event.assigneeChange.to.userId, currentUserId, userLabelMap) ?? "Unassigned");
     lines.push(`Assignee: ${from} -> ${to}`);
   }
+  if (event.workspaceChange) {
+    lines.push(
+      `Workspace: ${event.workspaceChange.from.label ?? "none"} -> ${event.workspaceChange.to.label ?? "none"}`,
+    );
+  }
 
   const message: ThreadSystemMessage = {
     id: `activity:${event.id}`,
@@ -393,6 +495,7 @@ function createTimelineEventMessage(args: {
         actorId: event.actorId,
         statusChange: event.statusChange ?? null,
         assigneeChange: event.assigneeChange ?? null,
+        workspaceChange: event.workspaceChange ?? null,
         followUpRequested: event.followUpRequested === true,
       },
     },
@@ -817,8 +920,19 @@ export function buildIssueChatMessages(args: {
   }
 
   for (const interaction of sortByCreated(interactions)) {
+    const createdAtMs = toTimestamp(interaction.createdAt);
+    const handoffAtMs = interaction.kind === "request_confirmation" && interaction.sourceRunId
+      ? latestSameRunHandoffTimestamp({
+        interactionCreatedAtMs: createdAtMs,
+        sourceRunId: interaction.sourceRunId,
+        comments,
+        timelineEvents,
+        linkedRuns,
+        liveRuns,
+      })
+      : null;
     orderedMessages.push({
-      createdAtMs: toTimestamp(interaction.createdAt),
+      createdAtMs: handoffAtMs ?? createdAtMs,
       order: 2,
       message: createInteractionMessage(interaction),
     });

@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   documents,
@@ -36,7 +36,7 @@ import {
   suggestTasksResultSchema,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
-import { issueService } from "./issues.js";
+import { issueService, listUnfinalizedExecutionWorkspaceIds } from "./issues.js";
 
 type InteractionActor = {
   agentId?: string | null;
@@ -156,6 +156,20 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
   if (args.issue.assigneeAgentId) return false;
   if (isTerminalIssueStatus(args.issue.status)) return false;
   return true;
+}
+
+function shouldSupersedeRequestConfirmationOnUserComment(interaction: RequestConfirmationInteraction) {
+  return interaction.payload.supersedeOnUserComment === true;
+}
+
+function isCommentAtOrAfterInteraction(args: {
+  commentCreatedAt: Date | string;
+  interactionCreatedAt: Date | string;
+}) {
+  const commentCreatedAtMs = new Date(args.commentCreatedAt).getTime();
+  const interactionCreatedAtMs = new Date(args.interactionCreatedAt).getTime();
+  if (!Number.isFinite(commentCreatedAtMs) || !Number.isFinite(interactionCreatedAtMs)) return false;
+  return commentCreatedAtMs >= interactionCreatedAtMs;
 }
 
 function buildTaskCreationOrder(tasks: ReadonlyArray<SuggestTasksInteraction["payload"]["tasks"][number]>) {
@@ -441,6 +455,32 @@ export function issueThreadInteractionService(db: Db) {
         eq(issueThreadInteractions.idempotencyKey, args.idempotencyKey),
       ))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function assertIssueWorkspaceFinalizedForAccept(args: {
+    db: Pick<Db, "select">;
+    issue: { id: string; companyId: string };
+  }) {
+    const executionWorkspaceId = await args.db
+      .select({ executionWorkspaceId: issues.executionWorkspaceId })
+      .from(issues)
+      .where(eq(issues.id, args.issue.id))
+      .then((rows: Array<{ executionWorkspaceId: string | null }>) => rows[0]?.executionWorkspaceId ?? null);
+
+    if (!executionWorkspaceId) return;
+
+    const unfinalized = await listUnfinalizedExecutionWorkspaceIds(
+      args.db,
+      args.issue.companyId,
+      [executionWorkspaceId],
+    );
+    if (!unfinalized.has(executionWorkspaceId)) return;
+
+    throw conflict(
+      "Cannot accept interaction: the issue's most recent run has not completed workspace_finalize. "
+        + "Retry once the local worktree has finished syncing.",
+      { executionWorkspaceId },
+    );
   }
 
   async function getPendingInteractionForResolution(args: {
@@ -733,8 +773,12 @@ export function issueThreadInteractionService(db: Db) {
       const current = await getPendingInteractionForResolution({ issue, interactionId });
       switch (current.kind) {
         case "suggest_tasks":
+          // Accepting suggest_tasks only creates follow-up issues; it does not
+          // approve code state or move the source workspace forward, so the
+          // workspace_finalize gate (PAPA-440) does not apply here.
           return issueThreadInteractionService(db).acceptSuggestedTasks(issue, interactionId, data, actor);
         case "request_confirmation": {
+          await assertIssueWorkspaceFinalizedForAccept({ db, issue });
           const accepted = await acceptRequestConfirmation({
             issue,
             current,
@@ -839,6 +883,7 @@ export function issueThreadInteractionService(db: Db) {
             title: task.title,
             description: task.description ?? null,
             status: "todo",
+            workMode: task.workMode ?? "standard",
             priority: task.priority ?? "medium",
             assigneeAgentId: task.assigneeAgentId ?? null,
             assigneeUserId: task.assigneeUserId ?? null,
@@ -966,7 +1011,7 @@ export function issueThreadInteractionService(db: Db) {
 
     expireRequestConfirmationsSupersededByComment: async (
       issue: { id: string; companyId: string },
-      comment: { id: string; authorUserId?: string | null },
+      comment: { id: string; createdAt: Date | string; authorUserId?: string | null },
       actor: InteractionActor,
     ) => {
       if (!comment.authorUserId) return [];
@@ -983,7 +1028,13 @@ export function issueThreadInteractionService(db: Db) {
 
       const superseded = rows.filter((row) => {
         const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
-        return interaction.payload.supersedeOnUserComment === true;
+        return (
+          shouldSupersedeRequestConfirmationOnUserComment(interaction)
+          && isCommentAtOrAfterInteraction({
+            commentCreatedAt: comment.createdAt,
+            interactionCreatedAt: row.createdAt,
+          })
+        );
       });
 
       if (superseded.length === 0) return [];
@@ -1011,6 +1062,91 @@ export function issueThreadInteractionService(db: Db) {
           ))
           .returning();
         if (updated) expired.push(hydrateInteraction(updated));
+      }
+
+      if (expired.length > 0) {
+        await touchIssue(db, issue.id);
+      }
+      return expired;
+    },
+
+    expireRequestConfirmationsSupersededByHistoricalComments: async (
+      issue: { id: string; companyId: string },
+    ) => {
+      const [rows, comments] = await Promise.all([
+        db
+          .select()
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.kind, "request_confirmation"),
+            eq(issueThreadInteractions.status, "pending"),
+          )),
+        db
+          .select()
+          .from(issueComments)
+          .where(and(
+            eq(issueComments.companyId, issue.companyId),
+            eq(issueComments.issueId, issue.id),
+            isNotNull(issueComments.authorUserId),
+          ))
+          .orderBy(asc(issueComments.createdAt)),
+      ]);
+
+      if (rows.length === 0 || comments.length === 0) return [];
+
+      const now = new Date();
+      const expired: IssueThreadInteraction[] = [];
+      const supersededByComment = new Map<
+        string,
+        {
+          comment: (typeof comments)[number];
+          rowIds: string[];
+        }
+      >();
+      for (const row of rows) {
+        const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+        if (!shouldSupersedeRequestConfirmationOnUserComment(interaction)) continue;
+
+        const supersedingComment = comments.find((comment) => isCommentAtOrAfterInteraction({
+          commentCreatedAt: comment.createdAt,
+          interactionCreatedAt: row.createdAt,
+        }));
+        if (!supersedingComment) continue;
+
+        const group = supersededByComment.get(supersedingComment.id);
+        if (group) {
+          group.rowIds.push(row.id);
+        } else {
+          supersededByComment.set(supersedingComment.id, {
+            comment: supersedingComment,
+            rowIds: [row.id],
+          });
+        }
+      }
+
+      for (const { comment, rowIds } of supersededByComment.values()) {
+        const updatedRows = await db
+          .update(issueThreadInteractions)
+          .set({
+            status: "expired",
+            result: {
+              version: 1,
+              outcome: "superseded_by_comment",
+              commentId: comment.id,
+            },
+            resolvedByAgentId: null,
+            resolvedByUserId: comment.authorUserId,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            inArray(issueThreadInteractions.id, rowIds),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        expired.push(...updatedRows.map(hydrateInteraction));
       }
 
       if (expired.length > 0) {

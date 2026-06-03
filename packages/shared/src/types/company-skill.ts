@@ -51,6 +51,10 @@ export interface CompanySkillListItem {
   sourceLabel: string | null;
   sourceBadge: CompanySkillSourceBadge;
   sourcePath: string | null;
+  catalogKind: "bundled" | "optional" | null;
+  originHash: string | null;
+  packageName: string | null;
+  packageVersion: string | null;
 }
 
 export interface CompanySkillUsageAgent {
@@ -84,6 +88,49 @@ export interface CompanySkillUpdateStatus {
   currentRef: string | null;
   latestRef: string | null;
   hasUpdate: boolean;
+  installedHash: string | null;
+  originHash: string | null;
+  userModifiedAt: string | null;
+  updateHoldReason: CompanySkillUpdateHoldReason | null;
+  auditVerdict: CompanySkillAuditVerdict | null;
+  auditCodes: string[];
+}
+
+export type CompanySkillAuditSeverity = "warning" | "error";
+
+export type CompanySkillAuditVerdict = "pass" | "warning" | "fail";
+
+export type CompanySkillUpdateHoldReason =
+  | "local_modifications"
+  | "audit_hard_stop"
+  | "origin_unavailable"
+  | "compatibility_invalid"
+  | "operator_hold";
+
+export interface CompanySkillAuditFinding {
+  code: string;
+  severity: CompanySkillAuditSeverity;
+  message: string;
+  path: string | null;
+}
+
+export interface CompanySkillAuditResult {
+  skillId: string;
+  installedHash: string | null;
+  originHash: string | null;
+  verdict: CompanySkillAuditVerdict;
+  codes: string[];
+  findings: CompanySkillAuditFinding[];
+  scannedAt: string;
+  scanVersion: string;
+}
+
+export interface CompanySkillInstallUpdateRequest {
+  force?: boolean;
+}
+
+export interface CompanySkillResetRequest {
+  force?: boolean;
 }
 
 export interface CompanySkillImportRequest {
@@ -154,4 +201,65 @@ export interface CompanySkillFileDetail {
 export interface CompanySkillFileUpdateRequest {
   path: string;
   content: string;
+}
+
+export type CatalogSkillKind = "bundled" | "optional";
+
+export type CatalogSkillFileKind = CompanySkillFileInventoryEntry["kind"];
+
+export interface CatalogSkillFile {
+  path: string;
+  kind: CatalogSkillFileKind;
+  sizeBytes: number;
+  sha256: string;
+}
+
+export interface CatalogSkill {
+  id: string;
+  key: string;
+  kind: CatalogSkillKind;
+  category: string;
+  slug: string;
+  name: string;
+  description: string;
+  path: string;
+  entrypoint: "SKILL.md";
+  trustLevel: CompanySkillTrustLevel;
+  compatibility: CompanySkillCompatibility;
+  defaultInstall: boolean;
+  recommendedForRoles: string[];
+  requires: string[];
+  tags: string[];
+  files: CatalogSkillFile[];
+  contentHash: string;
+  packageName?: string;
+  packageVersion?: string;
+}
+
+export interface CatalogSkillListQuery {
+  kind?: CatalogSkillKind;
+  category?: string;
+  q?: string;
+}
+
+export interface CatalogSkillFileDetail {
+  catalogSkillId: string;
+  path: string;
+  kind: CatalogSkillFileKind;
+  content: string;
+  language: string | null;
+  markdown: boolean;
+}
+
+export interface CompanySkillInstallCatalogRequest {
+  catalogSkillId: string;
+  slug?: string | null;
+  force?: boolean;
+}
+
+export interface CompanySkillInstallCatalogResult {
+  action: "created" | "updated" | "unchanged";
+  skill: CompanySkill;
+  catalogSkill: CatalogSkill;
+  warnings: string[];
 }

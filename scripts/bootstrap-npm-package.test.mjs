@@ -52,3 +52,9 @@ test("resolveTargetPackage matches by package name or dir", () => {
   assert.equal(resolveTargetPackage("@paperclipai/a", packages).dir, "packages/a");
   assert.equal(resolveTargetPackage("./packages/b", packages).name, "@paperclipai/b");
 });
+
+test("resolveTargetPackage includes the workspace diff plugin bootstrap package", () => {
+  const pkg = resolveTargetPackage("@paperclipai/plugin-workspace-diff");
+
+  assert.equal(pkg.dir, "packages/plugins/plugin-workspace-diff");
+});

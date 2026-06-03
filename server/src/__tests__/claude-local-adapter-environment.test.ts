@@ -218,4 +218,64 @@ describe("claude_local environment diagnostics", () => {
     ).toBe(true);
     expect(result.checks.some((check) => check.code === "claude_cwd_invalid")).toBe(false);
   });
+
+  it("uses --allowedTools instead of --dangerously-skip-permissions for sandbox hello probes", async () => {
+    const executeCalls: Array<{ command: string; args?: string[] }> = [];
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        command: "claude",
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "cloudflare",
+        remoteCwd: "/workspace/paperclip",
+        runner: {
+          execute: async (input) => {
+            executeCalls.push({ command: input.command, args: input.args });
+            if (input.command === "claude") {
+              return {
+                exitCode: 0,
+                signal: null,
+                timedOut: false,
+                stdout: [
+                  JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "hello" }] } }),
+                  JSON.stringify({
+                    type: "result",
+                    result: "hello",
+                    usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 },
+                  }),
+                ].join("\n"),
+                stderr: "",
+                pid: null,
+                startedAt: new Date().toISOString(),
+              };
+            }
+            return {
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              stdout: "",
+              stderr: "",
+              pid: null,
+              startedAt: new Date().toISOString(),
+            };
+          },
+        },
+      },
+      environmentName: "QA Cloudflare",
+    });
+
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_passed")).toBe(true);
+    const probeCall = executeCalls.find((call) => call.command === "claude");
+    expect(probeCall?.args).not.toContain("--dangerously-skip-permissions");
+    expect(probeCall?.args).not.toContain("--permission-mode");
+    // Sandbox probes pass `--allowedTools` so any tool invocation triggered
+    // by the probe prompt cannot stall waiting for an interactive permission
+    // approval that no human is present to answer.
+    expect(probeCall?.args).toContain("--allowedTools");
+  });
 });
