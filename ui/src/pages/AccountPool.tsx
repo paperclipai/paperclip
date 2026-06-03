@@ -42,6 +42,21 @@ function formatTimestamp(iso: string | null): string {
   return date.toLocaleString();
 }
 
+/** "Resets 1:10 PM" if today, else "Resets Jun 9, 11:00 AM" — friendly quota-reset text. */
+function formatResetTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return `Resets ${iso}`;
+  const now = new Date();
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (sameDay) return `Resets ${time}`;
+  const day = date.toLocaleDateString([], { month: "short", day: "numeric" });
+  return `Resets ${day}, ${time}`;
+}
+
 function healthBarColor(usedPercent: number | null, capped: boolean): string {
   if (capped) return "bg-red-600";
   if (usedPercent == null) return "bg-muted-foreground/30";
@@ -104,8 +119,8 @@ function WindowRow({ window }: { window: QuotaWindow }) {
   const pct = window.usedPercent;
   const barWidth = pct == null ? 0 : Math.min(100, Math.max(0, pct));
   const capped = pct != null && pct >= 100;
-  // The human-readable reset text lives in `detail` (e.g. "Resets 1:10pm (Asia/Saigon)").
-  const resetText = window.detail ?? (window.resetsAt ? `Resets ${formatTimestamp(window.resetsAt)}` : null);
+  // Reset text: prefer the provider's human text (`detail`), else format the ISO `resetsAt`.
+  const resetText = window.detail ?? (window.resetsAt ? formatResetTime(window.resetsAt) : null);
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between text-xs">
