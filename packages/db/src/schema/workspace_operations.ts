@@ -28,7 +28,7 @@ export const workspaceOperations = pgTable(
     command: text("command"),
     cwd: text("cwd"),
     status: text("status").notNull().default("running"),
-    exitCode: integer("exit_code"),
+    exitCode: bigint("exit_code", { mode: "number" }),
     logStore: text("log_store"),
     logRef: text("log_ref"),
     logBytes: bigint("log_bytes", { mode: "number" }),
