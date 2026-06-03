@@ -1,4 +1,4 @@
-import { asc, eq, ne, sql, and } from "drizzle-orm";
+import { asc, eq, ne, sql, and, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   plugins,
@@ -42,6 +42,13 @@ function isPluginKeyConflict(error: unknown): boolean {
   const err = error as { code?: string; constraint?: string; constraint_name?: string };
   const constraint = err.constraint ?? err.constraint_name;
   return err.code === "23505" && constraint === "plugins_plugin_key_idx";
+}
+
+function pluginConfigScopeCondition(pluginId: string, companyId?: string | null) {
+  return and(
+    eq(pluginConfig.pluginId, pluginId),
+    companyId ? eq(pluginConfig.companyId, companyId) : isNull(pluginConfig.companyId),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -280,12 +287,12 @@ export function pluginRegistryService(db: Db) {
 
     // ----- Config ---------------------------------------------------------
 
-    /** Retrieve a plugin's instance configuration. */
-    getConfig: (pluginId: string) =>
+    /** Retrieve a plugin's company-scoped config, or the legacy global fallback. */
+    getConfig: (pluginId: string, companyId?: string | null) =>
       db
         .select()
         .from(pluginConfig)
-        .where(eq(pluginConfig.pluginId, pluginId))
+        .where(pluginConfigScopeCondition(pluginId, companyId))
         .then((rows) => rows[0] ?? null),
 
     /**
@@ -293,14 +300,14 @@ export function pluginRegistryService(db: Db) {
      * If a config row already exists for the plugin it is replaced;
      * otherwise a new row is inserted.
      */
-    upsertConfig: async (pluginId: string, input: UpsertPluginConfig) => {
+    upsertConfig: async (pluginId: string, input: UpsertPluginConfig, companyId?: string | null) => {
       const plugin = await getById(pluginId);
       if (!plugin) throw notFound("Plugin not found");
 
       const existing = await db
         .select()
         .from(pluginConfig)
-        .where(eq(pluginConfig.pluginId, pluginId))
+        .where(pluginConfigScopeCondition(pluginId, companyId))
         .then((rows) => rows[0] ?? null);
 
       if (existing) {
@@ -311,7 +318,7 @@ export function pluginRegistryService(db: Db) {
             lastError: null,
             updatedAt: new Date(),
           })
-          .where(eq(pluginConfig.pluginId, pluginId))
+          .where(pluginConfigScopeCondition(pluginId, companyId))
           .returning()
           .then((rows) => rows[0]);
       }
@@ -320,6 +327,7 @@ export function pluginRegistryService(db: Db) {
         .insert(pluginConfig)
         .values({
           pluginId,
+          companyId: companyId ?? null,
           configJson: input.configJson,
         })
         .returning()
@@ -330,14 +338,14 @@ export function pluginRegistryService(db: Db) {
      * Partially update a plugin's instance configuration via shallow merge.
      * If no config row exists yet one is created with the supplied values.
      */
-    patchConfig: async (pluginId: string, input: PatchPluginConfig) => {
+    patchConfig: async (pluginId: string, input: PatchPluginConfig, companyId?: string | null) => {
       const plugin = await getById(pluginId);
       if (!plugin) throw notFound("Plugin not found");
 
       const existing = await db
         .select()
         .from(pluginConfig)
-        .where(eq(pluginConfig.pluginId, pluginId))
+        .where(pluginConfigScopeCondition(pluginId, companyId))
         .then((rows) => rows[0] ?? null);
 
       if (existing) {
@@ -349,7 +357,7 @@ export function pluginRegistryService(db: Db) {
             lastError: null,
             updatedAt: new Date(),
           })
-          .where(eq(pluginConfig.pluginId, pluginId))
+          .where(pluginConfigScopeCondition(pluginId, companyId))
           .returning()
           .then((rows) => rows[0]);
       }
@@ -358,6 +366,7 @@ export function pluginRegistryService(db: Db) {
         .insert(pluginConfig)
         .values({
           pluginId,
+          companyId: companyId ?? null,
           configJson: input.configJson,
         })
         .returning()
@@ -368,11 +377,11 @@ export function pluginRegistryService(db: Db) {
      * Record an error against a plugin's config (e.g. validation failure
      * against the plugin's instanceConfigSchema).
      */
-    setConfigError: async (pluginId: string, lastError: string | null) => {
+    setConfigError: async (pluginId: string, lastError: string | null, companyId?: string | null) => {
       const rows = await db
         .update(pluginConfig)
         .set({ lastError, updatedAt: new Date() })
-        .where(eq(pluginConfig.pluginId, pluginId))
+        .where(pluginConfigScopeCondition(pluginId, companyId))
         .returning();
 
       if (rows.length === 0) throw notFound("Plugin config not found");
@@ -380,10 +389,10 @@ export function pluginRegistryService(db: Db) {
     },
 
     /** Delete a plugin's config row. */
-    deleteConfig: async (pluginId: string) => {
+    deleteConfig: async (pluginId: string, companyId?: string | null) => {
       const rows = await db
         .delete(pluginConfig)
-        .where(eq(pluginConfig.pluginId, pluginId))
+        .where(pluginConfigScopeCondition(pluginId, companyId))
         .returning();
 
       return rows[0] ?? null;

@@ -296,3 +296,124 @@ describe("worker invocation scope propagation", () => {
     }
   });
 });
+
+describe("startWorkerRpcHost runtime company context", () => {
+  function collectJsonLines(stream: PassThrough) {
+    const queue: unknown[] = [];
+    const waiters: Array<(value: unknown) => void> = [];
+    let buffer = "";
+
+    stream.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line) {
+          const message = JSON.parse(line);
+          const waiter = waiters.shift();
+          if (waiter) waiter(message);
+          else queue.push(message);
+        }
+        newlineIndex = buffer.indexOf("\n");
+      }
+    });
+
+    return async function nextMessage(): Promise<any> {
+      const queued = queue.shift();
+      if (queued) return queued;
+      return new Promise((resolve) => waiters.push(resolve));
+    };
+  }
+
+  function writeMessage(stream: PassThrough, message: unknown): void {
+    stream.write(`${JSON.stringify(message)}\n`);
+  }
+
+  it("passes executeTool company context into config and secret host calls", async () => {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const nextMessage = collectJsonLines(stdout);
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.tools.register(
+          "check-context",
+          {
+            displayName: "Check Context",
+            description: "Checks runtime context propagation",
+            parametersSchema: { type: "object", properties: {} },
+          },
+          async () => {
+            const config = await ctx.config.get();
+            const token = await ctx.secrets.resolve("77777777-7777-4777-8777-777777777777");
+            return { content: `${config.mode}:${token}` };
+          },
+        );
+      },
+    });
+
+    const host = startWorkerRpcHost({ plugin, stdin, stdout });
+
+    writeMessage(stdin, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        manifest: { id: "test-plugin", name: "test-plugin", version: "1.0.0" },
+        config: {},
+        instanceInfo: { instanceId: "inst-1", hostVersion: "0.0.0-test" },
+        apiVersion: 1,
+      },
+    });
+    await expect(nextMessage()).resolves.toMatchObject({ id: 1, result: { ok: true } });
+
+    writeMessage(stdin, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "executeTool",
+      params: {
+        toolName: "check-context",
+        parameters: {},
+        runContext: {
+          agentId: "agent-1",
+          runId: "run-1",
+          companyId: "company-1",
+          projectId: "project-1",
+        },
+      },
+    });
+
+    const configRequest = await nextMessage();
+    expect(configRequest).toMatchObject({
+      method: "config.get",
+      params: { companyId: "company-1" },
+    });
+    writeMessage(stdin, {
+      jsonrpc: "2.0",
+      id: configRequest.id,
+      result: { mode: "company-config" },
+    });
+
+    const secretRequest = await nextMessage();
+    expect(secretRequest).toMatchObject({
+      method: "secrets.resolve",
+      params: {
+        secretRef: "77777777-7777-4777-8777-777777777777",
+        companyId: "company-1",
+      },
+    });
+    writeMessage(stdin, {
+      jsonrpc: "2.0",
+      id: secretRequest.id,
+      result: "company-secret",
+    });
+
+    await expect(nextMessage()).resolves.toMatchObject({
+      id: 2,
+      result: { content: "company-config:company-secret" },
+    });
+
+    host.stop();
+  });
+});
