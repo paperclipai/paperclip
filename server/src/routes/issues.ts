@@ -3898,6 +3898,165 @@ export function issueRoutes(
     res.json(result);
   });
 
+  // Authorized fallback reassignment (THIAAAAAA-1872).
+  //
+  // The fallback monitor runs under a non-Claude executor identity (so it
+  // survives Claude usage-limit/outage events). When it detects a usage-limit
+  // failure on a watched primary it must reassign that primary's open issues to
+  // the registered sister agent. A normal PATCH /issues/:id is rejected by the
+  // cross-agent-mutation rule (403). This route performs *only* the assignee
+  // swap, gated by an explicit, scope-constrained `tasks:fallback_reassign`
+  // grant — the registry of allowed sisters lives in the grant scope, so the
+  // executor can never mutate anything else or reassign to an unregistered
+  // target. Approved as Option 2 on THIAAAAAA-1872 (board approval ed6f4d65).
+  router.post(
+    "/issues/:id/fallback-reassign",
+    validate(
+      z.object({
+        toAgentId: z.string().min(1),
+        expectedFromAgentId: z.string().min(1).optional(),
+        reason: z.string().max(2000).optional(),
+        comment: z.string().max(20000).optional(),
+      }),
+    ),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await svc.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, existing.companyId);
+
+      if (req.actor.type !== "agent") {
+        res.status(403).json({ error: "Fallback reassignment requires an agent executor identity" });
+        return;
+      }
+      const actorAgentId = req.actor.agentId;
+      if (!actorAgentId) {
+        res.status(403).json({ error: "Agent authentication required" });
+        return;
+      }
+
+      const fromAgentId = existing.assigneeAgentId;
+      if (!fromAgentId) {
+        res.status(409).json({
+          error: "Fallback reassignment requires an assigned primary",
+          details: { issueId: id },
+        });
+        return;
+      }
+      if (req.body.expectedFromAgentId && req.body.expectedFromAgentId !== fromAgentId) {
+        // Integrity guard against races: the caller's view of the primary must
+        // match the current assignee before we swap.
+        res.status(409).json({
+          error: "Fallback reassignment primary mismatch",
+          details: { issueId: id, expectedFromAgentId: req.body.expectedFromAgentId, actualAssigneeAgentId: fromAgentId },
+        });
+        return;
+      }
+
+      const targetAgentId = await normalizeIssueAssigneeAgentReference(
+        existing.companyId,
+        req.body.toAgentId as string,
+      );
+      if (typeof targetAgentId !== "string" || targetAgentId.length === 0) {
+        res.status(422).json({
+          error: "Fallback reassignment target agent could not be resolved",
+          details: { toAgentId: req.body.toAgentId },
+        });
+        return;
+      }
+      if (targetAgentId === fromAgentId) {
+        res.status(409).json({
+          error: "Fallback reassignment target equals current assignee",
+          details: { issueId: id, assigneeAgentId: fromAgentId },
+        });
+        return;
+      }
+
+      // Authorize: requires an explicit, scope-constrained grant of
+      // `tasks:fallback_reassign`. The grant scope enumerates the registered
+      // sister agents; an unscoped grant is rejected (requireStructuredScope).
+      const decision = await access.decide({
+        actor: { type: "agent", agentId: actorAgentId, companyId: existing.companyId },
+        action: "tasks:fallback_reassign",
+        resource: {
+          type: "issue",
+          companyId: existing.companyId,
+          issueId: existing.id,
+          assigneeAgentId: fromAgentId,
+          status: existing.status,
+        },
+        scope: { targetAgentId },
+      });
+      if (!decision.allowed) {
+        res.status(403).json({
+          error: "Agent lacks an authorized fallback-reassignment grant for this target",
+          details: {
+            issueId: id,
+            actorAgentId,
+            fromAgentId,
+            toAgentId: targetAgentId,
+            reason: decision.reason,
+            securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+          },
+        });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const updated = await svc.update(id, {
+        assigneeAgentId: targetAgentId,
+        actorAgentId: actor.agentId ?? null,
+        actorUserId: null,
+      });
+      if (!updated) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+
+      if (req.body.comment) {
+        const comment = await svc.addComment(
+          id,
+          req.body.comment as string,
+          { agentId: actor.agentId ?? undefined, runId: actor.runId },
+          { authorType: "agent", presentation: null, metadata: null },
+        );
+        await issueReferencesSvc.syncComment(comment.id);
+      }
+
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.fallback_reassigned",
+        entityType: "issue",
+        entityId: existing.id,
+        details: {
+          fromAgentId,
+          toAgentId: targetAgentId,
+          grantPermissionKey: decision.grant?.permissionKey ?? null,
+          reason: typeof req.body.reason === "string" ? req.body.reason : null,
+        },
+      });
+
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue: updated,
+        reason: "issue_assigned",
+        mutation: "fallback_reassign",
+        contextSource: "issue.fallback_reassign",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+
+      res.json({ issue: updated, reassignedFromAgentId: fromAgentId, reassignedToAgentId: targetAgentId });
+    },
+  );
+
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
