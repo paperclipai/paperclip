@@ -19,14 +19,28 @@ export class CouchStore implements StrOpsStore {
 
   /** Create the database + Mango indexes if missing. Idempotent (existing db/index = no-op). */
   async ensure(): Promise<void> {
-    await this.http.request("PUT", `/${this.db}`); // 201 created or 412 exists — both fine
-    await this.http.request("POST", `/${this.db}/_index`, { index: { fields: ["type", "companyId"] }, name: "type-company", ddoc: "str-ops" });
-    await this.http.request("POST", `/${this.db}/_index`, { index: { fields: ["type", "companyId", "propertyId"] }, name: "type-company-property", ddoc: "str-ops" });
+    const dbR = await this.http.request("PUT", `/${this.db}`);
+    if (dbR.status !== 201 && dbR.status !== 202 && dbR.status !== 200 && dbR.status !== 412) {
+      throw new Error(`CouchDB ensure: PUT /${this.db} failed: ${dbR.status} ${JSON.stringify(dbR.body)}`);
+    }
+    const indexes = [
+      { index: { fields: ["type", "companyId"] }, name: "type-company", ddoc: "str-ops" },
+      { index: { fields: ["type", "companyId", "propertyId"] }, name: "type-company-property", ddoc: "str-ops" },
+      { index: { fields: ["type", "companyId", "externalCode"] }, name: "type-company-extcode", ddoc: "str-ops" },
+    ];
+    for (const idx of indexes) {
+      const r = await this.http.request("POST", `/${this.db}/_index`, idx);
+      if (r.status !== 200 && r.status !== 201) {
+        throw new Error(`CouchDB ensure: _index ${idx.name} failed: ${r.status} ${JSON.stringify(r.body)}`);
+      }
+    }
   }
 
   private async getDoc(id: string): Promise<any | null> {
     const r = await this.http.request("GET", `/${this.db}/${enc(id)}`);
-    return r.status === 200 ? r.body : null;
+    if (r.status === 200) return r.body;
+    if (r.status === 404) return null;
+    throw new Error(`CouchDB GET ${id} failed: ${r.status} ${JSON.stringify(r.body)}`);
   }
   private async putDoc(doc: Record<string, unknown> & { _id: string }): Promise<any> {
     const r = await this.http.request("PUT", `/${this.db}/${enc(doc._id)}`, doc);
@@ -39,8 +53,8 @@ export class CouchStore implements StrOpsStore {
     return r.body?.docs ?? [];
   }
 
-  private guestId(companyId: string, contact: string) { return `guest:${companyId}:${contact}`; }
-  private bookingId(companyId: string, channel: string, externalRef: string) { return `booking:${companyId}:${channel}:${externalRef}`; }
+  private guestId(companyId: string, contact: string) { return `guest:${encodeURIComponent(companyId)}:${encodeURIComponent(contact)}`; }
+  private bookingId(companyId: string, channel: string, externalRef: string) { return `booking:${encodeURIComponent(companyId)}:${encodeURIComponent(channel)}:${encodeURIComponent(externalRef)}`; }
 
   private toOwner(d: any): Owner { return { id: d._id, companyId: d.companyId, name: d.name, email: d.email, commissionPct: d.commissionPct }; }
   private toProperty(d: any): Property { return { id: d._id, companyId: d.companyId, name: d.name, externalCode: d.externalCode, ownerId: d.ownerId, basePriceCents: d.basePriceCents, currency: d.currency }; }

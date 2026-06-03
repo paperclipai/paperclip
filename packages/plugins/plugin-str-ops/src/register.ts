@@ -1,3 +1,4 @@
+import type { ToolRunContext } from "@paperclipai/plugin-sdk";
 import type { ChannelProvider } from "./providers/types.js";
 import type { StrOpsStore } from "./store/types.js";
 import { ingestNewBookings } from "./domain/ingest.js";
@@ -10,7 +11,7 @@ export interface RegisterDeps {
 }
 
 interface RegisterCtx {
-  tools: { register(name: string, def: unknown, handler: (params: unknown, runCtx?: unknown) => Promise<unknown>): void };
+  tools: { register(name: string, def: unknown, handler: (params: unknown, runCtx: ToolRunContext) => Promise<unknown>): void };
   jobs: { register(jobKey: string, handler: (job: { jobKey: string; runId: string; trigger: string; scheduledAt: string }) => Promise<unknown>): void };
   data: { register(key: string, handler: (params?: Record<string, unknown>) => Promise<unknown>): void };
   logger: { info: (msg: string, meta?: Record<string, unknown>) => void; warn: (msg: string, meta?: Record<string, unknown>) => void; error: (msg: string, meta?: Record<string, unknown>) => void };
@@ -22,12 +23,23 @@ function reqString(params: Record<string, unknown>, key: string): string {
   return v;
 }
 
+/** Resolve authoritative companyId from the run context.
+ *  Returns null (scope violation) if the caller supplied a companyId that differs from the run-scoped one. */
+function resolveCompany(
+  params: Record<string, unknown>,
+  runCtx: ToolRunContext,
+  defaultCompanyId: string,
+): string | null {
+  const authoritative = runCtx.companyId ?? defaultCompanyId;
+  const caller = typeof params.companyId === "string" && params.companyId ? params.companyId : null;
+  if (caller !== null && caller !== authoritative) return null;
+  return authoritative;
+}
+
+const SCOPE_VIOLATION = { content: "company_scope_violation", data: { error: "company_scope_violation" } } as const;
+
 export function registerStrOps(ctx: RegisterCtx, deps: RegisterDeps): void {
   const { store, channelProvider, defaultCompanyId } = deps;
-  const companyOf = (p: unknown) => {
-    const params = p as Record<string, unknown>;
-    return typeof params.companyId === "string" && params.companyId ? params.companyId : defaultCompanyId;
-  };
 
   ctx.data.register("health", async () => ({ status: "ok", plugin: "str-ops" }));
 
@@ -35,8 +47,11 @@ export function registerStrOps(ctx: RegisterCtx, deps: RegisterDeps): void {
     displayName: "List properties",
     description: "List STR properties for the company.",
     parametersSchema: { type: "object", properties: { companyId: { type: "string" } } },
-  }, async (params) => {
-    const properties = await store.listProperties(companyOf(params));
+  }, async (params, runCtx) => {
+    const p = params as Record<string, unknown>;
+    const companyId = resolveCompany(p, runCtx, defaultCompanyId);
+    if (companyId === null) return SCOPE_VIOLATION;
+    const properties = await store.listProperties(companyId);
     return { content: `${properties.length} properties`, data: { properties } };
   });
 
@@ -44,9 +59,11 @@ export function registerStrOps(ctx: RegisterCtx, deps: RegisterDeps): void {
     displayName: "Get owner",
     description: "Fetch an owner by id.",
     parametersSchema: { type: "object", properties: { companyId: { type: "string" }, ownerId: { type: "string" } }, required: ["ownerId"] },
-  }, async (params) => {
+  }, async (params, runCtx) => {
     const p = params as Record<string, unknown>;
-    const owner = await store.getOwner(companyOf(params), reqString(p, "ownerId"));
+    const companyId = resolveCompany(p, runCtx, defaultCompanyId);
+    if (companyId === null) return SCOPE_VIOLATION;
+    const owner = await store.getOwner(companyId, reqString(p, "ownerId"));
     return { content: owner ? owner.name : "not found", data: { owner } };
   });
 
@@ -54,10 +71,12 @@ export function registerStrOps(ctx: RegisterCtx, deps: RegisterDeps): void {
     displayName: "List bookings",
     description: "List bookings for the company, optionally filtered by property.",
     parametersSchema: { type: "object", properties: { companyId: { type: "string" }, propertyId: { type: "string" } } },
-  }, async (params) => {
+  }, async (params, runCtx) => {
     const p = params as Record<string, unknown>;
+    const companyId = resolveCompany(p, runCtx, defaultCompanyId);
+    if (companyId === null) return SCOPE_VIOLATION;
     const propertyId = typeof p.propertyId === "string" ? p.propertyId : undefined;
-    const bookings = await store.listBookings(companyOf(params), propertyId ? { propertyId } : undefined);
+    const bookings = await store.listBookings(companyId, propertyId ? { propertyId } : undefined);
     return { content: `${bookings.length} bookings`, data: { bookings } };
   });
 
@@ -69,9 +88,11 @@ export function registerStrOps(ctx: RegisterCtx, deps: RegisterDeps): void {
       properties: { companyId: { type: "string" }, propertyId: { type: "string" }, checkIn: { type: "string" }, checkOut: { type: "string" } },
       required: ["propertyId", "checkIn", "checkOut"],
     },
-  }, async (params) => {
+  }, async (params, runCtx) => {
     const p = params as Record<string, unknown>;
-    const available = await isPropertyAvailable(store, companyOf(params), reqString(p, "propertyId"), reqString(p, "checkIn"), reqString(p, "checkOut"));
+    const companyId = resolveCompany(p, runCtx, defaultCompanyId);
+    if (companyId === null) return SCOPE_VIOLATION;
+    const available = await isPropertyAvailable(store, companyId, reqString(p, "propertyId"), reqString(p, "checkIn"), reqString(p, "checkOut"));
     return { content: available ? "available" : "unavailable", data: { available } };
   });
 
@@ -88,10 +109,14 @@ export function registerStrOps(ctx: RegisterCtx, deps: RegisterDeps): void {
       },
       required: ["propertyId", "channel", "externalRef", "checkIn", "checkOut", "guestName", "guestContact"],
     },
-  }, async (params) => {
+  }, async (params, runCtx) => {
     const p = params as Record<string, unknown>;
-    const companyId = companyOf(params);
+    const companyId = resolveCompany(p, runCtx, defaultCompanyId);
+    if (companyId === null) return SCOPE_VIOLATION;
     const propertyId = reqString(p, "propertyId");
+    if (!(await store.getProperty(companyId, propertyId))) {
+      return { content: "unknown property", data: { created: null, unknownProperty: true } };
+    }
     const checkIn = reqString(p, "checkIn");
     const checkOut = reqString(p, "checkOut");
     if (!(await isPropertyAvailable(store, companyId, propertyId, checkIn, checkOut))) {
