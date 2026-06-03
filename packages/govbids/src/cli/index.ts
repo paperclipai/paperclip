@@ -25,7 +25,7 @@ import {
 import type { NormalizedOpportunity, PipelineResult, ScoredOpportunity } from "../core/types.js";
 import { loadState, saveState, getStateDir } from "./state.js";
 import { loadSeenStore, saveSeenStore, filterSeen, markSeen } from "./seen-set.js";
-import { isAddendumOrRepost } from "../core/addendum.js";
+import { isAddendumOrRepost, isQandA } from "../core/addendum.js";
 import { writeJson, writeCsv, writeLawyerCsv, writeLawyerXlsx, writeQualifiedCsv, printSummary, printQuota } from "./output.js";
 import { SlackClient } from "../core/slack-client.js";
 
@@ -1023,28 +1023,34 @@ program
       includeSeen: !!opts.includeSeen,
     });
 
-    // Classify what we're emitting into brand-new RFPs vs addenda/updates.
-    // Addenda = title looks like an addendum/re-post, OR same solicitation
-    // re-appeared with a new source id (repost), OR an already-shown RFP
-    // re-surfaced because its deadline changed (reshownDeadline).
-    const freshCandidates = filtered.fresh.filter(
+    // US-3: 3-way split — Qualified (new) / Addenda & Updates / dropped Q&A.
+    //   - Q&A / clarification docs are not biddable → DROPPED entirely.
+    //   - Addenda = title looks like an addendum/re-post, OR same solicitation
+    //     re-appeared with a new id / mutated title (repost via fingerprint or
+    //     agency-similarity), OR an already-shown RFP re-surfaced on a deadline
+    //     change (reshownDeadline).
+    //   - Everything else fresh = new Qualified RFPs.
+    const droppedQandA = filtered.fresh.filter((o) => isQandA(o.title));
+    const freshNonQandA = filtered.fresh.filter((o) => !isQandA(o.title));
+    const freshCandidates = freshNonQandA.filter(
       (o) => !isAddendumOrRepost(o.title),
     );
-    const freshAddenda = filtered.fresh.filter((o) =>
-      isAddendumOrRepost(o.title),
-    );
+    const freshAddenda = freshNonQandA.filter((o) => isAddendumOrRepost(o.title));
     const strictQualified = freshCandidates.sort((a, b) => b.score - a.score);
+    // repost/reshown that are actually Q&A should be dropped, not shown as addenda.
     const addenda = [
       ...freshAddenda,
-      ...filtered.repost,
-      ...filtered.reshownDeadline,
+      ...filtered.repost.filter((o) => !isQandA(o.title)),
+      ...filtered.reshownDeadline.filter((o) => !isQandA(o.title)),
     ].sort((a, b) => b.score - a.score);
 
     console.log(
-      `  Seen-set filter: ${strictQualified.length} new RFPs · ${addenda.length} addenda/updates (${freshAddenda.length} titled, ${filtered.repost.length} re-post, ${filtered.reshownDeadline.length} deadline) · ${filtered.suppressed.length} suppressed as repeats`,
+      `  Seen-set filter: ${strictQualified.length} new RFPs · ${addenda.length} addenda/updates (${freshAddenda.length} titled, ${filtered.repost.length} re-post, ${filtered.reshownDeadline.length} deadline) · ${droppedQandA.length} Q&A dropped · ${filtered.suppressed.length} suppressed as repeats`,
     );
 
-    // Mark everything we're emitting (new + addenda) as seen for future runs.
+    // Mark everything we surfaced (new + addenda) as seen for future runs.
+    // Dropped Q&A is intentionally NOT marked — if it ever re-appears as a real
+    // amendment we still want to evaluate it.
     markSeen([...strictQualified, ...addenda], seenStore);
     await saveSeenStore(seenStore);
 

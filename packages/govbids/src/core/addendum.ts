@@ -30,3 +30,26 @@ export function isAddendumOrRepost(title: string): boolean {
   if (!title) return false;
   return ADDENDUM_PATTERNS.some((re) => re.test(title));
 }
+
+/**
+ * US-3: Q&A / clarification / RFI-response documents are NOT biddable
+ * solicitations — they're supporting artifacts attached to an existing RFP.
+ * They belong in neither the Qualified sheet nor the Addenda tab; they are
+ * dropped entirely.
+ */
+const QANDA_PATTERNS: RegExp[] = [
+  /\bq\s*&\s*a\b/i,
+  /\bq\s*and\s*a\b/i,
+  /\bquestions?\s+(and|&)\s+answers?\b/i,
+  // "Answers to Questions" / "Answers to Vendor Questions" — allow words between.
+  /\banswers?\s+to\s+(?:\w+\s+){0,3}questions?\b/i,
+  /\bquestion\s+(and\s+)?responses?\b/i,
+  /\bclarification(s)?\b/i,
+  /\brfi\s+responses?\b/i,
+  /\bresponses?\s+to\s+(?:\w+\s+){0,3}questions?\b/i,
+];
+
+export function isQandA(title: string): boolean {
+  if (!title) return false;
+  return QANDA_PATTERNS.some((re) => re.test(title));
+}
