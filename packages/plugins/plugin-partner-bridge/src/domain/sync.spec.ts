@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { syncLink, resolveApprovalDecision } from "./sync.js";
+import { syncLink, resolveApprovalDecision, handleInbound } from "./sync.js";
 import { FakePaperclipApi } from "../paperclip/api.js";
 import { MemoryStore } from "../store/memory-store.js";
 import { MockHermesConnector } from "../hermes/mock.js";
@@ -69,5 +69,22 @@ describe("syncLink — commitment gate", () => {
     expect(await d.api.listComments("iss-B")).toHaveLength(0);
     const senderComments = await d.api.listComments("iss-A");
     expect(senderComments.some((c) => /rejet|refus/i.test(c.body))).toBe(true);
+  });
+});
+
+describe("handleInbound", () => {
+  it("approval decision routes to resolveApprovalDecision", async () => {
+    const d = deps(); await d.store.ensure();
+    await d.api.postComment("iss-A", "[COMMITMENT] signature");
+    await syncLink(d);
+    const approvalId = [...d.api.approvals.keys()][0];
+    await handleInbound(d, { channel: "telegram", from: "you", body: "", approvalDecision: { approvalId, decision: "approve", by: "you" }, linkId: "L", secret: "x" });
+    expect((await d.api.getApproval(approvalId))?.status).toBe("approved");
+  });
+  it("plain inbound message posts onto a channel-issue", async () => {
+    const d = deps(); await d.store.ensure();
+    await handleInbound(d, { channel: "email", from: "pcc@x.com", body: "réponse PCC", linkId: "L", secret: "x" });
+    const total = (await d.api.listComments("iss-A")).length + (await d.api.listComments("iss-B")).length;
+    expect(total).toBe(1);
   });
 });

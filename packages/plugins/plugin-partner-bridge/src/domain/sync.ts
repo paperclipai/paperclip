@@ -1,7 +1,7 @@
 import type { LinkConfig, LinkSide } from "../types.js";
 import type { BridgeStore } from "../store/types.js";
 import type { PaperclipApi } from "../paperclip/types.js";
-import type { HermesConnector } from "../hermes/types.js";
+import type { HermesConnector, InboundMessage } from "../hermes/types.js";
 import { bridgeMsgId, bridgeOriginMarker } from "./envelope.js";
 import { classifyItem } from "./classify.js";
 
@@ -86,4 +86,20 @@ export async function resolveApprovalDecision(deps: SyncDeps, approvalId: string
   await store.putMapping({ bridgeMsgId: pending.bridgeMsgId, sourceItemId: pending.sourceItemId, mirroredItemId: mirrored.id, flags: { mirrored: true, notified: true, emailed: true } });
   await hermes.send({ bridgeMsgId: pending.bridgeMsgId, channel: "email", to: link.transport.emailB, subject: `Engagement confirmé — ${self.label}`, body: `${pending.body}\n\n(Approbation board réf. ${approvalId})`, approvalId, linkId: link.linkId });
   await api.postComment(self.channelIssueId, `✅ Commitment approuvé (réf. ${approvalId}) — transmis au partenaire par email.`, bridgeOriginMarker(peer.companyId));
+}
+
+/** Inbound from Hermes (Telegram reply / inbound email / approve-button).
+ *  Approval decisions resolve the gate; plain messages post onto a channel-issue. */
+export async function handleInbound(deps: SyncDeps, msg: InboundMessage): Promise<void> {
+  if (msg.approvalDecision) {
+    await resolveApprovalDecision(deps, msg.approvalDecision.approvalId, msg.approvalDecision.decision);
+    return;
+  }
+  // Plain inbound from the external partner -> post on company B's channel-issue
+  // (company B is the externally-reachable partner side by convention).
+  await deps.api.postComment(
+    deps.link.companyB.channelIssueId,
+    `**[inbound:${msg.channel}]** ${msg.body}`,
+    bridgeOriginMarker(deps.link.companyA.companyId),
+  );
 }
