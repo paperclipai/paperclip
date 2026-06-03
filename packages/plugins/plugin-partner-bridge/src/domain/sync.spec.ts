@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { syncLink } from "./sync.js";
+import { syncLink, resolveApprovalDecision } from "./sync.js";
 import { FakePaperclipApi } from "../paperclip/api.js";
 import { MemoryStore } from "../store/memory-store.js";
 import { MockHermesConnector } from "../hermes/mock.js";
@@ -35,5 +35,39 @@ describe("syncLink — routine mirror", () => {
     await d.api.postComment("iss-B", "echo", { bridgeOrigin: "A" }); // came FROM the bridge
     await syncLink(d);
     expect(await d.api.listComments("iss-A")).toHaveLength(0);
+  });
+});
+
+describe("syncLink — commitment gate", () => {
+  it("commitment item creates an approval, holds (no mirror), Telegram approve/reject", async () => {
+    const d = deps(); await d.store.ensure();
+    await d.api.postComment("iss-A", "[COMMITMENT] lancer kickoff budget 20k€");
+    await syncLink(d);
+    expect(await d.api.listComments("iss-B")).toHaveLength(0);                 // not mirrored
+    expect(d.api.approvals.size).toBe(1);                                       // approval created
+    const tg = d.hermes.sent.find((m) => m.channel === "telegram");
+    expect(tg?.approvalId).toBeDefined();                                       // approve/reject surface
+  });
+
+  it("approve -> mirror + email formal record + confirmation", async () => {
+    const d = deps(); await d.store.ensure();
+    await d.api.postComment("iss-A", "[COMMITMENT] signature mission");
+    await syncLink(d);
+    const approvalId = [...d.api.approvals.keys()][0];
+    await resolveApprovalDecision(d, approvalId, "approve");
+    expect(await d.api.listComments("iss-B")).toHaveLength(1);                  // mirrored after approval
+    expect(d.hermes.sent.some((m) => m.channel === "email")).toBe(true);        // formal record
+    expect((await d.api.getApproval(approvalId))?.status).toBe("approved");
+  });
+
+  it("reject -> rejection comment on sender, no mirror", async () => {
+    const d = deps(); await d.store.ensure();
+    await d.api.postComment("iss-A", "[COMMITMENT] signature mission");
+    await syncLink(d);
+    const approvalId = [...d.api.approvals.keys()][0];
+    await resolveApprovalDecision(d, approvalId, "reject");
+    expect(await d.api.listComments("iss-B")).toHaveLength(0);
+    const senderComments = await d.api.listComments("iss-A");
+    expect(senderComments.some((c) => /rejet|refus/i.test(c.body))).toBe(true);
   });
 });

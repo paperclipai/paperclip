@@ -44,7 +44,14 @@ async function syncSide(deps: SyncDeps, sourceCompanyId: string): Promise<void> 
 
     const item = { id: c.id, companyId: sourceCompanyId, issueId: self.channelIssueId, kind: "msg" as const, body: c.body, ts: c.createdAt, metadata: c.metadata };
     const classification = classifyItem(item);
-    if (classification === "commitment") continue; // handled by the gate (later task)
+    if (classification === "commitment") {
+      const gateId = bridgeMsgId();
+      const approval = await api.createApproval(sourceCompanyId, { kind: "request_board_approval", summary: `Commitment via partner channel: ${c.body.slice(0, 140)}` });
+      await store.putPendingApproval({ approvalId: approval.id, linkId: link.linkId, sourceCompanyId, sourceItemId: c.id, bridgeMsgId: gateId, body: c.body, state: "pending", createdAt: c.createdAt });
+      await store.putMapping({ bridgeMsgId: gateId, sourceItemId: c.id, mirroredItemId: "", flags: { mirrored: false, notified: true, emailed: false } });
+      await hermes.send({ bridgeMsgId: gateId, channel: "telegram", to: link.transport.telegramChat, approvalId: approval.id, body: `⛔ ${self.label} → ${peer.label} COMMITMENT (approve/reject): ${c.body}`, linkId: link.linkId });
+      continue; // held — no mirror until approval resolves
+    }
 
     const id = bridgeMsgId();
     const mirrored = await api.postComment(peer.channelIssueId, `**[${self.label}]** ${c.body}`, bridgeOriginMarker(sourceCompanyId));
@@ -55,4 +62,28 @@ async function syncSide(deps: SyncDeps, sourceCompanyId: string): Promise<void> 
   }
 
   if (maxTs && maxTs !== since) await store.setCursor(link.linkId, self.channelIssueId, maxTs);
+}
+
+/** Resolve a held commitment after a board/Telegram decision.
+ *  approve -> mirror to peer + email formal record + confirmation on both sides.
+ *  reject  -> rejection comment on the sender's channel-issue. */
+export async function resolveApprovalDecision(deps: SyncDeps, approvalId: string, decision: "approve" | "reject"): Promise<void> {
+  const { api, store, hermes, link } = deps;
+  const pending = await store.getPendingApproval(approvalId);
+  if (!pending || pending.state !== "pending") return; // idempotent / unknown
+  const { self, peer } = peerOf(link, pending.sourceCompanyId);
+
+  await api.resolveApproval(approvalId, decision);
+  await store.setApprovalState(approvalId, decision === "approve" ? "approved" : "rejected");
+
+  if (decision === "reject") {
+    await api.postComment(self.channelIssueId, `❌ Commitment rejeté par le board (réf. ${approvalId}). Non transmis au partenaire.`, bridgeOriginMarker(peer.companyId));
+    return;
+  }
+
+  // approved: mirror + email formal record + confirmations
+  const mirrored = await api.postComment(peer.channelIssueId, `**[${self.label}]** ✅ ${pending.body}`, bridgeOriginMarker(pending.sourceCompanyId));
+  await store.putMapping({ bridgeMsgId: pending.bridgeMsgId, sourceItemId: pending.sourceItemId, mirroredItemId: mirrored.id, flags: { mirrored: true, notified: true, emailed: true } });
+  await hermes.send({ bridgeMsgId: pending.bridgeMsgId, channel: "email", to: link.transport.emailB, subject: `Engagement confirmé — ${self.label}`, body: `${pending.body}\n\n(Approbation board réf. ${approvalId})`, approvalId, linkId: link.linkId });
+  await api.postComment(self.channelIssueId, `✅ Commitment approuvé (réf. ${approvalId}) — transmis au partenaire par email.`, bridgeOriginMarker(peer.companyId));
 }
