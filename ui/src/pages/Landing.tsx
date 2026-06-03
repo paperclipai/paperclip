@@ -70,24 +70,24 @@ function LoginCard({ nextPath }: { nextPath: string }) {
   };
 
   const inputClass =
-    "rounded-md border border-border bg-background px-4 py-3 text-base text-foreground placeholder:text-muted-foreground focus:border-[#86c277] focus:outline-none";
+    "rounded-md border border-border bg-background px-4 py-3 text-base text-foreground placeholder:text-muted-foreground focus:border-[#f97316] focus:outline-none";
 
   return (
     <div
       id="signin"
-      className="w-full max-w-md rounded-2xl border border-border bg-card/70 p-6 shadow-2xl backdrop-blur sm:p-8"
+      className="w-full max-w-md rounded-xl border border-border bg-card/70 p-6 shadow-sm backdrop-blur sm:p-8"
     >
       <div className="mb-5 flex items-center justify-between">
         <div>
-          <p className="font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-[#86c277]">
+          <p className="font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-[#f97316]">
             {mode === "sign_in" ? "Sign in" : "Create account"}
           </p>
           <h2 className="mt-1 text-lg font-semibold text-foreground">
             {mode === "sign_in" ? "Instance access" : "Join the crew"}
           </h2>
         </div>
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-[#86c277]/30 px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider text-[#86c277]">
-          <span className="size-1.5 animate-pulse rounded-full bg-[#86c277]" /> live
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-[#f97316]/30 px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider text-[#f97316]">
+          <span className="size-1.5 animate-pulse rounded-full bg-[#f97316]" /> live
         </span>
       </div>
 
@@ -129,7 +129,7 @@ function LoginCard({ nextPath }: { nextPath: string }) {
         <button
           type="submit"
           disabled={mutation.isPending || !canSubmit}
-          className="group inline-flex items-center justify-center gap-2 rounded-md bg-[#86c277] px-6 py-3 text-sm font-semibold text-[#0A0A0A] transition hover:bg-[#a3d98f] disabled:opacity-50"
+          className="group inline-flex items-center justify-center gap-2 rounded-md bg-[#f97316] px-6 py-3 text-sm font-semibold text-[#0A0A0A] transition hover:bg-[#fb923c] disabled:opacity-50"
         >
           {mutation.isPending
             ? "Flooring it…"
@@ -242,16 +242,16 @@ function LiveConsole() {
   }, []);
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-background font-mono text-[12.5px] shadow-2xl">
+    <div className="overflow-hidden rounded-xl border border-border bg-background font-mono text-[12.5px] shadow-sm">
       <div className="flex items-center gap-2 border-b border-border bg-card px-4 py-2.5">
         <span className="size-2.5 rounded-full bg-red-500/70" />
         <span className="size-2.5 rounded-full bg-yellow-500/70" />
-        <span className="size-2.5 rounded-full bg-[#86c277]/80" />
+        <span className="size-2.5 rounded-full bg-[#f97316]/80" />
         <span className="ml-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
           <Terminal className="size-3" /> paperclip-worker · live
         </span>
-        <span className="ml-auto flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-[#86c277]">
-          <span className="size-1.5 animate-pulse rounded-full bg-[#86c277]" /> running
+        <span className="ml-auto flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-[#f97316]">
+          <span className="size-1.5 animate-pulse rounded-full bg-[#f97316]" /> running
         </span>
       </div>
       <div className="h-[200px] space-y-1.5 p-4">
@@ -403,8 +403,8 @@ function Section({
 
 function Eyebrow({ children }: { children: React.ReactNode }) {
   return (
-    <p className="mb-3 flex items-center gap-2 font-mono text-[12px] uppercase tracking-[0.18em] text-[#86c277]">
-      <span className="h-px w-6 bg-[#86c277]/50" />
+    <p className="mb-3 flex items-center gap-2 font-mono text-[12px] uppercase tracking-[0.18em] text-[#f97316]">
+      <span className="h-px w-6 bg-[#f97316]/50" />
       {children}
     </p>
   );
@@ -420,7 +420,7 @@ function Faq({ q, a }: { q: string; a: string }) {
       <div className="flex items-center justify-between gap-4">
         <span className="text-[16px] font-semibold text-foreground">{q}</span>
         {open ? (
-          <Minus className="size-4 shrink-0 text-[#86c277]" />
+          <Minus className="size-4 shrink-0 text-[#f97316]" />
         ) : (
           <Plus className="size-4 shrink-0 text-muted-foreground" />
         )}
@@ -496,7 +496,7 @@ export function LandingPage() {
         className="pointer-events-none fixed inset-0 opacity-80"
         style={{
           background:
-            "radial-gradient(50% 38% at 50% -5%, rgba(134,194,119,0.12) 0%, transparent 72%)",
+            "radial-gradient(50% 38% at 50% -5%, rgba(249,115,22,0.12) 0%, transparent 72%)",
         }}
       />
       {/* Speed grid */}
@@ -518,12 +518,12 @@ export function LandingPage() {
               <div className="text-sm font-bold tracking-tight">All Gas No Brakes</div>
             </div>
             <div className="flex items-center gap-4">
-              <span className="hidden items-center gap-1.5 rounded-full border border-border px-3 py-1 font-mono text-[11px] uppercase tracking-[0.1em] text-[#86c277] sm:inline-flex">
+              <span className="hidden items-center gap-1.5 rounded-full border border-border px-3 py-1 font-mono text-[11px] uppercase tracking-[0.1em] text-[#f97316] sm:inline-flex">
                 <Sparkles className="size-3" /> Stealth · Private beta
               </span>
               <a
                 href="#signin"
-                className="rounded-md border border-border px-4 py-1.5 text-[13px] font-semibold text-foreground transition hover:border-[#86c277]"
+                className="rounded-md border border-border px-4 py-1.5 text-[13px] font-semibold text-foreground transition hover:border-[#f97316]"
               >
                 Sign in
               </a>
@@ -534,13 +534,13 @@ export function LandingPage() {
         {/* ── Hero ── */}
         <Section className="grid grid-cols-1 items-center gap-12 pb-14 pt-12 lg:grid-cols-[1.1fr_0.9fr] lg:pt-20">
           <div>
-            <p className="mb-5 inline-flex items-center gap-2 rounded-full border border-[#86c277]/30 bg-[#86c277]/5 px-3 py-1 font-mono text-[12px] uppercase tracking-wider text-[#86c277]">
+            <p className="mb-5 inline-flex items-center gap-2 rounded-full border border-[#f97316]/30 bg-[#f97316]/5 px-3 py-1 font-mono text-[12px] uppercase tracking-wider text-[#f97316]">
               <Activity className="size-3.5" /> Redline since day one
             </p>
             <h1 className="text-[clamp(46px,7.5vw,88px)] font-bold leading-[0.95] tracking-[-0.04em]">
               All gas,
               <br />
-              <span className="text-[#86c277]">no brakes.</span>
+              <span className="bg-gradient-to-r from-amber-400 via-orange-500 to-red-600 bg-clip-text text-transparent">no brakes.</span>
             </h1>
             <p className="mt-6 max-w-xl text-[17px] leading-relaxed text-muted-foreground">
               Your engineers ship. Your agents never stop. We are the autonomous
@@ -550,7 +550,7 @@ export function LandingPage() {
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <a
                 href="#signin"
-                className="group inline-flex items-center gap-2 rounded-md bg-[#86c277] px-6 py-3 text-sm font-semibold text-[#0A0A0A] transition hover:bg-[#a3d98f]"
+                className="group inline-flex items-center gap-2 rounded-md bg-[#f97316] px-6 py-3 text-sm font-semibold text-[#0A0A0A] transition hover:bg-[#fb923c]"
               >
                 Floor it{" "}
                 <ArrowRight className="size-4 transition group-hover:translate-x-0.5" />
@@ -585,7 +585,7 @@ export function LandingPage() {
                   key={i}
                   className="mx-6 inline-flex items-center gap-3 font-mono text-[12px] uppercase tracking-[0.14em] text-muted-foreground"
                 >
-                  {t} <span className="text-[#86c277]/60">/</span>
+                  {t} <span className="text-[#f97316]/60">/</span>
                 </span>
               ))}
             </div>
@@ -596,7 +596,7 @@ export function LandingPage() {
         <Section className="grid grid-cols-2 gap-px py-14 sm:grid-cols-4">
           {STATS.map((s) => (
             <div key={s.l} className="px-2 text-center">
-              <div className="text-[clamp(34px,4.4vw,52px)] font-bold tracking-tight text-[#86c277]">
+              <div className="text-[clamp(34px,4.4vw,52px)] font-bold tracking-tight text-[#f97316]">
                 <CountUp to={s.to} suffix={s.suffix} />
               </div>
               <div className="mt-1 text-[12.5px] leading-snug text-muted-foreground">
@@ -627,10 +627,10 @@ export function LandingPage() {
           <h2 className="mb-10 text-[clamp(26px,3.2vw,38px)] font-bold tracking-[-0.02em]">
             Six engines. One throttle.
           </h2>
-          <div className="grid grid-cols-1 gap-px overflow-hidden rounded-2xl border border-border bg-border md:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border bg-border md:grid-cols-2 lg:grid-cols-3">
             {MODULES.map((m) => (
               <div key={m.k} className="group bg-background p-7 transition hover:bg-card">
-                <div className="mb-4 flex size-10 items-center justify-center rounded-lg border border-border bg-card text-[#86c277] transition group-hover:border-[#86c277]/40">
+                <div className="mb-4 flex size-10 items-center justify-center rounded-lg border border-border bg-card text-[#f97316] transition group-hover:border-[#f97316]/40">
                   <m.icon className="size-5" />
                 </div>
                 <h3 className="mb-2 text-[17px] font-semibold text-foreground">{m.k}</h3>
@@ -644,7 +644,7 @@ export function LandingPage() {
         <Section className="py-20">
           <div
             id="how"
-            className="grid grid-cols-1 items-center gap-10 rounded-3xl border border-border bg-card/40 p-8 sm:p-12 lg:grid-cols-2"
+            className="grid grid-cols-1 items-center gap-10 rounded-xl border border-border bg-card/40 p-8 sm:p-12 lg:grid-cols-2"
           >
             <div>
               <Eyebrow>
@@ -663,7 +663,7 @@ export function LandingPage() {
                 {LOOP.map((s, i) => (
                   <div key={s.t}>
                     <div className="mb-2 flex items-center gap-2">
-                      <span className="flex size-7 items-center justify-center rounded-md bg-[#86c277]/10 text-[#86c277]">
+                      <span className="flex size-7 items-center justify-center rounded-md bg-[#f97316]/10 text-[#f97316]">
                         <s.icon className="size-4" />
                       </span>
                       <span className="font-mono text-[11px] text-muted-foreground">
@@ -693,12 +693,12 @@ export function LandingPage() {
             {SURFACES.map((s) => (
               <span
                 key={s}
-                className="rounded-md border border-border bg-card px-3 py-1.5 font-mono text-[12px] text-muted-foreground transition hover:border-[#86c277]/40 hover:text-foreground"
+                className="rounded-md border border-border bg-card px-3 py-1.5 font-mono text-[12px] text-muted-foreground transition hover:border-[#f97316]/40 hover:text-foreground"
               >
                 {s}
               </span>
             ))}
-            <span className="rounded-md border border-[#86c277]/30 bg-[#86c277]/5 px-3 py-1.5 font-mono text-[12px] text-[#86c277]">
+            <span className="rounded-md border border-[#f97316]/30 bg-[#f97316]/5 px-3 py-1.5 font-mono text-[12px] text-[#f97316]">
               + more
             </span>
           </div>
@@ -706,7 +706,7 @@ export function LandingPage() {
 
         {/* ── Comparison ── */}
         <Section className="py-16">
-          <div className="grid grid-cols-1 gap-px overflow-hidden rounded-2xl border border-border bg-border md:grid-cols-2">
+          <div className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border bg-border md:grid-cols-2">
             <div className="bg-background p-8">
               <p className="mb-4 font-mono text-[12px] uppercase tracking-wider text-muted-foreground">
                 The old way
@@ -727,7 +727,7 @@ export function LandingPage() {
               </ul>
             </div>
             <div className="bg-card/50 p-8">
-              <p className="mb-4 font-mono text-[12px] uppercase tracking-wider text-[#86c277]">
+              <p className="mb-4 font-mono text-[12px] uppercase tracking-wider text-[#f97316]">
                 All gas
               </p>
               <ul className="space-y-3 text-[14px] text-foreground">
@@ -739,7 +739,7 @@ export function LandingPage() {
                   "Cost tracked per agent, per task",
                 ].map((x) => (
                   <li key={x} className="flex gap-2">
-                    <ChevronRight className="mt-0.5 size-4 shrink-0 text-[#86c277]" />
+                    <ChevronRight className="mt-0.5 size-4 shrink-0 text-[#f97316]" />
                     {x}
                   </li>
                 ))}
@@ -751,7 +751,7 @@ export function LandingPage() {
         {/* ── Manifesto ── */}
         <Section className="py-16">
           <div className="grid grid-cols-1 gap-8 md:grid-cols-[auto_1fr] md:items-center">
-            <Gauge className="size-10 text-[#86c277]" />
+            <Gauge className="size-10 text-[#f97316]" />
             <blockquote className="text-[clamp(22px,3vw,34px)] font-semibold leading-[1.2] tracking-[-0.02em] text-foreground">
               &ldquo;Deploy fast, approve what matters, automate the rest.
               <span className="text-muted-foreground">
@@ -774,8 +774,8 @@ export function LandingPage() {
 
         {/* ── CTA ── */}
         <Section className="py-20">
-          <div className="flex flex-col items-center rounded-3xl border border-[#86c277]/20 bg-[#86c277]/[0.04] px-6 py-14 text-center">
-            <p className="font-mono text-[12px] uppercase tracking-[0.16em] text-[#86c277]">
+          <div className="flex flex-col items-center rounded-xl border border-[#f97316]/20 bg-[#f97316]/[0.04] px-6 py-14 text-center">
+            <p className="font-mono text-[12px] uppercase tracking-[0.16em] text-[#f97316]">
               Your instance. Your agents.
             </p>
             <h2 className="mt-3 max-w-xl text-[clamp(28px,3.6vw,46px)] font-bold tracking-[-0.025em]">
@@ -787,7 +787,7 @@ export function LandingPage() {
             <div className="mt-8">
               <a
                 href="#signin"
-                className="group inline-flex items-center gap-2 rounded-md bg-[#86c277] px-7 py-3 text-sm font-semibold text-[#0A0A0A] transition hover:bg-[#a3d98f]"
+                className="group inline-flex items-center gap-2 rounded-md bg-[#f97316] px-7 py-3 text-sm font-semibold text-[#0A0A0A] transition hover:bg-[#fb923c]"
               >
                 Floor it{" "}
                 <ArrowRight className="size-4 transition group-hover:translate-x-0.5" />
