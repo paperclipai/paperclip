@@ -2205,7 +2205,7 @@ export async function runChildProcess(
           const readable = child.stdout;
           if (!readable) return;
           readable.pause();
-          const text = String(chunk);
+          const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
           stdout = appendWithCap(stdout, text);
           maybeArmTerminalResultCleanup();
           logChain = logChain
@@ -2221,7 +2221,7 @@ export async function runChildProcess(
           const readable = child.stderr;
           if (!readable) return;
           readable.pause();
-          const text = String(chunk);
+          const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
           stderr = appendWithCap(stderr, text);
           maybeArmTerminalResultCleanup();
           logChain = logChain
