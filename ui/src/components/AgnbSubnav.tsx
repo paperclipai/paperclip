@@ -88,7 +88,6 @@ export const AGNB_SUBNAV = {
     { to: "/tokens", label: "API tokens" },
   ],
   team: [
-    { to: "/human-team", label: "Team" },
     { to: "/my-queue", label: "My queue" },
     { to: "/backlog", label: "Backlog" },
     { to: "/routing-rules", label: "Routing rules" },
