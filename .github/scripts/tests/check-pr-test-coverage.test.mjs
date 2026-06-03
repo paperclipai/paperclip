@@ -23,6 +23,15 @@ test('passes when file under __tests__ is changed', () => {
   assert.equal(checkTestCoverage(makeFiles(['src/__tests__/qux.ts']), 'fix: bug').passed, true);
 });
 
+
+test('passes when .test.mjs file is changed', () => {
+  assert.equal(checkTestCoverage(makeFiles(['scripts/check-release-runtime-smoke.test.mjs']), 'fix: release smoke').passed, true);
+});
+
+test('passes when .spec.mjs file is changed', () => {
+  assert.equal(checkTestCoverage(makeFiles(['scripts/check-release-runtime-smoke.spec.mjs']), 'fix: release smoke').passed, true);
+});
+
 test('fails when fix: PR has no tests', () => {
   const result = checkTestCoverage(makeFiles(['src/foo.ts', 'src/bar.ts']), 'fix: bug');
   assert.equal(result.passed, false);
