@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -10,14 +10,14 @@ import {
   ShieldAlert,
   Trash2,
 } from "lucide-react";
-import type { AccountWithHealth, PoolState, QuotaWindow } from "@paperclipai/shared";
+import type { AccountWithHealth, PoolState, ProviderQuotaResult, QuotaWindow } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { accountPoolApi } from "../api/account-pool";
+import { costsApi } from "../api/costs";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
-import { EmptyState } from "../components/EmptyState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -65,6 +65,40 @@ function uniqueWindows(windows: QuotaWindow[]): QuotaWindow[] {
   return out;
 }
 
+/** synthetic id for the implicit machine-default account card (never a real secret id) */
+const DEFAULT_ACCOUNT_ID = "__default__";
+
+/**
+ * Build the implicit "Default — this machine" card from the existing
+ * quota-windows query (provider "anthropic" = the account logged in on this
+ * machine). This reuses the SAFE 5-min quota query — it does NOT add any
+ * per-poll live Anthropic call (that caused the 429). Returns an
+ * AccountWithHealth-shaped view model that the existing AccountCard can render.
+ */
+function buildDefaultCard(quota: ProviderQuotaResult[] | undefined): AccountWithHealth {
+  const result = quota?.find((r) => r.provider === "anthropic");
+  const windows = result?.windows ?? [];
+  const pcts = windows.map((w) => w.usedPercent).filter((p): p is number => p != null);
+  const usedPercent = pcts.length ? Math.max(...pcts) : null;
+  const capped = pcts.some((p) => p >= 100);
+  const resetsAt =
+    windows
+      .filter((w) => (w.usedPercent ?? 0) >= 100 && w.resetsAt)
+      .map((w) => w.resetsAt as string)
+      .sort()[0] ?? null;
+  return {
+    id: DEFAULT_ACCOUNT_ID,
+    name: "Default — this machine",
+    key: "Machine login (~/.claude)",
+    status: "active",
+    windows,
+    usedPercent,
+    resetsAt,
+    capped,
+    error: result && !result.ok ? result.error : undefined,
+  };
+}
+
 /** one quota window row: label, %, mini-bar, and reset detail */
 function WindowRow({ window }: { window: QuotaWindow }) {
   const pct = window.usedPercent;
@@ -95,10 +129,11 @@ function WindowRow({ window }: { window: QuotaWindow }) {
 function AccountCard(props: {
   account: AccountWithHealth;
   isActive: boolean;
+  removable: boolean;
   onRemove: (account: AccountWithHealth) => void;
   removeDisabled: boolean;
 }) {
-  const { account, isActive, onRemove, removeDisabled } = props;
+  const { account, isActive, removable, onRemove, removeDisabled } = props;
   const pct = account.usedPercent;
   const barWidth = pct == null ? 0 : Math.min(100, Math.max(0, pct));
   const windows = uniqueWindows(account.windows);
@@ -123,15 +158,17 @@ function AccountCard(props: {
           </div>
           <p className="mt-0.5 truncate text-xs text-muted-foreground">{account.key}</p>
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => onRemove(account)}
-          disabled={removeDisabled}
-          aria-label={`Remove ${account.name}`}
-        >
-          <Trash2 className="h-4 w-4" />
-        </Button>
+        {removable ? (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => onRemove(account)}
+            disabled={removeDisabled}
+            aria-label={`Remove ${account.name}`}
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        ) : null}
       </div>
 
       <div className="flex flex-col gap-2">
@@ -203,6 +240,19 @@ export function AccountPool() {
     refetchInterval: POLL_INTERVAL_MS,
   });
 
+  // Live-ish health for the machine's DEFAULT account (provider "anthropic").
+  // Shares the Costs page's query key + safe 5-min cadence — this does NOT add a
+  // per-poll live Anthropic call (the 429 we just fixed). React Query dedupes it.
+  const quotaQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.usageQuotaWindows(selectedCompanyId)
+      : (["usage-quota-windows", "__disabled__"] as const),
+    queryFn: () => costsApi.quotaWindows(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+    refetchInterval: 300_000,
+    staleTime: 60_000,
+  });
+
   function invalidatePool() {
     if (selectedCompanyId) {
       queryClient.invalidateQueries({ queryKey: queryKeys.accountPool.list(selectedCompanyId) });
@@ -247,6 +297,8 @@ export function AccountPool() {
       // write the freshly-probed list straight into the cache so the bars update now
       if (selectedCompanyId) {
         queryClient.setQueryData(queryKeys.accountPool.list(selectedCompanyId), data);
+        // also refresh the default-account health (separate quota query)
+        queryClient.invalidateQueries({ queryKey: queryKeys.usageQuotaWindows(selectedCompanyId) });
       }
       const erroredCount = data.accounts.filter((a) => a.error).length;
       pushToast({
@@ -288,6 +340,11 @@ export function AccountPool() {
   const state: PoolState | null = data?.state ?? null;
   const activeId = state?.activeAccountId ?? null;
   const rotationStopped = state?.rotationStopped ?? false;
+
+  // The implicit "Default — this machine" account, always shown first. It's
+  // ACTIVE whenever no pooled account is active (Slice 3's fallback semantics).
+  const defaultCard = useMemo(() => buildDefaultCard(quotaQuery.data), [quotaQuery.data]);
+  const poolActive = activeId != null;
 
   function openAdd() {
     setAddName("");
@@ -386,24 +443,35 @@ export function AccountPool() {
             Retry
           </Button>
         </div>
-      ) : accounts.length === 0 ? (
-        <EmptyState
-          icon={Layers}
-          message="No accounts in the pool yet. Add a Claude account to get started."
-          action="Add account"
-          onAction={openAdd}
-        />
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          {accounts.map((account) => (
+        <div className="flex flex-col gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {/* The machine's default account — always shown, never removable */}
             <AccountCard
-              key={account.id}
-              account={account}
-              isActive={account.id === activeId}
+              key={defaultCard.id}
+              account={defaultCard}
+              isActive={!poolActive}
+              removable={false}
               onRemove={setRemoveTarget}
-              removeDisabled={removeMutation.isPending}
+              removeDisabled={false}
             />
-          ))}
+            {accounts.map((account) => (
+              <AccountCard
+                key={account.id}
+                account={account}
+                isActive={account.id === activeId}
+                removable
+                onRemove={setRemoveTarget}
+                removeDisabled={removeMutation.isPending}
+              />
+            ))}
+          </div>
+          {accounts.length === 0 ? (
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Layers className="h-3.5 w-3.5 shrink-0" />
+              This is the account your agents already use. Add more Claude accounts to rotate across them when one hits its quota.
+            </p>
+          ) : null}
         </div>
       )}
 
