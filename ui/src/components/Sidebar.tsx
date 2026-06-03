@@ -21,7 +21,6 @@ import {
   Linkedin as LinkedinIcon,
   Youtube as YoutubeIcon,
   Mails,
-  CalendarClock,
   HeartPulse,
   Beaker,
   ListTodo,
@@ -117,7 +116,6 @@ export function Sidebar() {
           <SidebarNavItem to="/blog-automation" label="Blog" icon={PenLine} />
           <SidebarNavItem to="/linkedin-queue" label="LinkedIn" icon={LinkedinIcon} />
           <SidebarNavItem to="/youtube" label="YouTube" icon={YoutubeIcon} />
-          <SidebarNavItem to="/renewals" label="Renewals" icon={CalendarClock} />
           <SidebarNavItem to="/backlog" label="Backlog" icon={ListTodo} />
         </SidebarSection>
 
