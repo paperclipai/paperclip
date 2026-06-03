@@ -27,6 +27,32 @@ export function registerExperiments(router: Router, db: Db) {
     res.json({ ok: true, experiments: rows(result) });
   });
 
+  /** GET /api/agnb/csv — CSV upload history. */
+  router.get("/agnb/csv", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const result = await db.execute(sql`
+      SELECT id, filename, rows_total, rows_kept, rows_dedup, rows_suppressed,
+             status, rocket_file_id, uploaded_at
+      FROM agnb.csv_uploads
+      ORDER BY uploaded_at DESC
+      LIMIT 500
+    `);
+    res.json({ ok: true, uploads: rows(result) });
+  });
+
+  /** GET /api/agnb/subjects — subject-line performance, best reply rate first. */
+  router.get("/agnb/subjects", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const result = await db.execute(sql`
+      SELECT id, subject, first_word, length_chars, campaign_name,
+             sends, opens, replies, open_rate, reply_rate, pattern_tags, created_at
+      FROM agnb.subject_lines
+      ORDER BY reply_rate DESC
+      LIMIT 200
+    `);
+    res.json({ ok: true, subjects: rows(result) });
+  });
+
   /** GET /api/agnb/cohorts — ICP×week positive-rate heatmap source (last 12w). */
   router.get("/agnb/cohorts", async (req, res) => {
     assertBoardOrgAccess(req);

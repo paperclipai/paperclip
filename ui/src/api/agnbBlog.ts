@@ -54,8 +54,10 @@ interface AiDraft { title: string; slug: string; description: string; mdx_body: 
 export const blogApi = {
   // Ported to Paperclip server — same-origin /api/agnb/blog-automation.
   drafts: () => ported<{ ok: boolean; error?: string; drafts: BlogDraft[] }>("/blog-automation").then((r) => unwrap(r).drafts),
-  contentAudit: () => agnb.get<{ ok: boolean; error?: string; issues: AuditIssue[] }>("/content-audit").then((r) => unwrap(r).issues),
-  utmHygiene: () => agnb.get<{ ok: boolean; error?: string; issues: UtmIssue[] }>("/utm-hygiene").then((r) => unwrap(r).issues),
+  // Ported to Paperclip server — same-origin /api/agnb/content-audit (pure-DB read of scan results).
+  contentAudit: () => ported<{ ok: boolean; error?: string; issues: AuditIssue[] }>("/content-audit").then((r) => unwrap(r).issues),
+  // Ported to Paperclip server — same-origin /api/agnb/utm-hygiene (pure-DB read of scan results).
+  utmHygiene: () => ported<{ ok: boolean; error?: string; issues: UtmIssue[] }>("/utm-hygiene").then((r) => unwrap(r).issues),
 
   // --- writes ---
   // PHASE 5: ai-draft calls Gemini (LLM) — left cross-origin.

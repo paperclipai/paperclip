@@ -5,9 +5,10 @@ import { assertBoardOrgAccess } from "../../routes/authz.js";
 import { rows } from "../helpers.js";
 
 /**
- * AGNB group: blog drafts + ideas + schedule settings (reads + pure-DB CRUD).
+ * AGNB group: blog drafts + ideas + schedule settings (reads + pure-DB CRUD),
+ * plus content-audit / utm-hygiene scan-result reads.
  * Ported from agnb app/all-gas-no-brakes/api/agnb/blog-automation,
- * blog/save, blog/ideas, blog/schedule-settings.
+ * blog/save, blog/ideas, blog/schedule-settings, content-audit, utm-hygiene.
  *
  * SKIPPED (external/LLM/sync), left cross-origin in the UI:
  *  - blog/ai-draft       → Gemini (LLM)
@@ -213,6 +214,32 @@ export function registerBlog(router: Router, db: Db) {
       UPDATE agnb.blog_schedule_settings SET ${sql.join(sets, sql`, `)} WHERE id = 1
     `);
     res.json({ ok: true });
+  });
+
+  /** GET /api/agnb/content-audit — open content-audit issues (resolved_at IS NULL). */
+  router.get("/agnb/content-audit", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const result = await db.execute(sql`
+      SELECT id, blog_path, blog_title, issue_type, severity, details, detected_at, resolved_at
+      FROM agnb.content_audit_issues
+      WHERE resolved_at IS NULL
+      ORDER BY severity DESC, detected_at DESC
+      LIMIT 500
+    `);
+    res.json({ ok: true, issues: rows(result) });
+  });
+
+  /** GET /api/agnb/utm-hygiene — open UTM-hygiene issues (resolved_at IS NULL). */
+  router.get("/agnb/utm-hygiene", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const result = await db.execute(sql`
+      SELECT id, source_kind, source_id, source_name, url, issue_type, severity, details, detected_at, resolved_at
+      FROM agnb.utm_hygiene_issues
+      WHERE resolved_at IS NULL
+      ORDER BY detected_at DESC
+      LIMIT 500
+    `);
+    res.json({ ok: true, issues: rows(result) });
   });
 
   // PHASE 5: POST /agnb/blog/ai-draft calls Gemini (LLM) — external API. Left cross-origin in the UI.

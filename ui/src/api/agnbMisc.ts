@@ -40,16 +40,17 @@ export const miscApi = {
 
   // Ported to Paperclip server (misc group) — same-origin /api/agnb/quota.
   quota: () => ported<{ ok: boolean; error?: string; usage: QuotaRow[] }>("/quota").then((r) => unwrap(r).usage),
-  // PHASE 5: content-performance reads a Supabase VIEW not migrated — left cross-origin.
-  contentPerformance: (days = 30) => agnb.get<{ ok: boolean; error?: string; rows: PerfRow[] }>(`/content-performance?days=${days}`).then((r) => unwrap(r).rows),
+  // Ported to Paperclip server (misc group) — same-origin /api/agnb/content-performance.
+  contentPerformance: (days = 30) => ported<{ ok: boolean; error?: string; rows: PerfRow[] }>(`/content-performance?days=${days}`).then((r) => unwrap(r).rows),
 
   // Ported to Paperclip server (misc group) — same-origin /api/agnb/workflow-recipes.
   workflows: () => ported<{ ok: boolean; error?: string; recipes: Recipe[] }>("/workflow-recipes").then((r) => unwrap(r).recipes),
   toggleWorkflow: (id: string, active: boolean) => ported("/workflow-recipes", { method: "PATCH", body: { id, active } }),
   deleteWorkflow: (id: string) => ported(`/workflow-recipes?id=${id}`, { method: "DELETE" }),
 
-  comments: (filter?: string) => agnb.get<{ ok: boolean; error?: string; comments: ContentComment[] }>(`/comments${filter ? `?filter=${filter}` : ""}`).then((r) => unwrap(r).comments),
-  markReplied: (id: string) => agnb.patch(`/comments?id=${id}&replied=1`, {}),
+  // Reuses the inbox group's already-ported handler — same-origin /api/agnb/comments (GET + PATCH).
+  comments: (filter?: string) => ported<{ ok: boolean; error?: string; comments: ContentComment[] }>(`/comments${filter ? `?filter=${filter}` : ""}`).then((r) => unwrap(r).comments),
+  markReplied: (id: string) => ported(`/comments?id=${id}&replied=1`, { method: "PATCH" }),
   // PHASE 5: comments/draft-reply calls Gemini (LLM) — left cross-origin.
   draftReply: (id: string) => agnb.post(`/comments/draft-reply?id=${id}`, {}),
 };

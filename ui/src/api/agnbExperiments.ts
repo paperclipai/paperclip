@@ -1,4 +1,4 @@
-import { agnb, unwrap } from "./agnbClient";
+import { unwrap } from "./agnbClient";
 
 /**
  * Same-origin fetch for AGNB endpoints already ported into the Paperclip
@@ -31,8 +31,10 @@ export interface CohortBucket { id: string; icp_id: string | null }
 export interface CohortIcp { id: string; name: string; tier: string }
 
 export const experimentsApi = {
-  csv: () => agnb.get<{ ok: boolean; error?: string; uploads: CsvUpload[] }>("/csv").then((r) => unwrap(r).uploads),
-  subjects: () => agnb.get<{ ok: boolean; error?: string; subjects: SubjectLine[] }>("/subjects").then((r) => unwrap(r).subjects),
+  // Ported to Paperclip server — same-origin /api/agnb/csv.
+  csv: () => ported<{ ok: boolean; error?: string; uploads: CsvUpload[] }>("/csv").then((r) => unwrap(r).uploads),
+  // Ported to Paperclip server — same-origin /api/agnb/subjects.
+  subjects: () => ported<{ ok: boolean; error?: string; subjects: SubjectLine[] }>("/subjects").then((r) => unwrap(r).subjects),
   // Ported to Paperclip server — same-origin /api/agnb/experiments.
   experiments: () => ported<{ ok: boolean; error?: string; experiments: Experiment[] }>("/experiments").then((r) => unwrap(r).experiments),
   // Ported to Paperclip server — same-origin /api/agnb/cohorts.

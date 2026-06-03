@@ -175,4 +175,74 @@ export function registerInbox(router: Router, db: Db) {
 
   // PHASE 5: POST /agnb/comments/draft-reply calls Gemini (LLM) to generate a
   // reply draft — external API, not a pure DB op. Left cross-origin in the UI.
+
+  /** GET /api/agnb/replies — reply mining log (intent-tagged). Pure DB. */
+  router.get("/agnb/replies", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const result = await db.execute(sql`
+      SELECT id, campaign_name, from_email, from_name, subject, body, intent,
+             intent_confidence, objection_cluster, next_action, received_at, logged_by
+      FROM agnb.reply_log
+      ORDER BY received_at DESC
+      LIMIT 200
+    `);
+    res.json({ ok: true, replies: rows(result) });
+  });
+
+  /** GET /api/agnb/reply-drafts?status= — composed reply drafts. Pure DB. */
+  router.get("/agnb/reply-drafts", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const status = typeof req.query.status === "string" ? req.query.status : null;
+    const result =
+      status && status !== "all"
+        ? await db.execute(sql`
+            SELECT * FROM agnb.reply_drafts
+            WHERE status = ${status}
+            ORDER BY created_at DESC
+            LIMIT 200
+          `)
+        : await db.execute(sql`
+            SELECT * FROM agnb.reply_drafts
+            ORDER BY created_at DESC
+            LIMIT 200
+          `);
+    res.json({ ok: true, drafts: rows(result) });
+  });
+
+  /** PATCH /api/agnb/reply-drafts — Body: { id, status, sent_at? }. Pure DB. */
+  router.patch("/agnb/reply-drafts", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const body = (req.body ?? {}) as { id?: string; status?: string; sent_at?: string };
+    if (!body.id || !body.status) return res.status(400).json({ ok: false, error: "id + status required" });
+    if (!["draft", "queued", "sent", "cancelled"].includes(body.status)) {
+      return res.status(400).json({ ok: false, error: "bad status" });
+    }
+    if (body.status === "sent") {
+      const sentAt = body.sent_at ?? new Date().toISOString();
+      await db.execute(sql`
+        UPDATE agnb.reply_drafts SET status = ${body.status}, sent_at = ${sentAt} WHERE id = ${body.id}
+      `);
+    } else {
+      await db.execute(sql`
+        UPDATE agnb.reply_drafts SET status = ${body.status} WHERE id = ${body.id}
+      `);
+    }
+    res.json({ ok: true });
+  });
+
+  /** GET /api/agnb/approval — campaign-draft approval queue. Pure DB. */
+  router.get("/agnb/approval", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const result = await db.execute(sql`
+      SELECT id, name, product_id, persona_id, status, notes, rocket_campaign_id,
+             created_at, created_by, approved_at
+      FROM agnb.campaign_drafts
+      ORDER BY created_at DESC
+      LIMIT 500
+    `);
+    res.json({ ok: true, drafts: rows(result) });
+  });
+
+  // POST /internal/approval/:id (approve/reject/finalize) calls Rocket SDR on
+  // finalize (lib/rocketsdr/client) — external API. Left cross-origin in the UI.
 }

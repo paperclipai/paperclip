@@ -6,11 +6,11 @@ import { assertBoardOrgAccess } from "../../routes/authz.js";
 import { rows } from "../helpers.js";
 
 /**
- * AGNB group: misc (quota, api tokens, workflow recipes).
- * Ported from agnb app/all-gas-no-brakes/api/agnb/{quota,tokens,workflow-recipes}.
+ * AGNB group: misc (quota, api tokens, workflow recipes, content performance).
+ * Ported from agnb app/all-gas-no-brakes/api/agnb/{quota,tokens,workflow-recipes,content-performance}.
  *
- * - content-performance reads a Supabase VIEW not migrated → PHASE 5.
- * - comments/draft-reply calls Gemini (LLM) → PHASE 5, left cross-origin.
+ * - comments GET/PATCH live in the inbox group (/agnb/comments) — reused, not duplicated here.
+ * - comments/draft-reply calls Gemini (LLM) → left cross-origin.
  */
 
 /** Rocket SDR daily quota caps (mirrors agnb lib/rocketsdr/audit ROCKETSDR_QUOTAS). */
@@ -177,7 +177,25 @@ export function registerMisc(router: Router, db: Db) {
     res.json({ ok: true });
   });
 
-  // PHASE 5: GET /agnb/content-performance reads a Supabase VIEW not migrated
-  // to the local agnb schema — left cross-origin in the UI.
-  // PHASE 5: POST /agnb/comments/draft-reply calls Gemini (LLM) — left cross-origin.
+  /**
+   * GET /api/agnb/content-performance?days=N — cross-platform content metrics.
+   * Mirrors AGNB select exactly; top 100 by views within the window.
+   */
+  router.get("/agnb/content-performance", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const raw = typeof req.query.days === "string" ? parseInt(req.query.days, 10) : 30;
+    const days = Math.max(1, Math.min(365, Number.isFinite(raw) ? raw : 30));
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const result = await db.execute(sql`
+      SELECT id, platform, url, impressions, views, reactions, comments, shares,
+             ctr_pct, watch_time_sec, sampled_at
+      FROM agnb.content_performance
+      WHERE sampled_at >= ${since}
+      ORDER BY views DESC
+      LIMIT 100
+    `);
+    res.json({ ok: true, rows: rows(result), days });
+  });
+
+  // POST /agnb/comments/draft-reply calls Gemini (LLM) — left cross-origin.
 }

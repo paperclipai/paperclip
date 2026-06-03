@@ -5,10 +5,15 @@ import { agnb, unwrap } from "./agnbClient";
  * server (under /api/agnb/*). As each route group migrates off the standalone
  * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
  */
-async function ported<T>(path: string): Promise<T> {
+async function ported<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
   const res = await fetch(`/api/agnb${path}`, {
+    method: init?.method ?? "GET",
     credentials: "include",
-    headers: { Accept: "application/json" },
+    headers: {
+      Accept: "application/json",
+      ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
+    ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
   });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
@@ -128,14 +133,19 @@ export const campaignsApi = {
     ported<{ ok: boolean; error?: string; icps: IcpRow[] }>("/icps").then((r) => unwrap(r).icps),
 
   // --- write actions ---
+  // Ported to Paperclip server (catalog group) — pure-DB inserts, same-origin /api/agnb/*.
+  createIcp: (body: { name: string; tier: string; industries: string[]; regions: string[]; functions: string[]; company_size_min?: number | null; company_size_max?: number | null }) =>
+    ported<{ ok: boolean; error?: string; id?: string }>("/icps", { method: "POST", body }).then((r) => unwrap(r)),
+  saveTargeting: (body: { name: string; query: string; notes?: string; tags?: string[] }) =>
+    ported<{ ok: boolean; error?: string; id?: string }>("/targeting", { method: "POST", body }).then((r) => unwrap(r)),
+  createBucket: (body: { name: string; icp_id?: string | null; target_reply_rate?: number }) =>
+    ported<{ ok: boolean; error?: string; id?: string }>("/buckets", { method: "POST", body }).then((r) => unwrap(r)),
+
+  // --- left cross-origin (external Rocket SDR / scraper sidecars, not pure DB) → Phase 5 ---
   createPersona: (body: { name: string; title?: string; description?: string }) =>
     agnb.post<{ ok: boolean; error?: string }>("/rocket/personas/create", body).then((r) => unwrap(r)),
   createProduct: (body: { name: string; description?: string }) =>
     agnb.post<{ ok: boolean; error?: string }>("/rocket/products/create", body).then((r) => unwrap(r)),
-  createIcp: (body: { name: string; tier: string; industries: string[]; regions: string[]; functions: string[]; company_size_min?: number | null; company_size_max?: number | null }) =>
-    agnb.post<{ ok: boolean; error?: string }>("/icps", body).then((r) => unwrap(r)),
-  saveTargeting: (body: { name: string; query: string; notes?: string; tags?: string[] }) =>
-    agnb.post<{ ok: boolean; error?: string }>("/targeting", body).then((r) => unwrap(r)),
   queueJustdial: (body: { category: string; city: string; max_pages: number }) =>
     agnb.post<{ ok: boolean; error?: string }>("/leads/justdial", body).then((r) => unwrap(r)),
   runJustdial: (id: string) =>
@@ -144,6 +154,4 @@ export const campaignsApi = {
     agnb.post<{ ok: boolean; error?: string }>("/linkedin/scrape", { url }).then((r) => unwrap(r)),
   syncLinkedin: () =>
     agnb.post<{ ok: boolean; error?: string }>("/linkedin/sync", {}),
-  createBucket: (body: { name: string; icp_id?: string | null; target_reply_rate?: number }) =>
-    agnb.post<{ ok: boolean; error?: string }>("/buckets", body).then((r) => unwrap(r)),
 };
