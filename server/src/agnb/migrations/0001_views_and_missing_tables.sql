@@ -19,8 +19,19 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_move_log_deal_at
   ON agnb.pipeline_move_log (deal_id, moved_at DESC);
 
 -- ── restore unique constraints the data backup dropped (needed for upserts) ──
--- The JSON backup load kept only primary keys; ON CONFLICT targets need these.
+-- The JSON backup load kept only primary keys; ON CONFLICT targets in the
+-- ported routes/jobs need these unique indexes or the upsert throws at runtime.
 CREATE UNIQUE INDEX IF NOT EXISTS rss_items_url_key ON agnb.rss_items (url);
+CREATE UNIQUE INDEX IF NOT EXISTS gsc_rank_data_uniq ON agnb.gsc_rank_data (blog_url, query, capture_date);
+CREATE UNIQUE INDEX IF NOT EXISTS backlink_prospects_uniq ON agnb.backlink_prospects (source_domain, referring_to);
+CREATE UNIQUE INDEX IF NOT EXISTS positive_signal_uniq ON agnb.positive_signal (lead_email, thread_id);
+CREATE UNIQUE INDEX IF NOT EXISTS crm_hygiene_issues_uniq ON agnb.crm_hygiene_issues (hubspot_object_type, hubspot_object_id, issue_type);
+CREATE UNIQUE INDEX IF NOT EXISTS content_audit_issues_uniq ON agnb.content_audit_issues (blog_path, issue_type);
+CREATE UNIQUE INDEX IF NOT EXISTS daily_metrics_snapshots_uniq ON agnb.daily_metrics_snapshots (snapshot_date);
+CREATE UNIQUE INDEX IF NOT EXISTS content_gaps_uniq ON agnb.content_gaps (topic);
+CREATE UNIQUE INDEX IF NOT EXISTS work_items_uniq ON agnb.work_items (kind, ref_table, ref_id);
+CREATE UNIQUE INDEX IF NOT EXISTS utm_hygiene_issues_uniq ON agnb.utm_hygiene_issues (source_kind, source_id, url);
+CREATE UNIQUE INDEX IF NOT EXISTS whatsapp_groups_jid_uniq ON agnb.whatsapp_groups (jid);
 
 -- ── bucket_rollup (view) — live signal from Rocket campaign mirror ────────────
 DROP VIEW IF EXISTS agnb.bucket_rollup;
