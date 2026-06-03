@@ -485,7 +485,7 @@ export function LandingPage() {
   }
 
   return (
-    <div className="dark min-h-screen bg-background text-foreground antialiased" style={{ overflowX: "clip" }}>
+    <div className="dark h-screen overflow-y-auto bg-background text-foreground antialiased" style={{ overflowX: "clip" }}>
       <style>{`
         @keyframes agnb-marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
         .agnb-marquee { animation: agnb-marquee 28s linear infinite; }
