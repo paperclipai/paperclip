@@ -40,7 +40,10 @@ ValAdrien OS supports three deployment configurations, from zero-friction local 
 
 - **Just trying ValAdrien OS?** Use `local_trusted` (the default)
 - **Sharing with a team on private network?** Use `authenticated` + `private`
-- **Deploying to the cloud?** Use `authenticated` + `public` — see [AWS ECS Fargate guide](aws-ecs.md)
+- **Deploying to the cloud?** Use `authenticated` + `public`:
+  - **ValAdrien.DEV reference:** GitHub → [Vercel + Supabase](../../doc/plans/2026-06-02-host-valadrien-vercel-supabase-walkthrough.md) — see [Architecture.md](../../Architecture.md#14-hosted-reference-topology-vercel--supabase)
+  - **Self-hosted AWS:** [AWS ECS Fargate guide](aws-ecs.md)
+  - **Failures:** [troubleshooting.md](./troubleshooting.md)
 
 Set the mode during onboarding:
 
@@ -53,3 +56,15 @@ Or update it later:
 ```sh
 pnpm valadrien-os configure --section server
 ```
+
+## Vercel + Supabase (operator cloud)
+
+| Concern | Doc |
+| ------- | --- |
+| Step-by-step setup | [Host walkthrough](../../doc/plans/2026-06-02-host-valadrien-vercel-supabase-walkthrough.md) |
+| Architecture | [Architecture.md §14](../../Architecture.md#14-hosted-reference-topology-vercel--supabase) |
+| Database URLs | [database.md](./database.md) |
+| Env vars | [environment-variables.md](./environment-variables.md) |
+| Failures | [troubleshooting.md](./troubleshooting.md) |
+
+Build entrypoint: `pnpm run build:vercel` (see root `vercel.json`).

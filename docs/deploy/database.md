@@ -51,20 +51,36 @@ DATABASE_URL=postgres://valadrien_os:valadrien_os@localhost:5432/valadrien_os \
 For production, use a hosted provider like [Supabase](https://supabase.com/).
 
 1. Create a project at [database.new](https://database.new)
-2. Copy the connection string from Project Settings > Database
-3. Set `DATABASE_URL` in your `.env`
+2. Copy **pooler** connection strings from Project Settings → Database → Connect
+3. Set env vars on your host (Vercel, Docker, etc.)
 
-Use the **direct connection** (port 5432) for migrations and the **pooled connection** (port 6543) for the application.
+### Vercel (reference operator stack)
 
-If using connection pooling, disable prepared statements:
+Vercel serverless functions use **IPv4 only**. Do **not** set `DATABASE_URL` to the direct host `db.[ref].supabase.co` when that host has no IPv4 `A` record — you will see `getaddrinfo ENOTFOUND`.
 
-```ts
-// packages/db/src/client.ts
-export function createDb(url: string) {
-  const sql = postgres(url, { prepare: false });
-  return drizzlePg(sql, { schema });
-}
+Use Supabase **Supavisor pooler** on `aws-0-[REGION].pooler.supabase.com`:
+
+| Variable | Pooler mode | Port |
+| -------- | ----------- | ---- |
+| `DATABASE_URL` | Transaction pooler | **6543** |
+| `DATABASE_MIGRATION_URL` | Session pooler (when `VALADRIEN_OS_MIGRATION_AUTO_APPLY=true`) | **5432** |
+
+Username format: `postgres.[PROJECT-REF]`.
+
+Example:
+
+```text
+DATABASE_URL=postgresql://postgres.nzbwmlvxnzfhqaznyggw:[PASSWORD]@aws-0-us-west-2.pooler.supabase.com:6543/postgres
+DATABASE_MIGRATION_URL=postgresql://postgres.nzbwmlvxnzfhqaznyggw:[PASSWORD]@aws-0-us-west-2.pooler.supabase.com:5432/postgres
 ```
+
+See [troubleshooting.md](./troubleshooting.md) and [doc/DATABASE.md](../../doc/DATABASE.md).
+
+### Other hosts (Docker, ECS, long-running Node)
+
+Use transaction pooler (6543) for runtime and session pooler (5432) for migrations when auto-apply is enabled. Long-running servers may also use direct `db.[ref].supabase.co` **only if** the host resolves IPv4 or supports IPv6.
+
+If using transaction pooling at runtime, disable prepared statements in the client when required (see `packages/db` client configuration).
 
 ## Switching Between Modes
 

@@ -53,6 +53,25 @@ Agents run externally and report into the control plane. Adapters connect differ
 
 The control plane doesn't run agents. It orchestrates them. Agents run wherever they run and phone home.
 
+## Operator hosting (ValAdrien.DEV)
+
+ValAdrien.DEV runs a **single hosted control-plane instance** for dogfooding and early clients. The reference production stack (2026) is:
+
+```text
+GitHub  →  Vercel (board + API)  →  Supabase (Postgres only)
+```
+
+- **Vercel** hosts the monorepo build: static UI in `public/`, Express API via `api/index.mjs` serverless functions, env vars for secrets and auth.
+- **Supabase** is Postgres only — not Supabase Auth. ValAdrien OS uses Better Auth on the Vercel app.
+- **Railway / Docker workers** are optional sidecars for runtimes Vercel cannot host; they are not the main board URL.
+
+Fresh hosted databases use the **valadrien-os Drizzle schema** (migrations on startup when `VALADRIEN_OS_MIGRATION_AUTO_APPLY=true`). Archived legacy Supabase projects from earlier forks are not migrated in place.
+
+Canonical operator runbooks:
+
+- [Host on Vercel + Supabase](../doc/plans/2026-06-02-host-valadrien-vercel-supabase-walkthrough.md)
+- [Deploy troubleshooting](../docs/deploy/troubleshooting.md)
+
 ## Core Principle
 
 You should be able to look at ValAdrien OS and understand your entire company at a glance — who's doing what, how much it costs, and whether it's working.

@@ -84,36 +84,41 @@ For production, use a hosted PostgreSQL provider. [Supabase](https://supabase.co
 
 ### Connection string
 
-Supabase offers two connection modes:
+Supabase exposes several connection modes. For **ValAdrien OS on Vercel**, use **Supavisor pooler** hostnames only (see [Vercel / IPv4](#vercel-and-ipv4-only-hosts) below).
 
-**Direct connection** (port 5432) — use for migrations and one-off scripts:
+**Session pooler** (port 5432 on pooler host) — migrations and startup schema checks:
 
 ```
 postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
 ```
 
-**Connection pooling via Supavisor** (port 6543) — use for the application:
+**Transaction pooler** (port 6543) — application runtime queries:
 
 ```
 postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
 ```
 
-### Configure
+The legacy **direct** host `db.[PROJECT-REF].supabase.co` (port 5432) is for clients that can reach IPv6 or IPv4 direct endpoints. Do not use it on Vercel when the host is IPv6-only.
 
-For the application runtime, use a direct PostgreSQL connection unless the database client has explicit prepared-statement configuration for your pooling mode:
+### Configure (hosted production)
 
-```sh
-DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
-```
-
-If you later run the app with a pooled runtime URL, set `DATABASE_MIGRATION_URL` to the direct connection URL. ValAdrien OS uses it for startup schema checks/migrations and plugin namespace migrations, while the app continues to use `DATABASE_URL` for runtime queries:
+Recommended for Vercel and other serverless hosts:
 
 ```sh
 DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
 DATABASE_MIGRATION_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
+VALADRIEN_OS_MIGRATION_AUTO_APPLY=true
 ```
 
-If your hosted database requires transaction-pooling-only connections, use a direct or session-pooled connection for ValAdrien OS until runtime pooling support is documented in this guide. Do not edit database client source files as part of deployment setup.
+ValAdrien OS uses `DATABASE_MIGRATION_URL` for startup schema checks/migrations and plugin namespace migrations when set; runtime queries use `DATABASE_URL`.
+
+For long-running servers without separate migration URL, a single session pooler URL on port 5432 can work for both runtime and migrations at lower concurrency.
+
+### Vercel and IPv4-only hosts
+
+Vercel serverless resolves **IPv4 only**. If `dig +short A db.[PROJECT-REF].supabase.co` returns nothing, direct URLs fail with `getaddrinfo ENOTFOUND`. Use pooler URLs from Supabase **Connect → Transaction pooler**.
+
+Details: [docs/deploy/troubleshooting.md](../docs/deploy/troubleshooting.md).
 
 ### Push the schema
 

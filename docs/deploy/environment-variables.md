@@ -13,7 +13,9 @@ All environment variables that ValAdrien OS uses for server configuration.
 | `VALADRIEN_OS_BIND` | `loopback` | Reachability preset: `loopback`, `lan`, `tailnet`, or `custom` |
 | `VALADRIEN_OS_BIND_HOST` | (unset) | Required when `VALADRIEN_OS_BIND=custom` |
 | `HOST` | `127.0.0.1` | Legacy host override; prefer `VALADRIEN_OS_BIND` for new setups |
-| `DATABASE_URL` | (embedded) | PostgreSQL connection string |
+| `DATABASE_URL` | (embedded) | PostgreSQL connection string. On Vercel + Supabase use **transaction pooler** port **6543** (`aws-0-[REGION].pooler.supabase.com`). |
+| `DATABASE_MIGRATION_URL` | (unset) | Optional override for startup migrations and plugin namespace migrations. On Vercel + Supabase with `VALADRIEN_OS_MIGRATION_AUTO_APPLY=true`, set to **session pooler** port **5432** on the same host. |
+| `VALADRIEN_OS_MIGRATION_AUTO_APPLY` | `false` | When `true`, apply Drizzle migrations on server startup (typical for fresh Supabase projects). |
 | `VALADRIEN_OS_HOME` | `~/.valadrien-os` | Base directory for all ValAdrien OS data |
 | `VALADRIEN_OS_INSTANCE_ID` | `default` | Instance identifier (for multiple local instances) |
 | `VALADRIEN_OS_DEPLOYMENT_MODE` | `local_trusted` | Runtime mode override |
@@ -52,3 +54,18 @@ These are set automatically by the server when invoking agents:
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (for Claude Local adapter) |
 | `OPENAI_API_KEY` | OpenAI API key (for Codex Local adapter) |
+
+## Authenticated public deployment (Vercel)
+
+Required when `VALADRIEN_OS_DEPLOYMENT_MODE=authenticated` and `VALADRIEN_OS_DEPLOYMENT_EXPOSURE=public`:
+
+| Variable | Description |
+| -------- | ----------- |
+| `BETTER_AUTH_SECRET` | Session signing secret (32+ bytes); set in Vercel env, never in git |
+| `VALADRIEN_OS_AUTH_PUBLIC_BASE_URL` | Public origin, e.g. `https://os.valadrien.dev` — must match browser URL |
+| `BETTER_AUTH_TRUSTED_ORIGINS` | Comma-separated allowed origins (production + preview if needed) |
+| `VALADRIEN_OS_AUTH_BASE_URL_MODE` | Use `explicit` when public URL is set manually |
+
+URL-related vars (`VALADRIEN_OS_API_URL`, `VALADRIEN_OS_AUTH_PUBLIC_BASE_URL`, `BETTER_AUTH_TRUSTED_ORIGINS`) must match the URL in the browser bar exactly.
+
+See [troubleshooting.md](./troubleshooting.md) for `ENOTFOUND`, `FUNCTION_INVOCATION_FAILED`, and login redirect issues.

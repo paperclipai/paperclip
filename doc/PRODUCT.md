@@ -84,6 +84,33 @@ The current issue model includes stable issue identifiers, parent/sub-issues, bl
 6. Set budgets, define initial strategic tasks
 7. Hit go — agents start their heartbeats and the company runs
 
+## Hosted operator context (ValAdrien Cloud)
+
+ValAdrien OS is **local-first** but **cloud-ready**: the same company model runs on a laptop (`pnpm dev` + embedded Postgres) or on a public URL with `authenticated` + `public` deployment mode.
+
+### Reference production topology
+
+| Layer | Role |
+| ----- | ---- |
+| GitHub | Source of truth; Vercel deploys from the deploy branch |
+| Vercel | Serves UI + `/api/*` (serverless Express entry at `api/index.mjs`) |
+| Supabase | Managed Postgres (`DATABASE_URL`); schema from Drizzle migrations |
+| Resend (later) | Outbound email via env vars on Vercel |
+| Railway (optional) | Long-running or Python workers only — not the main board |
+
+Managed-infra entitlements (postgres, email, llm, hosting, worker) are seeded for `infra_mode = managed` companies. Phase 3+ provisioning fills concrete bindings lazily; until then, **instance-scoped env vars on Vercel** back the operator pool (see `doc/plans/2026-06-01-valadrien-cloud-managed-infra.md`).
+
+### Hosted bootstrap expectations
+
+1. Operator sets `VALADRIEN_OS_DEPLOYMENT_MODE=authenticated` and `VALADRIEN_OS_DEPLOYMENT_EXPOSURE=public` on the host.
+2. Operator provides a real Postgres `DATABASE_URL` (embedded Postgres is refused in this mode).
+3. First human signup on a fresh database becomes `instance_admin` (“first user wins”).
+4. Onboarding wizard creates **ValAdrien.DEV** and client companies as separate `companies` rows — not separate products.
+
+### Supabase connection rule (serverless)
+
+On IPv4-only hosts such as **Vercel**, use Supabase **Supavisor pooler** URLs (`aws-0-[REGION].pooler.supabase.com`), not the direct host `db.[ref].supabase.co` (often IPv6-only on free tier). See [docs/deploy/troubleshooting.md](../docs/deploy/troubleshooting.md) and [doc/DATABASE.md](./DATABASE.md).
+
 ## Guidelines
 
 There are two runtime modes ValAdrien OS must support:

@@ -2,7 +2,7 @@
 
 **Status:** Living document · Fork v0 (2026-05) · Maintained by `ValDola-stack` under [ValAdrien.DEV](https://valadrien.dev)
 **Upstream:** Fork of [paperclipai/paperclip](https://github.com/paperclipai/paperclip) · MIT
-**Related docs:** [README.md](README.md) · [Architecture.md](Architecture.md) · [ROADMAP.md](ROADMAP.md) · [doc/PRODUCT.md](doc/PRODUCT.md) · [doc/SPEC.md](doc/SPEC.md)
+**Related docs:** [README.md](README.md) · [Architecture.md](Architecture.md) · [ROADMAP.md](ROADMAP.md) · [doc/PRODUCT.md](doc/PRODUCT.md) · [doc/SPEC.md](doc/SPEC.md) · [docs/deploy/troubleshooting.md](docs/deploy/troubleshooting.md)
 
 ---
 
@@ -184,6 +184,20 @@ npx valadrien-os onboard --yes
 - **R-TE-2** No personal info, issue content, prompts, paths, or secrets are ever sent.
 - **R-TE-3** Private repo references are hashed with a per-install salt.
 
+### 5.12 Hosted deployment (ValAdrien.DEV reference stack)
+
+Requirements for internet-facing operator instances (GitHub → Vercel → Supabase):
+
+- **R-HD-1** `authenticated` + `public` mode on the host; embedded Postgres is refused at startup.
+- **R-HD-2** `DATABASE_URL` must be a `postgres://` or `postgresql://` URI to hosted Postgres (Supabase or equivalent).
+- **R-HD-3** On IPv4-only serverless hosts (Vercel), `DATABASE_URL` must use Supabase **transaction pooler** (port **6543**, user `postgres.[PROJECT-REF]`, host `aws-0-[REGION].pooler.supabase.com`). Direct `db.[ref].supabase.co` URLs are not supported on Vercel when that host is IPv6-only.
+- **R-HD-4** When `VALADRIEN_OS_MIGRATION_AUTO_APPLY=true`, set **`DATABASE_MIGRATION_URL`** to the Supabase **session pooler** URL (port **5432** on the same pooler host) so startup migrations use a session-compatible connection while runtime queries use port 6543.
+- **R-HD-5** Public URL env vars (`VALADRIEN_OS_API_URL`, `VALADRIEN_OS_AUTH_PUBLIC_BASE_URL`, `BETTER_AUTH_TRUSTED_ORIGINS`) must match the browser bar exactly (custom domain or `.vercel.app`).
+- **R-HD-6** `/api/*` must return JSON from the API handler, not SPA `index.html` — verified by `GET /api/health`.
+- **R-HD-7** Secrets (`BETTER_AUTH_SECRET`, `VALADRIEN_OS_SECRETS_MASTER_KEY`, provider keys) live in the host env (Vercel Environment Variables), not in git.
+
+Operator procedures: [doc/plans/2026-06-02-host-valadrien-vercel-supabase-walkthrough.md](doc/plans/2026-06-02-host-valadrien-vercel-supabase-walkthrough.md). Failure modes: [docs/deploy/troubleshooting.md](docs/deploy/troubleshooting.md).
+
 ---
 
 ## 6. Non-functional requirements
@@ -192,7 +206,7 @@ npx valadrien-os onboard --yes
 | ----------------- | ---------------------------------------------------------------------------------------- |
 | **Performance**   | Onboard → first-task completion in ≤ 5 minutes on a clean Mac/Linux laptop               |
 | **Reliability**   | Atomic checkout & budget enforcement; no double-work; orphaned-run recovery is automatic |
-| **Portability**   | Embedded Postgres for local mode; pluggable Postgres for production                      |
+| **Portability**   | Embedded Postgres for local mode; hosted Postgres (Supabase pooler on Vercel) for production |
 | **Observability** | Structured logs, cost events, durable activity log, immutable audit trail                |
 | **Security**      | Encrypted local secret storage; provider-backed storage; capability-gated plugins        |
 | **Compatibility** | Node.js 20+, pnpm 9.15+                                                                  |

@@ -40,11 +40,11 @@ Docker          →  build recipe in the repo; used where the host needs a conta
 
 **You can do today (browser + one Terminal paste):**
 
-1. Create Supabase project → copy `DATABASE_URL`
+1. Create Supabase project → copy **pooler** connection strings (Step A2)
 2. Create/connect Vercel project to GitHub → paste env vars in Vercel
 3. Deploy → open URL → sign up → onboard ValAdrien.DEV
 
-**Honest note about this repo:** ValAdrien OS is **one Node server** (Express API + built UI). The repo has a **Dockerfile** and **no `vercel.json` yet**. Vercel may need a small **deployment config commit** on GitHub before “Import project” succeeds. If the first deploy fails with “no output” or “build failed”, that is a **repo fix**, not something wrong with Supabase. Section 6 below says what to tell the agent.
+**Repo status (2026-06-02):** This repo includes **`vercel.json`**, **`api/index.mjs`**, and **`pnpm run build:vercel`** for Vercel deployment. If deploy still fails, see [Section 6](#section-6--if-vercel-deploy-fails-what-it-means-what-to-ask-for) and [docs/deploy/troubleshooting.md](../../docs/deploy/troubleshooting.md).
 
 ---
 
@@ -65,19 +65,31 @@ Docker          →  build recipe in the repo; used where the host needs a conta
 
 ---
 
-### Step A2 — Copy the database URL (this becomes `DATABASE_URL` in Vercel)
+### Step A2 — Copy database URLs for Vercel (pooler, not direct host)
 
-1. In Supabase, click **Project Settings** (gear icon, bottom of left sidebar).
-2. Click **Database**.
-3. Scroll to **Connection string**.
-4. Open the **URI** tab (sometimes labeled **Connection string** → mode **URI**).
-5. You will see a line like:
-   `postgresql://postgres.[something]:[YOUR-PASSWORD]@aws-0-....supabase.co:6543/postgres`
-6. **Replace** the text `[YOUR-PASSWORD]` with the database password you saved in Step A1.  
-   The result is one long line starting with `postgresql://` — that is your **`DATABASE_URL`**.
-7. Keep that line in your temporary note until Step B4 (you will paste it into Vercel).
+**Important:** On **Vercel**, do **not** use the Supabase **direct** host `db.[PROJECT-REF].supabase.co`. That hostname is often **IPv6-only**; Vercel serverless is **IPv4-only** → `getaddrinfo ENOTFOUND`. Use **Supavisor pooler** URLs instead.
 
-**Stop here:** You have one full `postgresql://…` line copied. You do **not** need Supabase for anything else right now (no tables to create by hand — the app runs migrations on startup when configured).
+1. In Supabase, click **Project Settings** (gear icon) → **Database** → **Connect** (or **Connection string**).
+2. Note your project **region** (e.g. `us-west-2` for West US / Oregon) — it appears in pooler hostnames.
+3. Copy **Transaction pooler** (port **6543**) — this becomes **`DATABASE_URL`** in Vercel:
+
+   ```text
+   postgresql://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
+   ```
+
+4. Copy **Session pooler** (port **5432** on the **same** pooler host) — this becomes **`DATABASE_MIGRATION_URL`** when `VALADRIEN_OS_MIGRATION_AUTO_APPLY=true`:
+
+   ```text
+   postgresql://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
+   ```
+
+5. Replace `[PASSWORD]` with the database password from Step A1. Username must be `postgres.[PROJECT-REF]`, not bare `postgres`.
+
+6. Keep both lines in your temporary note until Step B4.
+
+**Stop here:** Two pooler URIs copied. You do **not** create tables by hand — migrations run on startup when configured.
+
+See [docs/deploy/troubleshooting.md](../../docs/deploy/troubleshooting.md) if you already pasted a `db.….supabase.co` URL and the API fails.
 
 ---
 
@@ -143,7 +155,8 @@ openssl rand -base64 32
 
 | Key (copy exactly) | Value |
 | ------------------ | ----- |
-| `DATABASE_URL` | The full `postgresql://…` line from Step A2 |
+| `DATABASE_URL` | Transaction pooler URI (port **6543**) from Step A2 |
+| `DATABASE_MIGRATION_URL` | Session pooler URI (port **5432**) from Step A2 |
 | `VALADRIEN_OS_DEPLOYMENT_MODE` | `authenticated` |
 | `VALADRIEN_OS_DEPLOYMENT_EXPOSURE` | `public` |
 | `VALADRIEN_OS_API_URL` | Leave empty for now — fill in Step B5 after you know the URL |
@@ -243,19 +256,23 @@ Common messages:
 
 | What you see | Meaning | What to do |
 | ------------ | ------- | ---------- |
-| Build failed / no output directory | Vercel does not know how to build this monorepo server | Ask in chat: **“Add Vercel deployment config for valadrien-os (Express + ui build)”** — that is a **GitHub commit**, not a Supabase change |
-| Crashes on start: `DATABASE_URL` | Env var missing or wrong password in URI | Re-check Step A2 and B4 |
+| Build failed / no output directory | Monorepo build misconfigured | Confirm `vercel.json` and `pnpm run build:vercel` exist on your deploy branch; check Vercel build logs |
+| `getaddrinfo ENOTFOUND db.….supabase.co` | Direct Supabase host on IPv4-only Vercel | Switch to **pooler** URLs (Step A2); see [troubleshooting](../../docs/deploy/troubleshooting.md) |
+| `FUNCTION_INVOCATION_FAILED` | API crashed on cold start (often DB) | Vercel → deployment → **Functions** logs; fix `DATABASE_URL` / `DATABASE_MIGRATION_URL` |
+| `Unexpected token '<'` on `/api/*` | API returned HTML instead of JSON | Fix API crash first; confirm `/api/health` returns JSON |
+| Crashes on start: `DATABASE_URL` | Env var missing or wrong password in URI | Re-check Step A2 and B4 (both pooler URLs) |
 | Crashes: `BETTER_AUTH_SECRET` | Missing auth secret | Re-check B3 and B4 |
-| Crashes: `authenticated public` + database | `DATABASE_URL` must be real Postgres (`postgresql://…`) | Must be Supabase URI, not empty |
+| Crashes: `authenticated public` + database | `DATABASE_URL` must be real Postgres (`postgresql://…`) | Must be Supabase pooler URI, not empty |
 | Login redirect loop | URL env vars mismatch | All three URL keys in B5 must match the URL in the browser bar exactly |
+| Preview OK, custom domain broken | Production env vars or promotion differ | Compare Preview vs Production in Vercel env settings |
 
-**Do not** move the main app to Railway just because Vercel failed once — fix deploy config or use Vercel’s **Docker/container** option for this repo if your Vercel plan supports it (same env vars from Part B).
+**Do not** move the main app to Railway just because Vercel failed once — fix env vars and deploy config first.
 
 ---
 
 ## Checklist (tick in order)
 
-- [ ] **A1–A2** Supabase project `valadrien-os-prod` + `DATABASE_URL` copied
+- [ ] **A1–A2** Supabase project + **pooler** `DATABASE_URL` (6543) and `DATABASE_MIGRATION_URL` (5432) copied
 - [ ] **B1–B2** Vercel project imported from GitHub `valadrien-os`
 - [ ] **B3** Two `openssl` secrets generated
 - [ ] **B4** Env vars in Vercel (except three URLs)
@@ -273,6 +290,8 @@ Common messages:
 - `doc/plans/2026-06-01-valadrien-cloud-managed-infra.md` — ValAdrien Cloud entitlements
 - `docs/deploy/environment-variables.md` — full env reference
 - `docs/deploy/database.md` — Supabase connection notes
+- `docs/deploy/troubleshooting.md` — ENOTFOUND, HTML API responses, auth URL mismatches
+- `Architecture.md` §14 — hosted topology (Vercel + Supabase)
 
 ---
 

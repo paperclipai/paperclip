@@ -600,7 +600,73 @@ The wizard surfaces this in two places:
 
 ---
 
-## 14. Further reading
+## 14. Hosted reference topology (Vercel + Supabase)
+
+ValAdrien.DEV’s reference production layout keeps the **same monorepo** as local dev but changes how the process and database are hosted.
+
+### Request flow
+
+```text
+Browser  →  Vercel Edge / CDN
+              ├─ /* (except /api/*)  →  public/index.html + static assets (Vite build)
+              └─ /api/*              →  api/index.mjs  →  server/dist/index.js (Express)
+                                              ↓
+                                    Supabase Postgres (pooler, port 6543)
+```
+
+| Artifact | Purpose |
+| -------- | ------- |
+| `vercel.json` | Build command `pnpm run build:vercel`; rewrite `/api/*` to serverless handler; SPA fallback excludes `/api/` |
+| `api/index.mjs` | Lazy `startServer()` from compiled server; exports default handler for Vercel |
+| `scripts/prepare-vercel-public.mjs` | Copies `ui/dist` into `public/` for static hosting |
+| `scripts/patch-vercel-workspace-exports.mjs` | Ensures workspace packages resolve under Vercel’s install layout |
+
+### Environment split (runtime vs migrations)
+
+| Variable | Typical use on Vercel |
+| -------- | --------------------- |
+| `DATABASE_URL` | **Transaction pooler** — Supabase port **6543** (`?pgbouncer=true` optional) |
+| `DATABASE_MIGRATION_URL` | **Session pooler** — same pooler host, port **5432** (required when `VALADRIEN_OS_MIGRATION_AUTO_APPLY=true`) |
+| `VALADRIEN_OS_MIGRATION_AUTO_APPLY` | `true` on fresh Supabase projects so Drizzle migrations run at cold start |
+| `VALADRIEN_OS_DEPLOYMENT_MODE` | `authenticated` |
+| `VALADRIEN_OS_DEPLOYMENT_EXPOSURE` | `public` |
+| `VALADRIEN_OS_API_URL` | Public origin, e.g. `https://os.valadrien.dev` |
+| `VALADRIEN_OS_AUTH_PUBLIC_BASE_URL` | Same as API URL for Better Auth |
+| `BETTER_AUTH_SECRET` | Random 32+ byte secret (Vercel env) |
+| `BETTER_AUTH_TRUSTED_ORIGINS` | Comma-separated origins (production + preview if needed) |
+
+**Do not** point Vercel `DATABASE_URL` at `db.[ref].supabase.co` when that host is IPv6-only — Vercel functions resolve IPv4 only → `getaddrinfo ENOTFOUND`. Use the regional pooler hostname from Supabase **Connect → Transaction pooler**.
+
+### Serverless adaptations
+
+- `server/src/middleware/logger.ts` skips file logging when `process.env.VERCEL` is set.
+- Heavy optional deps (e.g. `jsdom` in assets routes) load lazily to reduce cold-start failures.
+- Long-running agent **workers** are not hosted on Vercel; use Railway/Docker sidecars per company when needed.
+
+### Deployment modes vs topology
+
+| Mode | Host | Database |
+| ---- | ---- | -------- |
+| Local dev | `pnpm dev` on laptop | Embedded PGlite (default) or local Postgres |
+| Operator cloud | Vercel + custom domain | Supabase Postgres (pooler URLs) |
+| Self-hosted Docker | `docker compose` / ECS | Operator-managed Postgres |
+
+Managed-infra entitlements (`company_infra_entitlements`) describe what a **managed** company may consume; Phase 3+ fills bindings. Until provisioning automation ships, the operator instance env vars above back the shared pool.
+
+### Verification
+
+After deploy:
+
+```sh
+curl -sS "https://os.valadrien.dev/api/health"
+# Expect JSON, e.g. {"status":"ok",...} — not HTML
+```
+
+See [docs/deploy/troubleshooting.md](docs/deploy/troubleshooting.md) for failure signatures.
+
+---
+
+## 15. Further reading
 
 - [doc/SPEC.md](doc/SPEC.md) — field-level specification (Company, Agent, Issue, etc.)
 - [doc/PRODUCT.md](doc/PRODUCT.md) — product definition (upstream-style)
@@ -613,3 +679,6 @@ The wizard surfaces this in two places:
 - [server/src/onboarding-assets/onboarding/](server/src/onboarding-assets/onboarding/) — Onboarding Specialist instruction bundle
 - [ROADMAP.md](ROADMAP.md) — shipped + planned features
 - [PRD.md](PRD.md) — product requirements for the fork
+- [doc/plans/2026-06-02-host-valadrien-vercel-supabase-walkthrough.md](doc/plans/2026-06-02-host-valadrien-vercel-supabase-walkthrough.md) — operator runbook: GitHub → Vercel → Supabase
+- [docs/deploy/troubleshooting.md](docs/deploy/troubleshooting.md) — hosted deploy failure modes and fixes
+- [docs/deploy/overview.md](docs/deploy/overview.md) — deployment options (Docker, AWS, Vercel)
