@@ -75,17 +75,7 @@ export const AGNB_SUBNAV = {
   ops: [
     { to: "/agnb-health", label: "Health" },
     { to: "/agnb-sync", label: "Sync" },
-    { to: "/events", label: "Events" },
-    { to: "/webhooks-catalog", label: "Event catalog" },
-    { to: "/audit", label: "API audit" },
-    { to: "/entity-audit", label: "Entity audit" },
-    { to: "/pending-actions", label: "Pending actions" },
-    { to: "/agnb-notifications", label: "Notifications" },
-    { to: "/comment-triage", label: "Comments" },
-    { to: "/content-performance", label: "Content perf" },
-    { to: "/workflows", label: "Workflows" },
     { to: "/quota", label: "Quota" },
-    { to: "/tokens", label: "API tokens" },
   ],
   team: [
     { to: "/my-queue", label: "My queue" },

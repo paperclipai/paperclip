@@ -119,7 +119,6 @@ export function Sidebar() {
           <SidebarNavItem to="/youtube" label="YouTube" icon={YoutubeIcon} />
           <SidebarNavItem to="/renewals" label="Renewals" icon={CalendarClock} />
           <SidebarNavItem to="/backlog" label="Backlog" icon={ListTodo} />
-          <SidebarNavItem to="/agnb-health" label="Ops" icon={HeartPulse} />
         </SidebarSection>
 
         <SidebarSection label="Work">
@@ -153,6 +152,7 @@ export function Sidebar() {
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
+          <SidebarNavItem to="/agnb-health" label="Ops" icon={HeartPulse} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>
 
