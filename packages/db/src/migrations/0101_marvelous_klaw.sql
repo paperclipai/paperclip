@@ -1,0 +1,1 @@
+ALTER TABLE "issues" ADD COLUMN "blocker_kind" text;

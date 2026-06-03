@@ -1,14 +1,17 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
+  chargeRequestSchema,
   createCostEventSchema,
   createFinanceEventSchema,
   normalizeIssueIdentifier,
+  preflightRequestSchema,
   resolveBudgetIncidentSchema,
   updateBudgetSchema,
   upsertBudgetPolicySchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
+import { budgetLifecycleService } from "../services/budget-lifecycle.js";
 import {
   budgetService,
   costService,
@@ -61,6 +64,7 @@ export function costRoutes(
   const companies = companyService(db);
   const agents = agentService(db);
   const issues = issueService(db);
+  const budgetLifecycle = budgetLifecycleService(db);
 
   async function resolveIssueByRef(rawId: string) {
     const identifier = normalizeIssueIdentifier(rawId);
@@ -97,6 +101,62 @@ export function costRoutes(
     });
 
     res.status(201).json(event);
+  });
+
+  // Resolve the acting agent + run for a lifecycle call. An agent actor may only
+  // charge/preflight under its own agentId; a missing agentId/runId defaults to
+  // the runtime context (§7.2 run-id propagation). Board/system actors may submit
+  // source-less charges (agentId null) for timer/probe spend (§2.1).
+  function resolveLifecycleContext(req: Request, body: { agentId?: string | null; runId?: string | null }) {
+    let agentId = body.agentId ?? null;
+    if (req.actor.type === "agent") {
+      if (agentId && agentId !== req.actor.agentId) {
+        throw badRequest("Agent can only report its own costs");
+      }
+      agentId = agentId ?? req.actor.agentId ?? null;
+    }
+    const runId = body.runId ?? req.actor.runId ?? null;
+    return { agentId, runId };
+  }
+
+  router.post("/cost/preflight", validate(preflightRequestSchema), async (req, res) => {
+    const companyId = req.body.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const { agentId, runId } = resolveLifecycleContext(req, req.body);
+
+    const result = await budgetLifecycle.preflight({
+      ...req.body,
+      agentId,
+      runId,
+    });
+    res.json(result);
+  });
+
+  router.post("/cost/charge", validate(chargeRequestSchema), async (req, res) => {
+    const companyId = req.body.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const { agentId, runId } = resolveLifecycleContext(req, req.body);
+
+    const result = await budgetLifecycle.charge({
+      ...req.body,
+      agentId,
+      runId,
+      occurredAt: req.body.occurredAt ? new Date(req.body.occurredAt) : undefined,
+    });
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: agentId ?? actor.agentId,
+      action: "cost.charged",
+      entityType: "cost_event",
+      entityId: result.id,
+      details: { costMicros: result.costMicros, provider: req.body.provider, model: req.body.model, idempotent: result.idempotent },
+    });
+
+    res.status(result.idempotent ? 200 : 201).json(result);
   });
 
   router.post("/companies/:companyId/finance-events", validate(createFinanceEventSchema), async (req, res) => {

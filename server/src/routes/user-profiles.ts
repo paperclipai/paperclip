@@ -413,7 +413,9 @@ export function userProfileRoutes(db: Db) {
         priority: issue.priority as UserProfileResponse["recentIssues"][number]["priority"],
       })),
       recentActivity,
-      topAgents: topAgents.map((entry) => ({
+      topAgents: topAgents
+        .filter((entry): entry is typeof entry & { agentId: string } => entry.agentId != null)
+        .map((entry) => ({
         ...entry,
         costCents: Number(entry.costCents),
         inputTokens: Number(entry.inputTokens),

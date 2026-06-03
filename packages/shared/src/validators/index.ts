@@ -67,8 +67,6 @@ export {
   companySkillUsageAgentSchema,
   companySkillDetailSchema,
   companySkillUpdateStatusSchema,
-  companySkillAuditFindingSchema,
-  companySkillAuditResultSchema,
   companySkillImportSchema,
   companySkillProjectScanRequestSchema,
   companySkillProjectScanSkippedSchema,
@@ -77,23 +75,10 @@ export {
   companySkillCreateSchema,
   companySkillFileDetailSchema,
   companySkillFileUpdateSchema,
-  catalogSkillKindSchema,
-  catalogSkillFileSchema,
-  catalogSkillSchema,
-  catalogSkillListQuerySchema,
-  catalogSkillFileDetailSchema,
-  companySkillInstallCatalogSchema,
-  companySkillInstallCatalogResultSchema,
-  companySkillInstallUpdateSchema,
-  companySkillResetSchema,
   type CompanySkillImport,
   type CompanySkillProjectScan,
   type CompanySkillCreate,
   type CompanySkillFileUpdate,
-  type CatalogSkillListQuery,
-  type CompanySkillInstallCatalog,
-  type CompanySkillInstallUpdate,
-  type CompanySkillReset,
 } from "./company-skill.js";
 export {
   agentSkillStateSchema,
@@ -168,25 +153,9 @@ export {
 } from "./project.js";
 
 export {
-  createDocumentAnnotationCommentSchema,
-  createDocumentAnnotationThreadSchema,
-  documentAnnotationAnchorConfidenceSchema,
-  documentAnnotationAnchorSelectorSchema,
-  documentAnnotationAnchorStateSchema,
-  documentAnnotationTextPositionSelectorSchema,
-  documentAnnotationTextQuoteSelectorSchema,
-  documentAnnotationThreadStatusSchema,
-  updateDocumentAnnotationThreadSchema,
-  type CreateDocumentAnnotationComment,
-  type CreateDocumentAnnotationThread,
-  type UpdateDocumentAnnotationThread,
-} from "./document-annotation.js";
-
-export {
   createIssueSchema,
   createIssueInputSchema,
   createChildIssueSchema,
-  createAcceptedPlanDecompositionSchema,
   resolveCreateIssueStatusDefault,
   createIssueLabelSchema,
   issueBlockedInboxAttentionSchema,
@@ -207,10 +176,13 @@ export {
   issueCommentMetadataRowSchema,
   issueCommentMetadataSectionSchema,
   issueCommentMetadataSchema,
+  addIssueCommentObjectSchema,
   addIssueCommentSchema,
   issueThreadInteractionStatusSchema,
   issueThreadInteractionKindSchema,
   issueThreadInteractionContinuationPolicySchema,
+  issueThreadInteractionDecisionClassSchema,
+  issueThreadInteractionBoardNotificationSchema,
   suggestedTaskDraftSchema,
   suggestTasksPayloadSchema,
   suggestTasksResultCreatedTaskSchema,
@@ -238,7 +210,6 @@ export {
   restoreIssueDocumentRevisionSchema,
   type CreateIssue,
   type CreateChildIssue,
-  type CreateAcceptedPlanDecomposition,
   type CreateIssueLabel,
   type UpdateIssue,
   type IssueExecutionWorkspaceSettings,
@@ -282,7 +253,6 @@ export {
 export {
   createIssueWorkProductSchema,
   updateIssueWorkProductSchema,
-  attachmentArtifactWorkProductMetadataSchema,
   issueWorkProductTypeSchema,
   issueWorkProductStatusSchema,
   issueWorkProductReviewStateSchema,
@@ -384,6 +354,13 @@ export {
 } from "./cost.js";
 
 export {
+  preflightRequestSchema,
+  chargeRequestSchema,
+  type PreflightRequest,
+  type ChargeRequest,
+} from "./budget-lifecycle.js";
+
+export {
   createFinanceEventSchema,
   type CreateFinanceEvent,
 } from "./finance.js";
@@ -403,7 +380,6 @@ export {
   boardCliAuthAccessLevelSchema,
   createCliAuthChallengeSchema,
   resolveCliAuthChallengeSchema,
-  createBoardApiKeySchema,
   currentUserProfileSchema,
   authSessionSchema,
   updateCurrentUserProfileSchema,
@@ -422,7 +398,6 @@ export {
   type BoardCliAuthAccessLevel,
   type CreateCliAuthChallenge,
   type ResolveCliAuthChallenge,
-  type CreateBoardApiKey,
   type CurrentUserProfile,
   type AuthSession,
   type UpdateCurrentUserProfile,
@@ -479,3 +454,5 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export { updateLabelSchema, type UpdateLabel } from "./label.js";
