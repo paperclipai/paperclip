@@ -6,6 +6,7 @@ import {
   applyPersistedExecutionWorkspaceConfig,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
+  computeSessionCompactionReason,
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
@@ -540,6 +541,92 @@ describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
     expect(
       prioritizeProjectWorkspaceCandidatesForRun(rows, "workspace-9").map((row) => row.id),
     ).toEqual(["workspace-1", "workspace-2"]);
+  });
+});
+
+describe("computeSessionCompactionReason", () => {
+  const policy = {
+    enabled: true,
+    maxSessionRuns: 0,
+    maxRawInputTokens: 150_000,
+    maxSessionAgeHours: 0,
+  };
+
+  it("rotates on a cache-heavy run where non-cached input alone is tiny", () => {
+    // Models the MC v2 (THIAAAAAA-1103) signature: real context ~352K is almost
+    // entirely cache_read tokens while non-cached input never exceeds ~7.5K.
+    const reason = computeSessionCompactionReason({
+      policy,
+      runCount: 1,
+      latestRawUsage: {
+        inputTokens: 7_500,
+        cachedInputTokens: 344_500,
+        outputTokens: 2_000,
+      },
+      sessionAgeHours: 0,
+    });
+
+    expect(reason).toBe("session raw input reached 352,000 tokens (threshold 150,000)");
+  });
+
+  it("does not rotate when total context (input + cached) stays under the ceiling", () => {
+    expect(
+      computeSessionCompactionReason({
+        policy,
+        runCount: 1,
+        latestRawUsage: {
+          inputTokens: 7_500,
+          cachedInputTokens: 100_000,
+          outputTokens: 2_000,
+        },
+        sessionAgeHours: 0,
+      }),
+    ).toBeNull();
+  });
+
+  it("would never fire on the cache-heavy run if only non-cached input were counted", () => {
+    // Regression guard for the pre-fix behaviour: non-cached inputTokens (7.5K)
+    // is far below the 150K ceiling, so the old check stayed silent.
+    expect(7_500 >= policy.maxRawInputTokens).toBe(false);
+    expect(
+      computeSessionCompactionReason({
+        policy,
+        runCount: 1,
+        latestRawUsage: { inputTokens: 7_500, cachedInputTokens: 344_500, outputTokens: 0 },
+        sessionAgeHours: 0,
+      }),
+    ).not.toBeNull();
+  });
+
+  it("still rotates on run-count and age thresholds", () => {
+    expect(
+      computeSessionCompactionReason({
+        policy: { enabled: true, maxSessionRuns: 25, maxRawInputTokens: 0, maxSessionAgeHours: 0 },
+        runCount: 26,
+        latestRawUsage: null,
+        sessionAgeHours: 0,
+      }),
+    ).toBe("session exceeded 25 runs");
+
+    expect(
+      computeSessionCompactionReason({
+        policy: { enabled: true, maxSessionRuns: 0, maxRawInputTokens: 0, maxSessionAgeHours: 72 },
+        runCount: 1,
+        latestRawUsage: null,
+        sessionAgeHours: 80,
+      }),
+    ).toBe("session age reached 80 hours");
+  });
+
+  it("returns null when no thresholds are configured", () => {
+    expect(
+      computeSessionCompactionReason({
+        policy: { enabled: true, maxSessionRuns: 0, maxRawInputTokens: 0, maxSessionAgeHours: 0 },
+        runCount: 100,
+        latestRawUsage: { inputTokens: 1_000_000, cachedInputTokens: 1_000_000, outputTokens: 0 },
+        sessionAgeHours: 1_000,
+      }),
+    ).toBeNull();
   });
 });
 

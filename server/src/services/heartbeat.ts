@@ -1524,6 +1524,43 @@ export function parseSessionCompactionPolicy(agent: typeof agents.$inferSelect):
   return resolveSessionCompactionPolicy(agent.adapterType, agent.runtimeConfig).policy;
 }
 
+/**
+ * Decide whether a session should rotate, returning a human-readable reason or
+ * null. Pure helper so the threshold logic can be unit-tested independently of
+ * the DB-backed {@link evaluateSessionCompaction} closure.
+ *
+ * The raw-input-token check counts BOTH non-cached input and cache_read input
+ * (`inputTokens + cachedInputTokens`) because that sum is the true size of the
+ * context re-fed to the model each run. For prompt-caching adapters (e.g.
+ * claude_local) a resumed bloated context is almost entirely cache_read tokens,
+ * so comparing `inputTokens` alone is structurally blind and never fires
+ * (THIAAAAAA-1743).
+ */
+export function computeSessionCompactionReason(input: {
+  policy: SessionCompactionPolicy;
+  runCount: number;
+  latestRawUsage: UsageTotals | null;
+  sessionAgeHours: number;
+}): string | null {
+  const { policy, runCount, latestRawUsage, sessionAgeHours } = input;
+  if (policy.maxSessionRuns > 0 && runCount > policy.maxSessionRuns) {
+    return `session exceeded ${policy.maxSessionRuns} runs`;
+  }
+  if (policy.maxRawInputTokens > 0 && latestRawUsage) {
+    const totalContextTokens = latestRawUsage.inputTokens + latestRawUsage.cachedInputTokens;
+    if (totalContextTokens >= policy.maxRawInputTokens) {
+      return (
+        `session raw input reached ${formatCount(totalContextTokens)} tokens ` +
+        `(threshold ${formatCount(policy.maxRawInputTokens)})`
+      );
+    }
+  }
+  if (policy.maxSessionAgeHours > 0 && sessionAgeHours >= policy.maxSessionAgeHours) {
+    return `session age reached ${Math.floor(sessionAgeHours)} hours`;
+  }
+  return null;
+}
+
 export function resolveRuntimeSessionParamsForWorkspace(input: {
   agentId: string;
   previousSessionParams: Record<string, unknown> | null;
@@ -3524,20 +3561,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           )
         : 0;
 
-    let reason: string | null = null;
-    if (policy.maxSessionRuns > 0 && runs.length > policy.maxSessionRuns) {
-      reason = `session exceeded ${policy.maxSessionRuns} runs`;
-    } else if (
-      policy.maxRawInputTokens > 0 &&
-      latestRawUsage &&
-      latestRawUsage.inputTokens >= policy.maxRawInputTokens
-    ) {
-      reason =
-        `session raw input reached ${formatCount(latestRawUsage.inputTokens)} tokens ` +
-        `(threshold ${formatCount(policy.maxRawInputTokens)})`;
-    } else if (policy.maxSessionAgeHours > 0 && sessionAgeHours >= policy.maxSessionAgeHours) {
-      reason = `session age reached ${Math.floor(sessionAgeHours)} hours`;
-    }
+    const reason = computeSessionCompactionReason({
+      policy,
+      runCount: runs.length,
+      latestRawUsage,
+      sessionAgeHours,
+    });
 
     if (!reason || !latestRun) {
       return {
