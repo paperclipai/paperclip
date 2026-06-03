@@ -13,6 +13,7 @@ import type {
   SecretVersionSelector,
   SshEnvironmentConfig,
 } from "@paperclipai/shared";
+import { k8sEnvironmentConfigSchema } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
@@ -331,6 +332,16 @@ export function normalizeEnvironmentConfig(input: {
       });
     }
     return parsed.data satisfies PluginEnvironmentConfig;
+  }
+
+  if (input.driver === "k8s") {
+    const parsed = k8sEnvironmentConfigSchema.safeParse(parseObject(input.config));
+    if (!parsed.success) {
+      throw unprocessable(toErrorMessage(parsed.error), {
+        issues: parsed.error.issues,
+      });
+    }
+    return parsed.data;
   }
 
   throw unprocessable(`Unsupported environment driver "${input.driver}".`);

@@ -2121,11 +2121,12 @@ describe("realizeExecutionWorkspace", () => {
   it("auto-detects the default branch via symbolic-ref when origin/HEAD is set", async () => {
     const repoRoot = await createTempRepo("main");
 
-    // Create a `master` branch alongside `main` so the remote advertises both.
-    // (Modern git defaults the initial branch to `main`, so `master` does not
-    // exist unless we make it; this test needs origin/master to assert the code
-    // prefers it over the origin/HEAD symbolic-ref → main.)
-    await runGit(repoRoot, ["branch", "master", "main"]);
+    // Ensure a `master` branch exists alongside `main` so the remote advertises
+    // both. This test needs origin/master to assert the code prefers it over the
+    // origin/HEAD symbolic-ref → main. Use -f so it works whether or not the
+    // host's git default already created `master` at init (CI runners default to
+    // master, so a plain `git branch master main` fails "already exists").
+    await runGit(repoRoot, ["branch", "-f", "master", "main"]);
 
     const bareRemote = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-bare-symref-"));
     await runGit(bareRemote, ["init", "--bare"]);

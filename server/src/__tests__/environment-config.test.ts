@@ -248,4 +248,34 @@ describe("environment config helpers", () => {
       },
     });
   });
+
+  it("normalizes k8s environment config into its canonical stored shape", () => {
+    const config = normalizeEnvironmentConfig({
+      driver: "k8s",
+      config: {
+        namespace: "paperclip",
+        nodeSelector: { workload: "paperclip" },
+        tolerations: [
+          { key: "dedicated", value: "paperclip", effect: "NoSchedule", operator: "Equal" },
+        ],
+      },
+    });
+
+    expect(config).toEqual({
+      namespace: "paperclip",
+      nodeSelector: { workload: "paperclip" },
+      tolerations: [
+        { key: "dedicated", value: "paperclip", effect: "NoSchedule", operator: "Equal" },
+      ],
+    });
+  });
+
+  it("rejects unknown keys in k8s config (inline kubeconfig is disallowed)", () => {
+    expect(() =>
+      normalizeEnvironmentConfig({
+        driver: "k8s",
+        config: { namespace: "paperclip", kubeconfig: "inline-not-allowed" },
+      }),
+    ).toThrow(/Unrecognized key/i);
+  });
 });
