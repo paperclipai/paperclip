@@ -7,7 +7,7 @@ describe("manifest", () => {
     expect(manifest.id).toBe(PLUGIN_ID);
     expect(manifest.entrypoints.worker).toBe("./dist/worker.js");
     expect(manifest.capabilities).toEqual(
-      expect.arrayContaining(["http.outbound", "companies.read", "plugin.state.read", "plugin.state.write", "jobs.schedule", "activity.log.write"]),
+      expect.arrayContaining(["http.outbound", "secrets.read-ref", "companies.read", "plugin.state.read", "plugin.state.write", "jobs.schedule", "activity.log.write"]),
     );
   });
   it("exposes the bridge-sync job and an instanceConfigSchema with the link + transport fields", () => {

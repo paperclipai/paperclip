@@ -33,7 +33,7 @@ const manifest: PaperclipPluginManifestV1 = {
       hermesBaseUrl:    { type: "string", description: "Hermes connector base URL (Telegram/email transport)" },
       hermesToken:      { type: "string", description: "Bearer token the plugin sends to Hermes" },
       inboundSecret:    { type: "string", description: "Shared secret Hermes echoes in inbound payloads (auth)" },
-      links:            { type: "string", description: "JSON array of LinkConfig objects" },
+      links:            { type: "string", description: "JSON array of LinkConfig objects, e.g. [{\"linkId\":\"rossignol-pcc\",\"companyA\":{\"companyId\":\"…\",\"channelIssueId\":\"…\",\"label\":\"…\"},\"companyB\":{\"companyId\":\"…\",\"channelIssueId\":\"…\",\"label\":\"…\"},\"transport\":{\"telegramChat\":\"…\",\"emailA\":\"…\",\"emailB\":\"…\"}}]" },
     },
   },
   jobs: [
