@@ -3160,13 +3160,11 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     draftTimer.current = setTimeout(() => {
       saveDraft(draftKey, body);
     }, DRAFT_DEBOUNCE_MS);
-  }, [body, draftKey]);
-
-  useEffect(() => {
     return () => {
       if (draftTimer.current) clearTimeout(draftTimer.current);
+      saveDraft(draftKey, body);
     };
-  }, []);
+  }, [body, draftKey]);
 
   useEffect(() => {
     setReassignTarget(effectiveSuggestedAssigneeValue);

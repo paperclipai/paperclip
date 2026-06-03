@@ -311,6 +311,8 @@ export function buildSuccessfulRunHandoffInstruction(input: {
   return [
     `Your previous run on ${issueLabel} succeeded, but the issue is still in \`in_progress\` and Paperclip cannot identify a valid issue disposition.`,
     "",
+    "⚠️ GitHub linkage required: If this issue represents work tracked on GitHub, it MUST reference its canonical GitHub issue (e.g. `GitHub: #ISSUE_NUMBER`) before closure. Do NOT self-close as `done` when GitHub sync or review is still pending.",
+    "",
     "Resolve the missing disposition before creating or revising any new artifacts. Choose **exactly one** outcome and perform the matching Paperclip action:",
     "",
     "**Is the issue finished?**",

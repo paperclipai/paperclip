@@ -26,6 +26,7 @@ export function ApprovalDetail() {
   const [commentBody, setCommentBody] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showRawPayload, setShowRawPayload] = useState(false);
+  const commentDraftKey = approvalId ? `paperclip:approval-comment-draft:${approvalId}` : null;
 
   const { data: approval, isLoading } = useQuery({
     queryKey: queryKeys.approvals.detail(approvalId!),
@@ -56,6 +57,28 @@ export function ApprovalDetail() {
     if (!approval?.companyId || approval.companyId === selectedCompanyId) return;
     setSelectedCompanyId(approval.companyId, { source: "route_sync" });
   }, [approval?.companyId, selectedCompanyId, setSelectedCompanyId]);
+
+  useEffect(() => {
+    if (!commentDraftKey) return;
+    try {
+      setCommentBody(localStorage.getItem(commentDraftKey) ?? "");
+    } catch {
+      setCommentBody("");
+    }
+  }, [commentDraftKey]);
+
+  useEffect(() => {
+    if (!commentDraftKey) return;
+    try {
+      if (commentBody.trim()) {
+        localStorage.setItem(commentDraftKey, commentBody);
+      } else {
+        localStorage.removeItem(commentDraftKey);
+      }
+    } catch {
+      // Ignore localStorage failures.
+    }
+  }, [commentBody, commentDraftKey]);
 
   const agentNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -125,6 +148,13 @@ export function ApprovalDetail() {
     mutationFn: () => approvalsApi.addComment(approvalId!, commentBody.trim()),
     onSuccess: () => {
       setCommentBody("");
+      if (commentDraftKey) {
+        try {
+          localStorage.removeItem(commentDraftKey);
+        } catch {
+          // Ignore localStorage failures.
+        }
+      }
       setError(null);
       refresh();
     },

@@ -113,6 +113,17 @@ function applyStatusSideEffects(
   return patch;
 }
 
+async function assertRoutineExecutionDoneAllowed(issue: typeof issues.$inferSelect) {
+  if (issue.originKind !== "routine_execution") return;
+  if (!issue.executionRunId || !issue.executionLockedAt) {
+    throw unprocessable("Routine execution issue cannot be closed as done without concrete execution evidence", {
+      executionRunId: issue.executionRunId,
+      executionLockedAt: issue.executionLockedAt,
+      issueStatus: issue.status,
+    });
+  }
+}
+
 function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
@@ -4272,6 +4283,9 @@ export function issueService(db: Db) {
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
+      }
+      if (issueData.status === "done") {
+        await assertRoutineExecutionDoneAllowed(existing);
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {

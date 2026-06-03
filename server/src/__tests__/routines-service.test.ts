@@ -1244,6 +1244,38 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues).toHaveLength(0);
   });
 
+  it("treats cancelled routine execution issues as completed runs", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const runId = randomUUID();
+    const issue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "cancelled",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: runId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: runId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: issue.id,
+    });
+
+    await expect(svc.syncRunStatusForIssue(issue.id)).resolves.toMatchObject({
+      id: runId,
+      status: "completed",
+    });
+  });
+
   it("accepts standard second-precision webhook timestamps for HMAC triggers", async () => {
     const { routine, svc } = await seedFixture();
     const { trigger, secretMaterial } = await svc.createTrigger(

@@ -33,7 +33,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const runIdHeaderRaw = req.header("x-paperclip-run-id");
+    const runIdHeader = typeof runIdHeaderRaw === "string"
+      ? runIdHeaderRaw.split(",")[0]?.trim() || undefined
+      : undefined;
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {

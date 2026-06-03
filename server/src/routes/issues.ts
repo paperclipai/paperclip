@@ -203,6 +203,21 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function normalizeIssueStatusQuery(status: string | string[] | undefined): string | undefined {
+  if (Array.isArray(status)) {
+    const statuses = status
+      .flatMap((value) => value.split(","))
+      .map((value) => value.trim())
+      .filter(Boolean);
+    return statuses.length > 0 ? statuses.join(",") : undefined;
+  }
+  if (typeof status !== "string") {
+    return undefined;
+  }
+  const normalized = status.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 function hasIssueWorkspaceAuditChange(previous: Record<string, unknown>) {
   return Object.keys(previous).some((key) => ISSUE_WORKSPACE_AUDIT_FIELDS.has(key));
 }
@@ -1478,7 +1493,7 @@ export function issueRoutes(
 
     const result = await svc.list(companyId, {
       attention: attention === "blocked" ? "blocked" : undefined,
-      status: req.query.status as string | undefined,
+      status: normalizeIssueStatusQuery(req.query.status as string | string[] | undefined),
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,
@@ -1534,7 +1549,7 @@ export function issueRoutes(
 
     const count = await svc.count(companyId, {
       attention: "blocked",
-      status: req.query.status as string | undefined,
+      status: normalizeIssueStatusQuery(req.query.status as string | string[] | undefined),
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId: req.query.assigneeUserId as string | undefined,

@@ -117,7 +117,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
   "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
   "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
-  "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create delegated follow-up issues with blockers when another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
+  "- Final disposition checklist: review-bound and GitHub-backed issues MUST land in `in_review` with a real reviewer path (executionState.currentParticipant, human assigneeUserId, pending issue-thread interaction, or linked approval) — do NOT self-close as `done` when review or GitHub sync is still pending. Use `done` only when the work is independently complete with no further review, delegation, or tracking required. Routine/queue-maintenance lanes that only seed child work retire as `cancelled` or `blocked`, not `done`. Use `blocked` with first-class blockers or a named unblock owner/action. Create delegated follow-up issues with blockers when another agent owns the next step. Keep `in_progress` only when a live continuation path exists. GitHub is the source of truth — new execution lanes MUST link back to their canonical GitHub issue before closure.",
   "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
   "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
@@ -690,6 +690,23 @@ export function renderPaperclipWakePrompt(
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
   }
+  const currentIssueIdentifier = normalized.issue?.identifier ?? null;
+  const currentIssueId = normalized.issue?.id ?? null;
+  if (currentIssueIdentifier || currentIssueId) {
+    lines.push(
+      "",
+      "Paperclip API discipline:",
+      `- Current issue identifier: ${currentIssueIdentifier ?? "unknown"}`,
+      `- Current issue id: ${currentIssueId ?? "unknown"}`,
+      "- Never send literal placeholder paths like `/api/issues/{id}` or `/api/issues/{id}/comments`.",
+      "- Never append shell flags or JSON after the URL path. `-d`, `-H`, and `-X` belong before the URL, not inside it.",
+      "- For current-issue reads, use the exact current issue identifier or id from this wake payload.",
+      `- Safe current-issue read forms: GET /api/issues/${currentIssueIdentifier ?? "<issue-identifier>"} or GET /api/issues/${currentIssueId ?? "<issue-id>"}.`,
+      `- Safe current-issue comment form: POST /api/issues/${currentIssueId ?? "<issue-id>"}/comments with JSON body {\"body\":\"...\"}.`,
+      `- Safe current-issue update form: PATCH /api/issues/${currentIssueId ?? "<issue-id>"} with a JSON body.`,
+      "- If you are uncertain about an endpoint or JSON field, inspect the local Paperclip server source first. Do not guess.",
+    );
+  }
   if (normalized.issue?.workMode === "planning") {
     const hasWakeComments = normalized.comments.length > 0;
     const acceptedPlanContinuation =
@@ -825,7 +842,7 @@ export function renderPaperclipWakePrompt(
     lines.push(
       "",
       "The harness already checked out this issue for the current run.",
-      "Do not call `/api/issues/{id}/checkout` again unless you intentionally switch to a different task.",
+      `Do not call checkout again for this issue unless you intentionally switch to a different task (current issue id: ${currentIssueId ?? "unknown"}).`,
       "",
     );
   }

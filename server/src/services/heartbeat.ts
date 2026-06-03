@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -2061,6 +2061,95 @@ async function buildPaperclipWakePayload(input: {
     truncated,
     fallbackFetchNeeded: truncated || missingCommentCount > 0,
   };
+}
+
+function truncateContinuityText(value: string | null | undefined, max = 240) {
+  const normalized = readNonEmptyString(value)?.replace(/\s+/g, " ").trim() ?? null;
+  if (!normalized) return null;
+  return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized;
+}
+
+function formatContinuityTimestamp(value: Date | string | null | undefined) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+function buildContinuityRunLine(run: {
+  createdAt: Date | string | null;
+  status: string | null;
+  livenessState: string | null;
+  nextAction: string | null;
+  livenessReason: string | null;
+  error: string | null;
+}) {
+  const parts = [formatContinuityTimestamp(run.createdAt) ?? "unknown-time", run.status ?? "unknown-status"];
+  const liveness = truncateContinuityText(run.livenessState, 64);
+  if (liveness && liveness !== "none") parts.push(`liveness=${liveness}`);
+  const nextAction = truncateContinuityText(run.nextAction, 180);
+  if (nextAction) {
+    parts.push(`next=${JSON.stringify(nextAction)}`);
+  } else {
+    const reason = truncateContinuityText(run.livenessReason, 180) ?? truncateContinuityText(run.error, 180);
+    if (reason) parts.push(`note=${JSON.stringify(reason)}`);
+  }
+  return `- ${parts.join(" | ")}`;
+}
+
+async function buildPaperclipContinuityMarkdown(input: {
+  db: Db;
+  agent: typeof agents.$inferSelect;
+  currentRunId: string;
+  issue: { id: string; identifier: string | null; title: string; status: string; priority: string | null } | null;
+  previousSessionId?: string | null;
+  continuationSummary?: { body?: string | null } | null;
+}) {
+  const recentRuns = await input.db
+    .select({
+      id: heartbeatRuns.id,
+      createdAt: heartbeatRuns.createdAt,
+      status: heartbeatRuns.status,
+      livenessState: heartbeatRuns.livenessState,
+      livenessReason: heartbeatRuns.livenessReason,
+      nextAction: heartbeatRuns.nextAction,
+      lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
+      error: heartbeatRuns.error,
+      sessionIdAfter: heartbeatRuns.sessionIdAfter,
+      sessionIdBefore: heartbeatRuns.sessionIdBefore,
+    })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.agentId, input.agent.id), ne(heartbeatRuns.id, input.currentRunId)))
+    .orderBy(desc(heartbeatRuns.createdAt))
+    .limit(3);
+
+  const latestRun = recentRuns[0] ?? null;
+  const previousSessionId = input.previousSessionId ?? latestRun?.sessionIdAfter ?? latestRun?.sessionIdBefore ?? null;
+  const lastUsefulActionAt = latestRun?.lastUsefulActionAt ?? null;
+  const nextAction = truncateContinuityText(latestRun?.nextAction, 280);
+  const blockerOrReason = truncateContinuityText(latestRun?.livenessReason, 280) ?? truncateContinuityText(latestRun?.error, 280);
+  const continuationSummaryBody = truncateContinuityText(input.continuationSummary?.body, 1400);
+
+  const lines = [
+    "Paperclip continuity contract:",
+    `- Agent identity persists across heartbeat runs. You are still ${JSON.stringify(input.agent.name)}; do not rediscover your role, company scope, or lane from scratch.`,
+    previousSessionId ? `- Previous Paperclip session: ${previousSessionId}` : "",
+    latestRun ? `- Previous run id: ${latestRun.id}` : "",
+    latestRun ? `- Previous run status: ${latestRun.status ?? "unknown"}` : "",
+    input.issue
+      ? `- Current issue: ${JSON.stringify(input.issue.identifier ?? input.issue.id)} — ${JSON.stringify(input.issue.title)} [status=${input.issue.status}, priority=${input.issue.priority}]`
+      : "",
+    lastUsefulActionAt ? `- Last useful action at: ${formatContinuityTimestamp(lastUsefulActionAt)}` : "",
+    nextAction ? `- Next concrete action: ${nextAction}` : "",
+    blockerOrReason ? `- Current blocker or liveness reason: ${blockerOrReason}` : "",
+    continuationSummaryBody ? `- Issue continuation summary: ${continuationSummaryBody}` : "",
+    recentRuns.length > 0 ? "- Recent run trail:" : "",
+    ...recentRuns.map((run) => buildContinuityRunLine(run)),
+    "- Continue directly from this state. Rebuild only the minimum context you truly need.",
+    "- Do not spend cycles re-deriving settled identity, scope, or priorities unless new evidence contradicts them.",
+  ].filter(Boolean);
+
+  return lines.length > 4 ? lines.join("\n") : null;
 }
 
 function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
@@ -7403,6 +7492,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback;
     let runtimeSessionParamsForAdapter = runtimeSessionParams;
 
+    const continuityMarkdown = await buildPaperclipContinuityMarkdown({
+      db,
+      agent,
+      currentRunId: runId,
+      issue: issueRef
+        ? {
+            id: issueRef.id,
+            identifier: issueRef.identifier,
+            title: issueRef.title,
+            status: issueRef.status,
+            priority: issueRef.priority,
+          }
+        : null,
+      continuationSummary,
+      previousSessionId: previousSessionDisplayId ?? runtimeSessionIdForAdapter,
+    });
+    if (continuityMarkdown) {
+      context.paperclipContinuityMarkdown = continuityMarkdown;
+    } else {
+      delete context.paperclipContinuityMarkdown;
+    }
+
     const sessionCompaction = await evaluateSessionCompaction({
       agent,
       sessionId: previousSessionDisplayId ?? runtimeSessionIdForAdapter,
@@ -9286,6 +9397,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return rows.map((row) => row.id);
   }
 
+  async function deriveTimerWorkspaceContext(agent: typeof agents.$inferSelect) {
+    const runIssueId = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+    const effectiveProjectId = sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'projectId', ${issues.projectId}::text)`;
+    const effectiveProjectWorkspaceId = sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'projectWorkspaceId', ${issues.projectWorkspaceId}::text)`;
+
+    const latestScopedRun = await db
+      .select({
+        projectId: effectiveProjectId,
+        projectWorkspaceId: effectiveProjectWorkspaceId,
+      })
+      .from(heartbeatRuns)
+      .leftJoin(
+        issues,
+        and(
+          eq(issues.companyId, agent.companyId),
+          sql`${issues.id}::text = ${runIssueId}`,
+        ),
+      )
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, agent.companyId),
+          eq(heartbeatRuns.agentId, agent.id),
+          sql`${effectiveProjectId} is not null`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (latestScopedRun?.projectId) {
+      return {
+        projectId: latestScopedRun.projectId,
+        projectWorkspaceId: latestScopedRun.projectWorkspaceId ?? null,
+      };
+    }
+
+    const fallbackWorkspace = await db
+      .select({
+        projectId: projectWorkspaces.projectId,
+        projectWorkspaceId: projectWorkspaces.id,
+      })
+      .from(projectWorkspaces)
+      .where(eq(projectWorkspaces.companyId, agent.companyId))
+      .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    return {
+      projectId: fallbackWorkspace?.projectId ?? null,
+      projectWorkspaceId: fallbackWorkspace?.projectWorkspaceId ?? null,
+    };
+  }
+
   async function listProjectScopedWakeupIds(companyId: string, projectId: string) {
     const wakeIssueId = sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`;
     const effectiveProjectId = sql<string | null>`coalesce(${agentWakeupRequests.payload} ->> 'projectId', ${issues.projectId}::text)`;
@@ -9771,6 +9935,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
+        const timerWorkspaceContext = await deriveTimerWorkspaceContext(agent);
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
           triggerDetail: "system",
@@ -9781,6 +9946,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             source: "scheduler",
             reason: "interval_elapsed",
             now: now.toISOString(),
+            ...(timerWorkspaceContext.projectId ? { projectId: timerWorkspaceContext.projectId } : {}),
+            ...(timerWorkspaceContext.projectWorkspaceId
+              ? { projectWorkspaceId: timerWorkspaceContext.projectWorkspaceId }
+              : {}),
           },
         });
         if (run) enqueued += 1;

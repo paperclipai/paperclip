@@ -2308,13 +2308,13 @@ export function routineService(
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
       if (!issue || issue.originKind !== "routine_execution" || !issue.originRunId) return null;
-      if (issue.status === "done") {
+      if (issue.status === "done" || issue.status === "cancelled") {
         return finalizeRun(issue.originRunId, {
           status: "completed",
           completedAt: new Date(),
         });
       }
-      if (issue.status === "blocked" || issue.status === "cancelled") {
+      if (issue.status === "blocked") {
         return finalizeRun(issue.originRunId, {
           status: "failed",
           failureReason: `Execution issue moved to ${issue.status}`,
