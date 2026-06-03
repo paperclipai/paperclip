@@ -3,6 +3,12 @@ import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { assertBoardOrgAccess } from "../../routes/authz.js";
 import { rows, pgTextArray } from "../helpers.js";
+import {
+  scrapeSingleUrl,
+  fetchProfilesFromSidecar,
+  scraperConfigured,
+} from "../lib/linkedin-sidecar.js";
+import { jdSearch, jdDetail } from "../lib/justdial-sidecar.js";
 
 /**
  * AGNB group: catalog reads (targeting, studio personas/products, justdial jobs,
@@ -245,5 +251,236 @@ export function registerCatalog(router: Router, db: Db) {
     }
 
     res.json({ ok: true, id });
+  });
+
+  /* ----------------------------------------------------------------------- *
+   * Sidecar-backed writes — same-origin, user-triggered (assertBoardOrgAccess).
+   * Ported from agnb app/.../api/agnb/{linkedin,leads/justdial}.
+   * ----------------------------------------------------------------------- */
+
+  /**
+   * POST /api/agnb/linkedin/scrape — Body: { url }.
+   * Forwards a single LinkedIn profile URL to the Python scraper sidecar's
+   * /api/search. Returns immediately; caller follows with /linkedin/sync.
+   */
+  router.post("/agnb/linkedin/scrape", async (req, res) => {
+    assertBoardOrgAccess(req);
+    if (!scraperConfigured()) {
+      return res.status(400).json({ ok: false, error: "LINKEDIN_SIDECAR_URL not set" });
+    }
+    const body = (req.body ?? {}) as { url?: string };
+    const url = (body.url ?? "").trim();
+    if (!/^https?:\/\/(www\.)?linkedin\.com\/in\//i.test(url)) {
+      return res.status(400).json({
+        ok: false,
+        error: "URL must be https://www.linkedin.com/in/<vanity>/",
+      });
+    }
+    try {
+      const result = await scrapeSingleUrl(url);
+      if (!result.ok) return res.status(502).json({ ok: false, error: result.error });
+      return res.json({ ok: true, url, started: true });
+    } catch (e) {
+      return res.status(502).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  /**
+   * POST /api/agnb/linkedin/sync — pull every profile from the scraper
+   * sidecar's profiles.json mirror, normalize, and upsert into
+   * agnb.linkedin_profiles keyed on source_url. Returns counts.
+   */
+  router.post("/agnb/linkedin/sync", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const email = req.actor.userEmail ?? req.actor.userId ?? "board";
+    if (!scraperConfigured()) {
+      return res.status(400).json({ ok: false, error: "LINKEDIN_SIDECAR_URL not set" });
+    }
+
+    let raw: unknown[];
+    try {
+      raw = await fetchProfilesFromSidecar();
+    } catch (e) {
+      return res.status(502).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+
+    const profiles = raw
+      .filter((p): p is Record<string, unknown> => !!p && typeof p === "object")
+      .map((p) => {
+        const jobs = Array.isArray(p.job_history) ? (p.job_history as Array<Record<string, unknown>>) : [];
+        const current = jobs.find((j) => j.is_current) ?? jobs[0];
+        return {
+          source_url: String(p.source_url ?? ""),
+          profile_id: (p.profile_id as string) ?? null,
+          full_name: (p.full_name as string) ?? null,
+          headline: (p.headline as string) ?? null,
+          location: (p.location as string) ?? null,
+          summary: (p.summary as string) ?? null,
+          connections: (p.connections as string) ?? null,
+          photo_url: (p.photo_url as string) ?? null,
+          job_history: jobs,
+          education: Array.isArray(p.education) ? p.education : [],
+          skills: Array.isArray(p.skills) ? p.skills : [],
+          current_company: (current?.company_name as string) ?? null,
+          current_title: (current?.title as string) ?? null,
+          raw: p,
+          scraped_at: p.scraped_at ? new Date(Number(p.scraped_at) * 1000).toISOString() : null,
+        };
+      })
+      .filter((r) => r.source_url);
+
+    if (profiles.length === 0) {
+      return res.json({ ok: true, synced: 0, sidecar_count: raw.length });
+    }
+
+    for (const p of profiles) {
+      await db.execute(sql`
+        INSERT INTO agnb.linkedin_profiles
+          (source_url, profile_id, full_name, headline, location, summary, connections,
+           photo_url, job_history, education, skills, current_company, current_title,
+           raw, scraped_at, added_by)
+        VALUES (
+          ${p.source_url}, ${p.profile_id}, ${p.full_name}, ${p.headline}, ${p.location},
+          ${p.summary}, ${p.connections}, ${p.photo_url},
+          ${JSON.stringify(p.job_history)}::jsonb, ${JSON.stringify(p.education)}::jsonb,
+          ${JSON.stringify(p.skills)}::jsonb, ${p.current_company}, ${p.current_title},
+          ${JSON.stringify(p.raw)}::jsonb, ${p.scraped_at}, ${email}
+        )
+        ON CONFLICT (source_url) DO UPDATE SET
+          profile_id = EXCLUDED.profile_id, full_name = EXCLUDED.full_name,
+          headline = EXCLUDED.headline, location = EXCLUDED.location,
+          summary = EXCLUDED.summary, connections = EXCLUDED.connections,
+          photo_url = EXCLUDED.photo_url, job_history = EXCLUDED.job_history,
+          education = EXCLUDED.education, skills = EXCLUDED.skills,
+          current_company = EXCLUDED.current_company, current_title = EXCLUDED.current_title,
+          raw = EXCLUDED.raw, scraped_at = EXCLUDED.scraped_at
+      `);
+    }
+
+    res.json({ ok: true, synced: profiles.length, sidecar_count: raw.length });
+  });
+
+  /**
+   * POST /api/agnb/leads/justdial — queue a JustDial scrape job. PURE DB.
+   * Body: { category, city, max_pages? }
+   */
+  router.post("/agnb/leads/justdial", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const email = req.actor.userEmail ?? req.actor.userId ?? "board";
+    const body = (req.body ?? {}) as { category?: string; city?: string; max_pages?: number };
+    const category = body.category?.trim();
+    const city = body.city?.trim();
+    const maxPages = Math.min(Math.max(Number(body.max_pages ?? 1), 1), 20);
+    if (!category || !city) {
+      return res.status(400).json({ ok: false, error: "category + city required" });
+    }
+    const result = await db.execute(sql`
+      INSERT INTO agnb.justdial_jobs (category, city, max_pages, created_by)
+      VALUES (${category}, ${city}, ${maxPages}, ${email})
+      RETURNING id, category, city, max_pages, status, error, pages_scraped, leads_count,
+                created_by, created_at, started_at, finished_at
+    `);
+    res.json({ ok: true, job: rows(result)[0] });
+  });
+
+  /**
+   * POST /api/agnb/leads/justdial/run?id=<jobId> — drain one pending job:
+   * search via sidecar → fan out detail pages when needed → upsert leads.
+   * Idempotent on source_url. Marks job done|error|blocked.
+   */
+  router.post("/agnb/leads/justdial/run", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const id = typeof req.query.id === "string" ? req.query.id : null;
+    if (!id) return res.status(400).json({ ok: false, error: "id required" });
+
+    const job = rows<{ id: string; category: string; city: string; max_pages: number; status: string }>(
+      await db.execute(sql`SELECT id, category, city, max_pages, status FROM agnb.justdial_jobs WHERE id = ${id}`)
+    )[0];
+    if (!job) return res.status(404).json({ ok: false, error: "job not found" });
+    if (job.status === "running") return res.status(409).json({ ok: false, error: "already running" });
+
+    await db.execute(sql`
+      UPDATE agnb.justdial_jobs SET status = 'running', started_at = now() WHERE id = ${id}
+    `);
+
+    try {
+      const search = await jdSearch({ category: job.category, city: job.city, maxPages: job.max_pages });
+      if (search.blocked && search.listings.length === 0) {
+        await db.execute(sql`
+          UPDATE agnb.justdial_jobs
+          SET status = 'blocked', error = 'sidecar reported blocked', finished_at = now()
+          WHERE id = ${id}
+        `);
+        return res.status(502).json({ ok: false, error: "blocked" });
+      }
+
+      // sidecar v0.2: listing page already has phone + address + rating, so
+      // upsert directly. Only fan out to /detail when basic listing missed
+      // phone (rare) OR when caller requested deep enrichment.
+      const ENRICH = false;
+      let leadsCount = 0;
+
+      for (const listing of search.listings) {
+        const existing = rows<{ id: string }>(
+          await db.execute(sql`SELECT id FROM agnb.justdial_leads WHERE source_url = ${listing.url} LIMIT 1`)
+        )[0];
+        if (existing) continue;
+
+        let phone = listing.phone ?? null;
+        let phoneSource = listing.phone_source ?? null;
+        let address = listing.address ?? null;
+        let rating = listing.rating ?? null;
+        let website: string | null = null;
+        let email: string | null = null;
+        let reviewCount: number | null = null;
+        let name = listing.name;
+
+        const needDetail = ENRICH || !phone;
+        if (needDetail) {
+          const detail = await jdDetail(listing.url);
+          if (!detail.blocked) {
+            name = detail.name ?? name;
+            phone = phone ?? detail.phone ?? null;
+            phoneSource = phoneSource ?? (detail.phone_source ?? null);
+            address = address ?? detail.address ?? null;
+            rating = rating ?? detail.rating ?? null;
+            website = detail.website ?? null;
+            email = detail.email ?? null;
+            reviewCount = detail.review_count ?? null;
+          }
+        }
+
+        const phoneRevealedAt = phone ? new Date().toISOString() : null;
+        await db.execute(sql`
+          INSERT INTO agnb.justdial_leads
+            (job_id, name, category, city, address, phone, phone_source, phone_revealed_at,
+             rating, review_count, website, email, source_url)
+          VALUES (
+            ${id}, ${name}, ${job.category}, ${job.city}, ${address}, ${phone}, ${phoneSource},
+            ${phoneRevealedAt}, ${rating}, ${reviewCount}, ${website}, ${email}, ${listing.url}
+          )
+          ON CONFLICT (source_url) DO UPDATE SET
+            name = EXCLUDED.name, address = EXCLUDED.address, phone = EXCLUDED.phone,
+            phone_source = EXCLUDED.phone_source, phone_revealed_at = EXCLUDED.phone_revealed_at,
+            rating = EXCLUDED.rating, review_count = EXCLUDED.review_count,
+            website = EXCLUDED.website, email = EXCLUDED.email
+        `);
+        leadsCount++;
+      }
+
+      await db.execute(sql`
+        UPDATE agnb.justdial_jobs
+        SET status = 'done', pages_scraped = ${search.pages_scraped}, leads_count = ${leadsCount},
+            finished_at = now()
+        WHERE id = ${id}
+      `);
+      return res.json({ ok: true, leads: leadsCount, pages: search.pages_scraped });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await db.execute(sql`
+        UPDATE agnb.justdial_jobs SET status = 'error', error = ${msg}, finished_at = now() WHERE id = ${id}
+      `);
+      return res.status(500).json({ ok: false, error: msg });
+    }
   });
 }

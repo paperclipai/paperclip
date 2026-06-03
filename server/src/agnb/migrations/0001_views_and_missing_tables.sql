@@ -61,3 +61,7 @@ FROM agnb.experiment_buckets b
 LEFT JOIN agnb.campaign_drafts cd ON cd.bucket_id = b.id
 LEFT JOIN agnb.rocket_campaigns c ON c.id = cd.rocket_campaign_id
 GROUP BY b.id;
+
+-- Sidecar upsert targets (LinkedIn/JustDial scrape results)
+CREATE UNIQUE INDEX IF NOT EXISTS linkedin_profiles_source_url_uniq ON agnb.linkedin_profiles (source_url);
+CREATE UNIQUE INDEX IF NOT EXISTS justdial_leads_source_url_uniq ON agnb.justdial_leads (source_url);

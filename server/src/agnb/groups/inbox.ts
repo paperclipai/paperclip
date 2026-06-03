@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { assertBoardOrgAccess } from "../../routes/authz.js";
 import { rows } from "../helpers.js";
+import { extractWhatsAppWork } from "../lib/whatsapp-extract.js";
 
 /**
  * AGNB group: inbox + content comments.
@@ -245,4 +246,162 @@ export function registerInbox(router: Router, db: Db) {
 
   // POST /internal/approval/:id (approve/reject/finalize) calls Rocket SDR on
   // finalize (lib/rocketsdr/client) — external API. Left cross-origin in the UI.
+
+  /**
+   * POST /api/agnb/whatsapp/ingest — Baileys sidecar webhook.
+   *   Header: Authorization: Bearer <WHATSAPP_SIDECAR_TOKEN>
+   *   Body:   { wa_message_id, group_jid, group_name, sender_phone,
+   *             sender_name, body }
+   *
+   * Ported from agnb api/internal/whatsapp-intake. This is SIDECAR-called, not
+   * a board-session request: auth is the shared bearer token (checked here);
+   * we do NOT call assertBoardOrgAccess. Flow: name gate → whitelist gate →
+   * dedup → Gemini classify → (if task) upsert work_item → insert raw message.
+   */
+  router.post("/agnb/whatsapp/ingest", async (req, res) => {
+    const token = process.env.WHATSAPP_SIDECAR_TOKEN;
+    const auth = req.header("authorization");
+    if (!token || auth !== `Bearer ${token}`) {
+      return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+
+    const body = (req.body ?? {}) as {
+      wa_message_id?: string;
+      group_jid?: string;
+      group_name?: string;
+      sender_phone?: string;
+      sender_name?: string;
+      body?: string;
+    };
+    if (!body.group_jid || !body.body?.trim()) {
+      return res.status(400).json({ ok: false, error: "group_jid + body required" });
+    }
+
+    const waId = body.wa_message_id ?? null;
+    const groupJid = body.group_jid;
+    const groupName = body.group_name ?? null;
+    const senderPhone = body.sender_phone ?? null;
+    const senderName = body.sender_name ?? null;
+    const text = body.body.trim();
+
+    // Helper: log a raw message (no Gemini, no work item) so the Settings
+    // "Recent messages" feed populates even for pending/disabled groups.
+    const logRaw = async (note: string) => {
+      if (waId) {
+        const dupe = rows<{ id: string }>(
+          await db.execute(sql`SELECT id FROM agnb.whatsapp_messages WHERE wa_message_id = ${waId} LIMIT 1`)
+        )[0];
+        if (dupe) return;
+      }
+      await db.execute(sql`
+        INSERT INTO agnb.whatsapp_messages
+          (wa_message_id, group_jid, group_name, sender_phone, sender_name, body,
+           is_task, extracted, processed_at)
+        VALUES (
+          ${waId}, ${groupJid}, ${groupName}, ${senderPhone}, ${senderName}, ${text},
+          false, ${JSON.stringify({ note })}::jsonb, now()
+        )
+      `);
+    };
+
+    // Name gate — only ingest groups whose name matches WA_GROUP_NAME_PREFIX.
+    const namePrefix = (process.env.WA_GROUP_NAME_PREFIX ?? "finn").toLowerCase();
+    if (namePrefix && !(groupName ?? "").trim().toLowerCase().startsWith(namePrefix)) {
+      return res.json({ ok: true, skipped: "group name not whitelisted" });
+    }
+
+    // Whitelist gate — only process enabled groups.
+    const grp = rows<{ enabled: boolean }>(
+      await db.execute(sql`SELECT enabled FROM agnb.whatsapp_groups WHERE jid = ${groupJid} LIMIT 1`)
+    )[0];
+    const autoEnable = process.env.WA_AUTO_ENABLE === "1";
+    if (!grp) {
+      await db.execute(sql`
+        INSERT INTO agnb.whatsapp_groups (jid, name, enabled)
+        VALUES (${groupJid}, ${groupName}, ${autoEnable})
+        ON CONFLICT (jid) DO NOTHING
+      `);
+      if (!autoEnable) {
+        await logRaw("group pending approval");
+        return res.json({ ok: true, skipped: "group pending approval" });
+      }
+      // autoEnable → fall through to classify this first message too
+    } else if (grp.enabled === false) {
+      await logRaw("group disabled");
+      return res.json({ ok: true, skipped: "group disabled" });
+    }
+
+    // Dedupe
+    if (waId) {
+      const existing = rows<{ id: string }>(
+        await db.execute(sql`SELECT id FROM agnb.whatsapp_messages WHERE wa_message_id = ${waId} LIMIT 1`)
+      )[0];
+      if (existing) return res.json({ ok: true, skipped: "duplicate" });
+    }
+
+    // Resolve known members for assignee hinting.
+    const members = rows<{ id: string; name: string }>(
+      await db.execute(sql`SELECT id, name FROM agnb.team_members WHERE active = true`)
+    );
+    const memberNames = members.map((m) => m.name);
+
+    // Gemini classify
+    const extracted = await extractWhatsAppWork({
+      body: text,
+      senderName: senderName ?? undefined,
+      groupName: groupName ?? undefined,
+      knownMembers: memberNames,
+    });
+
+    let workItemId: string | null = null;
+    if (extracted.is_task && extracted.title) {
+      // Resolve assignee: match hint against member names.
+      let assignedTo: string | null = null;
+      if (extracted.assignee_hint) {
+        const hint = extracted.assignee_hint.replace(/^@/, "").toLowerCase();
+        const match = members.find(
+          (m) => m.name.toLowerCase().includes(hint) || hint.includes(m.name.toLowerCase().split(" ")[0])
+        );
+        assignedTo = match?.id ?? null;
+      }
+      const refId = waId ?? `${groupJid}:${Date.now()}`;
+      const payload = JSON.stringify({
+        source: "whatsapp",
+        group: groupName,
+        sender: senderName,
+        due_hint: extracted.due_hint,
+        raw: text.slice(0, 500),
+      });
+      const assignedAt = assignedTo ? new Date().toISOString() : null;
+      const status = assignedTo ? "in_progress" : "queued";
+      const wi = rows<{ id: string }>(
+        await db.execute(sql`
+          INSERT INTO agnb.work_items
+            (kind, ref_table, ref_id, title, priority, assigned_to, assigned_at, status, payload)
+          VALUES (
+            'whatsapp.task', 'whatsapp_messages', ${refId}, ${extracted.title}, ${extracted.priority},
+            ${assignedTo}, ${assignedAt}, ${status}, ${payload}::jsonb
+          )
+          ON CONFLICT (kind, ref_table, ref_id) DO UPDATE SET
+            title = EXCLUDED.title, priority = EXCLUDED.priority,
+            payload = EXCLUDED.payload, updated_at = now()
+          RETURNING id
+        `)
+      )[0];
+      workItemId = wi?.id ?? null;
+    }
+
+    // Log raw message
+    await db.execute(sql`
+      INSERT INTO agnb.whatsapp_messages
+        (wa_message_id, group_jid, group_name, sender_phone, sender_name, body,
+         is_task, extracted, work_item_id, processed_at)
+      VALUES (
+        ${waId}, ${groupJid}, ${groupName}, ${senderPhone}, ${senderName}, ${text},
+        ${extracted.is_task}, ${JSON.stringify(extracted)}::jsonb, ${workItemId}, now()
+      )
+    `);
+
+    res.json({ ok: true, is_task: extracted.is_task, work_item_id: workItemId });
+  });
 }

@@ -146,12 +146,13 @@ export const campaignsApi = {
     agnb.post<{ ok: boolean; error?: string }>("/rocket/personas/create", body).then((r) => unwrap(r)),
   createProduct: (body: { name: string; description?: string }) =>
     agnb.post<{ ok: boolean; error?: string }>("/rocket/products/create", body).then((r) => unwrap(r)),
+  // Ported to All Gas No Brakes server (catalog group) — same-origin sidecar-backed writes.
   queueJustdial: (body: { category: string; city: string; max_pages: number }) =>
-    agnb.post<{ ok: boolean; error?: string }>("/leads/justdial", body).then((r) => unwrap(r)),
+    ported<{ ok: boolean; error?: string }>("/leads/justdial", { method: "POST", body }).then((r) => unwrap(r)),
   runJustdial: (id: string) =>
-    agnb.post<{ ok: boolean; error?: string }>(`/leads/justdial/run?id=${encodeURIComponent(id)}`, {}),
+    ported<{ ok: boolean; error?: string }>(`/leads/justdial/run?id=${encodeURIComponent(id)}`, { method: "POST" }),
   scrapeLinkedin: (url: string) =>
-    agnb.post<{ ok: boolean; error?: string }>("/linkedin/scrape", { url }).then((r) => unwrap(r)),
+    ported<{ ok: boolean; error?: string }>("/linkedin/scrape", { method: "POST", body: { url } }).then((r) => unwrap(r)),
   syncLinkedin: () =>
-    agnb.post<{ ok: boolean; error?: string }>("/linkedin/sync", {}),
+    ported<{ ok: boolean; error?: string }>("/linkedin/sync", { method: "POST" }),
 };
