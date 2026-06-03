@@ -12,11 +12,18 @@ export const DEFAULT_GEMINI_LOCAL_MODEL = "auto";
 
 export const models = [
   { id: DEFAULT_GEMINI_LOCAL_MODEL, label: "Auto" },
+  // Gemini 3.x — verified via direct API; requires GEMINI_API_KEY for access
+  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
+  { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
+  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
+  { id: "gemini-3-flash-preview", label: "Gemini 3 Flash Preview" },
+  // Gemini 2.5.x
   { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
-  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
-  { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite" },
+  // Gemini 2.0.x — not recommended for new work
+  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash (not recommended)" },
+  { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite (not recommended)" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [
@@ -64,4 +71,8 @@ Notes:
 - Sessions resume with --resume when stored session cwd matches the current cwd.
 - Paperclip auto-injects local skills into \`~/.gemini/skills/\` via symlinks, so the CLI can discover both credentials and skills in their natural location.
 - Authentication can use GEMINI_API_KEY / GOOGLE_API_KEY or local Gemini CLI login.
+- Gemini 3.x models (gemini-3.5-flash, gemini-3.1-pro-preview, gemini-3.1-flash-lite, gemini-3-flash-preview)
+  require GEMINI_API_KEY; they return ModelNotFoundError when using OAuth-only credentials.
+- Gemini 2.5.x models work with both API key and OAuth login.
+- Gemini 2.0.x models are available but not recommended for new work.
 `;

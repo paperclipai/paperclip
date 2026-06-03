@@ -130,4 +130,56 @@ describe("parseGeminiJsonl", () => {
     const result = parseGeminiJsonl(stdout);
     expect(result.errorMessage).toBe("boom");
   });
+
+  it("tolerates Gemini 3.x response fields: thoughtSignature, modelVersion, responseId", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "init",
+        session_id: "session-g3",
+        modelVersion: "gemini-3.5-flash-001",
+        responseId: "resp-xyz-123",
+      }),
+      JSON.stringify({
+        type: "message",
+        role: "assistant",
+        content: "all good",
+        thoughtSignature: "AXX8Cw==",
+        modelVersion: "gemini-3.5-flash-001",
+      }),
+      JSON.stringify({
+        type: "result",
+        status: "success",
+        responseId: "resp-xyz-123",
+        usageMetadata: {
+          promptTokenCount: 10,
+          candidatesTokenCount: 5,
+          totalTokenCount: 15,
+        },
+      }),
+    ].join("\n");
+
+    const result = parseGeminiJsonl(stdout);
+    expect(result.sessionId).toBe("session-g3");
+    expect(result.summary).toBe("all good");
+    expect(result.errorMessage).toBeNull();
+  });
+
+  it("accumulates usage from usageMetadata field (Gemini 3.x schema)", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "result",
+        status: "success",
+        usageMetadata: {
+          promptTokenCount: 100,
+          candidatesTokenCount: 50,
+          cachedContentTokenCount: 30,
+        },
+      }),
+    ].join("\n");
+
+    const result = parseGeminiJsonl(stdout);
+    expect(result.usage.inputTokens).toBe(100);
+    expect(result.usage.outputTokens).toBe(50);
+    expect(result.usage.cachedInputTokens).toBe(30);
+  });
 });

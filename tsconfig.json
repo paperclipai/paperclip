@@ -7,6 +7,7 @@
     { "path": "./packages/shared" },
     { "path": "./packages/db" },
     { "path": "./packages/adapters/claude-local" },
+    { "path": "./packages/adapters/gemini-api" },
     { "path": "./packages/adapters/codex-local" },
     { "path": "./packages/adapters/cursor-local" },
     { "path": "./packages/adapters/droid-local" },

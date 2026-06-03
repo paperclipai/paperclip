@@ -80,6 +80,15 @@ import {
   modelProfiles as geminiModelProfiles,
 } from "@paperclipai/adapter-gemini-local";
 import {
+  execute as geminiApiExecute,
+  testEnvironment as geminiApiTestEnvironment,
+} from "@paperclipai/adapter-gemini-api/server";
+import {
+  agentConfigurationDoc as geminiApiAgentConfigurationDoc,
+  models as geminiApiModels,
+  modelProfiles as geminiApiModelProfiles,
+} from "@paperclipai/adapter-gemini-api";
+import {
   execute as grokExecute,
   listGrokSkills,
   syncGrokSkills,
@@ -362,6 +371,18 @@ const geminiLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: geminiAgentConfigurationDoc,
 };
 
+const geminiApiAdapter: ServerAdapterModule = {
+  type: "gemini_api",
+  execute: geminiApiExecute,
+  testEnvironment: geminiApiTestEnvironment,
+  models: geminiApiModels,
+  modelProfiles: geminiApiModelProfiles,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: geminiApiAgentConfigurationDoc,
+};
+
 const grokLocalAdapter: ServerAdapterModule = {
   type: "grok_local",
   execute: grokExecute,
@@ -520,6 +541,7 @@ function registerBuiltInAdapters() {
     cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
+    geminiApiAdapter,
     grokLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,

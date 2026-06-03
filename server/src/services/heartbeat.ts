@@ -9172,6 +9172,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             id: issues.id,
             companyId: issues.companyId,
             status: issues.status,
+            priority: issues.priority,
             assigneeAgentId: issues.assigneeAgentId,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
@@ -9391,6 +9392,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               issueId,
               unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
             },
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        // Guard: orphaned-blocked premium adapter skip (FUL-5128)
+        // A blocked issue with no first-class blocker relations has no valid unblock path.
+        // Never charge a premium (Anthropic) adapter run on it — exit immediately.
+        if (
+          issue.status === "blocked" &&
+          agent.adapterType === "claude_local" &&
+          issue.priority !== "critical" &&
+          dependencyReadiness !== null &&
+          dependencyReadiness.blockerIssueIds.length === 0
+        ) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "orphaned_blocked_premium_skip",
+            payload: { ...(payload ?? {}), issueId },
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,

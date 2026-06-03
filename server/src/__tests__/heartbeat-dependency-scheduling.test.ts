@@ -960,4 +960,177 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       },
     });
   });
+
+  describe("orphaned-blocked premium adapter guard (FUL-5128)", () => {
+    async function setupGuardFixture(opts: {
+      adapterType: string;
+      issueStatus: string;
+      issuePriority: string;
+      hasBlockerRelation?: boolean;
+    }) {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      const blockerId = randomUUID();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "GuardTest",
+        issuePrefix: `G${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "TestAgent",
+        role: "engineer",
+        status: "active",
+        adapterType: opts.adapterType,
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      });
+      if (opts.hasBlockerRelation) {
+        await db.insert(issues).values({
+          id: blockerId,
+          companyId,
+          title: "Blocker",
+          status: "done",
+          priority: "high",
+        });
+      }
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Orphaned blocked issue",
+        status: opts.issueStatus,
+        priority: opts.issuePriority,
+        assigneeAgentId: agentId,
+      });
+      if (opts.hasBlockerRelation) {
+        await db.insert(issueRelations).values({
+          companyId,
+          issueId: blockerId,
+          relatedIssueId: issueId,
+          type: "blocks",
+        });
+      }
+
+      return { companyId, agentId, issueId, blockerId };
+    }
+
+    // Scenario A: blocked + claude_local + high priority + no blockers → skipped
+    it("skips orphaned-blocked issues for claude_local agents (Scenario A)", async () => {
+      const { agentId, issueId } = await setupGuardFixture({
+        adapterType: "claude_local",
+        issueStatus: "blocked",
+        issuePriority: "high",
+        hasBlockerRelation: false,
+      });
+
+      const result = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      });
+
+      expect(result).toBeNull();
+
+      const skippedRequest = await db
+        .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, agentId),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+
+      expect(skippedRequest?.status).toBe("skipped");
+      expect(skippedRequest?.reason).toBe("orphaned_blocked_premium_skip");
+    });
+
+    // Scenario B: blocked + claude_local + critical priority + no blockers → run proceeds
+    it("does not skip critical-priority orphaned-blocked issues (Scenario B)", async () => {
+      const { agentId, issueId } = await setupGuardFixture({
+        adapterType: "claude_local",
+        issueStatus: "blocked",
+        issuePriority: "critical",
+        hasBlockerRelation: false,
+      });
+
+      const result = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      });
+
+      expect(result).not.toBeNull();
+    });
+
+    // Scenario C: blocked + codex_local + high priority + no blockers → run proceeds
+    it("does not skip orphaned-blocked issues for non-premium adapters (Scenario C)", async () => {
+      const { agentId, issueId } = await setupGuardFixture({
+        adapterType: "codex_local",
+        issueStatus: "blocked",
+        issuePriority: "high",
+        hasBlockerRelation: false,
+      });
+
+      const result = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      });
+
+      expect(result).not.toBeNull();
+    });
+
+    // Scenario D: blocked + claude_local + high priority + has blocker relation (done) → run proceeds
+    it("does not skip when the issue has a blocker relation even if blocker is done (Scenario D)", async () => {
+      const { agentId, issueId } = await setupGuardFixture({
+        adapterType: "claude_local",
+        issueStatus: "blocked",
+        issuePriority: "high",
+        hasBlockerRelation: true,
+      });
+
+      const result = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      });
+
+      expect(result).not.toBeNull();
+    });
+
+    // Scenario E: in_progress + claude_local + high priority + no blockers → run proceeds
+    it("does not skip non-blocked issues for claude_local agents (Scenario E)", async () => {
+      const { agentId, issueId } = await setupGuardFixture({
+        adapterType: "claude_local",
+        issueStatus: "in_progress",
+        issuePriority: "high",
+        hasBlockerRelation: false,
+      });
+
+      const result = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      });
+
+      expect(result).not.toBeNull();
+    });
+  });
 });
