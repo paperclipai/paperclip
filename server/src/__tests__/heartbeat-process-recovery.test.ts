@@ -908,6 +908,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(run?.externalRunId).toBe(jobName);
   });
 
+  it("reaps a pre-adapter external-lifecycle orphan even when updatedAt is freshly churned by review machinery (BLO-8827)", async () => {
+    // Observed in prod 2026-06-03: a MulticastEngineer opencode_k8s run sat
+    // `running` for 4h+ with no backing Job and no adapter.invoke event (a
+    // pre-adapter orphan from a pod rollout). The silent-active-run /
+    // board-recovery review loop bumped heartbeat_runs.updated_at every ~minute,
+    // and the reaper used updatedAt as a freshness proxy (both the pre-adapter
+    // grace via externalLifecycleRecentRefTime AND the staleThreshold gate), so
+    // the dead run was shielded from reaping indefinitely — the review meant to
+    // recover it kept it alive. Staleness must key on genuine activity
+    // (lastOutputAt/startedAt/createdAt/finishedAt), never updatedAt.
+    const { runId } = await seedRunFixture({
+      adapterType: "opencode_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: null, // pre-adapter: never produced output
+    });
+    // No adapter.invoke event seeded -> pre-adapter. startedAt/createdAt are
+    // ancient (fixture default). Simulate review-machinery churn bumping
+    // updatedAt to "now" within the staleness/grace windows.
+    await db.update(heartbeatRuns).set({ updatedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    // No live Job for this run.
+    mockListAgentJobRunStatuses.mockResolvedValueOnce(new Map());
+
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 });
+
+    expect(result.runIds).toContain(runId);
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+  });
+
   it("reaps external-lifecycle runs whose kube-API Job is live but output is silent past the staleness window (RCA 2026-05-06)", async () => {
     // The harness reaper used to trust kube-API Job liveness as an oracle:
     // if the Job existed, the run was assumed healthy. RCA on 2026-05-06

@@ -8153,15 +8153,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number.isFinite(timestamp) ? timestamp : 0;
   }
 
+  // Deliberately EXCLUDES updatedAt. updatedAt is a generic "row was touched"
+  // timestamp that unrelated subsystems (silent-active-run review, board
+  // recovery, liveness backfill) bump every ~minute on a run under review.
+  // Including it let a dead pre-adapter orphan masquerade as "recently active"
+  // and evade the reaper indefinitely (BLO-8827 — a 4h+ stuck opencode_k8s run
+  // observed 2026-06-03, kept alive by the very review meant to recover it).
+  // Genuine run activity = streamed output + lifecycle timestamps only.
   function externalLifecycleRecentRefTime(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
-      "lastOutputAt" | "updatedAt" | "startedAt" | "createdAt" | "finishedAt"
+      "lastOutputAt" | "startedAt" | "createdAt" | "finishedAt"
     >,
   ): number {
     return Math.max(
       runTimestampMs(run.lastOutputAt),
-      runTimestampMs(run.updatedAt),
       runTimestampMs(run.finishedAt),
       runTimestampMs(run.startedAt),
       runTimestampMs(run.createdAt),
@@ -8410,9 +8416,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
-      // Apply staleness threshold to avoid false positives
+      // Apply staleness threshold to avoid false positives. For
+      // external-lifecycle runs, key on genuine activity rather than updatedAt:
+      // review/recovery churn bumps updatedAt every ~minute and would otherwise
+      // shield a dead run from this gate forever (BLO-8827). Local adapters keep
+      // updatedAt — their liveness is tracked via process pid/group, not Jobs.
       if (staleThresholdMs > 0) {
-        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+        const refTime = externalLifecycleRun
+          ? externalLifecycleRecentRefTime(run)
+          : run.updatedAt
+            ? new Date(run.updatedAt).getTime()
+            : 0;
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
