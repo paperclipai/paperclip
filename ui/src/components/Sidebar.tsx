@@ -19,7 +19,6 @@ import {
   AtSign,
   PenLine,
   Linkedin as LinkedinIcon,
-  Youtube as YoutubeIcon,
   Mails,
   HeartPulse,
   Beaker,
@@ -115,7 +114,6 @@ export function Sidebar() {
           <SidebarNavItem to="/mentions" label="Mentions" icon={AtSign} />
           <SidebarNavItem to="/blog-automation" label="Blog" icon={PenLine} />
           <SidebarNavItem to="/linkedin-queue" label="LinkedIn" icon={LinkedinIcon} />
-          <SidebarNavItem to="/youtube" label="YouTube" icon={YoutubeIcon} />
           <SidebarNavItem to="/backlog" label="Backlog" icon={ListTodo} />
         </SidebarSection>
 
