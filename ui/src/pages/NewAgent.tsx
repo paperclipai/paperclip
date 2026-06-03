@@ -14,6 +14,14 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Shield } from "lucide-react";
 import { cn, agentUrl } from "../lib/utils";
 import { roleLabels } from "../components/agent-config-primitives";
@@ -80,6 +88,7 @@ export function NewAgent() {
     errorMessage: null,
     result: null,
   });
+  const [showWorkerAdapterWarning, setShowWorkerAdapterWarning] = useState(false);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -138,15 +147,7 @@ export function NewAgent() {
     return adapter.buildAdapterConfig(configValues);
   }
 
-  function handleSubmit() {
-    if (!selectedCompanyId || !name.trim()) return;
-    setFormError(null);
-    if (configValues.adapterType === "opencode_local") {
-      if (!isValidOpenCodeModelId(configValues.model)) {
-        setFormError("OpenCode requires an explicit model in provider/model format.");
-        return;
-      }
-    }
+  function performCreate() {
     createAgent.mutate(
       buildNewAgentHirePayload({
         name,
@@ -158,6 +159,27 @@ export function NewAgent() {
         adapterConfig: buildAdapterConfig(),
       }),
     );
+  }
+
+  function confirmWorkerAdapterPairing() {
+    setShowWorkerAdapterWarning(false);
+    performCreate();
+  }
+
+  function handleSubmit() {
+    if (!selectedCompanyId || !name.trim()) return;
+    setFormError(null);
+    if (configValues.adapterType === "opencode_local") {
+      if (!isValidOpenCodeModelId(configValues.model)) {
+        setFormError("OpenCode requires an explicit model in provider/model format.");
+        return;
+      }
+    }
+    if (effectiveRole === "worker" && configValues.adapterType !== "openclaw_gateway") {
+      setShowWorkerAdapterWarning(true);
+      return;
+    }
+    performCreate();
   }
 
   const availableSkills = (companySkills ?? []).filter((skill) => !skill.key.startsWith("paperclipai/paperclip/"));
@@ -347,6 +369,29 @@ export function NewAgent() {
           </div>
         </div>
       </div>
+
+      <Dialog open={showWorkerAdapterWarning} onOpenChange={setShowWorkerAdapterWarning}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Unusual role and adapter pairing</DialogTitle>
+            <DialogDescription>
+              The Worker role is designed for chief-local agents on the openclaw_gateway adapter. You've selected{" "}
+              <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+                {configValues.adapterType}
+              </code>{" "}
+              - this pairing is unusual but allowed. Confirm to proceed.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setShowWorkerAdapterWarning(false)}>
+              Cancel
+            </Button>
+            <Button size="sm" onClick={confirmWorkerAdapterPairing}>
+              Confirm
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

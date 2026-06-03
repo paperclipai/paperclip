@@ -24,7 +24,7 @@ Follows the existing `NewIssueDialog` / `NewProjectDialog` pattern: a `Dialog` c
 |-------|---------|----------|---------|-------|
 | Name | Text input (large, auto-focused) | Yes | -- | e.g. "Alice", "Build Bot" |
 | Title | Text input (subtitle style) | No | -- | e.g. "VP of Engineering" |
-| Role | Chip popover (select) | No | `general` | Values from `AGENT_ROLES`: ceo, cto, cmo, cfo, engineer, designer, pm, qa, devops, researcher, general |
+| Role | Chip popover (select) | No | `general` | Values from `AGENT_ROLES`: ceo, cto, cmo, cfo, security, engineer, designer, pm, qa, devops, researcher, general, worker. The `worker` role is intended for chief-local subordinate agents using the `openclaw_gateway` adapter; pairing it with any other adapter triggers a soft-validation confirm modal in the create form. |
 | Reports To | Chip popover (agent select) | No | -- | Dropdown of existing agents in the company. If this is the first agent, auto-set role to `ceo` and gray out Reports To. Otherwise required unless role is `ceo`. |
 | Capabilities | Text input | No | -- | Free-text description of what this agent can do |
 
