@@ -1,6 +1,6 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import { CouchStore } from "./store/couch-store.js";
-import { createCtxCouchHttp } from "./store/couch-http.js";
+import { createCouchHttp } from "./store/couch-http.js";
 import { MockChannelProvider } from "./providers/mock-channel.js";
 import { registerStrOps } from "./register.js";
 import { readFileSync } from "node:fs";
@@ -23,7 +23,7 @@ const plugin = definePlugin({
     // CouchDB record store. Config from env; default localhost.
     const couchUrl = process.env.STR_OPS_COUCHDB_URL ?? "http://127.0.0.1:5984";
     const couchDb = process.env.STR_OPS_COUCHDB_DB ?? "str_ops";
-    const http = createCtxCouchHttp(ctx.http, {
+    const http = createCouchHttp({
       baseUrl: couchUrl,
       user: process.env.STR_OPS_COUCHDB_USER,
       password: process.env.STR_OPS_COUCHDB_PASSWORD,
