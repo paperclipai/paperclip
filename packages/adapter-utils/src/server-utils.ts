@@ -1304,9 +1304,13 @@ async function resolveSpawnTarget(
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
-  return { ...env, PATH: defaultPathForPlatform() };
+  const currentPath = (typeof env.PATH === "string" && env.PATH) || (typeof env.Path === "string" && env.Path) || "";
+  if (!currentPath) return { ...env, PATH: defaultPathForPlatform() };
+  const defaultDirs = defaultPathForPlatform().split(path.delimiter);
+  const existing = new Set(currentPath.split(path.delimiter));
+  const missing = defaultDirs.filter((dir) => !existing.has(dir));
+  if (missing.length === 0) return env;
+  return { ...env, PATH: currentPath + path.delimiter + missing.join(path.delimiter) };
 }
 
 export async function ensureAbsoluteDirectory(

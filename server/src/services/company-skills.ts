@@ -139,6 +139,10 @@ type ParsedSkillImportSource = {
   warnings: string[];
 };
 
+type GitHubImportAuth = {
+  githubToken?: string;
+};
+
 type SkillSourceMeta = {
   skillKey?: string;
   sourceKind?: string;
@@ -592,18 +596,35 @@ function parseFrontmatterMarkdown(raw: string): { frontmatter: Record<string, un
   };
 }
 
-async function fetchText(url: string) {
-  const response = await ghFetch(url);
+function buildGitHubAuthHeaders(auth?: GitHubImportAuth) {
+  if (!auth?.githubToken) return undefined;
+  return { authorization: `Bearer ${auth.githubToken}` };
+}
+
+function isGitHubUrl(url: string): boolean {
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    return h === "github.com" || h === "www.github.com" || h.endsWith(".github.com") || h.endsWith(".githubusercontent.com");
+  } catch {
+    return false;
+  }
+}
+
+async function fetchText(url: string, auth?: GitHubImportAuth) {
+  const response = await ghFetch(url, {
+    headers: buildGitHubAuthHeaders(auth),
+  });
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
   return response.text();
 }
 
-async function fetchJson<T>(url: string): Promise<T> {
+async function fetchJson<T>(url: string, auth?: GitHubImportAuth): Promise<T> {
   const response = await ghFetch(url, {
     headers: {
       accept: "application/vnd.github+json",
+      ...(buildGitHubAuthHeaders(auth) ?? {}),
     },
   });
   if (!response.ok) {
@@ -613,16 +634,24 @@ async function fetchJson<T>(url: string): Promise<T> {
 }
 
 
-async function resolveGitHubDefaultBranch(owner: string, repo: string, apiBase: string) {
+async function resolveGitHubDefaultBranch(owner: string, repo: string, apiBase: string, auth?: GitHubImportAuth) {
   const response = await fetchJson<{ default_branch?: string }>(
     `${apiBase}/repos/${owner}/${repo}`,
+    auth,
   );
   return asString(response.default_branch) ?? "main";
 }
 
-async function resolveGitHubCommitSha(owner: string, repo: string, ref: string, apiBase: string) {
+async function resolveGitHubCommitSha(
+  owner: string,
+  repo: string,
+  ref: string,
+  apiBase: string,
+  auth?: GitHubImportAuth,
+) {
   const response = await fetchJson<{ sha?: string }>(
     `${apiBase}/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
+    auth,
   );
   const sha = asString(response.sha);
   if (!sha) {
@@ -659,7 +688,7 @@ function parseGitHubSourceUrl(rawUrl: string) {
   return { hostname: url.hostname, owner, repo, ref, basePath, filePath, explicitRef };
 }
 
-async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>) {
+async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>, auth?: GitHubImportAuth) {
   const apiBase = gitHubApiBase(parsed.hostname);
   if (/^[0-9a-f]{40}$/i.test(parsed.ref.trim())) {
     return {
@@ -670,8 +699,8 @@ async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourc
 
   const trackingRef = parsed.explicitRef
     ? parsed.ref
-    : await resolveGitHubDefaultBranch(parsed.owner, parsed.repo, apiBase);
-  const pinnedRef = await resolveGitHubCommitSha(parsed.owner, parsed.repo, trackingRef, apiBase);
+    : await resolveGitHubDefaultBranch(parsed.owner, parsed.repo, apiBase, auth);
+  const pinnedRef = await resolveGitHubCommitSha(parsed.owner, parsed.repo, trackingRef, apiBase, auth);
   return { pinnedRef, trackingRef };
 }
 
@@ -1112,6 +1141,7 @@ async function readUrlSkillImports(
   companyId: string,
   sourceUrl: string,
   requestedSkillSlug: string | null = null,
+  auth?: GitHubImportAuth,
 ): Promise<{ skills: ImportedSkill[]; warnings: string[] }> {
   const url = sourceUrl.trim();
   const warnings: string[] = [];
@@ -1126,10 +1156,11 @@ async function readUrlSkillImports(
   if (looksLikeRepoUrl) {
     const parsed = parseGitHubSourceUrl(url);
     const apiBase = gitHubApiBase(parsed.hostname);
-    const { pinnedRef, trackingRef } = await resolveGitHubPinnedRef(parsed);
+    const { pinnedRef, trackingRef } = await resolveGitHubPinnedRef(parsed, auth);
     let ref = pinnedRef;
     const tree = await fetchJson<{ tree?: Array<{ path: string; type: string }> }>(
       `${apiBase}/repos/${parsed.owner}/${parsed.repo}/git/trees/${ref}?recursive=1`,
+      auth,
     ).catch(() => {
       throw unprocessable(`Failed to read GitHub tree for ${url}`);
     });
@@ -1156,7 +1187,10 @@ async function readUrlSkillImports(
     const skills: ImportedSkill[] = [];
     for (const relativeSkillPath of skillPaths) {
       const repoSkillPath = basePrefix ? `${basePrefix}${relativeSkillPath}` : relativeSkillPath;
-      const markdown = await fetchText(resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoSkillPath));
+      const markdown = await fetchText(
+        resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoSkillPath),
+        auth,
+      );
       const parsedMarkdown = parseFrontmatterMarkdown(markdown);
       const skillDir = path.posix.dirname(relativeSkillPath);
       const slug = deriveImportedSkillSlug(parsedMarkdown.frontmatter, path.posix.basename(skillDir));
@@ -1218,7 +1252,8 @@ async function readUrlSkillImports(
   }
 
   if (url.startsWith("http://") || url.startsWith("https://")) {
-    const markdown = await fetchText(url);
+    // Only forward the GitHub token to recognized GitHub hostnames; never to arbitrary URLs.
+    const markdown = await fetchText(url, isGitHubUrl(url) ? auth : undefined);
     const parsedMarkdown = parseFrontmatterMarkdown(markdown);
     const urlObj = new URL(url);
     const fileName = path.posix.basename(urlObj.pathname);
@@ -3340,7 +3375,11 @@ export function companySkillService(db: Db) {
     return out;
   }
 
-  async function importFromSource(companyId: string, source: string): Promise<CompanySkillImportResult> {
+  async function importFromSource(
+    companyId: string,
+    source: string,
+    githubToken?: string,
+  ): Promise<CompanySkillImportResult> {
     await ensureSkillInventoryCurrent(companyId);
     const parsed = parseSkillImportSourceInput(source);
     const local = !/^https?:\/\//i.test(parsed.resolvedSource);
@@ -3350,7 +3389,12 @@ export function companySkillService(db: Db) {
           .filter((skill) => !parsed.requestedSkillSlug || skill.slug === parsed.requestedSkillSlug),
         warnings: parsed.warnings,
       }
-      : await readUrlSkillImports(companyId, parsed.resolvedSource, parsed.requestedSkillSlug)
+      : await readUrlSkillImports(
+        companyId,
+        parsed.resolvedSource,
+        parsed.requestedSkillSlug,
+        githubToken ? { githubToken } : undefined,
+      )
         .then((result) => ({
           skills: result.skills,
           warnings: [...parsed.warnings, ...result.warnings],

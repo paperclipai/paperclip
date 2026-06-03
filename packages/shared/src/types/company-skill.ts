@@ -135,6 +135,7 @@ export interface CompanySkillResetRequest {
 
 export interface CompanySkillImportRequest {
   source: string;
+  githubToken?: string;
 }
 
 export interface CompanySkillImportResult {

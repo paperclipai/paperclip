@@ -47,10 +47,10 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills`,
       payload,
     ),
-  importFromSource: (companyId: string, source: string) =>
+  importFromSource: (companyId: string, source: string, githubToken?: string) =>
     api.post<CompanySkillImportResult>(
       `/companies/${encodeURIComponent(companyId)}/skills/import`,
-      { source },
+      { source, ...(githubToken ? { githubToken } : {}) },
     ),
   scanProjects: (companyId: string, payload: CompanySkillProjectScanRequest = {}) =>
     api.post<CompanySkillProjectScanResult>(
