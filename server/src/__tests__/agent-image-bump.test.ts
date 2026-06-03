@@ -6,7 +6,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { selectEligibleAgentsForImageBump, isAgentInFlight, applyImageBumpToAgent, bumpAgentImagesForCompany, processPendingImageBumpForAgent } from "../services/agent-image-bump.js";
+import { selectEligibleAgentsForImageBump, isAgentExecuting, applyImageBumpToAgent, bumpAgentImagesForCompany, processPendingImageBumpForAgent } from "../services/agent-image-bump.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -125,7 +125,7 @@ describeEmbeddedPostgres("selectEligibleAgentsForImageBump", () => {
   });
 });
 
-describeEmbeddedPostgres("isAgentInFlight", () => {
+describeEmbeddedPostgres("isAgentExecuting", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
@@ -171,17 +171,20 @@ describeEmbeddedPostgres("isAgentInFlight", () => {
       agentId: agent.id,
       status: "running",
     });
-    await expect(isAgentInFlight(db, agent.id)).resolves.toBe(true);
+    await expect(isAgentExecuting(db, agent.id)).resolves.toBe(true);
   });
 
-  it("returns true when agent has a queued heartbeat run", async () => {
+  it("returns false when agent only has a queued heartbeat run", async () => {
+    // BLO-8746/BLO-8827: queued runs are NOT active execution. A queued
+    // backlog must not be treated as "in flight", otherwise a pending image
+    // bump on a perpetually-backlogged maxConcurrentRuns=1 agent never applies.
     const { companyId, agent } = await createTestAgent(db);
     await db.insert(heartbeatRuns).values({
       companyId,
       agentId: agent.id,
       status: "queued",
     });
-    await expect(isAgentInFlight(db, agent.id)).resolves.toBe(true);
+    await expect(isAgentExecuting(db, agent.id)).resolves.toBe(false);
   });
 
   it("returns false when agent only has terminal runs", async () => {
@@ -190,7 +193,7 @@ describeEmbeddedPostgres("isAgentInFlight", () => {
       { companyId, agentId: agent.id, status: "succeeded" },
       { companyId, agentId: agent.id, status: "failed" },
     ]);
-    await expect(isAgentInFlight(db, agent.id)).resolves.toBe(false);
+    await expect(isAgentExecuting(db, agent.id)).resolves.toBe(false);
   });
 
   it("returns false when agent has no heartbeat runs and k8s client unavailable", async () => {
@@ -202,7 +205,7 @@ describeEmbeddedPostgres("isAgentInFlight", () => {
     // no Jobs, and this test stays green. The real guard is integration:
     // production verification that the label string matches kubectl output.
     const { agent } = await createTestAgent(db);
-    await expect(isAgentInFlight(db, agent.id)).resolves.toBe(false);
+    await expect(isAgentExecuting(db, agent.id)).resolves.toBe(false);
   });
 });
 
@@ -475,16 +478,43 @@ describeEmbeddedPostgres("processPendingImageBumpForAgent", () => {
     expect(refetched!.pendingImageBump).toBeNull();
   });
 
-  it("keeps pending_image_bump set when another run is in-flight (self-healing)", async () => {
+  it("applies the pending bump when the agent only has QUEUED runs (no active execution)", async () => {
+    // BLO-8746/BLO-8827: a queued backlog must NOT starve a pending image bump.
+    // A maxConcurrentRuns=1 agent under steady automation is perpetually
+    // backlogged; if queued runs gate the bump it never applies and the agent
+    // is pinned to a stale (possibly broken) image forever. Only an actively
+    // executing run (a live k8s Job) should defer the bump.
     const { companyId, agent } = await createCompanyAndAgent({
       image: "harbor.example/a:old",
       pending: "harbor.example/a:new",
     });
-    // Simulate a run that was already queued when the original bump was deferred
     await db.insert(heartbeatRuns).values({
       companyId,
       agentId: agent.id,
       status: "queued",
+    });
+
+    await processPendingImageBumpForAgent(db, agent.id);
+
+    const [refetched] = await db.select().from(agents).where(eq(agents.id, agent.id));
+    expect((refetched!.adapterConfig as Record<string, unknown>).image).toBe(
+      "harbor.example/a:new",
+    );
+    expect(refetched!.pendingImageBump).toBeNull();
+  });
+
+  it("keeps pending_image_bump set while a run is actively RUNNING (self-healing)", async () => {
+    const { companyId, agent } = await createCompanyAndAgent({
+      image: "harbor.example/a:old",
+      pending: "harbor.example/a:new",
+    });
+    // A run that is actively executing (running, not merely queued) must still
+    // defer the bump — it gets retried on the next terminal transition / next
+    // idle dispatch.
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId: agent.id,
+      status: "running",
     });
 
     await processPendingImageBumpForAgent(db, agent.id);

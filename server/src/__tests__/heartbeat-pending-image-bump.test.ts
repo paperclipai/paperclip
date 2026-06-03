@@ -135,6 +135,55 @@ describeEmbeddedPostgres("heartbeat setRunStatus → processPendingImageBumpForA
     expect(refetched!.pendingImageBump).toBeNull();
   });
 
+  it("applies a deferred bump when a run terminates even though a QUEUED sibling remains (deadlock break)", async () => {
+    // BLO-8746/BLO-8827 end-to-end: a maxConcurrentRuns=1 agent with a queued
+    // backlog used to starve its pending image bump forever, because the old
+    // gate counted queued runs as "in flight". With the fix, terminating the
+    // running run applies the bump even though a queued sibling remains.
+    // skipQueuedRunDispatch keeps the cancel path from spawning a real
+    // executeRun whose async chain would race afterEach's TRUNCATE.
+    const skipDispatchHeartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
+
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `BK${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "BacklogBumpTest Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "BacklogBumpAgent",
+      adapterType: "claude_k8s",
+      adapterConfig: { image: "harbor.example/a:old", model: "claude-opus" },
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+      permissions: {},
+      pendingImageBump: "harbor.example/a:new",
+    });
+    const [runningRun] = await db
+      .insert(heartbeatRuns)
+      .values({ companyId, agentId, status: "running" })
+      .returning();
+    // The backlog: a queued sibling that previously pinned the agent "in flight".
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued" });
+
+    await skipDispatchHeartbeat.cancelRun(runningRun!.id);
+
+    await vi.waitFor(
+      async () => {
+        const refetched = await getAgent(agentId);
+        expect((refetched!.adapterConfig as Record<string, unknown>).image).toBe(
+          "harbor.example/a:new",
+        );
+        expect(refetched!.pendingImageBump).toBeNull();
+      },
+      { timeout: 3_000, interval: 50 },
+    );
+  });
+
   // Non-terminal-transition test is exercised indirectly: the public
   // heartbeat service has no entry point that transitions queued → running
   // synchronously (running is set inside the executeRun pipeline), so this

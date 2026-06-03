@@ -29,6 +29,11 @@ export type AgentJobRunStatus = {
   phase: "active" | "succeeded" | "failed";
   reason?: string | null;
   message?: string | null;
+  // The backing Job's metadata.name. Populated by listAgentJobRunStatuses so
+  // callers can persist run→Job navigability onto the heartbeat_run record
+  // (heartbeat_runs.external_run_id). classifyAgentJobRunStatus itself does not
+  // set it — it only classifies phase.
+  name?: string | null;
 };
 
 type ClientState =
@@ -135,7 +140,10 @@ export async function listAgentJobRunStatuses(): Promise<Map<string, AgentJobRun
     for (const job of list.items ?? []) {
       const runId = job.metadata?.labels?.[RUN_ID_LABEL];
       if (typeof runId === "string" && runId.length > 0) {
-        statuses.set(runId, classifyAgentJobRunStatus(job));
+        statuses.set(runId, {
+          ...classifyAgentJobRunStatus(job),
+          name: job.metadata?.name ?? null,
+        });
       }
     }
     return statuses;

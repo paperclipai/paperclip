@@ -83,6 +83,7 @@ const mockListAgentJobRunStatuses = vi.hoisted(() =>
           phase: "active" | "succeeded" | "failed";
           reason?: string | null;
           message?: string | null;
+          name?: string | null;
         }
       > | null
     >
@@ -876,6 +877,35 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const run = await heartbeat.getRun(runId);
     expect(run?.status).toBe("running");
     expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
+  });
+
+  it("persists external_run_id (backing Job name) onto a live external-lifecycle run", async () => {
+    // BLO-8746/BLO-8827 Phase A: the run record carried no reference to its
+    // backing k8s Job (external_run_id was empty for every run), so process_pid
+    // — which is always NULL for external-lifecycle runs — got misread as a
+    // zombie signal. The reaper now stamps the Job name onto external_run_id so
+    // the run row is self-describing and run→Job is navigable without a live
+    // kube query.
+    const fresh = new Date(Date.now() - 30 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: fresh,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+    const jobName = `ac-agent-${runId.slice(0, 8)}-abcdef`;
+    mockListAgentJobRunStatuses.mockResolvedValueOnce(
+      new Map([[runId, { phase: "active" as const, name: jobName }]]),
+    );
+
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result.reaped).toBe(0);
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.externalRunId).toBe(jobName);
   });
 
   it("reaps external-lifecycle runs whose kube-API Job is live but output is silent past the staleness window (RCA 2026-05-06)", async () => {

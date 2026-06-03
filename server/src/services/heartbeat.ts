@@ -8270,6 +8270,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // when the API is unavailable (local dev, RBAC missing, transient failure).
     const hasExternalCandidates = activeRuns.some((row) => hasExternalLifecycle(row.adapterType));
     const jobRunStatuses = await listAgentJobRunStatuses();
+
+    // BLO-8746/BLO-8827 Phase A: stamp the backing k8s Job name onto each
+    // running external-lifecycle run's external_run_id so the run row is
+    // self-describing — run→Job is navigable without a live kube query, and
+    // process_pid (always NULL for these runs) stops being mistaken for a
+    // liveness signal. Best-effort: only when the Job is known and the value
+    // actually changed, so this adds no write churn on a steady fleet.
+    if (jobRunStatuses) {
+      for (const { run } of activeRuns) {
+        const jobName = jobRunStatuses.get(run.id)?.name ?? null;
+        if (jobName && run.externalRunId !== jobName) {
+          await db
+            .update(heartbeatRuns)
+            .set({ externalRunId: jobName })
+            .where(eq(heartbeatRuns.id, run.id));
+        }
+      }
+    }
+
     const cleanedTerminalJobRunIds = await cleanupTerminalExternalLifecycleJobs(jobRunStatuses, now);
     reaped.push(...cleanedTerminalJobRunIds);
     const liveJobRunIds =
@@ -8809,7 +8828,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function startNextQueuedRunForAgent(agentId: string) {
     if (options.skipQueuedRunDispatch) return [];
     return withAgentStartLock(agentId, async () => {
-      const agent = await getAgent(agentId);
+      let agent = await getAgent(agentId);
       if (!agent) return [];
       if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
         return [];
@@ -8828,6 +8847,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
       if (availableSlots <= 0) return [];
+
+      // BLO-8746/BLO-8827: we hold the agent start lock, orphans have been
+      // reaped, and (for external-lifecycle agents) the early return above
+      // guarantees no run is currently executing. Apply any pending image bump
+      // NOW, before dispatching the next queued run, so that run's Job is
+      // created on the new image. The setRunStatus completion hook also retries
+      // a pending bump, but it is fire-and-forget and can lose the race to this
+      // synchronous dispatch — applying here makes convergence deterministic
+      // and stops a perpetually-backlogged maxConcurrentRuns=1 agent from
+      // starving the bump (which previously pinned it to a stale image until
+      // its queue drained to empty, i.e. never under steady automation).
+      if (hasExternalLifecycle(agent.adapterType) && agent.pendingImageBump) {
+        await processPendingImageBumpForAgent(db, agentId);
+        agent = (await getAgent(agentId)) ?? agent;
+      }
 
       const queuedRuns = await db
         .select()

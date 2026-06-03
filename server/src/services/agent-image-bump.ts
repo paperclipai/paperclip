@@ -38,16 +38,24 @@ export async function selectEligibleAgentsForImageBump(
     );
 }
 
-const IN_FLIGHT_RUN_STATUSES = ["queued", "running"] as const;
+// A pending image bump is deferred only while the agent is *actively
+// executing* — a heartbeat run is `running`, or (when the DB lags) the agent
+// still has a live k8s Job. Queued runs are intentionally NOT counted:
+// BLO-8746/BLO-8827 — a maxConcurrentRuns=1 agent under steady automation is
+// perpetually backlogged, so gating on queued runs let a pending bump starve
+// forever and pinned the agent to a stale (possibly broken) image. The image
+// field only affects newly-created Job pods, so applying it between runs is
+// always safe: the next dispatched run picks up the new image.
+const EXECUTING_RUN_STATUSES = ["running"] as const;
 
-export async function isAgentInFlight(db: Db, agentId: string): Promise<boolean> {
+export async function isAgentExecuting(db: Db, agentId: string): Promise<boolean> {
   const [dbHit] = await db
     .select({ id: heartbeatRuns.id })
     .from(heartbeatRuns)
     .where(
       and(
         eq(heartbeatRuns.agentId, agentId),
-        inArray(heartbeatRuns.status, [...IN_FLIGHT_RUN_STATUSES]),
+        inArray(heartbeatRuns.status, [...EXECUTING_RUN_STATUSES]),
       ),
     )
     .limit(1);
@@ -63,12 +71,14 @@ export interface ApplyResult {
 /**
  * Bump an agent's container image, or defer if the agent is mid-run.
  *
- * - Idle agent (no queued/running heartbeat_runs, no active k8s Job): PATCH
- *   adapter_config.image in a transaction that also writes an
- *   agent_config_revisions audit row. Clears any prior pending_image_bump.
- * - In-flight agent: stash the target in agents.pending_image_bump (last-write-wins)
- *   and skip the PATCH. The heartbeat run-completion hook in Task 7 picks it
- *   up the next time the agent reaches a terminal run state.
+ * - Not actively executing (no `running` heartbeat_run, no active k8s Job;
+ *   queued runs are fine): PATCH adapter_config.image in a transaction that
+ *   also writes an agent_config_revisions audit row. Clears any prior
+ *   pending_image_bump.
+ * - Actively executing: stash the target in agents.pending_image_bump
+ *   (last-write-wins) and skip the PATCH. The heartbeat run-completion hook and
+ *   the queued-run dispatcher both retry it the next time the agent is idle
+ *   between runs (so a queued backlog no longer starves the bump).
  *
  * Mirrors the partial-patch semantics of PATCH /agents/:id without going
  * through HTTP, so the same audit trail lands either way.
@@ -82,15 +92,15 @@ export async function applyImageBumpToAgent(
     source: string;
   },
 ): Promise<ApplyResult> {
-  const inFlight = await isAgentInFlight(db, args.agentId);
-  if (inFlight) {
+  const executing = await isAgentExecuting(db, args.agentId);
+  if (executing) {
     await db
       .update(agents)
       .set({ pendingImageBump: args.targetImage, updatedAt: new Date() })
       .where(eq(agents.id, args.agentId));
     logger.info(
       { agentId: args.agentId, targetImage: args.targetImage, source: args.source },
-      "agent in-flight; pending_image_bump set",
+      "agent actively executing; pending_image_bump set",
     );
     return { outcome: "skipped", agentId: args.agentId };
   }
@@ -211,8 +221,8 @@ export async function processPendingImageBumpForAgent(
     return;
   }
 
-  if (await isAgentInFlight(db, agentId)) {
-    logger.info({ agentId }, "pending image bump deferred; another run is in-flight");
+  if (await isAgentExecuting(db, agentId)) {
+    logger.info({ agentId }, "pending image bump deferred; a run is actively executing");
     return;
   }
 
