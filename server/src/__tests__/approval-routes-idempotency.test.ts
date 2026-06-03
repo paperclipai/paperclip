@@ -337,6 +337,53 @@ describe("approval routes idempotent retries", () => {
         actorType: "agent",
         actorId: "agent-1",
         action: "approval.created",
+        // The approval's payload title + id must reach `details` so the plugin
+        // domain event (built from details) carries them to the Slack card.
+        // Without this every board-approval card renders only `Type`.
+        details: expect.objectContaining({
+          type: "request_board_approval",
+          approvalId: "approval-1",
+          title: "Approve hosting spend",
+          issueIds: ["00000000-0000-0000-0000-000000000001"],
+        }),
+      }),
+    );
+  });
+
+  it("carries the payload `note` into details as description (note alias)", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-note",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "Spend approval", note: "needs board sign-off" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    });
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        payload: { title: "Spend approval", note: "needs board sign-off" },
+      });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "approval.created",
+        details: expect.objectContaining({
+          approvalId: "approval-note",
+          title: "Spend approval",
+          // `note` is mapped to `description` (the field the formatter reads).
+          description: "needs board sign-off",
+        }),
       }),
     );
   });

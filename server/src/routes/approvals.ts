@@ -113,6 +113,26 @@ export function approvalRoutes(
       });
     }
 
+    // Surface the approval's human-facing title/description in the activity
+    // details so the plugin domain event (built from `details` in logActivity)
+    // carries them to notifiers. Without this the Slack approval card renders
+    // only `Type` — every board approval looks identical (every card is just
+    // `request_board_approval`). `payload` is free-form (z.record), so accept
+    // either `description` or the common `note` alias. The Slack formatter reads
+    // `approvalId`, `title`, `description`.
+    const payloadObj =
+      typeof normalizedPayload === "object" && normalizedPayload !== null
+        ? (normalizedPayload as Record<string, unknown>)
+        : {};
+    const approvalTitle =
+      typeof payloadObj.title === "string" ? payloadObj.title : undefined;
+    const approvalDescription =
+      typeof payloadObj.description === "string"
+        ? payloadObj.description
+        : typeof payloadObj.note === "string"
+          ? payloadObj.note
+          : undefined;
+
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
@@ -121,7 +141,15 @@ export function approvalRoutes(
       action: "approval.created",
       entityType: "approval",
       entityId: approval.id,
-      details: { type: approval.type, issueIds: uniqueIssueIds },
+      details: {
+        type: approval.type,
+        approvalId: approval.id,
+        issueIds: uniqueIssueIds,
+        ...(approvalTitle !== undefined ? { title: approvalTitle } : {}),
+        ...(approvalDescription !== undefined
+          ? { description: approvalDescription }
+          : {}),
+      },
     });
 
     res.status(201).json(redactApprovalPayload(approval));
