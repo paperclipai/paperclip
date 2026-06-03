@@ -556,6 +556,27 @@ importers:
         specifier: ^3.0.5
         version: 3.2.4(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@28.1.0(@noble/hashes@2.0.1))(lightningcss@1.30.2)(tsx@4.21.0)
 
+  packages/plugins/plugin-str-ops:
+    devDependencies:
+      '@paperclipai/plugin-sdk':
+        specifier: workspace:*
+        version: link:../sdk
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      esbuild:
+        specifier: ^0.27.3
+        version: 0.27.3
+      tslib:
+        specifier: ^2.8.1
+        version: 2.8.1
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.5
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@28.1.0(@noble/hashes@2.0.1))(lightningcss@1.30.2)(tsx@4.21.0)
+
   packages/plugins/plugin-workspace-diff:
     dependencies:
       '@paperclipai/plugin-sdk':
@@ -621,6 +642,8 @@ importers:
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
+
+  packages/skills-catalog: {}
 
   server:
     dependencies:

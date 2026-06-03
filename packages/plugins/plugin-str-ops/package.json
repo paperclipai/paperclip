@@ -1,0 +1,30 @@
+{
+  "name": "@paperclipai/plugin-str-ops",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Short-term-rental conciergerie domain plugin: bookings, guests, owners, turnover, pricing.",
+  "files": ["dist", "migrations", "README.md"],
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "node ./esbuild.config.mjs",
+    "dev": "node ./esbuild.config.mjs --watch",
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "keywords": ["paperclip", "plugin", "str", "conciergerie"],
+  "author": "Oleg",
+  "license": "MIT",
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "@types/node": "^24.6.0",
+    "esbuild": "^0.27.3",
+    "tslib": "^2.8.1",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}
