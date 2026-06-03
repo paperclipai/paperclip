@@ -107,7 +107,17 @@ async function postToken(body: Record<string, unknown>): Promise<ClaudeTokenResu
   }
   if (!resp.ok) {
     const detail = await resp.text().catch(() => "");
-    throw new Error(`claude oauth token endpoint returned ${resp.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`);
+    if (resp.status === 429) {
+      throw new Error(
+        "Claude is rate-limiting logins right now. Wait a few minutes, then click \"Login with Claude\" again to get a fresh code.",
+      );
+    }
+    if (resp.status === 400) {
+      throw new Error(
+        "Login code rejected (it may have expired or already been used). Click \"Login with Claude\" again for a fresh code.",
+      );
+    }
+    throw new Error(`Claude login failed (${resp.status})${detail ? `: ${detail.slice(0, 160)}` : ""}`);
   }
   return normalizeTokenResponse((await resp.json()) as RawTokenResponse);
 }
