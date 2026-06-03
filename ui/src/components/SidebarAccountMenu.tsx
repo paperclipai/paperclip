@@ -180,7 +180,7 @@ export function SidebarAccountMenu({
                 </div>
                 <p className="truncate text-sm text-muted-foreground">{secondaryLabel}</p>
                 {version ? (
-                  <p className="mt-1 text-xs text-muted-foreground">Paperclip v{version}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">All Gas No Brakes v{version}</p>
                 ) : null}
               </div>
             </div>
@@ -209,7 +209,7 @@ export function SidebarAccountMenu({
               />
               <MenuAction
                 label="Documentation"
-                description="Open Paperclip docs in a new tab."
+                description="Open the docs in a new tab."
                 icon={BookOpen}
                 href={DOCS_URL}
                 external

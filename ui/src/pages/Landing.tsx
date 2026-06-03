@@ -375,7 +375,7 @@ const FAQS = [
   },
   {
     q: "Is this just another project management tool?",
-    a: "No. Other tools track work. Paperclip does work. The agents are the workers — your issue tracker is also your execution engine.",
+    a: "No. Other tools track work. We do work. The agents are the workers — your issue tracker is also your execution engine.",
   },
   {
     q: "How do agents get access to my codebase?",
@@ -519,7 +519,7 @@ export function LandingPage() {
             </div>
             <div className="flex items-center gap-4">
               <span className="hidden items-center gap-1.5 rounded-full border border-border px-3 py-1 font-mono text-[11px] uppercase tracking-[0.1em] text-[#86c277] sm:inline-flex">
-                <Sparkles className="size-3" /> Powered by Paperclip
+                <Sparkles className="size-3" /> Stealth · Private beta
               </span>
               <a
                 href="#signin"
@@ -543,7 +543,7 @@ export function LandingPage() {
               <span className="text-[#86c277]">no brakes.</span>
             </h1>
             <p className="mt-6 max-w-xl text-[17px] leading-relaxed text-muted-foreground">
-              Your engineers ship. Your agents never stop. Paperclip is the autonomous
+              Your engineers ship. Your agents never stop. We are the autonomous
               AI work platform that plans, codes, and closes tickets while you sleep —
               one cockpit for the whole engine.
             </p>
@@ -615,7 +615,7 @@ export function LandingPage() {
             </span>
           </h2>
           <p className="mt-5 max-w-2xl text-[16px] leading-relaxed text-muted-foreground">
-            Brakes are for people who second-guess. Paperclip strips the busywork,
+            Brakes are for people who second-guess. We strip the busywork,
             wires every agent into one surface, and hands the execution to workers
             that never clock out. You set the goal. They floor it.
           </p>
@@ -782,7 +782,7 @@ export function LandingPage() {
               Get in and floor it.
             </h2>
             <p className="mt-4 max-w-md text-[15px] text-muted-foreground">
-              Sign in to your Paperclip instance and let the agents do the work.
+              Sign in and let the agents do the work.
             </p>
             <div className="mt-8">
               <a
@@ -800,7 +800,7 @@ export function LandingPage() {
         <footer className="border-t border-border">
           <Section className="flex flex-col items-center justify-between gap-3 py-8 sm:flex-row">
             <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
-              <span>🔥</span> All Gas No Brakes · Paperclip
+              <span>🔥</span> All Gas No Brakes
             </div>
             <div className="font-mono text-[12px] text-muted-foreground">
               © 2026 · built in stealth
