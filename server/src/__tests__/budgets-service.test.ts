@@ -309,3 +309,65 @@ describe("budgetService", () => {
     );
   });
 });
+
+describe("token-based budget mode", () => {
+  it("creates a hard-stop incident when token usage exceeds a token budget", async () => {
+    const policy = {
+      id: "policy-token-1",
+      companyId: "company-1",
+      scopeType: "agent",
+      scopeId: "agent-token-1",
+      metric: "tokens",
+      windowKind: "calendar_month_utc",
+      amount: 100000,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: false,
+      isActive: true,
+    };
+
+    const dbStub = createDbStub([
+      [policy],
+      [{ total: 150000 }],
+      [],
+      [{
+        companyId: "company-1",
+        name: "Token Budget Agent",
+        status: "running",
+        pauseReason: null,
+      }],
+    ]);
+
+    dbStub.queueInsert([{ id: "approval-t1", companyId: "company-1", status: "pending" }]);
+    dbStub.queueInsert([{
+      id: "incident-t1",
+      companyId: "company-1",
+      policyId: "policy-token-1",
+      approvalId: "approval-t1",
+    }]);
+    dbStub.queueUpdate([]);
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+
+    const service = budgetService(dbStub.db as any, { cancelWorkForScope });
+    await service.evaluateCostEvent({
+      companyId: "company-1",
+      agentId: "agent-token-1",
+      projectId: null,
+    } as any);
+
+    expect(dbStub.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "company-1",
+        policyId: "policy-token-1",
+        thresholdType: "hard",
+        amountLimit: 100000,
+        amountObserved: 150000,
+      }),
+    );
+    expect(cancelWorkForScope).toHaveBeenCalledWith({
+      companyId: "company-1",
+      scopeType: "agent",
+      scopeId: "agent-token-1",
+    });
+  });
+});
