@@ -246,4 +246,61 @@ describe("credential-scanner: env-driven extra rules (SH12_EXTRA_RULES)", () => 
       resetScannerRuleCache();
     }
   });
+
+  // P1 regression: invalid regex in SH12_EXTRA_RULES must not break the scanner
+  it("skips invalid-regex extra rule and continues scanning with remaining rules", () => {
+    const badExtra = JSON.stringify([
+      { kind: "regex", typeHint: "BAD_RULE", pattern: "[invalid(regex" },
+    ]);
+    const original = process.env["SH12_EXTRA_RULES"];
+    process.env["SH12_EXTRA_RULES"] = badExtra;
+    resetScannerRuleCache();
+    try {
+      const token = "ghp_" + "V".repeat(36);
+      // Must not throw; base rules still fire
+      const { text, matches } = scanAndRedact(token);
+      expect(text).toContain("[REDACTED:SH-12:GH_PAT]");
+      expect(matches[0].typeHint).toBe("GH_PAT");
+    } finally {
+      if (original === undefined) {
+        delete process.env["SH12_EXTRA_RULES"];
+      } else {
+        process.env["SH12_EXTRA_RULES"] = original;
+      }
+      resetScannerRuleCache();
+    }
+  });
+});
+
+describe("credential-scanner: characterOffset accuracy across multiple rules", () => {
+  // P2 regression: characterOffset must reflect the original input position even
+  // when a prior rule has already mutated the text (replacement length ≠ match length)
+  it("reports correct characterOffset for second-rule match after first rule fires", () => {
+    const gh = "ghp_" + "W".repeat(36);   // 40 chars, matched by GH_PAT rule
+    const aws = "AKIA" + "X".repeat(16);  // 20 chars, matched by AWS_ACCESS_KEY rule
+    const sep = " | ";
+    const input = gh + sep + aws;
+    const ghOffset = 0;
+    const awsOffset = gh.length + sep.length;
+    const { matches } = scanAndRedact(input);
+    expect(matches).toHaveLength(2);
+    const ghMatch = matches.find((m) => m.typeHint === "GH_PAT");
+    const awsMatch = matches.find((m) => m.typeHint === "AWS_ACCESS_KEY");
+    expect(ghMatch?.characterOffset).toBe(ghOffset);
+    expect(awsMatch?.characterOffset).toBe(awsOffset);
+  });
+
+  // P2 regression: within a single rule, second match offset must also be original-relative
+  it("reports correct characterOffset for second match within same rule", () => {
+    const token = "ghp_" + "Y".repeat(36);  // 40 chars
+    const sep = " middle ";
+    const input = token + sep + token;
+    const firstOffset = 0;
+    const secondOffset = token.length + sep.length;
+    const { matches } = scanAndRedact(input);
+    const ghMatches = matches.filter((m) => m.typeHint === "GH_PAT");
+    expect(ghMatches).toHaveLength(2);
+    expect(ghMatches[0].characterOffset).toBe(firstOffset);
+    expect(ghMatches[1].characterOffset).toBe(secondOffset);
+  });
 });

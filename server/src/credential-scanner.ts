@@ -88,7 +88,17 @@ let _compiledRules: CompiledRule[] | null = null;
 function getCompiledRules(): CompiledRule[] {
   if (_compiledRules) return _compiledRules;
   const config = loadConfig();
-  _compiledRules = config.rules.map(compileRule);
+  const compiled: CompiledRule[] = [];
+  for (const rule of config.rules) {
+    try {
+      compiled.push(compileRule(rule));
+    } catch {
+      // Invalid regex in rule — skip and continue with remaining rules.
+      // Never log the pattern value; only the typeHint is safe to surface.
+      console.error(`[SH-12] Skipping invalid rule (typeHint=${rule.typeHint ?? "unknown"})`);
+    }
+  }
+  _compiledRules = compiled;
   return _compiledRules;
 }
 
@@ -109,6 +119,9 @@ export function scanAndRedact(input: string): ScanResult {
   const rules = getCompiledRules();
   const matches: ScanMatch[] = [];
   let text = input;
+  // Tracks the cumulative length delta across all previous rules so that
+  // characterOffset always reflects the match position in the original input.
+  let cumulativeOffsetDelta = 0;
 
   for (const rule of rules) {
     const replacement = `[REDACTED:SH-12:${rule.typeHint}]`;
@@ -127,21 +140,25 @@ export function scanAndRedact(input: string): ScanResult {
     // Rebuild text with replacements and record offset metadata (NO values)
     let result = "";
     let cursor = 0;
-    let offsetDelta = 0;
+    let ruleOffsetDelta = 0;
 
     for (const raw of rawMatches) {
       result += text.slice(cursor, raw.index);
       matches.push({
         typeHint: rule.typeHint,
-        characterOffset: raw.index + offsetDelta,
+        // raw.index is relative to the current (already-mutated) text.
+        // Subtract the cumulative delta from all prior rules to recover the
+        // position in the original input string.
+        characterOffset: raw.index - cumulativeOffsetDelta,
         inputLength: raw.matchLength,
       });
       result += replacement;
       cursor = raw.index + raw.matchLength;
-      offsetDelta += replacement.length - raw.matchLength;
+      ruleOffsetDelta += replacement.length - raw.matchLength;
     }
     result += text.slice(cursor);
     text = result;
+    cumulativeOffsetDelta += ruleOffsetDelta;
   }
 
   return { text, matches };
