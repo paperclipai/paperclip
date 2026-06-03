@@ -9,7 +9,7 @@ import {
   ShieldAlert,
   Trash2,
 } from "lucide-react";
-import type { AccountWithHealth, PoolState } from "@paperclipai/shared";
+import type { AccountWithHealth, PoolState, QuotaWindow } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
@@ -48,6 +48,49 @@ function healthBarColor(usedPercent: number | null, capped: boolean): string {
   return "bg-green-600";
 }
 
+/**
+ * The live quota source can report the same window more than once (e.g. session
+ * + week listed twice). Collapse by label+detail so each window shows once.
+ */
+function uniqueWindows(windows: QuotaWindow[]): QuotaWindow[] {
+  const seen = new Set<string>();
+  const out: QuotaWindow[] = [];
+  for (const window of windows) {
+    const fingerprint = `${window.label}|${window.detail ?? ""}|${window.usedPercent ?? ""}`;
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+    out.push(window);
+  }
+  return out;
+}
+
+/** one quota window row: label, %, mini-bar, and reset detail */
+function WindowRow({ window }: { window: QuotaWindow }) {
+  const pct = window.usedPercent;
+  const barWidth = pct == null ? 0 : Math.min(100, Math.max(0, pct));
+  const capped = pct != null && pct >= 100;
+  // The human-readable reset text lives in `detail` (e.g. "Resets 1:10pm (Asia/Saigon)").
+  const resetText = window.detail ?? (window.resetsAt ? `Resets ${formatTimestamp(window.resetsAt)}` : null);
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between text-xs">
+        <span className="truncate text-muted-foreground">{window.label}</span>
+        <span className="font-medium text-foreground">
+          {pct == null ? "—" : `${Math.round(pct)}%`}
+          {window.valueLabel ? ` · ${window.valueLabel}` : ""}
+        </span>
+      </div>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+        <div
+          className={cn("h-full rounded-full transition-all", healthBarColor(pct, capped))}
+          style={{ width: `${barWidth}%` }}
+        />
+      </div>
+      {resetText ? <span className="text-[11px] text-muted-foreground">{resetText}</span> : null}
+    </div>
+  );
+}
+
 function AccountCard(props: {
   account: AccountWithHealth;
   isActive: boolean;
@@ -57,6 +100,7 @@ function AccountCard(props: {
   const { account, isActive, onRemove, removeDisabled } = props;
   const pct = account.usedPercent;
   const barWidth = pct == null ? 0 : Math.min(100, Math.max(0, pct));
+  const windows = uniqueWindows(account.windows);
 
   return (
     <div
@@ -89,31 +133,43 @@ function AccountCard(props: {
         </Button>
       </div>
 
-      <div className="flex flex-col gap-1">
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-muted-foreground">Usage</span>
-          <span className="font-medium text-foreground">
-            {pct == null ? "Unknown" : `${Math.round(pct)}%`}
-          </span>
+      <div className="flex flex-col gap-2">
+        {/* Peak usage across all windows — the number the Balancer ranks on */}
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-muted-foreground">Peak usage</span>
+            <span className="font-medium text-foreground">
+              {pct == null ? "Unknown" : `${Math.round(pct)}%`}
+            </span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className={cn("h-full rounded-full transition-all", healthBarColor(pct, account.capped))}
+              style={{ width: `${barWidth}%` }}
+            />
+          </div>
         </div>
-        <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
-          <div
-            className={cn("h-full rounded-full transition-all", healthBarColor(pct, account.capped))}
-            style={{ width: `${barWidth}%` }}
-          />
-        </div>
-        <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground">
-          <span>{account.resetsAt ? `Resets ${formatTimestamp(account.resetsAt)}` : "No reset reported"}</span>
-        </div>
+
+        {/* Per-window breakdown (session / week / …) with reset times */}
+        {windows.length > 0 ? (
+          <div className="flex flex-col gap-2 border-t border-border/60 pt-2">
+            {windows.map((window, index) => (
+              <WindowRow key={`${window.label}-${index}`} window={window} />
+            ))}
+          </div>
+        ) : null}
+
         {account.error ? (
-          <p className="mt-1 flex items-center gap-1 text-xs text-amber-600">
+          <p className="flex items-center gap-1 text-xs text-amber-600">
             <AlertCircle className="h-3.5 w-3.5 shrink-0" />
             {account.error}
           </p>
         ) : null}
-        {!isActive && account.windows.length === 0 && !account.error ? (
-          <p className="mt-1 text-xs text-muted-foreground">
-            Live quota is only available for the active account.
+        {windows.length === 0 && !account.error ? (
+          <p className="text-xs text-muted-foreground">
+            {isActive
+              ? "No quota windows reported yet — waiting for the next Balancer probe."
+              : "Live quota is only available for the active account."}
           </p>
         ) : null}
       </div>
