@@ -5,7 +5,7 @@
       "name": "UI (Vite)",
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--filter", "@paperclipai/ui", "dev"],
-      "port": 5174
+      "port": 5173
     },
     {
       "name": "Server (watch)",
