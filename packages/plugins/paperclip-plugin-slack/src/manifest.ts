@@ -222,6 +222,13 @@ const manifest: PaperclipPluginManifestV1 = {
         "Processes pending event watches and triggers agent invocations for matching events.",
       schedule: "*/2 * * * *",
     },
+    {
+      jobKey: "commit-pending-approvals",
+      displayName: "Commit Pending Approvals",
+      description:
+        "Commits reaction-staged approval decisions whose undo grace window has elapsed (two-phase resolve). Backstop for reactions that are never removed.",
+      schedule: "*/1 * * * *",
+    },
   ],
   webhooks: [
     {

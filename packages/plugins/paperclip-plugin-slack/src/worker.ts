@@ -76,7 +76,10 @@ import { postHumanDecisionEscalation } from "./escalation-watch.js";
 import {
   resolveApproval,
   resolvePaperclipApproval,
-  tryUndoResolution,
+  requestRevision,
+  stagePendingReaction,
+  handleReactionRemoved,
+  commitDuePendingApprovals,
   emojiToDecision,
   parseThreadCommand,
   type ApprovalDecision,
@@ -313,7 +316,7 @@ async function handleReactionEvent(
   if (!canProcessMutatingApprovalWebhook("reaction")) return;
 
   if (event.type === "reaction_removed") {
-    await tryUndoResolution(pluginCtx, pluginToken, {
+    await handleReactionRemoved(pluginCtx, pluginToken, {
       companyId,
       approvalId,
       decision,
@@ -325,27 +328,17 @@ async function handleReactionEvent(
     return;
   }
 
-  // reaction_added
-  if (!isAuthorizedReactor(slackUserId)) {
-    await postMessage(
-      pluginCtx,
-      pluginToken,
-      channel,
-      {
-        text: `:warning: <@${slackUserId}> is not on the approval allowlist — reaction ignored.`,
-      },
-      { threadTs: ts },
-    );
-    return;
-  }
-
-  await resolveApproval(pluginCtx, pluginToken, {
+  // reaction_added → stage a pending decision (committed after the undo grace
+  // window). The allowlist check is enforced inside stagePendingReaction so the
+  // unauthorized note + no-op behavior is covered by direct unit tests.
+  await stagePendingReaction(pluginCtx, pluginToken, {
     companyId,
     approvalId,
     decision,
     slackUserId,
     channel,
     ts,
+    authorized: isAuthorizedReactor(slackUserId),
     paperclipBaseUrl: pluginConfig.paperclipBaseUrl,
   });
 }
@@ -1586,6 +1579,31 @@ const plugin = definePlugin({
         }
       }
     });
+    // Commit reaction-staged approval decisions whose undo grace window has
+    // elapsed (BLO-8861 two-phase resolve). Backstop for reactors who add ✅/❌
+    // and never remove it; durable across worker restarts via the pending index.
+    ctx.jobs.register("commit-pending-approvals", async () => {
+      const companies = await listTargetCompanies(ctx);
+      for (const company of companies) {
+        try {
+          const { committed } = await commitDuePendingApprovals(ctx, token, {
+            companyId: company.id,
+            paperclipBaseUrl: config.paperclipBaseUrl,
+          });
+          if (committed > 0) {
+            ctx.logger.info("Committed due pending approval decisions", {
+              companyId: company.id,
+              committed,
+            });
+          }
+        } catch (err) {
+          ctx.logger.warn("Failed to commit pending approvals", {
+            companyId: company.id,
+            err,
+          });
+        }
+      }
+    });
 
     // =========================================================================
     // Agent output listeners (native streaming + ACP events)
@@ -1708,23 +1726,58 @@ const plugin = definePlugin({
           await postMessage(ctx, token, channel, { text: parsed.message }, { threadTs });
           return;
         }
+        if (parsed.kind === "freeform_revision") {
+          // A freeform (non-`!`) reply on an approval thread is a revision
+          // comment (BLO-8568). Only act for an authorized approver on a
+          // still-unresolved approval; otherwise treat it as ordinary thread
+          // chatter and stop (approval threads do not route to agents).
+          const freeformUserId = p.slackUserId ? String(p.slackUserId) : "";
+          if (!freeformUserId || !isAuthorizedReactor(freeformUserId)) return;
+          const resolvedLock = await ctx.state.get({
+            scopeKind: "company",
+            scopeId: event.companyId,
+            stateKey: STATE_KEYS.approvalResolved(approvalId),
+          });
+          const pendingDecision = await ctx.state.get({
+            scopeKind: "company",
+            scopeId: event.companyId,
+            stateKey: STATE_KEYS.approvalPending(approvalId),
+          });
+          if (resolvedLock || pendingDecision) return;
+          if (!canProcessMutatingApprovalWebhook("freeform_revision")) return;
+          await requestRevision(ctx, token, {
+            companyId: event.companyId,
+            approvalId,
+            slackUserId: freeformUserId,
+            channel,
+            ts: threadTs,
+            reason: parsed.reason,
+            threadTs,
+            paperclipBaseUrl: config.paperclipBaseUrl,
+          });
+          return;
+        }
         if (parsed.kind === "status") {
           const lock = (await ctx.state.get({
             scopeKind: "company",
             scopeId: event.companyId,
             stateKey: STATE_KEYS.approvalResolved(approvalId),
           })) as { decision: ApprovalDecision; by: string } | null;
-          await postMessage(
-            ctx,
-            token,
-            channel,
-            {
-              text: lock
-                ? `:information_source: This approval was ${lock.decision} by <@${lock.by}>.`
-                : ":hourglass: This approval is still pending. React :white_check_mark: / :x:, or reply \`!approve\` / \`!reject\` / \`!revise <reason>\`.",
-            },
-            { threadTs },
-          );
+          const pending = (await ctx.state.get({
+            scopeKind: "company",
+            scopeId: event.companyId,
+            stateKey: STATE_KEYS.approvalPending(approvalId),
+          })) as { decision: ApprovalDecision; by: string } | null;
+          let statusText: string;
+          if (lock) {
+            statusText = `:information_source: This approval was ${lock.decision} by <@${lock.by}>.`;
+          } else if (pending) {
+            statusText = `:hourglass_flowing_sand: A *${pending.decision}* by <@${pending.by}> is pending in its undo window (not committed yet). Remove the reaction to cancel it.`;
+          } else {
+            statusText =
+              ":hourglass: This approval is still pending. React :white_check_mark: / :x:, or reply `!approve` / `!reject` / `!revise <reason>`.";
+          }
+          await postMessage(ctx, token, channel, { text: statusText }, { threadTs });
           return;
         }
         // parsed.kind === "decision"

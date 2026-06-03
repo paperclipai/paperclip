@@ -1,6 +1,6 @@
 {
   "name": "paperclip-plugin-slack",
-  "version": "2.2.1",
+  "version": "2.3.0",
   "description": "In-tree fork of paperclip-plugin-slack with agent-callable Slack API tools",
   "type": "module",
   "private": true,

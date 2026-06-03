@@ -1,7 +1,7 @@
 import type { SlackPluginConfig } from "./types.js";
 
 export const PLUGIN_ID = "paperclip-plugin-slack";
-export const PLUGIN_VERSION = "2.2.1";
+export const PLUGIN_VERSION = "2.3.0";
 
 export const ESCALATION_NEEDS_HUMAN_DECISION_EVENT =
   "issue.escalation.needs_human_decision" as const;
@@ -49,6 +49,12 @@ export const STATE_KEYS = {
   approvalByTs: (channel: string, ts: string) =>
     `approval-by-ts-${channel}-${ts}`,
   approvalResolved: (approvalId: string) => `approval-resolved-${approvalId}`,
+  // Two-phase reaction resolve (BLO-8861): a reaction stages a *pending*
+  // decision that is not committed to the host until the undo grace window
+  // elapses. The index lets the every-minute commit job enumerate pending
+  // decisions without a state prefix scan (mirrors escalation-records-index).
+  approvalPending: (approvalId: string) => `approval-pending-${approvalId}`,
+  approvalPendingIndex: "approval-pending-index",
 } as const;
 
 export const DEFAULT_CONFIG: SlackPluginConfig = {
