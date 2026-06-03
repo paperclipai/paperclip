@@ -19,9 +19,7 @@ import {
   PenTool,
   Plus,
   Sparkles,
-  Target,
   Terminal,
-  Users,
   Zap,
 } from "lucide-react";
 
@@ -212,18 +210,18 @@ function CountUp({
 // ─── Live console ─────────────────────────────────────────────────────────────
 
 const JOB_FEED = [
+  "outbound-sync ✓ — 26 campaigns ranked by reply rate",
+  "blog-auto-drafter ✓ — 1 draft queued",
+  "gsc-rank-tracker ✓ — 41 keywords tracked",
   "agent-runner ✓ — PR merged in 4m",
+  "mentions-sync ✓ — 60 scanned, 4 hot",
+  "pipeline-sync ✓ — 6 deals attributed",
   "issue-planner ✓ — 7 subtasks scaffolded",
+  "linkedin-poster ✓ — post scheduled",
+  "renewal-reminders ✓ — 2 flagged",
   "code-review ✓ — 3 issues surfaced",
-  "routine-sync ✓ — 12 agents checked in",
-  "test-runner ✓ — 94/94 passing",
-  "goal-tracker ✓ — 2 milestones closed",
-  "inbox-triage ✓ — 8 tasks dispatched",
-  "deploy-check ✓ — staging green",
-  "cost-sweep ✓ — $0.34 this run",
+  "daily-digest ✓ — snapshot written",
   "approval-gate ✓ — 1 decision queued",
-  "workspace-sync ✓ — env patched",
-  "agent-heartbeat ✓ — all systems nominal",
 ];
 
 function LiveConsole() {
@@ -248,7 +246,7 @@ function LiveConsole() {
         <span className="size-2.5 rounded-full bg-yellow-500/70" />
         <span className="size-2.5 rounded-full bg-[#f97316]/80" />
         <span className="ml-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          <Terminal className="size-3" /> paperclip-worker · live
+          <Terminal className="size-3" /> agnb-worker · live
         </span>
         <span className="ml-auto flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-[#f97316]">
           <span className="size-1.5 animate-pulse rounded-full bg-[#f97316]" /> running
@@ -278,108 +276,113 @@ function LiveConsole() {
 // ─── Data ─────────────────────────────────────────────────────────────────────
 
 const TICKER = [
+  "Outbound",
+  "Inbound",
+  "Content Studio",
+  "Revenue",
+  "Experiments",
   "Autonomous Agents",
+  "Pipeline",
+  "Mentions",
+  "Blog",
+  "LinkedIn",
+  "YouTube",
+  "Attribution",
   "Tasks",
   "Routines",
   "Goals",
-  "Projects",
   "Approvals",
-  "Inbox",
-  "Activity",
-  "Costs",
-  "Search",
-  "Environments",
-  "Plugins",
-  "Adapters",
   "Human Team",
 ];
 
 const STATS = [
-  { to: 60, suffix: "s", l: "task dispatch interval" },
-  { to: 35, suffix: "+", l: "agent types, 24/7" },
-  { to: 9, suffix: "", l: "adapter integrations" },
-  { to: 0, suffix: "", l: "standups required" },
+  { to: 60, suffix: "s", l: "queue drain interval" },
+  { to: 35, suffix: "+", l: "autonomous jobs, 24/7" },
+  { to: 9, suffix: "", l: "channels, one cockpit" },
+  { to: 0, suffix: "", l: "tabs of busywork" },
 ];
 
 const MODULES = [
   {
     icon: Bot,
     k: "Autonomous Agents",
-    d: "Agents that plan, code, test, and ship. Give them a goal and get out of the way. Full execution logs, per-task workspaces, and approval gates when you want them.",
+    d: "Agents that plan, code, ship — and run your growth ops. Give them a goal and they do the reps: campaigns, content, tickets, syncs. Approval gates when you want them.",
   },
   {
-    icon: CheckSquare,
-    k: "Tasks & Issues",
-    d: "Full project management wired to your agents. Subtasks, priorities, assignees, timelines. Agents create and close tickets themselves — no manual triaging.",
+    icon: Network,
+    k: "Outbound",
+    d: "Campaigns ranked by reply rate, multi-sender across email + LinkedIn, AI reply drafts, sequence control. Stop guessing which campaign works — we rank them.",
   },
   {
-    icon: Zap,
-    k: "Routines",
-    d: "Scheduled agents that never sleep. Set the cadence, define the job, and watch the queue drain itself every minute. No cron, no babysitting.",
+    icon: Activity,
+    k: "Inbound",
+    d: "Every mention, demo, and deal — captured, attributed, scored. Share-of-voice across LLMs, pipeline + funnel sync, review monitoring. Signal, not noise.",
   },
   {
-    icon: Target,
-    k: "Goals & Projects",
-    d: "Top-down alignment, bottom-up execution. Goals break into projects, projects into tasks, tasks into agent runs. Strategy meets autonomy.",
-  },
-  {
-    icon: Users,
-    k: "Human Team",
-    d: "AI and human work in one surface. Assign tasks to people or agents. Approval gates, comment threads, and activity feeds keep everyone in the loop.",
+    icon: PenTool,
+    k: "Content Studio",
+    d: "Idea → published, on rails. Mine Reddit, YouTube + competitors for trends, auto-draft blog & LinkedIn, schedule, then track GSC rank and gaps. The flywheel runs itself.",
   },
   {
     icon: BarChart3,
-    k: "Activity & Costs",
-    d: "Full observability over every agent run. Duration, token cost, tool calls, outcomes. Know what shipped, what it cost, and what to optimize next.",
+    k: "Revenue",
+    d: "Attribution that isn't a guess. Forecast, renewals, GST invoicing, win/loss. Know what's driving revenue — and what's about to churn — before it does.",
+  },
+  {
+    icon: CheckSquare,
+    k: "Work OS",
+    d: "Issues, routines, goals, approvals — humans and agents in one surface. The orchestration layer that schedules, assigns, and drives every engine above.",
   },
 ];
 
 const SURFACES = [
-  "Tasks",
-  "Issues",
-  "Goals",
-  "Projects",
-  "Agents",
-  "Routines",
-  "Approvals",
+  "Campaigns",
   "Inbox",
-  "Dashboard",
+  "Pipeline",
+  "Mentions",
+  "Blog",
+  "LinkedIn",
+  "YouTube",
+  "Experiments",
+  "Buckets",
+  "Attribution",
+  "Forecast",
+  "Renewals",
+  "Win/Loss",
+  "Personas",
+  "ICPs",
+  "Agents",
+  "Issues",
+  "Routines",
+  "Goals",
+  "Approvals",
   "Activity",
   "Costs",
-  "Search",
-  "Workspaces",
-  "Documents",
-  "Company",
   "Human Team",
   "Adapters",
-  "Plugins",
-  "Environments",
   "Secrets",
-  "Instance",
-  "Tokens",
-  "Webhooks",
-  "Settings",
+  "Search",
 ];
 
 const LOOP = [
-  { icon: Zap, t: "Dispatch", d: "Tasks hit the queue. Agents pick up and plan." },
-  { icon: Network, t: "Execute", d: "Code written, tests run, PRs opened." },
-  { icon: PenTool, t: "Review", d: "Auto-review on CI green. Human gate when needed." },
-  { icon: Gauge, t: "Observe", d: "Costs, outcomes, and logs — always visible." },
+  { icon: Zap, t: "Drain", d: "Event queue flushed every 60s — nothing sits." },
+  { icon: Network, t: "Sync", d: "CRM, GSC, mentions, Rocket — pulled on schedule." },
+  { icon: PenTool, t: "Draft & ship", d: "Blog, LinkedIn, PRs — written and merged while you sleep." },
+  { icon: Gauge, t: "Observe", d: "Attribution, costs, anomalies — flagged before they bite." },
 ];
 
 const FAQS = [
   {
-    q: "Do agents really run unsupervised?",
-    a: "Yes. Routines fire on schedule — draining queues, planning tasks, writing code, running tests. You set the goal; they do the reps. Approval gates give you control at exactly the checkpoints you care about.",
+    q: "What is All Gas No Brakes?",
+    a: "Your entire growth engine — outbound, inbound, content, revenue — plus an autonomous agent platform that runs it. One cockpit; the agents do the reps across every channel and your dev work too.",
   },
   {
-    q: "Is this just another project management tool?",
-    a: "No. Other tools track work. We do work. The agents are the workers — your issue tracker is also your execution engine.",
+    q: "Does it really run itself?",
+    a: "Yes. 35 scheduled jobs fire around the clock — draining queues, syncing CRMs, drafting content, ranking campaigns, planning tickets, reconciling attribution. You make the calls; it does the work.",
   },
   {
-    q: "How do agents get access to my codebase?",
-    a: "Connect an adapter — Claude Code, Cursor, or any supported AI coding environment. Agents get isolated workspaces per task. No shared state, no collisions.",
+    q: "Is this a marketing tool or a dev tool?",
+    a: "Both, fused. AGNB's full growth stack (campaigns, pipeline, content, revenue) and an agent orchestration layer (issues, routines, goals, approvals) live in one surface — and cross-pollinate: an agent can run a campaign, a routine can ship a PR.",
   },
   {
     q: "What does the human actually do?",
@@ -543,9 +546,9 @@ export function LandingPage() {
               <span className="bg-gradient-to-r from-amber-400 via-orange-500 to-red-600 bg-clip-text text-transparent">no brakes.</span>
             </h1>
             <p className="mt-6 max-w-xl text-[17px] leading-relaxed text-muted-foreground">
-              Your engineers ship. Your agents never stop. We are the autonomous
-              AI work platform that plans, codes, and closes tickets while you sleep —
-              one cockpit for the whole engine.
+              Twelve dashboards. Six logins. Zero momentum. That ends here. Your
+              entire growth engine — outbound, inbound, content, revenue — run by
+              autonomous agents that floor it while you sleep. One cockpit.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <a
@@ -609,15 +612,15 @@ export function LandingPage() {
         {/* ── Problem ── */}
         <Section className="py-16">
           <h2 className="max-w-3xl text-[clamp(28px,3.6vw,44px)] font-bold leading-[1.08] tracking-[-0.025em]">
-            AI tooling is fragmented, opaque, and slow.{" "}
+            Growth tooling is bloated, siloed, and slow.{" "}
             <span className="text-muted-foreground">
-              You hired engineers to ship, not to babysit models.
+              You weren't hired to babysit twelve dashboards.
             </span>
           </h2>
           <p className="mt-5 max-w-2xl text-[16px] leading-relaxed text-muted-foreground">
-            Brakes are for people who second-guess. We strip the busywork,
-            wires every agent into one surface, and hands the execution to workers
-            that never clock out. You set the goal. They floor it.
+            Brakes are for people who second-guess. We strip the busywork, wire
+            every channel and your dev work into one surface, and hand the grind to
+            agents that never clock out. You set the goal. They floor it.
           </p>
         </Section>
 
@@ -656,8 +659,9 @@ export function LandingPage() {
                 The pipeline never goes cold.
               </h2>
               <p className="mt-4 max-w-md text-[15px] leading-relaxed text-muted-foreground">
-                Agents fire on schedule or on demand. Watch the real loop — dispatch,
-                execute, review, observe — running nonstop.
+                35 jobs + your agents fire on schedule or on demand — campaigns,
+                content, syncs, PRs. Watch the real loop — drain, sync, draft, observe
+                — running nonstop.
               </p>
               <div className="mt-8 grid grid-cols-2 gap-5">
                 {LOOP.map((s, i) => (
@@ -713,11 +717,11 @@ export function LandingPage() {
               </p>
               <ul className="space-y-3 text-[14px] text-muted-foreground">
                 {[
-                  "Jira + Slack + GitHub = 3 logins, context lost",
-                  "Manual task assignment at standup",
-                  "Wondering what the agent did overnight",
-                  "PR reviews sitting for days",
-                  "No idea what AI costs this sprint",
+                  "12 tabs: CRM, Rocket, GSC, Jira, Slack — context lost",
+                  "Manual CRM syncs + campaign checks at 11pm",
+                  "Guessing which campaign (or agent) actually worked",
+                  "Content stuck in drafts; PRs sitting for days",
+                  "Attribution? A spreadsheet prayer",
                 ].map((x) => (
                   <li key={x} className="flex gap-2 line-through decoration-border">
                     <span className="text-border">—</span>
@@ -732,11 +736,11 @@ export function LandingPage() {
               </p>
               <ul className="space-y-3 text-[14px] text-foreground">
                 {[
-                  "Tasks, agents, code — one cockpit, one login",
-                  "Agents self-assign and execute, 24/7",
-                  "Full execution logs, always",
-                  "Auto-review, human gate when needed",
-                  "Cost tracked per agent, per task",
+                  "Campaigns, pipeline, content, code — one cockpit, one login",
+                  "Agents + 35 jobs run the channels 24/7",
+                  "Campaigns ranked by reply rate; PRs merged on green",
+                  "Drafts written + scheduled on autopilot",
+                  "Attribution reconciled automatically",
                 ].map((x) => (
                   <li key={x} className="flex gap-2">
                     <ChevronRight className="mt-0.5 size-4 shrink-0 text-[#f97316]" />
@@ -753,10 +757,10 @@ export function LandingPage() {
           <div className="grid grid-cols-1 gap-8 md:grid-cols-[auto_1fr] md:items-center">
             <Gauge className="size-10 text-[#f97316]" />
             <blockquote className="text-[clamp(22px,3vw,34px)] font-semibold leading-[1.2] tracking-[-0.02em] text-foreground">
-              &ldquo;Deploy fast, approve what matters, automate the rest.
+              &ldquo;Ship fast, measure everything, automate the rest.
               <span className="text-muted-foreground">
                 {" "}
-                Your competition is still writing the Jira ticket.&rdquo;
+                The competition is still scheduling a meeting about it.&rdquo;
               </span>
             </blockquote>
           </div>
