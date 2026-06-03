@@ -105,6 +105,7 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
 import { environmentService } from "../services/environments.js";
 import { redactSensitiveText } from "../redaction.js";
+import { scanAndRedact } from "../credential-scanner.js";
 import {
   createCompanySearchRateLimiter,
   type CompanySearchRateLimiter,
@@ -2881,12 +2882,29 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     const referenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+
+    // P0: SH-12 credential scan — redact before persisting document body
+    const docScanResult = scanAndRedact(req.body.body ?? "");
+    if (docScanResult.matches.length > 0) {
+      const tc = getTelemetryClient();
+      if (tc) {
+        for (const m of docScanResult.matches) {
+          tc.track("sh12.credential_redacted", {
+            boundary: "document",
+            type_hint: m.typeHint,
+            character_offset: m.characterOffset,
+            input_length: m.inputLength,
+          });
+        }
+      }
+    }
+
     const result = await documentsSvc.upsertIssueDocument({
       issueId: issue.id,
       key: keyParsed.data,
       title: req.body.title ?? null,
       format: req.body.format,
-      body: req.body.body,
+      body: docScanResult.text,
       changeSummary: req.body.changeSummary ?? null,
       baseRevisionId: req.body.baseRevisionId ?? null,
       createdByAgentId: actor.agentId ?? null,
@@ -5879,7 +5897,23 @@ export function issueRoutes(
       }
     }
 
-    const comment = await svc.addComment(id, req.body.body, {
+    // P0: SH-12 credential scan — redact before persisting comment body
+    const commentScanResult = scanAndRedact(req.body.body ?? "");
+    if (commentScanResult.matches.length > 0) {
+      const tc = getTelemetryClient();
+      if (tc) {
+        for (const m of commentScanResult.matches) {
+          tc.track("sh12.credential_redacted", {
+            boundary: "comment",
+            type_hint: m.typeHint,
+            character_offset: m.characterOffset,
+            input_length: m.inputLength,
+          });
+        }
+      }
+    }
+
+    const comment = await svc.addComment(id, commentScanResult.text, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
       runId: actor.runId,
