@@ -17,6 +17,15 @@ How well does this opportunity match ConsultAdd's 7 service areas? A perfect mat
 
 SOFTWARE LICENSING IS IN SCOPE: Software licensing, subscriptions, SaaS license purchases, enterprise license agreements, and license + maintenance/support renewals are FULLY in scope — including pure license resale with no implementation component. Score them as the matching platform category (e.g., "Oracle license & support renewal" → erp; "Microsoft 365 / Azure subscription" → cloud; "Salesforce licenses" → erp). Do NOT penalize an opportunity for being "just a license/subscription/COTS purchase" — treat a clean license/subscription buy on a platform ConsultAdd works with as strong service alignment (30-40).
 
+CORE IMPLEMENTATION CATEGORIES SCORE 35-40: These are ConsultAdd's bread-and-butter — when an RFP is a clearly-scoped implementation/consulting engagement in any of these, score serviceAlignment 35-40 (top of the band), not the middle:
+- Microsoft 365 / SharePoint intranet, collaboration platform, or M365-based portal implementation
+- ERP implementation/modernization (Oracle, SAP, Workday, PeopleSoft, Dynamics, Salesforce)
+- Cybersecurity assessment, penetration testing, SOC/SIEM, MDR/MSSP
+- Data analytics / data platform / BI / AI implementation
+- Managed IT services / MSP / managed network services
+- Cloud migration / infrastructure modernization
+Do NOT dock service alignment merely because the contract value is unstated or because it is "just" one platform — a well-defined scope in a core category is a 35-40. Reserve the 20-34 band for genuinely adjacent work (e.g., generic staff-aug, telecom hardware, training-only).
+
 WEBSITE DESIGN IS OUT OF CORE SCOPE: Pure website design, website redesign, CMS setup, or brochure-ware web development with NO larger system, platform, integration, portal, or substantive application-development component scores 0-14 service alignment. However, if the website work is bundled with a larger system/platform/portal/app-dev engagement (e.g., "constituent portal with backend case-management system"), score the larger engagement normally.
 
 ### Bid Readiness (0–20 points)
@@ -57,6 +66,9 @@ DO NOT put these in disqualifiers — they are operating conditions the team han
 - "No diversity advantage" / "open competition" → NOT a disqualifier.
 
 If you want to note these as caveats, put them in the "reasoning" field instead. Keep the disqualifiers array empty unless you have a true hard blocker.
+
+## US-6: concerns must be SPECIFIC
+Never emit a vague concern like "unclear requirements", "requirements are unclear", "vague scope", or "limited details". Every concern you list MUST name the exact missing element — e.g. "no contract value stated", "no submission deadline given", "scope references Exhibit A which is not included", "does not state the required certifications". If the RFP's scope, evaluation criteria, and deliverables are all present, do NOT emit any vagueness concern at all — a complete RFP has zero "unclear" concerns. A bare "unclear requirements" string is never acceptable output.
 
 ## Response Format
 Respond with ONLY a JSON object (no markdown, no explanation outside the JSON):

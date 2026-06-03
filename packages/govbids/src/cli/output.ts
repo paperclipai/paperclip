@@ -36,16 +36,36 @@ export async function writeQualifiedCsv(
 
 // ── Shared lawyer-output helpers ────────────────────────────────────
 
-const CORE_PROMOTION_CATEGORIES: ServiceCategory[] = ["managed-it", "cybersecurity"];
+// US-5: all core implementation categories are GREEN-promotion eligible, not just
+// MSP/cyber. A well-scoped engagement (serviceAlignment >=35) in any of these is a
+// top opportunity even when the contract value is unstated (which deflates total
+// score). Website/CMS work can't reach this band — it scores <=14 alignment by the
+// scoring-prompt rule — so promotion doesn't undo the website down-rank.
+const CORE_PROMOTION_CATEGORIES: ServiceCategory[] = [
+  "managed-it",
+  "cybersecurity",
+  "erp",
+  "cloud",
+  "ai-data",
+  "app-dev",
+];
 
 /**
- * Tier with MSP/Cybersecurity promotion: a strong service-alignment (>=35/40)
- * in a core category is GREEN regardless of value-fit deductions.
+ * Tier with core-category promotion: a strong service-alignment (>=35/40) in a
+ * core category and no real disqualifier is GREEN regardless of value-fit
+ * deductions.
  */
-function tierOf(opp: ScoredOpportunity): "GREEN" | "YELLOW" | "AMBER" {
+export function tierOf(opp: ScoredOpportunity): "GREEN" | "YELLOW" | "AMBER" {
+  // Promote to GREEN only when alignment is strong AND the total score is already
+  // YELLOW-grade (>=70). This keeps GREEN meaningful ("pursue first") — a strong-
+  // alignment row that the value/readiness factors drag into AMBER (50-69) is NOT
+  // auto-promoted. The Redwood-style well-scoped implementation (score ~75) gets
+  // GREEN; a marginal AMBER license renewal does not.
   const promotable =
     CORE_PROMOTION_CATEGORIES.includes(opp.serviceCategory) &&
-    opp.scoreBreakdown.serviceAlignment >= 35;
+    opp.scoreBreakdown.serviceAlignment >= 35 &&
+    opp.score >= 70 &&
+    (opp.disqualifiers?.length ?? 0) === 0;
   if (promotable || opp.score >= 80) return "GREEN";
   if (opp.score >= 70) return "YELLOW";
   return "AMBER";

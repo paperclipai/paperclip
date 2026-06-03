@@ -272,6 +272,13 @@ export function stripSoftDisqualifiers(dq: string[]): string[] {
     // Limited / minimal / brief / vague RFP details
     /\b(limited|minimal|brief|vague|insufficient|sparse|incomplete)\b.*(detail|description|information|requirements|solicitation)/i,
     /\b(detail|description|information|requirements)\b.*\b(limited|minimal|brief|vague|insufficient|sparse|missing|incomplete)\b/i,
+    // US-6: bare "unclear requirements" style concerns with no specific missing
+    // element. A real gap names what's missing ("no contract value stated") and
+    // survives; a generic vagueness flag is stripped.
+    /\bunclear\b.*\b(requirements?|scope|details?|specifications?)\b/i,
+    /\b(requirements?|scope|specifications?)\b.*\bunclear\b/i,
+    /\bvague\b.*\b(scope|requirements?|rfp|solicitation)\b/i,
+    /^(unclear|vague|ambiguous)\b/i,
     // Deadline tightness
     /\b(tight|short|narrow|very brief|insufficient|limited)\b.*\b(deadline|response window|timeline|turnaround|time)\b/i,
     /\bdue (date)? (is )?(tomorrow|today|in \d+ days?|soon|imminent)/i,
