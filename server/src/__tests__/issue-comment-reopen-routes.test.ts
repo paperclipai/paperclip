@@ -66,6 +66,7 @@ const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  listForIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
@@ -487,7 +488,67 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("implicitly reopens closed issues via POST comments when an agent is assigned", async () => {
+  // FUL-3307: plain user comments must NOT implicitly reopen done issues.
+  // Done issues require explicit reopen: true; pure comments are informational only.
+  it("does NOT implicitly reopen done issues via POST comments (FUL-3307)", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "hello" });
+
+    expect(res.status).toBe(201);
+    // Issue must remain done — no implicit status transition.
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    // No wakeup should be queued (done + isClosed prevents it).
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  // FUL-3307: simulation of the board-user automation comment loop.
+  // Multiple rapid comments from the board user (e.g. a "drift corrected" script)
+  // must not chain-reopen a done issue and wake the assignee each time.
+  it("board user automation comments do not create a done→todo→run loop (FUL-3307)", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+    // Two rapid POST comment calls simulating a board-user automation
+    const res1 = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Reopen drift corrected: FUL-3168 restored to done." });
+    const res2 = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Reopen drift corrected again: FUL-3168 restored to done." });
+
+    expect(res1.status).toBe(201);
+    expect(res2.status).toBe(201);
+    // No status update to todo on either call.
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    // No wakeup queued on either call.
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  // FUL-3574: PATCH from in_progress → done with a comment must NOT fire issue_commented
+  // wake for the assignee. isClosed is based on the pre-update status (in_progress = false),
+  // so the fix adds a check against the post-update status (done = true → skip wake).
+  it("PATCH that sets in_progress issue to done with a comment does not fire issue_commented wake (FUL-3574)", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    // Simulate the PATCH succeeding and returning a done issue.
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("in_progress"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done", comment: "Disposition sync: acknowledged. Stop condition met. Restoring terminal status to done." });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("done");
+    // No wake should be queued — the issue is now terminal.
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  // FUL-3307: explicit reopen: true must still work for done issues.
+  it("still reopens done issues via POST comment with explicit reopen: true", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("done"),
@@ -496,7 +557,7 @@ describe.sequential("issue comment reopen routes", () => {
 
     const res = await request(await installActor(createApp()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      .send({ body: "hello" });
+      .send({ body: "Needs another pass.", reopen: true });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.update).toHaveBeenCalledWith(
@@ -1320,14 +1381,14 @@ describe.sequential("issue comment reopen routes", () => {
       expect.objectContaining({
         action: "heartbeat.cancelled",
         details: expect.objectContaining({
-          source: "issue_status_cancelled",
+          source: "issue_status_terminal",
           issueId: "11111111-1111-4111-8111-111111111111",
         }),
       }),
     );
   });
 
-  it("does not cancel active runs when an issue is marked done", async () => {
+  it("cancels active runs when an issue is marked done", async () => {
     const issue = {
       ...makeIssue("in_progress"),
       executionRunId: "run-1",
@@ -1343,13 +1404,30 @@ describe.sequential("issue comment reopen routes", () => {
       agentId: "22222222-2222-4222-8222-222222222222",
       status: "running",
     });
+    mockHeartbeatService.cancelRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "cancelled",
+    });
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ status: "done" });
 
     expect(res.status).toBe(200);
-    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("run-1");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "heartbeat.cancelled",
+        details: expect.objectContaining({
+          source: "issue_status_terminal",
+          issueId: "11111111-1111-4111-8111-111111111111",
+        }),
+      }),
+    );
   });
 
   it("writes decision ids into executionState and inserts the decision inside the transaction", async () => {

@@ -5,6 +5,8 @@ export interface CheckResult {
   canRepair?: boolean;
   repair?: () => void | Promise<void>;
   repairHint?: string;
+  /** Paths that this repair will overwrite. doctor will back them up before proceeding. */
+  repairWillOverwrite?: string[];
 }
 
 export { agentJwtSecretCheck } from "./agent-jwt-secret-check.js";

@@ -16,6 +16,7 @@ import {
   resolvePaperclipHomeDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
+import { acquireRunLock } from "../utils/process-lock.js";
 
 interface RunOptions {
   config?: string;
@@ -42,6 +43,16 @@ export async function runCommand(opts: RunOptions): Promise<void> {
   const paths = describeLocalInstancePaths(instanceId);
   fs.mkdirSync(paths.instanceRoot, { recursive: true });
 
+  // ── Single-runtime lock ───────────────────────────────────────────────────
+  // Prevent multiple `paperclipai run` processes for the same instance.
+  let runLock;
+  try {
+    runLock = acquireRunLock(paths.instanceRoot);
+  } catch (err) {
+    p.log.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+
   const configPath = resolveConfigPath(opts.config);
   process.env.PAPERCLIP_CONFIG = configPath;
   loadPaperclipEnvFile(configPath);
@@ -67,6 +78,7 @@ export async function runCommand(opts: RunOptions): Promise<void> {
     config: configPath,
     repair: opts.repair ?? true,
     yes: opts.yes ?? true,
+    _calledByRun: true,
   });
 
   if (summary.failed > 0) {

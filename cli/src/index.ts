@@ -80,6 +80,10 @@ program
   .option("--repair", "Attempt to repair issues automatically")
   .alias("--fix")
   .option("-y, --yes", "Skip repair confirmation prompts")
+  .option(
+    "--force",
+    "Override the runtime-active guard and allow --repair while the service is running",
+  )
   .action(async (opts) => {
     await doctor(opts);
   });

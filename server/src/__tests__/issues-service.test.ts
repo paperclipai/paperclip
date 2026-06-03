@@ -1475,6 +1475,9 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
     const defaultResult = await svc.list(companyId);
     expect(defaultResult.find((issue) => issue.id === blockedId)?.blockedBy).toBeUndefined();
+    expect(defaultResult.find((issue) => issue.id === blockedId)?.blockedByIssueIds).toEqual([blockerId]);
+    expect(defaultResult.find((issue) => issue.id === blockerId)?.blockedByIssueIds).toEqual([]);
+    expect(defaultResult.find((issue) => issue.id === unblockedId)?.blockedByIssueIds).toEqual([]);
 
     const result = await svc.list(companyId, { includeBlockedBy: true });
     const byId = new Map(result.map((issue) => [issue.id, issue]));
@@ -2342,6 +2345,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(workspaceOperations);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -2812,6 +2816,67 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await expect(
       svc.checkout(blockedId, assigneeAgentId, ["todo", "blocked"], null),
     ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("blocks checkout when the assignee already has an active run on another issue", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const activeIssueId = randomUUID();
+    const nextIssueId = randomUUID();
+    const activeRunId = randomUUID();
+    const nextRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId: assigneeAgentId,
+      status: "running",
+      invocationSource: "manual",
+    });
+
+    await db.insert(issues).values([
+      {
+        id: activeIssueId,
+        companyId,
+        title: "Already active",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId,
+        executionRunId: activeRunId,
+        checkoutRunId: activeRunId,
+      },
+      {
+        id: nextIssueId,
+        companyId,
+        title: "Next issue",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await expect(
+      svc.checkout(nextIssueId, assigneeAgentId, ["todo"], nextRunId),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "Agent already has an active run on another issue",
+    });
   });
 
   it("wakes parents only when all direct children are terminal", async () => {

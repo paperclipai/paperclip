@@ -17,5 +17,6 @@
       "lexical": ["./node_modules/lexical/index.d.ts"]
     }
   },
-  "include": ["src", "storybook"]
+  "include": ["src", "storybook"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/*.spec.ts", "src/**/*.spec.tsx"]
 }

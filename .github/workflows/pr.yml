@@ -181,6 +181,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Verify @paperclipai/shared export chain
+        run: node scripts/check-shared-export-chain.mjs
+
   verify_serialized_server:
     name: Verify serialized server suites (${{ matrix.shard_label }})
     needs: [policy]

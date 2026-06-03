@@ -36,6 +36,7 @@ vi.mock("../services/index.js", () => ({
     saveIssueVote: vi.fn(),
   }),
   logActivity: vi.fn(),
+  heartbeatService: () => ({}),
 }));
 
 describe("company routes malformed issue path guard", () => {

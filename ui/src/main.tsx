@@ -31,8 +31,11 @@ if ("serviceWorker" in navigator) {
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 30_000,
-      refetchOnWindowFocus: true,
+      staleTime: 60_000,
+      // WebSocket events keep data fresh during active sessions.
+      // Window-focus refetches cause thundering-herd spikes (20+ simultaneous
+      // queries) whenever the user tabs back from terminal/IDE — disable them.
+      refetchOnWindowFocus: false,
     },
   },
 });

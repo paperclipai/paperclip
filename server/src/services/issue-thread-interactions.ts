@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   documents,
@@ -1342,4 +1342,159 @@ export function issueThreadInteractionService(db: Db) {
       return hydrateInteraction(updated);
     },
   };
+}
+
+const SATISFACTION_EXCERPT_MAX = 200;
+// Truncate bodies before regex eval — limits worst-case ReDoS exposure.
+// Pending proper re2 adoption; 500 chars is sufficient for approval-phrase detection.
+const SATISFACTION_EVAL_BODY_MAX = 500;
+
+type EvalResult = { matched: true; expressionType: string; matchedExcerpt: string } | { matched: false };
+
+function evaluateCommentContainsExpression(args: {
+  pattern: string;
+  commentBodies: string[];
+}): EvalResult {
+  let regex: RegExp;
+  try {
+    regex = new RegExp(args.pattern, "i");
+  } catch {
+    return { matched: false };
+  }
+  for (const body of args.commentBodies) {
+    const truncated = body.length > SATISFACTION_EVAL_BODY_MAX ? body.slice(0, SATISFACTION_EVAL_BODY_MAX) : body;
+    const match = regex.exec(truncated);
+    if (match) {
+      const start = Math.max(0, match.index - 40);
+      const raw = truncated.slice(start, start + SATISFACTION_EXCERPT_MAX);
+      const excerpt = start > 0 ? `…${raw}` : raw;
+      return { matched: true, expressionType: "comment_contains", matchedExcerpt: excerpt };
+    }
+  }
+  return { matched: false };
+}
+
+function evaluateEnvVarPresentExpression(args: {
+  name: string;
+  evidence?: "presence_only" | "length_only" | null;
+}): EvalResult {
+  const value = process.env[args.name];
+  if (!value || value.length === 0) return { matched: false };
+  const mode = args.evidence ?? "presence_only";
+  const matchedExcerpt = mode === "length_only"
+    ? `${args.name} present (length: ${value.length}). No secret values exposed.`
+    : `${args.name} present. No secret values exposed.`;
+  return { matched: true, expressionType: "env_var_present_by_name", matchedExcerpt };
+}
+
+export type AutoResolvedConfirmation = {
+  interactionId: string;
+  matchedExcerpt: string;
+  continuationPolicy: string;
+  createdByAgentId: string | null;
+};
+
+/**
+ * Evaluates pending request_confirmation interactions that carry a satisfactionExpression
+ * against the current issue thread state. Any whose expression resolves true are marked
+ * accepted with outcome "auto_resolved" and a redacted system audit comment is posted.
+ *
+ * Safety: evaluators are read-only, non-secret-printing, and bounded.
+ * Called in the harness pre-dispatch step (claimQueuedRun) so no agent heartbeat
+ * budget is consumed for the evaluation itself.
+ */
+export async function autoResolveSatisfactionExpressionInteractions(
+  db: Db,
+  issue: { id: string; companyId: string },
+): Promise<AutoResolvedConfirmation[]> {
+  const pendingRows = await db
+    .select()
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.companyId, issue.companyId),
+      eq(issueThreadInteractions.issueId, issue.id),
+      eq(issueThreadInteractions.kind, "request_confirmation"),
+      eq(issueThreadInteractions.status, "pending"),
+    ));
+
+  const withExpression = pendingRows.filter((row) => {
+    const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+    return interaction.payload.satisfactionExpression != null;
+  });
+
+  if (withExpression.length === 0) return [];
+
+  const commentBodies = await db
+    .select({ body: issueComments.body })
+    .from(issueComments)
+    .where(and(
+      eq(issueComments.companyId, issue.companyId),
+      eq(issueComments.issueId, issue.id),
+    ))
+    .orderBy(desc(issueComments.createdAt))
+    .limit(100)
+    .then((rows) => rows.map((r) => r.body));
+
+  const resolved: AutoResolvedConfirmation[] = [];
+  const now = new Date();
+
+  for (const row of withExpression) {
+    const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+    const expr = interaction.payload.satisfactionExpression!;
+
+    let result: EvalResult;
+    if (expr.type === "comment_contains") {
+      result = evaluateCommentContainsExpression({ pattern: expr.pattern, commentBodies });
+    } else if (expr.type === "env_var_present_by_name") {
+      result = evaluateEnvVarPresentExpression({ name: expr.name, evidence: expr.evidence });
+    } else {
+      continue;
+    }
+
+    if (!result.matched) continue;
+
+    const [updated] = await db
+      .update(issueThreadInteractions)
+      .set({
+        status: "accepted",
+        result: {
+          version: 1,
+          outcome: "auto_resolved",
+          matchedExcerpt: result.matchedExcerpt,
+        },
+        resolvedAt: now,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(issueThreadInteractions.id, row.id),
+        eq(issueThreadInteractions.status, "pending"),
+      ))
+      .returning();
+
+    if (!updated) continue;
+
+    const excerptSnippet = result.matchedExcerpt.length > 120
+      ? `${result.matchedExcerpt.slice(0, 120)}…`
+      : result.matchedExcerpt;
+
+    await db
+      .insert(issueComments)
+      .values({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        authorType: "system",
+        body: `request_confirmation auto-accepted by satisfactionExpression: ${result.expressionType}(${excerptSnippet}) resolved true. No secret values exposed. Resume wake queued.`,
+      });
+
+    await touchIssue(db, issue.id);
+
+    resolved.push({
+      interactionId: row.id,
+      matchedExcerpt: result.matchedExcerpt,
+      continuationPolicy: row.continuationPolicy,
+      createdByAgentId: row.createdByAgentId ?? null,
+    });
+  }
+
+  return resolved;
 }

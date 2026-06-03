@@ -7,6 +7,10 @@ import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notI
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  GLOBAL_MAX_CONCURRENT_RUNS,
+  COMPANY_MAX_CONCURRENT_RUNS,
+  PREMIUM_MAX_CONCURRENT_RUNS,
+  AGENT_HARD_CAP_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
   isEnvironmentDriverSupportedForAdapter,
@@ -173,6 +177,11 @@ import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { autoResolveSatisfactionExpressionInteractions } from "./issue-thread-interactions.js";
+import {
+  stripPaperclipRuntimeEnvBindings,
+  stripPaperclipRuntimeEnvFromAdapterConfig,
+} from "./runtime-env.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -207,6 +216,15 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const AGENT_ONLY_STALE_COMMENT_WAKE_SUPPRESSION_THRESHOLD = 3;
+const HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS = readPositiveIntFromEnv(
+  "HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS",
+  GLOBAL_MAX_CONCURRENT_RUNS,
+);
+const HEARTBEAT_COMPANY_MAX_CONCURRENT_RUNS = readPositiveIntFromEnv(
+  "HEARTBEAT_COMPANY_MAX_CONCURRENT_RUNS",
+  COMPANY_MAX_CONCURRENT_RUNS,
+);
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -235,6 +253,14 @@ const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "running"] as const;
+// Checkout 409 exponential backoff: prevents thundering-herd re-checkout stampedes.
+// Each conflict schedules a delayed retry run; circuit breaker fires after max attempts.
+export const CHECKOUT_CONFLICT_409_BACKOFF_REASON = "checkout_409_backoff";
+export const CHECKOUT_CONFLICT_409_BACKOFF_WAKE_REASON = "checkout_409_backoff_retry";
+export const CHECKOUT_CONFLICT_409_BACKOFF_BASE_MS = 2_000;
+const CHECKOUT_CONFLICT_409_BACKOFF_MAX_MS = 60_000;
+const CHECKOUT_CONFLICT_409_BACKOFF_JITTER_RATIO = 0.25;
+export const CHECKOUT_CONFLICT_409_MAX_BACKOFF_ATTEMPTS = 3;
 type CodexTransientFallbackMode =
   | "same_session"
   | "safer_invocation"
@@ -252,6 +278,14 @@ function resolveCodexTransientFallbackMode(attempt: number): CodexTransientFallb
   if (attempt === 2) return "safer_invocation";
   if (attempt === 3) return "fresh_session";
   return "fresh_session_safer_invocation";
+}
+
+function readPositiveIntFromEnv(name: string, fallback: number) {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return parsed;
 }
 
 function readHeartbeatRunErrorFamily(
@@ -334,26 +368,6 @@ type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
   "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
 >;
-
-function isPaperclipRuntimeEnvKey(key: string) {
-  return key.startsWith("PAPERCLIP_");
-}
-
-function stripPaperclipRuntimeEnvBindings(envValue: unknown): Record<string, unknown> | null {
-  const record = parseObject(envValue);
-  const filtered = Object.fromEntries(
-    Object.entries(record).filter(([key]) => !isPaperclipRuntimeEnvKey(key)),
-  );
-  return Object.keys(filtered).length > 0 ? filtered : null;
-}
-
-function stripPaperclipRuntimeEnvFromAdapterConfig(config: Record<string, unknown>): Record<string, unknown> {
-  if (!Object.prototype.hasOwnProperty.call(config, "env")) return config;
-  return {
-    ...config,
-    env: stripPaperclipRuntimeEnvBindings(config.env) ?? {},
-  };
-}
 
 export async function resolveExecutionRunAdapterConfig(input: {
   companyId: string;
@@ -3974,7 +3988,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const updated = await db
       .update(heartbeatRuns)
       .set({ status, ...patch, updatedAt: new Date() })
-      .where(eq(heartbeatRuns.id, runId))
+      .where(and(
+        eq(heartbeatRuns.id, runId),
+        notInArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+      ))
       .returning()
       .then((rows) => rows[0] ?? null);
 
@@ -6030,6 +6047,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function countGlobalRunningRuns() {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "running"));
+    return Number(count ?? 0);
+  }
+
+  async function countCompanyRunningRuns(companyId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
+    return Number(count ?? 0);
+  }
+
+  async function countRunningPremiumRuns(companyId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "running"),
+          eq(agents.adapterType, "claude_local"),
+          sql`(${heartbeatRuns.contextSnapshot} ->> 'modelProfile') IS DISTINCT FROM 'cheap'`,
+        ),
+      );
+    return Number(count ?? 0);
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -6102,6 +6151,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "claimQueuedRun: cancelled stale queued run",
         );
         return null;
+      }
+
+      // Pre-dispatch: auto-resolve any pending request_confirmation interactions whose
+      // satisfactionExpression is already satisfied. This runs before the agent is woken
+      // so no heartbeat budget is consumed for the evaluation itself.
+      const autoResolved = await autoResolveSatisfactionExpressionInteractions(db, {
+        id: issueId,
+        companyId: run.companyId,
+      });
+      if (autoResolved.length > 0) {
+        logger.info(
+          { runId: run.id, issueId, count: autoResolved.length },
+          "claimQueuedRun: auto-resolved stop-condition confirmations",
+        );
       }
     }
 
@@ -6237,7 +6300,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_not_in_progress"
           | "issue_execution_lock_changed"
           | "issue_review_participant_changed"
-          | "issue_continuation_waiting_on_review";
+          | "issue_continuation_waiting_on_review"
+          | "issue_stable_in_review"
+          | "issue_stable_blocked";
         details: Record<string, unknown>;
       };
 
@@ -6317,7 +6382,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
-      if (!resumeIntent && !wakeCommentId) {
+      // FUL-3307: A comment wake (wakeCommentId) on a terminal issue no longer bypasses the
+      // stale gate. Terminal issues must have explicit resumeIntent (reopen: true on comment/patch)
+      // to allow a new run. This is defense-in-depth: the primary guard is in
+      // shouldImplicitlyMoveCommentedIssueToTodo (routes/issues.ts) which now prevents
+      // plain user comments from flipping done → todo at all.
+      if (!resumeIntent) {
         return {
           stale: true,
           errorCode: "issue_terminal_status",
@@ -6369,7 +6439,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             },
           };
         }
+      } else if (!wakeCommentId && !isInteractionWake) {
+        // in_review with no executionState participant and no human/interaction wake:
+        // the issue is waiting for board or human action (request_confirmation, board_approval).
+        // Cancel immediately instead of spending 3 checkout-backoff attempts on a 409.
+        return {
+          stale: true,
+          errorCode: "issue_stable_in_review",
+          reason:
+            "Cancelled because issue is in_review with no active execution stage and no interaction or comment wake; waiting for human or board action",
+          details: { issueId },
+        };
       }
+    }
+
+    // blocked issues without first-class unresolved blockers (orphaned-blocked) should not
+    // consume execution slots on non-human wakes. Dependency-blocked issues with unresolved
+    // blockers are already cancelled in claimQueuedRun before reaching this function.
+    if (issue.status === "blocked" && !wakeCommentId && !isInteractionWake) {
+      return {
+        stale: true,
+        errorCode: "issue_stable_blocked",
+        reason:
+          "Cancelled because issue is blocked and wake has no interaction or comment context; no execution slot consumed until blocker state changes",
+        details: { issueId },
+      };
     }
 
     return { stale: false };
@@ -6947,9 +7041,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
         return [];
       }
+
+      // Global cap: at most GLOBAL_MAX_CONCURRENT_RUNS running across all companies
+      const globalRunningCount = await countGlobalRunningRuns();
+      if (globalRunningCount >= HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS) return [];
+
+      const companyRunningCount = await countCompanyRunningRuns(agent.companyId);
+      if (companyRunningCount >= HEARTBEAT_COMPANY_MAX_CONCURRENT_RUNS) return [];
+
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      // Per-agent hard cap: enforce AGENT_HARD_CAP_CONCURRENT_RUNS regardless of agent config
+      const effectivePerAgentCap = Math.min(policy.maxConcurrentRuns, AGENT_HARD_CAP_CONCURRENT_RUNS);
+      const availableSlots = Math.max(0, effectivePerAgentCap - runningCount);
       if (availableSlots <= 0) return [];
 
       const queuedRuns = await db
@@ -6958,6 +7062,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
         .orderBy(asc(heartbeatRuns.createdAt));
       if (queuedRuns.length === 0) return [];
+
+      // Premium cap: snapshot the running premium count once before claiming
+      const premiumRunningCount = await countRunningPremiumRuns(agent.companyId);
+      const premiumSlotAvailable = premiumRunningCount < PREMIUM_MAX_CONCURRENT_RUNS;
+      const agentIsPremium = agent.adapterType === "claude_local";
 
       const dependencyReadiness = await listQueuedRunDependencyReadiness(agent.companyId, queuedRuns);
       const queuedIssueIds = [...new Set(
@@ -6999,6 +7108,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
+        // Premium cap: claude_local runs with modelProfile != 'cheap' require a premium slot
+        if (agentIsPremium) {
+          const runModelProfile = readNonEmptyString(parseObject(queuedRun.contextSnapshot).modelProfile);
+          const runIsPremium = runModelProfile !== "cheap";
+          if (runIsPremium && !premiumSlotAvailable) continue;
+        }
         const claimed = await claimQueuedRun(queuedRun);
         if (claimed) claimedRuns.push(claimed);
       }
@@ -7071,7 +7186,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
       } catch (error) {
         if (!isCheckoutConflictError(error)) throw error;
-        context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
+
+        // Checkout conflict: apply exponential backoff before the next attempt and
+        // suppress further execution in this run (deliverables: FUL-4342 §1, §2, §5).
+        const priorAttempts = run.scheduledRetryAttempt ?? 0;
+        const rawBackoffMs = Math.min(
+          CHECKOUT_CONFLICT_409_BACKOFF_BASE_MS * Math.pow(2, priorAttempts),
+          CHECKOUT_CONFLICT_409_BACKOFF_MAX_MS,
+        );
+        const jitter = rawBackoffMs * CHECKOUT_CONFLICT_409_BACKOFF_JITTER_RATIO * (2 * Math.random() - 1);
+        const delayMs = Math.max(CHECKOUT_CONFLICT_409_BACKOFF_BASE_MS, Math.round(rawBackoffMs + jitter));
+
+        const retryResult = await scheduleBoundedRetryForRun(run, agent, {
+          retryReason: CHECKOUT_CONFLICT_409_BACKOFF_REASON,
+          wakeReason: CHECKOUT_CONFLICT_409_BACKOFF_WAKE_REASON,
+          maxAttempts: CHECKOUT_CONFLICT_409_MAX_BACKOFF_ATTEMPTS,
+          delayMs,
+        });
+
+        const circuitBreakerFired =
+          retryResult.outcome === "retry_exhausted" || retryResult.outcome === "not_scheduled";
+        const runError = circuitBreakerFired
+          ? `Checkout 409 circuit breaker: ${priorAttempts + 1} consecutive conflicts on issue ${issueId ?? "unknown"}; no further retry`
+          : `Checkout conflict on issue ${issueId ?? "unknown"}; retry in ~${delayMs}ms (attempt ${priorAttempts + 1}/${CHECKOUT_CONFLICT_409_MAX_BACKOFF_ATTEMPTS})`;
+        const errorCode = circuitBreakerFired ? "checkout_409_circuit_breaker" : "checkout_409_conflict";
+
+        await setRunStatus(runId, "failed", {
+          error: runError,
+          errorCode,
+          finishedAt: new Date(),
+        });
+        await setWakeupStatus(run.wakeupRequestId, "failed", {
+          finishedAt: new Date(),
+          error: runError,
+        });
+        // Don't execute the agent — the retry (if scheduled) will re-attempt the checkout.
+        return;
       }
       issueContext = await getIssueExecutionContext(agent.companyId, issueId);
     }
@@ -8250,9 +8400,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
       });
-      if (persistedRun) {
-        persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
-      }
+      // If the run was already in a terminal state when we tried to update it
+      // (e.g., cancelled by a concurrent cancelRun() while the adapter executed),
+      // cancelRun() already handled all cleanup — skip finalization to avoid a
+      // duplicate releaseIssueExecutionAndPromote that would create a spurious recovery run.
+      if (!persistedRun) return;
+
+      persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
@@ -8740,6 +8894,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
 
+        // FUL-3405: Mention/agent-comment wakes on terminal issues should still invoke the
+        // mentioned agent without reopening the issue. Set resumeIntent so evaluateQueuedRunStaleness
+        // allows the run through; the stale gate otherwise cancels runs on done/cancelled issues
+        // that lack explicit resumeIntent, which was the correct behavior for plain comment wakes
+        // (FUL-3307) but incorrectly suppressed cross-agent mention wakes.
+        if (!shouldReopenDeferredCommentWake && deferredCommentIds.length > 0 &&
+            (issue.status === "done" || issue.status === "cancelled")) {
+          promotedContextSeed.resumeIntent = true;
+        }
+
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
         const promotedSource =
           (readNonEmptyString(deferred.source) as WakeupOptions["source"]) ?? "automation";
@@ -9172,6 +9336,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             id: issues.id,
             companyId: issues.companyId,
             status: issues.status,
+            updatedAt: issues.updatedAt,
             assigneeAgentId: issues.assigneeAgentId,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
@@ -9195,6 +9360,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             finishedAt: new Date(),
           });
           return { kind: "skipped" as const };
+        }
+
+        const shouldSuppressAgentOnlyStaleCommentWake =
+          reason === "issue_commented" &&
+          source === "automation" &&
+          opts.requestedByActorType === "agent";
+        if (shouldSuppressAgentOnlyStaleCommentWake) {
+          const recentComments = await tx
+            .select({
+              authorType: issueComments.authorType,
+              createdAt: issueComments.createdAt,
+            })
+            .from(issueComments)
+            .where(eq(issueComments.issueId, issue.id))
+            .orderBy(desc(issueComments.createdAt))
+            .limit(AGENT_ONLY_STALE_COMMENT_WAKE_SUPPRESSION_THRESHOLD);
+
+          const hasAgentOnlyBurst =
+            recentComments.length >= AGENT_ONLY_STALE_COMMENT_WAKE_SUPPRESSION_THRESHOLD &&
+            recentComments.every((comment) => comment.authorType === "agent");
+          const latestAgentCommentAt = recentComments[0]?.createdAt ?? null;
+          const issueUnchangedSinceLatestAgentComment =
+            Boolean(latestAgentCommentAt) &&
+            issue.updatedAt.getTime() <= latestAgentCommentAt.getTime();
+
+          if (hasAgentOnlyBurst && issueUnchangedSinceLatestAgentComment) {
+            await tx.insert(agentWakeupRequests).values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "issue_agent_only_comment_suppressed",
+              payload: {
+                ...(payload ?? {}),
+                issueId: issue.id,
+                suppression: {
+                  consecutiveAgentCommentCount: recentComments.length,
+                  issueUpdatedAt: issue.updatedAt.toISOString(),
+                  latestAgentCommentAt: latestAgentCommentAt?.toISOString() ?? null,
+                },
+              },
+              status: "skipped",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              finishedAt: new Date(),
+            });
+            return { kind: "skipped" as const };
+          }
         }
 
         const cancelStaleScheduledRetry = async (scheduledRun: typeof heartbeatRuns.$inferSelect) => {
@@ -10278,6 +10492,48 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .orderBy(desc(heartbeatRuns.startedAt))
         .limit(1);
       return run ?? null;
+    },
+
+    getExecutionSummary: async (companyId: string) => {
+      const [globalRow] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.status, "running"));
+      const globalRunning = Number(globalRow?.count ?? 0);
+
+      const [companyRow] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
+      const companyRunning = Number(companyRow?.count ?? 0);
+
+      const [premiumRow] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.status, "running"),
+            eq(agents.adapterType, "claude_local"),
+            sql`(${heartbeatRuns.contextSnapshot} ->> 'modelProfile') IS DISTINCT FROM 'cheap'`,
+          ),
+        );
+      const premiumRunning = Number(premiumRow?.count ?? 0);
+
+      const [queuedRow] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")));
+      const queued = Number(queuedRow?.count ?? 0);
+
+      return {
+        global: { running: globalRunning, cap: HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS },
+        company: { running: companyRunning, cap: HEARTBEAT_COMPANY_MAX_CONCURRENT_RUNS },
+        premium: { running: premiumRunning, cap: PREMIUM_MAX_CONCURRENT_RUNS },
+        perAgent: { cap: AGENT_HARD_CAP_CONCURRENT_RUNS },
+        queued,
+      };
     },
   };
 }

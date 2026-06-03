@@ -15,6 +15,7 @@ import {
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  addIssueMarkerSchema,
   acceptIssueThreadInteractionSchema,
   attachmentArtifactWorkProductMetadataSchema,
   cancelIssueThreadInteractionSchema,
@@ -670,11 +671,20 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  // FUL-3307: When true (e.g. PATCH reassigns to a new agent alongside the comment),
+  // done/cancelled issues may still be implicitly reopened. Without this, a plain
+  // user comment on a done issue does NOT reopen it — explicit reopen: true is required.
+  hasStructuralChange?: boolean;
 }) {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
   if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  // FUL-3307: Terminal done/cancelled issues must remain stable under plain user comments.
+  // They are only implicitly reopened when the same request also carries a structural change
+  // (e.g. reassigning to a different agent), which signals clear intent to resume the work.
+  // Pure commenting requires the caller to pass reopen: true explicitly.
+  if (isClosedIssueStatus(input.issueStatus) && !input.hasStructuralChange) return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -1493,10 +1503,14 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  const TRIAGE_HARD_BLOCKED = new Set([
+    "title", "description", "body", "documents", "comments", "attachments",
+  ]);
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null; updatedAt?: Date },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1507,6 +1521,83 @@ export function issueRoutes(
     if (issue.assigneeAgentId === null) {
       return true;
     }
+
+    // Triage-authority path: agent with triageAuthority permission can patch other agents' issues
+    // with restricted fields, staleness gate, and audit log.
+    if (issue.assigneeAgentId !== actorAgentId) {
+      const actorAgent = await agentsSvc.getById(actorAgentId);
+      const perms = actorAgent?.permissions;
+      if (perms?.triageAuthority === true) {
+        const allowedFields: string[] = Array.isArray(perms.triageAuthorityFields)
+          ? (perms.triageAuthorityFields as string[])
+          : ["status", "assigneeAgentId", "blockedByIssueIds"];
+        const patchKeys = Object.keys(req.body as Record<string, unknown>).filter(k => k !== "comment");
+
+        const hardViolations = patchKeys.filter(f => TRIAGE_HARD_BLOCKED.has(f));
+        if (hardViolations.length > 0) {
+          res.status(403).json({ error: `triage-authority: field(s) permanently restricted: ${hardViolations.join(", ")}` });
+          return false;
+        }
+
+        const scopeViolations = patchKeys.filter(f => !allowedFields.includes(f));
+        if (scopeViolations.length > 0) {
+          res.status(403).json({
+            error: `triage-authority: field(s) not in current scope: ${scopeViolations.join(", ")}`,
+            details: { currentScope: allowedFields },
+          });
+          return false;
+        }
+
+        if (["done", "cancelled"].includes(issue.status)) {
+          res.status(403).json({ error: "triage-authority: cannot patch a done/cancelled issue" });
+          return false;
+        }
+
+        if ((req.body as Record<string, unknown>).assigneeAgentId === actorAgentId) {
+          res.status(403).json({ error: "triage-authority: cannot self-assign via triage-authority" });
+          return false;
+        }
+
+        const lastActivityRow = await db
+          .select({ createdAt: activityLog.createdAt })
+          .from(activityLog)
+          .where(and(eq(activityLog.entityId, issue.id), eq(activityLog.entityType, "issue")))
+          .orderBy(desc(activityLog.createdAt))
+          .limit(1)
+          .then((rows: { createdAt: Date }[]) => rows[0] ?? null);
+        const lastActivityAt: Date = lastActivityRow?.createdAt ?? issue.updatedAt ?? new Date(0);
+        const stalenessMs = Date.now() - lastActivityAt.getTime();
+        if (stalenessMs < 15 * 60 * 1000) {
+          res.status(422).json({
+            error: `triage-authority: recent activity (${Math.round(stalenessMs / 1000)}s ago)`,
+            details: { lastActivityAt: lastActivityAt.toISOString(), stalenessMs, thresholdMs: 900000 },
+          });
+          return false;
+        }
+
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: "agent",
+          actorId: actorAgentId,
+          action: "issue.triage_authority_patch",
+          entityType: "issue",
+          entityId: issue.id,
+          agentId: actorAgentId,
+          runId: actor.runId ?? null,
+          details: {
+            triageAgentId: actorAgentId,
+            originalAssigneeAgentId: issue.assigneeAgentId,
+            patchedFields: patchKeys,
+            currentTriageScope: allowedFields,
+            lastActivityAt: lastActivityAt.toISOString(),
+            stalenessMs,
+          },
+        });
+        return true;
+      }
+    }
+
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
@@ -2363,6 +2454,7 @@ export function issueRoutes(
       relations,
       recoveryActionsByRelationIssue,
     );
+    const blockedByIssueIds = relationsWithRecoveryActions.blockedBy.map((relation) => relation.id);
     const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
       issue,
       trigger: "read_projection",
@@ -2378,6 +2470,7 @@ export function issueRoutes(
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json({
       ...issue,
+      blockedByIssueIds,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
       ...(blockerAttention ? { blockerAttention } : {}),
@@ -4038,7 +4131,44 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const routerBypassFields = new Set([
+      "assigneeAgentId",
+      "assigneeUserId",
+      "status",
+      "projectId",
+      "blockedByIssueIds",
+      "comment",
+    ]);
+    const patchKeys = Object.keys(req.body as Record<string, unknown>);
+    const isRoutingOnlyPatch = patchKeys.length > 0 && patchKeys.every((key) => routerBypassFields.has(key));
+    let allowRouterMutationBypass = false;
+    if (req.actor.type === "agent" && req.actor.agentId && isRoutingOnlyPatch) {
+      const routerActor = await agentsSvc.getById(req.actor.agentId);
+      if (
+        routerActor?.isRouter === true &&
+        existing.assigneeAgentId !== null &&
+        existing.assigneeAgentId !== req.actor.agentId
+      ) {
+        allowRouterMutationBypass = true;
+        const actorInfo = getActorInfo(req);
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: actorInfo.actorType,
+          actorId: actorInfo.actorId,
+          action: "issue.router_agent_mutation",
+          entityType: "issue",
+          entityId: existing.id,
+          agentId: actorInfo.agentId,
+          runId: actorInfo.runId,
+          details: {
+            routerAgentId: req.actor.agentId,
+            assigneeAgentId: existing.assigneeAgentId,
+            mutatedFields: patchKeys,
+          },
+        });
+      }
+    }
+    if (!allowRouterMutationBypass && !(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -4062,11 +4192,52 @@ export function issueRoutes(
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
-    const shouldCancelActiveRunForCancelledStatus =
-      existing.status !== "cancelled" && updateFields.status === "cancelled";
+    const shouldCancelActiveRunForTerminalStatus =
+      !["done", "cancelled"].includes(existing.status) &&
+      ["done", "cancelled"].includes(updateFields.status ?? "");
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
       return;
+    }
+    if (
+      req.actor.type === "agent" &&
+      updateFields.status === "done" &&
+      !commentBody
+    ) {
+      res.status(422).json({
+        error: "Agent done requires comment",
+        details: {
+          rule: "Terminal status requires terminal evidence",
+          fix: "Include a completion comment in the same PATCH request as status=done",
+        },
+      });
+      return;
+    }
+    // FUL-4188: prevent orphaned-blocked issues by requiring at least one blocker when setting status=blocked
+    if (
+      req.actor.type === "agent" &&
+      updateFields.status === "blocked" &&
+      (!Array.isArray(req.body.blockedByIssueIds) || (req.body.blockedByIssueIds as string[]).length === 0)
+    ) {
+      res.status(422).json({
+        error: "Blocked status requires blockedByIssueIds",
+        details: {
+          rule: "Blocked status requires at least one first-class blocker",
+          fix: "Include blockedByIssueIds with at least one issue ID in the same PATCH request as status=blocked",
+        },
+      });
+      return;
+    }
+    // FUL-2635: block agent close when a pending request_confirmation interaction is awaiting human response
+    if (updateFields.status === "done") {
+      const pendingInteractions = await issueThreadInteractionsSvc.listForIssue(existing.id);
+      if (pendingInteractions.some((i) => i.status === "pending")) {
+        res.status(422).json({
+          error: "PENDING_INTERACTION_BLOCKS_CLOSE",
+          message: "Issue has pending interactions awaiting human response. Resolve or cancel them before closing.",
+        });
+        return;
+      }
     }
     if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
     if (resumeRequested !== true && reopenRequested === true && req.actor.type === "agent") {
@@ -4076,6 +4247,11 @@ export function issueRoutes(
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
+    // FUL-3307: reassigning to a *different* agent alongside a comment is a structural change
+    // that signals clear intent to resume, so the implicit reopen is still allowed in that case.
+    const isAssigneeChangingToNewAgent =
+      typeof normalizedAssigneeAgentId === "string" &&
+      normalizedAssigneeAgentId !== existing.assigneeAgentId;
     const recoveryRelevantSourceMutationRequested =
       req.body.status !== undefined ||
       normalizedAssigneeAgentId !== undefined ||
@@ -4118,6 +4294,7 @@ export function issueRoutes(
           assigneeAgentId: requestedAssigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
+          hasStructuralChange: isAssigneeChangingToNewAgent,
         })) ||
       shouldResumeInProgressScheduledRetry;
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
@@ -4171,7 +4348,7 @@ export function issueRoutes(
       }
     }
 
-    const runToCancelForCancelledStatus = shouldCancelActiveRunForCancelledStatus
+    const runToCancelForTerminalStatus = shouldCancelActiveRunForTerminalStatus
       ? await resolveActiveIssueRun(existing)
       : null;
 
@@ -4210,7 +4387,17 @@ export function issueRoutes(
         ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
         : previousExecutionPolicy;
     if (normalizedAssigneeAgentId !== undefined) {
-      updateFields.assigneeAgentId = normalizedAssigneeAgentId;
+      // Board actors cannot reassign the accountable owner when transitioning to in_review;
+      // silently revert the requested reassignment to preserve the existing owner.
+      if (
+        req.actor.type !== "agent" &&
+        updateFields.status === "in_review" &&
+        normalizedAssigneeAgentId !== existing.assigneeAgentId
+      ) {
+        updateFields.assigneeAgentId = existing.assigneeAgentId;
+      } else {
+        updateFields.assigneeAgentId = normalizedAssigneeAgentId;
+      }
     }
     const monitorChanged = monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) === false;
     assertCanManageIssueMonitor(req, existing.assigneeAgentId, req.body.executionPolicy !== undefined && monitorChanged);
@@ -4370,9 +4557,9 @@ export function issueRoutes(
     }
 
     let cancelledStatusRunId: string | null = null;
-    if (runToCancelForCancelledStatus) {
+    if (runToCancelForTerminalStatus) {
       try {
-        const cancelled = await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
+        const cancelled = await heartbeat.cancelRun(runToCancelForTerminalStatus.id);
         if (cancelled) {
           cancelledStatusRunId = cancelled.id;
           await logActivity(db, {
@@ -4384,11 +4571,11 @@ export function issueRoutes(
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
-            details: { agentId: cancelled.agentId, source: "issue_status_cancelled", issueId: existing.id },
+            details: { agentId: cancelled.agentId, source: "issue_status_terminal", issueId: existing.id },
           });
         }
       } catch (err) {
-        logger.warn({ err, issueId: existing.id, runId: runToCancelForCancelledStatus.id }, "failed to cancel run for cancelled issue");
+        logger.warn({ err, issueId: existing.id, runId: runToCancelForTerminalStatus.id }, "failed to cancel run for terminal-status issue");
         await logActivity(db, {
           companyId: existing.companyId,
           actorType: actor.actorType,
@@ -4397,8 +4584,8 @@ export function issueRoutes(
           runId: actor.runId,
           action: "heartbeat.cancel_failed",
           entityType: "heartbeat_run",
-          entityId: runToCancelForCancelledStatus.id,
-          details: { source: "issue_status_cancelled", issueId: existing.id },
+          entityId: runToCancelForTerminalStatus.id,
+          details: { source: "issue_status_terminal", issueId: existing.id },
         });
       }
     }
@@ -4874,7 +5061,11 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        // Also suppress wake if the PATCH itself set the issue to a terminal state (e.g.,
+        // in_progress → done). isClosed is based on the pre-update status, so it would be
+        // false in that transition, incorrectly allowing the comment wake to fire.
+        const isNowClosed = isClosedIssueStatus(issue.status);
+        const skipAssigneeCommentWake = selfComment || isClosed || isNowClosed;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
@@ -5243,6 +5434,52 @@ export function issueRoutes(
     res.json(comments);
   });
 
+  // POST /api/issues/:id/markers — company-scoped write path for observation markers.
+  // Bypasses assignee ownership check so watcher agents can record dedup state on
+  // cross-assignee issues without violating least-privilege controls on the main comment
+  // mutation path. Markers do not fire wake events and cannot mutate issue workflow state.
+  router.post("/issues/:id/markers", validate(addIssueMarkerSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "agent") {
+      res.status(403).json({ error: "Only agent actors can write issue markers" });
+      return;
+    }
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    const comment = await svc.addComment(
+      id,
+      req.body.body ?? `[marker:${req.body.kind}]`,
+      { agentId: actorAgentId, runId: actor.runId },
+      { presentation: null, metadata: null },
+    );
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.marker_added",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        commentId: comment.id,
+        markerKind: req.body.kind,
+        identifier: issue.identifier,
+      },
+    });
+    res.status(201).json({ comment, kind: req.body.kind });
+  });
+
   router.get("/issues/:id/interactions", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -5274,7 +5511,30 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (req.actor.type === "agent") {
-      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const actorAgentId = req.actor.agentId;
+      if (actorAgentId && issue.assigneeAgentId !== null && issue.assigneeAgentId !== actorAgentId) {
+        const actorAgent = await agentsSvc.getById(actorAgentId);
+        if (actorAgent?.isRouter && actorAgent.permissions?.canCreateInteractions) {
+          // Router agent with explicit canCreateInteractions permission may create
+          // interactions on issues it doesn't own without the routing-fields body check.
+          const actor = getActorInfo(req);
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.router_agent_interaction_create",
+            entityType: "issue",
+            entityId: issue.id,
+            details: { routerAgentId: actorAgentId, assigneeAgentId: issue.assigneeAgentId },
+          });
+        } else {
+          if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+        }
+      } else {
+        if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      }
     } else {
       assertBoard(req);
     }
@@ -5324,6 +5584,12 @@ export function issueRoutes(
       }
       assertCompanyAccess(req, issue.companyId);
       assertBoard(req);
+
+      // local_implicit is only set in local_trusted (private local instance) mode.
+      // In local_trusted mode all traffic comes from the local machine and the actor
+      // IS the board user by definition — no remote unauthenticated access is possible.
+      // Board key auth (source: board_key) remains available for explicit key-based auth.
+      // Therefore no additional guard is required for local_implicit here.
 
       const actor = getActorInfo(req);
       const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
@@ -5429,6 +5695,10 @@ export function issueRoutes(
       }
       assertCompanyAccess(req, issue.companyId);
       assertBoard(req);
+
+      // local_implicit is only set in local_trusted (private local instance) mode.
+      // In local_trusted mode, the actor IS the board user — no remote unauthenticated
+      // access is possible, so no additional guard is needed for request_confirmation here.
 
       const actor = getActorInfo(req);
       const interaction = await issueThreadInteractionService(db).rejectInteraction(issue, interactionId, req.body, {
@@ -5747,7 +6017,45 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    let allowRouterCrossIssueComment = false;
+    if (req.actor.type === "agent" && req.actor.agentId) {
+      const commentActor = await agentsSvc.getById(req.actor.agentId);
+      if (
+        commentActor?.isRouter === true &&
+        issue.assigneeAgentId !== null &&
+        issue.assigneeAgentId !== req.actor.agentId
+      ) {
+        const permissionDecision = await access.decide({
+          actor: { type: "agent", agentId: req.actor.agentId, companyId: issue.companyId },
+          action: "tasks:cross_issue_comment",
+          resource: {
+            type: "issue",
+            companyId: issue.companyId,
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+          },
+        });
+        if (permissionDecision.allowed) {
+          allowRouterCrossIssueComment = true;
+          const actorInfo = getActorInfo(req);
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actorInfo.actorType,
+            actorId: actorInfo.actorId,
+            action: "issue.router_agent_comment_create",
+            entityType: "issue",
+            entityId: issue.id,
+            agentId: actorInfo.agentId,
+            runId: actorInfo.runId,
+            details: {
+              routerAgentId: req.actor.agentId,
+              assigneeAgentId: issue.assigneeAgentId,
+            },
+          });
+        }
+      }
+    }
+    if (!allowRouterCrossIssueComment && !(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
@@ -5783,11 +6091,14 @@ export function issueRoutes(
       scheduledRetryForHumanComment.agentId === issue.assigneeAgentId;
     const effectiveMoveToTodoRequested =
       explicitMoveToTodoRequested ||
+      // FUL-3307: plain comments never carry a structural change (no assignee/status update),
+      // so done/cancelled issues are not implicitly reopened. Use reopen: true explicitly.
       shouldImplicitlyMoveCommentedIssueToTodo({
         issueStatus: issue.status,
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
         actorId: actor.actorId,
+        hasStructuralChange: false,
       }) ||
       shouldResumeInProgressScheduledRetry;
     const hasUnresolvedFirstClassBlockers =

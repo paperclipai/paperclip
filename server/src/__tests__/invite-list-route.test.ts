@@ -25,6 +25,7 @@ vi.mock("../services/index.js", () => ({
   deduplicateAgentName: vi.fn(),
   logActivity: vi.fn(),
   notifyHireApproved: vi.fn(),
+  heartbeatService: () => ({}),
 }));
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();

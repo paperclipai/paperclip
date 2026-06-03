@@ -26,6 +26,8 @@ import {
   type RoutineHistoryDirtyFieldDescriptor,
 } from "../components/RoutineHistoryTab";
 import { heartbeatsApi } from "../api/heartbeats";
+import { useLiveUpdatesHealth } from "../context/LiveUpdatesProvider";
+import { usePageVisible, ISSUE_RUN_POLL_MS } from "../lib/issue-run-polling";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
@@ -291,6 +293,8 @@ export function RoutineDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const { pushToast } = useToastActions();
+  const isPageVisible = usePageVisible();
+  const { isWsHealthy } = useLiveUpdatesHealth();
   const hydratedRoutineIdRef = useRef<string | null>(null);
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
@@ -339,14 +343,16 @@ export function RoutineDetail() {
     queryKey: queryKeys.issues.liveRuns(activeIssueId!),
     queryFn: () => heartbeatsApi.liveRunsForIssue(activeIssueId!),
     enabled: !!activeIssueId,
-    refetchInterval: 3000,
+    refetchInterval: isWsHealthy ? false : (isPageVisible ? ISSUE_RUN_POLL_MS : false),
+    refetchIntervalInBackground: false,
   });
   const hasLiveRun = (liveRuns ?? []).length > 0;
   const { data: routineRuns } = useQuery({
     queryKey: queryKeys.routines.runs(routineId!),
     queryFn: () => routinesApi.listRuns(routineId!),
     enabled: !!routineId,
-    refetchInterval: hasLiveRun ? 3000 : false,
+    refetchInterval: (hasLiveRun && !isWsHealthy && isPageVisible) ? ISSUE_RUN_POLL_MS : false,
+    refetchIntervalInBackground: false,
   });
   const relatedActivityIds = useMemo(
     () => ({

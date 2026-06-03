@@ -1,5 +1,11 @@
 # @paperclipai/shared
 
+## 0.3.2
+
+### Patch Changes
+
+- Fix: export `ISSUE_MARKER_KINDS` and `addIssueMarkerSchema` from dist — these were imported by `@paperclipai/server` but missing from the published package, causing a startup crash in paperclipai@2026.517.0 (FUL-4339)
+
 ## 0.3.1
 
 ### Patch Changes

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import type { Agent, Issue, IssueComment, LiveEvent } from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
@@ -622,17 +622,20 @@ function invalidateHeartbeatQueries(
   companyId: string,
   payload: Record<string, unknown>,
 ) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  // Mark global queries stale without forcing an immediate refetch on every WS
+  // event — they will refresh on the next poll cycle or window-focus event.
+  // Issue-specific queries in invalidateVisibleIssueRunQueries remain immediate.
+  queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId), refetchType: "none" });
 
   const agentId = readString(payload.agentId);
   if (agentId) {
-    queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agentId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId), refetchType: "none" });
+    queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agentId), refetchType: "none" });
   }
 }
 
@@ -643,9 +646,11 @@ function invalidateActivityQueries(
   currentActor: { userId: string | null; agentId: string | null },
   options?: { pathname?: string; isForegrounded?: boolean },
 ) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  // Mark global/list queries stale without forcing an immediate refetch — they
+  // will refresh on the next poll cycle. Issue-specific queries below remain immediate.
+  queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId), refetchType: "none" });
 
   const entityType = readString(payload.entityType);
   const entityId = readString(payload.entityId);
@@ -662,10 +667,10 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId), refetchType: "none" });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId), refetchType: "none" });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId), refetchType: "none" });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId), refetchType: "none" });
     if (entityId) {
       const selfCommentActivity =
         ((action === "issue.comment_added") ||
@@ -841,11 +846,11 @@ function handleLiveEvent(
   }
 
   if (event.type === "agent.status") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(expectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(expectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.org(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(expectedCompanyId), refetchType: "none" });
+    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(expectedCompanyId), refetchType: "none" });
+    queryClient.invalidateQueries({ queryKey: queryKeys.org(expectedCompanyId), refetchType: "none" });
     const agentId = readString(payload.agentId);
-    if (agentId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
+    if (agentId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId), refetchType: "none" });
     const toast = buildAgentStatusToast(payload, nameOf, queryClient, expectedCompanyId);
     if (
       toast &&
@@ -913,6 +918,19 @@ function closeSocketQuietly(target: LiveUpdatesSocketLike | null, reason: string
   }
 }
 
+interface LiveUpdatesHealthContextValue {
+  /** True when the WebSocket connection to the server is open and healthy. */
+  isWsHealthy: boolean;
+}
+
+const LiveUpdatesHealthContext = createContext<LiveUpdatesHealthContextValue>({ isWsHealthy: false });
+
+/** Returns whether the live-updates WebSocket is currently connected. Use this to disable
+ *  fallback polling when the WS is healthy — WS events drive cache invalidation instead. */
+export function useLiveUpdatesHealth(): LiveUpdatesHealthContextValue {
+  return useContext(LiveUpdatesHealthContext);
+}
+
 export const __liveUpdatesTestUtils = {
   buildAgentStatusToast,
   buildRunStatusToast,
@@ -935,6 +953,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
   const pathnameRef = useRef(location.pathname);
+  const [isWsHealthy, setIsWsHealthy] = useState(false);
   const { data: session, status: sessionStatus } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -1002,6 +1021,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
         }
         reconnectAttempt = 0;
+        setIsWsHealthy(true);
       };
 
       nextSocket.onmessage = (message) => {
@@ -1027,6 +1047,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       nextSocket.onclose = () => {
         if (socket !== nextSocket) return;
         socket = null;
+        setIsWsHealthy(false);
         if (closed) return;
         scheduleReconnect();
       };
@@ -1044,8 +1065,13 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       const activeSocket = socket;
       socket = null;
       closeSocketQuietly(activeSocket, "provider_unmount");
+      setIsWsHealthy(false);
     };
   }, [queryClient, liveCompanyId, pushToast, canConnectSocket, socketAuthKey]);
 
-  return <>{children}</>;
+  return (
+    <LiveUpdatesHealthContext.Provider value={{ isWsHealthy }}>
+      {children}
+    </LiveUpdatesHealthContext.Provider>
+  );
 }

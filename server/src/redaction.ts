@@ -54,7 +54,7 @@ function sanitizeValue(value: unknown): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) return value.map(sanitizeValue);
   if (isSecretRefBinding(value)) return value;
-  if (isPlainBinding(value)) return { type: "plain", value: sanitizeValue(value.value) };
+  if (isPlainBinding(value)) return { type: "plain", value: REDACTED_EVENT_VALUE };
   if (!isPlainObject(value)) return value;
   return sanitizeRecord(value);
 }

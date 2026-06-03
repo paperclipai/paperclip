@@ -2333,7 +2333,7 @@ describe("company portability", () => {
       runtimeConfig: {
         heartbeat: {
           enabled: false,
-          maxConcurrentRuns: 20,
+          maxConcurrentRuns: 1,
         },
       },
     });
@@ -2412,7 +2412,7 @@ describe("company portability", () => {
       runtimeConfig: {
         heartbeat: {
           enabled: false,
-          maxConcurrentRuns: 20,
+          maxConcurrentRuns: 1,
         },
       },
     }));

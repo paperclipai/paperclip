@@ -93,6 +93,7 @@ describe("doctor", () => {
       config: configPath,
       repair: true,
       yes: true,
+      force: true,
     });
 
     expect(summary.failed).toBe(0);

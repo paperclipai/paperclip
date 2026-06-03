@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   companies,
@@ -26,7 +26,10 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
-import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import {
+  issueThreadInteractionService,
+  autoResolveSatisfactionExpressionInteractions,
+} from "../services/issue-thread-interactions.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -1142,6 +1145,189 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         },
       },
     });
+  });
+
+  it("does not auto-resolve request_confirmation without satisfactionExpression", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("no-expression");
+    await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Please confirm",
+      },
+    }, { userId: "local-board" });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorType: "user",
+      authorUserId: "local-board",
+      body: "grant approved",
+    });
+
+    const resolved = await autoResolveSatisfactionExpressionInteractions(db, { id: issueId, companyId });
+    expect(resolved).toHaveLength(0);
+
+    const rows = await db.select().from(issueThreadInteractions);
+    expect(rows[0]?.status).toBe("pending");
+  });
+
+  it("auto-accepts comment_contains when pattern matches a recent comment", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("comment-match");
+    await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Waiting for LGTM",
+        satisfactionExpression: {
+          type: "comment_contains",
+          pattern: "LGTM",
+        },
+      },
+    }, { userId: "local-board" });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorType: "user",
+      authorUserId: "local-board",
+      body: "LGTM, ship it",
+    });
+
+    const resolved = await autoResolveSatisfactionExpressionInteractions(db, { id: issueId, companyId });
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]?.matchedExcerpt).toContain("LGTM");
+
+    const rows = await db.select().from(issueThreadInteractions);
+    expect(rows[0]?.status).toBe("accepted");
+    expect((rows[0]?.result as { outcome: string }).outcome).toBe("auto_resolved");
+
+    const comments = await db.select().from(issueComments).then((r) => r.map((c) => c.body));
+    expect(comments.some((b) => b.includes("satisfactionExpression") && b.includes("comment_contains"))).toBe(true);
+  });
+
+  it("stays pending for comment_contains when no comment matches", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("comment-no-match");
+    await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Waiting for LGTM",
+        satisfactionExpression: {
+          type: "comment_contains",
+          pattern: "LGTM",
+        },
+      },
+    }, { userId: "local-board" });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorType: "user",
+      authorUserId: "local-board",
+      body: "not yet approved",
+    });
+
+    const resolved = await autoResolveSatisfactionExpressionInteractions(db, { id: issueId, companyId });
+    expect(resolved).toHaveLength(0);
+    const rows = await db.select().from(issueThreadInteractions);
+    expect(rows[0]?.status).toBe("pending");
+  });
+
+  it("stays pending for comment_contains with an invalid regex pattern", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("invalid-regex");
+    await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Waiting",
+        satisfactionExpression: {
+          type: "comment_contains",
+          pattern: "[invalid((",
+        },
+      },
+    }, { userId: "local-board" });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorType: "user",
+      authorUserId: "local-board",
+      body: "some comment",
+    });
+
+    const resolved = await autoResolveSatisfactionExpressionInteractions(db, { id: issueId, companyId });
+    expect(resolved).toHaveLength(0);
+    const rows = await db.select().from(issueThreadInteractions);
+    expect(rows[0]?.status).toBe("pending");
+  });
+
+  it("auto-accepts env_var_present_by_name when the env var is set", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("env-var-present");
+    const varName = `TEST_SECRET_${randomUUID().replace(/-/g, "").toUpperCase().slice(0, 8)}`;
+    process.env[varName] = "super-secret-value";
+
+    try {
+      await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: `Please set ${varName}`,
+          satisfactionExpression: {
+            type: "env_var_present_by_name",
+            name: varName,
+            evidence: "length_only",
+          },
+        },
+      }, { userId: "local-board" });
+
+      const resolved = await autoResolveSatisfactionExpressionInteractions(db, { id: issueId, companyId });
+      expect(resolved).toHaveLength(1);
+
+      const excerpt = resolved[0]?.matchedExcerpt ?? "";
+      expect(excerpt).toContain("present");
+      expect(excerpt).toContain("length:");
+      expect(excerpt).not.toContain("super-secret-value");
+
+      const rows = await db.select().from(issueThreadInteractions);
+      expect(rows[0]?.status).toBe("accepted");
+
+      const comments = await db.select().from(issueComments).then((r) => r.map((c) => c.body));
+      const auditComment = comments.find((b) => b.includes("satisfactionExpression"));
+      expect(auditComment).toBeDefined();
+      expect(auditComment).not.toContain("super-secret-value");
+    } finally {
+      delete process.env[varName];
+    }
+  });
+
+  it("stays pending for env_var_present_by_name when the env var is absent", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("env-var-absent");
+    const varName = `TEST_ABSENT_${randomUUID().replace(/-/g, "").toUpperCase().slice(0, 8)}`;
+    delete process.env[varName];
+
+    await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: `Please set ${varName}`,
+        satisfactionExpression: {
+          type: "env_var_present_by_name",
+          name: varName,
+        },
+      },
+    }, { userId: "local-board" });
+
+    const resolved = await autoResolveSatisfactionExpressionInteractions(db, { id: issueId, companyId });
+    expect(resolved).toHaveLength(0);
+    const rows = await db.select().from(issueThreadInteractions);
+    expect(rows[0]?.status).toBe("pending");
   });
 
   describe("workspace_finalize accept gate", () => {

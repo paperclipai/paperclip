@@ -23,6 +23,7 @@ vi.mock("../services/index.js", () => ({
   executionWorkspaceService: () => mockExecutionWorkspaceService,
   logActivity: mockLogActivity,
   workspaceOperationService: () => mockWorkspaceOperationService,
+  heartbeatService: () => ({}),
 }));
 
 function createApp(companyIds = ["company-1"]) {

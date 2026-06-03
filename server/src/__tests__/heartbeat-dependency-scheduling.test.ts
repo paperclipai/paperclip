@@ -686,14 +686,14 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
 
     await heartbeat.resumeQueuedRuns();
 
+    const TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"];
     await waitForCondition(async () => {
-      const run = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, readyRunId))
-        .then((rows) => rows[0] ?? null);
-      return run?.status === "succeeded";
-    });
+      const [ready, blocked] = await Promise.all([
+        db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, readyRunId)).then((rows) => rows[0] ?? null),
+        db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, blockedRunId)).then((rows) => rows[0] ?? null),
+      ]);
+      return ready?.status === "succeeded" && TERMINAL_STATUSES.includes(blocked?.status ?? "");
+    }, 10_000);
 
     const [blockedRun, blockedWakeup, blockedIssue, readyRun] = await Promise.all([
       db

@@ -10,6 +10,8 @@ import { envConfigSchema } from "./secret.js";
 
 export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
+  triageAuthority: z.boolean().optional(),
+  triageAuthorityFields: z.array(z.string()).optional(),
 });
 
 export const agentInstructionsBundleModeSchema = z.enum(["managed", "external"]);
@@ -98,6 +100,7 @@ export const updateAgentSchema = createAgentSchema
     replaceAdapterConfig: z.boolean().optional(),
     status: z.enum(AGENT_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
+    isRouter: z.boolean().optional(),
   });
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
@@ -156,8 +159,11 @@ export const testAdapterEnvironmentSchema = z.object({
 export type TestAdapterEnvironment = z.infer<typeof testAdapterEnvironmentSchema>;
 
 export const updateAgentPermissionsSchema = z.object({
-  canCreateAgents: z.boolean(),
-  canAssignTasks: z.boolean(),
+  canCreateAgents: z.boolean().optional(),
+  canAssignTasks: z.boolean().optional(),
+  canCreateInteractions: z.boolean().optional(),
+  triageAuthority: z.boolean().optional(),
+  triageAuthorityFields: z.array(z.string()).optional(),
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;

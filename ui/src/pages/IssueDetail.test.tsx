@@ -6,7 +6,7 @@ import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from "reac
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { canBoardResolveRecoveryAction, IssueDetail } from "./IssueDetail";
+import { canBoardResolveRecoveryAction, IssueDetail, resolveStageParticipantLabel } from "./IssueDetail";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -16,6 +16,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   listAttachments: vi.fn(),
   listWorkProducts: vi.fn(),
   listFeedbackVotes: vi.fn(),
+  listApprovals: vi.fn(),
   markRead: vi.fn(),
   update: vi.fn(),
   previewTreeControl: vi.fn(),
@@ -30,6 +31,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   uploadAttachment: vi.fn(),
   deleteAttachment: vi.fn(),
   upsertDocument: vi.fn(),
+  getDocument: vi.fn(),
 }));
 
 const mockActivityApi = vi.hoisted(() => ({
@@ -73,6 +75,7 @@ const mockSetMobileToolbar = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
 const mockIssuesListRender = vi.hoisted(() => vi.fn());
 const mockIssueChatThreadRender = vi.hoisted(() => vi.fn());
+const mockTabsOnValueChange = vi.hoisted(() => ({ fn: undefined as ((v: string) => void) | undefined }));
 
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
@@ -345,10 +348,23 @@ vi.mock("@/components/ui/skeleton", () => ({
 }));
 
 vi.mock("@/components/ui/tabs", () => ({
-  Tabs: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-  TabsContent: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-  TabsList: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-  TabsTrigger: ({ children }: { children?: ReactNode }) => <button type="button">{children}</button>,
+  Tabs: ({
+    children,
+    onValueChange,
+  }: {
+    children?: ReactNode;
+    value?: string;
+    onValueChange?: (v: string) => void;
+    className?: string;
+  }) => {
+    mockTabsOnValueChange.fn = onValueChange;
+    return <div>{children}</div>;
+  },
+  TabsContent: ({ children }: { children?: ReactNode; value?: string }) => <div>{children}</div>,
+  TabsList: ({ children }: { children?: ReactNode; variant?: string; className?: string }) => <div>{children}</div>,
+  TabsTrigger: ({ children, value }: { children?: ReactNode; value?: string; className?: string }) => (
+    <button type="button" onClick={() => value && mockTabsOnValueChange.fn?.(value)}>{children}</button>
+  ),
 }));
 
 vi.mock("@/components/ui/textarea", () => ({
@@ -813,6 +829,8 @@ describe("IssueDetail", () => {
     mockIssuesApi.listAttachments.mockResolvedValue([]);
     mockIssuesApi.listWorkProducts.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
+    mockIssuesApi.listApprovals.mockResolvedValue([]);
+    mockIssuesApi.getDocument.mockResolvedValue(null);
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
     mockIssuesApi.getTreeControlState.mockResolvedValue({ activePauseHold: null });
     mockIssuesApi.listTreeHolds.mockResolvedValue([]);
@@ -877,6 +895,23 @@ describe("IssueDetail", () => {
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
+  });
+
+  it("resolves explicit approver labels from current participants", () => {
+    const agentMap = new Map<string, Agent>([
+      ["agent-1", createAgent({ id: "agent-1", name: "Approver Bot" })],
+    ]);
+    const userProfileMap = new Map([
+      ["user-1", { label: "Board Jane", image: null }],
+    ]);
+
+    expect(
+      resolveStageParticipantLabel({ type: "agent", agentId: "agent-1", userId: null }, agentMap, userProfileMap),
+    ).toBe("Approver Bot");
+    expect(
+      resolveStageParticipantLabel({ type: "user", userId: "user-1", agentId: null }, agentMap, userProfileMap),
+    ).toBe("Board Jane");
+    expect(resolveStageParticipantLabel(null, agentMap, userProfileMap)).toBe("Approver");
   });
 
   it("hides the plan decomposition panel by default", async () => {
@@ -1668,6 +1703,130 @@ describe("IssueDetail", () => {
         && element.textContent?.includes("Close"),
       );
     expect(footer?.className).toContain("bg-background");
+  });
+  describe("Awaiting Approval banner", () => {
+    const approvalExecutionState = () => ({
+      status: "active" as const,
+      currentStageId: "stage-1",
+      currentStageIndex: 0,
+      currentStageType: "approval" as const,
+      currentParticipant: { type: "user" as const, userId: "user-board", agentId: null },
+      returnAssignee: null,
+      reviewRequest: null,
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+    });
+
+    async function renderAndSwitchToActivity() {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+
+      const activityButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.textContent?.includes("Activity"),
+      );
+      expect(activityButton).toBeTruthy();
+      await act(async () => {
+        activityButton!.click();
+      });
+      await flushReact();
+    }
+
+    it("shows Awaiting Approval banner when currentStageType is 'approval'", async () => {
+      mockIssuesApi.get.mockResolvedValue(
+        createIssue({ status: "in_review", executionState: approvalExecutionState() }),
+      );
+      await renderAndSwitchToActivity();
+      expect(container.textContent).toContain("Awaiting Approval");
+      expect(container.textContent).toContain("Current approver:");
+    });
+
+    it("shows approver name from userProfileMap in the banner", async () => {
+      mockIssuesApi.get.mockResolvedValue(
+        createIssue({ status: "in_review", executionState: approvalExecutionState() }),
+      );
+      mockAccessApi.listUserDirectory.mockResolvedValue({
+        users: [
+          {
+            principalId: "user-board",
+            status: "active" as const,
+            user: { id: "user-board", email: null, name: "Grant Boyles", image: null },
+          },
+        ],
+      });
+      await renderAndSwitchToActivity();
+      expect(container.textContent).toContain("Current approver:");
+      expect(container.textContent).toContain("Grant Boyles");
+    });
+
+    it("shows Approve and Reject buttons when a pending approval exists", async () => {
+      mockIssuesApi.get.mockResolvedValue(
+        createIssue({ status: "in_review", executionState: approvalExecutionState() }),
+      );
+      mockIssuesApi.listApprovals.mockResolvedValue([
+        {
+          id: "approval-1",
+          companyId: "company-1",
+          type: "request_board_approval" as const,
+          requestedByAgentId: "agent-1",
+          requestedByUserId: null,
+          status: "pending" as const,
+          payload: {},
+          decisionNote: null,
+          decidedByUserId: null,
+          decidedAt: null,
+          createdAt: new Date("2026-05-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-01T00:00:00.000Z"),
+        },
+      ]);
+      await renderAndSwitchToActivity();
+      expect(container.textContent).toContain("Awaiting Approval");
+      const approveButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.textContent?.trim() === "Approve",
+      );
+      const rejectButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.textContent?.trim() === "Reject",
+      );
+      expect(approveButton).toBeTruthy();
+      expect(rejectButton).toBeTruthy();
+    });
+
+    it("hides Approve/Reject buttons when no actionable approval exists", async () => {
+      mockIssuesApi.get.mockResolvedValue(
+        createIssue({ status: "in_review", executionState: approvalExecutionState() }),
+      );
+      mockIssuesApi.listApprovals.mockResolvedValue([
+        {
+          id: "approval-1",
+          companyId: "company-1",
+          type: "request_board_approval" as const,
+          requestedByAgentId: "agent-1",
+          requestedByUserId: null,
+          status: "approved" as const,
+          payload: {},
+          decisionNote: null,
+          decidedByUserId: null,
+          decidedAt: new Date("2026-05-01T01:00:00.000Z"),
+          createdAt: new Date("2026-05-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-01T01:00:00.000Z"),
+        },
+      ]);
+      await renderAndSwitchToActivity();
+      expect(container.textContent).toContain("Awaiting Approval");
+      expect(
+        Array.from(container.querySelectorAll("button")).find((btn) => btn.textContent?.trim() === "Approve"),
+      ).toBeFalsy();
+      expect(
+        Array.from(container.querySelectorAll("button")).find((btn) => btn.textContent?.trim() === "Reject"),
+      ).toBeFalsy();
+    });
   });
 });
 

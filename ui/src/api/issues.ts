@@ -210,10 +210,11 @@ export const issuesApi = {
     id: string,
     interactionId: string,
     data?: { selectedClientKeys?: string[] },
+    opts?: { boardKey?: string },
   ) =>
-    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/accept`, data ?? {}),
-  rejectInteraction: (id: string, interactionId: string, reason?: string) =>
-    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/reject`, reason ? { reason } : {}),
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/accept`, data ?? {}, opts),
+  rejectInteraction: (id: string, interactionId: string, reason?: string, opts?: { boardKey?: string }) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/reject`, reason ? { reason } : {}, opts),
   cancelInteraction: (id: string, interactionId: string, reason?: string) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/cancel`, reason ? { reason } : {}),
   respondToInteraction: (
