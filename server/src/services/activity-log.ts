@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { activityLog } from "@paperclipai/db";
+import { activityLog, pluginEventOutbox } from "@paperclipai/db";
 import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
@@ -28,6 +28,7 @@ const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>>
 };
 
 let _pluginEventBus: PluginEventBus | null = null;
+let _outboxDb: Db | null = null;
 
 /** Wire the plugin event bus so domain events are forwarded to plugins. */
 export function setPluginEventBus(bus: PluginEventBus): void {
@@ -37,18 +38,50 @@ export function setPluginEventBus(bus: PluginEventBus): void {
   _pluginEventBus = bus;
 }
 
+/**
+ * Wire the db used to enqueue plugin domain events into the cross-tier outbox.
+ * Mirrors setPluginEventBus; both are set once at app boot on every tier.
+ */
+export function setPluginEventOutboxDb(db: Db): void {
+  _outboxDb = db;
+}
+
+/** Accessor for the worker-tier outbox poller (the sole emitter). */
+export function getPluginEventBus(): PluginEventBus | null {
+  return _pluginEventBus;
+}
+
 function eventTypeForActivityAction(action: string): PluginEventType | null {
   if (PLUGIN_EVENT_SET.has(action)) return action as PluginEventType;
   return ACTIVITY_ACTION_TO_PLUGIN_EVENT[action.replaceAll(".", "_")] ?? null;
 }
 
+/**
+ * Enqueue a plugin domain event into the cross-tier outbox. This does NOT emit
+ * in-process: the worker-tier poller (plugin-event-outbox.ts) is the sole
+ * emitter, so events raised on any tier (notably the API tier, where plugins
+ * are not loaded) reliably reach subscribed plugins. One writer + one emitter
+ * ⇒ no double-delivery. Fire-and-forget to keep the signature synchronous.
+ */
 export function publishPluginDomainEvent(event: PluginEvent): void {
-  if (!_pluginEventBus) return;
-  void _pluginEventBus.emit(event).then(({ errors }) => {
-    for (const { pluginId, error } of errors) {
-      logger.warn({ pluginId, eventType: event.eventType, err: error }, "plugin event handler failed");
-    }
-  }).catch(() => {});
+  if (!_outboxDb) {
+    logger.warn(
+      { eventType: event.eventType, eventId: event.eventId },
+      "plugin event outbox db not set; dropping event",
+    );
+    return;
+  }
+  void _outboxDb
+    .insert(pluginEventOutbox)
+    .values({
+      eventId: event.eventId,
+      companyId: event.companyId,
+      eventType: event.eventType,
+      payload: event as unknown as Record<string, unknown>,
+    })
+    .catch((err) =>
+      logger.warn({ err, eventType: event.eventType }, "failed to enqueue plugin event to outbox"),
+    );
 }
 
 export interface LogActivityInput {

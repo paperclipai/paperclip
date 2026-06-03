@@ -116,7 +116,8 @@ vi.mock("../adapters/index.ts", async () => {
 });
 
 import { heartbeatService } from "../services/heartbeat.js";
-import { setPluginEventBus } from "../services/activity-log.js";
+import { setPluginEventBus, setPluginEventOutboxDb } from "../services/activity-log.js";
+import { pollOnce as drainPluginEventOutbox } from "../services/plugin-event-outbox.js";
 import type { PluginEventBus, ScopedPluginEventBus } from "../services/plugin-event-bus.js";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -226,6 +227,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let emittedPluginEvents: PluginEvent[] = [];
+  let fakeEventBus!: PluginEventBus;
+  const drainOutbox = async () => {
+    // publishPluginDomainEvent enqueues to the outbox; drain it through the
+    // fake bus so emittedPluginEvents reflects what plugins would receive.
+    while ((await drainPluginEventOutbox(db, fakeEventBus)) > 0) {
+      /* keep draining */
+    }
+  };
   const childProcesses = new Set<ChildProcess>();
   const cleanupPids = new Set<number>();
 
@@ -238,7 +247,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       emit: vi.fn(async () => ({ errors: [] })),
       clear: vi.fn(),
     };
-    setPluginEventBus({
+    fakeEventBus = {
       emit: vi.fn(async (event: PluginEvent) => {
         emittedPluginEvents.push(event);
         return { errors: [] };
@@ -246,7 +255,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       forPlugin: vi.fn(() => noopScopedBus),
       clearPlugin: vi.fn(),
       subscriptionCount: vi.fn(() => 0),
-    } satisfies PluginEventBus);
+    } satisfies PluginEventBus;
+    setPluginEventBus(fakeEventBus);
+    // Plugin domain events are now enqueued to the outbox; the worker-tier
+    // poller is the sole emitter. Wire the outbox db so publishPluginDomainEvent
+    // persists, and drain via pollOnce() before asserting emitted events.
+    setPluginEventOutboxDb(db);
   });
 
   afterEach(async () => {
@@ -2859,11 +2873,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const firstResult = await heartbeat.reconcileStrandedAssignedIssues();
     expect(firstResult.escalated).toBe(1);
 
-    const event = await waitForValue(async () =>
-      emittedPluginEvents.find(
+    const event = await waitForValue(async () => {
+      await drainOutbox();
+      return emittedPluginEvents.find(
         (item) => item.eventType === "issue.escalation.needs_human_decision" && item.entityId === issueId,
-      ) ?? null,
-    );
+      ) ?? null;
+    });
 
     expect(event).toMatchObject({
       eventType: "issue.escalation.needs_human_decision",
@@ -2890,6 +2905,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(repeatResult.escalated).toBe(0);
     }
 
+    await drainOutbox();
     const matchingEvents = emittedPluginEvents.filter(
       (item) => item.eventType === "issue.escalation.needs_human_decision" && item.entityId === issueId,
     );

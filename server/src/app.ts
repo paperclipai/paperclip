@@ -64,7 +64,8 @@ import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
-import { setPluginEventBus } from "./services/activity-log.js";
+import { setPluginEventBus, setPluginEventOutboxDb } from "./services/activity-log.js";
+import { startPluginEventOutbox } from "./services/plugin-event-outbox.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
@@ -445,6 +446,10 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
   setPluginEventBus(eventBus);
+  // Plugin domain events are enqueued to a DB outbox (every tier) and emitted
+  // by a single worker-tier poller, so events raised on the API tier (where
+  // plugins aren't loaded) still reach subscribed plugins. See plugin-event-outbox.ts.
+  setPluginEventOutboxDb(db);
   const jobStore = pluginJobStore(db);
   const lifecycle = pluginLifecycleManager(db, { workerManager });
   const scheduler = createPluginJobScheduler({
@@ -778,6 +783,7 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
   // because they're all errored. Mirrors the bundled-plugin-install skip
   // in server/src/index.ts so plugin lifecycle only runs on the tier that
   // can host workers.
+  let stopPluginEventOutbox: (() => void) | null = null;
   if (appConfig.paperclipNodeRole === "api") {
     logger.info(
       { role: appConfig.paperclipNodeRole },
@@ -785,12 +791,16 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
     );
   } else {
     void loader.loadAll().then((result) => {
-      if (!result) return;
-      for (const loaded of result.results) {
-        if (devWatcher && loaded.success && loaded.plugin.packagePath) {
-          devWatcher.watch(loaded.plugin.id, loaded.plugin.packagePath);
+      if (result) {
+        for (const loaded of result.results) {
+          if (devWatcher && loaded.success && loaded.plugin.packagePath) {
+            devWatcher.watch(loaded.plugin.id, loaded.plugin.packagePath);
+          }
         }
       }
+      // Start the outbox poller only after plugins have subscribed, so an
+      // early event isn't marked processed with no handler to receive it.
+      stopPluginEventOutbox = startPluginEventOutbox(db, eventBus);
     }).catch((err) => {
       logger.error({ err }, "Failed to load ready plugins on startup");
     });
@@ -799,6 +809,7 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
   const shutdownAppServices = () => {
     if (appServicesShutdown) return;
     appServicesShutdown = true;
+    stopPluginEventOutbox?.();
     disableFeedbackExportFlushes();
     devWatcher?.close();
     viteHtmlRenderer?.dispose();

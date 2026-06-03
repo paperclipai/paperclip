@@ -15,6 +15,7 @@ import {
   heartbeatRuns,
   issueRelations,
   issues,
+  pluginEventOutbox,
   pluginManagedResources,
   plugins,
   projects,
@@ -23,7 +24,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { logActivity, setPluginEventBus } from "../services/activity-log.js";
+import { logActivity, setPluginEventBus, setPluginEventOutboxDb } from "../services/activity-log.js";
+import { pollOnce as drainPluginEventOutbox } from "../services/plugin-event-outbox.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -74,6 +76,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(projects);
     await db.delete(plugins);
     await db.delete(agents);
+    await db.delete(pluginEventOutbox);
     await db.delete(companies);
   });
 
@@ -290,12 +293,16 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         contextSnapshot: { issueId },
       },
     ]);
-    setPluginEventBus({
+    const fakeBus = {
       emit: async (event: any) => {
         emitted.push(event);
         return { delivered: 1, errors: [] };
       },
-    } as any);
+    } as any;
+    setPluginEventBus(fakeBus);
+    // Events are enqueued to the outbox now; wire the db and drain through the
+    // fake bus before asserting (the worker-tier poller is the real emitter).
+    setPluginEventOutboxDb(db);
 
     await logActivity(db, {
       companyId,
@@ -339,6 +346,10 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         status: "pending",
       },
     });
+
+    while ((await drainPluginEventOutbox(db, fakeBus)) > 0) {
+      /* drain all enqueued events through the fake bus */
+    }
 
     expect(emitted).toEqual([
       expect.objectContaining({
