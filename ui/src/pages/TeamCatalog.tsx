@@ -11,10 +11,14 @@ import type {
   CatalogTeamSourceRef,
   CatalogTeamTrustLevel,
   CatalogTeamCompatibility,
+  CatalogTeamInstallResult,
+  CompanyPortabilityAdapterOverride,
   CompanyPortabilityCollisionStrategy,
 } from "@paperclipai/shared";
+import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import { teamCatalogApi } from "../api/teamCatalog";
 import { agentsApi } from "../api/agents";
+import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
@@ -50,6 +54,13 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   DropdownMenu,
@@ -67,7 +78,9 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  Cpu,
   Crown,
   Download,
   FileText,
@@ -88,6 +101,25 @@ import {
   XCircle,
   XOctagon,
 } from "lucide-react";
+
+// Matches design §11 breakpoints. Module-level so stories and the page agree.
+const DESKTOP_MIN = 1024;
+const MOBILE_MAX = 767;
+
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia(query).matches : false,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mql = window.matchMedia(query);
+    const onChange = () => setMatches(mql.matches);
+    onChange();
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
 
 // ---------------------------------------------------------------------------
 // Risk model — derived client-side from the team's source refs (design §8).
@@ -592,7 +624,7 @@ function ExternalSourcesList({ sources }: { sources: CatalogTeamSourceRef[] }) {
   );
 }
 
-function TeamDetailPane({
+export function TeamDetailPane({
   team,
   selectedPath,
   onSelectFile,
@@ -813,11 +845,14 @@ function TeamInstallerDialog({
   // Step 4 — preview controls
   const [collisionStrategy, setCollisionStrategy] = useState<CompanyPortabilityCollisionStrategy>("rename");
   const [nameOverrides, setNameOverrides] = useState<Record<string, string>>({});
+  // slug -> adapterType override (the install schema accepts adapterOverrides).
+  const [adapterOverrides, setAdapterOverrides] = useState<Record<string, string>>({});
   const [confirmScripts, setConfirmScripts] = useState(false);
 
   const [previewResult, setPreviewResult] = useState<CatalogTeamImportPreviewResult | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
+  const [installResult, setInstallResult] = useState<CatalogTeamInstallResult | null>(null);
 
   // Reset on open
   useEffect(() => {
@@ -831,16 +866,19 @@ function TeamInstallerDialog({
       setAllowLocalPathSources(false);
       setCollisionStrategy("rename");
       setNameOverrides({});
+      setAdapterOverrides({});
       setConfirmScripts(false);
       setPreviewResult(null);
       setPreviewError(null);
       setApplyError(null);
+      setInstallResult(null);
     }
   }, [open]);
 
   const currentStep = steps[stepIndex];
 
-  const buildOptions = () => ({
+  // Preview body — the preview schema is strict and does NOT accept adapterOverrides.
+  const buildPreviewOptions = () => ({
     targetManagerAgentId: fullCompany ? null : targetManagerAgentId,
     collisionStrategy,
     nameOverrides: Object.keys(nameOverrides).length > 0 ? nameOverrides : undefined,
@@ -851,8 +889,20 @@ function TeamInstallerDialog({
     },
   });
 
+  // Install body extends the preview body with adapterOverrides.
+  const buildInstallOptions = () => {
+    const overrides: Record<string, CompanyPortabilityAdapterOverride> = {};
+    for (const [slug, adapterType] of Object.entries(adapterOverrides)) {
+      if (adapterType) overrides[slug] = { adapterType };
+    }
+    return {
+      ...buildPreviewOptions(),
+      adapterOverrides: Object.keys(overrides).length > 0 ? overrides : undefined,
+    };
+  };
+
   const previewMutation = useMutation({
-    mutationFn: () => teamCatalogApi.preview(companyId, team.id, buildOptions()),
+    mutationFn: () => teamCatalogApi.preview(companyId, team.id, buildPreviewOptions()),
     onSuccess: (result) => {
       setPreviewResult(result);
       setPreviewError(null);
@@ -863,12 +913,13 @@ function TeamInstallerDialog({
   });
 
   const installMutation = useMutation({
-    mutationFn: () => teamCatalogApi.install(companyId, team.id, buildOptions()),
+    mutationFn: () => teamCatalogApi.install(companyId, team.id, buildInstallOptions()),
     onMutate: () => {
       setPhase("applying");
       setApplyError(null);
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
+      setInstallResult(result);
       setPhase("done");
       onInstalled();
     },
@@ -922,24 +973,38 @@ function TeamInstallerDialog({
   }
 
   const totalSteps = steps.length;
+  const isMobileSheet = useMediaQuery(`(max-width: ${MOBILE_MAX}px)`);
 
-  return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next && phase !== "applying") onClose(); }}>
-      <DialogContent className="max-w-3xl">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Users2 className="h-4 w-4" />
-            Install {team.name}
-          </DialogTitle>
-          {phase === "form" && (
-            <DialogDescription>
-              Step {stepIndex + 1} of {totalSteps} · {STEP_LABELS[currentStep]}
-            </DialogDescription>
-          )}
-        </DialogHeader>
+  const headerTitle = (
+    <span className="flex items-center gap-2">
+      <Users2 className="h-4 w-4" />
+      Install {team.name}
+    </span>
+  );
+  const headerDescription =
+    phase === "form" ? (
+      <span className="flex items-center gap-2">
+        <span>
+          Step {stepIndex + 1} of {totalSteps} · {STEP_LABELS[currentStep]}
+        </span>
+        <span className="flex items-center gap-1" aria-hidden>
+          {steps.map((s, i) => (
+            <span
+              key={s}
+              className={cn(
+                "h-1.5 w-1.5 rounded-full",
+                i === stepIndex ? "bg-primary" : i < stepIndex ? "bg-primary/50" : "bg-muted",
+              )}
+            />
+          ))}
+        </span>
+      </span>
+    ) : null;
 
+  const body = (
+    <>
         {phase === "form" && (
-          <div className="max-h-[60vh] space-y-4 overflow-auto pr-1">
+          <div className="space-y-4 overflow-auto pr-1 md:max-h-[60vh]">
             {currentStep === "target_manager" && (
               <StepTargetManager
                 team={team}
@@ -980,6 +1045,8 @@ function TeamInstallerDialog({
                 onCollisionStrategyChange={(s) => { setCollisionStrategy(s); previewRequested.current = false; previewMutation.mutate(); }}
                 nameOverrides={nameOverrides}
                 onRename={(slug, name) => setNameOverrides((cur) => ({ ...cur, [slug]: name }))}
+                adapterOverrides={adapterOverrides}
+                onAdapterChange={(slug, adapterType) => setAdapterOverrides((cur) => ({ ...cur, [slug]: adapterType }))}
                 onRetry={() => previewMutation.mutate()}
               />
             )}
@@ -987,7 +1054,7 @@ function TeamInstallerDialog({
         )}
 
         {phase === "applying" && <ApplyProgress team={team} />}
-        {phase === "done" && <ApplySuccess team={team} onClose={onClose} />}
+        {phase === "done" && <ApplySuccess team={team} result={installResult} onClose={onClose} />}
         {phase === "error" && (
           <div className="space-y-3">
             <div role="alert" className="flex items-start gap-2 rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-sm text-rose-700 dark:text-rose-300">
@@ -1002,61 +1069,81 @@ function TeamInstallerDialog({
             </div>
           </div>
         )}
+    </>
+  );
 
-        {phase === "form" && (
-          <DialogFooter className="flex items-center sm:justify-between">
-            <div>
-              {stepIndex > 0 ? (
-                <Button variant="ghost" onClick={goBack}>Back</Button>
-              ) : (
-                <Button variant="ghost" onClick={onClose}>Cancel</Button>
-              )}
-            </div>
-            <div className="flex items-center gap-3">
-              {currentStep === "preview" && hasErrors && (
-                <span className="text-xs text-rose-600 dark:text-rose-300">
-                  Install blocked: {blockedCount} error{blockedCount === 1 ? "" : "s"}
-                </span>
-              )}
-              {currentStep === "preview" ? (
-                needsScriptsConfirm && confirmScripts ? (
-                  <Button
-                    variant="destructive"
-                    onClick={submitInstall}
-                    disabled={hasErrors || previewMutation.isPending}
-                  >
-                    <AlertTriangle className="h-4 w-4" />
-                    Confirm — install with executables
-                  </Button>
-                ) : (
-                  <Button
-                    onClick={submitInstall}
-                    disabled={hasErrors || previewMutation.isPending || !previewResult}
-                  >
-                    {needsScriptsConfirm ? <AlertTriangle className="h-4 w-4" /> : <Download className="h-4 w-4" />}
-                    {needsScriptsConfirm ? "Install with executables" : "Install team"}
-                  </Button>
-                )
-              ) : (
-                <Button onClick={goNext} disabled={!canContinue(currentStep)}>
-                  Continue
-                </Button>
-              )}
-            </div>
-          </DialogFooter>
-        )}
+  const footer =
+    phase === "form" ? (
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          {stepIndex > 0 ? (
+            <Button variant="ghost" onClick={goBack}>Back</Button>
+          ) : (
+            <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          {currentStep === "preview" && hasErrors && (
+            <span className="text-xs text-rose-600 dark:text-rose-300">
+              Install blocked: {blockedCount} error{blockedCount === 1 ? "" : "s"}
+            </span>
+          )}
+          {currentStep === "preview" ? (
+            needsScriptsConfirm && confirmScripts ? (
+              <Button variant="destructive" onClick={submitInstall} disabled={hasErrors || previewMutation.isPending}>
+                <AlertTriangle className="h-4 w-4" />
+                Confirm — install with executables
+              </Button>
+            ) : (
+              <Button onClick={submitInstall} disabled={hasErrors || previewMutation.isPending || !previewResult}>
+                {needsScriptsConfirm ? <AlertTriangle className="h-4 w-4" /> : <Download className="h-4 w-4" />}
+                {needsScriptsConfirm ? "Install with executables" : "Install team"}
+              </Button>
+            )
+          ) : (
+            <Button onClick={goNext} disabled={!canContinue(currentStep)}>Continue</Button>
+          )}
+        </div>
+      </div>
+    ) : phase === "error" ? (
+      <div className="flex justify-end">
+        <Button variant="ghost" onClick={onClose}>Close</Button>
+      </div>
+    ) : null;
 
-        {phase === "error" && (
-          <DialogFooter>
-            <Button variant="ghost" onClick={onClose}>Close</Button>
-          </DialogFooter>
-        )}
+  const dismissable = phase !== "applying";
+
+  // <768px → full-height Sheet with sticky footer (design §11); otherwise Dialog.
+  if (isMobileSheet) {
+    return (
+      <Sheet open={open} onOpenChange={(next) => { if (!next && dismissable) onClose(); }}>
+        <SheetContent side="bottom" className="flex h-[100dvh] flex-col gap-0 p-0">
+          <SheetHeader className="border-b border-border">
+            <SheetTitle>{headerTitle}</SheetTitle>
+            {headerDescription && <SheetDescription>{headerDescription}</SheetDescription>}
+          </SheetHeader>
+          <div className="min-h-0 flex-1 overflow-auto p-4">{body}</div>
+          {footer && <div className="border-t border-border bg-background p-4">{footer}</div>}
+        </SheetContent>
+      </Sheet>
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!next && dismissable) onClose(); }}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>{headerTitle}</DialogTitle>
+          {headerDescription && <DialogDescription>{headerDescription}</DialogDescription>}
+        </DialogHeader>
+        {body}
+        {footer && <DialogFooter>{footer}</DialogFooter>}
       </DialogContent>
     </Dialog>
   );
 }
 
-function StepTargetManager({
+export function StepTargetManager({
   team,
   agents,
   targetManagerAgentId,
@@ -1140,7 +1227,7 @@ function StepTargetManager({
   );
 }
 
-function StepSourcePolicy({
+export function StepSourcePolicy({
   team,
   allowExternalSources,
   allowUnpinnedOptionalSources,
@@ -1258,7 +1345,7 @@ const SKILL_ACTION_META: Record<
   blocked: { label: "Blocked", tone: "text-rose-600 dark:text-rose-300 border-rose-500/30" },
 };
 
-function StepSkillPlan({
+export function StepSkillPlan({
   team,
   preparations,
 }: {
@@ -1358,7 +1445,7 @@ function PlanRow({
   );
 }
 
-function StepPreview({
+export function StepPreview({
   team,
   loading,
   error,
@@ -1367,6 +1454,8 @@ function StepPreview({
   onCollisionStrategyChange,
   nameOverrides,
   onRename,
+  adapterOverrides,
+  onAdapterChange,
   onRetry,
 }: {
   team: CatalogTeam;
@@ -1377,6 +1466,8 @@ function StepPreview({
   onCollisionStrategyChange: (s: CompanyPortabilityCollisionStrategy) => void;
   nameOverrides: Record<string, string>;
   onRename: (slug: string, name: string) => void;
+  adapterOverrides: Record<string, string>;
+  onAdapterChange: (slug: string, adapterType: string) => void;
   onRetry: () => void;
 }) {
   if (loading && !result) {
@@ -1403,6 +1494,7 @@ function StepPreview({
 
   const plan = result.portabilityPreview.plan;
   const envInputs = result.portabilityPreview.envInputs;
+  const manifestAgents = result.portabilityPreview.manifest.agents;
   const canRename = collisionStrategy === "rename";
 
   return (
@@ -1494,7 +1586,37 @@ function StepPreview({
         </PreviewSection>
       )}
 
-      {/* Env inputs (read-only) */}
+      {/* Adapter selection — install schema accepts adapterOverrides (design §4.4) */}
+      {manifestAgents.length > 0 && (
+        <PreviewSection title={`Adapter selection · ${manifestAgents.length}`}>
+          {manifestAgents.map((agent) => {
+            const selected = adapterOverrides[agent.slug] ?? agent.adapterType;
+            return (
+              <li key={agent.slug} className="flex items-center gap-2 px-3 py-2 text-sm">
+                <Cpu className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="min-w-0 truncate">{agent.name}</span>
+                <span className="font-mono text-[11px] text-muted-foreground">{agent.slug}</span>
+                <Select value={selected} onValueChange={(v) => onAdapterChange(agent.slug, v)}>
+                  <SelectTrigger className="ml-auto h-8 w-48">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {AGENT_ADAPTER_TYPES.map((type) => (
+                      <SelectItem key={type} value={type}>{getAdapterLabel(type)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </li>
+            );
+          })}
+          <li className="px-3 py-1.5 text-[11px] text-muted-foreground">
+            Each imported agent defaults to its package adapter; override here before install.
+            Deeper per-adapter model config is editable on the agent after install.
+          </li>
+        </PreviewSection>
+      )}
+
+      {/* Env inputs (read-only — install schema does not yet accept secretValues) */}
       {envInputs.length > 0 && (
         <PreviewSection title={`Secrets & env inputs · ${envInputs.length}`}>
           {envInputs.map((input) => (
@@ -1502,6 +1624,9 @@ function StepPreview({
               <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
               <span className="font-mono text-xs uppercase tracking-wide">{input.key}</span>
               {input.description && <span className="text-xs text-muted-foreground">{input.description}</span>}
+              {input.requirement === "required" && (
+                <Badge variant="outline" className="text-[10px]">required</Badge>
+              )}
               <Badge
                 variant="outline"
                 className={cn("ml-auto text-[10px]", input.kind === "secret" ? "text-rose-600 dark:text-rose-300 border-rose-500/30" : "text-muted-foreground")}
@@ -1510,8 +1635,13 @@ function StepPreview({
               </Badge>
             </li>
           ))}
-          <li className="px-3 py-1.5 text-[11px] text-muted-foreground">
-            Secret values are configured on the imported agents after install.
+          <li className="flex items-start gap-1.5 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
+            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+            <span>
+              The teams-catalog install API does not yet accept secret values, so these are listed
+              read-only and must be set on each imported agent after install. Inline entry is tracked
+              in the Phase E follow-up (see comment).
+            </span>
           </li>
         </PreviewSection>
       )}
@@ -1546,29 +1676,47 @@ function PreviewSection({ title, children }: { title: string; children: React.Re
   );
 }
 
-function ApplyProgress({ team }: { team: CatalogTeam }) {
-  const steps = [
-    "Installing prerequisite skills",
-    "Importing agents",
-    "Importing projects",
-    "Importing routines",
-    "Stamping provenance metadata",
-    "Recording activity events",
-  ];
+// The install API is a single non-streaming POST, so we cannot show truthful
+// per-step progress mid-flight. Show one honest in-flight row; the resolved
+// per-category checklist is rendered from the real result on the success screen.
+export function ApplyProgress({ team }: { team: CatalogTeam }) {
   return (
-    <div className="space-y-1 py-4">
-      <p className="mb-3 text-sm text-muted-foreground">Installing {team.name}…</p>
-      {steps.map((label) => (
-        <div key={label} className="flex items-center gap-3 py-2 text-sm">
-          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-          {label}
-        </div>
-      ))}
+    <div className="flex items-center gap-3 py-10 text-sm">
+      <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      <div>
+        <p className="font-medium">Installing {team.name}…</p>
+        <p className="text-xs text-muted-foreground">
+          Resolving skills, importing agents, projects, and routines. This may take a moment.
+        </p>
+      </div>
     </div>
   );
 }
 
-function ApplySuccess({ team, onClose }: { team: CatalogTeam; onClose: () => void }) {
+function ResultRow({ label, count }: { label: string; count: number }) {
+  return (
+    <li className="flex items-center gap-2.5 py-1.5 text-sm">
+      <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+      <span>{label}</span>
+      <span className="ml-auto font-mono tabular-nums text-muted-foreground">{count}</span>
+    </li>
+  );
+}
+
+export function ApplySuccess({
+  team,
+  result,
+  onClose,
+}: {
+  team: CatalogTeam;
+  result: CatalogTeamInstallResult | null;
+  onClose: () => void;
+}) {
+  const imp = result?.portabilityImport;
+  const agentsCreated = imp?.agents.filter((a) => a.action !== "skipped").length ?? 0;
+  const projectsCreated = imp?.projects.filter((p) => p.action !== "skipped").length ?? 0;
+  const skillsResolved = result?.skillPreparations.length ?? 0;
+  const warnings = result?.warnings ?? [];
   return (
     <div className="space-y-4 py-2">
       <div className="flex items-center gap-2">
@@ -1576,18 +1724,31 @@ function ApplySuccess({ team, onClose }: { team: CatalogTeam; onClose: () => voi
         <p className="text-base font-semibold">Team installed</p>
       </div>
       <p className="text-sm text-muted-foreground">
-        {team.name} was imported into your company. Imported agents, projects, and routines are
-        stamped with catalog provenance.
+        {team.name} was imported into your company. Imported entities are stamped with catalog provenance.
       </p>
+      {result && (
+        <ul className="divide-y divide-border/60 rounded-md border border-border px-3">
+          <ResultRow label="Agents imported" count={agentsCreated} />
+          <ResultRow label="Projects imported" count={projectsCreated} />
+          <ResultRow label="Skills resolved" count={skillsResolved} />
+        </ul>
+      )}
+      {warnings.length > 0 && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+          <ul className="list-disc space-y-0.5 pl-4">
+            {warnings.map((w, i) => <li key={i}>{w}</li>)}
+          </ul>
+        </div>
+      )}
       <ul className="space-y-1 text-sm">
         <li><a className="text-primary hover:underline" href="/agents/all">View imported agents →</a></li>
         <li><a className="text-primary hover:underline" href="/projects">View imported projects →</a></li>
         <li><a className="text-primary hover:underline" href="/routines">View routines →</a></li>
         <li><a className="text-primary hover:underline" href="/activity">View activity log →</a></li>
       </ul>
-      <DialogFooter>
+      <div className="flex justify-end">
         <Button onClick={onClose}>Done</Button>
-      </DialogFooter>
+      </div>
     </div>
   );
 }
@@ -1596,7 +1757,7 @@ function ApplySuccess({ team, onClose }: { team: CatalogTeam; onClose: () => voi
 // Browse list
 // ---------------------------------------------------------------------------
 
-function TeamRow({
+export function TeamRow({
   team,
   selected,
   onSelect,
@@ -1675,6 +1836,7 @@ export function TeamCatalog() {
   const riskFilter = (searchParams.get("risk") as RiskFilter) ?? "any";
 
   const [installOpen, setInstallOpen] = useState(false);
+  const isDesktop = useMediaQuery(`(min-width: ${DESKTOP_MIN}px)`);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -1711,12 +1873,14 @@ export function TeamCatalog() {
     [teams, selectedRef],
   );
 
-  // Auto-select the first team when none is in the route.
+  // Auto-select the first team when none is in the route — desktop only. On
+  // narrow viewports the list stands alone until the operator picks a team
+  // (design §11).
   useEffect(() => {
-    if (!selectedRef && filtered[0]) {
+    if (isDesktop && !selectedRef && filtered[0]) {
       navigate(teamRoute(filtered[0].id), { replace: true });
     }
-  }, [selectedRef, filtered, navigate]);
+  }, [isDesktop, selectedRef, filtered, navigate]);
 
   const fileQuery = useQuery({
     queryKey: queryKeys.teamCatalog.catalogFile(selectedTeam?.id ?? "", selectedFilePath ?? ""),
@@ -1848,8 +2012,13 @@ export function TeamCatalog() {
       </div>
 
       <div className="flex min-h-0 flex-1">
-        {/* List column */}
-        <div className="w-[28rem] shrink-0 overflow-auto border-r border-border">
+        {/* List column — full width on < lg, fixed rail on >= lg (design §11) */}
+        <div
+          className={cn(
+            "w-full overflow-auto border-r border-border lg:w-[28rem] lg:shrink-0",
+            !isDesktop && selectedTeam && "hidden",
+          )}
+        >
           {catalogQuery.isLoading ? (
             <div className="space-y-2 p-3">
               {Array.from({ length: 6 }).map((_, i) => (
@@ -1910,21 +2079,39 @@ export function TeamCatalog() {
           )}
         </div>
 
-        {/* Detail pane */}
-        {selectedTeam ? (
-          <TeamDetailPane
-            team={selectedTeam}
-            selectedPath={selectedFilePath}
-            onSelectFile={(path) =>
-              navigate(path ? teamRoute(selectedTeam.id, path) : teamRoute(selectedTeam.id))
-            }
-            onInstall={() => setInstallOpen(true)}
-            canInstall={canInstall}
-            fileContent={fileQuery.data?.content ?? null}
-          />
-        ) : (
-          <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-            Select a team to view details.
+        {/* Detail pane — hidden on < lg until a team is selected (design §11) */}
+        {(isDesktop || selectedTeam) && (
+          <div
+            className={cn(
+              "flex min-h-0 flex-1 flex-col",
+              !isDesktop && !selectedTeam && "hidden",
+            )}
+          >
+            {!isDesktop && selectedTeam && (
+              <button
+                type="button"
+                onClick={() => navigate("/teams")}
+                className="flex items-center gap-1.5 border-b border-border px-4 py-2 text-sm text-muted-foreground hover:text-foreground"
+              >
+                <ChevronLeft className="h-4 w-4" /> Back to catalog
+              </button>
+            )}
+            {selectedTeam ? (
+              <TeamDetailPane
+                team={selectedTeam}
+                selectedPath={selectedFilePath}
+                onSelectFile={(path) =>
+                  navigate(path ? teamRoute(selectedTeam.id, path) : teamRoute(selectedTeam.id))
+                }
+                onInstall={() => setInstallOpen(true)}
+                canInstall={canInstall}
+                fileContent={fileQuery.data?.content ?? null}
+              />
+            ) : (
+              <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+                Select a team to view details.
+              </div>
+            )}
           </div>
         )}
       </div>
