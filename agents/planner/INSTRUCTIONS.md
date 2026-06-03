@@ -45,6 +45,20 @@ Bug fixes → unblockers → systemic Reviewer patterns → current phase → me
 
 Every roadmap item must be specific enough that Coordinator can turn it into a task with no further research (file paths, concrete done-criteria). Dedupe before writing — grep the roadmap for overlap with an active or existing item.
 
+### Write for the Coordinator's intake filter (or your items never promote)
+
+Coordinator promotes by **scanning the file top-to-bottom from a saved cursor** (its Roadmap-intake step), and its filter is mechanical:
+- **Only top-level bullets promote.** Lines starting in column 0 with `- `. Indented sub-bullets (`  - ` or deeper) are NEVER promoted standalone — they ride along inside their parent's task body. The real work must live in a **top-level** bullet, not buried as the 4th nested sub-item under a heading.
+- **Skip-words kill promotion.** Any bullet whose lead intent reads as research is dropped: `investigate`, `decide`, `audit`, `review`, `consider`. A bullet titled "Audit X…" is re-skipped *every fire, forever* — it can never become a task.
+- **Order is priority.** The cursor moves forward; whatever sits higher in the file promotes sooner. §-numbers are stable cross-ref anchors, **not** execution order — repositioning a whole section in the file is allowed (and expected); renumbering is not.
+
+Consequences for how you write:
+- **An "audit that yields a backlog" is two different artifacts.** The audit itself is *your* job (or the operator's) — meta work, not a promotable task. Do it, then write each resulting unit as its own **top-level, imperative** bullet ("Migrate BuildingType metadata to `buildings.json`…"), not as nested sub-bullets under an "Audit…" heading. A growing nested inventory under a skip-worded parent is invisible work — accretion, not planning.
+- **Place unblockers physically above their dependents.** A prerequisite that sits *below* the items it unblocks promotes last — the cursor reaches the dependents first, they stall as blocked, and the queue dries up. When you tag something an unblocker (the "unblockers" slot in Priority order), move it **up** in the file, above everything that waits on it.
+- **An item unpromoted across many fires is almost never "not ready" — it's mis-phrased or mis-positioned.** Before adding anything new, check whether your highest-leverage item is structurally promotable (top-level + no skip-word + above its dependents). Fix that first. If you keep re-reading the same high-value blob and Coordinator keeps skipping it, that's the signal — reframe it, don't grow it.
+
+**Worked example (applied 2026-06-02 — use this shape for the next mis-phrased item):** §4.5's foundational metadata-lookup migration was titled "Audit metadata-lookup match arms" (skip-word) with ~25 confirmed instances as sub-bullets, positioned *below* its dependents (§2.6.1, §4.1) — the single most-leveraged item in the file, yet structurally unpromotable, so it never became a task. Fix: its lead unblocker (`BuildingType` → `BuildingMetadata`/`buildings.json`) was pulled out as a **top-level imperative bullet under a "Foundational unblocker" heading at the top of Phase 2**, above its dependents, carrying its own done-when/file-list/label as sub-bullets; the §4.5 inventory stays put as the reference catalogue + follow-on backlog (RoomType/NpcRole/QuestGiverType promote next, same pattern). When you find the next high-value item that keeps not promoting, do this to it.
+
 ## Paperclip config
 
 Strategic config: skills, instruction content, routine cadence, onboarding. Operational health (stuck queues, zombie runs, timeouts) = Facilitator — file for them, don't fix.

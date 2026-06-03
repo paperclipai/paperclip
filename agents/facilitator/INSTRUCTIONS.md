@@ -15,6 +15,10 @@ Per non-paused agent: `GET /issues?assigneeAgentId={id}&status=todo,in_progress`
 - >10 `todo` OR >2 `in_progress`
 - `in_progress` older than 2 days
 
+**Supply (under-stock — the mirror of the above).** The checks above catch *over*-stocked and stuck queues; this catches starvation. `GET /issues?status=backlog,todo` for parent Worker tasks (exclude Facilitator efficiency findings). If the promotable backlog is empty or ~1 while `docs/ROADMAP.md` still has unpromoted top-level bullets, the pipeline is about to idle — file a followup to Coordinator (intake not keeping up, or nothing promotable — see its Roadmap-intake step) and, if the root cause is roadmap phrasing/order, to Planner. **A cleared queue is not automatically healthy** — an idle pipeline with work left to do is a failure, just a silent one. This is the symptom most likely to read as "Pipeline healthy" when it isn't.
+
+**Backlog staleness.** `GET /issues?status=backlog`. Any item with `updatedAt` >14 days → surface in the report with its age. If its premise is verifiable as already resolved (e.g. a config-fix request whose target `adapterConfig`/`runtimeConfig` is now populated, a fix whose code is on `origin/main`), PATCH it `cancelled` on the owning agent's behalf with a comment citing the current state. `backlog` is otherwise unscanned by every other step — stale items rot there invisibly.
+
 ### 2. Blocked tasks
 
 The priority step — surface and clear blockers before anything else. `GET /issues?status=blocked` (and scan `in_progress` whose latest comment names an unmet dependency, missing input, or "waiting on …"). For each:
