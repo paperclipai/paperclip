@@ -178,12 +178,20 @@ host capability gate reject those calls.
 |---|---|---|---|
 | Concierge Manager (CEO) | null | issue-triage, task-planning | claude_local |
 | Guest-Comms | concierge-manager | guest-message-triage, checkin-instructions | claude_local (Hermes optional later) |
-| Reservations | concierge-manager | booking-intake, availability-sync | claude_local |
+| Reservations *(booking manager)* | concierge-manager | booking-intake, availability-sync | **hermes_local** (Hermes → MemoryOS) |
 | Turnover & Maintenance | concierge-manager | turnover-schedule, maintenance-dispatch | claude_local |
 | Revenue & Owner-Relations | concierge-manager | dynamic-pricing, owner-statement | claude_local |
 
 Languages: **FR + EN**. Open option: split Revenue and Owner-Relations into two
 agents if the demo needs it.
+
+**Agent memory (Hermes MemoryOS).** The **Reservations** agent (the *booking manager*)
+is the **first agent on the `hermes_local` adapter**, giving it Hermes's persistent
+**MemoryOS**. Roll-out is phased: the other agents stay `claude_local` for now and adopt
+Hermes/MemoryOS later as needed. Requires Hermes installed (`~/.hermes`) and the Hermes
+adapter plugin registered (Board → Adapter manager; type `hermes_local`). Memory split is
+defined in §9.1. *(If a literally-named "Booking Manager" agent is preferred over
+"Reservations," that is a rename only.)*
 
 These five operate the STR business in v1. Future **product/developer agents**
 (Sales/Product, Product Owner, Architecture Guardian, and the builder/QA/deployment
@@ -245,8 +253,34 @@ interfaces later — agents, skills, tables, and issues are unchanged.
 
 - `deborah-concierge` skill (FR/EN routing) -> source for `guest-message-triage`.
 - `plugin-llm-wiki` (in this repo) -> house manuals / local-recommendations KB.
-- `hermes-paperclip-adapter` -> optionally run Guest-Comms as a Hermes employee
-  (deferred past v1).
+- `hermes-paperclip-adapter` -> run the **Reservations (booking manager)** agent as a
+  Hermes employee (`hermes_local`) so it uses Hermes **MemoryOS** for location memory
+  (v1; phased to other agents later). The adapter only *runs* Hermes — MemoryOS lives
+  inside the Hermes runtime (`~/.hermes`), not in this repo.
+
+### 9.1 Memory model — MemoryOS vs llm-wiki
+
+Two memory stores, split by scope:
+
+- **Hermes MemoryOS — location-touching memory.** Everything tied to a specific
+  property / guest / owner: guest & owner **preferences**, **recurring-guest recall**,
+  **behavioral memory**, and **house/property facts** (soft knowledge — gate quirks,
+  owner do's/don'ts, best local taxi, quiet hours). Persisted inside the Hermes runtime
+  by agents running on `hermes_local`. Paperclip / str-ops do **not** manage it.
+- **llm-wiki — general company memory.** Company-wide, non-location knowledge (SOPs,
+  policies, playbooks). Stays in the in-repo `plugin-llm-wiki` KB for now.
+
+**MemoryOS ≠ str-ops records.** `str_ops.property/owner/guest/booking` hold the
+**structured, queryable records** (address, dates, prices, commission) — the system of
+record. MemoryOS holds **soft / preference / recall** knowledge keyed to those entities.
+Keep them distinct: anything that must be queried or aggregated (money, availability)
+lives in str-ops; preferences, recall, and behavioral notes live in MemoryOS. The
+Reservations agent reads str-ops via plugin tools and reads/writes its MemoryOS by virtue
+of running on Hermes.
+
+**v1 boundary.** Only the Reservations (booking manager) agent uses MemoryOS in v1. This
+is in the **agent layer** (Plan 2 onward); **Plan 1** (booking spine, relational records)
+is unaffected.
 - CouchDB kit-store patterns -> reference only; the plugin uses the Postgres
   namespace.
 
@@ -391,3 +425,14 @@ v1); added an out-of-scope pointer in §4. The five conciergerie agents and the 
 operational loops are unchanged. Any prior product codename is deliberately avoided;
 neutral terms only. v1 scope unchanged: STR conciergerie company PoC, no
 website/mobile/starterkit implementation.
+
+**2026-06-03 — agent-memory decision (spec-only).** Adopt Hermes **MemoryOS** (via
+`hermes-paperclip-adapter`, `hermes_local`) as the **location-touching** memory store
+(guest/owner preferences, recurring-guest recall, behavioral memory, house/property
+facts), **first used by the Reservations / booking-manager agent**; phased to other
+agents later. **llm-wiki** keeps general company memory for now. Changes: §4 (Reservations
+→ `hermes_local`; memory note), §9 (Hermes bullet now in-scope) + new §9.1 memory model
+(MemoryOS vs llm-wiki; MemoryOS ≠ str-ops records). MemoryOS is internal to the Hermes
+runtime (`~/.hermes`), not managed by str-ops. Agent-layer change → **Plan 1 (booking
+spine) unaffected**; lands Plan 2 onward. Requires Hermes installed + Hermes adapter
+plugin registered.
