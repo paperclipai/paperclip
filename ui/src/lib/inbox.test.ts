@@ -302,6 +302,7 @@ const dashboard: DashboardSummary = {
     pausedProjects: 0,
   },
   runActivity: [],
+  agentRunCaps: [],
 };
 
 describe("inbox helpers", () => {

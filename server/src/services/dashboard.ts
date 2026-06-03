@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
+import { resolveRunCaps } from "./run-caps.js";
 
 const DASHBOARD_RUN_ACTIVITY_DAYS = 14;
 
@@ -128,6 +129,52 @@ export function dashboardService(db: Db) {
         bucket.total += count;
       }
 
+      // Per-agent run-rate + caps + auto-pause status (WEI-209/WEI-210).
+      const runCapHourStart = new Date(now.getTime() - 60 * 60 * 1000);
+      const runCapDayStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      const [agentDetailRows, runRateHourRows, runRateDayRows] = await Promise.all([
+        db
+          .select({
+            id: agents.id,
+            name: agents.name,
+            role: agents.role,
+            status: agents.status,
+            adapterConfig: agents.adapterConfig,
+            pauseReason: agents.pauseReason,
+            pausedAt: agents.pausedAt,
+          })
+          .from(agents)
+          .where(eq(agents.companyId, companyId)),
+        db
+          .select({ agentId: heartbeatRuns.agentId, count: sql<number>`count(*)::int` })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.companyId, companyId), gte(heartbeatRuns.createdAt, runCapHourStart)))
+          .groupBy(heartbeatRuns.agentId),
+        db
+          .select({ agentId: heartbeatRuns.agentId, count: sql<number>`count(*)::int` })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.companyId, companyId), gte(heartbeatRuns.createdAt, runCapDayStart)))
+          .groupBy(heartbeatRuns.agentId),
+      ]);
+      const hourByAgent = new Map(runRateHourRows.map((row) => [row.agentId, Number(row.count)]));
+      const dayByAgent = new Map(runRateDayRows.map((row) => [row.agentId, Number(row.count)]));
+      const agentRunCaps = agentDetailRows.map((row) => {
+        const caps = resolveRunCaps(row.role, row.adapterConfig);
+        const pauseReason = row.pauseReason ?? null;
+        return {
+          agentId: row.id,
+          name: row.name,
+          role: row.role,
+          status: row.status,
+          runsLastHour: hourByAgent.get(row.id) ?? 0,
+          runsLastDay: dayByAgent.get(row.id) ?? 0,
+          caps,
+          pauseReason,
+          pausedAt: row.pausedAt ? new Date(row.pausedAt).toISOString() : null,
+          autoPaused: row.status === "paused" && (pauseReason?.startsWith("auto:") ?? false),
+        };
+      });
+
       const utilization =
         company.budgetMonthlyCents > 0
           ? (monthSpendCents / company.budgetMonthlyCents) * 100
@@ -156,6 +203,7 @@ export function dashboardService(db: Db) {
           pausedProjects: budgetOverview.pausedProjectCount,
         },
         runActivity: Array.from(runActivity.values()),
+        agentRunCaps,
       };
     },
   };
