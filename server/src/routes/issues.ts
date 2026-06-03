@@ -1240,6 +1240,100 @@ export function issueRoutes(
     });
   }
 
+  const DONE_ARTIFACT_PATTERNS: RegExp[] = [
+    // Merged GitHub PR
+    /https?:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+/i,
+    // Commit URL
+    /https?:\/\/github\.com\/[^/\s]+\/[^/\s]+\/commit\/[a-f0-9]{7,40}/i,
+    // External artifact URLs (non-GitHub)
+    /https?:\/\/(?:drive|docs)\.google\.com\//i,
+    /https?:\/\/(?:www\.)?notion\.so\//i,
+    /https?:\/\/airtable\.com\//i,
+    /https?:\/\/[\w.-]+\.gradata\.ai\//i,
+    /https?:\/\/(?:www\.)?linkedin\.com\/posts\//i,
+    /https?:\/\/(?:www\.)?twitter\.com\//i,
+    /https?:\/\/(?:x|www\.x)\.com\//i,
+    /https?:\/\/(?:www\.)?youtu(?:be\.com|\.be)\//i,
+    /https?:\/\/railway\.app\//i,
+    /https?:\/\/[\w.-]+\.vercel\.app\//i,
+    /https?:\/\/[\w.-]+\.netlify\.app\//i,
+    /https?:\/\/[\w.-]+\.supabase\.co\//i,
+    /https?:\/\/[\w.-]+\.cloudflare\.com\//i,
+    /<[A-Za-z0-9._-]+@[A-Za-z0-9._-]+>/,
+    /evt_[A-Za-z0-9]{14,}/,
+    /in_[A-Za-z0-9]{14,}/,
+    /ch_[A-Za-z0-9]{14,}/,
+  ];
+
+  const INVALID_AGENT_DONE_ARTIFACT_MESSAGE =
+    "invalid_issue_disposition: Agent-authored updates that move an issue to done must include a verifiable external artifact. " +
+    "This means a merged GitHub PR URL, a commit URL, or another external artifact URL in the linkedArtifactUrl field, " +
+    "description, or a comment on the issue. Open PRs do not count — the PR must be merged. " +
+    "Without a verifiable artifact, the issue cannot be marked done. Fix: merge the PR first, then mark done with the merged PR URL, " +
+    "or populate linkedArtifactUrl with a deployed/published URL.";
+
+  function textContainsArtifact(text: string | null | undefined): boolean {
+    if (!text) return false;
+    return DONE_ARTIFACT_PATTERNS.some((re) => re.test(text));
+  }
+
+  async function assertAgentDoneArtifactGate(input: {
+    existing: {
+      id: string;
+      companyId: string;
+      status: string;
+      description?: string | null;
+      linkedArtifactUrl?: string | null;
+    };
+    updateFields: Record<string, unknown>;
+    actorType: string;
+  }) {
+    const nextStatus = typeof input.updateFields.status === "string"
+      ? input.updateFields.status
+      : input.existing.status;
+    if (input.actorType !== "agent" || nextStatus !== "done") return;
+    // Already done — no re-validation needed
+    if (input.existing.status === "done") return;
+
+    // Check linkedArtifactUrl on the update or existing
+    const artifactUrl = (
+      (input.updateFields.linkedArtifactUrl as string) ??
+      input.existing.linkedArtifactUrl ??
+      ""
+    );
+    if (textContainsArtifact(artifactUrl)) return;
+
+    // Check description (update or existing)
+    const desc = (
+      (input.updateFields.description as string) ??
+      input.existing.description ??
+      ""
+    );
+    if (textContainsArtifact(desc)) return;
+
+    // Check last 50 comments
+    try {
+      const comments = await issueThreadInteractionService(db).listForIssue(input.existing.id);
+      for (const c of (comments ?? [])) {
+        const body = (c as any).body ?? (c as any).text ?? "";
+        if (textContainsArtifact(body)) return;
+      }
+    } catch (_) {
+      // Comment fetch failure — fall through to reject
+    }
+
+    throw unprocessable(INVALID_AGENT_DONE_ARTIFACT_MESSAGE, {
+      code: "invalid_issue_disposition",
+      missing: "done_artifact",
+      validArtifacts: [
+        "merged_github_pr_url",
+        "commit_url",
+        "external_artifact_url_in_linkedArtifactUrl",
+        "external_artifact_url_in_description_or_comments",
+      ],
+    });
+  }
+
   async function logExpiredRequestConfirmations(input: {
     issue: { id: string; companyId: string; identifier?: string | null };
     interactions: Array<{ id: string; kind: string; status: string; result?: unknown }>;
@@ -1377,6 +1471,27 @@ export function issueRoutes(
       resource: { type: "issue", companyId, assigneeAgentId },
     });
     return decision.allowed;
+  }
+
+  async function assertAgentCanCreateTopLevelIssue(req: Request, res: Response, companyId: string) {
+    if (req.actor.type !== "agent") return true;
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    const actorAgent = await agentsSvc.getById(actorAgentId);
+    if (actorAgent?.companyId === companyId && actorAgent.role === "ceo") return true;
+    res.status(403).json({
+      error: "Agent cannot create top-level issues",
+      details: {
+        companyId,
+        actorAgentId,
+        actorRole: actorAgent?.role ?? null,
+        remediation: "Create a child issue under an owned parent task, or ask the CEO/operator to create top-level work.",
+      },
+    });
+    return false;
   }
 
   async function assertAgentIssueMutationAllowed(
@@ -2333,6 +2448,12 @@ export function issueRoutes(
     const actor = getActorInfo(req);
     const updateFields = sourceIssueStatus ? { status: sourceIssueStatus } : {};
     await assertAgentInReviewReviewPath({
+      existing,
+      updateFields,
+      actorType: req.actor.type,
+    });
+
+    await assertAgentDoneArtifactGate({
       existing,
       updateFields,
       actorType: req.actor.type,
@@ -3504,6 +3625,7 @@ export function issueRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    if (!(await assertAgentCanCreateTopLevelIssue(req, res, companyId))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, req.body))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId, {
@@ -3609,6 +3731,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, parent.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    if (!(await assertAgentIssueMutationAllowed(req, res, parent))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, req.body))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, parent.companyId, {
@@ -3983,6 +4106,12 @@ export function issueRoutes(
     }
 
     await assertAgentInReviewReviewPath({
+      existing,
+      updateFields,
+      actorType: req.actor.type,
+    });
+
+    await assertAgentDoneArtifactGate({
       existing,
       updateFields,
       actorType: req.actor.type,

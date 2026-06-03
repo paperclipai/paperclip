@@ -210,6 +210,49 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
   });
 
+  it("ignores post-completion runs when calculating no-comment streak", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const completedAt = new Date(now.getTime() - 20 * 60_000);
+
+    await db
+      .update(issues)
+      .set({ status: "done", completedAt, updatedAt: completedAt })
+      .where(eq(issues.id, seeded.issueId));
+
+    const preCompletionRuns = await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 3,
+      now: new Date(completedAt.getTime() - 60_000),
+      withRunComments: true,
+    });
+
+    await db
+      .delete(issueComments)
+      .where(eq(issueComments.createdByRunId, preCompletionRuns[1]!.id));
+    await db
+      .delete(issueComments)
+      .where(eq(issueComments.createdByRunId, preCompletionRuns[2]!.id));
+
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS + 2,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();

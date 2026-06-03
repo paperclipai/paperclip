@@ -402,7 +402,12 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(MAX_RUNS_FOR_STREAK);
 
-    const runIds = latestRuns.map((run) => run.id);
+    const terminalAt = sourceIssue.completedAt ?? sourceIssue.cancelledAt;
+    const streakEligibleRuns = terminalAt
+      ? latestRuns.filter((run) => run.createdAt <= terminalAt)
+      : latestRuns;
+
+    const runIds = streakEligibleRuns.map((run) => run.id);
     const commentRunIds = new Set<string>();
     if (runIds.length > 0) {
       const commentRows = await db
@@ -420,7 +425,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       }
     }
 
-    const terminalRuns = latestRuns.filter((run) =>
+    const terminalRuns = streakEligibleRuns.filter((run) =>
       TERMINAL_RUN_STATUSES.includes(run.status as (typeof TERMINAL_RUN_STATUSES)[number]),
     );
     let noCommentStreak = 0;

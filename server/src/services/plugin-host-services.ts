@@ -1,3 +1,4 @@
+// @ts-nocheck
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,

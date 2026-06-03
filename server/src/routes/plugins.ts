@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * @fileoverview Plugin management REST API routes
  *

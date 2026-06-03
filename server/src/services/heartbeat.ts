@@ -1059,6 +1059,52 @@ type SessionCompactionDecision = {
   previousRunId: string | null;
 };
 
+const DEAD_REUSED_SESSION_RUN_STREAK_THRESHOLD = 3;
+
+type DeadReusedSessionRunLike = {
+  usageJson: unknown;
+  livenessState: string | null;
+};
+
+function readUsageNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function isDeadReusedSessionRun(
+  run: DeadReusedSessionRunLike,
+  expectedPersistedSessionId: string,
+): boolean {
+  if (run.livenessState !== "failed") return false;
+  const usage = parseObject(run.usageJson);
+  if (!usage) return false;
+
+  const persistedSessionId = readNonEmptyString(usage.persistedSessionId);
+  if (!persistedSessionId || persistedSessionId !== expectedPersistedSessionId) return false;
+  if (usage.sessionReused !== true) return false;
+
+  const inputTokens = readUsageNumber(usage.inputTokens);
+  const outputTokens = readUsageNumber(usage.outputTokens);
+  return inputTokens === 0 && outputTokens === 0;
+}
+
+export function hasDeadReusedSessionRunStreak(
+  runs: DeadReusedSessionRunLike[],
+  persistedSessionId: string,
+  threshold = DEAD_REUSED_SESSION_RUN_STREAK_THRESHOLD,
+): boolean {
+  if (!persistedSessionId || threshold <= 0) return false;
+  let streak = 0;
+  for (const run of runs) {
+    if (isDeadReusedSessionRun(run, persistedSessionId)) {
+      streak += 1;
+      if (streak >= threshold) return true;
+      continue;
+    }
+    break;
+  }
+  return false;
+}
+
 interface ParsedIssueAssigneeAdapterOverrides {
   modelProfile: ModelProfileKey | null;
   adapterConfig: Record<string, unknown> | null;
@@ -3414,21 +3460,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const policy = parseSessionCompactionPolicy(agent);
-    if (!policy.enabled || !hasSessionCompactionThresholds(policy)) {
-      return {
-        rotate: false,
-        reason: null,
-        handoffMarkdown: null,
-        previousRunId: null,
-      };
-    }
-
-    const fetchLimit = Math.max(policy.maxSessionRuns > 0 ? policy.maxSessionRuns + 1 : 0, 4);
+    const hasPolicyThresholds = policy.enabled && hasSessionCompactionThresholds(policy);
+    const fetchLimit = Math.max(hasPolicyThresholds && policy.maxSessionRuns > 0 ? policy.maxSessionRuns + 1 : 0, 4);
     const runs = await db
       .select({
         id: heartbeatRuns.id,
         createdAt: heartbeatRuns.createdAt,
         usageJson: heartbeatRuns.usageJson,
+        livenessState: heartbeatRuns.livenessState,
         error: heartbeatRuns.error,
         ...heartbeatRunListResultColumns,
       })
@@ -3447,6 +3486,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const latestRun = runs[0] ?? null;
+    if (
+      hasDeadReusedSessionRunStreak(
+        runs,
+        sessionId,
+        DEAD_REUSED_SESSION_RUN_STREAK_THRESHOLD,
+      )
+    ) {
+      const reason =
+        `session reused with failed liveness and zero tokens ` +
+        `for ${DEAD_REUSED_SESSION_RUN_STREAK_THRESHOLD} consecutive runs`;
+      const handoffMarkdown = [
+        "Paperclip session handoff:",
+        `- Previous session: ${sessionId}`,
+        issueId ? `- Issue: ${issueId}` : "",
+        `- Rotation reason: ${reason}`,
+        input.continuationSummaryBody
+          ? `- Issue continuation summary: ${input.continuationSummaryBody.slice(0, 1_500)}`
+          : "",
+        "Continue from the current task state. Rebuild only the minimum context you need.",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      return {
+        rotate: true,
+        reason,
+        handoffMarkdown,
+        previousRunId: latestRun?.id ?? null,
+      };
+    }
+
+    if (!hasPolicyThresholds) {
+      return {
+        rotate: false,
+        reason: null,
+        handoffMarkdown: null,
+        previousRunId: latestRun?.id ?? null,
+      };
+    }
+
     const oldestRun =
       policy.maxSessionAgeHours > 0
         ? await getOldestRunForSession(agent.id, sessionId)
@@ -8878,6 +8956,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const policy = parseHeartbeatPolicy(agent);
 
+    const globalActiveRunCap = Math.max(
+      0,
+      Math.floor(Number(process.env.HEARTBEAT_GLOBAL_MAX_ACTIVE_RUNS) || Number.POSITIVE_INFINITY),
+    );
+    if (source !== "on_demand" && Number.isFinite(globalActiveRunCap)) {
+      const [activeRunCount] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, agent.companyId),
+          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+        ));
+      if (Number(activeRunCount?.count ?? 0) >= globalActiveRunCap) {
+        await writeSkippedRequest("heartbeat.global_active_run_cap");
+        return null;
+      }
+    }
+
     if (source === "timer" && !policy.enabled) {
       await writeSkippedRequest("heartbeat.disabled");
       return null;
@@ -9972,8 +10068,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     buildRunOutputSilence,
 
-    tickTimers: async (now = new Date()) => {
-      const allAgents = await db.select().from(agents);
+    tickTimers: async (now = new Date(), opts: { maxTimerEnqueues?: number } = {}) => {
+      const maxTimerEnqueues = Math.max(
+        0,
+        Math.floor(opts.maxTimerEnqueues ?? Number.POSITIVE_INFINITY),
+      );
+      const allAgents = await db
+        .select()
+        .from(agents)
+        .orderBy(asc(agents.lastHeartbeatAt), asc(agents.createdAt), asc(agents.id));
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
@@ -9987,6 +10090,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+        if (enqueued >= maxTimerEnqueues) {
+          skipped += 1;
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",

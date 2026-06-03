@@ -765,7 +765,9 @@ export async function startServer(): Promise<StartedServer> {
       });
     setInterval(() => {
       void heartbeat
-        .tickTimers(new Date())
+        .tickTimers(new Date(), {
+          maxTimerEnqueues: config.heartbeatSchedulerMaxTimerEnqueuesPerTick,
+        })
         .then((result) => {
           if (result.enqueued > 0) {
             logger.info({ ...result }, "heartbeat timer tick enqueued runs");

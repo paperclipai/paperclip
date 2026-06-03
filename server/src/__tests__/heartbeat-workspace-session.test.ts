@@ -13,6 +13,7 @@ import {
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  hasDeadReusedSessionRunStreak,
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
@@ -418,6 +419,74 @@ describe("deriveTaskKeyWithHeartbeatFallback", () => {
 
   it("returns null for empty context", () => {
     expect(deriveTaskKeyWithHeartbeatFallback({}, null)).toBeNull();
+  });
+});
+
+describe("hasDeadReusedSessionRunStreak", () => {
+  it("returns true after 3 consecutive failed reused runs with zero input/output tokens on same persisted session", () => {
+    expect(
+      hasDeadReusedSessionRunStreak(
+        [
+          {
+            livenessState: "failed",
+            usageJson: { persistedSessionId: "session-1", sessionReused: true, inputTokens: 0, outputTokens: 0 },
+          },
+          {
+            livenessState: "failed",
+            usageJson: { persistedSessionId: "session-1", sessionReused: true, inputTokens: 0, outputTokens: 0 },
+          },
+          {
+            livenessState: "failed",
+            usageJson: { persistedSessionId: "session-1", sessionReused: true, inputTokens: 0, outputTokens: 0 },
+          },
+        ],
+        "session-1",
+      ),
+    ).toBe(true);
+  });
+
+  it("returns false when streak is interrupted before threshold", () => {
+    expect(
+      hasDeadReusedSessionRunStreak(
+        [
+          {
+            livenessState: "failed",
+            usageJson: { persistedSessionId: "session-1", sessionReused: true, inputTokens: 0, outputTokens: 0 },
+          },
+          {
+            livenessState: "ok",
+            usageJson: { persistedSessionId: "session-1", sessionReused: true, inputTokens: 0, outputTokens: 0 },
+          },
+          {
+            livenessState: "failed",
+            usageJson: { persistedSessionId: "session-1", sessionReused: true, inputTokens: 0, outputTokens: 0 },
+          },
+        ],
+        "session-1",
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false when tokens are non-zero even if liveness failed and session reused", () => {
+    expect(
+      hasDeadReusedSessionRunStreak(
+        [
+          {
+            livenessState: "failed",
+            usageJson: { persistedSessionId: "session-1", sessionReused: true, inputTokens: 1, outputTokens: 0 },
+          },
+          {
+            livenessState: "failed",
+            usageJson: { persistedSessionId: "session-1", sessionReused: true, inputTokens: 0, outputTokens: 0 },
+          },
+          {
+            livenessState: "failed",
+            usageJson: { persistedSessionId: "session-1", sessionReused: true, inputTokens: 0, outputTokens: 0 },
+          },
+        ],
+        "session-1",
+      ),
+    ).toBe(false);
   });
 });
 
