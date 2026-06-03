@@ -288,17 +288,20 @@ pod:
 # Blockcast/paperclip#73, image sha-f324704). The chart splits the single-pod
 # StatefulSet into a multi-replica HTTP API Deployment plus a singleton worker
 # StatefulSet. The worker owns heartbeat scheduler + plugin workers + Linear
-# tunnel + DB backup; the API tier serves HTTP traffic only with
-# `PAPERCLIP_NODE_ROLE=api` (plugin RPC paths 503 cleanly on it via stub —
-# acceptable trade-off for HA; bridge is Phase 3 follow-up).
+# tunnel + DB backup; the API tier serves HTTP traffic with
+# `PAPERCLIP_NODE_ROLE=api` and reverse-proxies the worker-dependent plugin
+# routes (lifecycle / bridge / webhooks / scoped-api) to the worker tier's
+# internal Service (Blockcast/paperclip#84, #89, #279), so they no longer 503
+# on the API tier.
 #
-# Two-step rollout:
-#   Phase A (current): api.enabled=false — new image with NODE_ROLE code rolls
-#     onto paperclip-0 as before; no topology change. Verify paperclip-0 healthy.
-#   Phase B (after verify): set api.enabled=true — chart creates
-#     Deployment/paperclip-api (2 replicas, RollingUpdate maxSurge=1
-#     maxUnavailable=0). Service selector switches to component=api. Workers
-#     stay on the StatefulSet, mount same paperclip-data PVC (RWX cephfs).
+# Two-step rollout — Phase B is the CURRENT live state (api.enabled=true below):
+#   Phase A (done): api.enabled=false — new image with NODE_ROLE code rolled
+#     onto paperclip-0 as before; no topology change. paperclip-0 verified
+#     healthy.
+#   Phase B (current): api.enabled=true — chart creates Deployment/paperclip-api
+#     (2 replicas, RollingUpdate maxSurge=1 maxUnavailable=0). Service selector
+#     switches to component=api. Workers stay on the StatefulSet, mount same
+#     paperclip-data PVC (RWX cephfs).
 #
 # Rollback: flip api.enabled back to false + helm upgrade. Service selector
 # reverts; Deployment is reaped; StatefulSet stays.

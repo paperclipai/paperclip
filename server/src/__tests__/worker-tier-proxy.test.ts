@@ -200,6 +200,40 @@ describe("registerWorkerTierProxyRoutes", () => {
     );
   });
 
+  it("forwards a non-canonical JSON webhook body byte-for-byte with its original content-type", async () => {
+    let captured: CapturedRequest | undefined;
+    worker = await startWorkerStub((req) => {
+      captured = req;
+      return { status: 200, body: JSON.stringify({ ok: true }) };
+    });
+    const app = buildAppWithRawCapture(worker.url);
+
+    // A signed JSON webhook (Slack Events / GitHub) whose exact bytes are NOT
+    // reproduced by JSON.stringify(JSON.parse(x)): pretty-printed whitespace
+    // plus a \u-escaped sequence. The OLD proxy re-serialized req.body, which
+    // collapses the whitespace and unescapes ✅ -> a DIFFERENT byte string,
+    // so the worker's HMAC over those bytes never matched the provider
+    // signature. The proxy must forward these original bytes instead.
+    const rawBody = '{\n  "action": "update",\n  "emoji": "\\u2705"\n}';
+    // Guard: re-serialization really does change the bytes (the bug shape) —
+    // if this ever became false the byte-fidelity assertion below would pass
+    // vacuously.
+    expect(JSON.stringify(JSON.parse(rawBody))).not.toBe(rawBody);
+
+    await request(app)
+      .post("/api/plugins/paperclip-plugin-slack/webhooks/slack-events")
+      .set("content-type", "application/json")
+      .send(rawBody);
+
+    // Byte-identical forwarding: the worker verifies the provider HMAC over
+    // exactly these bytes, so recomputing the signature over captured.body
+    // reproduces the signature header.
+    expect(captured?.body).toBe(rawBody);
+    // Original content-type preserved (here it stays application/json, but it
+    // is carried through verbatim rather than force-set by the proxy).
+    expect(captured?.headers["content-type"]).toMatch(/application\/json/);
+  });
+
   it("forwards auth-bearing headers so the worker tier can re-authorize", async () => {
     let captured: CapturedRequest | undefined;
     worker = await startWorkerStub((req) => {
