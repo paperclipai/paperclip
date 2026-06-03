@@ -4,6 +4,8 @@ import type { CatalogTeam } from "./types.js";
 
 const EXPECTED_BUNDLED_KEYS = [
   "paperclipai/bundled/company-defaults/core-exec-team",
+  "paperclipai/bundled/product/product-design",
+  "paperclipai/bundled/software-development/product-engineering",
 ];
 
 const EXPECTED_OPTIONAL_KEYS = [

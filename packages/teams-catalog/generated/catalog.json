@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/teams-catalog",
   "packageVersion": "0.1.0",
-  "generatedAt": "2026-06-03T17:24:44.400Z",
+  "generatedAt": "2026-06-03T17:31:32.494Z",
   "teams": [
     {
       "id": "paperclipai:bundled:company-defaults:core-exec-team",
@@ -11,27 +11,29 @@
       "category": "company-defaults",
       "slug": "core-exec-team",
       "name": "Core Exec Team",
-      "description": "Minimal default leadership and engineering team for bootstrapping a Paperclip company with a CEO, CTO, starter project, and first recurring operating task.",
+      "description": "Default leadership and engineering team for bootstrapping a Paperclip company with a CEO, CTO, QA Engineer, starter project, and a recurring CEO heartbeat review task.",
       "path": "catalog/bundled/company-defaults/core-exec-team",
       "entrypoint": "TEAM.md",
       "schema": "agentcompanies/v1",
       "defaultInstall": true,
       "recommendedForCompanyTypes": [
         "startup",
-        "software"
+        "software",
+        "generalist"
       ],
       "tags": [
         "default",
         "executive",
-        "engineering"
+        "engineering",
+        "qa"
       ],
       "counts": {
-        "agents": 2,
+        "agents": 3,
         "projects": 1,
         "tasks": 0,
         "routines": 1,
         "localSkills": 0,
-        "catalogSkills": 2,
+        "catalogSkills": 4,
         "externalSkillSources": 0
       },
       "rootAgentSlugs": [
@@ -39,7 +41,8 @@
       ],
       "agentSlugs": [
         "ceo",
-        "cto"
+        "cto",
+        "qa"
       ],
       "projectSlugs": [
         "first-project"
@@ -57,9 +60,30 @@
         },
         {
           "type": "catalog",
-          "ref": "task-planning",
+          "ref": "issue-triage",
           "agentSlugs": [
             "ceo"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:paperclip-operations:issue-triage",
+          "catalogSkillKey": "paperclipai/bundled/paperclip-operations/issue-triage"
+        },
+        {
+          "type": "catalog",
+          "ref": "qa-acceptance",
+          "agentSlugs": [
+            "qa"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:quality:qa-acceptance",
+          "catalogSkillKey": "paperclipai/bundled/quality/qa-acceptance"
+        },
+        {
+          "type": "catalog",
+          "ref": "task-planning",
+          "agentSlugs": [
+            "ceo",
+            "cto"
           ],
           "resolved": true,
           "catalogSkillId": "paperclipai:bundled:paperclip-operations:task-planning",
@@ -72,37 +96,278 @@
         {
           "path": "TEAM.md",
           "kind": "team",
-          "sizeBytes": 881,
-          "sha256": "ba82aebfb880e664ecfbf25f507cde73421553f0c9163983075ae5b41b2f0a26"
+          "sizeBytes": 2144,
+          "sha256": "4ab4f57f147e89a56a6753755d7ef142d91741b3c0159f2e53fb333cd2779eaf"
         },
         {
           "path": "agents/ceo/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 198,
-          "sha256": "b60338f0de7bf9d0cdfdfeb11e6dce0204850715bd1e18863c4f133c1cb0b785"
+          "sizeBytes": 2492,
+          "sha256": "50f580c51807762265f09c6fe7bf32d7701d64caeb30595bfd577b2f5087c21b"
         },
         {
           "path": "agents/cto/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 235,
-          "sha256": "3ebecad5b0e2948c67c3403469aa08d95f0f1fcd8222f9cbe8de00eea0a3b376"
+          "sizeBytes": 1449,
+          "sha256": "596e2e9fe08d7368b3b0cfe72c2635ea80444d92a2c0414157bfb0a17773fcaf"
+        },
+        {
+          "path": "agents/qa/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 1307,
+          "sha256": "2a139b88b4b98516048395c569c1bc74fd31cdc2da65db410e9779b8d92c0343"
         },
         {
           "path": "projects/first-project/PROJECT.md",
           "kind": "project",
-          "sizeBytes": 208,
-          "sha256": "65333c0fbc992cb1a33418bfa9d8236215aa55a3a65bfc31ff597af54fadb28a"
+          "sizeBytes": 364,
+          "sha256": "1f457ae956da52ff83adc1cf63a3fb84337a4afb25bd43f0d123902d75e871cc"
         },
         {
           "path": "projects/first-project/tasks/first-heartbeat/TASK.md",
           "kind": "task",
-          "sizeBytes": 195,
-          "sha256": "45e2a90a78f43c587260bca09daa586404de9cf29162e3b9b6843c6c71d66f25"
+          "sizeBytes": 292,
+          "sha256": "bdc979cafa43fc9b8f0d6f0e4120c01cecfb899082781a5da88e26fa262f18e4"
         }
       ],
       "trustLevel": "markdown_only",
       "compatibility": "compatible",
-      "contentHash": "sha256:ab9ca597e8cc4cde290e560c3d9a65f2cd06a81867cd64bd7efb2bf26c8d2b74"
+      "contentHash": "sha256:0f20e9d56124c1dc90a1e4b128fabd863538bcc935117220f719d9620f7c89f1"
+    },
+    {
+      "id": "paperclipai:bundled:product:product-design",
+      "key": "paperclipai/bundled/product/product-design",
+      "kind": "bundled",
+      "category": "product",
+      "slug": "product-design",
+      "name": "Product Design",
+      "description": "Bundled product design team with a Principal Product Designer who owns wireframes, design critiques, and UX quality reviews for a product company.",
+      "path": "catalog/bundled/product/product-design",
+      "entrypoint": "TEAM.md",
+      "schema": "agentcompanies/v1",
+      "defaultInstall": false,
+      "recommendedForCompanyTypes": [
+        "software",
+        "product",
+        "design"
+      ],
+      "tags": [
+        "design",
+        "ux",
+        "product"
+      ],
+      "counts": {
+        "agents": 1,
+        "projects": 1,
+        "tasks": 0,
+        "routines": 1,
+        "localSkills": 0,
+        "catalogSkills": 3,
+        "externalSkillSources": 0
+      },
+      "rootAgentSlugs": [
+        "ux-designer"
+      ],
+      "agentSlugs": [
+        "ux-designer"
+      ],
+      "projectSlugs": [
+        "product-design"
+      ],
+      "requiredSkills": [
+        {
+          "type": "catalog",
+          "ref": "design-critique",
+          "agentSlugs": [
+            "ux-designer"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:optional:product:design-critique",
+          "catalogSkillKey": "paperclipai/optional/product/design-critique"
+        },
+        {
+          "type": "catalog",
+          "ref": "task-planning",
+          "agentSlugs": [
+            "ux-designer"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:paperclip-operations:task-planning",
+          "catalogSkillKey": "paperclipai/bundled/paperclip-operations/task-planning"
+        },
+        {
+          "type": "catalog",
+          "ref": "wireframe",
+          "agentSlugs": [
+            "ux-designer"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:product:wireframe",
+          "catalogSkillKey": "paperclipai/bundled/product/wireframe"
+        }
+      ],
+      "envInputs": [],
+      "sourceRefs": [],
+      "files": [
+        {
+          "path": "TEAM.md",
+          "kind": "team",
+          "sizeBytes": 2074,
+          "sha256": "205be8d3ef6c1f5e73729207913c387eee4cc9379191c3ce6d943fcf9ca2545d"
+        },
+        {
+          "path": "agents/ux-designer/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 2136,
+          "sha256": "f5a4b5696d8249e9f9d808a4373c2a1e6b07faa463e72f83fd9d5bed98d2022f"
+        },
+        {
+          "path": "projects/product-design/PROJECT.md",
+          "kind": "project",
+          "sizeBytes": 353,
+          "sha256": "4afe346bc5d5958216542d60a06be12983e1e018960cf2709c85c7d578f28420"
+        },
+        {
+          "path": "projects/product-design/tasks/weekly-design-review/TASK.md",
+          "kind": "task",
+          "sizeBytes": 313,
+          "sha256": "d255115eccc5c8b9f576c34fc2fb46a1cbb86ab36a56b980bdab35a952482d8a"
+        }
+      ],
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "contentHash": "sha256:15a04b36f31d4c9a391bb499c92e91fedfcc237cfa6c3d41ea3ddb441bc85c5b"
+    },
+    {
+      "id": "paperclipai:bundled:software-development:product-engineering",
+      "key": "paperclipai/bundled/software-development/product-engineering",
+      "kind": "bundled",
+      "category": "software-development",
+      "slug": "product-engineering",
+      "name": "Product Engineering",
+      "description": "Bundled engineering team that pairs a CTO with a senior coder and a QA engineer to deliver, review, and verify product changes.",
+      "path": "catalog/bundled/software-development/product-engineering",
+      "entrypoint": "TEAM.md",
+      "schema": "agentcompanies/v1",
+      "defaultInstall": false,
+      "recommendedForCompanyTypes": [
+        "software",
+        "startup",
+        "product"
+      ],
+      "tags": [
+        "engineering",
+        "delivery",
+        "qa",
+        "code-review"
+      ],
+      "counts": {
+        "agents": 3,
+        "projects": 1,
+        "tasks": 0,
+        "routines": 1,
+        "localSkills": 0,
+        "catalogSkills": 4,
+        "externalSkillSources": 0
+      },
+      "rootAgentSlugs": [
+        "cto"
+      ],
+      "agentSlugs": [
+        "cto",
+        "qa",
+        "senior-coder"
+      ],
+      "projectSlugs": [
+        "product-engineering"
+      ],
+      "requiredSkills": [
+        {
+          "type": "catalog",
+          "ref": "doc-maintenance",
+          "agentSlugs": [
+            "cto",
+            "senior-coder"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:docs:doc-maintenance",
+          "catalogSkillKey": "paperclipai/bundled/docs/doc-maintenance"
+        },
+        {
+          "type": "catalog",
+          "ref": "github-pr-workflow",
+          "agentSlugs": [
+            "cto",
+            "senior-coder"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:software-development:github-pr-workflow",
+          "catalogSkillKey": "paperclipai/bundled/software-development/github-pr-workflow"
+        },
+        {
+          "type": "catalog",
+          "ref": "qa-acceptance",
+          "agentSlugs": [
+            "qa"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:quality:qa-acceptance",
+          "catalogSkillKey": "paperclipai/bundled/quality/qa-acceptance"
+        },
+        {
+          "type": "catalog",
+          "ref": "task-planning",
+          "agentSlugs": [
+            "cto"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:paperclip-operations:task-planning",
+          "catalogSkillKey": "paperclipai/bundled/paperclip-operations/task-planning"
+        }
+      ],
+      "envInputs": [],
+      "sourceRefs": [],
+      "files": [
+        {
+          "path": "TEAM.md",
+          "kind": "team",
+          "sizeBytes": 2583,
+          "sha256": "7204eeef78a48714dd3f82b82e171a4039adc6325e91a6bdf51a442105ee33b0"
+        },
+        {
+          "path": "agents/cto/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 1499,
+          "sha256": "0a1a73ec9e5008056bca0a26325131ded2fcf4c4680a5014ba1e13400b32c173"
+        },
+        {
+          "path": "agents/qa/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 1223,
+          "sha256": "2d5738f831aa772befa3471c844a0c9e611584be668e3ec82580ca9e92dc13fc"
+        },
+        {
+          "path": "agents/senior-coder/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 1413,
+          "sha256": "b61071518755d9e584c099ae2082c7a78448d09586093ee91393082fe10872b5"
+        },
+        {
+          "path": "projects/product-engineering/PROJECT.md",
+          "kind": "project",
+          "sizeBytes": 358,
+          "sha256": "225d01c5b5b77f5d4dafedc083899c9368c9b079db1d3b7b67cfebd4677fc527"
+        },
+        {
+          "path": "projects/product-engineering/tasks/weekly-engineering-sync/TASK.md",
+          "kind": "task",
+          "sizeBytes": 322,
+          "sha256": "6acf3ed2da3dfa48de163810b4bc9d385dad537fd34037ca881eec713986a2a8"
+        }
+      ],
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "contentHash": "sha256:c1690ae90dc2049f5e3c7cd60f3206c2d2584d4119197b216aae2c49ec50deb9"
     },
     {
       "id": "paperclipai:optional:content:content-machine",

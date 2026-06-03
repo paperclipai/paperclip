@@ -1,8 +1,8 @@
 ---
 name: First Project
 slug: first-project
-description: Starter project for first useful company execution work.
+description: Starter project that turns the company goal into the first useful piece of implementation work.
 owner: cto
 ---
 
-Use this project to turn the company goal into the first implementation task.
+Use this project to convert the company goal into a concrete first deliverable. The CEO seeds priorities, the CTO breaks them into engineering tasks, and QA verifies the result before close-out.
