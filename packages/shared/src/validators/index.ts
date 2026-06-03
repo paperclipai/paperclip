@@ -384,6 +384,34 @@ export {
 } from "./cost.js";
 
 export {
+  CHANNEL_PLATFORMS,
+  CHANNEL_STATUSES,
+  CHANNEL_DIRECTIONS,
+  CHANNEL_MESSAGE_STATUSES,
+  CHANNEL_MESSAGE_DIRECTIONS,
+  createChannelSchema,
+  updateChannelSchema,
+  createChannelRouteSchema,
+  updateChannelRouteSchema,
+  listChannelMessagesQuerySchema,
+  listChannelRoutesQuerySchema,
+  type ChannelPlatform,
+  type ChannelStatus,
+  type ChannelDirection,
+  type ChannelMessageStatus,
+  type ChannelMessageDirection,
+  type CreateChannel,
+  type UpdateChannel,
+  type CreateChannelRoute,
+  type UpdateChannelRoute,
+  type ListChannelMessagesQuery,
+  type ListChannelRoutesQuery,
+  type Channel,
+  type ChannelRoute,
+  type ChannelMessage,
+} from "./channel.js";
+
+export {
   createFinanceEventSchema,
   type CreateFinanceEvent,
 } from "./finance.js";
