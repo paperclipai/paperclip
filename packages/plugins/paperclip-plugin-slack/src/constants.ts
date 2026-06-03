@@ -1,7 +1,7 @@
 import type { SlackPluginConfig } from "./types.js";
 
 export const PLUGIN_ID = "paperclip-plugin-slack";
-export const PLUGIN_VERSION = "2.3.0";
+export const PLUGIN_VERSION = "2.4.0";
 
 export const ESCALATION_NEEDS_HUMAN_DECISION_EVENT =
   "issue.escalation.needs_human_decision" as const;
@@ -11,6 +11,11 @@ export const WEBHOOK_KEYS = {
   slashCommand: "slash-command",
   interactivity: "slack-interactivity",
 } as const;
+
+// callback_id on the "Request changes" revision modal (BLO-8568 Phase 2). The
+// interactivity webhook routes a view_submission with this id to the revision
+// handler; the approval id + card channel/ts ride along in private_metadata.
+export const REVISION_MODAL_CALLBACK_ID = "approval_request_changes_modal";
 
 export const SLOT_IDS = {
   settingsPage: "slack-settings-page",

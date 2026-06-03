@@ -1,5 +1,5 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { STATE_KEYS } from "./constants.js";
+import { REVISION_MODAL_CALLBACK_ID, STATE_KEYS } from "./constants.js";
 import { postMessage, updateMessage } from "./slack-api.js";
 
 /**
@@ -836,6 +836,123 @@ export async function requestRevision(
     source: "slack_interaction",
   });
   return { ok: true };
+}
+
+/**
+ * The block id + action id of the reason input inside the revision modal. Slack
+ * echoes these back in the view_submission `state.values`, so they must match
+ * between the open and submit paths.
+ */
+export const REVISION_MODAL_BLOCK_ID = "revision_reason_block";
+export const REVISION_MODAL_INPUT_ID = "revision_reason_input";
+
+/** Data carried through the modal round-trip via `view.private_metadata`. */
+export interface RevisionModalMetadata {
+  approvalId: string;
+  channel: string;
+  ts: string;
+  threadTs?: string;
+}
+
+/**
+ * Build the "Request changes" modal view (Block Kit `views.open` payload). The
+ * approval id and the card's channel/ts ride along in `private_metadata` so the
+ * view_submission handler can post the revision comment back onto the right card
+ * without a separate lookup. The reason input is `optional: false`, so Slack
+ * enforces non-empty input client-side before submit.
+ */
+export function buildRevisionModalView(
+  meta: RevisionModalMetadata,
+): Record<string, unknown> {
+  return {
+    type: "modal",
+    callback_id: REVISION_MODAL_CALLBACK_ID,
+    private_metadata: JSON.stringify(meta),
+    title: { type: "plain_text", text: "Request changes" },
+    submit: { type: "plain_text", text: "Submit" },
+    close: { type: "plain_text", text: "Cancel" },
+    blocks: [
+      {
+        type: "input",
+        block_id: REVISION_MODAL_BLOCK_ID,
+        label: { type: "plain_text", text: "What needs to change?" },
+        element: {
+          type: "plain_text_input",
+          action_id: REVISION_MODAL_INPUT_ID,
+          multiline: true,
+          focus_on_load: true,
+          placeholder: {
+            type: "plain_text",
+            text: "Describe the changes you want before this can be approved.",
+          },
+        },
+        optional: false,
+      },
+    ],
+  };
+}
+
+/**
+ * Extract `{ metadata, reason }` from a Slack `view_submission` payload for the
+ * revision modal. Returns null when the payload is not our modal or the reason
+ * is empty (Slack should block empty submits, but we re-check defensively).
+ */
+export function parseRevisionModalSubmission(
+  payload: Record<string, unknown>,
+): { metadata: RevisionModalMetadata; reason: string } | null {
+  const view = payload.view as Record<string, unknown> | undefined;
+  if (!view || view.callback_id !== REVISION_MODAL_CALLBACK_ID) return null;
+
+  let metadata: RevisionModalMetadata;
+  try {
+    metadata = JSON.parse(
+      String(view.private_metadata ?? "{}"),
+    ) as RevisionModalMetadata;
+  } catch {
+    return null;
+  }
+  if (!metadata?.approvalId || !metadata.channel || !metadata.ts) return null;
+
+  const state = view.state as
+    | { values?: Record<string, Record<string, { value?: string }>> }
+    | undefined;
+  const reason = String(
+    state?.values?.[REVISION_MODAL_BLOCK_ID]?.[REVISION_MODAL_INPUT_ID]?.value ??
+      "",
+  ).trim();
+  if (!reason) return null;
+
+  return { metadata, reason };
+}
+
+/**
+ * Handle a revision-modal `view_submission`: post the reason onto the approval
+ * via the existing `requestRevision` host path. Authorization is the caller's
+ * responsibility (the worker checks the approver allowlist before invoking this,
+ * same as the reaction/button paths).
+ */
+export async function submitRevisionModal(
+  ctx: ResolveCtx,
+  token: string,
+  params: {
+    companyId: string;
+    slackUserId: string;
+    metadata: RevisionModalMetadata;
+    reason: string;
+    paperclipBaseUrl: string;
+  },
+): Promise<{ ok: boolean; alreadyResolved?: boolean; error?: string }> {
+  const { companyId, slackUserId, metadata, reason, paperclipBaseUrl } = params;
+  return requestRevision(ctx, token, {
+    companyId,
+    approvalId: metadata.approvalId,
+    slackUserId,
+    channel: metadata.channel,
+    ts: metadata.ts,
+    threadTs: metadata.threadTs,
+    reason,
+    paperclipBaseUrl,
+  });
 }
 
 /** Map an approval-card reaction emoji name to a decision (or null). */

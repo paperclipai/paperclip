@@ -246,7 +246,7 @@ const manifest: PaperclipPluginManifestV1 = {
       endpointKey: WEBHOOK_KEYS.interactivity,
       displayName: "Slack Interactivity",
       description:
-        "Receives button click payloads from interactive messages (approve/reject/escalation/handoff/discussion/command).",
+        "Receives button click (block_actions) and modal submit (view_submission) payloads from interactive messages (approve/reject/request-changes/escalation/handoff/discussion/command).",
     },
   ],
   // Tool declarations are imported from `tool-declarations.ts`, which is also

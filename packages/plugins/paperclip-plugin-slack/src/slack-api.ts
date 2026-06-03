@@ -127,6 +127,33 @@ export async function updateMessage(
   return body;
 }
 
+/**
+ * Open a Slack modal (`views.open`) in response to a `block_actions` interaction.
+ * `triggerId` comes from the interaction payload and is valid for ~3s, so this
+ * must be called promptly when handling the button click. `view` is a Block Kit
+ * view object (type `modal`, with `callback_id`, `title`, `blocks`, `submit`).
+ */
+export async function openModal(
+  ctx: SlackCtx,
+  token: string,
+  triggerId: string,
+  view: Record<string, unknown>,
+): Promise<{ ok: boolean; error?: string }> {
+  const response = await fetchWithRetry(ctx, `${SLACK_API_BASE}/views.open`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ trigger_id: triggerId, view }),
+  });
+  const body = (await response.json()) as { ok: boolean; error?: string };
+  if (!body.ok) {
+    logSlackApiError(ctx, "Slack views.open failed", body.error, { triggerId });
+  }
+  return body;
+}
+
 export async function respondToAction(
   ctx: SlackCtx,
   token: string,

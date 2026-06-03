@@ -26,6 +26,7 @@ import {
 import {
   authTest,
   conversationsInfo,
+  openModal,
   postMessage,
   respondToAction,
   respondEphemeral,
@@ -82,6 +83,9 @@ import {
   commitDuePendingApprovals,
   emojiToDecision,
   parseThreadCommand,
+  buildRevisionModalView,
+  parseRevisionModalSubmission,
+  submitRevisionModal,
   type ApprovalDecision,
 } from "./approval-actions.js";
 import type {
@@ -2062,15 +2066,50 @@ const plugin = definePlugin({
           ? JSON.parse(String(body.payload))
           : body
       ) as Record<string, unknown> | undefined;
-      if (!payload || payload.type !== "block_actions") return;
-      const actions = payload.actions as
-        | Array<Record<string, unknown>>
-        | undefined;
-      const responseUrl = String(payload.response_url ?? "");
+      if (!payload) return;
       const user = payload.user as Record<string, unknown> | undefined;
       const userId = user
         ? String(user.id ?? user.username ?? "unknown")
         : "unknown";
+
+      // --- Revision modal submit (view_submission) ---
+      // The "Request changes" button opens a modal; submitting it lands here as
+      // a view_submission (not a block_actions). Route it to the revision path.
+      if (payload.type === "view_submission") {
+        if (!canProcessMutatingApprovalWebhook("interactivity")) return;
+        const submission = parseRevisionModalSubmission(payload);
+        if (!submission) return;
+        try {
+          if (!userId || !isAuthorizedReactor(userId)) {
+            // No response_url for a modal submit; the unauthorized case is
+            // dropped silently (the allowlist is also enforced when the modal
+            // is opened, so reaching here requires a mid-flight allowlist change).
+            return;
+          }
+          const companyId = await resolveTargetCompanyId(pluginCtx);
+          if (!companyId) return;
+          await submitRevisionModal(pluginCtx, pluginToken, {
+            companyId,
+            slackUserId: userId,
+            metadata: submission.metadata,
+            reason: submission.reason,
+            paperclipBaseUrl: pluginConfig.paperclipBaseUrl,
+          });
+        } catch (err) {
+          pluginCtx.logger.warn("Failed to handle revision modal submit", {
+            err,
+            approvalId: submission.metadata.approvalId,
+          });
+        }
+        return;
+      }
+
+      if (payload.type !== "block_actions") return;
+      const actions = payload.actions as
+        | Array<Record<string, unknown>>
+        | undefined;
+      const responseUrl = String(payload.response_url ?? "");
+      const triggerId = String(payload.trigger_id ?? "");
       if (!actions?.length || !responseUrl) return;
       const action = actions[0];
       const actionId = String(action.action_id ?? "");
@@ -2116,6 +2155,59 @@ const plugin = definePlugin({
           });
         } catch (err) {
           pluginCtx.logger.warn("Failed to handle approval action", {
+            err,
+            approvalId: actionValue,
+          });
+        }
+        return;
+      }
+      // --- Request changes (open revision modal) ---
+      // Opens a modal with a reason field; the reason is posted to the approval
+      // on view_submission (handled above). The card's channel/ts ride through
+      // private_metadata so the revision comment lands on the right thread.
+      if (actionId === "approval_request_changes") {
+        if (!canProcessMutatingApprovalWebhook("interactivity")) return;
+        try {
+          if (!userId || !isAuthorizedReactor(userId)) {
+            await respondToAction(pluginCtx, pluginToken, responseUrl, {
+              text: userId
+                ? `:warning: <@${userId}> is not on the approval allowlist - action ignored.`
+                : ":warning: Action ignored because Slack did not include a user id.",
+            });
+            return;
+          }
+          if (!triggerId) {
+            pluginCtx.logger.warn("Request-changes click had no trigger_id", {
+              approvalId: actionValue,
+            });
+            return;
+          }
+          const channelObj = payload.channel as
+            | Record<string, unknown>
+            | undefined;
+          const messageObj = payload.message as
+            | Record<string, unknown>
+            | undefined;
+          const cardChannel = String(channelObj?.id ?? "");
+          const cardTs = String(messageObj?.ts ?? "");
+          if (!cardChannel || !cardTs) {
+            pluginCtx.logger.warn("Request-changes click missing card location", {
+              approvalId: actionValue,
+            });
+            return;
+          }
+          await openModal(
+            pluginCtx,
+            pluginToken,
+            triggerId,
+            buildRevisionModalView({
+              approvalId: actionValue,
+              channel: cardChannel,
+              ts: cardTs,
+            }),
+          );
+        } catch (err) {
+          pluginCtx.logger.warn("Failed to open revision modal", {
             err,
             approvalId: actionValue,
           });
