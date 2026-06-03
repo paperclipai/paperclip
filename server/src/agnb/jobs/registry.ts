@@ -51,7 +51,7 @@ export const AGNB_JOBS: AgnbJobDef[] = [
   { key: "rocket-personas", intervalMs: 12 * HOUR, handler: rocketPersonas, requiresEnv: ["ROCKETSDR_API_KEY"], enabledByDefault: true },
   { key: "rocket-products", intervalMs: 12 * HOUR, handler: rocketProducts, requiresEnv: ["ROCKETSDR_API_KEY"], enabledByDefault: true },
   { key: "inbox-sync", intervalMs: 30 * MIN, handler: inboxSync, requiresEnv: ["ROCKETSDR_API_KEY"], enabledByDefault: true },
-  { key: "blog-auto-drafter", intervalMs: 1 * DAY, handler: blogAutoDrafter, requiresEnv: ["GEMINI_API_KEY"], enabledByDefault: true },
+  { key: "blog-auto-drafter", intervalMs: 1 * DAY, handler: blogAutoDrafter, requiresEnv: ["GEMINI_API_KEY"], enabledByDefault: false }, // disabled: blog drafting now owned by Paperclip "Blog" project agents (Content Strategist -> Blog Writer)
   { key: "changelog-drafter", intervalMs: 1 * DAY, handler: changelogDrafter, requiresEnv: ["GEMINI_API_KEY"], enabledByDefault: true },
   { key: "gap-analyzer", intervalMs: 1 * DAY, handler: gapAnalyzer, requiresEnv: ["GEMINI_API_KEY"], enabledByDefault: true },
   { key: "content-audit", intervalMs: 1 * DAY, handler: contentAudit, enabledByDefault: true },

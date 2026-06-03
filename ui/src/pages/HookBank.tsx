@@ -6,7 +6,6 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { AgnbSubnav } from "../components/AgnbSubnav";
 import { AgnbFormModal } from "../components/AgnbFormModal";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -30,7 +29,6 @@ export function HookBank() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="linkedinQueue" />
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">Hook bank</h1>
         <div className="flex flex-wrap items-center gap-1">

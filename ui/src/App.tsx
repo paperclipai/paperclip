@@ -82,16 +82,7 @@ import { Sov } from "./pages/Sov";
 import { Backlinks } from "./pages/Backlinks";
 import { BacklinkProspects } from "./pages/BacklinkProspects";
 import { BlogAutomation } from "./pages/BlogAutomation";
-import { ReviewQueue } from "./pages/ReviewQueue";
-import { EditorialCalendar } from "./pages/EditorialCalendar";
-import { ContentAudit } from "./pages/ContentAudit";
-import { UtmHygiene } from "./pages/UtmHygiene";
-import { LinkedinQueuePage } from "./pages/LinkedinQueuePage";
 import { HookBank } from "./pages/HookBank";
-import { LinkedinScheduled } from "./pages/LinkedinScheduled";
-import { LinkedinRepurpose } from "./pages/LinkedinRepurpose";
-import { LinkedinSeries } from "./pages/LinkedinSeries";
-import { LinkedinPerformance } from "./pages/LinkedinPerformance";
 import { YoutubeIdeas } from "./pages/YoutubeIdeas";
 import { YoutubeTrends } from "./pages/YoutubeTrends";
 import { YoutubeScripts } from "./pages/YoutubeScripts";
@@ -199,16 +190,7 @@ function boardRoutes() {
       <Route path="backlinks" element={<Backlinks />} />
       <Route path="backlink-prospects" element={<BacklinkProspects />} />
       <Route path="blog-automation" element={<BlogAutomation />} />
-      <Route path="review-queue" element={<ReviewQueue />} />
-      <Route path="editorial-calendar" element={<EditorialCalendar />} />
-      <Route path="content-audit" element={<ContentAudit />} />
-      <Route path="utm-hygiene" element={<UtmHygiene />} />
-      <Route path="linkedin-queue" element={<LinkedinQueuePage />} />
       <Route path="linkedin-hooks" element={<HookBank />} />
-      <Route path="linkedin-scheduled" element={<LinkedinScheduled />} />
-      <Route path="linkedin-repurpose" element={<LinkedinRepurpose />} />
-      <Route path="linkedin-series" element={<LinkedinSeries />} />
-      <Route path="linkedin-performance" element={<LinkedinPerformance />} />
       <Route path="youtube" element={<YoutubeIdeas />} />
       <Route path="youtube-trends" element={<YoutubeTrends />} />
       <Route path="youtube-scripts" element={<YoutubeScripts />} />
@@ -502,16 +484,7 @@ export function App() {
           <Route path="backlinks" element={<UnprefixedBoardRedirect />} />
           <Route path="backlink-prospects" element={<UnprefixedBoardRedirect />} />
           <Route path="blog-automation" element={<UnprefixedBoardRedirect />} />
-          <Route path="review-queue" element={<UnprefixedBoardRedirect />} />
-          <Route path="editorial-calendar" element={<UnprefixedBoardRedirect />} />
-          <Route path="content-audit" element={<UnprefixedBoardRedirect />} />
-          <Route path="utm-hygiene" element={<UnprefixedBoardRedirect />} />
-          <Route path="linkedin-queue" element={<UnprefixedBoardRedirect />} />
           <Route path="linkedin-hooks" element={<UnprefixedBoardRedirect />} />
-          <Route path="linkedin-scheduled" element={<UnprefixedBoardRedirect />} />
-          <Route path="linkedin-repurpose" element={<UnprefixedBoardRedirect />} />
-          <Route path="linkedin-series" element={<UnprefixedBoardRedirect />} />
-          <Route path="linkedin-performance" element={<UnprefixedBoardRedirect />} />
           <Route path="youtube" element={<UnprefixedBoardRedirect />} />
           <Route path="youtube-trends" element={<UnprefixedBoardRedirect />} />
           <Route path="youtube-scripts" element={<UnprefixedBoardRedirect />} />

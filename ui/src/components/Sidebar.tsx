@@ -17,7 +17,7 @@ import {
   Megaphone,
   FlaskConical,
   AtSign,
-  PenLine,
+  Archive,
   Linkedin as LinkedinIcon,
   Mails,
   HeartPulse,
@@ -112,8 +112,8 @@ export function Sidebar() {
           <SidebarNavItem to="/assets" label="Assets" icon={Package} />
           <SidebarNavItem to="/competitors" label="Research" icon={FlaskConical} />
           <SidebarNavItem to="/mentions" label="Mentions" icon={AtSign} />
-          <SidebarNavItem to="/blog-automation" label="Blog" icon={PenLine} />
-          <SidebarNavItem to="/linkedin-queue" label="LinkedIn" icon={LinkedinIcon} />
+          <SidebarNavItem to="/linkedin-hooks" label="Hooks" icon={LinkedinIcon} />
+          <SidebarNavItem to="/blog-automation" label="Blog archive" icon={Archive} />
           <SidebarNavItem to="/backlog" label="Backlog" icon={ListTodo} />
         </SidebarSection>
 

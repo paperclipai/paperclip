@@ -51,21 +51,6 @@ export const AGNB_SUBNAV = {
     { to: "/backlinks", label: "Backlinks" },
     { to: "/backlink-prospects", label: "Prospects" },
   ],
-  blog: [
-    { to: "/blog-automation", label: "Draft blogs" },
-    { to: "/review-queue", label: "Review queue" },
-    { to: "/editorial-calendar", label: "Calendar" },
-    { to: "/content-audit", label: "Audit" },
-    { to: "/utm-hygiene", label: "UTM hygiene" },
-  ],
-  linkedinQueue: [
-    { to: "/linkedin-queue", label: "Queue" },
-    { to: "/linkedin-hooks", label: "Hook bank" },
-    { to: "/linkedin-scheduled", label: "Scheduled" },
-    { to: "/linkedin-repurpose", label: "Repurpose" },
-    { to: "/linkedin-series", label: "Series" },
-    { to: "/linkedin-performance", label: "Performance" },
-  ],
   renewals: [
     { to: "/renewals", label: "Calendar" },
     { to: "/changelog-queue", label: "Changelog" },

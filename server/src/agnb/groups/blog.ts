@@ -242,6 +242,75 @@ export function registerBlog(router: Router, db: Db) {
     res.json({ ok: true, issues: rows(result) });
   });
 
+  // ── Sense-layer reads for Paperclip agents (Content Strategist / Blog Writer) ──
+  // The cron jobs (gap-analyzer, sitemap-scraper, gsc-rank-tracker) keep producing
+  // this data at scale; these endpoints let the drafting agents CONSUME it as
+  // grounding instead of guessing via web search.
+
+  /** GET /api/agnb/content-gaps?min=25&limit=25&status=identified — top SEO gaps for briefing. */
+  router.get("/agnb/content-gaps", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const min = Number(req.query.min ?? 25) || 0;
+    const limit = Math.min(Number(req.query.limit ?? 25) || 25, 200);
+    const status = typeof req.query.status === "string" ? req.query.status : "identified";
+    const result = await db.execute(sql`
+      SELECT id, topic, gap_score, competitor_count, our_coverage_count,
+             suggested_keywords, representative_titles, status, suggestion_type,
+             cluster_type, parent_topic
+      FROM agnb.content_gaps
+      WHERE status = ${status} AND gap_score >= ${min}
+      ORDER BY gap_score DESC NULLS LAST, updated_at DESC
+      LIMIT ${limit}
+    `);
+    res.json({ ok: true, gaps: rows(result) });
+  });
+
+  /** PATCH /api/agnb/content-gaps/:id — mark a gap consumed. Body: { status?, ignored_reason? } */
+  router.patch("/agnb/content-gaps/:id", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const id = req.params.id;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const sets = [sql`updated_at = ${new Date().toISOString()}`];
+    if ("status" in body) sets.push(sql`status = ${body.status as string | null}`);
+    if ("ignored_reason" in body) sets.push(sql`ignored_reason = ${body.ignored_reason as string | null}`);
+    await db.execute(sql`UPDATE agnb.content_gaps SET ${sql.join(sets, sql`, `)} WHERE id = ${id}`);
+    res.json({ ok: true });
+  });
+
+  /** GET /api/agnb/competitor-blogs?q=<keyword>&limit=20 — corpus retrieval for draft grounding. */
+  router.get("/agnb/competitor-blogs", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const limit = Math.min(Number(req.query.limit ?? 20) || 20, 100);
+    const like = `%${q}%`;
+    const where = q
+      ? sql`WHERE title ILIKE ${like} OR description ILIKE ${like}
+             OR array_to_string(topics, ' ') ILIKE ${like}
+             OR array_to_string(keywords, ' ') ILIKE ${like}`
+      : sql``;
+    const result = await db.execute(sql`
+      SELECT id, url, title, description, content_excerpt, topics, keywords, published_at
+      FROM agnb.competitor_blogs
+      ${where}
+      ORDER BY published_at DESC NULLS LAST
+      LIMIT ${limit}
+    `);
+    res.json({ ok: true, blogs: rows(result) });
+  });
+
+  /** GET /api/agnb/gsc-rank-data?limit=100 — Search Console rank rows (feedback signal). */
+  router.get("/agnb/gsc-rank-data", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const limit = Math.min(Number(req.query.limit ?? 100) || 100, 500);
+    const result = await db.execute(sql`
+      SELECT blog_url, query, position, clicks, impressions, ctr, capture_date
+      FROM agnb.gsc_rank_data
+      ORDER BY capture_date DESC, impressions DESC NULLS LAST
+      LIMIT ${limit}
+    `);
+    res.json({ ok: true, ranks: rows(result) });
+  });
+
   // PHASE 5: POST /agnb/blog/ai-draft calls Gemini (LLM) — external API. Left cross-origin in the UI.
   // PHASE 5: POST /agnb/blog/[id]/repurpose calls Gemini (LLM) — external API. Left cross-origin in the UI.
   // PHASE 5: POST /agnb/blog/[id]/publish performs GitHub commit + Cloud Run rebuild — external. Left cross-origin in the UI.
