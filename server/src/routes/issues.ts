@@ -995,6 +995,17 @@ export function issueRoutes(
       return "Recovery action became stale because the source issue was manually moved from blocked to todo.";
     }
 
+    // Check blocked+blockers before any trigger-based early returns: a blocked issue with
+    // active first-class blockers always has a valid disposition regardless of what changed.
+    // This prevents recovery-action loops where the issue is correctly blocked but the
+    // missing_disposition action stays active because no "durable change" has occurred.
+    if (issue.status === "blocked") {
+      const readiness = await svc.getDependencyReadiness(issue.id);
+      if (readiness.unresolvedBlockerCount > 0) {
+        return "Recovery action became stale because the source issue now has unresolved first-class blockers.";
+      }
+    }
+
     if (input.trigger === "read_projection") return null;
     if (
       input.trigger === "comment" &&
