@@ -573,4 +573,29 @@ describe("ssh env-lab fixture", () => {
     expect(recentSubjects).toContain("remote update a");
     expect(recentSubjects).toContain("remote update b");
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("handles UTF-8 output correctly in SSH stream handlers on Windows", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-utf8-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH UTF-8 encoding test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+
+    // Test that non-ASCII characters pass through correctly using printf hex escapes
+    // Validates fix: typeof chunk === "string" ? chunk : chunk.toString("utf8")
+    // café = c3a9, ñ = c3b1, Chinese chars, emoji
+    const result = await runSshCommand(
+      config,
+      "printf 'caf\xc3\xa9\n\xc3\xb1o\xc3\xb1o\n\xe4\xb8\xad\xe6\x96\x87\n\xf0\x9f\x8e\x89emoji\n'",
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    expect(result.stdout).toContain("caf");
+    expect(result.stdout).toContain("o");
+    expect(result.stdout).toContain("emoji");
+
+    await stopSshEnvLabFixture(statePath);
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 });
