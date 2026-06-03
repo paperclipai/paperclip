@@ -90,9 +90,8 @@ components rather than restructuring. Three layers:
 3. **Deploy layer** — leave the Cloudflare/`wrangler` scripts unused for now (localhost
    focus); keep `astro build` working so the static `dist/` is Hostinger-ready later.
 
-**Language:** single-language first, **EN default** (source is EN; dev brand is English).
-FR / bilingual via Astro i18n is **deferred** — note the real market may be FR; confirm at
-content-finalize time (§8).
+**Language:** **French is the primary (single) language** (South-of-France market). The
+site ships in FR (`lang="fr"` + FR copy); EN / bilingual via Astro i18n is **deferred**.
 
 ## 5. Units / boundaries
 
@@ -129,7 +128,7 @@ Each section is self-contained (props + copy); changing one doesn't break others
 
 ## 8. Open items / follow-ups
 
-- **Language:** EN-first now; FR / bilingual (Astro i18n) — confirm and schedule later.
+- **Language:** ✅ resolved — **French is primary** (single-language). EN / bilingual (Astro i18n) deferred.
 - **Owner-portal route behavior:** placeholder copy + whether it collects "request access"
   emails (static form → mailto / form service) vs pure "coming soon".
 - **Company realignment (follow-up):** rename the Paperclip conciergerie company instance
@@ -144,3 +143,6 @@ Each section is self-contained (props + copy); changing one doesn't break others
   `paperclip-website`; owners dashboard, Hostinger deploy, and i18n explicitly deferred.
   Brand = Soloway Travel (dev name); Deborah reframed as a future multi-property **owner**;
   ≥3 owners to be invited once the owner area exists.
+- **2026-06-03 — French set as primary language.** Site switched to `lang="fr"` + full FR
+  copy (single-language); EN / bilingual i18n remains deferred. Implemented on website
+  branch `feat/soloway-travel-reskin` (commit `31348d9`).
