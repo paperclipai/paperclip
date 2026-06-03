@@ -20,6 +20,7 @@ function createRoutine(overrides: Partial<RoutineListItem> = {}): RoutineListIte
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
     variables: [],
+    executionLabelIds: [],
     latestRevisionId: null,
     latestRevisionNumber: 1,
     createdByAgentId: null,

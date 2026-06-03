@@ -371,6 +371,7 @@ export function pluginManagedRoutineService(
       concurrencyPolicy: declaration.concurrencyPolicy ?? "coalesce_if_active",
       catchUpPolicy: declaration.catchUpPolicy ?? "skip_missed",
       variables: declaration.variables ?? [],
+      executionLabelIds: [],
     }, { agentId: null, userId: null });
     await upsertBinding(companyId, declaration, created.id);
     await ensureDefaultTriggers(created.id, declaration);
@@ -431,6 +432,7 @@ export function pluginManagedRoutineService(
       concurrencyPolicy: declaration.concurrencyPolicy ?? "coalesce_if_active",
       catchUpPolicy: declaration.catchUpPolicy ?? "skip_missed",
       variables: declaration.variables ?? [],
+      executionLabelIds: [],
     }, { agentId: null, userId: null });
     if (!updated) throw notFound("Managed routine not found");
     await upsertBinding(companyId, declaration, updated.id);

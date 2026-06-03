@@ -12,6 +12,7 @@ import {
   issueInboxArchives,
   issueReadStates,
   issues,
+  labels,
   pluginManagedResources,
   plugins,
   projects,
@@ -414,6 +415,7 @@ function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSna
     catchUpPolicy: routine.catchUpPolicy as RoutineRevisionSnapshotV1["routine"]["catchUpPolicy"],
     variables: routine.variables ?? [],
     env: routine.env ?? null,
+    executionLabelIds: routine.executionLabelIds ?? [],
   };
 }
 
@@ -1253,6 +1255,7 @@ export function routineService(
             originRunId: createdRun.id,
             originFingerprint: dispatchFingerprint,
             billingCode: issueBillingCode,
+            labelIds: input.routine.executionLabelIds ?? [],
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
@@ -1534,6 +1537,14 @@ export function routineService(
         sanitizeRoutineVariableInputs(input.variables),
       );
       assertRoutineVariableDefinitions(variables);
+      const executionLabelIds = input.labelIds ?? input.executionLabelIds ?? [];
+      if (executionLabelIds.length > 0) {
+        const valid = await db.select({ id: labels.id }).from(labels)
+          .where(and(eq(labels.companyId, companyId), inArray(labels.id, executionLabelIds)));
+        if (valid.length !== new Set(executionLabelIds).size) {
+          throw unprocessable("One or more executionLabelIds are invalid for this company");
+        }
+      }
       const status = normalizeDraftRoutineStatus(input.status, input.assigneeAgentId);
       const createdRoutine = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
@@ -1553,6 +1564,7 @@ export function routineService(
             catchUpPolicy: input.catchUpPolicy,
             variables,
             env,
+            executionLabelIds,
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
             updatedByAgentId: actor.agentId ?? null,
@@ -1606,6 +1618,14 @@ export function routineService(
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
       assertRoutineVariableDefinitions(nextVariables);
+      const patchedLabelIds = patch.labelIds !== undefined ? patch.labelIds : patch.executionLabelIds;
+      if (patchedLabelIds !== undefined && patchedLabelIds.length > 0) {
+        const valid = await db.select({ id: labels.id }).from(labels)
+          .where(and(eq(labels.companyId, existing.companyId), inArray(labels.id, patchedLabelIds)));
+        if (valid.length !== new Set(patchedLabelIds).size) {
+          throw unprocessable("One or more executionLabelIds are invalid for this company");
+        }
+      }
       const enabledScheduleTriggers = await db
         .select({ id: routineTriggers.id })
         .from(routineTriggers)
@@ -1651,6 +1671,11 @@ export function routineService(
           catchUpPolicy: patch.catchUpPolicy ?? locked.catchUpPolicy,
           variables: nextVariables,
           env: nextEnv,
+          executionLabelIds: patch.labelIds !== undefined
+            ? patch.labelIds
+            : patch.executionLabelIds !== undefined
+            ? patch.executionLabelIds
+            : (locked.executionLabelIds ?? []),
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };
@@ -1700,6 +1725,7 @@ export function routineService(
             catchUpPolicy: candidate.catchUpPolicy,
             variables: candidate.variables,
             env: candidate.env,
+            executionLabelIds: candidate.executionLabelIds,
             updatedByAgentId: actor.agentId ?? null,
             updatedByUserId: actor.userId ?? null,
             updatedAt: new Date(),

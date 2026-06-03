@@ -63,6 +63,8 @@ export interface Routine {
   catchUpPolicy: string;
   variables: RoutineVariable[];
   env?: RoutineEnvConfig | null;
+  executionLabelIds: string[];
+  labelIds?: string[];
   latestRevisionId: string | null;
   latestRevisionNumber: number;
   createdByAgentId: string | null;
@@ -103,6 +105,7 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   catchUpPolicy: RoutineCatchUpPolicy;
   variables: RoutineVariable[];
   env: RoutineEnvConfig | null;
+  executionLabelIds: string[];
 }
 
 export interface RoutineRevisionSnapshotTriggerV1 {

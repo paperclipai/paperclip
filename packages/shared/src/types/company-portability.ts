@@ -93,6 +93,7 @@ export interface CompanyPortabilityIssueRoutineManifestEntry {
   concurrencyPolicy: string | null;
   catchUpPolicy: string | null;
   variables?: RoutineVariable[] | null;
+  executionLabelIds?: string[];
   triggers: CompanyPortabilityIssueRoutineTriggerManifestEntry[];
 }
 
