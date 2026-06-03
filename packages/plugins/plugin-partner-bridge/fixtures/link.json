@@ -1,0 +1,8 @@
+[
+  {
+    "linkId": "rossignol-pcc",
+    "companyA": { "companyId": "99418004-eea1-4bbb-9be7-9811b16f2b3b", "channelIssueId": "REPLACE_CON_CHANNEL_ISSUE", "label": "Rossignol Voyage" },
+    "companyB": { "companyId": "e27fca3e-ecdd-4fb0-b563-d40b5381e4e4", "channelIssueId": "REPLACE_PRO_CHANNEL_ISSUE", "label": "Product Compass Consulting" },
+    "transport": { "telegramChat": "REPLACE_TELEGRAM_CHAT", "emailA": "ops@rossignol-voyage.example", "emailB": "contact@productcompass.example" }
+  }
+]
