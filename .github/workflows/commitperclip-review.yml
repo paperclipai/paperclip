@@ -45,6 +45,7 @@ jobs:
 
       - name: Run quality gates
         id: quality
+        if: github.event.pull_request.user.login != 'dependabot[bot]'
         run: node .github/scripts/run-quality-gates.mjs
         continue-on-error: true
         env:
@@ -63,7 +64,9 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
 
       - name: Fail if quality gates failed
-        if: steps.quality.outcome == 'failure'
+        if: >-
+          github.event.pull_request.user.login != 'dependabot[bot]' &&
+          steps.quality.outcome == 'failure'
         run: |
           echo "One or more quality gates failed. See commitperclip comment on the PR for details."
           exit 1

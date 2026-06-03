@@ -1880,6 +1880,16 @@ export function routineService(
         });
         return { deleted: true, revision: appended.revision };
       });
+      if (result.deleted && existing.secretId) {
+        try {
+          await secretsSvc.remove(existing.secretId);
+        } catch (err) {
+          logger.warn(
+            { err, routineId: existing.routineId, triggerId: existing.id, secretId: existing.secretId },
+            "failed to remove routine trigger webhook secret after trigger deletion",
+          );
+        }
+      }
       return result;
     },
 
