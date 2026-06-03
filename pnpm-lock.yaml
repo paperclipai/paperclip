@@ -622,8 +622,6 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
-  packages/skills-catalog: {}
-
   server:
     dependencies:
       '@aws-sdk/client-s3':
