@@ -18,6 +18,7 @@ const apiPrefixes: Record<string, string> = {
   "approvals.ts": "/api",
   "assets.ts": "/api",
   "auth.ts": "/api/auth",
+  "cloud-upstreams.ts": "/api",
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
   "costs.ts": "/api",
@@ -32,6 +33,7 @@ const apiPrefixes: Record<string, string> = {
   "issues.ts": "/api",
   "issue-tree-control.ts": "/api",
   "llms.ts": "/api",
+  "openapi.ts": "/api",
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
   "projects.ts": "/api",
@@ -42,6 +44,10 @@ const apiPrefixes: Record<string, string> = {
   "sidebar-preferences.ts": "/api",
   "user-profiles.ts": "/api",
 };
+
+const ROUTE_LITERAL_PATTERN = /router\.(get|post|put|patch|delete)\(\s*["'`]([^"'`]+)["'`]/g;
+const ROUTER_METHOD_PATTERN = /router\.(get|post|put|patch|delete)\(/;
+const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
 
 function createApp() {
   const app = express();
@@ -72,13 +78,19 @@ function resolveMountedPath(file: string, prefix: string, routePath: string) {
 
 function loadActualRoutes() {
   const routes = new Set<string>();
+  const unknownRouteFiles: string[] = [];
 
   for (const file of fs.readdirSync(ROUTES_DIR).filter((entry) => entry.endsWith(".ts"))) {
     const prefix = apiPrefixes[file];
-    if (!prefix) continue;
-
     const source = fs.readFileSync(path.join(ROUTES_DIR, file), "utf8");
-    for (const match of source.matchAll(/router\.(get|post|put|patch|delete)\(\s*"([^"]+)"/g)) {
+    if (!prefix) {
+      if (ROUTER_METHOD_PATTERN.test(source)) {
+        unknownRouteFiles.push(file);
+      }
+      continue;
+    }
+
+    for (const match of source.matchAll(ROUTE_LITERAL_PATTERN)) {
       const method = match[1].toUpperCase();
       const routePath = match[2];
       routes.add(`${method} ${normalizeExpressPath(resolveMountedPath(file, prefix, routePath))}`);
@@ -89,8 +101,7 @@ function loadActualRoutes() {
     }
   }
 
-  routes.add("GET /api/openapi.json");
-  return routes;
+  return { routes, unknownRouteFiles: unknownRouteFiles.sort() };
 }
 
 function loadSpecRoutes() {
@@ -99,7 +110,9 @@ function loadSpecRoutes() {
 
   for (const [routePath, pathItem] of Object.entries<Record<string, Record<string, unknown>>>(spec.paths ?? {})) {
     for (const method of Object.keys(pathItem)) {
-      routes.add(`${method.toUpperCase()} ${routePath}`);
+      if (HTTP_METHODS.has(method)) {
+        routes.add(`${method.toUpperCase()} ${routePath}`);
+      }
     }
   }
 
@@ -139,13 +152,14 @@ describe("openapi routes", () => {
   });
 
   it("covers the mounted server routes exactly", () => {
-    const actualRoutes = loadActualRoutes();
+    const { routes: actualRoutes, unknownRouteFiles } = loadActualRoutes();
     const { routes: specRoutes } = loadSpecRoutes();
 
     const missingInSpec = [...actualRoutes].filter((route) => !specRoutes.has(route)).sort();
     const extraInSpec = [...specRoutes].filter((route) => !actualRoutes.has(route)).sort();
 
-    expect({ missingInSpec, extraInSpec }).toEqual({
+    expect({ unknownRouteFiles, missingInSpec, extraInSpec }).toEqual({
+      unknownRouteFiles: [],
       missingInSpec: [],
       extraInSpec: [],
     });
