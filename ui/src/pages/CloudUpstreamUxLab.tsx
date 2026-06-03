@@ -159,7 +159,7 @@ function CloudUpstreamRender({ fixture }: { fixture: Fixture }) {
             <h1 className="text-lg font-semibold">Cloud upstream</h1>
           </div>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            Push {selectedCompanyName} into a Paperclip Cloud stack. Automations stay paused until activation.
+            Push {selectedCompanyName} into a All Gas No Brakes Cloud stack. Automations stay paused until activation.
           </p>
         </div>
         {connection?.target.origin ? (
@@ -211,7 +211,7 @@ function CloudUpstreamRender({ fixture }: { fixture: Fixture }) {
               <Input
                 defaultValue="https://paperclip.paperclip.app/PC521D/dashboard"
                 placeholder="https://paperclip.paperclip.app/PC521D/dashboard"
-                aria-label="Paperclip Cloud stack URL"
+                aria-label="All Gas No Brakes Cloud stack URL"
                 autoFocus
               />
               <Button disabled>
@@ -490,7 +490,7 @@ function formatBytes(value: number) {
 const STACK_TARGET = {
   stackId: "stk_2vKqz9D8mNFqQ7Rp",
   stackSlug: "paperclip-prod",
-  stackDisplayName: "Paperclip Prod",
+  stackDisplayName: "All Gas No Brakes Prod",
   companyId: "co_4hT2yX",
   primaryHost: "paperclip.paperclip.app",
   origin: "https://paperclip.paperclip.app",
@@ -736,7 +736,7 @@ function buildFixture(state: FixtureStateKey): Fixture {
   switch (state) {
     case "settings-pane":
       return {
-        selectedCompanyName: "Paperclip · PC521D",
+        selectedCompanyName: "All Gas No Brakes · PC521D",
         connection: connectedConnection(),
         preview: null,
         latestRun: null,
@@ -746,7 +746,7 @@ function buildFixture(state: FixtureStateKey): Fixture {
       };
     case "connect-wizard":
       return {
-        selectedCompanyName: "Paperclip · PC521D",
+        selectedCompanyName: "All Gas No Brakes · PC521D",
         connection: null,
         preview: null,
         latestRun: null,
@@ -756,7 +756,7 @@ function buildFixture(state: FixtureStateKey): Fixture {
       };
     case "schema-mismatch":
       return {
-        selectedCompanyName: "Paperclip · PC521D",
+        selectedCompanyName: "All Gas No Brakes · PC521D",
         connection: connectedConnection(STACK_TARGET_SCHEMA_BEHIND),
         preview: schemaMismatchPreview(),
         latestRun: null,
@@ -766,7 +766,7 @@ function buildFixture(state: FixtureStateKey): Fixture {
       };
     case "preview":
       return {
-        selectedCompanyName: "Paperclip · PC521D",
+        selectedCompanyName: "All Gas No Brakes · PC521D",
         connection: connectedConnection(),
         preview: basePreview(),
         latestRun: null,
@@ -776,7 +776,7 @@ function buildFixture(state: FixtureStateKey): Fixture {
       };
     case "preview-clean":
       return {
-        selectedCompanyName: "Paperclip · PC521D",
+        selectedCompanyName: "All Gas No Brakes · PC521D",
         connection: connectedConnection(),
         preview: cleanPreview(),
         latestRun: null,
@@ -786,7 +786,7 @@ function buildFixture(state: FixtureStateKey): Fixture {
       };
     case "progress":
       return {
-        selectedCompanyName: "Paperclip · PC521D",
+        selectedCompanyName: "All Gas No Brakes · PC521D",
         connection: connectedConnection(),
         preview: null,
         latestRun: runningRun(),
@@ -796,7 +796,7 @@ function buildFixture(state: FixtureStateKey): Fixture {
       };
     case "retry":
       return {
-        selectedCompanyName: "Paperclip · PC521D",
+        selectedCompanyName: "All Gas No Brakes · PC521D",
         connection: connectedConnection(),
         preview: null,
         latestRun: failedRun(),
@@ -808,7 +808,7 @@ function buildFixture(state: FixtureStateKey): Fixture {
       };
     case "finish":
       return {
-        selectedCompanyName: "Paperclip · PC521D",
+        selectedCompanyName: "All Gas No Brakes · PC521D",
         connection: connectedConnection(),
         preview: null,
         latestRun: succeededRun(),

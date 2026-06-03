@@ -1,7 +1,7 @@
 import { agnb, unwrap } from "./agnbClient";
 
 /**
- * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
  * server (under /api/agnb/*). As each route group migrates off the standalone
  * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
  */
@@ -37,28 +37,28 @@ export interface PressRelease {
 }
 
 export const renewalsApi = {
-  // Ported to Paperclip server — same-origin /api/agnb/renewals.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/renewals.
   renewals: () => ported<{ ok: boolean; error?: string; renewals: Renewal[] }>("/renewals").then((r) => unwrap(r).renewals),
   createRenewal: (b: { kind: string; name: string; vendor?: string; renewal_date: string; amount_paise?: number; currency?: string; notes?: string }) =>
     ported("/renewals", { method: "POST", body: b }),
   patchRenewal: (id: string, b: Record<string, unknown>) => ported(`/renewals?id=${id}`, { method: "PATCH", body: b }),
   deleteRenewal: (id: string) => ported(`/renewals?id=${id}`, { method: "DELETE" }),
 
-  // Ported to Paperclip server — same-origin /api/agnb/changelog-queue.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/changelog-queue.
   changelog: () => ported<{ ok: boolean; error?: string; changelog: ChangelogDraft[] }>("/changelog-queue").then((r) => unwrap(r).changelog),
   publishChangelog: (id: string) => ported(`/changelog-queue?id=${id}`, { method: "PATCH", body: { status: "published" } }),
   deleteChangelog: (id: string) => ported(`/changelog-queue?id=${id}`, { method: "DELETE" }),
   // PHASE 5: cron changelog-drafter (LLM) — left cross-origin.
   draftChangelog: () => agnb.post("/crons/run?path=/all-gas-no-brakes/api/internal/changelog-drafter", {}),
 
-  // Ported to Paperclip server — same-origin /api/agnb/newsletter.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/newsletter.
   newsletter: () => ported<{ ok: boolean; error?: string; issues: NewsletterIssue[] }>("/newsletter").then((r) => unwrap(r).issues),
   markNewsletterSent: (id: string) => ported(`/newsletter?id=${id}`, { method: "PATCH", body: { status: "sent" } }),
   deleteNewsletter: (id: string) => ported(`/newsletter?id=${id}`, { method: "DELETE" }),
   // PHASE 5: cron newsletter-drafter (LLM) — left cross-origin.
   draftNewsletter: () => agnb.post("/crons/run?path=/all-gas-no-brakes/api/internal/newsletter-drafter", {}),
 
-  // Ported to Paperclip server — same-origin /api/agnb/press-releases.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/press-releases.
   pressReleases: () => ported<{ ok: boolean; error?: string; releases: PressRelease[] }>("/press-releases").then((r) => unwrap(r).releases),
   publishPress: (id: string) => ported(`/press-releases?id=${id}`, { method: "PATCH", body: { status: "published" } }),
   deletePress: (id: string) => ported(`/press-releases?id=${id}`, { method: "DELETE" }),

@@ -1,7 +1,7 @@
 import { agnb, unwrap } from "./agnbClient";
 
 /**
- * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
  * server (under /api/agnb/*). As each route group migrates off the standalone
  * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
  */
@@ -31,7 +31,7 @@ export interface Notification { id: string; kind: string; severity: string; titl
 /**
  * Sync jobs — label + the AGNB POST path (relative to /api/agnb).
  *
- * The Paperclip scheduler now runs these automatically. The redundant
+ * The All Gas No Brakes scheduler now runs these automatically. The redundant
  * trigger buttons whose work the scheduler fully owns have been removed:
  * rocket/sync-all, events/drain, alerts/check, maintenance/retention,
  * maintenance/snapshot-buckets, inbound/sov/run. The standalone AGNB app is
@@ -51,12 +51,12 @@ export const SYNC_JOBS: Array<{ key: string; label: string; path: string }> = [
 ];
 
 export const opsApi = {
-  // Ported to Paperclip server (group: ops) — same-origin /api/agnb/health.
+  // Ported to All Gas No Brakes server (group: ops) — same-origin /api/agnb/health.
   health: () => ported<{ ok: boolean; error?: string; checks: HealthCheck[] }>("/health").then((r) => unwrap(r).checks),
-  // Ported to Paperclip server (group: ops) — same-origin /api/agnb/sync.
+  // Ported to All Gas No Brakes server (group: ops) — same-origin /api/agnb/sync.
   syncStatus: () => ported<{ ok: boolean; error?: string } & SyncStatus>("/sync").then((r) => { const u = unwrap(r); return { counts: u.counts, worker: u.worker } as SyncStatus; }),
   runJob: (path: string) => agnb.post(path, {}),
-  // Ported to Paperclip server (Phase 4 group: ops) — same-origin /api/agnb/*.
+  // Ported to All Gas No Brakes server (Phase 4 group: ops) — same-origin /api/agnb/*.
   events: () => ported<{ ok: boolean; error?: string; events: EventRow[] }>("/events").then((r) => unwrap(r).events),
   audit: () => ported<{ ok: boolean; error?: string; audit: AuditRow[] }>("/audit").then((r) => unwrap(r).audit),
   entityAudit: () => ported<{ ok: boolean; error?: string; audit: EntityAuditRow[] }>("/entity-audit").then((r) => unwrap(r).audit),

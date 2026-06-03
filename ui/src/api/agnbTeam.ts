@@ -1,7 +1,7 @@
 import { agnb, unwrap } from "./agnbClient";
 
 /**
- * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
  * server (under /api/agnb/*). As each route group migrates off the standalone
  * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
  */
@@ -37,20 +37,20 @@ export interface RoutingRule {
 }
 
 export const teamApi = {
-  // Ported to Paperclip server — same-origin /api/agnb/team.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/team.
   members: () => ported<{ ok: boolean; error?: string; members: TeamMember[] }>("/team").then((r) => unwrap(r).members),
   // PHASE 5: ingest sweeps source tables (worker) — left cross-origin.
   ingest: () => agnb.post("/team/ingest", {}),
   // PHASE 5: auto-route runs the routing engine (worker) — left cross-origin.
   autoRoute: () => agnb.post("/team/auto-route", {}),
-  // Ported to Paperclip server — same-origin /api/agnb/team/work.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/team/work.
   work: (query = "") => ported<{ ok: boolean; error?: string; items: WorkItem[] }>(`/team/work${query}`).then((r) => unwrap(r).items),
   // work?action=reassign with no assignee hits the routing engine (Phase 5) and
   // returns 501 same-origin; all other actions (claim|done|block|reopen|manual
-  // reassign) are pure DB ops handled by the Paperclip server.
+  // reassign) are pure DB ops handled by the All Gas No Brakes server.
   workAction: (id: string, action: string, body: Record<string, unknown> = {}) =>
     ported(`/team/work?id=${id}&action=${action}`, { method: "PATCH", body }),
-  // Ported to Paperclip server — same-origin /api/agnb/team/rules.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/team/rules.
   rules: () => ported<{ ok: boolean; error?: string; rules: RoutingRule[] }>("/team/rules").then((r) => unwrap(r).rules),
   patchRule: (id: string, body: Record<string, unknown>) => ported(`/team/rules?id=${id}`, { method: "PATCH", body }),
   deleteRule: (id: string) => ported(`/team/rules?id=${id}`, { method: "DELETE" }),

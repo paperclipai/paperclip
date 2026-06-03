@@ -1,5 +1,5 @@
 /**
- * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
  * server (under /api/agnb/*). As each route group migrates off the standalone
  * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
  */
@@ -53,7 +53,7 @@ export interface ContentBrief {
 }
 
 export const researchApi = {
-  // Ported to Paperclip server — same-origin /api/agnb/*.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/*.
   competitors: () =>
     ported<{ ok: boolean; error?: string; competitors: Competitor[]; gaps: ContentGap[] }>("/competitors").then((r) => unwrap(r)),
   ideaInbox: () =>

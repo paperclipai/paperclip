@@ -295,7 +295,7 @@ function createReactShimSource(reactModule: object): string {
   return `
         const R = globalThis.__paperclipPluginBridge__?.react;
         if (!R) {
-          throw new Error("Paperclip plugin React runtime is not initialized.");
+          throw new Error("All Gas No Brakes plugin React runtime is not initialized.");
         }
         export default R;
 ${namedExports}
@@ -333,7 +333,7 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
         const SDK = globalThis.__paperclipPluginBridge__?.sdkUi ?? {};
         function missing(name) {
           return function MissingPaperclipSdkUiComponent() {
-            throw new Error('Paperclip plugin UI runtime is not initialized for "' + name + '". Ensure the host loaded the plugin bridge before rendering this UI module.');
+            throw new Error('All Gas No Brakes plugin UI runtime is not initialized for "' + name + '". Ensure the host loaded the plugin bridge before rendering this UI module.');
           };
         }
         const { usePluginData, usePluginAction, useHostContext, useHostLocation, useHostNavigation, usePluginStream, usePluginToast } = SDK;

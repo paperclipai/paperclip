@@ -282,7 +282,7 @@ function hasCompanyPrefix(pathname: string, companyPrefix: string): boolean {
 }
 
 /**
- * Resolve a plugin-provided Paperclip path to the active company scope.
+ * Resolve a plugin-provided All Gas No Brakes path to the active company scope.
  *
  * This intentionally handles plugin page roots such as `/wiki`, which cannot
  * be listed in the host router's static board-route table ahead of time.

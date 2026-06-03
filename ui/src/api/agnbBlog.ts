@@ -1,7 +1,7 @@
 import { agnb, unwrap } from "./agnbClient";
 
 /**
- * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
  * server (under /api/agnb/*). As each route group migrates off the standalone
  * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
  */
@@ -52,25 +52,25 @@ export interface UtmIssue {
 interface AiDraft { title: string; slug: string; description: string; mdx_body: string; keywords?: string[]; categories?: string[] }
 
 export const blogApi = {
-  // Ported to Paperclip server — same-origin /api/agnb/blog-automation.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/blog-automation.
   drafts: () => ported<{ ok: boolean; error?: string; drafts: BlogDraft[] }>("/blog-automation").then((r) => unwrap(r).drafts),
-  // Ported to Paperclip server — same-origin /api/agnb/content-audit (pure-DB read of scan results).
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/content-audit (pure-DB read of scan results).
   contentAudit: () => ported<{ ok: boolean; error?: string; issues: AuditIssue[] }>("/content-audit").then((r) => unwrap(r).issues),
-  // Ported to Paperclip server — same-origin /api/agnb/utm-hygiene (pure-DB read of scan results).
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/utm-hygiene (pure-DB read of scan results).
   utmHygiene: () => ported<{ ok: boolean; error?: string; issues: UtmIssue[] }>("/utm-hygiene").then((r) => unwrap(r).issues),
 
   // --- writes ---
   // PHASE 5: ai-draft calls Gemini (LLM) — left cross-origin.
   aiDraft: (topic: string) => agnb.post<{ ok: boolean; error?: string } & AiDraft>("/blog/ai-draft", { topic }).then((r) => unwrap(r) as AiDraft),
-  // Ported to Paperclip server — same-origin /api/agnb/blog/save.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/blog/save.
   saveDraft: (b: { title: string; slug?: string; description?: string; mdx_body?: string; status?: string; scheduled_at?: string; frontmatter?: unknown }) =>
     portedSend<{ ok: boolean; error?: string; id?: string }>("/blog/save", "POST", b),
-  // Ported to Paperclip server — same-origin /api/agnb/blog-automation?id=.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/blog-automation?id=.
   patchDraft: (id: string, b: { status?: string; scheduled_at?: string | null }) =>
     portedSend(`/blog-automation?id=${id}`, "PATCH", b),
   // PHASE 5: publish performs GitHub commit + Cloud Run rebuild (external) — left cross-origin.
   publishDraft: (id: string) => agnb.post(`/blog/${id}/publish`, {}),
-  // Ported to Paperclip server — same-origin /api/agnb/blog-automation?id=.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/blog-automation?id=.
   deleteDraft: (id: string) => portedSend(`/blog-automation?id=${id}`, "DELETE"),
   // PHASE 5: cron triggers — left cross-origin.
   runContentAudit: () => agnb.post("/crons/run?path=/all-gas-no-brakes/api/internal/content-audit", {}),

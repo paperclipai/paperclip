@@ -1,7 +1,7 @@
 /**
  * Dynamic UI parser loading for external adapters — sandboxed execution.
  *
- * When the Paperclip UI encounters an adapter type that doesn't have a
+ * When the All Gas No Brakes UI encounters an adapter type that doesn't have a
  * built-in parser (e.g., an external adapter loaded via the plugin system),
  * it fetches the parser JS from `/api/adapters/:type/ui-parser.js` and
  * executes it **inside a dedicated Web Worker** so it cannot access the

@@ -1,7 +1,7 @@
 import { agnb, unwrap } from "./agnbClient";
 
 /**
- * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
  * server (under /api/agnb/*). As each route group migrates off the standalone
  * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
  */
@@ -43,23 +43,23 @@ export interface ReplyLog {
 }
 
 export const inboxApi = {
-  // Ported to Paperclip server — same-origin /api/agnb/inbox.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/inbox.
   threads: (status?: string) =>
     ported<{ ok: boolean; error?: string; threads: InboxThread[] }>(`/inbox${status && status !== "all" ? `?status=${status}` : ""}`).then((r) => unwrap(r).threads),
   threadAction: (id: string, action: "archive" | "unarchive" | "mark_positive") =>
     ported(`/inbox/${id}/action`, { method: "POST", body: { action } }),
 
-  // Ported to Paperclip server — same-origin /api/agnb/approval (pure DB).
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/approval (pure DB).
   approvals: () => ported<{ ok: boolean; error?: string; drafts: CampaignDraft[] }>("/approval").then((r) => unwrap(r).drafts),
   // external: stays cross-origin / job-covered — finalize pushes to Rocket SDR.
   approvalAction: (id: string, action: "approve" | "reject" | "finalize") =>
     agnb.postAbs(`/all-gas-no-brakes/api/internal/approval/${id}`, { action }),
 
-  // Ported to Paperclip server — same-origin /api/agnb/reply-drafts (pure DB).
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/reply-drafts (pure DB).
   replyDrafts: (status?: string) =>
     ported<{ ok: boolean; error?: string; drafts: ReplyDraft[] }>(`/reply-drafts${status && status !== "all" ? `?status=${status}` : ""}`).then((r) => unwrap(r).drafts),
   patchReplyDraft: (id: string, status: string) => ported("/reply-drafts", { method: "PATCH", body: { id, status } }),
 
-  // Ported to Paperclip server — same-origin /api/agnb/replies (pure DB).
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/replies (pure DB).
   replies: () => ported<{ ok: boolean; error?: string; replies: ReplyLog[] }>("/replies").then((r) => unwrap(r).replies),
 };

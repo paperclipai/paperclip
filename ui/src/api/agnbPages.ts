@@ -1,7 +1,7 @@
 import { agnb, unwrap } from "./agnbClient";
 
 /**
- * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
  * server (under /api/agnb/*). As each route group migrates off the standalone
  * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
  */
@@ -161,10 +161,10 @@ export interface InvoiceRow {
 }
 
 export const agnbPagesApi = {
-  // Ported to Paperclip server (group: revenue) — same-origin /api/agnb/forecast.
+  // Ported to All Gas No Brakes server (group: revenue) — same-origin /api/agnb/forecast.
   forecast: () =>
     ported<{ ok: boolean; error?: string } & ForecastResp>("/forecast").then((r) => unwrap(r)),
-  // Ported to Paperclip server — same-origin /api/agnb/demos.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/demos.
   demos: () =>
     ported<{ ok: boolean; error?: string; upcoming: DemoRow[]; past: DemoRow[] }>("/demos")
       .then((r) => unwrap(r)),
@@ -173,23 +173,23 @@ export const agnbPagesApi = {
     agnb
       .get<{ ok: boolean; error?: string; days: number; channels: ChannelRow[] }>(`/channels?days=${days}`)
       .then((r) => unwrap(r)),
-  // Ported to Paperclip server — same-origin /api/agnb/attribution.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/attribution.
   attribution: () =>
     ported<{ ok: boolean; error?: string; matched: number; unmatched: number; recent_unmatched: UnmatchedEvent[] }>("/attribution")
       .then((r) => unwrap(r)),
-  // Ported to Paperclip server — same-origin /api/agnb/funnel.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/funnel.
   funnel: () =>
     ported<{ ok: boolean; error?: string; snapshot_date: string | null; steps: FunnelStep[]; sources?: PageviewSource[]; pages?: TopPage[] }>("/funnel")
       .then((r) => unwrap(r)),
-  // Ported to Paperclip server — same-origin /api/agnb/crm-hygiene.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/crm-hygiene.
   crmHygiene: () =>
     ported<{ ok: boolean; error?: string; issues: HygieneIssue[] }>("/crm-hygiene")
       .then((r) => unwrap(r).issues),
-  // Ported to Paperclip server — same-origin /api/agnb/win-loss (GET read).
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/win-loss (GET read).
   winLoss: (outcome = "all") =>
     ported<{ ok: boolean; error?: string; interviews: Interview[] }>(`/win-loss${outcome !== "all" ? `?outcome=${outcome}` : ""}`)
       .then((r) => unwrap(r).interviews),
-  // Ported to Paperclip server — same-origin /api/agnb/invoices (GET read).
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/invoices (GET read).
   invoices: () =>
     ported<{ ok: boolean; error?: string; invoices: InvoiceRow[] }>("/invoices")
       .then((r) => unwrap(r).invoices),
@@ -220,7 +220,7 @@ export const agnbPagesApi = {
     agnb
       .post<{ ok: boolean; error?: string; suggestions: RematchSuggestion[]; applied?: number; note?: string }>("/attribution/gemini-rematch", { apply, limit })
       .then((r) => unwrap(r)),
-  // Non-LLM email→bucket rematch. Ported to Paperclip server (group: revenue)
+  // Non-LLM email→bucket rematch. Ported to All Gas No Brakes server (group: revenue)
   // — same-origin POST /api/agnb/attribution/rematch. Pure DB.
   attributionRematchDb: () =>
     portedPost<{ ok: boolean; error?: string; scanned: number; matched: number }>("/attribution/rematch")

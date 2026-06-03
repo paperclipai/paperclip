@@ -1,7 +1,7 @@
 import { agnb, unwrap } from "./agnbClient";
 
 /**
- * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
  * server (under /api/agnb/*). As each route group migrates off the standalone
  * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
  */
@@ -112,7 +112,7 @@ export const pipelineApi = {
   createDeal: (body: { dealname: string; dealstage: string; amount?: number; closedate?: string }) =>
     agnb.post<{ ok: boolean; error?: string }>("/pipeline/create", body),
 
-  // Ported to Paperclip server — same-origin /api/agnb/pipeline/comments.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/pipeline/comments.
   comments: (dealId: string) =>
     ported<{ ok: boolean; error?: string; comments: PipelineComment[] }>(`/pipeline/comments?deal_id=${dealId}`).then((r) => unwrap(r).comments),
   addComment: (deal_id: string, body: string) =>
@@ -120,7 +120,7 @@ export const pipelineApi = {
   deleteComment: (id: string) =>
     ported<{ ok: boolean; error?: string }>(`/pipeline/comments?id=${id}`, { method: "DELETE" }),
 
-  // Ported to Paperclip server — same-origin /api/agnb/pipeline/tasks (GET read).
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/pipeline/tasks (GET read).
   // NOTE: server returns [] (no HubSpot task mirror in agnb yet) — see PHASE5 in pipeline.ts.
   tasks: (dealId: string) =>
     ported<{ ok: boolean; error?: string; tasks: PipelineTask[] }>(`/pipeline/tasks?deal_id=${dealId}`).then((r) => unwrap(r).tasks),
@@ -128,12 +128,12 @@ export const pipelineApi = {
   toggleTask: (task_id: string, status: "COMPLETED" | "NOT_STARTED") =>
     agnb.patch<{ ok: boolean; error?: string }>("/pipeline/tasks", { task_id, status }),
 
-  // Ported to Paperclip server — same-origin /api/agnb/pipeline/activity.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/pipeline/activity.
   // NOTE: server feed is comments-only (pipeline_move_log not yet migrated).
   activity: (dealId: string) =>
     ported<{ ok: boolean; error?: string; activity: ActivityItem[] }>(`/pipeline/activity?deal_id=${dealId}`).then((r) => unwrap(r).activity),
 
-  // Ported to Paperclip server — same-origin /api/agnb/pipeline/details (GET read).
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/pipeline/details (GET read).
   // NOTE: server returns empty lists (no HubSpot line-item/quote/ticket mirror in agnb yet) — see PHASE5 in pipeline.ts.
   details: (dealId: string) =>
     ported<{ ok: boolean; error?: string } & DealDetails>(`/pipeline/details?deal_id=${dealId}`).then((r) => {

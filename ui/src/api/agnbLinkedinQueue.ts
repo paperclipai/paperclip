@@ -1,7 +1,7 @@
 import { agnb, unwrap } from "./agnbClient";
 
 /**
- * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
  * server (under /api/agnb/*). As each route group migrates off the standalone
  * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
  */
@@ -36,7 +36,7 @@ export interface Series {
 export interface ExtractedPost { hook: string; body: string; cta: string; x_variant?: string }
 
 export const linkedinQueueApi = {
-  // Ported to Paperclip server — same-origin /api/agnb/linkedin-{queue,hooks,series}.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/linkedin-{queue,hooks,series}.
   queue: () => ported<{ ok: boolean; error?: string; rows: QueueRow[] }>("/linkedin-queue").then((r) => unwrap(r).rows),
   hooks: () => ported<{ ok: boolean; error?: string; hooks: Hook[] }>("/linkedin-hooks").then((r) => unwrap(r).hooks),
   series: () => ported<{ ok: boolean; error?: string; series: Series[] }>("/linkedin-series").then((r) => unwrap(r).series),

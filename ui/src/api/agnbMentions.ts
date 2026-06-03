@@ -1,7 +1,7 @@
 import { agnb, unwrap } from "./agnbClient";
 
 /**
- * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
  * server (under /api/agnb/*). As each route group migrates off the standalone
  * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
  */
@@ -40,7 +40,7 @@ export interface BacklinkProspect {
 }
 
 export const mentionsApi = {
-  // Ported to Paperclip server (Phase 4) — same-origin /api/agnb/*.
+  // Ported to All Gas No Brakes server (Phase 4) — same-origin /api/agnb/*.
   mentions: () => ported<{ ok: boolean; error?: string; mentions: Mention[] }>("/mentions").then((r) => unwrap(r).mentions),
   reviews: () => ported<{ ok: boolean; error?: string; platforms: ReviewPlatform[]; log: ReviewLog[] }>("/reviews").then((r) => unwrap(r)),
   sov: () => ported<{ ok: boolean; error?: string; prompts: SovPrompt[]; results: SovResult[] }>("/sov").then((r) => unwrap(r)),

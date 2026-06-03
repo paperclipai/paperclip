@@ -1,7 +1,7 @@
 import { unwrap } from "./agnbClient";
 
 /**
- * Same-origin fetch for AGNB endpoints already ported into the Paperclip
+ * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
  * server (under /api/agnb/*). As each route group migrates off the standalone
  * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
  */
@@ -31,12 +31,12 @@ export interface CohortBucket { id: string; icp_id: string | null }
 export interface CohortIcp { id: string; name: string; tier: string }
 
 export const experimentsApi = {
-  // Ported to Paperclip server — same-origin /api/agnb/csv.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/csv.
   csv: () => ported<{ ok: boolean; error?: string; uploads: CsvUpload[] }>("/csv").then((r) => unwrap(r).uploads),
-  // Ported to Paperclip server — same-origin /api/agnb/subjects.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/subjects.
   subjects: () => ported<{ ok: boolean; error?: string; subjects: SubjectLine[] }>("/subjects").then((r) => unwrap(r).subjects),
-  // Ported to Paperclip server — same-origin /api/agnb/experiments.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/experiments.
   experiments: () => ported<{ ok: boolean; error?: string; experiments: Experiment[] }>("/experiments").then((r) => unwrap(r).experiments),
-  // Ported to Paperclip server — same-origin /api/agnb/cohorts.
+  // Ported to All Gas No Brakes server — same-origin /api/agnb/cohorts.
   cohorts: () => ported<{ ok: boolean; error?: string; snapshots: CohortSnapshot[]; buckets: CohortBucket[]; icps: CohortIcp[] }>("/cohorts").then((r) => unwrap(r)),
 };

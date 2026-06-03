@@ -285,7 +285,7 @@ export function CompanyInvites() {
                 ) : null}
               </div>
               <div className="text-sm text-muted-foreground">
-                This URL includes the current Paperclip domain returned by the server.
+                This URL includes the current All Gas No Brakes domain returned by the server.
               </div>
             </div>
             <label className="block space-y-1">
