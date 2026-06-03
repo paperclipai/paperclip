@@ -7,6 +7,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbFormModal } from "../components/AgnbFormModal";
+import { AgnbSubnav } from "../components/AgnbSubnav";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { relativeTime } from "../lib/utils";
@@ -38,6 +39,7 @@ export function BlogAutomation() {
 
   return (
     <div className="space-y-4">
+      <AgnbSubnav group="assets" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Blog drafts (archive)</h1>
         <Button size="sm" onClick={() => setOpen(true)}>Draft with AI</Button>

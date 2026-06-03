@@ -16,6 +16,8 @@ export const AGNB_SUBNAV = {
   assets: [
     { to: "/assets", label: "Sales enablement" },
     { to: "/invoices", label: "Invoices" },
+    { to: "/linkedin-hooks", label: "Hooks" },
+    { to: "/blog-automation", label: "Blog archive" },
   ],
   campaigns: [
     { to: "/campaigns", label: "Campaigns" },

@@ -7,6 +7,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbFormModal } from "../components/AgnbFormModal";
+import { AgnbSubnav } from "../components/AgnbSubnav";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,6 +30,7 @@ export function HookBank() {
 
   return (
     <div className="space-y-4">
+      <AgnbSubnav group="assets" />
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">Hook bank</h1>
         <div className="flex flex-wrap items-center gap-1">
