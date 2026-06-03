@@ -471,6 +471,17 @@ export function agentRoutes(
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
+  function redactAgentForResponse<T extends { adapterConfig?: unknown; runtimeConfig?: unknown; metadata?: unknown }>(
+    agent: T,
+  ): T {
+    return {
+      ...agent,
+      adapterConfig: redactEventPayload(asRecord(agent.adapterConfig) ?? {}) ?? {},
+      runtimeConfig: redactEventPayload(asRecord(agent.runtimeConfig) ?? {}) ?? {},
+      metadata: asRecord(agent.metadata) ? redactEventPayload(agent.metadata as Record<string, unknown>) : agent.metadata,
+    };
+  }
+
   async function buildAgentAccessState(agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
     const membership = await access.getMembership(agent.companyId, "agent", agent.id);
     const grants = membership
@@ -532,7 +543,7 @@ export function agentRoutes(
     ]);
 
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...(options?.restricted ? redactForRestrictedAgentView(agent) : redactAgentForResponse(agent)),
       chainOfCommand,
       access: accessState,
     };
