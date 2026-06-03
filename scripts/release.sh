@@ -204,18 +204,18 @@ export PAPERCLIP_RELEASE_REUSE_UI_DIST=1
 
 if [ "$skip_verify" = false ]; then
   release_info ""
-  release_info "==> Step 1/7: Verification gate..."
+  release_info "==> Step 1/8: Verification gate..."
   cd "$REPO_ROOT"
   pnpm -r typecheck
   pnpm test:run
   pnpm build
 else
   release_info ""
-  release_info "==> Step 1/7: Verification gate skipped (--skip-verify)"
+  release_info "==> Step 1/8: Verification gate skipped (--skip-verify)"
 fi
 
 release_info ""
-release_info "==> Step 2/7: Building workspace artifacts..."
+release_info "==> Step 2/8: Building workspace artifacts..."
 cd "$REPO_ROOT"
 pnpm build
 node "$REPO_ROOT/scripts/build-standalone-public-packages.mjs"
@@ -227,12 +227,12 @@ done
 release_info "  ✓ Workspace build complete"
 
 release_info ""
-release_info "==> Step 3/7: Rewriting workspace versions..."
+release_info "==> Step 3/8: Rewriting workspace versions..."
 set_public_package_version "$TARGET_PUBLISH_VERSION"
 release_info "  ✓ Versioned workspace to $TARGET_PUBLISH_VERSION"
 
 release_info ""
-release_info "==> Step 4/7: Building publishable CLI bundle..."
+release_info "==> Step 4/8: Building publishable CLI bundle..."
 "$REPO_ROOT/scripts/build-npm.sh" --skip-checks --skip-typecheck
 release_info "  ✓ CLI bundle ready"
 
@@ -243,8 +243,13 @@ if [ "$VERSION_IN_CLI_PACKAGE" != "$TARGET_PUBLISH_VERSION" ]; then
 fi
 
 release_info ""
+release_info "==> Step 5/8: Running packaged runtime smoke gate..."
+node "$REPO_ROOT/scripts/check-release-runtime-smoke.mjs" --skip-build-artifacts
+release_info "  ✓ Packaged runtime smoke gate passed"
+
+release_info ""
 if [ "$dry_run" = true ]; then
-  release_info "==> Step 5/7: Previewing publish payloads (--dry-run)..."
+  release_info "==> Step 6/8: Previewing publish payloads (--dry-run)..."
   while IFS=$'\t' read -r pkg_dir _pkg_name _pkg_version; do
     [ -z "$pkg_dir" ] && continue
     release_info "  --- $pkg_dir ---"
@@ -253,7 +258,7 @@ if [ "$dry_run" = true ]; then
   done <<< "$VERSIONED_PACKAGE_INFO"
   release_info "  [dry-run] Would create git tag $tag_name on $CURRENT_SHA"
 else
-  release_info "==> Step 5/7: Publishing packages to npm..."
+  release_info "==> Step 6/8: Publishing packages to npm..."
   while IFS=$'\t' read -r pkg_dir pkg_name pkg_version; do
     [ -z "$pkg_dir" ] && continue
     release_info "  Publishing $pkg_name@$pkg_version"
@@ -265,9 +270,9 @@ fi
 
 release_info ""
 if [ "$dry_run" = true ]; then
-  release_info "==> Step 6/7: Skipping npm verification in dry-run mode..."
+  release_info "==> Step 7/8: Skipping npm verification in dry-run mode..."
 else
-  release_info "==> Step 6/7: Confirming npm package availability and dist-tag integrity..."
+  release_info "==> Step 7/8: Confirming npm package availability and dist-tag integrity..."
   VERIFY_ATTEMPTS="${NPM_PUBLISH_VERIFY_ATTEMPTS:-12}"
   VERIFY_DELAY_SECONDS="${NPM_PUBLISH_VERIFY_DELAY_SECONDS:-5}"
   REGISTRY_STATE_VERIFY_ATTEMPTS="${NPM_REGISTRY_STATE_VERIFY_ATTEMPTS:-12}"
@@ -320,9 +325,9 @@ fi
 
 release_info ""
 if [ "$dry_run" = true ]; then
-  release_info "==> Step 7/7: Dry run complete..."
+  release_info "==> Step 8/8: Dry run complete..."
 else
-  release_info "==> Step 7/7: Creating git tag..."
+  release_info "==> Step 8/8: Creating git tag..."
   git -C "$REPO_ROOT" tag "$tag_name" "$CURRENT_SHA"
   release_info "  ✓ Created tag $tag_name on $CURRENT_SHA"
 fi

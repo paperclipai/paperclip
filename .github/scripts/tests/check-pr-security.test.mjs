@@ -254,6 +254,28 @@ test('validateSensitivePaths: returns only 404 paths and rethrows non-404 errors
   );
 });
 
+
+test('security advisory sync failures can be handled without blocking pending security review', async () => {
+  const calls = [];
+
+  await postSecurityCheckRun(async (path, token, options) => {
+    calls.push({ path, token, options });
+    return { ok: true };
+  }, 'token', 'paperclipai/paperclip', 'deadbeef', true);
+
+  await assert.rejects(
+    syncDraftAdvisory(async (path) => {
+      if (path.includes('/security-advisories?state=draft')) return [];
+      throw new Error('GitHub API POST /security-advisories → 422: Advisory must have at least one vulnerability');
+    }, 'token', 'paperclipai/paperclip', 7465, 'Release smoke gate', [{ check: 'build-script-change', file: 'scripts/release.sh' }]),
+    /Advisory must have at least one vulnerability/,
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, '/repos/paperclipai/paperclip/check-runs');
+  assert.equal(JSON.parse(calls[0].options.body).status, 'in_progress');
+});
+
 // ── scanTestPatterns ─────────────────────────────────────────────────────────
 
 test('scanTestPatterns: flags outbound fetch in test file', () => {

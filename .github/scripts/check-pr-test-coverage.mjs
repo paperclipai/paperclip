@@ -9,8 +9,8 @@
 import { fileURLToPath } from 'node:url';
 
 const TEST_PATTERNS = [
-  /\.test\.(ts|js|tsx|jsx)$/,
-  /\.spec\.(ts|js|tsx|jsx)$/,
+  /\.test\.(ts|js|tsx|jsx|mjs)$/,
+  /\.spec\.(ts|js|tsx|jsx|mjs)$/,
   /(?:^|\/)tests?\//,
   /\/__tests__\//,
 ];

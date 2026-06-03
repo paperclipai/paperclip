@@ -332,10 +332,13 @@ async function main() {
 
   if (allFlags.length > 0) {
     console.error(`[security] ${allFlags.length} flag(s) detected — creating draft advisory and pending check run`);
-    await Promise.all([
-      syncDraftAdvisory(ghFetch, GH_TOKEN, GH_REPO, prNumber, pr.title, allFlags),
-      postSecurityCheckRun(ghFetch, GH_TOKEN, GH_REPO, pr.head.sha, true),
-    ]);
+    await postSecurityCheckRun(ghFetch, GH_TOKEN, GH_REPO, pr.head.sha, true);
+    try {
+      await syncDraftAdvisory(ghFetch, GH_TOKEN, GH_REPO, prNumber, pr.title, allFlags);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[security] advisory sync failed; leaving pending security-review check for maintainer review: ${message}`);
+    }
   } else {
     console.log('[security] all clear');
     await postSecurityCheckRun(ghFetch, GH_TOKEN, GH_REPO, pr.head.sha, false);
