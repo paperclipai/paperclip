@@ -6,6 +6,12 @@ on:
       - "master"
     tags:
       - "v*"
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref (tag or SHA) to build. Required for callers; push events use github.ref.
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -16,11 +22,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: docker-${{ github.ref }}
+      group: docker-${{ inputs.ref || github.ref }}
       cancel-in-progress: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -38,7 +46,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ inputs.ref == '' }}
+            type=raw,value=${{ inputs.ref }},enable=${{ inputs.ref != '' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
