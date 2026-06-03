@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   agents,
   companies,
@@ -26,6 +27,27 @@ import {
 import { heartbeatService } from "../services/heartbeat.ts";
 import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 
+const adapterExecute = vi.hoisted(() => vi.fn(async () => ({
+  exitCode: 0,
+  signal: null,
+  timedOut: false,
+  sessionParams: { sessionId: "issue-monitor-test-session" },
+  sessionDisplayId: "issue-monitor-test-session",
+  summary: "Issue monitor scheduler test run.",
+  provider: "test",
+  model: "test-model",
+})));
+
+vi.mock("../adapters/index.js", () => ({
+  getServerAdapter: () => ({
+    type: "process",
+    execute: adapterExecute,
+    supportsLocalAgentJwt: false,
+  }),
+  listAdapterModelProfiles: async () => [],
+  runningProcesses: new Map(),
+}));
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -44,6 +66,10 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-monitor-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
+
+  afterEach(() => {
+    adapterExecute.mockClear();
+  });
 
   async function waitForHeartbeatIdle(timeoutMs = 3_000) {
     const deadline = Date.now() + timeoutMs;
@@ -108,6 +134,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     await db.delete(environmentLeases);
     await db.delete(workspaceRuntimeServices);
     await db.delete(issues);
+    await db.delete(agentTaskSessions);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
@@ -129,7 +156,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       }
     }
     throw lastError;
-  });
+  }, 20_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
