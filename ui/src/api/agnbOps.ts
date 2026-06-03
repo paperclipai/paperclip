@@ -49,8 +49,10 @@ export const SYNC_JOBS: Array<{ key: string; label: string; path: string }> = [
 ];
 
 export const opsApi = {
-  health: () => agnb.get<{ ok: boolean; error?: string; checks: HealthCheck[] }>("/health").then((r) => unwrap(r).checks),
-  syncStatus: () => agnb.get<{ ok: boolean; error?: string } & SyncStatus>("/sync").then((r) => { const u = unwrap(r); return { counts: u.counts, worker: u.worker } as SyncStatus; }),
+  // Ported to Paperclip server (group: ops) — same-origin /api/agnb/health.
+  health: () => ported<{ ok: boolean; error?: string; checks: HealthCheck[] }>("/health").then((r) => unwrap(r).checks),
+  // Ported to Paperclip server (group: ops) — same-origin /api/agnb/sync.
+  syncStatus: () => ported<{ ok: boolean; error?: string } & SyncStatus>("/sync").then((r) => { const u = unwrap(r); return { counts: u.counts, worker: u.worker } as SyncStatus; }),
   runJob: (path: string) => agnb.post(path, {}),
   // Ported to Paperclip server (Phase 4 group: ops) — same-origin /api/agnb/*.
   events: () => ported<{ ok: boolean; error?: string; events: EventRow[] }>("/events").then((r) => unwrap(r).events),

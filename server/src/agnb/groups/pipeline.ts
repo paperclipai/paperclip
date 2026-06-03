@@ -15,8 +15,7 @@ import { rows } from "../helpers.js";
  *    contacts come from the live CRM API, so the board stays cross-origin.
  *  - POST /pipeline/move:    HubSpot updateDealStage.
  *  - POST /pipeline/create:  HubSpot createDeal.
- *  - GET/PATCH /pipeline/tasks, GET /pipeline/details, GET /pipeline/engagements:
- *    all HubSpot API reads.
+ *  - PATCH /pipeline/tasks, GET /pipeline/engagements: HubSpot API writes/reads.
  *  - pipeline_move_log table is a Supabase-only relation (not migrated), so the
  *    activity feed degrades to comments-only here.
  */
@@ -91,5 +90,36 @@ export function registerPipeline(router: Router, db: Db) {
 
     out.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
     res.json({ ok: true, activity: out });
+  });
+
+  /**
+   * GET /api/agnb/pipeline/tasks?deal_id=… — checklist tasks for a deal.
+   * Ported same-origin to kill the cross-origin call after AGNB decommission.
+   * PHASE5: AGNB read these live from HubSpot (listTasksForDeal) — there is NO
+   * agnb mirror table for HubSpot tasks, so the DB has nothing to return. We
+   * preserve the exact response shape ({ ok, tasks }) with an empty list until a
+   * task mirror lands. (deal_id still validated to match the old contract.)
+   */
+  router.get("/agnb/pipeline/tasks", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const dealId = typeof req.query.deal_id === "string" ? req.query.deal_id : null;
+    if (!dealId) return res.status(400).json({ ok: false, error: "deal_id required" });
+    res.json({ ok: true, tasks: [] });
+  });
+
+  /**
+   * GET /api/agnb/pipeline/details?deal_id=… — line items + quotes + tickets.
+   * Ported same-origin to kill the cross-origin call after AGNB decommission.
+   * PHASE5: AGNB read these live from HubSpot (listLineItemsForDeal /
+   * listQuotesForDeal / listTicketsForDeal) — there are NO agnb mirror tables for
+   * line items, quotes, or tickets, so the DB has nothing to return. We preserve
+   * the exact response shape ({ ok, lineItems, quotes, tickets }) with empty
+   * lists until those mirrors land.
+   */
+  router.get("/agnb/pipeline/details", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const dealId = typeof req.query.deal_id === "string" ? req.query.deal_id : null;
+    if (!dealId) return res.status(400).json({ ok: false, error: "deal_id required" });
+    res.json({ ok: true, lineItems: [], quotes: [], tickets: [] });
   });
 }

@@ -120,9 +120,11 @@ export const pipelineApi = {
   deleteComment: (id: string) =>
     ported<{ ok: boolean; error?: string }>(`/pipeline/comments?id=${id}`, { method: "DELETE" }),
 
-  // PHASE 5: GET/PATCH /pipeline/tasks are HubSpot task reads/writes — cross-origin.
+  // Ported to Paperclip server — same-origin /api/agnb/pipeline/tasks (GET read).
+  // NOTE: server returns [] (no HubSpot task mirror in agnb yet) — see PHASE5 in pipeline.ts.
   tasks: (dealId: string) =>
-    agnb.get<{ ok: boolean; error?: string; tasks: PipelineTask[] }>(`/pipeline/tasks?deal_id=${dealId}`).then((r) => unwrap(r).tasks),
+    ported<{ ok: boolean; error?: string; tasks: PipelineTask[] }>(`/pipeline/tasks?deal_id=${dealId}`).then((r) => unwrap(r).tasks),
+  // PHASE 5: PATCH /pipeline/tasks calls HubSpot updateTaskStatus — cross-origin.
   toggleTask: (task_id: string, status: "COMPLETED" | "NOT_STARTED") =>
     agnb.patch<{ ok: boolean; error?: string }>("/pipeline/tasks", { task_id, status }),
 
@@ -131,9 +133,10 @@ export const pipelineApi = {
   activity: (dealId: string) =>
     ported<{ ok: boolean; error?: string; activity: ActivityItem[] }>(`/pipeline/activity?deal_id=${dealId}`).then((r) => unwrap(r).activity),
 
-  // PHASE 5: GET /pipeline/details reads HubSpot line items/quotes/tickets — cross-origin.
+  // Ported to Paperclip server — same-origin /api/agnb/pipeline/details (GET read).
+  // NOTE: server returns empty lists (no HubSpot line-item/quote/ticket mirror in agnb yet) — see PHASE5 in pipeline.ts.
   details: (dealId: string) =>
-    agnb.get<{ ok: boolean; error?: string } & DealDetails>(`/pipeline/details?deal_id=${dealId}`).then((r) => {
+    ported<{ ok: boolean; error?: string } & DealDetails>(`/pipeline/details?deal_id=${dealId}`).then((r) => {
       const u = unwrap(r);
       return { lineItems: u.lineItems, quotes: u.quotes, tickets: u.tickets } as DealDetails;
     }),

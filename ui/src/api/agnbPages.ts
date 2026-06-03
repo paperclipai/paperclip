@@ -143,8 +143,9 @@ export interface InvoiceRow {
 }
 
 export const agnbPagesApi = {
+  // Ported to Paperclip server (group: revenue) — same-origin /api/agnb/forecast.
   forecast: () =>
-    agnb.get<{ ok: boolean; error?: string } & ForecastResp>("/forecast").then((r) => unwrap(r)),
+    ported<{ ok: boolean; error?: string } & ForecastResp>("/forecast").then((r) => unwrap(r)),
   // Ported to Paperclip server — same-origin /api/agnb/demos.
   demos: () =>
     ported<{ ok: boolean; error?: string; upcoming: DemoRow[]; past: DemoRow[] }>("/demos")
