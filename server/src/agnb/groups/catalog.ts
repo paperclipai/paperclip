@@ -86,8 +86,8 @@ export function registerCatalog(router: Router, db: Db) {
         LIMIT 500
       `),
       db.execute(sql`
-        SELECT bucket_id, total_sent, total_replies, total_meetings,
-               compound_reply_rate, campaigns_run
+        SELECT bucket_id, total_sent, total_replies, total_positive, total_meetings,
+               compound_reply_rate, compound_positive_rate, campaigns_run
         FROM agnb.bucket_rollup
       `),
       db.execute(sql`

@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { assertBoardOrgAccess } from "../../routes/authz.js";
-import { rows } from "../helpers.js";
+import { rows, pgTextArray } from "../helpers.js";
 
 /**
  * AGNB group: misc (quota, api tokens, workflow recipes, content performance).
@@ -96,7 +96,7 @@ export function registerMisc(router: Router, db: Db) {
 
     const result = await db.execute(sql`
       INSERT INTO agnb.api_tokens (name, scopes, token_hash, created_by, requests_per_minute)
-      VALUES (${name}, ${scopes}, ${hash}, ${email}, ${rpm})
+      VALUES (${name}, ${pgTextArray(scopes)}::text[], ${hash}, ${email}, ${rpm})
       RETURNING id
     `);
     const inserted = rows<{ id: string }>(result)[0];

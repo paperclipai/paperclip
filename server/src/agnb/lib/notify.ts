@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { pgTextArray } from "../helpers.js";
 
 /**
  * Centralized notification helper. Ported from agnb lib/agnb/notify.ts.
@@ -112,7 +113,7 @@ export async function notify(
         ${input.source_kind ?? null},
         ${input.source_id ?? null},
         ${channels.length > 0 ? new Date().toISOString() : null},
-        ${channels}::text[]
+        ${pgTextArray(channels)}::text[]
       )
     `);
     stored = true;

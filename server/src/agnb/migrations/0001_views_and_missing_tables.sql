@@ -41,10 +41,14 @@ SELECT
   COALESCE(SUM(c.sent_count), 0)::bigint                   AS total_sent,
   COALESCE(SUM(c.open_count), 0)::bigint                   AS total_opens,
   COALESCE(SUM(c.reply_count), 0)::bigint                  AS total_replies,
+  COALESCE(SUM(c.positive_count), 0)::bigint               AS total_positive,
   COALESCE(SUM(c.meeting_count), 0)::bigint                AS total_meetings,
   CASE WHEN COALESCE(SUM(c.sent_count), 0) > 0
        THEN SUM(c.reply_count)::numeric / SUM(c.sent_count)
        ELSE NULL END                                       AS compound_reply_rate,
+  CASE WHEN COALESCE(SUM(c.reply_count), 0) > 0
+       THEN SUM(c.positive_count)::numeric / SUM(c.reply_count)
+       ELSE NULL END                                       AS compound_positive_rate,
   CASE WHEN COALESCE(SUM(c.sent_count), 0) > 0
        THEN SUM(c.open_count)::numeric / SUM(c.sent_count)
        ELSE NULL END                                       AS compound_open_rate,

@@ -2,7 +2,7 @@ import type { Router } from "express";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { assertBoardOrgAccess } from "../../routes/authz.js";
-import { rows } from "../helpers.js";
+import { rows, pgTextArray } from "../helpers.js";
 
 /**
  * AGNB group: team (members, work items, routing rules).
@@ -83,7 +83,7 @@ export function registerTeam(router: Router, db: Db) {
         ${body.role ?? null},
         ${body.is_ai ?? false},
         ${body.ai_engine ?? null},
-        ${body.skills ?? []}::text[],
+        ${pgTextArray(Array.isArray(body.skills) ? body.skills : [])}::text[],
         ${body.capacity_daily ?? 50},
         ${body.weight ?? 1.0},
         ${body.timezone ?? null}
@@ -116,7 +116,7 @@ export function registerTeam(router: Router, db: Db) {
     if (body.name !== undefined) sets.push(sql`name = ${body.name}`);
     if (body.email !== undefined) sets.push(sql`email = ${body.email}`);
     if (body.role !== undefined) sets.push(sql`role = ${body.role}`);
-    if (body.skills !== undefined) sets.push(sql`skills = ${body.skills}::text[]`);
+    if (body.skills !== undefined) sets.push(sql`skills = ${pgTextArray(Array.isArray(body.skills) ? body.skills : [])}::text[]`);
     if (body.capacity_daily !== undefined) sets.push(sql`capacity_daily = ${body.capacity_daily}`);
     if (body.weight !== undefined) sets.push(sql`weight = ${body.weight}`);
     if (body.active !== undefined) sets.push(sql`active = ${body.active}`);
@@ -280,7 +280,7 @@ export function registerTeam(router: Router, db: Db) {
       INSERT INTO agnb.work_routing_rules (kind, prefer_skills, strategy, fallback_member, weight, notes)
       VALUES (
         ${body.kind},
-        ${body.prefer_skills ?? []}::text[],
+        ${pgTextArray(Array.isArray(body.prefer_skills) ? body.prefer_skills : [])}::text[],
         ${body.strategy ?? "skill_then_load"},
         ${body.fallback_member ?? null},
         ${body.weight ?? 1.0},
@@ -309,7 +309,7 @@ export function registerTeam(router: Router, db: Db) {
     }>;
 
     const sets: ReturnType<typeof sql>[] = [];
-    if (body.prefer_skills !== undefined) sets.push(sql`prefer_skills = ${body.prefer_skills}::text[]`);
+    if (body.prefer_skills !== undefined) sets.push(sql`prefer_skills = ${pgTextArray(Array.isArray(body.prefer_skills) ? body.prefer_skills : [])}::text[]`);
     if (body.strategy !== undefined) sets.push(sql`strategy = ${body.strategy}`);
     if (body.fallback_member !== undefined) sets.push(sql`fallback_member = ${body.fallback_member}`);
     if (body.weight !== undefined) sets.push(sql`weight = ${body.weight}`);

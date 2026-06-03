@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { sql } from "drizzle-orm";
-import { rows } from "../helpers.js";
+import { rows, pgTextArray } from "../helpers.js";
 import { generateJson, hasGeminiKey } from "../lib/gemini.js";
 import { googleSuggest } from "../lib/keyword-research.js";
 import type { AgnbJobContext, AgnbJobResult } from "./types.js";
@@ -92,8 +92,8 @@ export async function gapAnalyzer(ctx: AgnbJobContext): Promise<AgnbJobResult> {
       usageOut += r.outTok;
       await db.execute(sql`
         UPDATE agnb.competitor_blogs
-        SET topics = ${r.topics.slice(0, 8)}::text[],
-            keywords = ${r.keywords.slice(0, 12)}::text[],
+        SET topics = ${pgTextArray(r.topics.slice(0, 8))}::text[],
+            keywords = ${pgTextArray(r.keywords.slice(0, 12))}::text[],
             analysis_status = 'analyzed'
         WHERE id = ${blog.id}
       `);
@@ -182,8 +182,8 @@ export async function gapAnalyzer(ctx: AgnbJobContext): Promise<AgnbJobResult> {
            representative_titles, suggestion_type, cluster_type, parent_topic,
            existing_blog_path, status, updated_at)
         VALUES (
-          ${topic}, ${score}, ${agg.count}, ${ourCoverage}, ${suggestedKeywords}::text[],
-          ${representativeTitles}::text[], ${suggestionType}, ${clusterType}, ${parentTopic},
+          ${topic}, ${score}, ${agg.count}, ${ourCoverage}, ${pgTextArray(suggestedKeywords)}::text[],
+          ${pgTextArray(representativeTitles)}::text[], ${suggestionType}, ${clusterType}, ${parentTopic},
           ${existingBlogPath}, 'identified', now()
         )
         ON CONFLICT (topic) DO UPDATE SET
@@ -223,7 +223,7 @@ export async function gapAnalyzer(ctx: AgnbJobContext): Promise<AgnbJobResult> {
       for (const s of suggestions) existing.add(s);
       const merged = Array.from(existing).slice(0, 20);
       await db.execute(sql`
-        UPDATE agnb.content_gaps SET suggested_keywords = ${merged}::text[], updated_at = now() WHERE id = ${g.id}
+        UPDATE agnb.content_gaps SET suggested_keywords = ${pgTextArray(merged)}::text[], updated_at = now() WHERE id = ${g.id}
       `);
       enriched++;
       await new Promise((r) => setTimeout(r, 250));
