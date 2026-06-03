@@ -174,6 +174,40 @@ Two options per job:
 
 ---
 
+## 3b. PHASE 6 CUTOVER RUNBOOK (executable)
+
+⚠️ **Irreversible steps marked 🔴. Do NOT start until the freeze + fresh data sync (steps 1–3) are complete — the local `agnb` schema is a point-in-time snapshot and prod keeps diverging until frozen.**
+
+### Pre-cutover (reversible, do anytime)
+- [ ] **Pick the deploy target DB.** Prod Paperclip needs a Postgres with BOTH `public` (core) and `agnb` schemas. Either a fresh hosted PG, or reuse the existing Supabase project (`bcslmvndyrdnacbaxjpg`) — Paperclip core in `public`, AGNB in `agnb`. Set `DATABASE_URL` accordingly.
+- [ ] **Stage env on the deploy target.** Copy the instance `.env` keys: `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL=https://allgasnobrakes.online`, `BETTER_AUTH_TRUSTED_ORIGINS=https://allgasnobrakes.online`, `PAPERCLIP_DEPLOYMENT_MODE=authenticated`, `PAPERCLIP_DEPLOYMENT_EXPOSURE=public`, `PAPERCLIP_AGNB_JOBS=true`, and all 28 AGNB integration keys (+`GSC_PROPERTY`, `OPENPAGERANK_API_KEY`). Generate a NEW `BETTER_AUTH_SECRET` for prod.
+- [ ] **Build passes** on the deploy artifact: `pnpm run build`.
+- [ ] **Create real users** for each AGNB allowlist member; plan board-claim for the first admin.
+
+### Cutover window (🔴 = irreversible / disruptive)
+1. [ ] 🔴 **Freeze prod AGNB writes.** Put `www.allgasnobrakes.online` in maintenance / disable its cron worker so Supabase `internal` stops changing.
+2. [ ] **Fresh data sync** (NOT the yesterday snapshot):
+   - Preferred: `pg_dump` the live `internal` schema → load into deploy DB as `agnb` (see §5 — needs the Supabase DB password).
+   - Or re-run `~/agnb-backup-2026-06-02/dump.mjs` then `load-local.mjs` pointed at the deploy DB (`LOCAL_DSN=...`). Then re-run `server/src/agnb/migrations/0001_*.sql` (views + unique indexes + defaults).
+   - [ ] Verify row counts match prod (campaigns, deals, blog_drafts, etc.).
+3. [ ] **Re-auth Google (GSC).** The stored refresh token is expired (`invalid_grant`). Reconnect via the Google OAuth start flow on the new instance so `gsc-rank-tracker` works; re-point the OAuth redirect URI to the Paperclip domain in Google Cloud console.
+4. [ ] **Deploy Paperclip** to prod infra with the staged env + `DATABASE_URL`. Boot, confirm `/api/health` shows `authenticated` + bootstrap, claim board as admin.
+5. [ ] **Smoke test on the deploy URL** (pre-DNS): sign in, load campaigns/mentions/pipeline/blog, `GET /api/agnb/jobs` lists 26, run one job manually.
+6. [ ] 🔴 **Repoint DNS** `allgasnobrakes.online` → Paperclip deploy. Wait for propagation.
+7. [ ] **Verify prod** end-to-end on the real domain. Watch logs for `agnb job` errors; toggle the 5 default-OFF jobs on only after confirming external creds.
+8. [ ] 🔴 **Decommission AGNB**: stop the old Vercel Next.js deploy; archive the `agnb` repo (`git tag agnb-final && git push --tags`, then archive on GitHub).
+
+### Post-cutover cleanup
+- [ ] Port/retire the remaining cross-origin **write/LLM** endpoints (createPersona, pipeline move/create, invoices/create, *ai* drafts). Until done, set prod `VITE_AGNB_BASE_URL` to a still-running headless AGNB API, OR finish porting them first. **Do not flip `agnbClient.ts` `AGNB_BASE=""` until every endpoint it serves exists same-origin.**
+- [ ] Remove the local dev test user `test-agnb@local.dev` (instance_admin) from any shared DB.
+- [ ] Move sidecars (`LINKEDIN_SIDECAR_URL`, `JUSTDIAL_SIDECAR_URL`, WhatsApp) into Paperclip env or fold in.
+- [ ] Delete AGNB CORS allowances + `.allgasnobrakes.online` cookie scoping.
+
+### Rollback (if cutover fails)
+- DNS back to the old Vercel AGNB deploy (kept running until step 8). Prod data was frozen at step 1, so no divergence to reconcile. Un-freeze AGNB writes.
+
+---
+
 ## 4. Effort & sequencing summary
 
 | Phase | Scope | Rough effort | Risk |
