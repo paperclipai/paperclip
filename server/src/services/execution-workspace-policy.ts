@@ -87,6 +87,26 @@ export function gateProjectExecutionWorkspacePolicy(
   return projectPolicy;
 }
 
+export function defaultProjectlessIssueExecutionWorkspacePolicy(input: {
+  issueId: string | null | undefined;
+  projectId: string | null | undefined;
+  isolatedWorkspacesEnabled: boolean;
+  projectPolicy: ProjectExecutionWorkspacePolicy | null;
+  issueSettings: IssueExecutionWorkspaceSettings | null;
+}): ProjectExecutionWorkspacePolicy | null {
+  if (!input.isolatedWorkspacesEnabled) return null;
+  if (!input.issueId) return null;
+  if (input.projectId) return null;
+  if (input.projectPolicy?.enabled) return null;
+  const issueMode = input.issueSettings?.mode;
+  if (issueMode && issueMode !== "inherit") return null;
+  return {
+    enabled: true,
+    defaultMode: "isolated_workspace",
+    workspaceStrategy: { type: "git_worktree" },
+  };
+}
+
 export function parseIssueExecutionWorkspaceSettings(raw: unknown): IssueExecutionWorkspaceSettings | null {
   const parsed = parseObject(raw);
   if (Object.keys(parsed).length === 0) return null;

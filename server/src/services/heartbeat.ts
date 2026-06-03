@@ -121,6 +121,7 @@ import { workspaceOperationService } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
+  defaultProjectlessIssueExecutionWorkspacePolicy,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseIssueExecutionWorkspaceSettings,
@@ -3838,6 +3839,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
+    const configuredCwd = issueId ? readNonEmptyString(parseObject(agent.adapterConfig).cwd) : null;
+    const configuredCwdLooksUnsafe = isUnsafeSessionWorkspaceCwd(configuredCwd);
+    if (configuredCwd && !configuredCwdLooksUnsafe) {
+      const configuredCwdExists = await fs
+        .stat(configuredCwd)
+        .then((stats) => stats.isDirectory())
+        .catch(() => false);
+      if (configuredCwdExists) {
+        return {
+          cwd: configuredCwd,
+          source: "task_session" as const,
+          projectId: resolvedProjectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+          workspaceHints,
+          warnings: [],
+        };
+      }
+    }
+
     const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
     await fs.mkdir(cwd, { recursive: true });
     const warnings: string[] = [];
@@ -7151,10 +7173,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       delete context.acceptedPlanWakeRouting;
     }
     const routineEnvContext = await getRoutineEnvForExecutionIssue(agent.companyId, issueContext);
-    const projectExecutionWorkspacePolicy = gateProjectExecutionWorkspacePolicy(
+    const configuredProjectExecutionWorkspacePolicy = gateProjectExecutionWorkspacePolicy(
       parseProjectExecutionWorkspacePolicy(projectContext?.executionWorkspacePolicy),
       isolatedWorkspacesEnabled,
     );
+    const projectExecutionWorkspacePolicy =
+      configuredProjectExecutionWorkspacePolicy ??
+      defaultProjectlessIssueExecutionWorkspacePolicy({
+        issueId: issueContext?.id ?? null,
+        projectId: executionProjectId ?? null,
+        isolatedWorkspacesEnabled,
+        projectPolicy: configuredProjectExecutionWorkspacePolicy,
+        issueSettings: issueExecutionWorkspaceSettings,
+      });
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;

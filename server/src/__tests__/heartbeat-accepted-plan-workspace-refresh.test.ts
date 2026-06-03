@@ -358,6 +358,106 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     expect(isolatedRows[0]?.cwd).not.toBe(repoRoot);
   }, 20_000);
 
+  it("realizes an isolated worktree for projectless issue runs from the agent configured cwd", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+
+    await instanceSettingsService(db).updateExperimental({
+      enableIsolatedWorkspaces: true,
+    });
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { cwd: repoRoot },
+      runtimeConfig: {},
+      permissions: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId: null,
+      title: "Projectless CTO task",
+      status: "in_progress",
+      workMode: "standard",
+      priority: "high",
+      assigneeAgentId: agentId,
+      identifier: "VIVA-1729",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    adapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: { sessionId: "fresh-session" },
+        sessionDisplayId: "fresh-session",
+        summary: "Projectless worktree isolation test run.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+      },
+    });
+
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(run!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 10_000 });
+
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
+    const adapterInput = adapterExecute.mock.calls[0]?.[0] as {
+      context: Record<string, unknown>;
+    };
+    expect(adapterInput.context.paperclipWorkspace).toEqual(expect.objectContaining({
+      mode: "isolated_workspace",
+      strategy: "git_worktree",
+    }));
+    const workspace = adapterInput.context.paperclipWorkspace as { cwd: string; worktreePath: string };
+    expect(workspace.cwd).not.toBe(repoRoot);
+    expect(workspace.worktreePath).toContain("VIVA-1729");
+    expect(workspace.worktreePath).toContain(".paperclip");
+
+    const refreshedIssue = await db
+      .select({ executionWorkspaceId: issues.executionWorkspaceId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(refreshedIssue?.executionWorkspaceId).toBeNull();
+
+    const persistedRows = await db.select().from(executionWorkspaces);
+    expect(persistedRows).toHaveLength(0);
+  }, 20_000);
+
   it("forces a fresh session and suppresses accepted-plan continuation when another issue owns the in-flight claim", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

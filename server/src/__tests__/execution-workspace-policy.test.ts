@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildExecutionWorkspaceAdapterConfig,
+  defaultProjectlessIssueExecutionWorkspacePolicy,
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
@@ -365,5 +366,61 @@ describe("execution workspace policy helpers", () => {
         true,
       ),
     ).toEqual({ enabled: true, defaultMode: "isolated_workspace" });
+  });
+
+  it("defaults projectless issue-backed runs to isolated git worktrees", () => {
+    expect(
+      defaultProjectlessIssueExecutionWorkspacePolicy({
+        issueId: "issue-1",
+        projectId: null,
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: null,
+        issueSettings: null,
+      }),
+    ).toEqual({
+      enabled: true,
+      defaultMode: "isolated_workspace",
+      workspaceStrategy: { type: "git_worktree" },
+    });
+
+    expect(
+      defaultProjectlessIssueExecutionWorkspacePolicy({
+        issueId: "issue-1",
+        projectId: null,
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: { enabled: true, defaultMode: "shared_workspace" },
+        issueSettings: null,
+      }),
+    ).toBeNull();
+
+    expect(
+      defaultProjectlessIssueExecutionWorkspacePolicy({
+        issueId: "issue-1",
+        projectId: null,
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: null,
+        issueSettings: { mode: "shared_workspace" },
+      }),
+    ).toBeNull();
+
+    expect(
+      defaultProjectlessIssueExecutionWorkspacePolicy({
+        issueId: null,
+        projectId: null,
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: null,
+        issueSettings: null,
+      }),
+    ).toBeNull();
+
+    expect(
+      defaultProjectlessIssueExecutionWorkspacePolicy({
+        issueId: "issue-1",
+        projectId: "project-1",
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: null,
+        issueSettings: null,
+      }),
+    ).toBeNull();
   });
 });
