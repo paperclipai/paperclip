@@ -84,7 +84,10 @@ cd /home/soloway/openclaw-runner/paperclip/packages/plugins
 mkdir -p plugin-partner-bridge/src plugin-partner-bridge/fixtures
 cp plugin-str-ops/tsconfig.json plugin-str-ops/vitest.config.ts plugin-partner-bridge/
 cp plugin-str-ops/package.json plugin-partner-bridge/package.json
-cp plugin-str-ops/src/store/couch-http.ts plugin-partner-bridge/src/   # temp location; moved in Task 1
+# Also copy whatever root build config str-ops' package.json build/dev scripts reference
+# (e.g. esbuild.config.mjs) so `pnpm build` works — match str-ops exactly.
+# NOTE: do NOT copy couch-http.ts here. str-ops' couch-http.ts imports its types from
+# couch-store.ts; copied alone it would not typecheck. It is introduced in Task 6 alongside couch-store.ts.
 ```
 
 Then edit `plugin-partner-bridge/package.json`: set `"name": "@paperclipai/plugin-partner-bridge"`, `"description": "Inter-partnership channel bridge between Paperclip companies."` Keep all scripts identical.
@@ -188,7 +191,6 @@ git commit -m "feat(partner-bridge): scaffold plugin + manifest (S0)"
 **Files:**
 - Create: `src/types.ts`, `src/domain/envelope.ts`, `src/domain/envelope.spec.ts`
 - Create: `src/store/types.ts`, `src/store/memory-store.ts`, `src/store/memory-store.spec.ts`
-- Move: `src/couch-http.ts` → `src/store/couch-http.ts`
 
 - [ ] **Step 1: Create `src/types.ts` (shared types used by every later task)**
 
@@ -311,11 +313,7 @@ export function isBridgeAuthored(item: ChannelItem): boolean {
 Run: `pnpm test src/domain/envelope.spec.ts`
 Expected: PASS (3 tests).
 
-- [ ] **Step 6: Move couch-http into store/ and define the store interface**
-
-```bash
-mv src/couch-http.ts src/store/couch-http.ts
-```
+- [ ] **Step 6: Define the store interface**
 
 Create `src/store/types.ts`:
 ```ts
@@ -1176,9 +1174,15 @@ rg -n "approvals" packages/*/src --glob '*.ts' | rg -i "post|put|router|\.route|
 ```
 If the real paths differ from `POST /api/companies/:id/approvals` and `POST /api/approvals/:id/{approve|reject}`, update those two methods in `src/paperclip/api.ts` to match. (The Fake — used by all non-live tests — is unaffected.)
 
-- [ ] **Step 1: Write the CouchStore (mirror str-ops couch-store doc-id discipline)**
+- [ ] **Step 1: Bring in couch-http + write the CouchStore (mirror str-ops couch-store doc-id discipline)**
 
-Implement `src/store/couch-store.ts` with deterministic `_id`s and Mango-free `GET`/`PUT` by id (CouchDB), backed by the copied `couch-http.ts`. Doc ids: cursor `cursor:<linkId>:<issueId>`, mapping `map:<sourceItemId>`, approval `appr:<approvalId>`. Each method does `GET` (capture `_rev`) then `PUT`. Reuse the exact `CouchHttp`/`CouchResponse` types from `couch-http.ts` (str-ops style).
+First copy the HTTP adapter into `store/` (it imports the `CouchHttp`/`CouchResponse` types
+that `couch-store.ts` defines, so the two files must land together):
+```bash
+cp ../plugin-str-ops/src/store/couch-http.ts src/store/couch-http.ts
+```
+
+Then implement `src/store/couch-store.ts` with deterministic `_id`s and Mango-free `GET`/`PUT` by id (CouchDB), backed by the copied `couch-http.ts`. Doc ids: cursor `cursor:<linkId>:<issueId>`, mapping `map:<sourceItemId>`, approval `appr:<approvalId>`. Each method does `GET` (capture `_rev`) then `PUT`. Reuse the exact `CouchHttp`/`CouchResponse` types from `couch-http.ts` (str-ops style).
 
 ```ts
 import type { PendingApproval } from "../types.js";
