@@ -9156,6 +9156,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
+    // Suppress wakeups where the requesting agent is the same agent being woken
+    // via an automation event. These are self-triggered events (e.g. agent posts
+    // a comment → comment wake fires back to the same agent). Route-level checks
+    // handle the common case; this is belt-and-suspenders for execution-stage and
+    // other paths that lack a per-caller self-check.
+    if (
+      opts.requestedByActorType === "agent" &&
+      opts.requestedByActorId === agentId &&
+      source === "automation"
+    ) {
+      await writeSkippedRequest("self_event_suppression");
+      return null;
+    }
+
     if (issueId) {
       // Mention-triggered wakes can request input from another agent, but they must
       // still respect the issue execution lock so a second agent cannot start on the
@@ -9590,6 +9604,54 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES])))
       .orderBy(desc(heartbeatRuns.createdAt));
 
+    // Dedup: if this wake carries a comment ID that an active run already has in
+    // its context, the comment is already queued to be processed — coalesce into
+    // that run instead of spawning a follower. This stops the cascade where each
+    // comment the agent posts generates a new wakeup that bypasses the same-scope
+    // running-run coalesce gate via shouldQueueFollowupForCommentWake.
+    // The check and update run inside a transaction with FOR UPDATE so two concurrent
+    // wakeups carrying the same wakeCommentId cannot both fall through to enqueue.
+    if (wakeCommentId) {
+      const runWithSameComment = activeRuns.find((run) => {
+        const ctx = parseObject(run.contextSnapshot);
+        return extractWakeCommentIds(ctx).includes(wakeCommentId) || readNonEmptyString(ctx.wakeCommentId) === wakeCommentId;
+      });
+      if (runWithSameComment) {
+        const coalesced = await db.transaction(async (tx) => {
+          await tx.execute(
+            sql`select id from heartbeat_runs where id = ${runWithSameComment.id} for update`,
+          );
+          const [current] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runWithSameComment.id));
+          if (!current || !EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.includes(current.status as typeof EXECUTION_PATH_HEARTBEAT_RUN_STATUSES[number])) return null;
+          const mergedContextSnapshot = mergeCoalescedContextSnapshot(
+            current.contextSnapshot,
+            enrichedContextSnapshot,
+          );
+          await tx
+            .update(heartbeatRuns)
+            .set({ contextSnapshot: mergedContextSnapshot, updatedAt: new Date() })
+            .where(eq(heartbeatRuns.id, current.id));
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason,
+            payload,
+            status: "coalesced",
+            coalescedCount: 1,
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            runId: current.id,
+            finishedAt: new Date(),
+          });
+          return current;
+        });
+        if (coalesced) return coalesced;
+      }
+    }
+
     const sameScopeQueuedRun = activeRuns.find(
       (candidate) => candidate.status === "queued" && isSameTaskScope(runTaskKey(candidate), taskKey),
     );
@@ -9799,7 +9861,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return wakeupIds.length;
   }
 
-  async function cancelRunInternal(runId: string, reason = "Cancelled by control plane") {
+  async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", opts: { userInitiated?: boolean } = {}) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
     if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
@@ -9849,6 +9911,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     runningProcesses.delete(run.id);
     await finalizeAgentStatus(run.agentId, "cancelled");
+
+    if (opts.userInitiated) {
+      // Drain any queued timer-sourced runs so they don't immediately promote
+      // and re-start the agent. Non-timer queued runs (e.g. comment wakeups)
+      // are left intact and will be picked up by startNextQueuedRunForAgent below.
+      const queuedTimerRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.agentId, run.agentId),
+          eq(heartbeatRuns.status, "queued"),
+          eq(heartbeatRuns.invocationSource, "timer"),
+        ));
+      for (const timerRun of queuedTimerRuns) {
+        const cancelledTimerRun = await setRunStatus(timerRun.id, "cancelled", {
+          finishedAt: new Date(),
+          error: "Cancelled: user cancelled the active run",
+          errorCode: "cancelled",
+        });
+        await setWakeupStatus(timerRun.wakeupRequestId, "cancelled", {
+          finishedAt: new Date(),
+          error: "Cancelled: user cancelled the active run",
+        });
+        if (cancelledTimerRun) {
+          await appendRunEvent(cancelledTimerRun, 1, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message: "run cancelled",
+          });
+        }
+      }
+    }
+
     await startNextQueuedRunForAgent(run.agentId);
     return cancelled;
   }
@@ -9925,6 +10021,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     await cancelPendingWakeupsForBudgetScope(scope);
+  }
+
+  async function countIssueAvailabilityForTimerAgent(agentId: string, companyId: string, agentNameKey: string) {
+    const assignedRows = await db
+      .select({ id: issues.id, executionAgentNameKey: issues.executionAgentNameKey })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        eq(issues.assigneeAgentId, agentId),
+        sql`${issues.status} not in ('done', 'cancelled')`,
+      ));
+
+    if (assignedRows.length === 0) return { totalAssigned: 0, available: 0 };
+
+    const available = assignedRows.filter(
+      (row) => row.executionAgentNameKey === null || row.executionAgentNameKey === agentNameKey,
+    ).length;
+
+    return { totalAssigned: assignedRows.length, available };
   }
 
   return {
@@ -10210,6 +10325,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
+        // If the agent has assigned issues but ALL of them are currently locked by
+        // another execution, skip this tick — there is no issue work for it to do
+        // and the run would immediately hit 409 on every checkout attempt.
+        // Pure-task agents (zero assigned issues) are unaffected: totalAssigned === 0
+        // falls through to the normal enqueue path.
+        const agentNameKey = normalizeAgentNameKey(agent.name);
+        if (agentNameKey) {
+          const issueAvailability = await countIssueAvailabilityForTimerAgent(agent.id, agent.companyId, agentNameKey);
+          if (issueAvailability.totalAssigned > 0 && issueAvailability.available === 0) {
+            logger.debug(
+              { agentId: agent.id, totalAssigned: issueAvailability.totalAssigned },
+              "timer tick skipped: agent has assigned issues, all owned by other executions",
+            );
+            skipped += 1;
+            continue;
+          }
+        }
+
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
           triggerDetail: "system",
@@ -10235,7 +10368,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     },
 
-    cancelRun: (runId: string) => cancelRunInternal(runId),
+    cancelRun: (runId: string, opts?: { userInitiated?: boolean }) => cancelRunInternal(runId, undefined, opts),
 
     cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
 

@@ -3206,7 +3206,7 @@ export function agentRoutes(
     if (existing) {
       assertCompanyAccess(req, existing.companyId);
     }
-    const run = await heartbeat.cancelRun(runId);
+    const run = await heartbeat.cancelRun(runId, { userInitiated: true });
 
     if (run) {
       await logActivity(db, {
