@@ -39,6 +39,12 @@ export {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  DEFAULT_STRANDED_BLOCKED_CEO_PARENT_THRESHOLD_MINUTES,
+  MIN_STRANDED_BLOCKED_CEO_PARENT_THRESHOLD_MINUTES,
+  MAX_STRANDED_BLOCKED_CEO_PARENT_THRESHOLD_MINUTES,
+  DEFAULT_CEO_BLOCKED_SWEEP_INTERVAL_MINUTES,
+  MIN_CEO_BLOCKED_SWEEP_INTERVAL_MINUTES,
+  MAX_CEO_BLOCKED_SWEEP_INTERVAL_MINUTES,
 } from "./instance.js";
 export type {
   CompanySkillSourceType,
@@ -225,6 +231,8 @@ export type {
   IssueCommentMetadataRunLinkRow,
   IssueCommentPresentation,
   IssueThreadInteractionActorFields,
+  IssueThreadInteractionDecisionClass,
+  IssueThreadInteractionBoardNotification,
   SuggestedTaskDraft,
   SuggestTasksPayload,
   SuggestTasksResultCreatedTask,

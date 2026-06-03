@@ -1,6 +1,9 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
+export const COMPANY_TRUST_LEVELS = ["standard", "elevated", "restricted"] as const;
+export type CompanyTrustLevel = (typeof COMPANY_TRUST_LEVELS)[number];
+
 export const DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const MAX_COMPANY_ATTACHMENT_MAX_BYTES = 1024 * 1024 * 1024;
 
@@ -135,6 +138,13 @@ export const ISSUE_STATUSES = [
 ] as const;
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
 
+export const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
+export type TerminalIssueStatus = (typeof TERMINAL_ISSUE_STATUSES)[number];
+
+export function isTerminalIssueStatus(status: string | null | undefined): status is TerminalIssueStatus {
+  return status === "done" || status === "cancelled";
+}
+
 export const INBOX_MINE_ISSUE_STATUSES = [
   "backlog",
   "todo",
@@ -214,6 +224,8 @@ export type PluginIssueOriginKind = `plugin:${string}`;
 export type IssueOriginKind = BuiltInIssueOriginKind | PluginIssueOriginKind;
 export const ISSUE_SURFACE_VISIBILITIES = ["default", "plugin_operation"] as const;
 export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number];
+
+export const AUDIT_SINK_LABEL_NAME = "audit-sink";
 
 export const ISSUE_RECOVERY_ACTION_KINDS = [
   "missing_disposition",

@@ -532,7 +532,10 @@ export const issueCommentMetadataSchema = z.object({
 
 export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 
-export const addIssueCommentSchema = z.object({
+const ROUTED_REVIEWER_COMMENT_MUTATION_TYPES = ["routed_reviewer_comment", "routed_reviewer_comment.v1"] as const;
+const routedReviewerCommentMutationTypeSchema = z.enum(ROUTED_REVIEWER_COMMENT_MUTATION_TYPES);
+
+export const addIssueCommentObjectSchema = z.object({
   body: multilineTextSchema.pipe(z.string().min(1)),
   authorType: issueCommentAuthorTypeSchema.optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),
@@ -540,9 +543,47 @@ export const addIssueCommentSchema = z.object({
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  mutationType: routedReviewerCommentMutationTypeSchema.optional(),
+  routedReviewerOf: z.string().trim().min(1).max(128).optional(),
+  routingEvidenceLink: z.string().trim().min(1).max(512).optional(),
+  routingMetadata: z.record(z.unknown()).optional(),
+});
+
+export const addIssueCommentSchema = addIssueCommentObjectSchema.superRefine((value, ctx) => {
+  const hasRoutingAuditFields = value.routedReviewerOf !== undefined || value.routingEvidenceLink !== undefined;
+  if (!value.mutationType) {
+    if (hasRoutingAuditFields) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["mutationType"], message: "mutationType is required when routedReviewerOf or routingEvidenceLink is provided" });
+    return;
+  }
+  if (!value.routedReviewerOf) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routedReviewerOf"], message: "routedReviewerOf is required for routed reviewer comments" });
+  if (!value.routingEvidenceLink) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routingEvidenceLink"], message: "routingEvidenceLink is required for routed reviewer comments" });
 });
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
+
+export const issueThreadInteractionDecisionClassSchema = z.enum([
+  "agent_actionable",
+  "ceo_actionable",
+  "human_only",
+  "external_wait",
+]);
+
+export const issueThreadInteractionBoardNotificationSafetyTierSchema = z.enum([
+  "production_deploy",
+  "credentials",
+  "rbac",
+  "network",
+  "legal",
+]);
+
+export const issueThreadInteractionBoardNotificationSchema = z.object({
+  platform: z.literal("telegram").optional().default("telegram"),
+  channelName: z.string().trim().min(1).max(160),
+  target: z.string().trim().min(1).max(240).nullable().optional(),
+  required: z.boolean().optional().default(false),
+  messageMarkdown: z.string().trim().max(4000).nullable().optional(),
+  safetyTier: issueThreadInteractionBoardNotificationSafetyTierSchema.nullable().optional(),
+});
 
 export const issueThreadInteractionStatusSchema = z.enum(ISSUE_THREAD_INTERACTION_STATUSES);
 export const issueThreadInteractionKindSchema = z.enum(ISSUE_THREAD_INTERACTION_KINDS);
