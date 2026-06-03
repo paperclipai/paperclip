@@ -371,6 +371,17 @@ export type {
   UserCompanyAccessResponse,
 } from "./access.js";
 export type { QuotaWindow, ProviderQuotaResult } from "./quota.js";
+export {
+  POOL_ACCOUNT_TYPE,
+} from "./account-pool.js";
+export type {
+  RotationReason,
+  PoolAccount,
+  AccountWithHealth,
+  PoolState,
+  AccountPoolListResponse,
+  AddPoolAccountRequest,
+} from "./account-pool.js";
 export type {
   CompanyPortabilityInclude,
   CompanyPortabilityEnvInput,

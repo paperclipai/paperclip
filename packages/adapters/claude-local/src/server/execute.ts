@@ -55,7 +55,7 @@ import {
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
 } from "./parse.js";
-import { prepareClaudeConfigSeed } from "./claude-config.js";
+import { prepareClaudeConfigSeed, type PoolAccountSeedInput } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
@@ -96,6 +96,20 @@ export function claudeSessionCwdMatchesExecutionTarget(input: {
 }): boolean {
   if (input.executionTargetIsRemote || input.runtimeSessionCwd.length === 0) return true;
   return path.resolve(input.runtimeSessionCwd) === path.resolve(input.effectiveExecutionCwd);
+}
+
+/**
+ * Read the active pooled account (if any) off the runtime config. Heartbeat
+ * attaches `config.paperclipPoolAccount = { accountId, credentialsJson }` after
+ * reading account_pool_state + decrypting the secret. Returns null when no pool
+ * account is active so behavior is identical to a non-pooled company.
+ */
+function parsePoolAccountSeed(value: unknown): PoolAccountSeedInput | null {
+  const record = parseObject(value);
+  const accountId = asString(record.accountId, "").trim();
+  const credentialsJson = asString(record.credentialsJson, "");
+  if (!accountId || credentialsJson.trim().length === 0) return null;
+  return { accountId, credentialsJson };
 }
 
 function buildLoginResult(input: {
@@ -378,6 +392,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const configEnv = parseObject(config.env);
+  // Account Pool & Rotation (Slice 3): the active pooled account, if any, is
+  // resolved + decrypted server-side and threaded down on the runtime config.
+  // We pass it to prepareClaudeConfigSeed so the seeded `.credentials.json`
+  // comes from that account — NOT via a CLAUDE_CONFIG_DIR override (Spec D4).
+  const poolAccountSeed = parsePoolAccountSeed(config.paperclipPoolAccount);
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
   const workspaceSource = asString(workspaceContext.source, "");
@@ -466,7 +485,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     adapterExecutionTargetUsesManagedHome(executionTarget) &&
     !hasExplicitClaudeConfigDir;
   const claudeConfigSeedDir = useManagedRemoteClaudeConfig
-    ? await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
+    ? await prepareClaudeConfigSeed(process.env, onLog, agent.companyId, poolAccountSeed)
     : null;
   const preparedExecutionTargetRuntime = executionTargetIsRemote
     ? await (async () => {

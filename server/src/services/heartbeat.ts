@@ -22,12 +22,14 @@ import {
   type RunLivenessState,
 } from "@paperclipai/shared";
 import {
+  accountPoolState,
   agents,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
   activityLog,
   approvals,
+  companySecrets,
   companySkills as companySkillsTable,
   documentAnnotationComments,
   documentAnnotationThreads,
@@ -64,6 +66,7 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
+import { POOL_ACCOUNT_TYPE } from "@paperclipai/shared/types/account-pool";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
@@ -333,6 +336,64 @@ type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
   "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
 >;
+
+/**
+ * Account Pool & Rotation (Slice 3 — credential injection).
+ *
+ * Read account_pool_state for the company; if a pooled account is currently
+ * active, decrypt its `.credentials.json` blob so it can be threaded down to the
+ * claude-local adapter (config.paperclipPoolAccount) and used as the seed source
+ * inside prepareClaudeConfigSeed.
+ *
+ * Spec D4: we never override env.CLAUDE_CONFIG_DIR from here — we only resolve
+ * WHICH account's credentials to seed. Backward-compat: returns null when no
+ * pool is configured / no active account, so seeding falls back to ~/.claude.
+ */
+type PoolAccountSeed = { accountId: string; credentialsJson: string };
+
+async function resolveActivePoolAccountSeed(input: {
+  db: Pick<Db, "select">;
+  secretsSvc: Pick<ReturnType<typeof secretService>, "resolveSecretValue">;
+  companyId: string;
+}): Promise<PoolAccountSeed | null> {
+  const stateRow = await input.db
+    .select({ activeAccountId: accountPoolState.activeAccountId })
+    .from(accountPoolState)
+    .where(eq(accountPoolState.companyId, input.companyId))
+    .then((rows) => rows[0] ?? null);
+  const activeAccountId = stateRow?.activeAccountId ?? null;
+  if (!activeAccountId) return null;
+
+  // Confirm the active secret is actually a pool account in this company.
+  const secretRow = await input.db
+    .select({
+      id: companySecrets.id,
+      companyId: companySecrets.companyId,
+      status: companySecrets.status,
+      providerMetadata: companySecrets.providerMetadata,
+    })
+    .from(companySecrets)
+    .where(eq(companySecrets.id, activeAccountId))
+    .then((rows) => rows[0] ?? null);
+  if (
+    !secretRow ||
+    secretRow.companyId !== input.companyId ||
+    secretRow.status !== "active" ||
+    secretRow.providerMetadata?.poolType !== POOL_ACCOUNT_TYPE
+  ) {
+    return null;
+  }
+
+  const credentialsJson = await input.secretsSvc.resolveSecretValue(
+    input.companyId,
+    activeAccountId,
+    "latest",
+  );
+  if (typeof credentialsJson !== "string" || credentialsJson.trim().length === 0) {
+    return null;
+  }
+  return { accountId: activeAccountId, credentialsJson };
+}
 
 function isPaperclipRuntimeEnvKey(key: string) {
   return key.startsWith("PAPERCLIP_");
@@ -7287,6 +7348,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
+    // Account Pool & Rotation (Slice 3): thread the active pooled account's
+    // decrypted credentials down to the claude-local adapter so it seeds the
+    // right `.credentials.json` (Spec D4 — extend the seed source, not the env).
+    if (agent.adapterType === "claude_local") {
+      try {
+        const poolAccountSeed = await resolveActivePoolAccountSeed({
+          db,
+          secretsSvc,
+          companyId: agent.companyId,
+        });
+        if (poolAccountSeed) {
+          runtimeConfig = {
+            ...runtimeConfig,
+            paperclipPoolAccount: poolAccountSeed,
+          } as typeof runtimeConfig & { paperclipPoolAccount: PoolAccountSeed };
+        }
+      } catch (err) {
+        // Non-fatal: fall back to shared ~/.claude credentials.
+        logger.warn(
+          {
+            err,
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+          },
+          "failed to resolve active pool account; falling back to shared Claude credentials",
+        );
+      }
+    }
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
       heartbeatRunId: run.id,

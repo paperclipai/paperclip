@@ -58,12 +58,14 @@ import { parseCron, validateCron } from "./cron.js";
 import { heartbeatService } from "./heartbeat.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
+import { accountPoolBalancer } from "./account-pool-balancer.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
+const ACCOUNT_POOL_BALANCER_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_ROUTINE_REVISIONS = 100;
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
@@ -482,6 +484,15 @@ export function routineService(
   const heartbeat = deps.heartbeat ?? heartbeatService(db, {
     pluginWorkerManager: deps.pluginWorkerManager,
   });
+
+  // Account Pool & Rotation — Balancer Brain (Slice 2). Registered as a
+  // recurring job that rides the existing scheduler tick (tickScheduledTriggers
+  // is already invoked every scheduler interval from index.ts). We gate it to a
+  // ~5 minute cadence rather than creating a synthetic routine row, because the
+  // balancer is an internal system job (upserts account_pool_state), not a
+  // user-defined routine that dispatches issue-creating runs.
+  const balancer = accountPoolBalancer(db, { heartbeat });
+  let lastBalancerTickAt: number | null = null;
 
   async function getRoutineById(id: string) {
     return db
@@ -2300,7 +2311,30 @@ export function routineService(
       }));
     },
 
+    // Force a balancer run regardless of cadence (manual trigger / tests /
+    // immediate rebalance after add/remove account). Returns per-company results.
+    tickAccountPoolBalancer: async () => {
+      lastBalancerTickAt = Date.now();
+      return balancer.tick();
+    },
+
     tickScheduledTriggers: async (now: Date = new Date()) => {
+      // Drive the Account Pool Balancer on its own ~5 min cadence. This rides
+      // the existing scheduler interval without a separate setInterval and
+      // without coupling to the user-routine dispatch path below.
+      const sinceLastBalancer = lastBalancerTickAt === null ? Infinity : now.getTime() - lastBalancerTickAt;
+      if (sinceLastBalancer >= ACCOUNT_POOL_BALANCER_INTERVAL_MS) {
+        lastBalancerTickAt = now.getTime();
+        try {
+          const result = await balancer.tick();
+          if (result.rotations > 0) {
+            logger.info({ ...result }, "account-pool balancer rotated accounts");
+          }
+        } catch (err) {
+          logger.error({ err }, "account-pool balancer tick failed");
+        }
+      }
+
       const due = await db
         .select({
           trigger: routineTriggers,
