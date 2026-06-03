@@ -199,19 +199,44 @@ function createWorkerProxyHandler(
 
     try {
       const headers = forwardRequestHeaders(req.headers);
-      let body: string | undefined;
+      // Node's runtime fetch accepts string | Uint8Array bodies, but the global
+      // DOM-flavored BodyInit type (from @types/node) omits Uint8Array; cast at
+      // the fetch call site below.
+      let body: string | Uint8Array | undefined;
       if (hasRequestBody(req)) {
-        // express.json() already parsed the body; re-serialize as JSON.
-        // Every allowlisted mutating route is a JSON endpoint.
-        body = JSON.stringify(req.body ?? {});
-        headers.set("content-type", "application/json");
+        // Forward the EXACT bytes the client sent, captured by the
+        // captureRawBody verify hook on the body parsers in app.ts. This
+        // preserves the bytes a provider signed, so downstream HMAC
+        // verification (Slack/Linear webhooks) matches. Re-serializing via
+        // JSON.stringify(req.body) corrupts the signed bytes — it drops the
+        // original form-urlencoded payload entirely (Slack interactivity) and
+        // does not reproduce non-canonical JSON byte-for-byte. The
+        // content-type is carried untouched by forwardRequestHeaders; we must
+        // NOT override it. rawBody is always present for requests with a body
+        // (the express.raw catch-all in app.ts captures every content-type);
+        // the JSON.stringify fallback is a defensive guard that should not
+        // fire in practice.
+        const stashedRaw = (req as unknown as { rawBody?: Buffer }).rawBody;
+        if (stashedRaw) {
+          // Zero-copy Uint8Array view of the exact captured bytes. (Buffer is a
+          // Uint8Array subclass but is not assignable to BodyInit directly.)
+          body = new Uint8Array(
+            stashedRaw.buffer,
+            stashedRaw.byteOffset,
+            stashedRaw.byteLength,
+          );
+        } else {
+          body = JSON.stringify(req.body ?? {});
+          headers.set("content-type", "application/json");
+        }
       }
 
       const retryStartupRace = req.method === "GET" && !streaming;
       const upstream = await fetchWithStartupRetry(targetUrl, {
         method: req.method,
         headers,
-        body,
+        // Uint8Array is a valid runtime fetch body; the DOM BodyInit type omits it.
+        body: body as BodyInit | undefined,
         redirect: "manual",
         signal: controller.signal,
       }, retryStartupRace);

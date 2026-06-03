@@ -74,6 +74,32 @@ function buildApp(workersUrl: string) {
   return app;
 }
 
+/**
+ * Build a test app that mirrors the PRODUCTION body-parser stack from
+ * server/src/app.ts: express.json + express.urlencoded + express.raw catch-all,
+ * each capturing the exact request bytes into req.rawBody. The proxy forwards
+ * req.rawBody verbatim, so webhook signature verification downstream sees the
+ * bytes the provider signed (Slack/Linear HMAC). Used by the raw-body-fidelity
+ * tests; the plain buildApp above keeps the legacy bare express.json() setup.
+ */
+function buildAppWithRawCapture(workersUrl: string) {
+  const captureRawBody = (
+    req: express.Request,
+    _res: express.Response,
+    buf: Buffer,
+  ) => {
+    (req as unknown as { rawBody: Buffer }).rawBody = buf;
+  };
+  const app = express();
+  app.use(express.json({ verify: captureRawBody }));
+  app.use(express.urlencoded({ extended: false, verify: captureRawBody }));
+  app.use(express.raw({ type: "*/*", verify: captureRawBody }));
+  const router = express.Router();
+  registerWorkerTierProxyRoutes(router, workersUrl);
+  app.use("/api", router);
+  return app;
+}
+
 async function getFreePort(): Promise<number> {
   const server = createServer((_req, res) => res.end());
   return new Promise((resolve) => {
@@ -145,6 +171,33 @@ describe("registerWorkerTierProxyRoutes", () => {
       "/api/plugins/paperclip-plugin-linear/webhooks/linear-events",
     );
     expect(JSON.parse(captured?.body ?? "{}")).toEqual({ action: "update" });
+  });
+
+  it("forwards a form-urlencoded webhook body verbatim with its original content-type (Slack interactivity)", async () => {
+    let captured: CapturedRequest | undefined;
+    worker = await startWorkerStub((req) => {
+      captured = req;
+      return { status: 200, body: JSON.stringify({ ok: true }) };
+    });
+    const app = buildAppWithRawCapture(worker.url);
+
+    // Slack interactivity arrives as application/x-www-form-urlencoded with a
+    // single `payload=<urlencoded-json>` field — the exact bytes Slack signed.
+    const rawBody =
+      "payload=%7B%22type%22%3A%22block_actions%22%2C%22actions%22%3A%5B%5D%7D";
+
+    await request(app)
+      .post("/api/plugins/paperclip-plugin-slack/webhooks/slack-interactivity")
+      .set("content-type", "application/x-www-form-urlencoded")
+      .send(rawBody);
+
+    // The worker MUST receive the exact signed bytes, not "{}" (the bug:
+    // express.json skips form bodies -> req.body={} -> proxied as JSON.stringify({})).
+    expect(captured?.body).toBe(rawBody);
+    // And the original content-type MUST survive, not be forced to application/json.
+    expect(captured?.headers["content-type"]).toMatch(
+      /application\/x-www-form-urlencoded/,
+    );
   });
 
   it("forwards auth-bearing headers so the worker tier can re-authorize", async () => {

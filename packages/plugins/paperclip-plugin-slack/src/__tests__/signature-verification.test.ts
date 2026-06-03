@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "../worker.js";
 import { WEBHOOK_KEYS } from "../constants.js";
@@ -234,5 +234,111 @@ describe("Slack signature verification diagnostics", () => {
       (c: unknown[]) => c[0] === REJECT_MSG,
     );
     expect(rejectionWarns).toHaveLength(1);
+  });
+});
+
+// Slack interactivity (Block Kit button clicks) arrives as
+// application/x-www-form-urlencoded: rawBody = `payload=<urlencoded-json>`,
+// parsedBody = { payload: "<json>" }. The API->worker proxy used to
+// JSON.stringify(req.body), so the worker verified HMAC over "{}" and the
+// signature NEVER matched -> button dead. These tests prove the interactivity
+// endpoint verifies the signature over the real rawBody (so the fix's
+// raw-byte forwarding makes buttons work) and rejects a tampered body.
+describe("Slack interactivity signature verification", () => {
+  // A real block_actions payload (approve button). The urlencoded form body is
+  // the exact bytes Slack signs.
+  const INTERACTIVITY_JSON = JSON.stringify({
+    type: "block_actions",
+    user: { id: "U_TEST" },
+    response_url: "https://hooks.slack.test/r",
+    actions: [{ action_id: "approval_approve", value: "appr-1" }],
+  });
+  const INTERACTIVITY_RAW = `payload=${encodeURIComponent(INTERACTIVITY_JSON)}`;
+
+  async function fireInteractivity(
+    ctx: unknown,
+    headers: Record<string, string>,
+    rawBody: string,
+  ) {
+    await plugin.definition.onWebhook?.({
+      endpointKey: WEBHOOK_KEYS.interactivity,
+      headers,
+      rawBody,
+      // What express.urlencoded produces from the form body.
+      parsedBody: { payload: INTERACTIVITY_JSON },
+      requestId: "req-interactivity-1",
+    } as any);
+  }
+
+  it("accepts a correctly-signed interactivity payload (no rejection over the real rawBody)", async () => {
+    const { ctx } = makeContext({ slackSigningSecretRef: SIGNING_REF });
+    await plugin.definition.setup?.(ctx as any);
+
+    const ts = nowTs();
+    await fireInteractivity(ctx, {
+      "x-slack-request-timestamp": ts,
+      "x-slack-signature": sign(SIGNING_SECRET, ts, INTERACTIVITY_RAW),
+    }, INTERACTIVITY_RAW);
+
+    // Signature verifies over the form bytes — the previously-dead path is live.
+    expect(rejectionCall(ctx)).toBeUndefined();
+  });
+
+  it("rejects an interactivity payload signed over '{}' instead of the real form body (the bug)", async () => {
+    const { ctx } = makeContext({ slackSigningSecretRef: SIGNING_REF });
+    await plugin.definition.setup?.(ctx as any);
+
+    const ts = nowTs();
+    // Simulate the OLD proxy behavior: Slack signed the form body, but the
+    // worker received "{}". Sign over the real body, deliver rawBody="{}".
+    await fireInteractivity(ctx, {
+      "x-slack-request-timestamp": ts,
+      "x-slack-signature": sign(SIGNING_SECRET, ts, INTERACTIVITY_RAW),
+    }, "{}");
+
+    const call = rejectionCall(ctx);
+    expect(call).toBeDefined();
+    expect(call![1].reason).toBe("hmac_mismatch");
+    // Ground-truth from prod: the worker saw the literal 2-byte "{}" —
+    // sha256("{}").slice(0,12). This is the exact bodyFp logged in the incident.
+    expect(call![1].bodyFp).toBe(
+      createHash("sha256").update("{}").digest("hex").slice(0, 12),
+    );
+  });
+});
+
+// Proves the corruption MECHANISM on a concrete JSON payload: a Slack JSON body
+// whose bytes are NOT reproduced by JSON.stringify(JSON.parse(x)) (here, a
+// \u-escaped sequence) verifies over the original rawBody but would fail if the
+// proxy re-serialized it. This is why forwarding raw bytes (not req.body) is
+// required for the rich-message event class too — not just interactivity.
+describe("Slack rich-JSON event signature over original bytes", () => {
+  it("the re-serialized body differs from the original \\u-escaped bytes", () => {
+    // A realistic rich Slack payload fragment with a \u escape. Slack delivers
+    // these bytes verbatim; JSON.parse + JSON.stringify does NOT reproduce them.
+    const original = '{"text":"caf\\u00e9 \\u2014 done"}';
+    const reSerialized = JSON.stringify(JSON.parse(original));
+    expect(reSerialized).not.toBe(original);
+  });
+
+  it("verifies a \\u-escaped JSON event over its original rawBody", async () => {
+    const { ctx } = makeContext({ slackSigningSecretRef: SIGNING_REF });
+    await plugin.definition.setup?.(ctx as any);
+
+    const ts = nowTs();
+    const rawBody = '{"type":"event_callback","event":{"text":"caf\\u00e9"}}';
+    await plugin.definition.onWebhook?.({
+      endpointKey: WEBHOOK_KEYS.slackEvents,
+      headers: {
+        "x-slack-request-timestamp": ts,
+        "x-slack-signature": sign(SIGNING_SECRET, ts, rawBody),
+      },
+      rawBody,
+      parsedBody: JSON.parse(rawBody),
+      requestId: "req-rich-1",
+    } as any);
+
+    // Forwarded raw bytes verify; a re-serialized body would have failed.
+    expect(rejectionCall(ctx)).toBeUndefined();
   });
 });

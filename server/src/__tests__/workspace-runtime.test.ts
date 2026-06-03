@@ -74,6 +74,13 @@ async function runPnpm(cwd: string, args: string[]) {
 async function createTempRepo(defaultBranch = "main") {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-repo-"));
   await runGit(repoRoot, ["init"]);
+  // Make the repo hermetic: neutralize any global core.hooksPath (e.g. a
+  // developer's Git LFS hooks). Otherwise `git worktree add`/`checkout` runs
+  // the inherited global post-checkout hook, which shells out to git-lfs — and
+  // the provision-sandbox tests run git under a minimal PATH that excludes
+  // git-lfs, so the hook fails and the worktree add exits non-zero. Pointing
+  // core.hooksPath at an empty in-repo dir disables all inherited hooks.
+  await runGit(repoRoot, ["config", "core.hooksPath", path.join(repoRoot, ".git", "no-hooks")]);
   await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
   await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
   await fs.writeFile(path.join(repoRoot, "README.md"), "hello\n", "utf8");
@@ -2113,6 +2120,12 @@ describe("realizeExecutionWorkspace", () => {
 
   it("auto-detects the default branch via symbolic-ref when origin/HEAD is set", async () => {
     const repoRoot = await createTempRepo("main");
+
+    // Create a `master` branch alongside `main` so the remote advertises both.
+    // (Modern git defaults the initial branch to `main`, so `master` does not
+    // exist unless we make it; this test needs origin/master to assert the code
+    // prefers it over the origin/HEAD symbolic-ref → main.)
+    await runGit(repoRoot, ["branch", "master", "main"]);
 
     const bareRemote = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-bare-symref-"));
     await runGit(bareRemote, ["init", "--bare"]);
