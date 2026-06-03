@@ -25,6 +25,7 @@ import {
   wakeAgentSchema,
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
+  AGENT_DEFAULT_MAX_TURNS_PER_RUN,
 } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
@@ -987,6 +988,16 @@ export function agentRoutes(
     return { ...adapterConfig, devicePrivateKeyPem: generateEd25519PrivateKeyPem() };
   }
 
+  // Local coding adapters that honor a per-run turn limit (--max-turns or equivalent).
+  const LOCAL_CODING_ADAPTER_TYPES = new Set([
+    "claude_local",
+    "codex_local",
+    "gemini_local",
+    "opencode_local",
+    "acpx_local",
+    "cursor",
+  ]);
+
   function applyCreateDefaultsByAdapterType(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
@@ -1029,6 +1040,15 @@ export function agentRoutes(
     }
     if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_CURSOR_LOCAL_MODEL;
+    }
+    // Hire-default: bound maxTurnsPerRun so new agents never start NULL/unbounded
+    // (WEI-209 point 3 / WEI-210). Coders are documented at 500 and can be raised
+    // per-agent; the floor default keeps every new local-adapter hire bounded.
+    if (LOCAL_CODING_ADAPTER_TYPES.has(adapterType ?? "")) {
+      const current = typeof next.maxTurnsPerRun === "number" ? next.maxTurnsPerRun : Number(next.maxTurnsPerRun);
+      if (!Number.isFinite(current) || current <= 0) {
+        next.maxTurnsPerRun = AGENT_DEFAULT_MAX_TURNS_PER_RUN;
+      }
     }
     return ensureGatewayDeviceKey(adapterType, next);
   }
