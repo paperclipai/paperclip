@@ -422,7 +422,7 @@ function sameManifestExceptGeneratedAt(a: CatalogManifest, b: CatalogManifest) {
 }
 
 function sha256(contents: Buffer) {
-  return createHash("sha256").update(contents).digest("hex");
+  return createHash("sha256").update(contents as unknown as Uint8Array).digest("hex");
 }
 
 function relativePackagePath(packageDir: string, absolutePath: string) {
