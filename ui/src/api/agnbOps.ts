@@ -28,24 +28,26 @@ export interface EntityAuditRow { id: number; entity_type: string; entity_id: st
 export interface PendingAction { id: string; action_type: string; payload: { lead_name?: string; lead_email?: string; reason?: string }; bucket_id: string | null; proposed_by: string; proposed_at: string }
 export interface Notification { id: string; kind: string; severity: string; title: string; body: string | null; link: string | null; created_at: string; pushed_channels: string[] }
 
-/** Sync jobs — label + the AGNB POST path (relative to /api/agnb). */
+/**
+ * Sync jobs — label + the AGNB POST path (relative to /api/agnb).
+ *
+ * The Paperclip scheduler now runs these automatically. The redundant
+ * trigger buttons whose work the scheduler fully owns have been removed:
+ * rocket/sync-all, events/drain, alerts/check, maintenance/retention,
+ * maintenance/snapshot-buckets, inbound/sov/run. The standalone AGNB app is
+ * decommissioned, so those cross-origin POSTs were dead.
+ */
 export const SYNC_JOBS: Array<{ key: string; label: string; path: string }> = [
-  { key: "sync-all", label: "Sync Rocket mirror", path: "/rocket/sync-all" },
   { key: "sync-inbox", label: "Sync inbox", path: "/rocket/sync-inbox?max_campaigns=5&per=20" },
-  { key: "drain", label: "Drain events", path: "/events/drain" },
   { key: "rematch", label: "Rematch attribution", path: "/attribution/rematch" },
   { key: "summary", label: "Regenerate digest", path: "/summary" },
   { key: "mentions", label: "Mentions sync", path: "/inbound/mentions/sync" },
-  { key: "sov", label: "SoV (Gemini)", path: "/inbound/sov/run" },
   { key: "pipeline", label: "HubSpot pipeline", path: "/inbound/pipeline/sync" },
   { key: "demos", label: "Demos (Cal)", path: "/inbound/demos/sync" },
   { key: "funnel", label: "PostHog funnel", path: "/inbound/funnel/sync" },
   { key: "bofu", label: "BoFu positions", path: "/inbound/bofu/sync" },
   { key: "backlinks", label: "Backlinks", path: "/inbound/backlinks/sync" },
   { key: "reviews", label: "Reviews", path: "/inbound/reviews/sync" },
-  { key: "alerts", label: "Alerts check", path: "/alerts/check" },
-  { key: "retention", label: "Retention purge", path: "/maintenance/retention" },
-  { key: "snapshot", label: "Snapshot buckets", path: "/maintenance/snapshot-buckets" },
 ];
 
 export const opsApi = {

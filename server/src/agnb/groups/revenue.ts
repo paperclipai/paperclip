@@ -9,8 +9,9 @@ import { rows, pgTextArray } from "../helpers.js";
  * Ported from agnb app/all-gas-no-brakes/api/agnb/{attribution,crm-hygiene,
  * demos,funnel,win-loss,invoices}.
  *
- * Pure-DB GET reads only. The following stay cross-origin (Phase 5 / worker):
- *  - attribution/gemini-rematch + attribution/rematch (Gemini LLM)
+ * Pure-DB GET reads + the non-LLM attribution/rematch write. The following
+ * stay cross-origin (Phase 5 / worker):
+ *  - attribution/gemini-rematch (Gemini LLM)
  *  - invoices/create + invoices/[id]/refresh (Razorpay external API)
  *  - win-loss POST/PATCH/DELETE + win-loss/[id]/analyze (writes/LLM)
  */
@@ -191,6 +192,71 @@ export function registerRevenue(router: Router, db: Db) {
     });
   });
 
+  /**
+   * POST /api/agnb/attribution/rematch — re-run the (non-LLM) email→bucket
+   * matcher over unmatched attribution_events. Pure DB: ports
+   * matchEmailToBucket (rocket_inbox → rocket_campaigns → campaign_drafts).
+   * The Gemini variant (/attribution/gemini-rematch) stays cross-origin (LLM).
+   * Shape: { ok, scanned, matched }.
+   */
+  router.post("/agnb/attribution/rematch", async (req, res) => {
+    assertBoardOrgAccess(req);
+
+    const eventsR = await db.execute(sql`
+      SELECT id, email
+      FROM agnb.attribution_events
+      WHERE match_method = 'unmatched' AND email IS NOT NULL
+      LIMIT 500
+    `);
+    const events = rows<{ id: string; email: string | null }>(eventsR);
+
+    let matched = 0;
+    for (const ev of events) {
+      if (!ev.email) continue;
+      const normalized = ev.email.trim().toLowerCase();
+      if (!normalized) continue;
+
+      // email → latest rocket_inbox thread (by lead_email)
+      const threadR = await db.execute(sql`
+        SELECT thread_id, campaign_name
+        FROM agnb.rocket_inbox
+        WHERE lead_email ILIKE ${normalized}
+        ORDER BY last_message_at DESC NULLS LAST
+        LIMIT 1
+      `);
+      const thread = rows<{ thread_id: string | null; campaign_name: string | null }>(threadR)[0];
+      if (!thread || !thread.campaign_name) continue;
+
+      // campaign_name → rocket_campaigns.id
+      const campaignR = await db.execute(sql`
+        SELECT id FROM agnb.rocket_campaigns WHERE name = ${thread.campaign_name} LIMIT 1
+      `);
+      const campaign = rows<{ id: string }>(campaignR)[0];
+      if (!campaign) continue;
+
+      // campaign id → bucket via the draft that finalized into it
+      const draftR = await db.execute(sql`
+        SELECT bucket_id FROM agnb.campaign_drafts
+        WHERE rocket_campaign_id = ${campaign.id} AND bucket_id IS NOT NULL
+        LIMIT 1
+      `);
+      const draft = rows<{ bucket_id: string | null }>(draftR)[0];
+      if (!draft?.bucket_id) continue;
+
+      await db.execute(sql`
+        UPDATE agnb.attribution_events
+        SET bucket_id = ${draft.bucket_id},
+            rocket_thread_id = ${thread.thread_id},
+            rocket_campaign_id = ${campaign.id},
+            match_method = 'email_inbox'
+        WHERE id = ${ev.id}
+      `);
+      matched++;
+    }
+
+    res.json({ ok: true, scanned: events.length, matched });
+  });
+
   /** GET /api/agnb/crm-hygiene — unresolved CRM data-quality issues. */
   router.get("/agnb/crm-hygiene", async (req, res) => {
     assertBoardOrgAccess(req);
@@ -301,7 +367,7 @@ export function registerRevenue(router: Router, db: Db) {
   });
 
   // PHASE 5 (cross-origin, left in standalone AGNB app):
-  //  - POST /agnb/attribution/gemini-rematch + /agnb/attribution/rematch (Gemini LLM)
+  //  - POST /agnb/attribution/gemini-rematch (Gemini LLM)
   //  - POST /agnb/invoices/create + POST /agnb/invoices/:id/refresh (Razorpay external API)
   //  - POST/PATCH/DELETE /agnb/win-loss + POST /agnb/win-loss/:id/analyze (writes / LLM)
 }

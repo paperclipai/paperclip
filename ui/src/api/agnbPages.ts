@@ -17,6 +17,24 @@ async function ported<T>(path: string): Promise<T> {
   return res.json();
 }
 
+/** Same-origin POST variant for ported AGNB write endpoints. */
+async function portedPost<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`/api/agnb${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(errBody?.error ?? `AGNB request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 // ---- Forecast ----
 export interface ForecastRow {
   bucket_id: string | null;
@@ -197,10 +215,15 @@ export const agnbPagesApi = {
   winLossDelete: (id: string) =>
     agnb.delete<{ ok: boolean; error?: string }>(`/win-loss?id=${encodeURIComponent(id)}`),
 
-  // --- Attribution Gemini rematch ---
+  // --- Attribution Gemini rematch (LLM) — stays cross-origin (Phase 5). ---
   attributionRematch: (apply: boolean, limit = 25) =>
     agnb
       .post<{ ok: boolean; error?: string; suggestions: RematchSuggestion[]; applied?: number; note?: string }>("/attribution/gemini-rematch", { apply, limit })
+      .then((r) => unwrap(r)),
+  // Non-LLM email→bucket rematch. Ported to Paperclip server (group: revenue)
+  // — same-origin POST /api/agnb/attribution/rematch. Pure DB.
+  attributionRematchDb: () =>
+    portedPost<{ ok: boolean; error?: string; scanned: number; matched: number }>("/attribution/rematch")
       .then((r) => unwrap(r)),
 
   // --- CRM hygiene manual scan ---
