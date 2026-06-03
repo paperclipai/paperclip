@@ -52,7 +52,6 @@ import {
   AlertTriangle,
   Tag,
   Calendar,
-  Paperclip,
   FileText,
   Flag,
   Loader2,
@@ -1808,7 +1807,7 @@ export function NewIssueDialog() {
                       <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            <span className="shrink-0 text-muted-foreground inline-flex items-center justify-center text-[13px] leading-none" aria-hidden>🔥</span>
                             <span className="truncate text-sm">{file.file.name}</span>
                           </div>
                           <div className="mt-1 text-[11px] text-muted-foreground">
@@ -1924,7 +1923,7 @@ export function NewIssueDialog() {
             onClick={() => stageFileInputRef.current?.click()}
             disabled={createIssue.isPending}
           >
-            <Paperclip className="h-3 w-3" />
+            <span className="inline-flex items-center justify-center text-[11px] leading-none" aria-hidden>🔥</span>
             Upload
           </button>
 

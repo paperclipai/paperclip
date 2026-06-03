@@ -130,7 +130,6 @@ import {
   MoreHorizontal,
   MoreVertical,
   PauseCircle,
-  Paperclip,
   PlayCircle,
   Plus,
   Repeat,
@@ -3216,7 +3215,7 @@ export function IssueDetail() {
           attachmentDragActive && "border-primary bg-primary/5",
         )}
       >
-        <Paperclip className="h-3.5 w-3.5 mr-1.5" />
+        <span className="mr-1.5 inline-flex items-center justify-center text-[13px] leading-none" aria-hidden>🔥</span>
         {uploadAttachment.isPending || importMarkdownDocument.isPending ? "Uploading..." : (
           <>
             <span className="hidden sm:inline">Upload attachment</span>

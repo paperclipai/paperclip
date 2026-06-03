@@ -79,7 +79,7 @@ import {
   HelpCircle,
   Link2,
   ExternalLink,
-  Paperclip,
+  Flame,
   Pencil,
   Plus,
   Copy,
@@ -197,7 +197,7 @@ function sourceMeta(sourceBadge: CompanySkillSourceBadge, sourceLabel: string | 
     case "local":
       return { icon: Folder, label: sourceLabel ?? "Folder", managedLabel: "Folder managed" };
     case "paperclip":
-      return { icon: Paperclip, label: sourceLabel ?? "Paperclip", managedLabel: "Paperclip managed" };
+      return { icon: Flame, label: sourceLabel ?? "All Gas No Brakes", managedLabel: "All Gas No Brakes managed" };
     default:
       return { icon: Boxes, label: sourceLabel ?? "Catalog", managedLabel: "Catalog managed" };
   }

@@ -10,7 +10,7 @@ import type {
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowRight, Check, Copy, Paperclip } from "lucide-react";
+import { ArrowRight, Check, Copy } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
@@ -1031,7 +1031,7 @@ export function CommentThread({
                   disabled={attaching}
                   title="Attach image"
                 >
-                  <Paperclip className="h-4 w-4" />
+                  <span className="inline-flex items-center justify-center text-[15px] leading-none" aria-hidden>🔥</span>
                 </Button>
               </div>
             )}
