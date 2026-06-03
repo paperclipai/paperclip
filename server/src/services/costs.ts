@@ -52,10 +52,14 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
   return {
     createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
+      // Legacy cents-denominated writer: an agent is required here. Source-less
+      // (agent-less) charges go through POST /cost/charge (§2.1), not this path.
+      if (!data.agentId) throw unprocessable("agentId is required for cost events on this endpoint");
+      const agentId = data.agentId;
       const agent = await db
         .select()
         .from(agents)
-        .where(eq(agents.id, data.agentId))
+        .where(eq(agents.id, agentId))
         .then((rows) => rows[0] ?? null);
 
       if (!agent) throw notFound("Agent not found");
@@ -76,7 +80,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .then((rows) => rows[0]);
 
       const [agentMonthSpend, companyMonthSpend] = await Promise.all([
-        getMonthlySpendTotal(db, { companyId, agentId: event.agentId }),
+        getMonthlySpendTotal(db, { companyId, agentId }),
         getMonthlySpendTotal(db, { companyId }),
       ]);
 
@@ -86,7 +90,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           spentMonthlyCents: agentMonthSpend,
           updatedAt: new Date(),
         })
-        .where(eq(agents.id, event.agentId));
+        .where(eq(agents.id, agentId));
 
       await db
         .update(companies)

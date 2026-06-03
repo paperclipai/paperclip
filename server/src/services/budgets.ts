@@ -7,6 +7,8 @@ import {
   budgetPolicies,
   companies,
   costEvents,
+  issueApprovals,
+  issues,
   projects,
 } from "@paperclipai/db";
 import type {
@@ -23,6 +25,8 @@ import type {
 } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+import { issueService } from "./issues.js";
+import { loadEnforcementConfig, type EnforcementConfig } from "./budgeting-config.js";
 
 type ScopeRecord = {
   companyId: string;
@@ -210,6 +214,9 @@ async function markApprovalStatus(
 }
 
 export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
+  const enforcement = loadEnforcementConfig();
+  const issuesSvc = issueService(db);
+
   async function pauseScopeForBudget(policy: PolicyRow) {
     const now = new Date();
     if (policy.scopeType === "agent") {
@@ -412,6 +419,227 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       .then((rows) => rows[0] ?? null);
   }
 
+  // ELI-77: idempotent per (scope, scopeKey, window) budget gate issue + approval wiring.
+  // Creates the first-class blocker issue on first hard enforcement for the scope/window.
+  // Body follows §10.1 template. Links request_board_approval so grant => blockers_resolved wakes.
+  function makeGateFingerprint(scopeType: string, scopeId: string, windowKind: string): string {
+    return `budget-gate:${scopeType}:${scopeId}:${windowKind}`;
+  }
+
+  function buildBudgetGateBody(params: {
+    scope: string;
+    scopeKey: string;
+    window: string;
+    spendObservedMicros?: number;
+    limitMicros?: number;
+    action?: string;
+    windowRolloverAt?: string;
+    approvalId?: string | null;
+    companyPrefix?: string;
+  }): string {
+    const scope = params.scope;
+    const key = params.scopeKey;
+    const win = params.window;
+    const observed = params.spendObservedMicros ?? 0;
+    const limit = params.limitMicros ?? 0;
+    const pct = limit > 0 ? Math.min(100, Math.round((observed / limit) * 100)) : 0;
+    const dollars = (n: number) => (n / 1_000_000).toFixed(2);
+    const action = params.action ?? "hard_stop";
+    const rollover = params.windowRolloverAt ?? "window end";
+    const prefix = params.companyPrefix ?? "ELI";
+    const approvalLink = params.approvalId
+      ? `[Approval](/${prefix}/approvals/${params.approvalId}) (board)`
+      : "Approval (pending creation)";
+    return `## Budget gate: ${scope} ${key} (${win})
+
+- Spend: $${dollars(observed)} / $${dollars(limit)} (${pct}%)
+- Cap action: ${action} (until window rollover at ${rollover} or cap raise)
+- Top contributors (last 24h):
+  - (computed at enforcement time; see cost events for details)
+- Unblock paths:
+  - ${approvalLink}
+  - Raise cap (manager)
+  - Wait for rollover
+`;
+  }
+
+  async function findOpenBudgetGate(
+    companyId: string,
+    scopeType: string,
+    scopeId: string,
+    windowKind: string,
+  ) {
+    const fp = makeGateFingerprint(scopeType, scopeId, windowKind);
+    const rows = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "budget_gate"),
+          eq(issues.originFingerprint, fp),
+          // not terminal
+          // (status not in done/cancelled/hidden is implicit for open gate)
+        ),
+      )
+      .then((r) => r.filter((i) => !["done", "cancelled"].includes(i.status) && !i.hiddenAt));
+    return rows[0] ?? null;
+  }
+
+  async function ensureBudgetGateIssue(
+    policy: PolicyRow,
+    amountObserved: number,
+    amountLimit: number,
+  ): Promise<any | null> {
+    if (!enforcement.autoCreateBudgetGateIssue) return null;
+    const fp = makeGateFingerprint(policy.scopeType, policy.scopeId, policy.windowKind as string);
+    const existing = await findOpenBudgetGate(
+      policy.companyId,
+      policy.scopeType as string,
+      policy.scopeId,
+      policy.windowKind as string,
+    );
+    if (existing) return existing;
+
+    const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
+    const scopeName = normalizeScopeName(policy.scopeType as BudgetScopeType, scope.name);
+    const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
+    const title = `Budget gate: ${policy.scopeType} ${policy.scopeId} (${policy.windowKind})`;
+    const initialBody = buildBudgetGateBody({
+      scope: policy.scopeType as string,
+      scopeKey: policy.scopeId,
+      window: policy.windowKind as string,
+      spendObservedMicros: amountObserved,
+      limitMicros: amountLimit,
+      action: "hard_stop",
+      windowRolloverAt: end.toISOString(),
+      approvalId: null,
+    });
+
+    // Create via service (handles numbering, identifier, audit, etc.)
+    const gate = await issuesSvc.create(policy.companyId, {
+      title,
+      description: initialBody,
+      status: "blocked",
+      priority: "high",
+      originKind: "budget_gate",
+      originFingerprint: fp,
+      billingCode: enforcement.budgetGateBillingCode,
+      // no project/parent for gate; it is a synthetic scope-level blocker
+    } as any);
+
+    // Create request_board_approval linked to the gate (per §7.2 + Paperclip approval flow)
+    const approval = await db
+      .insert(approvals)
+      .values({
+        companyId: policy.companyId,
+        type: "request_board_approval",
+        requestedByUserId: null,
+        requestedByAgentId: null,
+        status: "pending",
+        payload: {
+          title,
+          summary: `Budget hard-stop gate for ${scopeName} (${policy.windowKind}). Spend observed $${(amountObserved / 1e6).toFixed(2)} / limit $${(amountLimit / 1e6).toFixed(2)}.`,
+          recommendedAction: "Review burn, raise cap or approve one-time override, then resolve gate.",
+          risks: ["Continued spend on scope until cleared."],
+        },
+      })
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (approval && gate) {
+      await db.insert(issueApprovals).values({
+        companyId: policy.companyId,
+        issueId: gate.id,
+        approvalId: approval.id,
+        linkedByAgentId: null,
+        linkedByUserId: null,
+      });
+
+      // Re-render body with live approval link (use identifier prefix if available)
+      const prefix = (gate as any).identifier ? (gate as any).identifier.split("-")[0] : "ELI";
+      const fullBody = buildBudgetGateBody({
+        scope: policy.scopeType as string,
+        scopeKey: policy.scopeId,
+        window: policy.windowKind as string,
+        spendObservedMicros: amountObserved,
+        limitMicros: amountLimit,
+        action: "hard_stop",
+        windowRolloverAt: end.toISOString(),
+        approvalId: approval.id,
+        companyPrefix: prefix,
+      });
+      await db
+        .update(issues)
+        .set({ description: fullBody, updatedAt: new Date() })
+        .where(eq(issues.id, gate.id));
+    }
+
+    await logActivity(db, {
+      companyId: policy.companyId,
+      actorType: "system",
+      actorId: "budget_gate",
+      action: "budget.gate_created",
+      entityType: "issue",
+      entityId: gate?.id ?? null,
+      details: {
+        scopeType: policy.scopeType,
+        scopeId: policy.scopeId,
+        windowKind: policy.windowKind,
+        approvalId: approval?.id ?? null,
+      },
+    });
+
+    return gate ?? null;
+  }
+
+  async function resolveOpenBudgetGatesForPolicy(policyId: string, actorUserId: string | null) {
+    // On cap raise / resume / window clear: mark open budget_gate issues for related scopes as done
+    // so their blocked dependents get issue_blockers_resolved wakes.
+    // For simplicity, we resolve any open budget_gate whose scope matches policies under this company/policy.
+    // (A more precise impl would track gate <-> policy links; here we rely on originFingerprint containing scope.)
+    const policy = await getPolicyRow(policyId);
+    const fpPrefix = `budget-gate:${policy.scopeType}:${policy.scopeId}:`;
+    const openGates = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, policy.companyId),
+          eq(issues.originKind, "budget_gate"),
+          // rough match; in prod would store policyId or exact window on gate
+        ),
+      )
+      .then((rows) =>
+        rows.filter(
+          (i) =>
+            (i.originFingerprint ?? "").startsWith(fpPrefix) &&
+            !["done", "cancelled"].includes(i.status) &&
+            !i.hiddenAt,
+        ),
+      );
+
+    for (const g of openGates) {
+      await db
+        .update(issues)
+        .set({
+          status: "done",
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, g.id));
+      await logActivity(db, {
+        companyId: policy.companyId,
+        actorType: "system",
+        actorId: "budget_gate",
+        action: "budget.gate_resolved",
+        entityType: "issue",
+        entityId: g.id,
+        details: { reason: "policy_cleared_or_rollover" },
+      });
+    }
+  }
+
   async function resolveOpenSoftIncidents(policyId: string) {
     await db
       .update(budgetIncidents)
@@ -591,6 +819,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         if (observedAmount < amount) {
           await resumeScopeFromBudget(row);
           await resolveOpenIncidentsForPolicy(row.id, actorUserId ? "approved" : null, actorUserId);
+          await resolveOpenBudgetGatesForPolicy(row.id, actorUserId);
         } else {
           const softThreshold = Math.ceil((row.amount * row.warnPercent) / 100);
           if (row.notifyEnabled && observedAmount >= softThreshold) {
@@ -599,12 +828,14 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           if (row.hardStopEnabled && observedAmount >= row.amount) {
             await resolveOpenSoftIncidents(row.id);
             await createIncidentIfNeeded(row, "hard", observedAmount);
+            await ensureBudgetGateIssue(row, observedAmount, row.amount);
             await pauseAndCancelScopeForBudget(row);
           }
         }
       } else {
         await resumeScopeFromBudget(row);
         await resolveOpenIncidentsForPolicy(row.id, actorUserId ? "approved" : null, actorUserId);
+        await resolveOpenBudgetGatesForPolicy(row.id, actorUserId);
       }
 
       await logActivity(db, {
@@ -691,6 +922,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         if (policy.hardStopEnabled && observedAmount >= policy.amount) {
           await resolveOpenSoftIncidents(policy.id);
           const hardIncident = await createIncidentIfNeeded(policy, "hard", observedAmount);
+          // ELI-77: ensure gate issue + approval (idempotent). This is the first time enforcement for the scope/window.
+          await ensureBudgetGateIssue(policy, observedAmount, policy.amount);
           await pauseAndCancelScopeForBudget(policy);
           if (hardIncident) {
             await logActivity(db, {
@@ -954,5 +1187,9 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       }]);
       return updated!;
     },
+
+    // ELI-77 exposed for tests + call sites (cancel path etc)
+    ensureBudgetGateIssue,
+    resolveOpenBudgetGatesForPolicy,
   };
 }

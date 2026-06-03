@@ -309,3 +309,12 @@ describe("budgetService", () => {
     );
   });
 });
+
+describe("budgetService (ELI-77 gate wiring smoke)", () => {
+  it("exposes ensureBudgetGateIssue and resolver for gate creation + clear (ELI-77)", () => {
+    const stub = createDbStub([]);
+    const svc = budgetService(stub.db as any);
+    expect(typeof svc.ensureBudgetGateIssue).toBe("function");
+    expect(typeof svc.resolveOpenBudgetGatesForPolicy).toBe("function");
+  });
+});
