@@ -6,7 +6,12 @@ import {
   INBOX_MINE_ISSUE_STATUS_FILTER,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
+import { profileImageSchema } from "./access.js";
 import { envConfigSchema } from "./secret.js";
+
+const agentImageSchema = z
+  .union([profileImageSchema, z.literal(""), z.null()])
+  .transform((value) => (value === "" ? null : value));
 
 export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
@@ -68,6 +73,7 @@ export const createAgentSchema = z.object({
   role: z.enum(AGENT_ROLES).optional().default("general"),
   title: z.string().optional().nullable(),
   icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
+  image: agentImageSchema.optional(),
   reportsTo: z.string().uuid().optional().nullable(),
   capabilities: z.string().optional().nullable(),
   desiredSkills: z.array(z.string().min(1)).optional(),

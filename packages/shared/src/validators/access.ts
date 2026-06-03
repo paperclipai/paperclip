@@ -170,7 +170,7 @@ function isValidProfileImage(value: string): boolean {
   }
 }
 
-const profileImageSchema = z
+export const profileImageSchema = z
   .string()
   .trim()
   .min(1)

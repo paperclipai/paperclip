@@ -21,6 +21,7 @@ function agent(partial: Partial<Agent>): Agent {
     role: "engineer",
     title: null,
     icon: null,
+    image: null,
     status: "idle",
     reportsTo: null,
     capabilities: null,
