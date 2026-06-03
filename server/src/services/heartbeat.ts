@@ -6719,7 +6719,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
-        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+        const refTime = new Date(run.updatedAt ?? run.createdAt).getTime();
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
