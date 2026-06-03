@@ -3667,7 +3667,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null },
+    opts?: { useProjectWorkspace?: boolean | null; allowConfiguredCwd?: boolean | null },
   ): Promise<ResolvedWorkspaceForRun> {
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const contextProjectId = readNonEmptyString(context.projectId);
@@ -3839,7 +3839,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    const configuredCwd = issueId ? readNonEmptyString(parseObject(agent.adapterConfig).cwd) : null;
+    const configuredCwd = issueId && opts?.allowConfiguredCwd === true
+      ? readNonEmptyString(parseObject(agent.adapterConfig).cwd)
+      : null;
     const configuredCwdLooksUnsafe = isUnsafeSessionWorkspaceCwd(configuredCwd);
     if (configuredCwd && !configuredCwdLooksUnsafe) {
       const configuredCwdExists = await fs
@@ -7177,15 +7179,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       parseProjectExecutionWorkspacePolicy(projectContext?.executionWorkspacePolicy),
       isolatedWorkspacesEnabled,
     );
+    const projectlessIssueExecutionWorkspacePolicy = defaultProjectlessIssueExecutionWorkspacePolicy({
+      issueId: issueContext?.id ?? null,
+      projectId: executionProjectId ?? null,
+      isolatedWorkspacesEnabled,
+      projectPolicy: configuredProjectExecutionWorkspacePolicy,
+      issueSettings: issueExecutionWorkspaceSettings,
+    });
     const projectExecutionWorkspacePolicy =
-      configuredProjectExecutionWorkspacePolicy ??
-      defaultProjectlessIssueExecutionWorkspacePolicy({
-        issueId: issueContext?.id ?? null,
-        projectId: executionProjectId ?? null,
-        isolatedWorkspacesEnabled,
-        projectPolicy: configuredProjectExecutionWorkspacePolicy,
-        issueSettings: issueExecutionWorkspaceSettings,
-      });
+      configuredProjectExecutionWorkspacePolicy ?? projectlessIssueExecutionWorkspacePolicy;
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
@@ -7214,7 +7216,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       agent,
       context,
       previousSessionParams,
-      { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
+      {
+        useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default",
+        allowConfiguredCwd:
+          requestedExecutionWorkspaceMode === "isolated_workspace" &&
+          projectExecutionWorkspacePolicy?.workspaceStrategy?.type === "git_worktree",
+      },
     );
     const issueRef = issueContext
       ? {

@@ -416,6 +416,16 @@ describe("execution workspace policy helpers", () => {
     expect(
       defaultProjectlessIssueExecutionWorkspacePolicy({
         issueId: "issue-1",
+        projectId: null,
+        isolatedWorkspacesEnabled: false,
+        projectPolicy: null,
+        issueSettings: null,
+      }),
+    ).toBeNull();
+
+    expect(
+      defaultProjectlessIssueExecutionWorkspacePolicy({
+        issueId: "issue-1",
         projectId: "project-1",
         isolatedWorkspacesEnabled: true,
         projectPolicy: null,
