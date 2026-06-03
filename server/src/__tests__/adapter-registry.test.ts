@@ -239,7 +239,8 @@ describe("server adapter registry", () => {
     expect(adapter).not.toBeNull();
     expect(adapter!.supportsLocalAgentJwt).toBe(false);
     await expect(listAdapterModels("free-mesh")).resolves.toEqual([
-      { id: "swarm-public", label: "swarm-public (low-stakes/public only)" },
+      { id: "swarm-public", label: "swarm-public (PRC public lane; public/non-confidential only)" },
+      { id: "swarm-internal", label: "swarm-internal (US/EU lane; low-stakes TWB internal context)" },
     ]);
     await expect(listAdapterModelProfiles("free-mesh")).resolves.toEqual([
       expect.objectContaining({
