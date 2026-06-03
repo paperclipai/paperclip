@@ -8,6 +8,7 @@ import type {
   FeedbackTrace,
   FeedbackVote,
   Issue,
+  IssueArtifactUploadResponse,
   IssueAttachment,
   IssueCostSummary,
   IssueComment,
@@ -289,6 +290,29 @@ export const issuesApi = {
       form.append("issueCommentId", issueCommentId);
     }
     return api.postForm<IssueAttachment>(`/companies/${companyId}/issues/${issueId}/attachments`, form);
+  },
+  uploadArtifact: (
+    companyId: string,
+    issueId: string,
+    file: File,
+    options?: {
+      issueCommentId?: string | null;
+      title?: string;
+      summary?: string | null;
+      status?: string;
+      reviewState?: string;
+      isPrimary?: boolean;
+    },
+  ) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (options?.issueCommentId) form.append("issueCommentId", options.issueCommentId);
+    if (options?.title) form.append("title", options.title);
+    if (options?.summary) form.append("summary", options.summary);
+    if (options?.status) form.append("status", options.status);
+    if (options?.reviewState) form.append("reviewState", options.reviewState);
+    if (options?.isPrimary !== undefined) form.append("isPrimary", String(options.isPrimary));
+    return api.postForm<IssueArtifactUploadResponse>(`/companies/${companyId}/issues/${issueId}/artifacts`, form);
   },
   deleteAttachment: (id: string) => api.delete<{ ok: true }>(`/attachments/${id}`),
   listApprovals: (id: string) => api.get<Approval[]>(`/issues/${id}/approvals`),

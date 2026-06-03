@@ -282,12 +282,14 @@ export {
 export {
   createIssueWorkProductSchema,
   updateIssueWorkProductSchema,
+  createIssueArtifactUploadSchema,
   attachmentArtifactWorkProductMetadataSchema,
   issueWorkProductTypeSchema,
   issueWorkProductStatusSchema,
   issueWorkProductReviewStateSchema,
   type CreateIssueWorkProduct,
   type UpdateIssueWorkProduct,
+  type CreateIssueArtifactUpload,
 } from "./work-product.js";
 
 export {

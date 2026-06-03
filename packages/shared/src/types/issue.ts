@@ -848,3 +848,8 @@ export interface IssueAttachment {
   openPath?: string;
   downloadPath?: string;
 }
+
+export interface IssueArtifactUploadResponse {
+  attachment: IssueAttachment;
+  workProduct: IssueWorkProduct;
+}

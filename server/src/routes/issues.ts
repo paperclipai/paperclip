@@ -19,6 +19,7 @@ import {
   attachmentArtifactWorkProductMetadataSchema,
   cancelIssueThreadInteractionSchema,
   companySearchQuerySchema,
+  createIssueArtifactUploadSchema,
   createIssueAttachmentMetadataSchema,
   createIssueThreadInteractionSchema,
   createIssueWorkProductSchema,
@@ -183,6 +184,11 @@ function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => 
 
 function buildAttachmentContentPath(attachmentId: string): string {
   return `/api/attachments/${attachmentId}/content`;
+}
+
+function getUuidOrNull(value: string | null | undefined) {
+  const parsed = z.string().uuid().safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 const GENERIC_ATTACHMENT_CONTENT_TYPES = new Set([
@@ -1276,6 +1282,15 @@ export function issueRoutes(
       });
     }
 
+    return buildPaperclipArtifactMetadata(attachment);
+  }
+
+  function buildPaperclipArtifactMetadata(attachment: {
+    id: string;
+    contentType: string;
+    byteSize: number;
+    originalFilename?: string | null;
+  }) {
     const contentPath = buildAttachmentContentPath(attachment.id);
     return attachmentArtifactWorkProductMetadataSchema.parse({
       attachmentId: attachment.id,
@@ -6232,18 +6247,28 @@ export function issueRoutes(
       body: file.buffer,
     });
 
-    const attachment = await svc.createAttachment({
-      issueId,
-      issueCommentId: parsedMeta.data.issueCommentId ?? null,
-      provider: stored.provider,
-      objectKey: stored.objectKey,
-      contentType: stored.contentType,
-      byteSize: stored.byteSize,
-      sha256: stored.sha256,
-      originalFilename: stored.originalFilename,
-      createdByAgentId: actor.agentId,
-      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-    });
+    let attachment: Awaited<ReturnType<typeof svc.createAttachment>>;
+    try {
+      attachment = await svc.createAttachment({
+        issueId,
+        issueCommentId: parsedMeta.data.issueCommentId ?? null,
+        provider: stored.provider,
+        objectKey: stored.objectKey,
+        contentType: stored.contentType,
+        byteSize: stored.byteSize,
+        sha256: stored.sha256,
+        originalFilename: stored.originalFilename,
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+    } catch (err) {
+      try {
+        await storage.deleteObject(companyId, stored.objectKey);
+      } catch (cleanupErr) {
+        logger.warn({ err: cleanupErr, objectKey: stored.objectKey }, "storage delete failed while rolling back artifact upload");
+      }
+      throw err;
+    }
 
     await logActivity(db, {
       companyId,
@@ -6263,6 +6288,167 @@ export function issueRoutes(
     });
 
     res.status(201).json(withContentPath(attachment));
+  });
+
+  router.post("/companies/:companyId/issues/:issueId/artifacts", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const issueId = req.params.issueId as string;
+    assertCompanyAccess(req, companyId);
+    const issue = await svc.getById(issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (issue.companyId !== companyId) {
+      res.status(422).json({ error: "Issue does not belong to company" });
+      return;
+    }
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
+
+    const company = await companiesSvc.getById(companyId);
+    const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(company?.attachmentMaxBytes);
+
+    try {
+      await runSingleFileUpload(req, res, attachmentMaxBytes);
+    } catch (err) {
+      if (err instanceof multer.MulterError) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          res.status(422).json({ error: `Attachment exceeds ${attachmentMaxBytes} bytes` });
+          return;
+        }
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+
+    const file = (req as Request & { file?: { mimetype: string; buffer: Buffer; originalname: string } }).file;
+    if (!file) {
+      res.status(400).json({ error: "Missing file field 'file'" });
+      return;
+    }
+    const contentType = normalizeContentType(file.mimetype);
+    if (file.buffer.length <= 0) {
+      res.status(422).json({ error: "Attachment is empty" });
+      return;
+    }
+    if (!isAllowedContentType(contentType)) {
+      res.status(422).json({ error: `Unsupported attachment content type: ${contentType}` });
+      return;
+    }
+
+    const parsedMeta = createIssueArtifactUploadSchema.safeParse(req.body ?? {});
+    if (!parsedMeta.success) {
+      res.status(400).json({ error: "Invalid artifact metadata", details: parsedMeta.error.issues });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const stored = await storage.putFile({
+      companyId,
+      namespace: `issues/${issueId}`,
+      originalFilename: file.originalname || null,
+      contentType,
+      body: file.buffer,
+    });
+
+    const attachment = await svc.createAttachment({
+      issueId,
+      issueCommentId: parsedMeta.data.issueCommentId ?? null,
+      provider: stored.provider,
+      objectKey: stored.objectKey,
+      contentType: stored.contentType,
+      byteSize: stored.byteSize,
+      sha256: stored.sha256,
+      originalFilename: stored.originalFilename,
+      createdByAgentId: actor.agentId,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    const cleanupAttachment = async () => {
+      try {
+        await storage.deleteObject(attachment.companyId, attachment.objectKey);
+      } catch (err) {
+        logger.warn({ err, attachmentId: attachment.id }, "storage delete failed while rolling back artifact upload");
+      }
+      try {
+        await svc.removeAttachment(attachment.id);
+      } catch (err) {
+        logger.warn({ err, attachmentId: attachment.id }, "attachment row delete failed while rolling back artifact upload");
+      }
+    };
+
+    const title = parsedMeta.data.title ?? attachment.originalFilename ?? "Artifact";
+    const summary = parsedMeta.data.summary && parsedMeta.data.summary.trim().length > 0
+      ? parsedMeta.data.summary
+      : null;
+    let product: Awaited<ReturnType<typeof workProductsSvc.createForIssue>>;
+    try {
+      product = await workProductsSvc.createForIssue(issue.id, issue.companyId, {
+        projectId: issue.projectId ?? null,
+        type: "artifact",
+        provider: "paperclip",
+        title,
+        status: parsedMeta.data.status,
+        reviewState: parsedMeta.data.reviewState,
+        isPrimary: parsedMeta.data.isPrimary,
+        healthStatus: "unknown",
+        summary,
+        metadata: buildPaperclipArtifactMetadata(attachment),
+        createdByRunId: getUuidOrNull(actor.runId),
+      });
+    } catch (err) {
+      await cleanupAttachment();
+      throw err;
+    }
+
+    if (!product) {
+      await cleanupAttachment();
+      res.status(422).json({ error: "Invalid work product payload" });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.attachment_added",
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        attachmentId: attachment.id,
+        originalFilename: attachment.originalFilename,
+        contentType: attachment.contentType,
+        byteSize: attachment.byteSize,
+      },
+    });
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.work_product_created",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { workProductId: product.id, type: product.type, provider: product.provider },
+    });
+
+    await revalidateActiveSourceRecoveryAfterCommittedWrite({
+      issue,
+      trigger: "work_product",
+      actor,
+      workProductChanged: true,
+    });
+
+    res.status(201).json({
+      attachment: withContentPath(attachment),
+      workProduct: product,
+    });
   });
 
   router.get("/attachments/:attachmentId/content", async (req, res, next) => {

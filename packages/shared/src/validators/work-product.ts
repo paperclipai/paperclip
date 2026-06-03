@@ -91,3 +91,23 @@ export type CreateIssueWorkProduct = z.infer<typeof createIssueWorkProductSchema
 export const updateIssueWorkProductSchema = createIssueWorkProductSchema.partial();
 
 export type UpdateIssueWorkProduct = z.infer<typeof updateIssueWorkProductSchema>;
+
+const formBooleanSchema = z.preprocess((value) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return value;
+  const normalized = value.trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  return value;
+}, z.boolean());
+
+export const createIssueArtifactUploadSchema = z.object({
+  issueCommentId: z.string().uuid().optional().nullable(),
+  title: z.string().trim().min(1).max(200).optional(),
+  summary: z.string().trim().max(4000).optional().nullable(),
+  status: issueWorkProductStatusSchema.optional().default("ready_for_review"),
+  reviewState: issueWorkProductReviewStateSchema.optional().default("none"),
+  isPrimary: formBooleanSchema.optional().default(true),
+});
+
+export type CreateIssueArtifactUpload = z.infer<typeof createIssueArtifactUploadSchema>;

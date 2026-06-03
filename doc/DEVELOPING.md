@@ -234,9 +234,10 @@ skills/paperclip/scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
   --summary "WebM walkthrough render"
 ```
 
-The helper uploads the file as an issue attachment, creates an artifact work
-product by default, and prints markdown links for the final issue comment. See
-`doc/AGENT-ARTIFACTS.md` for the full completion pattern and direct API shape.
+The helper uploads the file through the issue artifact endpoint, which stores an
+issue attachment and creates an artifact work product by default, then prints
+markdown links for the final issue comment. See `doc/AGENT-ARTIFACTS.md` for
+the full completion pattern and direct API shape.
 
 ## Default Agent Workspaces
 

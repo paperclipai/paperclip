@@ -261,6 +261,7 @@ export type {
   IssueAncestorProject,
   IssueAncestorGoal,
   IssueAttachment,
+  IssueArtifactUploadResponse,
   IssueLabel,
 } from "./issue.js";
 export type {

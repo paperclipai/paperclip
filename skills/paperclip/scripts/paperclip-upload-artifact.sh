@@ -83,44 +83,6 @@ detect_content_type() {
   esac
 }
 
-request_json() {
-  local method="$1"
-  local url="$2"
-  local body="${3:-}"
-  local response_file
-  local status_code
-
-  response_file="$(mktemp)"
-  if [[ -n "$body" ]]; then
-    status_code="$(
-      curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
-        "$url" \
-        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-        -H 'Content-Type: application/json' \
-        --data-binary "$body"
-    )"
-  else
-    status_code="$(
-      curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
-        "$url" \
-        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"
-    )"
-  fi
-
-  if [[ "$status_code" -lt 200 || "$status_code" -ge 300 ]]; then
-    printf 'Request failed (%s): %s\n' "$status_code" "$url" >&2
-    cat "$response_file" >&2
-    printf '\n' >&2
-    rm -f "$response_file"
-    exit 1
-  fi
-
-  cat "$response_file"
-  rm -f "$response_file"
-}
-
 upload_file() {
   local url="$1"
   local path="$2"
@@ -142,6 +104,54 @@ upload_file() {
 
   if [[ "$status_code" -lt 200 || "$status_code" -ge 300 ]]; then
     printf 'Upload failed (%s): %s\n' "$status_code" "$url" >&2
+    cat "$response_file" >&2
+    printf '\n' >&2
+    rm -f "$response_file"
+    exit 1
+  fi
+
+  cat "$response_file"
+  rm -f "$response_file"
+}
+
+upload_artifact_file() {
+  local url="$1"
+  local path="$2"
+  local content_type="$3"
+  local title="$4"
+  local summary="$5"
+  local status="$6"
+  local is_primary="$7"
+  local escaped_path
+  local response_file
+  local status_code
+  local is_primary_value
+  local -a form_args
+
+  escaped_path="${path//\\/\\\\}"
+  escaped_path="${escaped_path//\"/\\\"}"
+  is_primary_value="$(json_bool "$is_primary")"
+  form_args=(
+    -F "file=@\"${escaped_path}\";type=${content_type}"
+    -F "title=${title}"
+    -F "status=${status}"
+    -F "isPrimary=${is_primary_value}"
+  )
+  if [[ -n "$summary" ]]; then
+    form_args+=(-F "summary=${summary}")
+  fi
+
+  response_file="$(mktemp)"
+  status_code="$(
+    curl -sS -X POST -w '%{http_code}' -o "$response_file" \
+      "$url" \
+      -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+      -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+      "${form_args[@]}"
+  )"
+
+  if [[ "$status_code" -lt 200 || "$status_code" -ge 300 ]]; then
+    printf 'Artifact upload failed (%s): %s\n' "$status_code" "$url" >&2
     cat "$response_file" >&2
     printf '\n' >&2
     rm -f "$response_file"
@@ -282,70 +292,31 @@ if [[ -z "$issue_id" || -z "$company_id" ]]; then
 fi
 
 api_base="${PAPERCLIP_API_URL%/}/api"
-attachment="$(
-  upload_file \
-    "$api_base/companies/$company_id/issues/$issue_id/attachments" \
-    "$file_path" \
-    "$content_type"
-)"
-
 work_product="null"
 if [[ "$create_work_product" == "1" ]]; then
-  is_primary_json="$(json_bool "$is_primary")"
-  attachment_id="$(jq -r '.id // empty' <<<"$attachment")"
-  byte_size="$(jq -r '.byteSize // 0' <<<"$attachment")"
-  content_path="$(jq -r '.contentPath // empty' <<<"$attachment")"
-  open_path="$(jq -r '.openPath // .contentPath // empty' <<<"$attachment")"
-  download_path="$(jq -r '.downloadPath // (if .contentPath then (.contentPath + "?download=1") else "" end)' <<<"$attachment")"
-  original_filename="$(jq -r '.originalFilename // empty' <<<"$attachment")"
-
-  if [[ -z "$attachment_id" || -z "$content_path" || -z "$download_path" ]]; then
-    printf 'Upload response did not include attachment path metadata.\n' >&2
-    printf '%s\n' "$attachment" >&2
+  artifact_response="$(
+    upload_artifact_file \
+      "$api_base/companies/$company_id/issues/$issue_id/artifacts" \
+      "$file_path" \
+      "$content_type" \
+      "$title" \
+      "$summary" \
+      "$status" \
+      "$is_primary"
+  )"
+  attachment="$(jq -c '.attachment' <<<"$artifact_response")"
+  work_product="$(jq -c '.workProduct' <<<"$artifact_response")"
+  if [[ "$attachment" == "null" || "$work_product" == "null" ]]; then
+    printf 'Artifact upload response did not include attachment and workProduct.\n' >&2
+    printf '%s\n' "$artifact_response" >&2
     exit 1
   fi
-
-  work_product_payload="$(
-    jq -nc \
-      --arg title "$title" \
-      --arg summary "$summary" \
-      --arg status "$status" \
-      --arg runId "$PAPERCLIP_RUN_ID" \
-      --arg attachmentId "$attachment_id" \
-      --arg contentType "$content_type" \
-      --argjson byteSize "$byte_size" \
-      --arg contentPath "$content_path" \
-      --arg openPath "$open_path" \
-      --arg downloadPath "$download_path" \
-      --arg originalFilename "$original_filename" \
-      --argjson isPrimary "$is_primary_json" \
-      '{
-        type: "artifact",
-        provider: "paperclip",
-        title: $title,
-        status: $status,
-        reviewState: "none",
-        isPrimary: $isPrimary,
-        healthStatus: "unknown",
-        summary: (if $summary == "" then null else $summary end),
-        createdByRunId: $runId,
-        metadata: {
-          attachmentId: $attachmentId,
-          contentType: $contentType,
-          byteSize: $byteSize,
-          contentPath: $contentPath,
-          openPath: $openPath,
-          downloadPath: $downloadPath,
-          originalFilename: (if $originalFilename == "" then null else $originalFilename end)
-        }
-      }'
-  )"
-
-  work_product="$(
-    request_json \
-      POST \
-      "$api_base/issues/$issue_id/work-products" \
-      "$work_product_payload"
+else
+  attachment="$(
+    upload_file \
+      "$api_base/companies/$company_id/issues/$issue_id/attachments" \
+      "$file_path" \
+      "$content_type"
   )"
 fi
 

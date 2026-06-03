@@ -9,6 +9,7 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
   createAttachment: vi.fn(),
   getAttachmentById: vi.fn(),
+  removeAttachment: vi.fn(),
 }));
 const mockCompanyService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -229,6 +230,7 @@ describe("issue attachment routes", () => {
       id: "company-1",
       attachmentMaxBytes: 1024 * 1024 * 1024,
     });
+    mockIssueService.removeAttachment.mockReset();
     mockWorkProductService.createForIssue.mockReset();
     mockWorkProductService.getById.mockReset();
     mockWorkProductService.update.mockReset();
@@ -292,6 +294,122 @@ describe("issue attachment routes", () => {
       openPath: "/api/attachments/attachment-1/content",
       downloadPath: "/api/attachments/attachment-1/content?download=1",
     });
+  });
+
+  it("uploads an issue artifact by creating an attachment-backed work product", async () => {
+    const storage = createStorageService();
+    const issue = {
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+      projectId: "99999999-9999-4999-8999-999999999999",
+    };
+    const attachment = {
+      ...makeAttachment("video/mp4", "demo.mp4"),
+      id: "22222222-2222-4222-8222-222222222222",
+      issueId: issue.id,
+      byteSize: 4,
+    };
+    const workProduct = {
+      id: "33333333-3333-4333-8333-333333333333",
+      issueId: issue.id,
+      companyId: issue.companyId,
+      type: "artifact",
+      provider: "paperclip",
+      title: "Demo video",
+      status: "ready_for_review",
+      metadata: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.createAttachment.mockResolvedValue(attachment);
+    mockWorkProductService.createForIssue.mockResolvedValue(workProduct);
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post(`/api/companies/company-1/issues/${issue.id}/artifacts`)
+      .field("title", "Demo video")
+      .field("summary", "Rendered demo")
+      .field("status", "ready_for_review")
+      .field("isPrimary", "true")
+      .attach("file", Buffer.from("demo"), { filename: "demo.mp4", contentType: "video/mp4" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.attachment.contentPath).toBe(`/api/attachments/${attachment.id}/content`);
+    expect(res.body.workProduct).toMatchObject({ id: workProduct.id, type: "artifact", provider: "paperclip" });
+    expect(mockIssueService.createAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issueId: issue.id,
+        issueCommentId: null,
+        contentType: "video/mp4",
+        originalFilename: "demo.mp4",
+      }),
+    );
+    expect(mockWorkProductService.createForIssue).toHaveBeenCalledWith(
+      issue.id,
+      issue.companyId,
+      expect.objectContaining({
+        projectId: issue.projectId,
+        type: "artifact",
+        provider: "paperclip",
+        title: "Demo video",
+        status: "ready_for_review",
+        reviewState: "none",
+        isPrimary: true,
+        summary: "Rendered demo",
+        metadata: {
+          attachmentId: attachment.id,
+          contentType: "video/mp4",
+          byteSize: 4,
+          contentPath: `/api/attachments/${attachment.id}/content`,
+          openPath: `/api/attachments/${attachment.id}/content`,
+          downloadPath: `/api/attachments/${attachment.id}/content?download=1`,
+          originalFilename: "demo.mp4",
+        },
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.attachment_added" }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.work_product_created" }),
+    );
+  });
+
+  it("rolls back the attachment when issue artifact work product creation fails", async () => {
+    const storage = createStorageService();
+    const issue = {
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+      projectId: null,
+    };
+    const attachment = {
+      ...makeAttachment("video/webm", "demo.webm"),
+      id: "22222222-2222-4222-8222-222222222222",
+      issueId: issue.id,
+      objectKey: `issues/${issue.id}/demo.webm`,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.createAttachment.mockResolvedValue(attachment);
+    mockIssueService.removeAttachment.mockResolvedValue(attachment);
+    mockWorkProductService.createForIssue.mockResolvedValue(null);
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post(`/api/companies/company-1/issues/${issue.id}/artifacts`)
+      .field("title", "Demo video")
+      .attach("file", Buffer.from("demo"), { filename: "demo.webm", contentType: "video/webm" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Invalid work product payload");
+    expect(storage.deleteObject).toHaveBeenCalledWith(issue.companyId, attachment.objectKey);
+    expect(mockIssueService.removeAttachment).toHaveBeenCalledWith(attachment.id);
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.work_product_created" }),
+    );
   });
 
   it("rejects unsupported upload content types before storing the file", async () => {

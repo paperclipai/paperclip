@@ -493,6 +493,13 @@ describe("agent issue mutation checkout ownership", () => {
           .post(`/api/companies/${companyId}/issues/${issueId}/attachments`)
           .attach("file", Buffer.from("report"), { filename: "report.txt", contentType: "text/plain" }),
     ],
+    [
+      "artifact upload",
+      (app: express.Express) =>
+        request(app)
+          .post(`/api/companies/${companyId}/issues/${issueId}/artifacts`)
+          .send({ title: "Artifact" }),
+    ],
     ["attachment delete", (app: express.Express) => request(app).delete("/api/attachments/attachment-1")],
   ])("rejects peer agent %s on another agent's active checkout", async (_name, sendRequest) => {
     const res = await sendRequest(await createApp(peerActor()));
@@ -548,6 +555,13 @@ describe("agent issue mutation checkout ownership", () => {
         request(app)
           .post(`/api/companies/${companyId}/issues/${issueId}/attachments`)
           .attach("file", Buffer.from("report"), { filename: "report.txt", contentType: "text/plain" }),
+    ],
+    [
+      "artifact upload",
+      (app: express.Express) =>
+        request(app)
+          .post(`/api/companies/${companyId}/issues/${issueId}/artifacts`)
+          .send({ title: "Artifact" }),
     ],
     ["attachment delete", (app: express.Express) => request(app).delete("/api/attachments/attachment-1")],
   ])("blocks cheap status-only recovery runs from %s", async (_name, sendRequest) => {

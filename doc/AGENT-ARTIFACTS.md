@@ -23,8 +23,9 @@ environment:
 - `PAPERCLIP_RUN_ID`
 
 It uploads the file to
-`POST /api/companies/{companyId}/issues/{issueId}/attachments` and creates an
-artifact work product on `POST /api/issues/{issueId}/work-products` by default.
+`POST /api/companies/{companyId}/issues/{issueId}/artifacts` by default. The
+server stores the file as an issue attachment and creates the attachment-backed
+artifact work product in the same request.
 The command prints issue-safe markdown links for the final task comment.
 
 ## Completion Pattern
@@ -75,23 +76,16 @@ If the helper is unavailable, use the same API shape:
 
 ```sh
 curl -sS -X POST \
-  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments" \
+  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/artifacts" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -F 'file=@"dist/demo.mp4";type=video/mp4'
+  -F 'file=@"dist/demo.mp4";type=video/mp4' \
+  -F 'title=Demo video render' \
+  -F 'summary=MP4 render for board review' \
+  -F 'status=ready_for_review' \
+  -F 'isPrimary=true'
 ```
 
-Then create a work product when the uploaded file is the deliverable:
-
-```sh
-curl -sS -X POST \
-  "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/work-products" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -H "Content-Type: application/json" \
-  --data-binary @artifact-work-product.json
-```
-
-Use `type: "artifact"`, `provider: "paperclip"`, and metadata containing the
-uploaded `attachmentId`. The server canonicalizes `contentType`, `byteSize`,
-`contentPath`, `openPath`, `downloadPath`, and `originalFilename`.
+The response contains `{ "attachment": ..., "workProduct": ... }`. Use
+`POST /api/companies/{companyId}/issues/{issueId}/attachments` only for
+supporting files that should not be promoted as issue outputs.
