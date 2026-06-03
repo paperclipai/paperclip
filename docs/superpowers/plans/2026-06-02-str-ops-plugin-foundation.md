@@ -839,7 +839,12 @@ git commit -m "feat(str-ops): booking ingest with dedupe + conflict guard (S1)"
 
 ---
 
-## Task 6: Migration + Postgres store (runtime persistence)
+## Task 6: Migration + Postgres store (runtime persistence) — ⛔ SUPERSEDED by Task 6R (CouchDB)
+
+> **Do NOT implement this section.** The record store moved from the Postgres SDK
+> namespace to **CouchDB** (see spec §3.1 / §9 and the 2026-06-03 review-log entry).
+> Implement **Task 6R** below instead. This Postgres version is retained only for
+> historical context.
 
 **Files:**
 - Create: `packages/plugins/plugin-str-ops/migrations/001_str_ops.sql`
@@ -1052,6 +1057,237 @@ git commit -m "feat(str-ops): namespace migration + Postgres store (S1)"
 ```
 
 ---
+
+## Task 6R: CouchDB store (replaces Task 6, TDD)
+
+**Files:**
+- Create: `packages/plugins/plugin-str-ops/src/store/couch-store.ts`
+- Test: `packages/plugins/plugin-str-ops/src/store/couch-store.spec.ts`
+
+The `CouchStore` is a SECOND implementation of the SAME `StrOpsStore` interface (from
+`src/store/types.ts`), backed by **CouchDB** over an injected HTTP client (`CouchHttp`).
+No Postgres, no SQL migration, no SDK DB namespace. Deterministic `_id`s give the
+uniqueness/dedupe the SQL `UNIQUE` constraints gave; Mango `_find` + two indexes (created
+by `ensure()`) cover list/overlap queries. The production `CouchHttp` adapter (over
+`ctx.http`, with base URL + Basic auth from env/secret) and the `ensure()` call are wired
+in **Task 7** — this task delivers `CouchStore` + its unit test against a fake `CouchHttp`.
+
+- [ ] **Step 1: Confirm `ctx.http` shape (for Task 7, note it now).** Read the SDK to
+  confirm the outbound HTTP surface and capability: `grep -nE "http|outbound|secrets" packages/plugins/sdk/src/types.ts` and the SDK README "http.outbound" section. Record the exact `ctx.http` signature so Task 7's adapter conforms. `CouchStore` depends only on the local `CouchHttp` interface below, so it stays host-agnostic and unit-testable.
+
+- [ ] **Step 2: Write `src/store/couch-store.spec.ts` (failing test first)**
+
+```ts
+import { describe, expect, it } from "vitest";
+import { CouchStore, type CouchHttp, type CouchResponse } from "./couch-store.js";
+
+// In-memory fake CouchDB: db-create, _index, _find (minimal selector), GET/PUT by id.
+class FakeCouch implements CouchHttp {
+  docs = new Map<string, Record<string, unknown>>();
+  async request(method: string, path: string, body?: unknown): Promise<CouchResponse> {
+    const parts = path.split("/").filter(Boolean); // [db, rest...]
+    if (method === "PUT" && parts.length === 1) return { status: 201, body: { ok: true } };
+    if (method === "POST" && parts[1] === "_index") return { status: 200, body: { result: "created" } };
+    if (method === "POST" && parts[1] === "_find") {
+      const selector = (body as { selector: Record<string, unknown> }).selector;
+      const docs = [...this.docs.values()].filter((d) => matchesSelector(d, selector));
+      return { status: 200, body: { docs } };
+    }
+    const id = decodeURIComponent(parts.slice(1).join("/"));
+    if (method === "GET") {
+      const d = this.docs.get(id);
+      return d ? { status: 200, body: d } : { status: 404, body: { error: "not_found" } };
+    }
+    if (method === "PUT") {
+      const prev = this.docs.get(id);
+      const n = prev ? Number(String(prev._rev).split("-")[0]) + 1 : 1;
+      const doc = { ...(body as Record<string, unknown>), _rev: `${n}-x` };
+      this.docs.set(id, doc);
+      return { status: 201, body: { ok: true, id, rev: doc._rev } };
+    }
+    return { status: 405, body: {} };
+  }
+}
+function matchesSelector(doc: Record<string, any>, sel: Record<string, any>): boolean {
+  return Object.entries(sel).every(([k, v]) => {
+    if (v && typeof v === "object") {
+      if ("$ne" in v) return doc[k] !== v.$ne;
+      if ("$lt" in v) return doc[k] < v.$lt;
+      if ("$gt" in v) return doc[k] > v.$gt;
+    }
+    return doc[k] === v;
+  });
+}
+
+const CO = "c1";
+const newBooking = (over: Record<string, unknown> = {}) => ({
+  companyId: CO, propertyId: "property:c1:VILLA", guestId: "guest:c1:ana@x.com",
+  channel: "airbnb", status: "confirmed" as const, checkIn: "2026-07-01", checkOut: "2026-07-05",
+  nights: 4, grossCents: 1, feesCents: 0, externalRef: "AB-1", ...over,
+});
+
+describe("CouchStore", () => {
+  it("dedupes a booking by deterministic _id (findBookingByExternalRef = GET)", async () => {
+    const store = new CouchStore(new FakeCouch(), "str_ops");
+    await store.insertBooking(newBooking());
+    expect(await store.findBookingByExternalRef(CO, "airbnb", "AB-1")).not.toBeNull();
+    expect(await store.findBookingByExternalRef(CO, "booking", "AB-1")).toBeNull();
+    expect(await store.findBookingByExternalRef("other", "airbnb", "AB-1")).toBeNull();
+  });
+
+  it("upserts a guest idempotently by contact (latest name wins, same id)", async () => {
+    const store = new CouchStore(new FakeCouch(), "str_ops");
+    const a = await store.upsertGuestByContact({ companyId: CO, name: "Ana", contact: "ana@x.com", locale: "en" });
+    const b = await store.upsertGuestByContact({ companyId: CO, name: "Ana R.", contact: "ana@x.com", locale: "en" });
+    expect(b.id).toBe(a.id);
+    expect(b.name).toBe("Ana R.");
+  });
+
+  it("findOverlappingBookings honors half-open intervals and excludes cancelled", async () => {
+    const store = new CouchStore(new FakeCouch(), "str_ops");
+    await store.insertBooking(newBooking());
+    expect(await store.findOverlappingBookings(CO, "property:c1:VILLA", "2026-07-04", "2026-07-06")).toHaveLength(1);
+    expect(await store.findOverlappingBookings(CO, "property:c1:VILLA", "2026-07-05", "2026-07-09")).toHaveLength(0);
+  });
+
+  it("getPropertyByExternalCode finds a seeded property via _find", async () => {
+    const store = new CouchStore(new FakeCouch(), "str_ops");
+    await store.insertProperty({ id: "property:c1:VILLA", companyId: CO, name: "Villa", externalCode: "VILLA", ownerId: "owner:1", basePriceCents: 1, currency: "EUR" });
+    const p = await store.getPropertyByExternalCode(CO, "VILLA");
+    expect(p?.name).toBe("Villa");
+  });
+});
+```
+
+- [ ] **Step 3: Run to verify it fails**
+
+Run: `pnpm --filter @paperclipai/plugin-str-ops test -- src/store/couch-store.spec.ts`
+Expected: FAIL — `Cannot find module './couch-store.js'`.
+
+- [ ] **Step 4: Write `src/store/couch-store.ts`**
+
+```ts
+import type { Booking, Guest, Owner, Property } from "../domain/types.js";
+import type { NewBooking, NewGuest, StrOpsStore } from "./types.js";
+
+export interface CouchResponse {
+  status: number;
+  body: any;
+}
+
+/** Minimal CouchDB HTTP surface. `path` is relative to the server root, e.g. "/str_ops/owner:1".
+ *  Production adapter (Task 7) wraps `ctx.http` + base URL + Basic auth; tests use a fake. */
+export interface CouchHttp {
+  request(method: "GET" | "PUT" | "POST", path: string, body?: unknown): Promise<CouchResponse>;
+}
+
+const enc = encodeURIComponent;
+
+export class CouchStore implements StrOpsStore {
+  constructor(private readonly http: CouchHttp, private readonly db = "str_ops") {}
+
+  /** Create the database + Mango indexes if missing. Idempotent (existing db/index = no-op). */
+  async ensure(): Promise<void> {
+    await this.http.request("PUT", `/${this.db}`); // 201 created or 412 exists — both fine
+    await this.http.request("POST", `/${this.db}/_index`, { index: { fields: ["type", "companyId"] }, name: "type-company", ddoc: "str-ops" });
+    await this.http.request("POST", `/${this.db}/_index`, { index: { fields: ["type", "companyId", "propertyId"] }, name: "type-company-property", ddoc: "str-ops" });
+  }
+
+  private async getDoc(id: string): Promise<any | null> {
+    const r = await this.http.request("GET", `/${this.db}/${enc(id)}`);
+    return r.status === 200 ? r.body : null;
+  }
+  private async putDoc(doc: Record<string, unknown> & { _id: string }): Promise<any> {
+    const r = await this.http.request("PUT", `/${this.db}/${enc(doc._id)}`, doc);
+    if (r.status >= 400) throw new Error(`couch PUT ${doc._id} failed: ${r.status} ${JSON.stringify(r.body)}`);
+    return { ...doc, _rev: r.body?.rev };
+  }
+  private async find(selector: Record<string, unknown>): Promise<any[]> {
+    const r = await this.http.request("POST", `/${this.db}/_find`, { selector, limit: 100000 });
+    if (r.status >= 400) throw new Error(`couch _find failed: ${r.status} ${JSON.stringify(r.body)}`);
+    return r.body?.docs ?? [];
+  }
+
+  private guestId(companyId: string, contact: string) { return `guest:${companyId}:${contact}`; }
+  private bookingId(companyId: string, channel: string, externalRef: string) { return `booking:${companyId}:${channel}:${externalRef}`; }
+
+  private toOwner(d: any): Owner { return { id: d._id, companyId: d.companyId, name: d.name, email: d.email, commissionPct: d.commissionPct }; }
+  private toProperty(d: any): Property { return { id: d._id, companyId: d.companyId, name: d.name, externalCode: d.externalCode, ownerId: d.ownerId, basePriceCents: d.basePriceCents, currency: d.currency }; }
+  private toGuest(d: any): Guest { return { id: d._id, companyId: d.companyId, name: d.name, contact: d.contact, locale: d.locale === "fr" ? "fr" : "en" }; }
+  private toBooking(d: any): Booking { return { id: d._id, companyId: d.companyId, propertyId: d.propertyId, guestId: d.guestId, channel: d.channel, status: d.status, checkIn: d.checkIn, checkOut: d.checkOut, nights: d.nights, grossCents: d.grossCents, feesCents: d.feesCents, externalRef: d.externalRef }; }
+
+  async listProperties(companyId: string): Promise<Property[]> {
+    return (await this.find({ type: "property", companyId })).map((d) => this.toProperty(d));
+  }
+  async getProperty(companyId: string, propertyId: string): Promise<Property | null> {
+    const d = await this.getDoc(propertyId);
+    return d && d.type === "property" && d.companyId === companyId ? this.toProperty(d) : null;
+  }
+  async getPropertyByExternalCode(companyId: string, externalCode: string): Promise<Property | null> {
+    const docs = await this.find({ type: "property", companyId, externalCode });
+    return docs[0] ? this.toProperty(docs[0]) : null;
+  }
+  async getOwner(companyId: string, ownerId: string): Promise<Owner | null> {
+    const d = await this.getDoc(ownerId);
+    return d && d.type === "owner" && d.companyId === companyId ? this.toOwner(d) : null;
+  }
+  async upsertGuestByContact(guest: NewGuest): Promise<Guest> {
+    const _id = this.guestId(guest.companyId, guest.contact);
+    const existing = await this.getDoc(_id);
+    const saved = await this.putDoc({ _id, ...(existing?._rev ? { _rev: existing._rev } : {}), type: "guest", companyId: guest.companyId, name: guest.name, contact: guest.contact, locale: guest.locale });
+    return this.toGuest(saved);
+  }
+  async findBookingByExternalRef(companyId: string, channel: string, externalRef: string): Promise<Booking | null> {
+    const d = await this.getDoc(this.bookingId(companyId, channel, externalRef));
+    return d && d.type === "booking" ? this.toBooking(d) : null;
+  }
+  async findOverlappingBookings(companyId: string, propertyId: string, checkIn: string, checkOut: string): Promise<Booking[]> {
+    const docs = await this.find({ type: "booking", companyId, propertyId, status: { $ne: "cancelled" }, checkIn: { $lt: checkOut }, checkOut: { $gt: checkIn } });
+    return docs.map((d) => this.toBooking(d));
+  }
+  async insertBooking(b: NewBooking): Promise<Booking> {
+    const _id = this.bookingId(b.companyId, b.channel, b.externalRef);
+    const saved = await this.putDoc({ _id, type: "booking", ...b });
+    return this.toBooking(saved);
+  }
+  async listBookings(companyId: string, filter?: { propertyId?: string }): Promise<Booking[]> {
+    const selector: Record<string, unknown> = { type: "booking", companyId };
+    if (filter?.propertyId) selector.propertyId = filter.propertyId;
+    return (await this.find(selector)).map((d) => this.toBooking(d));
+  }
+  async insertOwner(o: Owner): Promise<Owner> {
+    const saved = await this.putDoc({ _id: o.id, type: "owner", ...o });
+    return this.toOwner(saved);
+  }
+  async insertProperty(p: Property): Promise<Property> {
+    const saved = await this.putDoc({ _id: p.id, type: "property", ...p });
+    return this.toProperty(saved);
+  }
+}
+```
+
+- [ ] **Step 5: Run to verify it passes**
+
+Run: `pnpm --filter @paperclipai/plugin-str-ops test -- src/store/couch-store.spec.ts`
+Expected: PASS (4 tests).
+
+- [ ] **Step 6: Typecheck + full suite**
+
+Run: `pnpm --filter @paperclipai/plugin-str-ops typecheck && pnpm --filter @paperclipai/plugin-str-ops test`
+Expected: typecheck 0; all spec files pass (memory-store, availability, mock-channel, ingest, couch-store).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/plugins/plugin-str-ops/src/store/couch-store.ts packages/plugins/plugin-str-ops/src/store/couch-store.spec.ts
+git commit -m "feat(str-ops): CouchDB store implementing StrOpsStore (S1, replaces Postgres)"
+```
+
+> **Note for Task 7 (worker wiring).** Build the production `CouchHttp` adapter over
+> `ctx.http` (confirmed in Step 1) with base URL + Basic auth from `STR_OPS_COUCHDB_URL` /
+> `STR_OPS_COUCHDB_USER` / `STR_OPS_COUCHDB_PASSWORD` (env or Paperclip secret; default
+> `http://127.0.0.1:5984`, db `str_ops`). In `setup()`, construct `new CouchStore(adapter, db)`,
+> `await store.ensure()` once, and use it where the Postgres store was previously used.
 
 ## Task 7: Seed data + worker wiring + registration (TDD)
 

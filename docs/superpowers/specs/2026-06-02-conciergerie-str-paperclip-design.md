@@ -93,11 +93,20 @@ the domain needs, verified against the cloned code:
 
 ## 3. `str-ops` plugin internals
 
-### 3.1 Database (namespace `str_ops`, own SQL migration)
+### 3.1 Data store — CouchDB (database `str_ops`, reuse the existing instance)
 
-System-of-record tables (all rows carry `company_id`):
+System-of-record **CouchDB JSON documents** (one DB `str_ops`; every doc carries `type`
++ `companyId`). **No Postgres / no SDK DB namespace** — the plugin is a CouchDB client
+over `ctx.http`. Natural-key docs use **deterministic `_id`s** so uniqueness + dedupe
+come for free (replacing SQL `UNIQUE`):
 
-| Table | Key columns |
+- `owner:<uuid>` · `property:<companyId>:<externalCode>` · `guest:<companyId>:<contact>`
+  · `booking:<companyId>:<channel>:<externalRef>` (dedupe = a plain GET).
+
+List/overlap queries use **Mango `_find`** + indexes created on startup
+(`{type,companyId}`, `{type,companyId,propertyId}`). Doc fields:
+
+| Doc `type` | Fields |
 |---|---|
 | `property` | id, company_id, name, address, type, owner_id, base_price_cents, currency, ical_url(null in mock), season_ranges(jsonb), paperclip_project_id |
 | `owner` | id, company_id, name, email, commission_pct, payout_method(mock) |
@@ -158,13 +167,13 @@ back into `booking`/work-item state.
 
 ### 3.7 Capabilities (manifest)
 
-`database.namespace.migrate|read|write`, `jobs.schedule`, `webhooks.receive`,
-`issues.create`, `issues.update`, `issues.wakeup`, `issue.comments.create`,
-`issue.relations.read`, `issue.relations.write`, `agent.tools.register`,
-`agents.managed`, `projects.managed`, `skills.managed`, `routines.managed`,
-`events.subscribe`, `ui.page.register`, `ui.dashboardWidget.register`,
+`http.outbound` (CouchDB + later real providers), `secrets.read-ref` (CouchDB creds),
+`jobs.schedule`, `webhooks.receive`, `issues.create`, `issues.update`, `issues.wakeup`,
+`issue.comments.create`, `issue.relations.read`, `issue.relations.write`,
+`agent.tools.register`, `agents.managed`, `projects.managed`, `skills.managed`,
+`routines.managed`, `events.subscribe`, `ui.page.register`, `ui.dashboardWidget.register`,
 `activity.log.write`, `plugin.state.read|write`.
-Reserved for the real bridge (not used in v1): `http.outbound`, `secrets.read-ref`.
+**No `database.namespace.*`** — records live in CouchDB, not the SDK Postgres namespace.
 
 The managed-resource + relations capabilities are required because the manifest ships
 managed agents/projects/skills/routines and the plugin calls `ctx.issues.relations.*`
@@ -281,8 +290,9 @@ of running on Hermes.
 **v1 boundary.** Only the Reservations (booking manager) agent uses MemoryOS in v1. This
 is in the **agent layer** (Plan 2 onward); **Plan 1** (booking spine, relational records)
 is unaffected.
-- CouchDB kit-store patterns -> reference only; the plugin uses the Postgres
-  namespace.
+- **CouchDB** (your existing instance, reusing the kit-store patterns) -> the str-ops
+  **record store** (DB `str_ops`): owner/property/guest/booking docs. **Replaces the
+  Postgres namespace.** See §3.1. MemoryOS (§9.1) and llm-wiki remain separate stores.
 
 ## 10. Constraints & risks (from SDK caveats)
 
@@ -345,6 +355,19 @@ reporting tools, deployment tools.
 
 Supporting roles referenced in the workflow — Sales/Product, Product Owner,
 Architecture Guardian — are likewise post-v1.
+
+**Human-in-the-loop & actor model (future — from discussion #3010 "Human Adapter", a
+proposal, NOT yet shipped).** The Human Adapter would represent a human as a high-latency
+agent node (tasks routed via Slack/webhook/ticket, resolved by a person). Future uses:
+**per-owner human agents** + an **owner cockpit** (owners approve bookings/spend, view
+statements); a **supervisor/president** human seat above the CEO; an **outsourcing /
+vendor bridge** for human tasks (cleaning, maintenance, complex guest issues). **v1
+substitute (shipped):** the **board user + approval gates** are the human
+president/supervisor seat, and human/outsourced tasks are Paperclip **issues** a person
+resolves via the board. **Owners stay records** (§3.1), served by the AI Owner-Relations
+agent. All agent-layer / emergent — not v1, not Plan 1. **DB stays single `str_ops`** (no
+per-owner/per-agent DB) so cross-owner queries work; per-owner DB is a future
+hard-isolation option if owners get direct cockpit DB access.
 
 **v1 boundary (restated).** v1 remains focused on the Paperclip STR conciergerie
 company PoC. **No website / mobile app / starterkit implementation in v1.** This
@@ -436,3 +459,14 @@ agents later. **llm-wiki** keeps general company memory for now. Changes: §4 (R
 runtime (`~/.hermes`), not managed by str-ops. Agent-layer change → **Plan 1 (booking
 spine) unaffected**; lands Plan 2 onward. Requires Hermes installed + Hermes adapter
 plugin registered.
+
+**2026-06-03 — record store → CouchDB (replaces Postgres).** User direction: do not use
+the SDK Postgres namespace; persist str-ops records to **CouchDB** (reuse existing
+instance, single DB `str_ops`, defaults). Deterministic `_id`s replace SQL `UNIQUE`;
+Mango indexes replace SQL indexes; the plugin talks to CouchDB over `ctx.http`. Changes:
+§3.1 (CouchDB doc store), §3.7 (caps: −`database.namespace.*`, +`http.outbound` /
+`secrets.read-ref`), §9 (CouchDB = the record store). Also recorded as **deferred**:
+Human Adapter (#3010, proposal-only) + per-owner human agents + owner cockpit +
+supervisor/president seat + outsourcing bridge → Future Tooling; v1 uses board user +
+approval gates; single DB (no per-owner/per-agent DB). **Plan Task 6 rewritten as Task 6R
+(CouchStore) — the Postgres migration + pg-store are superseded.**
