@@ -16,6 +16,14 @@ import type { PoolAccount, PoolState, QuotaWindow, RotationReason } from "@paper
  * Spec: docs/superpowers/specs/2026-06-02-account-pool-rotation-spec.md
  */
 
+/**
+ * Sentinel id for the implicit "Default — this machine" account card. It is NOT
+ * a company_secrets row: it represents the local login agents fall back to when
+ * `account_pool_state.activeAccountId` is null. When this candidate "wins" the
+ * rotation, the effective activeAccountId written to the DB is null.
+ */
+export const DEFAULT_ACCOUNT_ID = "__default__";
+
 type CompanySecretRow = typeof companySecrets.$inferSelect;
 type AccountPoolStateRow = typeof accountPoolState.$inferSelect;
 
@@ -237,6 +245,69 @@ export function readPoolAccountHealth(providerMetadata: unknown): PoolAccountHea
     error: typeof h.error === "string" ? h.error : null,
     erroredAt: typeof h.erroredAt === "string" ? h.erroredAt : null,
   };
+}
+
+/**
+ * Persist a probe result for the company's DEFAULT (local/machine) account into
+ * `account_pool_state.defaultHealth`. Same preserve-last-good-on-error logic as
+ * savePoolAccountHealth, but the default has no company_secrets row so its
+ * snapshot lives on the pool-state row. Stored wrapped as `{ poolHealth }` so it
+ * can be parsed by the shared readPoolAccountHealth(). Ensures the state row
+ * exists first (so a company with no pooled accounts still shows default health).
+ */
+export async function saveDefaultAccountHealth(
+  db: Db,
+  companyId: string,
+  probe: PoolAccountProbe,
+): Promise<void> {
+  const existing = await db
+    .select({ defaultHealth: accountPoolState.defaultHealth })
+    .from(accountPoolState)
+    .where(eq(accountPoolState.companyId, companyId))
+    .then((rows) => rows[0] ?? null);
+  const prev = readPoolAccountHealth(existing?.defaultHealth) ?? defaultSnapshot();
+
+  const next: PoolAccountHealthSnapshot = probe.error
+    ? {
+        usedPercent: prev.usedPercent,
+        resetsAt: prev.resetsAt,
+        capped: prev.capped,
+        windows: prev.windows,
+        checkedAt: prev.checkedAt,
+        error: probe.error,
+        erroredAt: probe.at,
+      }
+    : {
+        usedPercent: probe.usedPercent,
+        resetsAt: probe.resetsAt,
+        capped: probe.capped,
+        windows: probe.windows,
+        checkedAt: probe.at,
+        error: null,
+        erroredAt: null,
+      };
+
+  const now = new Date();
+  await db
+    .insert(accountPoolState)
+    .values({ companyId, reason: "initial", defaultHealth: { poolHealth: next }, updatedAt: now })
+    .onConflictDoUpdate({
+      target: accountPoolState.companyId,
+      set: { defaultHealth: { poolHealth: next }, updatedAt: now },
+    });
+}
+
+/** Read the company's DEFAULT account health snapshot, or null when never probed. */
+export async function getDefaultAccountHealth(
+  db: Db,
+  companyId: string,
+): Promise<PoolAccountHealthSnapshot | null> {
+  const row = await db
+    .select({ defaultHealth: accountPoolState.defaultHealth })
+    .from(accountPoolState)
+    .where(eq(accountPoolState.companyId, companyId))
+    .then((rows) => rows[0] ?? null);
+  return readPoolAccountHealth(row?.defaultHealth);
 }
 
 /** Read the global STOP switch (D3) for a company. Defaults to not-stopped. */

@@ -1,17 +1,19 @@
 import { eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, companies } from "@paperclipai/db";
-import { fetchClaudeQuota } from "@paperclipai/adapter-claude-local/server";
+import { fetchClaudeQuota, readClaudeToken } from "@paperclipai/adapter-claude-local/server";
 import type { AccountWithHealth, PoolAccount, QuotaWindow } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import {
+  DEFAULT_ACCOUNT_ID,
   getPoolState,
   getStopSwitch,
   listPoolAccounts,
   savePoolAccountHealth,
+  saveDefaultAccountHealth,
   setActiveAccount,
 } from "./account-pool.js";
 
@@ -147,14 +149,61 @@ export function accountPoolBalancer(db: Db, deps: BalancerDeps = {}) {
     return health;
   }
 
-  /** On-demand probe of all of a company's pool accounts (the UI "Reload" button). */
-  async function probeCompany(companyId: string): Promise<AccountWithHealth[]> {
-    const accounts = await listPoolAccounts(db, companyId);
-    return probeAndPersist(companyId, accounts);
+  /**
+   * Probe the machine's DEFAULT (local) account — the login agents fall back to
+   * when no pool account is active. Reads the local token (file or macOS
+   * Keychain via readClaudeToken) and asks the Anthropic usage API. Returned as
+   * an implicit candidate with the DEFAULT_ACCOUNT_ID sentinel. Best-effort: on
+   * non-macOS / Docker / missing login the token is null → returns an error
+   * shape (does not throw, does not block rotation).
+   */
+  async function fetchDefaultAccountHealth(): Promise<AccountWithHealth> {
+    const base: PoolAccount = {
+      id: DEFAULT_ACCOUNT_ID,
+      name: "Default — this machine",
+      key: "Machine login (~/.claude)",
+      status: "active",
+    };
+    try {
+      const token = await readClaudeToken();
+      if (!token) {
+        return { ...base, windows: [], usedPercent: null, resetsAt: null, capped: false, error: "no local Claude login found on this machine" };
+      }
+      const windows = await fetchClaudeQuota(token);
+      return toAccountWithHealth(base, windows);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ...base, windows: [], usedPercent: null, resetsAt: null, capped: false, error: message };
+    }
   }
 
-  /** Wake every agent in the company so they re-seed on the new account. */
-  async function wakeAllAgents(companyId: string, fromAccountId: string | null, toAccountId: string) {
+  /** Probe the default account and persist its snapshot to account_pool_state. */
+  async function probeAndPersistDefault(companyId: string): Promise<AccountWithHealth> {
+    const health = await fetchDefaultAccountHealth();
+    await saveDefaultAccountHealth(db, companyId, {
+      usedPercent: health.usedPercent,
+      resetsAt: health.resetsAt,
+      capped: health.capped,
+      windows: health.windows,
+      error: health.error ?? null,
+      at: new Date().toISOString(),
+    }).catch((err) => logger.warn({ err, companyId }, "failed to persist default account health"));
+    return health;
+  }
+
+  /** On-demand probe of all of a company's accounts incl. default (UI "Reload"). */
+  async function probeCompany(companyId: string): Promise<AccountWithHealth[]> {
+    const accounts = await listPoolAccounts(db, companyId);
+    const [pooled, def] = await Promise.all([
+      probeAndPersist(companyId, accounts),
+      probeAndPersistDefault(companyId),
+    ]);
+    return [def, ...pooled];
+  }
+
+  /** Wake every agent in the company so they re-seed on the new account.
+   *  toAccountId is null when rotating TO the default/local account. */
+  async function wakeAllAgents(companyId: string, fromAccountId: string | null, toAccountId: string | null) {
     const wakeup = deps.heartbeat?.wakeup;
     if (!wakeup) {
       logger.warn({ companyId }, "account-pool balancer rotated but no wakeup dep wired; agents will pick up on next natural run");
@@ -220,32 +269,49 @@ export function accountPoolBalancer(db: Db, deps: BalancerDeps = {}) {
     });
   }
 
+  /**
+   * Map a candidate's id to the value stored in account_pool_state.activeAccountId.
+   * The default candidate ("__default__") maps to null — "use the local login,
+   * inject nothing" — which is exactly the Slice-3 fallback (heartbeat.ts).
+   */
+  function effectiveActiveId(candidateId: string): string | null {
+    return candidateId === DEFAULT_ACCOUNT_ID ? null : candidateId;
+  }
+
   /** Run the balancer for a single company. */
   async function runForCompany(companyId: string): Promise<BalancerCompanyResult> {
     const poolAccounts = await listPoolAccounts(db, companyId);
-    if (poolAccounts.length === 0) {
-      return { companyId, activeAccountId: null, rotated: false, stopped: false, note: "no_pool_accounts" };
-    }
 
-    const health = await probeAndPersist(companyId, poolAccounts);
+    // The local/default account is ALWAYS a candidate (it's what agents fall back
+    // to). Probe it + every pooled account, persisting snapshots for the UI.
+    const [pooledHealth, defaultHealth] = await Promise.all([
+      probeAndPersist(companyId, poolAccounts),
+      probeAndPersistDefault(companyId),
+    ]);
+    const health = [defaultHealth, ...pooledHealth];
+
     const best = pickBestAccount(health);
     const state = await getPoolState(db, companyId);
-    const currentId = state?.activeAccountId ?? null;
+    const currentId = state?.activeAccountId ?? null; // null == currently on default/local
 
     if (!best) {
       logger.warn({ companyId }, "account-pool balancer found no usable account");
       return { companyId, activeAccountId: currentId, rotated: false, stopped: false, note: "no_usable_account" };
     }
 
-    // No change needed — already on the best account.
-    if (best.id === currentId) {
+    const bestActiveId = effectiveActiveId(best.id); // null when default wins
+
+    // No change needed — already on the best account (default↔null compares too).
+    if (bestActiveId === currentId) {
       return { companyId, activeAccountId: currentId, rotated: false, stopped: false };
     }
 
-    const isInitialAssignment = currentId === null;
+    // "Initial" only when there is no pool-state row at all yet. Being on the
+    // default (currentId === null with an existing row) is a real state we may
+    // rotate AWAY from, so we can't treat null as always-initial here.
+    const isInitialAssignment = state === null;
 
-    // STOP switch (D3): never auto-rotate when engaged. An initial assignment
-    // (no account yet) is allowed so a freshly-armed pool still gets seeded.
+    // STOP switch (D3): never auto-rotate when engaged (except first-ever seed).
     if (!isInitialAssignment) {
       const stop = await getStopSwitch(db, companyId);
       if (stop.stopped) {
@@ -255,24 +321,24 @@ export function accountPoolBalancer(db: Db, deps: BalancerDeps = {}) {
       }
     }
 
-    // Commit the new assignment.
+    // Commit the new assignment (bestActiveId is null when default wins).
     await setActiveAccount(db, {
       companyId,
-      activeAccountId: best.id,
+      activeAccountId: bestActiveId,
       prevAccountId: currentId,
       reason: isInitialAssignment ? "initial" : "rotation",
     });
 
     if (isInitialAssignment) {
-      logger.info({ companyId, accountId: best.id }, "account-pool balancer set initial active account");
-      return { companyId, activeAccountId: best.id, rotated: false, stopped: false, note: "initial_assignment" };
+      logger.info({ companyId, accountId: bestActiveId }, "account-pool balancer set initial active account");
+      return { companyId, activeAccountId: bestActiveId, rotated: false, stopped: false, note: "initial_assignment" };
     }
 
-    const from = health.find((h) => h.id === currentId) ?? null;
+    const from = health.find((h) => effectiveActiveId(h.id) === currentId) ?? null;
     await notifyRotation(companyId, from, best);
-    await wakeAllAgents(companyId, currentId, best.id);
-    logger.info({ companyId, from: currentId, to: best.id }, "account-pool balancer rotated active account");
-    return { companyId, activeAccountId: best.id, rotated: true, stopped: false };
+    await wakeAllAgents(companyId, currentId, bestActiveId);
+    logger.info({ companyId, from: currentId, to: bestActiveId }, "account-pool balancer rotated active account");
+    return { companyId, activeAccountId: bestActiveId, rotated: true, stopped: false };
   }
 
   /** Run the balancer across every active company that has a pool. */

@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, boolean, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, boolean, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { companySecrets } from "./company_secrets.js";
 
@@ -25,6 +25,11 @@ export const accountPoolState = pgTable(
     // global STOP switch (D3) — when true the Balancer must not auto-rotate
     rotationStopped: boolean("rotation_stopped").notNull().default(false),
     stopReason: text("stop_reason"),
+    // last-known health snapshot for the machine's LOCAL/default account (the
+    // login agents fall back to when activeAccountId is null). Shape matches
+    // PoolAccountHealthSnapshot. Persisted by the Balancer so the default card
+    // shares the same snapshot pipeline as pooled accounts (no live API on GET).
+    defaultHealth: jsonb("default_health").$type<Record<string, unknown> | null>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

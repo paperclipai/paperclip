@@ -14,7 +14,11 @@ import {
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
-import { readPoolAccountHealth } from "../services/account-pool.js";
+import {
+  DEFAULT_ACCOUNT_ID,
+  getDefaultAccountHealth,
+  readPoolAccountHealth,
+} from "../services/account-pool.js";
 import { accountPoolBalancer } from "../services/account-pool-balancer.js";
 
 /**
@@ -90,8 +94,28 @@ export function accountPoolRoutes(db: Db) {
    * endpoint below.
    */
   async function buildAccountList(companyId: string): Promise<AccountPoolListResponse> {
-    const [secrets, state] = await Promise.all([listPoolSecrets(companyId), readState(companyId)]);
-    const accounts: AccountWithHealth[] = secrets.map((secret) => {
+    const [secrets, state, defaultSnapshot] = await Promise.all([
+      listPoolSecrets(companyId),
+      readState(companyId),
+      getDefaultAccountHealth(db, companyId),
+    ]);
+
+    // The implicit "Default — this machine" account always comes first and is
+    // never removable. Its health is the Balancer-persisted snapshot (same
+    // pipeline as pooled accounts — no live API call on this GET).
+    const defaultCard: AccountWithHealth = {
+      id: DEFAULT_ACCOUNT_ID,
+      name: "Default — this machine",
+      key: "Machine login (~/.claude)",
+      status: "active",
+      windows: defaultSnapshot?.windows ?? [],
+      usedPercent: defaultSnapshot?.usedPercent ?? null,
+      resetsAt: defaultSnapshot?.resetsAt ?? null,
+      capped: defaultSnapshot?.capped ?? false,
+      error: defaultSnapshot?.error ?? undefined,
+    };
+
+    const pooled: AccountWithHealth[] = secrets.map((secret) => {
       const snapshot = readPoolAccountHealth(secret.providerMetadata);
       return {
         ...toPoolAccount(secret),
@@ -104,7 +128,8 @@ export function accountPoolRoutes(db: Db) {
         error: snapshot?.error ?? undefined,
       };
     });
-    return { accounts, state };
+
+    return { accounts: [defaultCard, ...pooled], state };
   }
 
   // GET /api/account-pool — list pooled accounts with last-known health + current state
