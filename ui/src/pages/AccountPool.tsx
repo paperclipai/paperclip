@@ -286,6 +286,12 @@ export function AccountPool() {
     },
     onError: (error) => {
       setAddError(error instanceof ApiError ? error.message : "Failed to complete login");
+      // A code can only be exchanged once; after any failure it's spent (or the
+      // endpoint is throttled). Reset to the "Login with Claude" step so the only
+      // path forward is a FRESH code + a single clean exchange — this prevents
+      // re-submitting a dead code, which is what piles up into a 429.
+      setOauth(null);
+      setPastedCode("");
     },
   });
 
