@@ -185,6 +185,30 @@ function buildAttachmentContentPath(attachmentId: string): string {
   return `/api/attachments/${attachmentId}/content`;
 }
 
+const GENERIC_ATTACHMENT_CONTENT_TYPES = new Set([
+  "application/octet-stream",
+  "binary/octet-stream",
+  "application/x-binary",
+]);
+
+function inferVideoContentTypeFromFilename(filename: string | null | undefined): string | null {
+  const lower = (filename ?? "").toLowerCase();
+  if (lower.endsWith(".mp4") || lower.endsWith(".m4v")) return "video/mp4";
+  if (lower.endsWith(".webm")) return "video/webm";
+  if (lower.endsWith(".mov") || lower.endsWith(".qt") || lower.endsWith(".quicktime")) return "video/quicktime";
+  return null;
+}
+
+function resolveAttachmentResponseContentType(input: {
+  storedContentType: string | null | undefined;
+  objectContentType?: string | null;
+  originalFilename?: string | null;
+}) {
+  const storedContentType = normalizeContentType(input.storedContentType || input.objectContentType);
+  if (!GENERIC_ATTACHMENT_CONTENT_TYPES.has(storedContentType)) return storedContentType;
+  return inferVideoContentTypeFromFilename(input.originalFilename) ?? storedContentType;
+}
+
 function requiresPaperclipAttachmentMetadata(input: {
   type?: unknown;
   provider?: unknown;
@@ -6376,7 +6400,11 @@ export function issueRoutes(
       attachment.objectKey,
       range.kind === "range" ? { range: { start: range.start, end: range.end } } : undefined,
     );
-    const responseContentType = normalizeContentType(attachment.contentType || object.contentType);
+    const responseContentType = resolveAttachmentResponseContentType({
+      storedContentType: attachment.contentType,
+      objectContentType: object.contentType,
+      originalFilename: attachment.originalFilename,
+    });
     res.setHeader("Content-Type", responseContentType);
     res.setHeader("Cache-Control", "private, max-age=60");
     res.setHeader("X-Content-Type-Options", "nosniff");

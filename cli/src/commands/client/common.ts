@@ -23,6 +23,7 @@ export interface ResolvedClientContext {
   profileName: string;
   profile: ClientContextProfile;
   json: boolean;
+  authSource: "explicit" | "env" | "profile_env" | "stored_board" | "none";
 }
 
 export function addCommonClientOptions(command: Command, opts?: { includeCompany?: boolean }): Command {
@@ -49,16 +50,10 @@ export function resolveCommandContext(
   const context = readContext(options.context);
   const { name: profileName, profile } = resolveProfile(context, options.profile);
 
-  const apiBase =
-    options.apiBase?.trim() ||
-    process.env.PAPERCLIP_API_URL?.trim() ||
-    profile.apiBase ||
-    inferApiBaseFromConfig(options.config);
+  const apiBase = resolveApiBase(options, profile);
 
-  const explicitApiKey =
-    options.apiKey?.trim() ||
-    process.env.PAPERCLIP_API_KEY?.trim() ||
-    readKeyFromProfileEnv(profile);
+  const resolvedApiKey = resolveApiKey(options, profile);
+  const explicitApiKey = resolvedApiKey.value;
   const storedBoardCredential = explicitApiKey ? null : getStoredBoardCredential(apiBase);
   const apiKey = explicitApiKey || storedBoardCredential?.token;
 
@@ -100,7 +95,66 @@ export function resolveCommandContext(
     profileName,
     profile,
     json: Boolean(options.json),
+    authSource: explicitApiKey ? resolvedApiKey.source : storedBoardCredential ? "stored_board" : "none",
   };
+}
+
+export function resolveApiBase(options: Pick<BaseClientOptions, "apiBase" | "config">, profile: ClientContextProfile = {}): string {
+  return normalizeApiBase(
+    options.apiBase?.trim() ||
+    process.env.PAPERCLIP_API_URL?.trim() ||
+    profile.apiBase ||
+    inferApiBaseFromConfig(options.config),
+  );
+}
+
+export function normalizeApiBase(apiBase: string): string {
+  return apiBase.trim().replace(/\/+$/, "");
+}
+
+export function apiPath(strings: TemplateStringsArray, ...values: Array<string | number | boolean | null | undefined>): string {
+  let path = strings[0] ?? "";
+  values.forEach((value, index) => {
+    if (value === null || value === undefined || String(value).trim() === "") {
+      throw new Error("Cannot build API path with an empty path segment.");
+    }
+    path += `${encodeURIComponent(String(value))}${strings[index + 1] ?? ""}`;
+  });
+  return path;
+}
+
+export function inferContentTypeFromPath(filePath: string): string | undefined {
+  const ext = filePath.split(/[\\/]/).pop()?.split(".").pop()?.toLowerCase();
+  if (!ext) return undefined;
+  return {
+    avif: "image/avif",
+    gif: "image/gif",
+    jpeg: "image/jpeg",
+    jpg: "image/jpeg",
+    json: "application/json",
+    md: "text/markdown; charset=utf-8",
+    pdf: "application/pdf",
+    png: "image/png",
+    svg: "image/svg+xml",
+    txt: "text/plain; charset=utf-8",
+    webp: "image/webp",
+  }[ext];
+}
+
+function resolveApiKey(
+  options: Pick<BaseClientOptions, "apiKey">,
+  profile: ClientContextProfile,
+): { value: string | undefined; source: "explicit" | "env" | "profile_env" | "none" } {
+  const optionValue = options.apiKey?.trim();
+  if (optionValue) return { value: optionValue, source: "explicit" };
+
+  const envValue = process.env.PAPERCLIP_API_KEY?.trim();
+  if (envValue) return { value: envValue, source: "env" };
+
+  const profileEnvValue = readKeyFromProfileEnv(profile);
+  if (profileEnvValue) return { value: profileEnvValue, source: "profile_env" };
+
+  return { value: undefined, source: "none" };
 }
 
 function shouldRecoverBoardAuth(error: ApiRequestError): boolean {
@@ -183,7 +237,7 @@ function renderValue(value: unknown): string {
   return "[object]";
 }
 
-function inferApiBaseFromConfig(configPath?: string): string {
+export function inferApiBaseFromConfig(configPath?: string): string {
   const envHost = process.env.PAPERCLIP_SERVER_HOST?.trim() || "localhost";
   let port = Number(process.env.PAPERCLIP_SERVER_PORT || "");
 

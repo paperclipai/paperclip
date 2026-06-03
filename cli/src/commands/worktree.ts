@@ -1568,11 +1568,31 @@ export async function worktreeMakeCommand(nameArg: string, opts: WorktreeMakeOpt
   }
 }
 
+type PnpmInstallInvocation = {
+  command: string;
+  argsPrefix: string[];
+};
+
+export function resolvePnpmInstallInvocation(
+  env: NodeJS.ProcessEnv = process.env,
+  nodeExecPath = process.execPath,
+): PnpmInstallInvocation {
+  const npmExecPath = nonEmpty(env.npm_execpath);
+  if (npmExecPath && npmExecPath.toLowerCase().includes("pnpm")) {
+    if (/\.(cjs|mjs|js)$/i.test(npmExecPath)) {
+      return { command: nodeExecPath, argsPrefix: [npmExecPath] };
+    }
+    return { command: npmExecPath, argsPrefix: [] };
+  }
+  return { command: "pnpm", argsPrefix: [] };
+}
+
 function installDependenciesBestEffort(targetPath: string): void {
   const installSpinner = p.spinner();
   installSpinner.start("Installing dependencies...");
+  const pnpm = resolvePnpmInstallInvocation();
   try {
-    execFileSync("pnpm", ["install"], {
+    execFileSync(pnpm.command, [...pnpm.argsPrefix, "install"], {
       cwd: targetPath,
       stdio: ["ignore", "pipe", "pipe"],
     });

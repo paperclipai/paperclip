@@ -65,10 +65,11 @@ import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
+import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssuePlanDecompositionsSection } from "../components/IssuePlanDecompositionsSection";
 import { IssueOutputSection } from "../components/issue-output/IssueOutputSection";
-import { formatBytes } from "../lib/issue-output";
+import { isImageAttachment } from "../lib/issue-attachments";
 import { IssueSiblingNavigation } from "../components/IssueSiblingNavigation";
 import { IssuesList } from "../components/IssuesList";
 import { AgentIcon } from "../components/AgentIconPicker";
@@ -137,7 +138,6 @@ import {
   Plus,
   Repeat,
   SlidersHorizontal,
-  Trash2,
   XCircle,
 } from "lucide-react";
 import {
@@ -1248,7 +1248,6 @@ export function IssueDetail() {
     approvalId: string;
     action: "approve" | "reject";
   } | null>(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
   const [galleryOpen, setGalleryOpen] = useState(false);
@@ -2828,10 +2827,8 @@ export function IssueDetail() {
     commentComposerRef.current?.focus();
   }, [detailTab, pendingCommentComposerFocusKey]);
 
-  const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
   const attachmentList = attachments ?? [];
   const imageAttachments = attachmentList.filter(isImageAttachment);
-  const nonImageAttachments = attachmentList.filter((a) => !isImageAttachment(a));
 
   const handleChatImageClick = useCallback(
     (src: string) => {
@@ -3772,133 +3769,32 @@ export function IssueDetail() {
       {attachmentsInitialLoading ? (
         <IssueSectionSkeleton titleWidth="w-24" rows={2} />
       ) : hasAttachments ? (
-        <div
-        className={cn(
-          "space-y-3 rounded-lg transition-colors",
-        )}
-        onDragEnter={(evt) => {
-          evt.preventDefault();
-          setAttachmentDragActive(true);
-        }}
-        onDragOver={(evt) => {
-          evt.preventDefault();
-          setAttachmentDragActive(true);
-        }}
-        onDragLeave={(evt) => {
-          if (evt.currentTarget.contains(evt.relatedTarget as Node | null)) return;
-          setAttachmentDragActive(false);
-        }}
-        onDrop={(evt) => void handleAttachmentDrop(evt)}
-      >
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
-          {attachmentUploadButton}
-        </div>
-
-        {attachmentError && (
-          <p className="text-xs text-destructive">{attachmentError}</p>
-        )}
-
-        {imageAttachments.length > 0 && (
-          <div className="grid grid-cols-4 gap-2">
-            {imageAttachments.map((attachment) => (
-              <div
-                key={attachment.id}
-                className="group relative aspect-square rounded-lg overflow-hidden border border-border bg-accent/10 cursor-pointer"
-                onClick={() => {
-                  const idx = imageAttachments.findIndex((a) => a.id === attachment.id);
-                  setGalleryIndex(idx >= 0 ? idx : 0);
-                  setGalleryOpen(true);
-                }}
-              >
-                <img
-                  src={attachment.contentPath}
-                  alt={attachment.originalFilename ?? "attachment"}
-                  className="h-full w-full object-cover"
-                  loading="lazy"
-                />
-                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors" />
-                {confirmDeleteId === attachment.id ? (
-                  <div
-                    className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/60"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <p className="text-xs text-white font-medium">Delete?</p>
-                    <div className="flex gap-1.5">
-                      <button
-                        type="button"
-                        className="rounded bg-destructive px-2 py-0.5 text-xs text-white hover:bg-destructive/80"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deleteAttachment.mutate(attachment.id);
-                          setConfirmDeleteId(null);
-                        }}
-                        disabled={deleteAttachment.isPending}
-                      >
-                        Yes
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded bg-muted px-2 py-0.5 text-xs hover:bg-muted/80"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setConfirmDeleteId(null);
-                        }}
-                      >
-                        No
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    className="absolute top-1.5 right-1.5 rounded-md bg-black/50 p-1 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setConfirmDeleteId(attachment.id);
-                    }}
-                    title="Delete attachment"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {nonImageAttachments.length > 0 && (
-          <div className="space-y-2">
-            {nonImageAttachments.map((attachment) => (
-              <div key={attachment.id} className="border border-border rounded-md p-2">
-                <div className="flex items-center justify-between gap-2">
-                  <a
-                    href={attachment.contentPath}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs hover:underline truncate"
-                    title={attachment.originalFilename ?? attachment.id}
-                  >
-                    {attachment.originalFilename ?? attachment.id}
-                  </a>
-                  <button
-                    type="button"
-                    className="text-muted-foreground hover:text-destructive"
-                    onClick={() => deleteAttachment.mutate(attachment.id)}
-                    disabled={deleteAttachment.isPending}
-                    title="Delete attachment"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-                <p className="text-[11px] text-muted-foreground">
-                  {attachment.contentType} · {formatBytes(attachment.byteSize)}
-                </p>
-              </div>
-            ))}
-          </div>
-        )}
-        </div>
+        <IssueAttachmentsSection
+          attachments={attachmentList}
+          uploadButton={attachmentUploadButton}
+          error={attachmentError}
+          dragActive={attachmentDragActive}
+          deletePending={deleteAttachment.isPending}
+          onDelete={(attachmentId) => deleteAttachment.mutate(attachmentId)}
+          onImageClick={(attachment) => {
+            const idx = imageAttachments.findIndex((a) => a.id === attachment.id);
+            setGalleryIndex(idx >= 0 ? idx : 0);
+            setGalleryOpen(true);
+          }}
+          onDragEnter={(evt) => {
+            evt.preventDefault();
+            setAttachmentDragActive(true);
+          }}
+          onDragOver={(evt) => {
+            evt.preventDefault();
+            setAttachmentDragActive(true);
+          }}
+          onDragLeave={(evt) => {
+            if (evt.currentTarget.contains(evt.relatedTarget as Node | null)) return;
+            setAttachmentDragActive(false);
+          }}
+          onDrop={(evt) => void handleAttachmentDrop(evt)}
+        />
       ) : null}
 
       <ImageGalleryModal
