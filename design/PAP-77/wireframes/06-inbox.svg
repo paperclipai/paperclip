@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- Outer border -->
+  <rect x="0.75" y="0.75" width="1278.5" height="798.5"/>
+
+  <!-- ============ A) FAR-LEFT NAV RAIL ============ -->
+  <g data-region="nav-rail">
+    <rect x="0" y="0" width="80" height="800"/>
+
+    <!-- Workspace square -->
+    <rect x="24" y="24" width="32" height="32" fill="#e6e6e6"/>
+
+    <!-- Chat -->
+    <rect x="24" y="96" width="32" height="32" rx="8"/>
+    <text x="40" y="140" font-size="12" stroke="none" fill="#000" text-anchor="middle">Chat</text>
+
+    <!-- Inbox (ACTIVE) -->
+    <rect x="24" y="176" width="32" height="32" rx="8" fill="#e6e6e6"/>
+    <text x="40" y="220" font-size="12" stroke="none" fill="#000" text-anchor="middle">Inbox</text>
+    <!-- Badge -->
+    <circle cx="64" cy="168" r="8" fill="#000"/>
+    <text x="64" y="172" font-size="12" stroke="none" fill="#fff" text-anchor="middle">1</text>
+
+    <!-- Tasks -->
+    <rect x="24" y="256" width="32" height="32" rx="8"/>
+    <text x="40" y="300" font-size="12" stroke="none" fill="#000" text-anchor="middle">Tasks</text>
+
+    <!-- Agents -->
+    <rect x="24" y="336" width="32" height="32" rx="8"/>
+    <text x="40" y="380" font-size="12" stroke="none" fill="#000" text-anchor="middle">Agents</text>
+
+    <!-- Files -->
+    <rect x="24" y="416" width="32" height="32" rx="8"/>
+    <text x="40" y="460" font-size="12" stroke="none" fill="#000" text-anchor="middle">Files</text>
+
+    <!-- Settings -->
+    <rect x="24" y="720" width="32" height="32" rx="8"/>
+    <text x="40" y="764" font-size="12" stroke="none" fill="#000" text-anchor="middle">Settings</text>
+  </g>
+
+  <!-- ============ B) MAIN INBOX PANE ============ -->
+  <g data-region="main">
+    <!-- Title -->
+    <text x="112" y="64" font-size="28" stroke="none" fill="#000">Inbox</text>
+    <!-- Subtitle -->
+    <text x="112" y="96" font-size="14" stroke="none" fill="#666">1 unread &#183; things that need your attention</text>
+
+    <!-- Filter tabs -->
+    <text x="112" y="128" font-size="14" stroke="none" fill="#000">Needs review</text>
+    <rect x="112" y="136" width="124" height="3" fill="#000" stroke="none"/>
+    <text x="260" y="128" font-size="14" stroke="none" fill="#666">All</text>
+    <text x="320" y="128" font-size="14" stroke="none" fill="#666">Done</text>
+
+    <!-- Divider -->
+    <line x1="112" y1="160" x2="1232" y2="160"/>
+
+    <!-- NOTIFICATION ROW (unread) -->
+    <rect x="112" y="176" width="1120" height="80" rx="8"/>
+    <rect x="112" y="176" width="6" height="80" fill="#000" stroke="none"/>
+    <circle cx="148" cy="216" r="5" fill="#000"/>
+    <circle cx="184" cy="216" r="16" fill="#e6e6e6"/>
+    <text x="216" y="210" font-size="14" stroke="none" fill="#000">Company strategy is ready for your review</text>
+    <text x="216" y="232" font-size="12" stroke="none" fill="#666">PAP-128 &#183; Ada (team lead) &#183; 1m ago</text>
+    <!-- For review pill -->
+    <rect x="1040" y="204" width="96" height="24" rx="10"/>
+    <text x="1088" y="220" font-size="12" stroke="none" fill="#000" text-anchor="middle">For review</text>
+    <!-- Chevron -->
+    <polyline points="1196,208 1204,216 1196,224" fill="none"/>
+
+    <!-- SECOND, already-read row (muted) -->
+    <rect x="112" y="272" width="1120" height="72" rx="8"/>
+    <circle cx="184" cy="308" r="16" fill="#e6e6e6"/>
+    <text x="216" y="302" font-size="14" stroke="none" fill="#666">Ada finished setting up your workspace</text>
+    <text x="216" y="324" font-size="12" stroke="none" fill="#666">Yesterday</text>
+  </g>
+
+  <!-- ============ ANNOTATIONS ============ -->
+  <g data-region="annotations" stroke="#d33" fill="none" stroke-dasharray="6 3">
+    <!-- 1: Inbox nav badge -->
+    <circle cx="64" cy="248" r="12"/>
+    <text x="64" y="252" font-size="12" stroke="none" fill="#d33" text-anchor="middle">1</text>
+    <text x="88" y="540" font-size="12" stroke="none" fill="#d33">Badge count appears when</text>
+    <text x="88" y="556" font-size="12" stroke="none" fill="#d33">something needs review</text>
+
+    <!-- 2: unread notification row -->
+    <circle cx="1208" cy="216" r="12"/>
+    <text x="1208" y="220" font-size="12" stroke="none" fill="#d33" text-anchor="middle">2</text>
+    <text x="900" y="120" font-size="12" stroke="none" fill="#d33">One click jumps straight to</text>
+    <text x="900" y="136" font-size="12" stroke="none" fill="#d33">the task &amp; artifact</text>
+
+    <!-- Dashed note box: the full chain -->
+    <rect x="112" y="600" width="800" height="120"/>
+    <text x="136" y="632" font-size="12" stroke="none" fill="#d33">The full chain:</text>
+    <text x="136" y="660" font-size="12" stroke="none" fill="#d33">Chat -&gt; Task -&gt; Quiz -&gt; Agent works -&gt; Artifact -&gt; Review -&gt; Approve</text>
+    <text x="136" y="688" font-size="12" stroke="none" fill="#d33">Each step is visible in chat, the agent feed, the nav,</text>
+    <text x="136" y="704" font-size="12" stroke="none" fill="#d33">and here.</text>
+  </g>
+</svg>

@@ -1,0 +1,164 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- Outer border -->
+  <rect x="0.75" y="0.75" width="1278.5" height="798.5"/>
+
+  <!-- ================= FAR-LEFT NAV RAIL ================= -->
+  <g data-region="nav-rail">
+    <rect x="0.75" y="0.75" width="79.25" height="798.5"/>
+    <!-- workspace square -->
+    <rect x="24" y="24" width="32" height="32" rx="6" fill="#e6e6e6"/>
+
+    <!-- Chat -->
+    <rect x="24" y="96" width="32" height="32" rx="6"/>
+    <text x="40" y="144" font-size="12" stroke="none" fill="#666" text-anchor="middle">Chat</text>
+
+    <!-- Inbox -->
+    <rect x="24" y="176" width="32" height="32" rx="6"/>
+    <text x="40" y="224" font-size="12" stroke="none" fill="#666" text-anchor="middle">Inbox</text>
+
+    <!-- Tasks (ACTIVE) -->
+    <rect x="24" y="256" width="32" height="32" rx="6" fill="#e6e6e6"/>
+    <text x="40" y="304" font-size="12" stroke="none" fill="#000" text-anchor="middle">Tasks</text>
+
+    <!-- Agents -->
+    <rect x="24" y="336" width="32" height="32" rx="6"/>
+    <circle cx="60" cy="336" r="5" fill="#000"/>
+    <text x="40" y="384" font-size="12" stroke="none" fill="#666" text-anchor="middle">Agents</text>
+
+    <!-- Files -->
+    <rect x="24" y="416" width="32" height="32" rx="6"/>
+    <text x="40" y="464" font-size="12" stroke="none" fill="#666" text-anchor="middle">Files</text>
+
+    <!-- Settings -->
+    <rect x="24" y="720" width="32" height="32" rx="6"/>
+    <text x="40" y="768" font-size="12" stroke="none" fill="#666" text-anchor="middle">Settings</text>
+  </g>
+
+  <!-- ================= MAIN TASK PANE ================= -->
+  <g data-region="main-pane">
+    <!-- Breadcrumb -->
+    <text x="112" y="28" font-size="12" stroke="none" fill="#666">Tasks / PAP-128</text>
+
+    <!-- Status pill -->
+    <rect x="1000" y="52" width="200" height="28" rx="12"/>
+    <text x="1100" y="70" font-size="12" stroke="none" fill="#000" text-anchor="middle">Needs your input</text>
+
+    <!-- Task title -->
+    <text x="112" y="72" font-size="28" stroke="none" fill="#000">Company strategy interview</text>
+
+    <!-- Meta row -->
+    <text x="112" y="100" font-size="12" stroke="none" fill="#666">PAP-128 · assigned to Ada (team lead) · created from chat</text>
+
+    <!-- Divider -->
+    <line x1="112" y1="120" x2="1232" y2="120"/>
+
+    <!-- ===== COMMENT THREAD ===== -->
+    <g data-region="comments">
+      <!-- Comment 1 (user) -->
+      <circle cx="128" cy="160" r="16" fill="#e6e6e6"/>
+      <text x="156" y="156" font-size="14" stroke="none" fill="#000">You</text>
+      <text x="200" y="156" font-size="12" stroke="none" fill="#666">2:14pm</text>
+      <text x="156" y="184" font-size="14" stroke="none" fill="#000">Create a 1-page company strategy</text>
+
+      <!-- Comment 2 (agent) -->
+      <circle cx="128" cy="232" r="16" fill="#e6e6e6"/>
+      <text x="156" y="228" font-size="14" stroke="none" fill="#000">Ada · team lead</text>
+      <text x="156" y="256" font-size="14" stroke="none" fill="#000">Great — let me ask a few quick questions so the strategy reflects how you</text>
+      <text x="156" y="278" font-size="14" stroke="none" fill="#000">actually think about the business.</text>
+    </g>
+
+    <!-- Divider -->
+    <line x1="112" y1="296" x2="1232" y2="296"/>
+
+    <!-- ===== QUIZ CARD ===== -->
+    <g data-region="quiz-card">
+      <rect x="112" y="312" width="1024" height="470" rx="8"/>
+
+      <text x="136" y="348" font-size="20" stroke="none" fill="#000">A few questions to build your strategy</text>
+      <text x="136" y="372" font-size="12" stroke="none" fill="#666">5 of 8 questions · pick one or type your own</text>
+
+      <!-- QUESTION 1 -->
+      <text x="136" y="412" font-size="14" stroke="none" fill="#000">1. What stage is Acme Robotics at?</text>
+
+      <!-- Option 1 (selected) -->
+      <circle cx="161" cy="432" r="9"/>
+      <circle cx="161" cy="432" r="4" fill="#000"/>
+      <text x="184" y="437" font-size="14" stroke="none" fill="#000">Pre-product / exploring</text>
+
+      <!-- Option 2 -->
+      <circle cx="161" cy="460" r="9"/>
+      <text x="184" y="465" font-size="14" stroke="none" fill="#000">Early traction</text>
+
+      <!-- Option 3 -->
+      <circle cx="161" cy="488" r="9"/>
+      <text x="184" y="493" font-size="14" stroke="none" fill="#000">Scaling</text>
+
+      <!-- Freeform row -->
+      <circle cx="161" cy="518" r="9"/>
+      <rect x="176" y="504" width="360" height="28" rx="4"/>
+      <text x="188" y="522" font-size="12" stroke="none" fill="#666">Other (type your own)</text>
+
+      <!-- Divider inside card -->
+      <line x1="136" y1="552" x2="1112" y2="552"/>
+
+      <!-- QUESTION 2 -->
+      <text x="136" y="584" font-size="14" stroke="none" fill="#000">2. Who is your primary customer?</text>
+
+      <!-- Option 1 -->
+      <circle cx="161" cy="604" r="9"/>
+      <text x="184" y="609" font-size="14" stroke="none" fill="#000">Enterprise</text>
+
+      <!-- Option 2 -->
+      <circle cx="161" cy="632" r="9"/>
+      <text x="184" y="637" font-size="14" stroke="none" fill="#000">SMB</text>
+
+      <!-- Option 3 -->
+      <circle cx="161" cy="660" r="9"/>
+      <text x="184" y="665" font-size="14" stroke="none" fill="#000">Consumer</text>
+
+      <!-- Freeform row -->
+      <circle cx="161" cy="698" r="9"/>
+      <rect x="176" y="684" width="360" height="28" rx="4"/>
+      <text x="188" y="702" font-size="12" stroke="none" fill="#666">Other (type your own)</text>
+
+      <!-- Final open field note -->
+      <text x="136" y="724" font-size="12" stroke="none" fill="#666">Question 8 of 8 is an open field: 'Anything else I should know?'</text>
+
+      <!-- Textarea (side-by-side with submit, width 760) -->
+      <rect x="136" y="732" width="760" height="40" rx="4"/>
+      <text x="148" y="756" font-size="12" stroke="none" fill="#666">Anything else I should know?</text>
+
+      <!-- Submit button -->
+      <rect x="952" y="732" width="160" height="40" rx="8" fill="#000"/>
+      <text x="1032" y="757" font-size="14" stroke="none" fill="#fff" text-anchor="middle">Submit answers</text>
+    </g>
+  </g>
+
+  <!-- ================= ANNOTATIONS ================= -->
+  <g data-region="annotations" stroke="#d33" fill="none" stroke-dasharray="4 3">
+    <!-- 1: comment thread -->
+    <circle cx="620" cy="200" r="12"/>
+    <text x="620" y="204" font-size="12" stroke="none" fill="#d33" text-anchor="middle">1</text>
+    <text x="640" y="204" font-size="12" stroke="none" fill="#d33">The chat comments that created this task live here</text>
+
+    <!-- 2: Q1 radios -->
+    <circle cx="600" cy="460" r="12"/>
+    <text x="600" y="464" font-size="12" stroke="none" fill="#d33" text-anchor="middle">2</text>
+    <text x="620" y="464" font-size="12" stroke="none" fill="#d33">Multiple-choice quiz, &lt;=10 questions</text>
+
+    <!-- 3: freeform 'Other' input -->
+    <circle cx="600" cy="518" r="12"/>
+    <text x="600" y="522" font-size="12" stroke="none" fill="#d33" text-anchor="middle">3</text>
+    <text x="620" y="522" font-size="12" stroke="none" fill="#d33">Every question has a free-text escape hatch</text>
+
+    <!-- 4: final textarea -->
+    <circle cx="940" cy="700" r="12"/>
+    <text x="940" y="704" font-size="12" stroke="none" fill="#d33" text-anchor="middle">4</text>
+    <text x="960" y="704" font-size="12" stroke="none" fill="#d33">Last question is always an open 'anything else?' field</text>
+
+    <!-- 5: status pill -->
+    <circle cx="966" cy="66" r="12"/>
+    <text x="966" y="70" font-size="12" stroke="none" fill="#d33" text-anchor="middle">5</text>
+    <text x="760" y="40" font-size="12" stroke="none" fill="#d33">Task state: waiting on the user</text>
+  </g>
+</svg>

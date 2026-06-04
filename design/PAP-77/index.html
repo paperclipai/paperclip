@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PAP-77 — Onboarding chip flow wireframes</title>
+<style>
+  :root {
+    --bg: #fafaf8;
+    --panel: #ffffff;
+    --ink: #111111;
+    --muted: #666666;
+    --line: #e5e5e0;
+    --accent: #d33;
+    --maxw: 1200px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 15px/1.55 -apple-system, system-ui, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+
+  .shell { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+
+  .toc {
+    position: sticky; top: 0; align-self: start;
+    height: 100vh; overflow: auto;
+    padding: 24px 16px 24px 24px;
+    border-right: 1px solid var(--line);
+    background: var(--panel);
+    font-size: 13px;
+    z-index: 20;
+  }
+  .toc h1 { font-size: 14px; margin: 0 0 4px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+  .toc h2 { font-size: 12px; margin: 24px 0 6px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+  .toc a { display: block; text-decoration: none; padding: 6px 8px; margin-left: -8px; border-radius: 4px; color: var(--ink); }
+  .toc a:hover { background: var(--bg); }
+  .toc .num { display: inline-block; width: 22px; color: var(--muted); }
+  .toc .toc-summary { display: none; }
+  .toc .toc-body { display: block; }
+
+  main { padding: 48px 56px 96px; max-width: 1300px; min-width: 0; }
+
+  header.hero { max-width: var(--maxw); margin-bottom: 56px; }
+  header.hero .crumb { color: var(--muted); font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
+  header.hero h1 { font-size: 36px; line-height: 1.15; margin: 8px 0 16px; }
+  header.hero p { color: var(--muted); max-width: 760px; font-size: 16px; }
+  header.hero .pills { margin-top: 20px; display: flex; gap: 8px; flex-wrap: wrap; }
+  header.hero .pill { font-size: 12px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); }
+
+  section { scroll-margin-top: 24px; max-width: var(--maxw); margin-bottom: 88px; }
+  section .lede { color: var(--muted); margin: 0 0 12px; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 700; }
+  section h2 { font-size: 28px; line-height: 1.2; margin: 0 0 8px; }
+  section h2 .step-num { display: inline-block; width: 40px; color: var(--muted); }
+  section h3 { font-size: 16px; margin: 24px 0 8px; }
+  section .desc { color: var(--muted); margin: 0 0 24px; max-width: 760px; }
+
+  .grid {
+    display: grid; gap: 24px;
+    grid-template-columns: minmax(0, 1.4fr) 220px minmax(0, 0.9fr);
+    align-items: start;
+  }
+  .grid.grid-2 { grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.9fr); }
+  @media (max-width: 1180px) {
+    .grid { grid-template-columns: minmax(0, 1fr) 200px; }
+    .grid > .notes-col { grid-column: 1 / -1; }
+    .grid.grid-2 { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } .grid > .mobile-col { max-width: 280px; } }
+
+  @media (max-width: 900px) {
+    .shell { grid-template-columns: 1fr; }
+    .toc {
+      position: sticky; top: 0;
+      height: auto; max-height: 60vh;
+      padding: 12px 16px;
+      border-right: none;
+      border-bottom: 1px solid var(--line);
+    }
+    .toc .toc-summary {
+      display: flex; justify-content: space-between; align-items: center;
+      cursor: pointer; list-style: none; padding: 4px 0;
+    }
+    .toc .toc-summary::-webkit-details-marker { display: none; }
+    .toc .toc-summary .title { font-size: 13px; font-weight: 600; }
+    .toc .toc-summary .crumb { font-size: 11px; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+    .toc .toc-summary .chevron {
+      width: 10px; height: 10px;
+      border-right: 1.5px solid var(--ink); border-bottom: 1.5px solid var(--ink);
+      transform: rotate(45deg); transition: transform 120ms ease; margin-right: 4px;
+    }
+    .toc[open] .toc-summary .chevron { transform: rotate(225deg) translate(-2px, -2px); }
+    .toc .toc-body { display: none; padding-top: 8px; border-top: 1px solid var(--line); margin-top: 8px; }
+    .toc[open] .toc-body { display: block; }
+    main { padding: 24px 20px 64px; }
+    header.hero { margin-bottom: 40px; }
+    header.hero h1 { font-size: 28px; }
+    header.hero p { font-size: 15px; }
+    section { margin-bottom: 64px; scroll-margin-top: 80px; }
+    section h2 { font-size: 24px; }
+    section h2 .step-num { width: 32px; }
+    .flow-section { padding: 20px; margin-bottom: 40px; scroll-margin-top: 80px; }
+  }
+
+  @media (max-width: 560px) {
+    main { padding: 16px 14px 56px; }
+    header.hero { margin-bottom: 32px; }
+    header.hero h1 { font-size: 24px; line-height: 1.2; }
+    header.hero p { font-size: 14px; }
+    section { margin-bottom: 48px; }
+    section h2 { font-size: 20px; line-height: 1.25; }
+    section h2 .step-num { width: 28px; }
+    section h3 { font-size: 15px; margin: 20px 0 6px; }
+    section .desc { font-size: 14px; }
+    .grid { gap: 16px; }
+    .flow-section { padding: 16px; border-radius: 8px; }
+    .wire .label { padding: 8px 10px; font-size: 11px; gap: 8px; }
+    body { font-size: 14px; }
+  }
+
+  .wire {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    overflow: hidden; cursor: zoom-in;
+    transition: transform 80ms ease, box-shadow 80ms ease;
+  }
+  .wire:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.08); }
+  .wire .label {
+    padding: 10px 14px; font-size: 12px; color: var(--muted);
+    border-bottom: 1px solid var(--line);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .wire img { display: block; width: 100%; height: auto; background: #fff; }
+  .wire.mobile-wire img { max-width: 220px; margin: 0 auto; }
+
+  .notes ul { padding-left: 20px; margin: 8px 0; }
+  .notes li { margin-bottom: 6px; }
+  .notes .why {
+    background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--ink);
+    padding: 14px 18px; border-radius: 4px; margin-top: 12px; font-size: 14px;
+  }
+  .notes .num-badge { display: inline-block; min-width: 18px; text-align: center; font-weight: 700; }
+
+  .flow-section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 32px; margin-bottom: 56px; max-width: var(--maxw); }
+  .flow-section h2 { margin-top: 0; }
+  .flow-section .wire { margin-top: 16px; }
+
+  .lightbox {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.86);
+    display: none; align-items: center; justify-content: center;
+    z-index: 100; cursor: zoom-out; padding: 32px;
+  }
+  .lightbox.open { display: flex; }
+  .lightbox img { max-width: 100%; max-height: 100%; background: #fff; box-shadow: 0 30px 80px rgba(0,0,0,0.4); border-radius: 4px; }
+  .lightbox .close { position: absolute; top: 16px; right: 24px; font-size: 28px; color: #fff; cursor: pointer; }
+  .lightbox .caption { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); color: #fff; font-size: 13px; opacity: 0.9; }
+
+  @media (max-width: 560px) {
+    .lightbox { padding: 12px; overflow: auto; touch-action: pinch-zoom; }
+    .lightbox.open { display: block; }
+    .lightbox img { display: block; width: 100%; max-width: none; max-height: none; height: auto; margin: 40px auto 56px; box-shadow: none; }
+    .lightbox .close { position: fixed; top: 8px; right: 12px; font-size: 32px; }
+    .lightbox .caption { position: fixed; left: 50%; transform: translateX(-50%); font-size: 12px; bottom: 12px; text-align: center; background: rgba(0,0,0,0.7); border-radius: 4px; padding: 6px 12px; }
+  }
+
+  .footer { color: var(--muted); font-size: 12px; max-width: var(--maxw); border-top: 1px solid var(--line); padding-top: 24px; }
+  .footer code { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+</style>
+</head>
+<body>
+  <div class="shell">
+    <details class="toc">
+      <summary class="toc-summary">
+        <span>
+          <span class="crumb">PAP-77 · Onboarding chips</span><br>
+          <span class="title">Jump to a screen</span>
+        </span>
+        <span class="chevron" aria-hidden="true"></span>
+      </summary>
+      <nav class="toc-body" aria-label="Section navigation">
+        <h1>PAP-77</h1>
+        <div style="font-size: 13px; color: var(--muted); margin-bottom: 16px;">Change the intro chat chips</div>
+
+        <h2>Flow</h2>
+        <a href="#flow"><span class="num">⤳</span>The chain end-to-end</a>
+
+        <h2>Screens</h2>
+        <a href="#s1"><span class="num">1</span>Post-onboarding chat</a>
+        <a href="#s2"><span class="num">2</span>Chip clicked → task created</a>
+        <a href="#s3"><span class="num">3</span>Task: interview quiz</a>
+        <a href="#s4"><span class="num">4</span>Task: agent working</a>
+        <a href="#s5"><span class="num">5</span>Task: in review + artifact</a>
+        <a href="#s6"><span class="num">6</span>Inbox: review badge</a>
+
+        <h2>Notes</h2>
+        <a href="#mapping"><span class="num">⚙</span>Maps to existing primitives</a>
+        <a href="#open"><span class="num">?</span>Open questions</a>
+      </nav>
+    </details>
+
+    <main>
+      <header class="hero">
+        <div class="crumb">PAP-77 · Wireframes · Planning</div>
+        <h1>Intro chat chips → real tasks, quizzes &amp; reviewable artifacts</h1>
+        <p>
+          Today the four suggested chips under the post-onboarding chat just <em>pre-fill</em> the input box, and a
+          sent message <em>might</em> become a buried comment. This redesign makes each chip <strong>auto-send</strong> and
+          spin up a real, traceable Paperclip task: the team-lead agent creates an interview <strong>quiz</strong>, the user
+          answers it inside the task, the agent produces a <strong>document artifact</strong>, and the task moves to
+          <strong>In review</strong> for approval. The point isn't the documents — it's teaching a brand-new user the core
+          Paperclip primitives (tasks, states, live agents, comments, artifacts, review, approval, chaining) on their very
+          first interaction.
+        </p>
+        <div class="pills">
+          <span class="pill">6 screens + flow</span>
+          <span class="pill">Desktop + mobile (chat)</span>
+          <span class="pill">Lo-fi · monochrome</span>
+          <span class="pill">Click any wireframe to zoom</span>
+          <span class="pill">Planning only — no code</span>
+        </div>
+      </header>
+
+      <!-- ========== Flow ========== -->
+      <section id="flow" class="flow-section">
+        <div class="lede">Flow</div>
+        <h2>One chip click, the full Paperclip loop</h2>
+        <p class="desc">Solid arrows = the happy path a first-time user walks. Top row left-to-right, then down and back across the bottom row. Each hop is the same task, surfaced in a new place.</p>
+        <div class="wire" data-zoom data-caption="Onboarding chip flow — chat to approved artifact">
+          <div class="label"><span>flow.svg</span><span>1600×520</span></div>
+          <img src="wireframes/flow.svg" alt="Flow: chat + chips → auto-send + task → interview quiz → agent works → artifact + review → inbox + approve" />
+        </div>
+      </section>
+
+      <!-- ========== 1 — Post-onboarding chat ========== -->
+      <section id="s1">
+        <div class="lede">Step 1 · Land in chat</div>
+        <h2><span class="step-num">1.</span>Post-onboarding chat</h2>
+        <p class="desc">Where the user lands when the wizard finishes. Same two-pane layout as the rest of the app — chat on the left, a quiet <strong>Agent feed</strong> on the right — so the workspace they'll live in is visible from second one. The four chips get clearer, outcome-oriented copy.</p>
+        <div class="grid">
+          <div class="wire" data-zoom data-caption="01 · Post-onboarding chat (desktop)">
+            <div class="label"><span>01-chat.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/01-chat.svg" alt="Post-onboarding chat with four suggested chips (desktop)" />
+          </div>
+          <div class="wire mobile-wire mobile-col" data-zoom data-caption="01 · Post-onboarding chat (mobile)">
+            <div class="label"><span>mobile</span><span>375×812</span></div>
+            <img src="wireframes/01-chat-mobile.svg" alt="Post-onboarding chat (mobile)" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><span class="num-badge">1</span> Four chips with new copy: <em>Create a 1-page company strategy</em>, <em>Build a hiring plan</em>, <em>Map our first 30 days</em>, <em>Write an intro pitch</em>. Clicking now <b>auto-sends</b> — no manual Send step.</li>
+                <li><span class="num-badge">2</span> Helper line sets the expectation: "Pick one and I'll spin up a task — you'll review the result before anything ships."</li>
+                <li>Right pane = <b>Agent feed</b>, intentionally empty/quiet until a task exists.</li>
+                <li><b>Mobile:</b> side rail collapses to a bottom tab bar; chips stack full-width and still auto-send on tap.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> Today chips just fill the textbox, so the user has to read a long sentence, decide, and press Send — friction at the exact moment they're least oriented. Auto-send + plain-language labels turns "what do I even type?" into one confident tap.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 2 — Chip clicked → task created ========== -->
+      <section id="s2">
+        <div class="lede">Step 2 · A task is born</div>
+        <h2><span class="step-num">2.</span>Chip clicked → task created</h2>
+        <p class="desc">The chip text posts as the user's own message; the agent replies conversationally and, behind the scenes, creates the interview task. The user immediately sees the same task surface in three places — proving the chat isn't a dead-end.</p>
+        <div class="grid grid-2">
+          <div class="wire" data-zoom data-caption="02 · Chip clicked, task created (desktop)">
+            <div class="label"><span>02-chat-after-chip.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/02-chat-after-chip.svg" alt="Chat after clicking a chip: user bubble, agent reply with task link, task card in agent feed" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><span class="num-badge">1</span> The chip text appears as the user's <b>sent bubble</b> — auto-sent, no Send click.</li>
+                <li><span class="num-badge">2</span> Agent reply: "Great — I've created task <u>PAP-128</u>…" with the task id as a <b>live link</b> into the task.</li>
+                <li><span class="num-badge">3</span> Left nav shows the agent is now <b>running</b> (live dot on Agents).</li>
+                <li><span class="num-badge">4</span> The same task shows as a <b>card in the Agent feed</b> (id, title, "To do", assignee, running).</li>
+                <li class="notes"><b>Two-layer prompt:</b> the user reads a friendly sentence; the agent silently receives a structured instruction — <em>"create an interview task: a ≤10-question multiple-choice quiz, every question has a free-text option, the last is an open 'anything else?' field; don't ask anything the wizard already answered."</em></li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> Today a sent message may just produce a comment the user never notices. Surfacing one task in chat + feed + nav at the moment it's created is the first lesson in how Paperclip threads work together.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 3 — Interview quiz ========== -->
+      <section id="s3">
+        <div class="lede">Step 3 · The interview</div>
+        <h2><span class="step-num">3.</span>Task detail — interview quiz</h2>
+        <p class="desc">Opening the task shows the two chat comments that created it, then a multiple-choice quiz the agent built. The user answers <em>inside the task</em> — their first time using a task as a two-way workspace, not a status page.</p>
+        <div class="grid grid-2">
+          <div class="wire" data-zoom data-caption="03 · Task detail — interview quiz (desktop)">
+            <div class="label"><span>03-task-quiz.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/03-task-quiz.svg" alt="Task detail with comment thread and a multiple-choice interview quiz" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><span class="num-badge">1</span> The two chat comments that led here are carried into the task thread — context travels with the work.</li>
+                <li><span class="num-badge">2</span> A multiple-choice quiz, <b>≤10 questions</b>, rendered as an interaction card.</li>
+                <li><span class="num-badge">3</span> Every question has a freeform <em>"Other (type your own)"</em> escape hatch.</li>
+                <li><span class="num-badge">4</span> The last question is always an open <em>"Anything else I should know?"</em> text field.</li>
+                <li><span class="num-badge">5</span> Status pill <b>"Needs your input"</b> — the user learns a task can be waiting on <em>them</em>.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> Instead of the agent guessing (or dumping a generic doc), it interviews the user with low-effort taps. This teaches comments + interactions + task state in one screen, and produces a far better artifact.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 4 — Agent working ========== -->
+      <section id="s4">
+        <div class="lede">Step 4 · Watch it work</div>
+        <h2><span class="step-num">4.</span>Task detail — agent working</h2>
+        <p class="desc">After submitting, the quiz collapses to a tidy summary and the agent acknowledges and starts building. The task flips to <strong>In progress</strong> with a live indicator the user can watch.</p>
+        <div class="grid grid-2">
+          <div class="wire" data-zoom data-caption="04 · Task detail — agent working (desktop)">
+            <div class="label"><span>04-task-working.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/04-task-working.svg" alt="Task detail after quiz submitted: collapsed answers, agent working, in-progress indicator" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><span class="num-badge">1</span> Submitted quiz collapses to "Your answers — 8 questions submitted" (expandable).</li>
+                <li><span class="num-badge">2</span> Status flips <b>Needs your input → In progress</b>, with a running dot.</li>
+                <li><span class="num-badge">3</span> A subtle progress strip ("Working on the strategy doc…") lets the user watch the agent run in real time.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> "Seeing the agent work" is a core Paperclip value that the current flow never demonstrates. A visible state change + live indicator makes the system feel alive and trustworthy.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 5 — In review with artifact ========== -->
+      <section id="s5">
+        <div class="lede">Step 5 · Review the work</div>
+        <h2><span class="step-num">5.</span>Task detail — in review + artifact</h2>
+        <p class="desc">The agent posts the finished document inline and moves the task to <strong>In review</strong>. The same artifact appears in the right-hand Artifacts panel, and the user holds the decision: <strong>Approve</strong> or <strong>Request changes</strong>.</p>
+        <div class="grid grid-2">
+          <div class="wire" data-zoom data-caption="05 · Task detail — in review with artifact (desktop)">
+            <div class="label"><span>05-task-review.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/05-task-review.svg" alt="Task in review: inline document artifact, Artifacts panel, Approve / Request changes" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><span class="num-badge">1</span> The artifact is shown <b>inline in the thread</b> (document preview with real headings).</li>
+                <li><span class="num-badge">2</span> …and listed in the <b>Artifacts panel</b> with a "For review" badge — find it from anywhere.</li>
+                <li><span class="num-badge">3</span> <b>Approve</b> / <b>Request changes</b> — nothing ships without the user; iteration is one click.</li>
+                <li><span class="num-badge">4</span> The Inbox badge (top-left) lights up: "ready to review".</li>
+                <li><span class="num-badge">5</span> Status pill <b>"In review"</b> — the approval gate is explicit.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> Artifacts + review + approval are the heart of how a user directs agents. Putting the document inline (not in a hidden .md), with a real Approve/iterate gate, teaches the whole loop on the first deliverable.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 6 — Inbox ========== -->
+      <section id="s6">
+        <div class="lede">Step 6 · The notification closes the loop</div>
+        <h2><span class="step-num">6.</span>Inbox — review badge</h2>
+        <p class="desc">While the agent worked, the user could be anywhere. The Inbox badge and a single notification row pull them straight back to the task and its artifact — demonstrating how actions chain and notify across the app.</p>
+        <div class="grid grid-2">
+          <div class="wire" data-zoom data-caption="06 · Inbox with review badge (desktop)">
+            <div class="label"><span>06-inbox.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/06-inbox.svg" alt="Inbox showing a 'ready for review' notification and a nav badge" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><span class="num-badge">1</span> The nav <b>Inbox badge</b> count appears the moment something needs review.</li>
+                <li><span class="num-badge">2</span> One click on the unread row jumps straight to the task + artifact.</li>
+                <li>The full chain made visible: <b>Chat → Task → Quiz → Agent works → Artifact → Review → Approve</b>, each step surfaced in chat, the agent feed, the nav, and here.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> A first-time user shouldn't have to babysit a running agent. The inbox badge teaches the "I'll get pulled back when it matters" model that makes delegating to agents feel safe.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== Mapping to primitives ========== -->
+      <section id="mapping">
+        <div class="lede">For engineering</div>
+        <h2>This reuses primitives that already exist</h2>
+        <p class="desc">Nothing here needs net-new infrastructure — the flow is an orchestration of mechanisms already in the codebase. (Planning note, not a build instruction.)</p>
+        <div class="notes">
+          <ul>
+            <li><b>Auto-send chips</b> — the chip click handler in <code>ui/src/pages/BoardChat.tsx</code> currently calls <code>setInput(chip.prompt)</code>; it would instead submit immediately. The new chip set also carries a hidden "agent instruction" distinct from the visible message (the two-layer prompt).</li>
+            <li><b>Interview quiz</b> — the existing <code>ask_user_questions</code> interaction already renders as a multiple-choice quiz with per-question options inside task detail (<code>IssueThreadInteractionCard.tsx</code> → <code>AskUserQuestionsCard</code>). Freeform "Other" + final open field map to its option/answer model.</li>
+            <li><b>Artifact + review</b> — documents created via <code>PUT /api/issues/{id}/documents/{key}</code> render in <code>ArtifactsPanel.tsx</code>/<code>DocumentViewer</code> with Approve/Reject when <code>ready_for_review</code>; a <code>request_confirmation</code> interaction can gate approval.</li>
+            <li><b>Chaining + notifications</b> — interaction <code>continuationPolicy: wake_assignee</code> already wakes the agent on answer/approve; the inbox badge is the surfacing layer.</li>
+          </ul>
+          <div class="why"><b>Implication:</b> the largest new piece is the orchestration prompt/skill that turns a chip into "create an interview task, then build a document, then request review" — plus the chip-to-task wiring in the chat. The UI surfaces are mostly already built.</div>
+        </div>
+      </section>
+
+      <!-- ========== Open questions ========== -->
+      <section id="open">
+        <div class="lede">For reviewer</div>
+        <h2>Open questions</h2>
+        <div class="notes">
+          <ul>
+            <li><b>Chip copy</b> — does "Create a 1-page company strategy / Build a hiring plan / Map our first 30 days / Write an intro pitch" land, or keep any of the originals?</li>
+            <li><b>Quiz length</b> — is ≤10 questions right for the first run, or should the first chip be deliberately short (≈4–5) to avoid fatigue before the user has seen any payoff?</li>
+            <li><b>Answer location</b> — answer the quiz only inside the task (shown here), or also allow it to continue inline in chat?</li>
+            <li><b>Auto-send safety</b> — should the very first chip click show a tiny "this creates a task" confirmation the first time, or trust the helper text?</li>
+            <li><b>Do all four chips follow the same interview→artifact pattern</b>, or do some (e.g. "Write an intro pitch") skip the quiz and draft straight to a reviewable artifact?</li>
+            <li><b>Naming</b> — the team-lead agent is "CEO" in some copy and "team lead" here; confirm which term the product uses post the PAP-67 team-centric rename.</li>
+          </ul>
+        </div>
+      </section>
+
+      <div class="footer">
+        Wireframes follow the in-tree <code>wireframe</code> skill house style — black on white, 1.5pt strokes, 8px grid, type sizes 12/14/20/28. Red dashed marks are the annotation layer only and are not part of the proposed UI. Placeholder names (Acme Robotics, "Ada", PAP-128) are illustrative.
+      </div>
+    </main>
+  </div>
+
+  <div class="lightbox" id="lb" aria-hidden="true">
+    <span class="close" id="lbClose">×</span>
+    <img id="lbImg" alt="" />
+    <div class="caption" id="lbCap"></div>
+  </div>
+
+<script>
+  const lb = document.getElementById('lb');
+  const lbImg = document.getElementById('lbImg');
+  const lbCap = document.getElementById('lbCap');
+  const lbClose = document.getElementById('lbClose');
+
+  document.querySelectorAll('[data-zoom]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const target = el.tagName === 'IMG' ? el : el.querySelector('img');
+      if (!target) return;
+      lbImg.src = target.src;
+      lbImg.alt = target.alt;
+      lbCap.textContent = el.dataset.caption || target.alt || '';
+      lb.classList.add('open');
+    });
+  });
+
+  function close() { lb.classList.remove('open'); }
+  lb.addEventListener('click', close);
+  lbClose.addEventListener('click', close);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+
+  const toc = document.querySelector('details.toc');
+  if (toc) {
+    const mq = window.matchMedia('(max-width: 900px)');
+    const apply = () => { toc.open = !mq.matches; };
+    apply();
+    mq.addEventListener('change', apply);
+    toc.querySelectorAll('.toc-body a').forEach((a) => {
+      a.addEventListener('click', () => { if (mq.matches) toc.open = false; });
+    });
+  }
+</script>
+</body>
+</html>

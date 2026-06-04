@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- Outer border -->
+  <rect x="0" y="0" width="1280" height="800"/>
+
+  <!-- ============ A) FAR-LEFT NAV RAIL ============ -->
+  <rect x="0" y="0" width="80" height="800"/>
+  <!-- workspace square -->
+  <rect x="24" y="24" width="32" height="32" fill="#e6e6e6"/>
+
+  <!-- Chat (active) -->
+  <rect x="24" y="96" width="32" height="32" rx="8" fill="#e6e6e6"/>
+  <text x="40" y="140" font-size="12" fill="#000" stroke="none" text-anchor="middle">Chat</text>
+
+  <!-- Inbox -->
+  <rect x="24" y="176" width="32" height="32" rx="8"/>
+  <text x="40" y="220" font-size="12" fill="#000" stroke="none" text-anchor="middle">Inbox</text>
+
+  <!-- Tasks -->
+  <rect x="24" y="256" width="32" height="32" rx="8"/>
+  <text x="40" y="300" font-size="12" fill="#000" stroke="none" text-anchor="middle">Tasks</text>
+
+  <!-- Agents (with running dot) -->
+  <rect x="24" y="336" width="32" height="32" rx="8"/>
+  <circle cx="60" cy="336" r="5" fill="#000" stroke="none"/>
+  <text x="40" y="380" font-size="12" fill="#000" stroke="none" text-anchor="middle">Agents</text>
+
+  <!-- Files -->
+  <rect x="24" y="416" width="32" height="32" rx="8"/>
+  <text x="40" y="460" font-size="12" fill="#000" stroke="none" text-anchor="middle">Files</text>
+
+  <!-- Settings -->
+  <rect x="24" y="720" width="32" height="32" rx="8"/>
+  <text x="40" y="764" font-size="12" fill="#000" stroke="none" text-anchor="middle">Settings</text>
+
+  <!-- ============ B) CHAT PANE x=80..760 ============ -->
+  <!-- header divider -->
+  <line x1="80" y1="64" x2="760" y2="64"/>
+  <!-- avatar -->
+  <circle cx="120" cy="32" r="16" fill="#e6e6e6"/>
+  <text x="152" y="28" font-size="14" fill="#000" stroke="none">Ada · team lead</text>
+  <text x="152" y="46" font-size="12" fill="#666" stroke="none">[Acme Robotics]</text>
+
+  <!-- USER message bubble (right-aligned, shaded) -->
+  <rect x="360" y="104" width="304" height="56" rx="8" fill="#e6e6e6"/>
+  <text x="384" y="136" font-size="14" fill="#000" stroke="none">Create a 1-page company strategy</text>
+
+  <!-- AGENT reply bubble (left-aligned) -->
+  <rect x="104" y="184" width="520" height="128" rx="8" fill="#fff"/>
+  <text x="128" y="224" font-size="14" fill="#000" stroke="none">Great — I've created task <tspan fill="#000">PAP-128</tspan> to ask you a few</text>
+  <!-- underline for inline link PAP-128 -->
+  <line x1="280" y1="228" x2="336" y2="228" stroke="#000" stroke-width="1.5"/>
+  <text x="128" y="248" font-size="14" fill="#000" stroke="none">quick questions so I can build your strategy doc.</text>
+  <text x="128" y="280" font-size="12" fill="#666" stroke="none">I'll let you know the moment it's ready to review.</text>
+
+  <!-- Chat input -->
+  <rect x="104" y="712" width="560" height="56" rx="8"/>
+  <text x="128" y="744" font-size="12" fill="#666" stroke="none">Message Ada…</text>
+  <rect x="624" y="720" width="40" height="40" rx="8" fill="#000"/>
+
+  <!-- divider between chat pane and feed pane -->
+  <line x1="760" y1="0" x2="760" y2="800"/>
+
+  <!-- ============ C) AGENT FEED PANE ============ -->
+  <rect x="784" y="88" width="472" height="664" rx="8"/>
+  <text x="808" y="120" font-size="14" fill="#000" stroke="none">Agent feed</text>
+
+  <!-- NEW TASK CARD -->
+  <rect x="808" y="144" width="424" height="128" rx="8"/>
+  <!-- top row -->
+  <text x="824" y="176" font-size="12" fill="#666" stroke="none">PAP-128</text>
+  <!-- status pill -->
+  <rect x="1120" y="160" width="96" height="24" rx="10"/>
+  <text x="1168" y="176" font-size="12" fill="#000" stroke="none" text-anchor="middle">To do</text>
+  <!-- title -->
+  <text x="824" y="204" font-size="14" fill="#000" stroke="none">Company strategy interview</text>
+  <!-- bottom row -->
+  <circle cx="836" cy="240" r="12" fill="#e6e6e6"/>
+  <text x="856" y="244" font-size="12" fill="#666" stroke="none">Ada (team lead)</text>
+  <text x="1200" y="244" font-size="12" fill="#666" stroke="none" text-anchor="end">running</text>
+  <circle cx="1208" cy="240" r="5" fill="#000" stroke="none"/>
+
+  <!-- secondary text under card -->
+  <text x="808" y="312" font-size="12" fill="#666" stroke="none">Open the task to answer Ada's questions.</text>
+
+  <!-- ============ ANNOTATIONS ============ -->
+  <g data-region="annotations">
+    <!-- 1: user bubble -->
+    <circle cx="688" cy="120" r="12" fill="none" stroke="#d33" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <text x="688" y="124" font-size="12" fill="#d33" stroke="none" text-anchor="middle">1</text>
+    <text x="688" y="160" font-size="12" fill="#d33" stroke="none">Chip text auto-sent as the user's message</text>
+
+    <!-- 2: PAP-128 inline link -->
+    <circle cx="352" cy="216" r="12" fill="none" stroke="#d33" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <text x="352" y="220" font-size="12" fill="#d33" stroke="none" text-anchor="middle">2</text>
+    <text x="376" y="356" font-size="12" fill="#d33" stroke="none">Task ID is a live link → opens task detail</text>
+    <line x1="352" y1="228" x2="430" y2="350" stroke="#d33" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+    <!-- 3: running dot on Agents nav -->
+    <circle cx="64" cy="320" r="12" fill="none" stroke="#d33" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <text x="64" y="324" font-size="12" fill="#d33" stroke="none" text-anchor="middle">3</text>
+    <text x="88" y="324" font-size="12" fill="#d33" stroke="none">Left-nav shows the agent is now running</text>
+
+    <!-- 4: task card -->
+    <circle cx="1248" cy="208" r="12" fill="none" stroke="#d33" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <text x="1248" y="212" font-size="12" fill="#d33" stroke="none" text-anchor="middle">4</text>
+    <text x="912" y="412" font-size="12" fill="#d33" stroke="none">Same task appears in the agent feed</text>
+
+    <!-- Two-layer prompt note box -->
+    <rect x="808" y="600" width="424" height="136" fill="none" stroke="#d33" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <text x="824" y="628" font-size="12" fill="#d33" stroke="none">Two-layer prompt:</text>
+    <text x="824" y="652" font-size="12" fill="#d33" stroke="none">User sees a friendly reply.</text>
+    <text x="824" y="672" font-size="12" fill="#d33" stroke="none">Agent silently receives a structured instruction to</text>
+    <text x="824" y="692" font-size="12" fill="#d33" stroke="none">create an interview task: a &lt;=10 question multiple-</text>
+    <text x="824" y="712" font-size="12" fill="#d33" stroke="none">choice quiz, each with a freeform option, last</text>
+    <text x="824" y="728" font-size="12" fill="#d33" stroke="none">question an open 'anything else?' text field.</text>
+  </g>
+</svg>

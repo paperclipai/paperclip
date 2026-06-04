@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- Outer border -->
+  <rect x="0.75" y="0.75" width="1278.5" height="798.5"/>
+
+  <!-- ============ A) FAR-LEFT NAV RAIL ============ -->
+  <g data-region="nav-rail">
+    <rect x="0" y="0" width="80" height="800"/>
+    <!-- workspace square -->
+    <rect x="24" y="24" width="32" height="32" fill="#e6e6e6"/>
+
+    <!-- Chat -->
+    <rect x="24" y="96" width="32" height="32" rx="8"/>
+    <text x="40" y="140" font-size="12" fill="#666" stroke="none" text-anchor="middle">Chat</text>
+
+    <!-- Inbox + badge -->
+    <rect x="24" y="176" width="32" height="32" rx="8"/>
+    <text x="40" y="220" font-size="12" fill="#666" stroke="none" text-anchor="middle">Inbox</text>
+    <circle cx="64" cy="168" r="8" fill="#000"/>
+    <text x="64" y="172" font-size="12" fill="#fff" stroke="none" text-anchor="middle">1</text>
+
+    <!-- Tasks (ACTIVE) -->
+    <rect x="24" y="256" width="32" height="32" rx="8" fill="#e6e6e6"/>
+    <text x="40" y="300" font-size="12" fill="#000" stroke="none" text-anchor="middle">Tasks</text>
+
+    <!-- Agents -->
+    <rect x="24" y="336" width="32" height="32" rx="8"/>
+    <text x="40" y="380" font-size="12" fill="#666" stroke="none" text-anchor="middle">Agents</text>
+
+    <!-- Files -->
+    <rect x="24" y="416" width="32" height="32" rx="8"/>
+    <text x="40" y="460" font-size="12" fill="#666" stroke="none" text-anchor="middle">Files</text>
+
+    <!-- Settings -->
+    <rect x="24" y="720" width="32" height="32" rx="8"/>
+    <text x="40" y="764" font-size="12" fill="#666" stroke="none" text-anchor="middle">Settings</text>
+  </g>
+
+  <!-- ============ B) MAIN TASK PANE ============ -->
+  <g data-region="main-pane">
+    <!-- Breadcrumb -->
+    <text x="112" y="28" font-size="12" fill="#666" stroke="none">Tasks / PAP-128</text>
+
+    <!-- Title -->
+    <text x="112" y="72" font-size="28" fill="#000" stroke="none">Company strategy interview</text>
+
+    <!-- Status pill -->
+    <rect x="656" y="52" width="160" height="28" rx="12"/>
+    <text x="736" y="70" font-size="12" fill="#000" stroke="none" text-anchor="middle">In review</text>
+
+    <!-- Meta -->
+    <text x="112" y="96" font-size="12" fill="#666" stroke="none">PAP-128 · Ada (team lead)</text>
+
+    <!-- Divider -->
+    <line x1="112" y1="120" x2="832" y2="120"/>
+
+    <!-- Agent comment -->
+    <circle cx="128" cy="160" r="16" fill="#e6e6e6"/>
+    <text x="156" y="156" font-size="14" fill="#000" stroke="none">Ada · team lead</text>
+    <text x="300" y="156" font-size="12" fill="#666" stroke="none">just now</text>
+    <text x="156" y="184" font-size="14" fill="#000" stroke="none">Here's your 1-page company strategy — take a look and approve, or tell me what to change.</text>
+
+    <!-- Embedded artifact card -->
+    <rect x="156" y="232" width="660" height="320" rx="8"/>
+    <!-- header doc icon -->
+    <path d="M176 252 h14 l6 6 v18 h-20 z" fill="#fff"/>
+    <path d="M190 252 v6 h6" fill="none"/>
+    <text x="208" y="268" font-size="14" fill="#000" stroke="none">Company Strategy — Acme Robotics</text>
+    <text x="208" y="286" font-size="12" fill="#666" stroke="none">Document</text>
+    <!-- divider -->
+    <line x1="176" y1="300" x2="796" y2="300"/>
+    <!-- body -->
+    <text x="176" y="324" font-size="12" fill="#000" stroke="none">Mission</text>
+    <line x1="176" y1="340" x2="760" y2="340" stroke="#666"/>
+    <line x1="176" y1="356" x2="760" y2="356" stroke="#666"/>
+    <text x="176" y="384" font-size="12" fill="#000" stroke="none">Where we play</text>
+    <line x1="176" y1="400" x2="760" y2="400" stroke="#666"/>
+    <line x1="176" y1="416" x2="760" y2="416" stroke="#666"/>
+    <text x="176" y="444" font-size="12" fill="#000" stroke="none">First priorities</text>
+    <line x1="176" y1="460" x2="760" y2="460" stroke="#666"/>
+    <line x1="176" y1="476" x2="760" y2="476" stroke="#666"/>
+    <line x1="176" y1="492" x2="560" y2="492" stroke="#666"/>
+    <!-- link -->
+    <text x="176" y="524" font-size="12" fill="#000" stroke="none" text-decoration="underline">Open full document</text>
+
+    <!-- Action buttons -->
+    <rect x="156" y="576" width="140" height="40" rx="8" fill="#000"/>
+    <text x="226" y="601" font-size="14" fill="#fff" stroke="none" text-anchor="middle">Approve</text>
+    <rect x="312" y="576" width="180" height="40" rx="8"/>
+    <text x="402" y="601" font-size="14" fill="#000" stroke="none" text-anchor="middle">Request changes</text>
+    <text x="156" y="636" font-size="12" fill="#666" stroke="none">Approving marks the task Done and unblocks next steps.</text>
+  </g>
+
+  <!-- ============ C) RIGHT ARTIFACTS PANEL ============ -->
+  <g data-region="artifacts-panel">
+    <rect x="888" y="88" width="368" height="664" rx="8"/>
+    <text x="912" y="120" font-size="14" fill="#000" stroke="none">Artifacts</text>
+
+    <!-- artifact row -->
+    <rect x="912" y="144" width="320" height="96" rx="8"/>
+    <path d="M928 164 h14 l6 6 v18 h-20 z" fill="#fff"/>
+    <path d="M942 164 v6 h6" fill="none"/>
+    <text x="956" y="176" font-size="12" fill="#000" stroke="none">Company Strategy — Acme…</text>
+    <text x="956" y="196" font-size="12" fill="#666" stroke="none">PAP-128 · just now</text>
+    <!-- For review pill -->
+    <rect x="928" y="212" width="96" height="24" rx="10"/>
+    <text x="976" y="228" font-size="12" fill="#000" stroke="none" text-anchor="middle">For review</text>
+
+    <text x="912" y="272" font-size="12" fill="#666" stroke="none">Also shown in the agent feed.</text>
+  </g>
+
+  <!-- ============ ANNOTATIONS ============ -->
+  <g data-region="annotations" stroke="#d33" stroke-width="1.5" stroke-dasharray="4 3" fill="none">
+    <!-- 1: embedded artifact -->
+    <circle cx="836" cy="392" r="12"/>
+    <text x="836" y="396" font-size="12" fill="#d33" stroke="none" text-anchor="middle">1</text>
+    <line x1="824" y1="392" x2="816" y2="392"/>
+    <text x="600" y="572" font-size="12" fill="#d33" stroke="none">1  Artifact shown inline in the thread…</text>
+
+    <!-- 2: right panel artifact row -->
+    <circle cx="1248" cy="192" r="12"/>
+    <text x="1248" y="196" font-size="12" fill="#d33" stroke="none" text-anchor="middle">2</text>
+    <line x1="1236" y1="192" x2="1232" y2="192"/>
+    <text x="912" y="304" font-size="12" fill="#d33" stroke="none">2  …and in the Artifacts panel</text>
+
+    <!-- 3: approve/request buttons -->
+    <circle cx="524" cy="596" r="12"/>
+    <text x="524" y="600" font-size="12" fill="#d33" stroke="none" text-anchor="middle">3</text>
+    <line x1="512" y1="596" x2="492" y2="596"/>
+    <text x="156" y="676" font-size="12" fill="#d33" stroke="none">3  User approves or iterates — nothing ships without this</text>
+
+    <!-- 4: inbox badge (callout moved to empty lower-left; connector up to the nav badge) -->
+    <circle cx="264" cy="704" r="12"/>
+    <text x="264" y="708" font-size="12" fill="#d33" stroke="none" text-anchor="middle">4</text>
+    <line x1="252" y1="704" x2="284" y2="704" stroke="#d33" stroke-dasharray="4 2"/>
+    <text x="284" y="708" font-size="12" fill="#d33" stroke="none">4  Inbox badge (top-left) lights up: 'ready to review'</text>
+
+    <!-- 5: status pill -->
+    <circle cx="836" cy="66" r="12"/>
+    <text x="836" y="70" font-size="12" fill="#d33" stroke="none" text-anchor="middle">5</text>
+    <line x1="824" y1="66" x2="816" y2="66"/>
+    <text x="856" y="70" font-size="12" fill="#d33" stroke="none">5  Task state: In review</text>
+  </g>
+</svg>

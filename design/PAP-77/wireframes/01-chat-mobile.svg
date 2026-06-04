@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="812" viewBox="0 0 375 812" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- canvas border -->
+  <rect x="0" y="0" width="375" height="812" />
+
+  <!-- TOP BAR -->
+  <line x1="0" y1="56" x2="375" y2="56" />
+  <!-- hamburger glyph -->
+  <line x1="16" y1="24" x2="36" y2="24" />
+  <line x1="16" y1="30" x2="36" y2="30" />
+  <line x1="16" y1="36" x2="36" y2="36" />
+  <text x="187" y="34" font-size="14" text-anchor="middle" stroke="none" fill="#000">Ada · team lead</text>
+
+  <!-- Agent welcome bubble -->
+  <rect x="16" y="72" width="343" height="128" rx="8" />
+  <text x="32" y="104" font-size="14" stroke="none" fill="#000">Welcome to Acme Robotics! I'm Ada,</text>
+  <text x="32" y="124" font-size="14" stroke="none" fill="#000">your team lead. I read everything</text>
+  <text x="32" y="144" font-size="14" stroke="none" fill="#000">from the setup wizard.</text>
+  <text x="32" y="176" font-size="12" stroke="none" fill="#666">Pick one and I'll take it from there.</text>
+
+  <!-- Helper text -->
+  <text x="16" y="224" font-size="12" stroke="none" fill="#666">Tap one — I'll spin up a task you can review.</text>
+
+  <!-- FOUR CHIPS -->
+  <rect x="16" y="240" width="343" height="44" rx="16" />
+  <text x="187" y="267" font-size="14" text-anchor="middle" stroke="none" fill="#000">Create a 1-page company strategy</text>
+
+  <rect x="16" y="296" width="343" height="44" rx="16" />
+  <text x="187" y="323" font-size="14" text-anchor="middle" stroke="none" fill="#000">Build a hiring plan</text>
+
+  <rect x="16" y="352" width="343" height="44" rx="16" />
+  <text x="187" y="379" font-size="14" text-anchor="middle" stroke="none" fill="#000">Map our first 30 days</text>
+
+  <rect x="16" y="408" width="343" height="44" rx="16" />
+  <text x="187" y="435" font-size="14" text-anchor="middle" stroke="none" fill="#000">Write an intro pitch</text>
+
+  <!-- CHAT INPUT -->
+  <rect x="16" y="680" width="287" height="48" rx="8" />
+  <text x="32" y="708" font-size="12" stroke="none" fill="#666">Message Ada…</text>
+  <!-- send button -->
+  <rect x="311" y="680" width="48" height="48" rx="8" fill="#000" />
+  <polygon points="328,692 348,704 328,716" fill="#fff" stroke="none" />
+
+  <!-- BOTTOM TAB BAR -->
+  <line x1="0" y1="752" x2="375" y2="752" />
+  <!-- Chat (active) -->
+  <rect x="35" y="764" width="24" height="24" rx="6" fill="#e6e6e6" />
+  <text x="47" y="804" font-size="12" text-anchor="middle" stroke="none" fill="#000">Chat</text>
+  <!-- Tasks -->
+  <rect x="129" y="764" width="24" height="24" rx="6" />
+  <text x="141" y="804" font-size="12" text-anchor="middle" stroke="none" fill="#666">Tasks</text>
+  <!-- Agents -->
+  <rect x="223" y="764" width="24" height="24" rx="6" />
+  <text x="235" y="804" font-size="12" text-anchor="middle" stroke="none" fill="#666">Agents</text>
+  <!-- Inbox -->
+  <rect x="317" y="764" width="24" height="24" rx="6" />
+  <text x="329" y="804" font-size="12" text-anchor="middle" stroke="none" fill="#666">Inbox</text>
+
+  <!-- ANNOTATIONS -->
+  <g data-region="annotations">
+    <rect x="8" y="232" width="359" height="232" fill="none" stroke="#d33" stroke-width="1.5" stroke-dasharray="6 4" />
+    <circle cx="8" cy="232" r="10" fill="#fff" stroke="#d33" stroke-width="1.5" />
+    <text x="8" y="236" font-size="12" text-anchor="middle" stroke="none" fill="#d33">1</text>
+    <text x="24" y="220" font-size="12" stroke="none" fill="#d33">Chips AUTO-SEND on tap</text>
+
+    <circle cx="20" cy="760" r="10" fill="#fff" stroke="#d33" stroke-width="1.5" />
+    <text x="20" y="764" font-size="12" text-anchor="middle" stroke="none" fill="#d33">2</text>
+    <text x="36" y="744" font-size="12" stroke="none" fill="#d33">Side rail → bottom tabs on mobile</text>
+  </g>
+</svg>

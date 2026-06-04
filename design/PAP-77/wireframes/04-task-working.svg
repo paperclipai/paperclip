@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- Outer border -->
+  <rect x="0" y="0" width="1280" height="800"/>
+
+  <!-- ============ A) FAR-LEFT NAV RAIL ============ -->
+  <g data-region="nav-rail">
+    <rect x="0" y="0" width="80" height="800"/>
+    <!-- workspace square -->
+    <rect x="24" y="24" width="32" height="32" fill="#e6e6e6"/>
+
+    <!-- Chat -->
+    <rect x="24" y="96" width="32" height="32" rx="6"/>
+    <text x="40" y="140" font-size="12" stroke="none" fill="#666" text-anchor="middle">Chat</text>
+
+    <!-- Inbox -->
+    <rect x="24" y="176" width="32" height="32" rx="6"/>
+    <text x="40" y="220" font-size="12" stroke="none" fill="#666" text-anchor="middle">Inbox</text>
+
+    <!-- Tasks (ACTIVE) -->
+    <rect x="24" y="256" width="32" height="32" rx="6" fill="#e6e6e6"/>
+    <text x="40" y="300" font-size="12" stroke="none" fill="#000" text-anchor="middle">Tasks</text>
+
+    <!-- Agents (running dot) -->
+    <rect x="24" y="336" width="32" height="32" rx="6"/>
+    <circle cx="60" cy="336" r="5" fill="#000" stroke="none"/>
+    <text x="40" y="380" font-size="12" stroke="none" fill="#666" text-anchor="middle">Agents</text>
+
+    <!-- Files -->
+    <rect x="24" y="416" width="32" height="32" rx="6"/>
+    <text x="40" y="460" font-size="12" stroke="none" fill="#666" text-anchor="middle">Files</text>
+
+    <!-- Settings -->
+    <rect x="24" y="720" width="32" height="32" rx="6"/>
+    <text x="40" y="764" font-size="12" stroke="none" fill="#666" text-anchor="middle">Settings</text>
+  </g>
+
+  <!-- ============ B) MAIN TASK PANE ============ -->
+  <g data-region="task-pane">
+    <!-- Breadcrumb -->
+    <text x="112" y="28" font-size="12" stroke="none" fill="#666">Tasks / PAP-128</text>
+
+    <!-- Title -->
+    <text x="112" y="72" font-size="28" stroke="none" fill="#000">Company strategy interview</text>
+
+    <!-- Status pill -->
+    <rect x="1040" y="52" width="160" height="28" rx="12" fill="#fff"/>
+    <circle cx="1064" cy="66" r="5" fill="#000" stroke="none"/>
+    <text x="1128" y="70" font-size="12" stroke="none" fill="#000" text-anchor="middle">In progress</text>
+
+    <!-- Meta row -->
+    <text x="112" y="96" font-size="12" stroke="none" fill="#666">PAP-128 · Ada (team lead) is working</text>
+
+    <!-- Divider -->
+    <line x1="112" y1="120" x2="1232" y2="120"/>
+
+    <!-- ===== COMMENT THREAD ===== -->
+    <!-- Comment 1: user request -->
+    <circle cx="128" cy="160" r="16" fill="#e6e6e6"/>
+    <text x="156" y="156" font-size="14" stroke="none" fill="#000">You</text>
+    <text x="156" y="184" font-size="14" stroke="none" fill="#000">Create a 1-page company strategy</text>
+
+    <!-- Comment 2: agent ack -->
+    <circle cx="128" cy="232" r="16" fill="#e6e6e6"/>
+    <text x="156" y="228" font-size="14" stroke="none" fill="#000">Ada · team lead</text>
+    <text x="156" y="256" font-size="14" stroke="none" fill="#000">Great — let me ask a few quick questions first.</text>
+
+    <!-- ===== ANSWERED QUIZ (collapsed) ===== -->
+    <rect x="112" y="296" width="1024" height="72" rx="8" fill="#fff"/>
+    <!-- checkmark in small box -->
+    <rect x="136" y="316" width="24" height="24" rx="4" fill="#fff"/>
+    <polyline points="141,328 147,334 156,322" fill="none"/>
+    <text x="176" y="328" font-size="14" stroke="none" fill="#000">Your answers — 8 questions submitted</text>
+    <text x="176" y="348" font-size="12" stroke="none" fill="#666">Submitted 2:18pm · tap to review</text>
+    <!-- chevron expand -->
+    <polyline points="1100,324 1108,332 1100,340" fill="none"/>
+
+    <!-- ===== NEW AGENT COMMENT (working) ===== -->
+    <circle cx="128" cy="416" r="16" fill="#e6e6e6"/>
+    <text x="156" y="412" font-size="14" stroke="none" fill="#000">Ada · team lead</text>
+    <text x="300" y="412" font-size="12" stroke="none" fill="#666">just now</text>
+    <text x="156" y="440" font-size="14" stroke="none" fill="#000">Perfect — I've got everything I need. Building your 1-page strategy now — stand by.</text>
+
+    <!-- ===== PROGRESS / RUNNING STRIP ===== -->
+    <rect x="156" y="472" width="560" height="48" rx="8" fill="#fff"/>
+    <rect x="164" y="488" width="200" height="16" fill="#e6e6e6"/>
+    <text x="380" y="502" font-size="12" stroke="none" fill="#666">Working on the strategy doc…</text>
+  </g>
+
+  <!-- ============ ANNOTATIONS ============ -->
+  <g data-region="annotations" stroke="#d33" fill="none" stroke-dasharray="4 3">
+    <!-- 1: collapsed answers card -->
+    <circle cx="1168" cy="332" r="12"/>
+    <text x="1168" y="337" font-size="12" stroke="none" fill="#d33" text-anchor="middle">1</text>
+    <text x="1080" y="392" font-size="12" stroke="none" fill="#d33" text-anchor="end">Submitted quiz collapses to a tidy summary</text>
+
+    <!-- 2: status pill -->
+    <circle cx="1224" cy="40" r="12"/>
+    <text x="1224" y="45" font-size="12" stroke="none" fill="#d33" text-anchor="middle">2</text>
+    <text x="1232" y="104" font-size="12" stroke="none" fill="#d33" text-anchor="end">Task state flips: Needs input -&gt; In progress</text>
+
+    <!-- 3: progress strip -->
+    <circle cx="748" cy="496" r="12"/>
+    <text x="748" y="501" font-size="12" stroke="none" fill="#d33" text-anchor="middle">3</text>
+    <text x="780" y="552" font-size="12" stroke="none" fill="#d33">User can watch the agent work in real time</text>
+  </g>
+</svg>

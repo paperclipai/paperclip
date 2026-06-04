@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- Outer canvas border -->
+  <rect x="0" y="0" width="1280" height="800"/>
+
+  <!-- ============ A) FAR-LEFT NAV RAIL ============ -->
+  <g data-region="nav-rail">
+    <rect x="0" y="0" width="80" height="800"/>
+    <!-- Workspace square -->
+    <rect x="24" y="24" width="32" height="32" fill="#e6e6e6"/>
+
+    <!-- Chat (active) -->
+    <rect x="24" y="96" width="32" height="32" rx="4" fill="#e6e6e6"/>
+    <text x="40" y="140" font-size="12" fill="#000" stroke="none" text-anchor="middle">Chat</text>
+
+    <!-- Inbox -->
+    <rect x="24" y="176" width="32" height="32" rx="4"/>
+    <text x="40" y="220" font-size="12" fill="#000" stroke="none" text-anchor="middle">Inbox</text>
+
+    <!-- Tasks -->
+    <rect x="24" y="256" width="32" height="32" rx="4"/>
+    <text x="40" y="300" font-size="12" fill="#000" stroke="none" text-anchor="middle">Tasks</text>
+
+    <!-- Agents -->
+    <rect x="24" y="336" width="32" height="32" rx="4"/>
+    <text x="40" y="380" font-size="12" fill="#000" stroke="none" text-anchor="middle">Agents</text>
+
+    <!-- Files -->
+    <rect x="24" y="416" width="32" height="32" rx="4"/>
+    <text x="40" y="460" font-size="12" fill="#000" stroke="none" text-anchor="middle">Files</text>
+
+    <!-- Settings (pinned) -->
+    <rect x="24" y="720" width="32" height="32" rx="4"/>
+    <text x="40" y="764" font-size="12" fill="#000" stroke="none" text-anchor="middle">Settings</text>
+  </g>
+
+  <!-- ============ B) CHAT PANE ============ -->
+  <g data-region="chat-pane">
+    <!-- Header strip divider -->
+    <line x1="80" y1="64" x2="760" y2="64"/>
+    <circle cx="120" cy="32" r="16" fill="#e6e6e6"/>
+    <text x="152" y="28" font-size="14" fill="#000" stroke="none">Ada · team lead</text>
+    <text x="152" y="46" font-size="12" fill="#666" stroke="none">[Acme Robotics]</text>
+
+    <!-- Agent welcome bubble -->
+    <rect x="104" y="104" width="560" height="120" rx="8"/>
+    <text x="128" y="144" font-size="14" fill="#000" stroke="none">Welcome to Acme Robotics! I'm Ada, your team lead.</text>
+    <text x="128" y="168" font-size="14" fill="#000" stroke="none">I read everything you shared in the setup wizard.</text>
+    <text x="128" y="200" font-size="14" fill="#666" stroke="none">Here are a few things I can put on paper right now —</text>
+    <text x="128" y="216" font-size="14" fill="#666" stroke="none">pick one and I'll take it from there.</text>
+
+    <!-- Helper text -->
+    <text x="104" y="264" font-size="12" fill="#666" stroke="none">Pick one and I'll spin up a task — you'll review the result before anything ships.</text>
+
+    <!-- Suggested chips: Row 1 -->
+    <rect x="104" y="288" width="280" height="40" rx="16"/>
+    <text x="244" y="312" font-size="14" fill="#000" stroke="none" text-anchor="middle">Create a 1-page company strategy</text>
+
+    <rect x="400" y="288" width="200" height="40" rx="16"/>
+    <text x="500" y="312" font-size="14" fill="#000" stroke="none" text-anchor="middle">Build a hiring plan</text>
+
+    <!-- Suggested chips: Row 2 -->
+    <rect x="104" y="344" width="220" height="40" rx="16"/>
+    <text x="214" y="368" font-size="14" fill="#000" stroke="none" text-anchor="middle">Map our first 30 days</text>
+
+    <rect x="340" y="344" width="190" height="40" rx="16"/>
+    <text x="435" y="368" font-size="14" fill="#000" stroke="none" text-anchor="middle">Write an intro pitch</text>
+
+    <!-- Chat input -->
+    <rect x="104" y="712" width="560" height="56" rx="8"/>
+    <text x="120" y="744" font-size="14" fill="#666" stroke="none">Message Ada…</text>
+    <rect x="624" y="720" width="40" height="40" rx="8" fill="#000"/>
+    <polygon points="640,732 652,740 640,748" fill="#fff" stroke="none"/>
+  </g>
+
+  <!-- ============ C) AGENT FEED PANE ============ -->
+  <g data-region="agent-feed">
+    <rect x="784" y="88" width="472" height="664" rx="8"/>
+    <text x="808" y="120" font-size="14" fill="#000" stroke="none">Agent feed</text>
+
+    <!-- Empty state placeholder icon -->
+    <rect x="996" y="344" width="48" height="48" fill="#e6e6e6"/>
+    <text x="1020" y="408" font-size="12" fill="#666" stroke="none" text-anchor="middle">Nothing running yet.</text>
+    <text x="1020" y="432" font-size="12" fill="#666" stroke="none" text-anchor="middle">Tasks your agents pick up will show here.</text>
+  </g>
+
+  <!-- ============ ANNOTATIONS ============ -->
+  <g data-region="annotations">
+    <!-- Callout 1: chips region -->
+    <rect x="96" y="280" width="520" height="120" fill="none" stroke="#d33" stroke-dasharray="6 3"/>
+    <circle cx="624" cy="280" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/>
+    <text x="624" y="284" font-size="12" fill="#d33" stroke="none" text-anchor="middle">1</text>
+    <text x="648" y="312" font-size="12" fill="#d33" stroke="none">Chips now AUTO-SEND on click (no manual send)</text>
+
+    <!-- Callout 2: helper text -->
+    <circle cx="624" cy="260" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/>
+    <text x="624" y="264" font-size="12" fill="#d33" stroke="none" text-anchor="middle">2</text>
+
+    <!-- Agent feed note -->
+    <text x="808" y="464" font-size="12" fill="#d33" stroke="none">Quiet until a task is created</text>
+  </g>
+</svg>

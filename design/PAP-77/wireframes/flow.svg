@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="520" viewBox="0 0 1600 520" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- outer border -->
+  <rect x="0" y="0" width="1600" height="520"/>
+
+  <!-- title -->
+  <text x="48" y="48" font-size="20" stroke="none" fill="#000">PAP-77 · Onboarding chip flow — chat to approved artifact</text>
+
+  <!-- ============ ROW 1 ============ -->
+
+  <!-- Card 1: Chat + chips (x=48 y=96) -->
+  <rect x="48" y="96" width="220" height="160" rx="8"/>
+  <line x1="48" y1="128" x2="268" y2="128"/>
+  <text x="64" y="120" font-size="14" stroke="none" fill="#000">Chat + chips</text>
+  <text x="64" y="152" font-size="12" stroke="none" fill="#666">User taps a suggested chip</text>
+  <!-- two chip pills -->
+  <rect x="64" y="176" width="80" height="24" rx="12" fill="#e6e6e6"/>
+  <rect x="152" y="176" width="64" height="24" rx="12" fill="#e6e6e6"/>
+  <line x1="64" y1="224" x2="216" y2="224" stroke="#666"/>
+
+  <!-- arrow 1->2 -->
+  <line x1="268" y1="176" x2="552" y2="176"/>
+  <polygon points="552,176 540,170 540,182" fill="#000"/>
+  <text x="376" y="168" font-size="12" stroke="none" fill="#666">auto-send</text>
+
+  <!-- Card 2: Auto-send + task (x=560 y=96) -->
+  <rect x="560" y="96" width="220" height="160" rx="8"/>
+  <line x1="560" y1="128" x2="780" y2="128"/>
+  <text x="576" y="120" font-size="14" stroke="none" fill="#000">Auto-send + task</text>
+  <text x="576" y="152" font-size="12" stroke="none" fill="#666">Chip auto-sends; agent creates PAP-128</text>
+  <!-- message bubble + task chip -->
+  <rect x="576" y="176" width="120" height="24" rx="8" fill="#e6e6e6"/>
+  <rect x="576" y="208" width="88" height="24" rx="4"/>
+  <text x="588" y="224" font-size="12" stroke="none" fill="#666">PAP-128</text>
+
+  <!-- arrow 2->3 -->
+  <line x1="780" y1="176" x2="1064" y2="176"/>
+  <polygon points="1064,176 1052,170 1052,182" fill="#000"/>
+
+  <!-- Card 3: Interview quiz (x=1072 y=96) -->
+  <rect x="1072" y="96" width="220" height="160" rx="8"/>
+  <line x1="1072" y1="128" x2="1292" y2="128"/>
+  <text x="1088" y="120" font-size="14" stroke="none" fill="#000">Interview quiz</text>
+  <text x="1088" y="152" font-size="12" stroke="none" fill="#666">Multiple-choice quiz in the task</text>
+  <!-- radio circles -->
+  <circle cx="1096" cy="184" r="6"/>
+  <line x1="1112" y1="184" x2="1200" y2="184" stroke="#666"/>
+  <circle cx="1096" cy="208" r="6" fill="#e6e6e6"/>
+  <line x1="1112" y1="208" x2="1224" y2="208" stroke="#666"/>
+  <circle cx="1096" cy="232" r="6"/>
+  <line x1="1112" y1="232" x2="1184" y2="232" stroke="#666"/>
+
+  <!-- connector row1 -> row2 (down the right side) -->
+  <line x1="1182" y1="256" x2="1182" y2="320"/>
+  <polygon points="1182,320 1176,308 1188,308" fill="#000"/>
+  <text x="1198" y="296" font-size="12" stroke="none" fill="#666">next</text>
+
+  <!-- ============ ROW 2 (snakes right-to-left) ============ -->
+
+  <!-- Card 4: Agent works (x=1072 y=320) -->
+  <rect x="1072" y="320" width="220" height="160" rx="8"/>
+  <line x1="1072" y1="352" x2="1292" y2="352"/>
+  <text x="1088" y="344" font-size="14" stroke="none" fill="#000">Agent works</text>
+  <text x="1088" y="376" font-size="12" stroke="none" fill="#666">Task: In progress, live run</text>
+  <!-- progress hint -->
+  <rect x="1088" y="400" width="188" height="16" rx="8" fill="#e6e6e6"/>
+  <rect x="1088" y="400" width="96" height="16" rx="8"/>
+  <line x1="1088" y1="440" x2="1240" y2="440" stroke="#666"/>
+
+  <!-- arrow 4->5 (leftward) -->
+  <line x1="1072" y1="400" x2="788" y2="400"/>
+  <polygon points="788,400 800,394 800,406" fill="#000"/>
+
+  <!-- Card 5: Artifact + review (x=560 y=320) -->
+  <rect x="560" y="320" width="220" height="160" rx="8"/>
+  <line x1="560" y1="352" x2="780" y2="352"/>
+  <text x="576" y="344" font-size="14" stroke="none" fill="#000">Artifact + review</text>
+  <text x="576" y="376" font-size="12" stroke="none" fill="#666">Task: In review; Approve / iterate</text>
+  <!-- doc rect with folded corner -->
+  <polygon points="576,392 612,392 624,404 624,440 576,440" fill="#e6e6e6"/>
+  <polyline points="612,392 612,404 624,404" fill="none"/>
+  <!-- two tiny buttons -->
+  <rect x="640" y="400" width="56" height="20" rx="4"/>
+  <rect x="640" y="424" width="56" height="20" rx="4"/>
+
+  <!-- arrow 5->6 (leftward) -->
+  <line x1="560" y1="400" x2="276" y2="400"/>
+  <polygon points="276,400 288,394 288,406" fill="#000"/>
+  <text x="376" y="392" font-size="12" stroke="none" fill="#666">notify</text>
+
+  <!-- Card 6: Inbox + approve (x=48 y=320) -->
+  <rect x="48" y="320" width="220" height="160" rx="8"/>
+  <line x1="48" y1="352" x2="268" y2="352"/>
+  <text x="64" y="344" font-size="14" stroke="none" fill="#000">Inbox + approve</text>
+  <text x="64" y="376" font-size="12" stroke="none" fill="#666">Review badge; user approves -&gt; Done</text>
+  <!-- inbox row with unread dot -->
+  <circle cx="72" cy="400" r="5" fill="#000"/>
+  <line x1="88" y1="400" x2="240" y2="400" stroke="#666"/>
+  <line x1="88" y1="416" x2="200" y2="416" stroke="#666"/>
+  <!-- approve button -->
+  <rect x="64" y="432" width="80" height="24" rx="4"/>
+  <text x="76" y="448" font-size="12" stroke="none" fill="#666">Approve</text>
+</svg>
