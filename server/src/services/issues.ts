@@ -66,7 +66,11 @@ import {
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import {
+  buildInitialIssueMonitorFields,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -387,6 +391,12 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const ACTIVE_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
+const ACTIVE_BLOCKED_WAIT_APPROVAL_STATUSES = ["pending", "revision_requested"];
+const INVALID_BLOCKED_DISPOSITION_MESSAGE =
+  "invalid_issue_disposition: Blocked issues require a first-class unresolved blocker or a structured wait path. " +
+  "Add blockedByIssueIds for dependency blockers, create a pending issue-thread interaction, link a pending approval, " +
+  "assign a human owner with assigneeUserId, set a typed executionState.currentParticipant, schedule an issue monitor, " +
+  "or create an explicit recovery action.";
 export const SCANNER_FINDING_ORIGIN_KIND = "scanner_finding";
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
@@ -802,7 +812,7 @@ async function listUnresolvedBlockerIssueIds(
 ) {
   const uniqueBlockerIssueIds = [...new Set(blockerIssueIds.filter(Boolean))];
   if (uniqueBlockerIssueIds.length === 0) return [];
-  return dbOrTx
+  const blockerRows = await dbOrTx
     .select({ id: issues.id })
     .from(issues)
     .where(
@@ -814,6 +824,217 @@ async function listUnresolvedBlockerIssueIds(
       ),
     )
     .then((rows) => rows.map((row) => row.id));
+  const doneBlockerRows = await dbOrTx
+    .select({ id: issues.id, executionWorkspaceId: issues.executionWorkspaceId })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        inArray(issues.id, uniqueBlockerIssueIds),
+        eq(issues.status, "done"),
+      ),
+    );
+  const executionWorkspaceIds = doneBlockerRows
+    .map((row) => row.executionWorkspaceId)
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+  const unfinalizedWorkspaceIds = await listUnfinalizedExecutionWorkspaceIds(
+    dbOrTx,
+    companyId,
+    executionWorkspaceIds,
+  );
+  return [
+    ...blockerRows,
+    ...doneBlockerRows
+      .filter((row) => row.executionWorkspaceId && unfinalizedWorkspaceIds.has(row.executionWorkspaceId))
+      .map((row) => row.id),
+  ];
+}
+
+function hasIssueExecutionParticipant(value: unknown) {
+  const state = parseIssueExecutionState(value);
+  if (!state || state.status !== "pending") return false;
+  const participant = state.currentParticipant;
+  if (!participant) return false;
+  if (participant.type === "agent") return Boolean(participant.agentId);
+  if (participant.type === "user") return Boolean(participant.userId);
+  return false;
+}
+
+function hasIssueScheduledMonitor(input: {
+  existingMonitorNextCheckAt?: Date | null;
+  patchMonitorNextCheckAt?: unknown;
+  executionPolicy?: unknown;
+}) {
+  if (input.patchMonitorNextCheckAt instanceof Date && !Number.isNaN(input.patchMonitorNextCheckAt.getTime())) return true;
+  if (input.patchMonitorNextCheckAt === undefined && input.existingMonitorNextCheckAt) return true;
+  const policy = normalizeIssueExecutionPolicy(input.executionPolicy ?? null);
+  return Boolean(policy?.monitor?.nextCheckAt);
+}
+
+async function issueHasPendingInteractionOrApproval(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  issueId: string,
+) {
+  const pendingInteraction = await dbOrTx
+    .select({ id: issueThreadInteractions.id })
+    .from(issueThreadInteractions)
+    .where(
+      and(
+        eq(issueThreadInteractions.companyId, companyId),
+        eq(issueThreadInteractions.issueId, issueId),
+        eq(issueThreadInteractions.status, "pending"),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (pendingInteraction) return true;
+
+  const pendingApproval = await dbOrTx
+    .select({ id: approvals.id })
+    .from(issueApprovals)
+    .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+    .where(
+      and(
+        eq(issueApprovals.companyId, companyId),
+        eq(issueApprovals.issueId, issueId),
+        eq(approvals.companyId, companyId),
+        inArray(approvals.status, ACTIVE_BLOCKED_WAIT_APPROVAL_STATUSES),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return Boolean(pendingApproval);
+}
+
+async function issueHasActiveRecoveryAction(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  issueId: string,
+) {
+  const row = await dbOrTx
+    .select({ id: issueRecoveryActions.id })
+    .from(issueRecoveryActions)
+    .where(
+      and(
+        eq(issueRecoveryActions.companyId, companyId),
+        eq(issueRecoveryActions.sourceIssueId, issueId),
+        inArray(issueRecoveryActions.status, ["active", "escalated"]),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return Boolean(row);
+}
+
+async function normalizeBlockedIssueDisposition(input: {
+  dbOrTx: any;
+  companyId: string;
+  issueId?: string;
+  existing?: Pick<
+    typeof issues.$inferSelect,
+    "id" | "status" | "assigneeUserId" | "executionState" | "monitorNextCheckAt"
+  > | null;
+  patch: Partial<typeof issues.$inferInsert>;
+  blockedByIssueIds: string[] | undefined;
+}) {
+  const statusExplicitlyRequested = typeof input.patch.status === "string";
+  const blockersExplicitlyRequested = input.blockedByIssueIds !== undefined;
+  const nextStatus = statusExplicitlyRequested
+    ? input.patch.status
+    : input.existing?.status;
+  if (nextStatus !== "blocked") return input.blockedByIssueIds;
+
+  const blockerIds = blockersExplicitlyRequested
+    ? [...new Set((input.blockedByIssueIds ?? []).filter(Boolean))]
+    : input.issueId
+      ? await input.dbOrTx
+          .select({ id: issueRelations.issueId })
+          .from(issueRelations)
+          .where(
+            and(
+              eq(issueRelations.companyId, input.companyId),
+              eq(issueRelations.relatedIssueId, input.issueId),
+              eq(issueRelations.type, "blocks"),
+            ),
+          )
+          .then((rows: Array<{ id: string }>) => rows.map((row) => row.id))
+      : [];
+
+  if (blockerIds.length > 0) {
+    const blockerRows = await input.dbOrTx
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.companyId), inArray(issues.id, blockerIds)));
+    const unresolvedBlockerIssueIds = await listUnresolvedBlockerIssueIds(
+      input.dbOrTx,
+      input.companyId,
+      blockerIds,
+    );
+    const allKnownBlockersDone =
+      blockerRows.length === blockerIds.length &&
+      blockerRows.every((blocker: { status: string }) => blocker.status === "done") &&
+      unresolvedBlockerIssueIds.length === 0;
+
+    if (allKnownBlockersDone) {
+      input.patch.status = "todo";
+      return [];
+    }
+
+    if (unresolvedBlockerIssueIds.length > 0) {
+      return blockerIds;
+    }
+
+    return blockerIds;
+  }
+
+  const nextAssigneeUserId =
+    input.patch.assigneeUserId === undefined
+      ? input.existing?.assigneeUserId
+      : input.patch.assigneeUserId;
+  if (typeof nextAssigneeUserId === "string" && nextAssigneeUserId.trim().length > 0) return blockerIds;
+
+  const nextExecutionState =
+    input.patch.executionState === undefined
+      ? input.existing?.executionState
+      : input.patch.executionState;
+  if (hasIssueExecutionParticipant(nextExecutionState)) return blockerIds;
+
+  if (hasIssueScheduledMonitor({
+    existingMonitorNextCheckAt: input.existing?.monitorNextCheckAt ?? null,
+    patchMonitorNextCheckAt: input.patch.monitorNextCheckAt,
+    executionPolicy: input.patch.executionPolicy,
+  })) {
+    return blockerIds;
+  }
+
+  if (
+    input.issueId &&
+    await issueHasPendingInteractionOrApproval(input.dbOrTx, input.companyId, input.issueId)
+  ) {
+    return blockerIds;
+  }
+
+  if (
+    input.issueId &&
+    await issueHasActiveRecoveryAction(input.dbOrTx, input.companyId, input.issueId)
+  ) {
+    return blockerIds;
+  }
+
+  throw unprocessable(INVALID_BLOCKED_DISPOSITION_MESSAGE, {
+    code: "invalid_issue_disposition",
+    missing: "blocked_wait_path",
+    validBlockedPaths: [
+      "unresolved_blocked_by_issue",
+      "pending_issue_thread_interaction",
+      "linked_pending_approval",
+      "human_assignee_user_id",
+      "typed_execution_state_current_participant",
+      "scheduled_issue_monitor",
+      "active_recovery_action",
+    ],
+  });
 }
 async function getProjectDefaultGoalId(
   db: ProjectGoalReader,
@@ -4822,10 +5043,11 @@ export function issueService(db: Db) {
     ) => {
       const {
         labelIds: inputLabelIds,
-        blockedByIssueIds,
+        blockedByIssueIds: inputBlockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
         ...issueData
       } = data;
+      let blockedByIssueIds = inputBlockedByIssueIds;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -5009,6 +5231,13 @@ export function issueService(db: Db) {
           issueNumber,
           identifier,
         } as typeof issues.$inferInsert;
+        blockedByIssueIds = await normalizeBlockedIssueDisposition({
+          dbOrTx: tx,
+          companyId,
+          ...(values.id ? { issueId: values.id } : {}),
+          patch: values,
+          blockedByIssueIds,
+        });
         if (values.status === "in_progress" && !values.startedAt) {
           values.startedAt = new Date();
         }
@@ -5068,11 +5297,12 @@ export function issueService(db: Db) {
 
       const {
         labelIds: nextLabelIds,
-        blockedByIssueIds,
+        blockedByIssueIds: inputBlockedByIssueIds,
         actorAgentId,
         actorUserId,
         ...issueData
       } = data;
+      let blockedByIssueIds = inputBlockedByIssueIds;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -5139,14 +5369,24 @@ export function issueService(db: Db) {
         await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
       }
 
-      applyStatusSideEffects(issueData.status, patch);
-      if (issueData.status && issueData.status !== "done") {
+      blockedByIssueIds = await normalizeBlockedIssueDisposition({
+        dbOrTx,
+        companyId: existing.companyId,
+        issueId: existing.id,
+        existing,
+        patch,
+        blockedByIssueIds,
+      });
+
+      const effectivePatchStatus = typeof patch.status === "string" ? patch.status : undefined;
+      applyStatusSideEffects(effectivePatchStatus, patch);
+      if (effectivePatchStatus && effectivePatchStatus !== "done") {
         patch.completedAt = null;
       }
-      if (issueData.status && issueData.status !== "cancelled") {
+      if (effectivePatchStatus && effectivePatchStatus !== "cancelled") {
         patch.cancelledAt = null;
       }
-      if (issueData.status && issueData.status !== "in_progress") {
+      if (effectivePatchStatus && effectivePatchStatus !== "in_progress") {
         patch.checkoutRunId = null;
         // Fix B: also clear the execution lock when leaving in_progress
         patch.executionRunId = null;

@@ -5,6 +5,7 @@ import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  approvals,
   companies,
   createDb,
   documentRevisions,
@@ -18,6 +19,8 @@ import {
   issueInboxArchives,
   issueDocuments,
   issuePlanDecompositions,
+  issueApprovals,
+  issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -2428,6 +2431,10 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
   afterEach(async () => {
     await db.delete(issueComments);
+    await db.delete(issueApprovals);
+    await db.delete(approvals);
+    await db.delete(issueRecoveryActions);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
@@ -2548,6 +2555,138 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await expect(
       svc.update(issueB, { blockedByIssueIds: [issueA] }),
     ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("rejects blocked issues without first-class blockers or structured wait paths", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await expect(
+      svc.create(companyId, {
+        title: "Orphaned blocked create",
+        status: "blocked",
+        priority: "medium",
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "invalid_issue_disposition",
+        missing: "blocked_wait_path",
+      }),
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Orphaned blocked update",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(
+      svc.update(issueId, { status: "blocked" }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "invalid_issue_disposition",
+        missing: "blocked_wait_path",
+      }),
+    });
+  });
+
+  it("allows blocked issues with pending interaction or approval wait paths", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const interactionIssueId = randomUUID();
+    const approvalIssueId = randomUUID();
+    const approvalId = randomUUID();
+    await db.insert(issues).values([
+      { id: interactionIssueId, companyId, title: "Interaction wait", status: "todo", priority: "medium" },
+      { id: approvalIssueId, companyId, title: "Approval wait", status: "todo", priority: "medium" },
+    ]);
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId: interactionIssueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [
+          {
+            id: "scope",
+            prompt: "Choose scope",
+            selectionMode: "single",
+            required: true,
+            options: [{ id: "ship", label: "Ship it" }],
+          },
+        ],
+      },
+    });
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "task_approval",
+      status: "pending",
+      payload: { issueId: approvalIssueId },
+    });
+    await db.insert(issueApprovals).values({
+      companyId,
+      issueId: approvalIssueId,
+      approvalId,
+    });
+
+    await expect(svc.update(interactionIssueId, { status: "blocked" })).resolves.toMatchObject({
+      id: interactionIssueId,
+      status: "blocked",
+    });
+    await expect(svc.update(approvalIssueId, { status: "blocked" })).resolves.toMatchObject({
+      id: approvalIssueId,
+      status: "blocked",
+    });
+  });
+
+  it("repairs blocked issues whose blockers are all done by clearing relations and requeueing", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const doneBlockerId = randomUUID();
+    const dependentId = randomUUID();
+    await db.insert(issues).values([
+      { id: doneBlockerId, companyId, title: "Done blocker", status: "done", priority: "medium" },
+      { id: dependentId, companyId, title: "Dependent", status: "todo", priority: "medium" },
+    ]);
+
+    const repaired = await svc.update(dependentId, {
+      status: "blocked",
+      blockedByIssueIds: [doneBlockerId],
+    });
+
+    expect(repaired).toMatchObject({
+      id: dependentId,
+      status: "todo",
+    });
+    await expect(svc.getRelationSummaries(dependentId)).resolves.toMatchObject({
+      blockedBy: [],
+    });
   });
 
   it("only returns dependents once every blocker is done", async () => {
@@ -2675,8 +2814,6 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         assigneeAgentId,
       },
     ]);
-    await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
-
     // A run touched the workspace (prepare phase) but has not yet recorded
     // workspace_finalize — the dependent must NOT wake.
     await db.insert(workspaceOperations).values({
@@ -2686,6 +2823,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       status: "succeeded",
       startedAt: new Date("2026-05-23T22:00:00.000Z"),
     });
+    await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
 
     expect(await svc.listWakeableBlockedDependents(blockerId)).toEqual([]);
     await expect(svc.getDependencyReadiness(dependentId)).resolves.toMatchObject({
@@ -2727,7 +2865,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     });
   });
 
-  it("treats blockers with no executionWorkspaceId as not subject to the workspace-finalize barrier", async () => {
+  it("repairs done blockers with no executionWorkspaceId instead of leaving wakeable blocked dependents", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
 
@@ -2763,16 +2901,14 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         assigneeAgentId,
       },
     ]);
-    await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
-
-    // No executionWorkspaceId → no barrier → dependent should be wakeable.
-    await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([
-      expect.objectContaining({
-        id: dependentId,
-        assigneeAgentId,
-        blockerIssueIds: [blockerId],
-      }),
-    ]);
+    await expect(svc.update(dependentId, { blockedByIssueIds: [blockerId] })).resolves.toMatchObject({
+      id: dependentId,
+      status: "todo",
+    });
+    await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([]);
+    await expect(svc.getRelationSummaries(dependentId)).resolves.toMatchObject({
+      blockedBy: [],
+    });
   });
 
   it("reports dependency readiness for blocked issue chains", async () => {
@@ -2959,16 +3095,17 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
     await svc.update(childB, { status: "cancelled" });
 
-    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toMatchObject({
+    const wakeableParent = await svc.getWakeableParentAfterChildCompletion(parentId);
+    expect(wakeableParent).toMatchObject({
       id: parentId,
       assigneeAgentId,
-      childIssueIds: [childA, childB],
-      childIssueSummaries: [
-        expect.objectContaining({ id: childA, title: "Child A", status: "done" }),
-        expect.objectContaining({ id: childB, title: "Child B", status: "cancelled" }),
-      ],
       childIssueSummaryTruncated: false,
     });
+    expect(wakeableParent?.childIssueIds).toEqual(expect.arrayContaining([childA, childB]));
+    expect(wakeableParent?.childIssueSummaries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: childA, title: "Child A", status: "done" }),
+      expect.objectContaining({ id: childB, title: "Child B", status: "cancelled" }),
+    ]));
   });
 });
 
