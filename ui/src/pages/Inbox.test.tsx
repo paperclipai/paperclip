@@ -313,12 +313,11 @@ describe("Inbox toolbar", () => {
         </QueryClientProvider>,
       );
     });
-    await act(async () => {
-      await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(container.querySelectorAll("[data-inbox-item]").length).toBeGreaterThanOrEqual(2);
     });
 
     const rows = container.querySelectorAll("[data-inbox-item]");
-    expect(rows.length).toBeGreaterThanOrEqual(2);
 
     const linkOf = (row: Element): HTMLAnchorElement | null =>
       row.querySelector("a[data-inbox-issue-link]");
