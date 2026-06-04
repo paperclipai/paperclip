@@ -16,10 +16,18 @@ import { rows, pgTextArray } from "../helpers.js";
  *  - win-loss POST/PATCH/DELETE + win-loss/[id]/analyze (writes/LLM)
  */
 
-/** Standard HubSpot stage probability ladder (env override existed in AGNB). */
+/**
+ * Stage → win-probability ladder. Covers the default HubSpot internal stage ids
+ * AND this account's custom pipeline ids (qualified/demo). An unmapped stage
+ * falls to 0 — which silently zeroed the weighted forecast when the live
+ * pipeline used `qualified`/`demo`. Override per-account via the
+ * HUBSPOT_STAGE_PROBABILITIES env var.
+ */
 const DEFAULT_PROBS: Record<string, number> = {
   appointmentscheduled: 0.2,
+  qualified: 0.3,
   qualifiedtobuy: 0.4,
+  demo: 0.6,
   presentationscheduled: 0.6,
   decisionmakerboughtin: 0.8,
   contractsent: 0.9,
