@@ -213,7 +213,10 @@ export function awardSolicitBid(args: {
     const resolved = submitted
       ? scoreSubmittedBid(candidate, submitted, args.priority, maxLoad, preset)
       : simulateSolicitBid(candidate, args.priority, maxLoad, preset);
-    if (resolved.specialtyFit < fitGate) {
+    // The fit gate is the manager's eligibility floor (the Announcement filter), so it must be
+    // evaluated against the manager-assigned `candidate.specialtyFit` — never the candidate's
+    // self-reported `resolved.specialtyFit`, which an agent could inflate to bypass the gate.
+    if (candidate.specialtyFit < fitGate) {
       ineligibleAgentIds.push(candidate.agentId);
       continue;
     }

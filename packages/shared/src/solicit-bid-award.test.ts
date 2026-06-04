@@ -85,6 +85,19 @@ describe("solicit_bid deterministic award", () => {
     expect(result.bids).toEqual([]);
   });
 
+  it("fit gate uses the manager-assigned fit — a self-reported specialtyFit cannot bypass it", () => {
+    const pool: SolicitBidCandidate[] = [
+      { agentId: "low", agentName: "Unfit", role: "engineer", specialtyFit: 0.05, load: 0 },
+    ];
+    // The agent self-reports a maxed-out fit, but the manager floor (0.05 < 0.12 gate) holds.
+    const submittedBids: SubmittedBidInput[] = [
+      { agentId: "low", confidence: 1, estEffortHours: 1, specialtyFit: 1, rationale: "trust me" },
+    ];
+    const result = awardSolicitBid({ priority: "low", candidates: pool, submittedBids });
+    expect(result.ineligibleAgentIds).toEqual(["low"]);
+    expect(result.winnerAgentId).toBeNull();
+  });
+
   it("manager keeps authority over priority-fit — a self-reported bid cannot inflate it", () => {
     // submitted specialtyFit/confidence are honored; priorityFit stays role-derived.
     const candidate = POOL[2];
