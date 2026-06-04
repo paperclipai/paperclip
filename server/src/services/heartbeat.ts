@@ -4274,10 +4274,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         companyId: issues.companyId,
         identifier: issues.identifier,
         title: issues.title,
+        description: issues.description,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
+        originKind: issues.originKind,
+        monitorNextCheckAt: issues.monitorNextCheckAt,
         projectId: issues.projectId,
       })
       .from(issues)
@@ -4299,6 +4302,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       pendingApproval,
       explicitBlocker,
       openRecoveryIssue,
+      scheduledRetry,
       existingWake,
       budgetBlock,
       pauseHold,
@@ -4412,6 +4416,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .limit(1)
           .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, run.agentId),
+              eq(heartbeatRuns.status, "scheduled_retry"),
+              sql`(
+                ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}
+                or ${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${issue.id}
+              )`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
       idempotencyKey
         ? findExistingFinishSuccessfulRunHandoffWake(db, {
           companyId: run.companyId,
@@ -4441,6 +4463,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasPendingInteractionOrApproval: Boolean(pendingInteraction || pendingApproval),
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
+      hasScheduledMonitor: Boolean(issue?.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now()),
+      hasScheduledRetry: Boolean(scheduledRetry),
       hasPauseHold: Boolean(pauseHold),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),

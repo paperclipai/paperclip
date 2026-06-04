@@ -11,6 +11,8 @@ const SUMMARY_SECTION_MAX_CHARS = 1_200;
 const PATH_CANDIDATE_RE = /(?:^|[\s`"'(])((?:server|ui|packages|doc|scripts|\.github)\/[A-Za-z0-9._/-]+)/g;
 const WAITING_FOR_REVIEW_OR_APPROVAL_RE =
   /\bwait(?:ing)? for\b.{0,160}\b(?:review(?:er)?(?: feedback)?|approval|board|human|user|operator)\b/i;
+const FAILED_RUN_NEXT_ACTION_RE = /\binspect the failed run\b/i;
+const STANDING_ISSUE_RE = /\b(?:standing|recurring|routine|continuous|watch|monitor|never[-\s]?done)\b/i;
 
 type IssueSummaryInput = {
   id: string;
@@ -26,6 +28,7 @@ type RunSummaryInput = {
   status: string;
   error: string | null;
   errorCode?: string | null;
+  nextAction?: string | null;
   resultJson?: Record<string, unknown> | null;
   stdoutExcerpt?: string | null;
   stderrExcerpt?: string | null;
@@ -105,6 +108,14 @@ function inferNextAction(issue: IssueSummaryInput, run: RunSummaryInput, previou
     return "Inspect the failed run, fix the cause, and resume from the most recent concrete action above.";
   }
   if (run.status === "cancelled") return "Confirm the cancellation reason before starting another run.";
+  const runNextAction = asNonEmptyString(run.nextAction);
+  if (runNextAction) return runNextAction;
+  if (run.status === "succeeded" && previousNextAction && FAILED_RUN_NEXT_ACTION_RE.test(previousNextAction)) {
+    if (STANDING_ISSUE_RE.test(`${issue.identifier ?? ""}\n${issue.title}\n${issue.description ?? ""}`)) {
+      return "Continue from the standing issue's next scheduled wake, monitor, or dispatcher cycle.";
+    }
+    return "Resume implementation from the acceptance criteria, latest comments, and this summary.";
+  }
   return previousNextAction ?? "Resume implementation from the acceptance criteria, latest comments, and this summary.";
 }
 

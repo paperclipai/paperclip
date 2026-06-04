@@ -2271,6 +2271,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
+  const standingIssueRe = /\b(?:standing|recurring|routine|continuous|watch|monitor|never[-\s]?done)\b/i;
+
+  function isStandingIssue(issue: typeof issues.$inferSelect) {
+    return issue.originKind === "routine_execution" ||
+      standingIssueRe.test(`${issue.identifier ?? ""}\n${issue.title ?? ""}\n${issue.description ?? ""}\n${issue.originKind ?? ""}`);
+  }
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: "todo" | "in_progress";
@@ -2296,6 +2303,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    if (blockerIds.length === 0 && isStandingIssue(input.issue)) {
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: input.latestRun?.id ?? null,
+        action: "issue.recovery_standing_block_skipped",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          identifier: input.issue.identifier,
+          source: "recovery.escalate_stranded_assigned_issue",
+          recoveryCause,
+          reason: "standing_issue_without_first_class_blockers",
+        },
+      });
+      return input.issue;
+    }
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
