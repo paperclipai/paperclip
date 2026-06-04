@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertBoardOrgAccess, assertCompanyAccess, hasBoardOrgAccess } from "../routes/authz.js";
+import { assertAgnbAccess, assertBoardOrgAccess, assertCompanyAccess, hasBoardOrgAccess } from "../routes/authz.js";
 
 function makeReq(input: {
   method?: string;
@@ -153,5 +153,66 @@ describe("assertBoardOrgAccess", () => {
 
     expect(hasBoardOrgAccess(req)).toBe(false);
     expect(() => assertBoardOrgAccess(req)).toThrow("Company membership or instance admin access required");
+  });
+});
+
+describe("assertAgnbAccess", () => {
+  it("allows an authenticated producer agent (the AGNB ingest path)", () => {
+    const req = makeReq({
+      method: "POST",
+      actor: {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        source: "agent_key",
+      } as Express.Request["actor"],
+    });
+    expect(() => assertAgnbAccess(req)).not.toThrow();
+  });
+
+  it("rejects an agent token with no agentId", () => {
+    const req = makeReq({
+      method: "POST",
+      actor: {
+        type: "agent",
+        agentId: null,
+        companyId: "company-1",
+        source: "agent_key",
+      } as Express.Request["actor"],
+    });
+    expect(() => assertAgnbAccess(req)).toThrow();
+  });
+
+  it("still allows board users with org access", () => {
+    const req = makeReq({
+      actor: {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+        companyIds: ["company-1"],
+        memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }],
+        isInstanceAdmin: false,
+      },
+    });
+    expect(() => assertAgnbAccess(req)).not.toThrow();
+  });
+
+  it("rejects board users without company access", () => {
+    const req = makeReq({
+      actor: {
+        type: "board",
+        userId: "outsider-1",
+        source: "session",
+        companyIds: [],
+        memberships: [],
+        isInstanceAdmin: false,
+      },
+    });
+    expect(() => assertAgnbAccess(req)).toThrow("Company membership or instance admin access required");
+  });
+
+  it("rejects unauthenticated requests", () => {
+    const req = makeReq({ actor: { type: "none" } as Express.Request["actor"] });
+    expect(() => assertAgnbAccess(req)).toThrow();
   });
 });
