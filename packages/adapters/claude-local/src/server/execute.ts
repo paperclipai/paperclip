@@ -52,6 +52,7 @@ import {
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
+  isClaudeQuotaExhaustedError,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
 } from "./parse.js";
@@ -803,8 +804,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     if (!parsed) {
       const fallbackErrorMessage = parseFallbackErrorMessage(proc);
+      const quotaExhausted =
+        !loginMeta.requiresLogin &&
+        (proc.exitCode ?? 0) !== 0 &&
+        isClaudeQuotaExhaustedError({
+          parsed: null,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage: fallbackErrorMessage,
+        });
+      const quotaResetAt = quotaExhausted
+        ? extractClaudeRetryNotBefore({
+            parsed: null,
+            stdout: proc.stdout,
+            stderr: proc.stderr,
+            errorMessage: fallbackErrorMessage,
+          })
+        : null;
       const transientUpstream =
         !loginMeta.requiresLogin &&
+        !quotaExhausted &&
         (proc.exitCode ?? 0) !== 0 &&
         isClaudeTransientUpstreamError({
           parsed: null,
@@ -822,6 +841,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : null;
       const errorCode = loginMeta.requiresLogin
         ? "claude_auth_required"
+        : quotaExhausted
+        ? "claude_quota_exhausted"
         : transientUpstream
         ? "claude_transient_upstream"
         : null;
@@ -837,6 +858,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: proc.stdout,
           stderr: proc.stderr,
+          ...(quotaExhausted ? { quotaExhausted: true } : {}),
+          ...(quotaResetAt ? { quotaResetAt: quotaResetAt.toISOString() } : {}),
           ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
           ...(transientRetryNotBefore
             ? { retryNotBefore: transientRetryNotBefore.toISOString() }
@@ -880,14 +903,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
     const parsedIsError = asBoolean(parsed.is_error, false);
-    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
+    const parsedSubtype = asString(parsed.subtype, "").trim().toLowerCase();
+    const parsedSuccess = parsedSubtype === "success" && !parsedIsError;
+    const effectiveExitCode = parsedSuccess ? 0 : proc.exitCode;
+    const failed = (effectiveExitCode ?? 0) !== 0 || parsedIsError;
     const errorMessage = failed
-      ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
+      ? describeClaudeFailure(parsed) ?? `Claude exited with code ${effectiveExitCode ?? -1}`
+      : null;
+    const quotaExhausted =
+      failed &&
+      !loginMeta.requiresLogin &&
+      !clearSessionForMaxTurns &&
+      isClaudeQuotaExhaustedError({
+        parsed,
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        errorMessage,
+      });
+    const quotaResetAt = quotaExhausted
+      ? extractClaudeRetryNotBefore({
+          parsed,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage,
+        })
       : null;
     const transientUpstream =
       failed &&
       !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
+      !quotaExhausted &&
       isClaudeTransientUpstreamError({
         parsed,
         stdout: proc.stdout,
@@ -906,19 +951,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? "claude_auth_required"
       : failed && clearSessionForMaxTurns
       ? "max_turns_exhausted"
+      : quotaExhausted
+      ? "claude_quota_exhausted"
       : transientUpstream
       ? "claude_transient_upstream"
       : null;
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
+      ...(quotaExhausted ? { quotaExhausted: true } : {}),
+      ...(quotaResetAt ? { quotaResetAt: quotaResetAt.toISOString() } : {}),
       ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
       ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
     };
 
     return {
-      exitCode: proc.exitCode,
+      exitCode: effectiveExitCode,
       signal: proc.signal,
       timedOut: false,
       errorMessage,
