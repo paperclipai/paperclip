@@ -140,6 +140,13 @@ function getMissingModuleSpecifier(err: unknown): string | null {
   return null;
 }
 
+function isTypeScriptLoaderUnavailable(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: unknown }).code;
+  if (code === "ERR_UNKNOWN_FILE_EXTENSION") return true;
+  return err.message.includes("Unknown file extension") && err.message.includes(".ts");
+}
+
 function maybeEnableUiDevMiddleware(entrypoint: string): void {
   if (process.env.PAPERCLIP_UI_DEV_MIDDLEWARE !== undefined) return;
   const normalized = entrypoint.replaceAll("\\", "/");
@@ -171,15 +178,51 @@ function ensureDevWorkspaceBuildDeps(projectRoot: string): void {
   }
 }
 
+function findWorkspaceRoot(startDir: string): string {
+  let current = startDir;
+  for (let depth = 0; depth < 8; depth += 1) {
+    const packageJsonPath = path.resolve(current, "package.json");
+    const serverPackageJsonPath = path.resolve(current, "server/package.json");
+    if (fs.existsSync(packageJsonPath) && fs.existsSync(serverPackageJsonPath)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as { name?: unknown };
+        if (raw.name === "paperclip") return current;
+      } catch {
+        // Keep walking; a malformed package.json here is not a valid workspace root.
+      }
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+
+  return path.resolve(startDir, "../..");
+}
+
 async function importServerEntry(): Promise<StartedServer> {
-  // Dev mode: try local workspace path (monorepo with tsx)
-  const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+  const projectRoot = findWorkspaceRoot(path.dirname(fileURLToPath(import.meta.url)));
   const devEntry = path.resolve(projectRoot, "server/src/index.ts");
+  const builtEntry = path.resolve(projectRoot, "server/dist/index.js");
+
   if (fs.existsSync(devEntry)) {
     ensureDevWorkspaceBuildDeps(projectRoot);
     maybeEnableUiDevMiddleware(devEntry);
-    const mod = await import(pathToFileURL(devEntry).href);
-    return await startServerFromModule(mod, devEntry);
+    try {
+      const mod = await import(pathToFileURL(devEntry).href);
+      return await startServerFromModule(mod, devEntry);
+    } catch (err) {
+      // A built CLI running under plain Node cannot import TypeScript source.
+      // In that case, fall back to an available compiled server entry.
+      if (!isTypeScriptLoaderUnavailable(err) || !fs.existsSync(builtEntry)) {
+        throw err;
+      }
+    }
+  }
+
+  if (fs.existsSync(builtEntry)) {
+    const mod = await import(pathToFileURL(builtEntry).href);
+    return await startServerFromModule(mod, builtEntry);
   }
 
   // Production mode: import the published @paperclipai/server package
