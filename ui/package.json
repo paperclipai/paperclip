@@ -62,7 +62,7 @@
     "react-dom": "^19.0.0",
     "react-i18next": "^17.0.7",
     "react-markdown": "^10.1.0",
-    "react-router-dom": "^7.1.5",
+    "react-router-dom": "^7.16.0",
     "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.4.1"
   },
