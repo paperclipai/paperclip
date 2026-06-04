@@ -6273,9 +6273,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
 
+    // The "wait for reviewer feedback or approval" continuation Next Action is written from the
+    // EXECUTOR's point of view. When the woken agent IS the current review participant, parking
+    // the run would cancel the very reviewer who is supposed to provide that feedback — a deadlock
+    // (reviewer run cancelled -> issue stranded -> auto-recovery re-wakes -> cancelled again). Only
+    // park the executor; let the active reviewer/approver run.
+    const executionStateForPark = parseIssueExecutionState(issue.executionState);
+    const parkParticipant = executionStateForPark?.currentParticipant ?? null;
+    const runnerIsActiveReviewParticipant =
+      parkParticipant?.type === "agent" && parkParticipant.agentId === run.agentId;
+
     if (
       issue.status === "in_progress" &&
       !wakeCommentId &&
+      !runnerIsActiveReviewParticipant &&
       (wakeReason === "issue_continuation_needed" || retryReason === "issue_continuation_needed")
     ) {
       const queuedWake = parseObject(context.paperclipWake);
