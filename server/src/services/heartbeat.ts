@@ -6511,6 +6511,92 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload: staleness.details,
     });
 
+    if (staleness.errorCode === "issue_assignee_changed") {
+      const currentAssigneeAgentId = readNonEmptyString(
+        staleness.details.currentAssigneeAgentId,
+      );
+      if (currentAssigneeAgentId) {
+        const originalWakeup = run.wakeupRequestId
+          ? await db
+            .select({ payload: agentWakeupRequests.payload })
+            .from(agentWakeupRequests)
+            .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+            .then((rows) => rows[0] ?? null)
+          : null;
+        const originalPayload = parseObject(originalWakeup?.payload);
+        const originalContext = parseObject(run.contextSnapshot);
+        const wakeReason =
+          readNonEmptyString(originalContext.wakeReason) ??
+          run.scheduledRetryReason ??
+          "issue_assigned";
+
+        try {
+          const replacementRun = await enqueueWakeup(currentAssigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: wakeReason,
+            payload: {
+              ...originalPayload,
+              issueId,
+              replacementForRunId: run.id,
+              previousAssigneeAgentId: run.agentId,
+              currentAssigneeAgentId,
+            },
+            requestedByActorType: "system",
+            requestedByActorId: null,
+            contextSnapshot: {
+              ...originalContext,
+              issueId,
+              taskId: issueId,
+              wakeReason,
+              replacementForRunId: run.id,
+              previousAssigneeAgentId: run.agentId,
+              currentAssigneeAgentId,
+            },
+          });
+
+          await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "info",
+            message:
+              replacementRun
+                ? "Queued replacement wake for the current issue assignee"
+                : "Replacement wake for the current issue assignee was deferred or skipped",
+            payload: {
+              issueId,
+              previousAssigneeAgentId: run.agentId,
+              currentAssigneeAgentId,
+              replacementRunId: replacementRun?.id ?? null,
+            },
+          });
+        } catch (err) {
+          logger.warn(
+            {
+              err,
+              runId: run.id,
+              issueId,
+              previousAssigneeAgentId: run.agentId,
+              currentAssigneeAgentId,
+            },
+            "failed to queue replacement wake after stale queued run assignee change",
+          );
+          await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "error",
+            message: "Failed to queue replacement wake for the current issue assignee",
+            payload: {
+              issueId,
+              previousAssigneeAgentId: run.agentId,
+              currentAssigneeAgentId,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
+      }
+    }
+
     return cancelled;
   }
 
