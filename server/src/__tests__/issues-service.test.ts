@@ -4172,4 +4172,145 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(record).not.toHaveProperty("requestedChildren");
     expect(record?.childIssues.every((child) => typeof child.title === "string")).toBe(true);
   });
+
+  it("recovers a stale same-assignee checkout run during checkout and reports lease recovery", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const issueId = randomUUID();
+    const staleRunId = randomUUID();
+    const recoveryRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Coder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: staleRunId,
+      companyId,
+      agentId: assigneeAgentId,
+      invocationSource: "manual",
+      status: "running",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: recoveryRunId,
+      companyId,
+      agentId: assigneeAgentId,
+      invocationSource: "manual",
+      status: "running",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reclaim stale lease on checkout",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId,
+      assigneeUserId: null,
+      checkoutRunId: staleRunId,
+      executionRunId: staleRunId,
+      startedAt: new Date("2026-06-03T00:00:00.000Z"),
+      updatedAt: new Date("2026-06-03T00:00:00.000Z"),
+    });
+
+    const updated = await svc.checkout(issueId, assigneeAgentId, ["in_progress"], recoveryRunId);
+
+    expect(updated.checkoutLease).toMatchObject({
+      action: "issue.checkout_lease_recovered",
+      previousCheckoutRunId: staleRunId,
+      replacementRunId: recoveryRunId,
+    });
+
+    const rows = await db
+      .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(rows[0]).toMatchObject({ checkoutRunId: recoveryRunId, executionRunId: recoveryRunId });
+  });
+
+  it("recovers a stale same-assignee checkout run during checkout ownership assertions", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const issueId = randomUUID();
+    const staleRunId = randomUUID();
+    const recoveryRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Coder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: staleRunId,
+      companyId,
+      agentId: assigneeAgentId,
+      invocationSource: "manual",
+      status: "running",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: recoveryRunId,
+      companyId,
+      agentId: assigneeAgentId,
+      invocationSource: "manual",
+      status: "running",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reclaim stale lease on assert",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId,
+      assigneeUserId: null,
+      checkoutRunId: staleRunId,
+      executionRunId: staleRunId,
+      startedAt: new Date("2026-06-03T00:00:00.000Z"),
+      updatedAt: new Date("2026-06-03T00:00:00.000Z"),
+    });
+
+    const ownership = await svc.assertCheckoutOwner(issueId, assigneeAgentId, recoveryRunId);
+
+    expect(ownership.checkoutLease).toMatchObject({
+      action: "issue.checkout_lease_recovered",
+      previousCheckoutRunId: staleRunId,
+      replacementRunId: recoveryRunId,
+    });
+    expect(ownership.adoptedFromRunId).toBe(staleRunId);
+
+    const rows = await db
+      .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(rows[0]).toMatchObject({ checkoutRunId: recoveryRunId, executionRunId: recoveryRunId });
+  });
 });

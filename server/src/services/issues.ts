@@ -290,6 +290,12 @@ type IssueLastActivityStat = {
   latestCommentAt: Date | null;
   latestLogAt: Date | null;
 };
+type CheckoutLeaseDecision = {
+  action: "issue.checkout_lease_preserved" | "issue.checkout_lease_recovered" | "issue.checkout_lease_rejected";
+  previousCheckoutRunId: string | null;
+  replacementRunId: string | null;
+  recoverMode: "direct_checkout" | "same_run_reuse" | "stale_checkout_run" | "unowned_checkout_run" | "unknown";
+};
 
 function serializeAcceptedPlanDecomposition(
   decomposition: IssuePlanDecompositionRow,
@@ -3612,14 +3618,51 @@ export function issueService(db: Db) {
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
   }
 
+  async function getCheckoutRunReclaimDecision(runId: string, actorAgentId: string) {
+    const run = await db
+      .select({
+        status: heartbeatRuns.status,
+        agentId: heartbeatRuns.agentId,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!run) {
+      return {
+        reclaimable: true,
+        reason: "missing_checkout_run" as const,
+      };
+    }
+
+    if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) {
+      return {
+        reclaimable: true,
+        reason: "terminal_checkout_run" as const,
+      };
+    }
+
+    if (run.agentId === actorAgentId) {
+      return {
+        reclaimable: true,
+        reason: "same_assignee_active_run" as const,
+      };
+    }
+
+    return {
+      reclaimable: false,
+      reason: "different_agent_active_run" as const,
+    };
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
     actorRunId: string;
     expectedCheckoutRunId: string;
   }) {
-    const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
-    if (!stale) return null;
+    const reclaim = await getCheckoutRunReclaimDecision(input.expectedCheckoutRunId, input.actorAgentId);
+    if (!reclaim.reclaimable) return null;
 
     const now = new Date();
     const adopted = await db
@@ -3647,7 +3690,11 @@ export function issueService(db: Db) {
       })
       .then((rows) => rows[0] ?? null);
 
-    return adopted;
+    if (!adopted) return null;
+    return {
+      ...adopted,
+      adoptionReason: reclaim.reason,
+    };
   }
 
   async function adoptUnownedCheckoutRun(input: {
@@ -5274,7 +5321,13 @@ export function issueService(db: Db) {
 
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
-        return enriched;
+        const checkoutLease = {
+          action: "issue.checkout_lease_preserved" as const,
+          previousCheckoutRunId: null,
+          replacementRunId: checkoutRunId,
+          recoverMode: "direct_checkout" as const,
+        };
+        return { ...enriched, checkoutLease };
       }
 
       const current = await db
@@ -5316,7 +5369,16 @@ export function issueService(db: Db) {
           )
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (adopted) return adopted;
+        if (adopted) {
+          const [enriched] = await withIssueLabels(db, [adopted]);
+          const checkoutLease = {
+            action: "issue.checkout_lease_recovered" as const,
+            previousCheckoutRunId: null,
+            replacementRunId: checkoutRunId,
+            recoverMode: "unowned_checkout_run" as const,
+          };
+          return { ...enriched, checkoutLease };
+        }
       }
 
       if (
@@ -5336,7 +5398,13 @@ export function issueService(db: Db) {
           const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
           if (!row) throw notFound("Issue not found");
           const [enriched] = await withIssueLabels(db, [row]);
-          return enriched;
+          const checkoutLease = {
+            action: "issue.checkout_lease_recovered" as const,
+            previousCheckoutRunId: current.checkoutRunId,
+            replacementRunId: checkoutRunId,
+            recoverMode: "stale_checkout_run" as const,
+          };
+          return { ...enriched, checkoutLease };
         }
       }
 
@@ -5349,7 +5417,13 @@ export function issueService(db: Db) {
         const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
         if (!row) throw notFound("Issue not found");
         const [enriched] = await withIssueLabels(db, [row]);
-        return enriched;
+        const checkoutLease = {
+          action: "issue.checkout_lease_preserved" as const,
+          previousCheckoutRunId: current.checkoutRunId,
+          replacementRunId: checkoutRunId,
+          recoverMode: "same_run_reuse" as const,
+        };
+        return { ...enriched, checkoutLease };
       }
 
       throw conflict("Issue checkout conflict", {
@@ -5382,7 +5456,17 @@ export function issueService(db: Db) {
         current.assigneeAgentId === actorAgentId &&
         sameRunLock(current.checkoutRunId, actorRunId)
       ) {
-        return { ...current, adoptedFromRunId: null as string | null };
+        const checkoutLease = {
+          action: "issue.checkout_lease_preserved" as const,
+          previousCheckoutRunId: current.checkoutRunId,
+          replacementRunId: actorRunId,
+          recoverMode: "same_run_reuse" as const,
+        };
+        return {
+          ...current,
+          checkoutLease,
+          adoptedFromRunId: null as string | null,
+        };
       }
 
       if (
@@ -5399,9 +5483,16 @@ export function issueService(db: Db) {
         });
 
         if (adopted) {
+          const checkoutLease = {
+            action: "issue.checkout_lease_recovered" as const,
+            previousCheckoutRunId: null,
+            replacementRunId: actorRunId,
+            recoverMode: "unowned_checkout_run" as const,
+          };
           return {
             ...adopted,
             adoptedFromRunId: null as string | null,
+            checkoutLease,
           };
         }
       }
@@ -5421,9 +5512,16 @@ export function issueService(db: Db) {
         });
 
         if (adopted) {
+          const checkoutLease = {
+            action: "issue.checkout_lease_recovered" as const,
+            previousCheckoutRunId: current.checkoutRunId,
+            replacementRunId: actorRunId,
+            recoverMode: "stale_checkout_run" as const,
+          };
           return {
             ...adopted,
             adoptedFromRunId: current.checkoutRunId,
+            checkoutLease,
           };
         }
       }
