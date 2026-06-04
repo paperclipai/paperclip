@@ -16,6 +16,7 @@ import {
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  computeSessionCompactionReason,
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
@@ -111,6 +112,125 @@ describe("k8s adapters default to session rotation (BLO-8827)", () => {
       }),
     );
     expect(policy).toEqual({ ...K8S_DEFAULT, enabled: false });
+  });
+});
+
+describe("computeSessionCompactionReason fires rotation at the k8s ceiling (BLO-8827)", () => {
+  // parseSessionCompactionPolicy tests above prove the k8s DEFAULT is 150k. These
+  // prove the CONSUMER actually rotates at that ceiling: the >= comparator, the
+  // non-cached rawInputTokens field, and trigger precedence. Without this layer a
+  // regression in the decision wiring (wrong operator, wrong field, reordered
+  // triggers) would pass every policy-shape assertion yet silently stop rotating —
+  // the exact BLO-8827 failure mode. Driven by the real resolved policy (not a
+  // hand-built literal) so the default and the decision can't drift apart.
+  const k8sPolicy = (adapter: string, runtimeConfig: Record<string, unknown> = {}) =>
+    parseSessionCompactionPolicy(buildAgent(adapter, runtimeConfig));
+
+  it("rotates opencode_k8s exactly at the 150k raw-input ceiling (>= is inclusive)", () => {
+    expect(
+      computeSessionCompactionReason({
+        policy: k8sPolicy("opencode_k8s"),
+        runsCount: 1,
+        latestRawInputTokens: 150_000,
+        sessionAgeHours: 0,
+      }),
+    ).toBe("session raw input reached 150,000 tokens (threshold 150,000)");
+  });
+
+  it("rotates claude_k8s at the 150k ceiling too", () => {
+    expect(
+      computeSessionCompactionReason({
+        policy: k8sPolicy("claude_k8s"),
+        runsCount: 1,
+        latestRawInputTokens: 150_000,
+        sessionAgeHours: 0,
+      }),
+    ).not.toBeNull();
+  });
+
+  it("does not rotate one token below the ceiling", () => {
+    expect(
+      computeSessionCompactionReason({
+        policy: k8sPolicy("opencode_k8s"),
+        runsCount: 1,
+        latestRawInputTokens: 149_999,
+        sessionAgeHours: 0,
+      }),
+    ).toBeNull();
+  });
+
+  it("does not rotate a cache-heavy wake whose non-cached raw input stays low", () => {
+    // The caller feeds readRawUsageTotals' NON-cached rawInputTokens here, so a wake
+    // that re-reads a large cached working set but only adds a little fresh input must
+    // NOT rotate — the ceiling gates re-inflation across wakes, not cache hits.
+    expect(
+      computeSessionCompactionReason({
+        policy: k8sPolicy("opencode_k8s"),
+        runsCount: 1,
+        latestRawInputTokens: 40_000,
+        sessionAgeHours: 0,
+      }),
+    ).toBeNull();
+  });
+
+  it("does not rotate before usage is recorded (null raw input)", () => {
+    expect(
+      computeSessionCompactionReason({
+        policy: k8sPolicy("opencode_k8s"),
+        runsCount: 1,
+        latestRawInputTokens: null,
+        sessionAgeHours: 0,
+      }),
+    ).toBeNull();
+  });
+
+  it("honors a per-agent maxRawInputTokens override end-to-end: 150k no longer rotates, 180k does", () => {
+    const policy = k8sPolicy("opencode_k8s", {
+      heartbeat: { sessionCompaction: { maxRawInputTokens: 180_000 } },
+    });
+    expect(
+      computeSessionCompactionReason({ policy, runsCount: 1, latestRawInputTokens: 150_000, sessionAgeHours: 0 }),
+    ).toBeNull();
+    expect(
+      computeSessionCompactionReason({ policy, runsCount: 1, latestRawInputTokens: 180_000, sessionAgeHours: 0 }),
+    ).toBe("session raw input reached 180,000 tokens (threshold 180,000)");
+  });
+
+  it("checks the runs ceiling before the raw-input ceiling (precedence)", () => {
+    // Both runs (201 > 200) and raw input (200k >= 150k) are over threshold; runs is
+    // evaluated first, so its reason wins.
+    expect(
+      computeSessionCompactionReason({
+        policy: k8sPolicy("opencode_k8s"),
+        runsCount: 201,
+        latestRawInputTokens: 200_000,
+        sessionAgeHours: 0,
+      }),
+    ).toBe("session exceeded 200 runs");
+  });
+
+  it("rotates on the 72h age ceiling when runs and raw input are under threshold", () => {
+    expect(
+      computeSessionCompactionReason({
+        policy: k8sPolicy("opencode_k8s"),
+        runsCount: 1,
+        latestRawInputTokens: 10,
+        sessionAgeHours: 72,
+      }),
+    ).toBe("session age reached 72 hours");
+  });
+
+  it("never rotates an adapter-managed agent whose thresholds are all zero", () => {
+    // claude_local has native compaction → ADAPTER_MANAGED policy (all thresholds 0).
+    // Every trigger guards on `> 0`, so even absurd inputs produce no rotation reason.
+    expect(
+      computeSessionCompactionReason({
+        policy: k8sPolicy("claude_local"),
+        runsCount: 10_000,
+        latestRawInputTokens: 5_000_000,
+        sessionAgeHours: 9_999,
+      }),
+    ).toBeNull();
   });
 });
 

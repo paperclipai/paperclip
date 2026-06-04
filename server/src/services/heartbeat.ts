@@ -1953,6 +1953,42 @@ export function parseSessionCompactionPolicy(agent: typeof agents.$inferSelect):
   return resolveSessionCompactionPolicy(agent.adapterType, agent.runtimeConfig).policy;
 }
 
+// Pure rotation-trigger decision, factored out of evaluateSessionCompaction so the
+// boundary semantics are unit-testable without a DB harness (BLO-8827). Returns the
+// human-readable rotation reason, or null to keep the current session. Trigger
+// precedence is runs → raw-input → age (first match wins). `latestRawInputTokens` is
+// the NON-cached raw input of the latest run (readRawUsageTotals prefers
+// rawInputTokens, which excludes cached reads) — the ceiling gates re-inflation
+// across wakes, not cache hits. The raw-input comparison is inclusive (>=), so a wake
+// that lands exactly on the threshold rotates. A zero/disabled threshold (value <= 0)
+// disables that trigger.
+export function computeSessionCompactionReason(input: {
+  policy: SessionCompactionPolicy;
+  runsCount: number;
+  latestRawInputTokens: number | null;
+  sessionAgeHours: number;
+}): string | null {
+  const { policy, runsCount, latestRawInputTokens, sessionAgeHours } = input;
+
+  if (policy.maxSessionRuns > 0 && runsCount > policy.maxSessionRuns) {
+    return `session exceeded ${policy.maxSessionRuns} runs`;
+  }
+  if (
+    policy.maxRawInputTokens > 0 &&
+    latestRawInputTokens !== null &&
+    latestRawInputTokens >= policy.maxRawInputTokens
+  ) {
+    return (
+      `session raw input reached ${formatCount(latestRawInputTokens)} tokens ` +
+      `(threshold ${formatCount(policy.maxRawInputTokens)})`
+    );
+  }
+  if (policy.maxSessionAgeHours > 0 && sessionAgeHours >= policy.maxSessionAgeHours) {
+    return `session age reached ${Math.floor(sessionAgeHours)} hours`;
+  }
+  return null;
+}
+
 export function resolveRuntimeSessionParamsForWorkspace(input: {
   agentId: string;
   previousSessionParams: Record<string, unknown> | null;
@@ -4425,20 +4461,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           )
         : 0;
 
-    let reason: string | null = null;
-    if (policy.maxSessionRuns > 0 && runs.length > policy.maxSessionRuns) {
-      reason = `session exceeded ${policy.maxSessionRuns} runs`;
-    } else if (
-      policy.maxRawInputTokens > 0 &&
-      latestRawUsage &&
-      latestRawUsage.inputTokens >= policy.maxRawInputTokens
-    ) {
-      reason =
-        `session raw input reached ${formatCount(latestRawUsage.inputTokens)} tokens ` +
-        `(threshold ${formatCount(policy.maxRawInputTokens)})`;
-    } else if (policy.maxSessionAgeHours > 0 && sessionAgeHours >= policy.maxSessionAgeHours) {
-      reason = `session age reached ${Math.floor(sessionAgeHours)} hours`;
-    }
+    const reason = computeSessionCompactionReason({
+      policy,
+      runsCount: runs.length,
+      latestRawInputTokens: latestRawUsage?.inputTokens ?? null,
+      sessionAgeHours,
+    });
 
     if (!reason || !latestRun) {
       return {
