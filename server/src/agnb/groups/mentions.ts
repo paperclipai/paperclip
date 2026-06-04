@@ -15,6 +15,10 @@ import { rows } from "../helpers.js";
  *   - POST /inbound/sov/run                           → PHASE 5 (external LLM engines)
  *   - POST /backlinks/draft-outreach/:id              → PHASE 5 (external LLM)
  *   - POST /backlinks/prospect-status/:id             → PHASE 5 (writes)
+ *
+ * Exception: POST /agnb/mentions — ingest path for the Brand Monitor agent so its
+ * web-search findings persist into community_mentions (the Mentions dashboard's
+ * source), replacing the retired standalone scraper. Idempotent on url.
  */
 export function registerMentions(router: Router, db: Db) {
   /** GET /api/agnb/mentions — community mentions (HN/Reddit/etc). */
@@ -27,6 +31,44 @@ export function registerMentions(router: Router, db: Db) {
       LIMIT 500
     `);
     res.json({ ok: true, mentions: rows(result) });
+  });
+
+  /**
+   * POST /api/agnb/mentions — ingest a brand mention (Brand Monitor agent).
+   * Idempotent on url: a mention whose url already exists is skipped (no dupes
+   * across weekly re-runs). Rows are tagged noticed_by='brand-monitor' so they
+   * can be told apart from legacy-scraper rows during the shadow period.
+   */
+  router.post("/agnb/mentions", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const body = (req.body ?? {}) as {
+      source?: string;
+      url?: string;
+      context?: string;
+      sentiment?: string;
+      author?: string;
+      has_link?: boolean;
+      noticed_at?: string;
+      noticed_by?: string;
+    };
+    if (!body.source || !body.url) {
+      res.status(400).json({ ok: false, error: "source and url are required" });
+      return;
+    }
+    const result = await db.execute(sql`
+      INSERT INTO agnb.community_mentions
+        (source, url, context, sentiment, author, has_link, noticed_at, noticed_by)
+      SELECT ${body.source}, ${body.url}, ${body.context ?? null}, ${body.sentiment ?? null},
+             ${body.author ?? null}, ${body.has_link ?? false},
+             COALESCE(${body.noticed_at ?? null}::timestamptz, now()),
+             ${body.noticed_by ?? "brand-monitor"}
+      WHERE NOT EXISTS (
+        SELECT 1 FROM agnb.community_mentions WHERE url = ${body.url}
+      )
+      RETURNING id
+    `);
+    const inserted = rows(result);
+    res.json({ ok: true, inserted: inserted.length > 0, duplicate: inserted.length === 0, id: inserted[0]?.id ?? null });
   });
 
   /** GET /api/agnb/reviews — review platforms + recent review log. */
