@@ -33,6 +33,37 @@ interface MarkdownBodyProps {
 
 let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = null;
 
+// Linear and Paperclip share the `BLO-N` identifier scheme for different
+// issues, so a bare `BLO-1234` is ambiguous. We resolve it against Paperclip
+// (the query below): a hit renders an in-app Paperclip link with a rich
+// tooltip; a confirmed miss is treated as a Linear reference and rendered as a
+// fully-qualified external linear.app link instead of dead-ending on
+// Paperclip's own `/issues/BLO-1234`. The workspace slug is needed for the
+// linear.app URL to resolve (slug-less `linear.app/issue/…` returns the
+// marketing site); defaults to "blockcast", overridable per deployment.
+const LINEAR_WORKSPACE_SLUG =
+  (import.meta.env.VITE_LINEAR_WORKSPACE_SLUG as string | undefined)?.trim() || "blockcast";
+
+export function buildLinearIssueUrl(identifier: string): string {
+  return `https://linear.app/${LINEAR_WORKSPACE_SLUG}/issue/${encodeURIComponent(identifier)}`;
+}
+
+export function buildIssueTooltip(
+  identifier: string,
+  title: string | null | undefined,
+  status: string | null | undefined,
+  description: string | null | undefined,
+): string {
+  const head = title && title !== identifier ? `${identifier}: ${title}` : identifier;
+  const lines: string[] = [head];
+  if (status) lines.push(`Status: ${status}`);
+  if (description) {
+    const trimmed = description.trim().replace(/\s+/g, " ");
+    if (trimmed) lines.push(trimmed.length > 200 ? `${trimmed.slice(0, 200)}…` : trimmed);
+  }
+  return lines.join("\n");
+}
+
 function MarkdownIssueLink({
   issuePathId,
   children,
@@ -40,15 +71,37 @@ function MarkdownIssueLink({
   issuePathId: string;
   children: ReactNode;
 }) {
-  const { data } = useQuery({
+  // retry:false so a 404 (identifier isn't a Paperclip issue) settles to
+  // isError quickly instead of retrying, letting us fall back to Linear.
+  const { data, isError } = useQuery({
     queryKey: queryKeys.issues.detail(issuePathId),
     queryFn: () => issuesApi.get(issuePathId),
     staleTime: 60_000,
+    retry: false,
   });
 
   const identifier = data?.identifier ?? issuePathId;
+
+  // Confirmed not a Paperclip issue → render a fully-qualified Linear link.
+  if (isError && !data) {
+    return (
+      <a
+        href={buildLinearIssueUrl(identifier)}
+        target="_blank"
+        rel="noopener noreferrer"
+        data-mention-kind="issue-linear"
+        className="paperclip-markdown-issue-ref"
+        title={`Linear issue ${identifier}`}
+        aria-label={`Linear issue ${identifier}`}
+      >
+        {children}
+      </a>
+    );
+  }
+
   const title = data?.title ?? identifier;
   const status = data?.status;
+  const tooltip = buildIssueTooltip(identifier, data?.title, status, data?.description);
   const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
 
   return (
@@ -56,7 +109,7 @@ function MarkdownIssueLink({
       to={`/issues/${identifier}`}
       data-mention-kind="issue"
       className="paperclip-markdown-issue-ref"
-      title={title}
+      title={tooltip}
       aria-label={issueLabel}
     >
       {status ? (

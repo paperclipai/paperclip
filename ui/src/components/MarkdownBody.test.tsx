@@ -13,7 +13,7 @@ import {
   buildUserMentionHref,
 } from "@paperclipai/shared";
 import { ThemeProvider } from "../context/ThemeContext";
-import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownBody, buildLinearIssueUrl, buildIssueTooltip } from "./MarkdownBody";
 import { queryKeys } from "../lib/queryKeys";
 
 const mockIssuesApi = vi.hoisted(() => ({
@@ -36,13 +36,17 @@ vi.mock("../api/issues", () => ({
 
 function renderMarkdown(
   children: string,
-  seededIssues: Array<{ identifier: string; status: string; title?: string }> = [],
+  seededIssues: Array<{ identifier: string; status: string; title?: string; description?: string }> = [],
   props: Partial<ComponentProps<typeof MarkdownBody>> = {},
 ) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
         retry: false,
+        // Keep observers from refetching the seeded states on mount so the
+        // synchronous SSR render reflects exactly what we seed.
+        refetchOnMount: false,
+        staleTime: Infinity,
       },
     },
   });
@@ -53,6 +57,7 @@ function renderMarkdown(
       identifier: issue.identifier,
       status: issue.status,
       title: issue.title,
+      description: issue.description,
     });
   }
 
@@ -181,6 +186,37 @@ describe("MarkdownBody", () => {
     expect(html).toContain('data-mention-kind="issue"');
     expect(html).toContain("paperclip-markdown-issue-ref");
     expect(html).not.toContain("paperclip-mention-chip--issue");
+  });
+
+  it("builds a fully-qualified Linear URL for the workspace (Linear fallback target)", () => {
+    expect(buildLinearIssueUrl("BLO-9999")).toBe("https://linear.app/blockcast/issue/BLO-9999");
+    // The Paperclip↔Linear disambiguation in MarkdownIssueLink routes a
+    // confirmed Paperclip miss to exactly this URL via an external <a>.
+  });
+
+  it("composes the issue tooltip from identifier, title, status, and description", () => {
+    expect(buildIssueTooltip("PAP-1300", "Wire the hover card", "in_progress", "Render title + status on hover."))
+      .toBe("PAP-1300: Wire the hover card\nStatus: in_progress\nRender title + status on hover.");
+    // No title / no extras → bare identifier.
+    expect(buildIssueTooltip("PAP-1", undefined, undefined, undefined)).toBe("PAP-1");
+    // Long descriptions are clamped.
+    const long = "x".repeat(300);
+    expect(buildIssueTooltip("PAP-2", "T", "todo", long)).toContain(`${"x".repeat(200)}…`);
+  });
+
+  it("enriches the Paperclip issue tooltip with status and description", () => {
+    const html = renderMarkdown("See PAP-1300 for details.", [
+      {
+        identifier: "PAP-1300",
+        status: "in_progress",
+        title: "Wire the hover card",
+        description: "Render title + status on hover.",
+      },
+    ]);
+
+    expect(html).toContain("PAP-1300: Wire the hover card");
+    expect(html).toContain("Status: in_progress");
+    expect(html).toContain("Render title + status on hover.");
   });
 
   it("uses concise issue aria labels until a distinct title is available", () => {
