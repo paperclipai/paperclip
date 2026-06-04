@@ -116,7 +116,7 @@ vi.mock("../routes/org-chart-svg.js", () => ({
   renderOrgChartPng: vi.fn(async () => Buffer.from("png")),
 }));
 
-const { companyPortabilityService, parseGitHubSourceUrl } = await import("../services/company-portability.js");
+const { companyPortabilityService, parseGitHubSourceUrl, renderYamlBlock } = await import("../services/company-portability.js");
 
 function asTextFile(entry: CompanyPortabilityFileEntry | undefined) {
   expect(typeof entry).toBe("string");
@@ -399,6 +399,16 @@ describe("company portability", () => {
         instructionsFilePath: `/tmp/${agent.id}/AGENTS.md`,
       },
     }));
+  });
+
+  it("renders high-volume YAML blocks without overflowing the call stack", () => {
+    const tasks = Array.from({ length: 130_000 }, (_, index) => `issue-${index}`);
+
+    const lines = renderYamlBlock({ tasks }, 0);
+
+    expect(lines[0]).toBe("tasks:");
+    expect(lines[1]).toBe('  - "issue-0"');
+    expect(lines.at(-1)).toBe('  - "issue-129999"');
   });
 
   it("parses canonical GitHub import URLs with explicit ref and package path", () => {

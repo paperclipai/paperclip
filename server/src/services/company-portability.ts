@@ -1899,53 +1899,76 @@ function orderedYamlEntries(value: Record<string, unknown>) {
   return Object.entries(value).sort(([leftKey], [rightKey]) => compareYamlKeys(leftKey, rightKey));
 }
 
-function renderYamlBlock(value: unknown, indentLevel: number): string[] {
-  const indent = "  ".repeat(indentLevel);
+function isYamlScalarValue(value: unknown) {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    typeof value === "number" ||
+    (Array.isArray(value) && value.length === 0) ||
+    isEmptyObject(value)
+  );
+}
 
-  if (Array.isArray(value)) {
-    if (value.length === 0) return [`${indent}[]`];
-    const lines: string[] = [];
-    for (const entry of value) {
-      const scalar =
-        entry === null ||
-        typeof entry === "string" ||
-        typeof entry === "boolean" ||
-        typeof entry === "number" ||
-        Array.isArray(entry) && entry.length === 0 ||
-        isEmptyObject(entry);
-      if (scalar) {
-        lines.push(`${indent}- ${renderYamlScalar(entry)}`);
+type YamlRenderFrame =
+  | { kind: "line"; text: string }
+  | { kind: "value"; value: unknown; indentLevel: number };
+
+export function renderYamlBlock(value: unknown, indentLevel: number): string[] {
+  const lines: string[] = [];
+  const stack: YamlRenderFrame[] = [{ kind: "value", value, indentLevel }];
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (frame.kind === "line") {
+      lines.push(frame.text);
+      continue;
+    }
+
+    const indent = "  ".repeat(frame.indentLevel);
+    const current = frame.value;
+
+    if (Array.isArray(current)) {
+      if (current.length === 0) {
+        lines.push(`${indent}[]`);
         continue;
       }
-      lines.push(`${indent}-`);
-      lines.push(...renderYamlBlock(entry, indentLevel + 1));
-    }
-    return lines;
-  }
 
-  if (isPlainRecord(value)) {
-    const entries = orderedYamlEntries(value);
-    if (entries.length === 0) return [`${indent}{}`];
-    const lines: string[] = [];
-    for (const [key, entry] of entries) {
-      const scalar =
-        entry === null ||
-        typeof entry === "string" ||
-        typeof entry === "boolean" ||
-        typeof entry === "number" ||
-        Array.isArray(entry) && entry.length === 0 ||
-        isEmptyObject(entry);
-      if (scalar) {
-        lines.push(`${indent}${key}: ${renderYamlScalar(entry)}`);
+      for (let index = current.length - 1; index >= 0; index -= 1) {
+        const entry = current[index];
+        if (isYamlScalarValue(entry)) {
+          stack.push({ kind: "line", text: `${indent}- ${renderYamlScalar(entry)}` });
+          continue;
+        }
+        stack.push({ kind: "value", value: entry, indentLevel: frame.indentLevel + 1 });
+        stack.push({ kind: "line", text: `${indent}-` });
+      }
+      continue;
+    }
+
+    if (isPlainRecord(current)) {
+      const entries = orderedYamlEntries(current);
+      if (entries.length === 0) {
+        lines.push(`${indent}{}`);
         continue;
       }
-      lines.push(`${indent}${key}:`);
-      lines.push(...renderYamlBlock(entry, indentLevel + 1));
+
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const [key, entry] = entries[index]!;
+        if (isYamlScalarValue(entry)) {
+          stack.push({ kind: "line", text: `${indent}${key}: ${renderYamlScalar(entry)}` });
+          continue;
+        }
+        stack.push({ kind: "value", value: entry, indentLevel: frame.indentLevel + 1 });
+        stack.push({ kind: "line", text: `${indent}${key}:` });
+      }
+      continue;
     }
-    return lines;
+
+    lines.push(`${indent}${renderYamlScalar(current)}`);
   }
 
-  return [`${indent}${renderYamlScalar(value)}`];
+  return lines;
 }
 
 function renderFrontmatter(frontmatter: Record<string, unknown>) {
@@ -1953,13 +1976,7 @@ function renderFrontmatter(frontmatter: Record<string, unknown>) {
   for (const [key, value] of orderedYamlEntries(frontmatter)) {
     // Skip null/undefined values — don't export empty fields
     if (value === null || value === undefined) continue;
-    const scalar =
-      typeof value === "string" ||
-      typeof value === "boolean" ||
-      typeof value === "number" ||
-      Array.isArray(value) && value.length === 0 ||
-      isEmptyObject(value);
-    if (scalar) {
+    if (isYamlScalarValue(value)) {
       lines.push(`${key}: ${renderYamlScalar(value)}`);
       continue;
     }
