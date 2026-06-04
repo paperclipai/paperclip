@@ -607,6 +607,9 @@ importers:
       '@paperclipai/db':
         specifier: workspace:*
         version: link:../packages/db
+      '@paperclipai/mcp-server':
+        specifier: workspace:*
+        version: link:../packages/mcp-server
       '@paperclipai/plugin-sdk':
         specifier: workspace:*
         version: link:../packages/plugins/sdk
