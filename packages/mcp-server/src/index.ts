@@ -4,6 +4,9 @@ import { PaperclipApiClient } from "./client.js";
 import { readConfigFromEnv, type PaperclipMcpConfig } from "./config.js";
 import { createToolDefinitions } from "./tools.js";
 
+export { normalizeApiUrl, readConfigFromEnv, type PaperclipMcpConfig } from "./config.js";
+export { handlePaperclipStreamableHttpRequest } from "./http.js";
+
 export function createPaperclipMcpServer(config: PaperclipMcpConfig = readConfigFromEnv()) {
   const server = new McpServer({
     name: "paperclip",

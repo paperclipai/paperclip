@@ -4,6 +4,7 @@ export interface PaperclipMcpConfig {
   companyId: string | null;
   agentId: string | null;
   runId: string | null;
+  scopes: string[];
 }
 
 function nonEmpty(value: string | undefined): string | null {
@@ -12,6 +13,14 @@ function nonEmpty(value: string | undefined): string | null {
 
 function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function parseScopes(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(/[,\s]+/)
+    .map((scope) => scope.trim())
+    .filter(Boolean);
 }
 
 export function normalizeApiUrl(apiUrl: string): string {
@@ -35,5 +44,6 @@ export function readConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Papercl
     companyId: nonEmpty(env.PAPERCLIP_COMPANY_ID),
     agentId: nonEmpty(env.PAPERCLIP_AGENT_ID),
     runId: nonEmpty(env.PAPERCLIP_RUN_ID),
+    scopes: parseScopes(env.PAPERCLIP_MCP_SCOPES),
   };
 }

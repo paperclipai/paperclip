@@ -31,6 +31,10 @@ function isWriteMethod(method: string): boolean {
   return !["GET", "HEAD"].includes(method.toUpperCase());
 }
 
+function hasWriteScope(scopes: string[]): boolean {
+  return scopes.includes("paperclip:write") || scopes.includes("write") || scopes.includes("*");
+}
+
 function buildErrorMessage(method: string, path: string, status: number, body: unknown): string {
   if (body && typeof body === "object" && "error" in body && typeof body.error === "string") {
     return `${method} ${path} failed with ${status}: ${body.error}`;
@@ -59,6 +63,10 @@ export class PaperclipApiClient {
     };
   }
 
+  hasWriteScope(): boolean {
+    return hasWriteScope(this.config.scopes);
+  }
+
   resolveCompanyId(companyId?: string | null): string {
     const resolved = companyId?.trim() || this.config.companyId;
     if (!resolved) {
@@ -78,6 +86,9 @@ export class PaperclipApiClient {
   async requestJson<T>(method: string, path: string, options: JsonRequestOptions = {}): Promise<T> {
     if (!path.startsWith("/")) {
       throw new Error(`API path must start with "/": ${path}`);
+    }
+    if (isWriteMethod(method) && !hasWriteScope(this.config.scopes)) {
+      throw new Error("Paperclip MCP write tools require paperclip:write scope");
     }
 
     const url = new URL(path.slice(1), `${this.config.apiUrl}/`);
