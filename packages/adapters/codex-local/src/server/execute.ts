@@ -395,6 +395,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
   const executionTargetIsSandbox =
     runtimeExecutionTarget?.kind === "remote" && runtimeExecutionTarget.transport === "sandbox";
+  const executionUsesPaperclipAgentHome =
+    !useConfiguredInsteadOfAgentHome &&
+    agentHome.length > 0 &&
+    path.resolve(cwd) === path.resolve(agentHome);
+  const skipGitRepoCheck = executionTargetIsSandbox || executionUsesPaperclipAgentHome;
   const restoreRemoteWorkspace = preparedExecutionTargetRuntime
     ? () => preparedExecutionTargetRuntime.restoreWorkspace()
     : null;
@@ -657,6 +662,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     commandNotes.push(
       "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
     );
+  } else if (executionUsesPaperclipAgentHome) {
+    commandNotes.push(
+      "Added --skip-git-repo-check for the Paperclip-managed agent home workspace because it is a coordination scratch space, not a project repository.",
+    );
   }
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
@@ -682,7 +691,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       forceSaferInvocation ? { ...config, fastMode: false } : config,
       {
         resumeSessionId,
-        skipGitRepoCheck: executionTargetIsSandbox,
+        skipGitRepoCheck,
       },
     );
     const args = execArgs.args;
