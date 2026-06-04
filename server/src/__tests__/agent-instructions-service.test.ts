@@ -358,4 +358,153 @@ describe("agent instructions service", () => {
     ]);
     expect(exported.files).toEqual({ "AGENTS.md": "# Managed Agent\n" });
   });
+
+  it("materializes durable content to the local managed root when writing on a host without the bundle", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-foreign-write-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+    const managedRoot = path.join(
+      paperclipHome,
+      "instances",
+      "test-instance",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "instructions",
+    );
+    // managedRoot intentionally does NOT exist yet: a fresh host that did not
+    // create this bundle. The only copy of the content is the durable DB column.
+    const foreignRoot = "/paperclip/instances/default/companies/company-1/agents/agent-1/instructions";
+
+    const svc = agentInstructionsService();
+    const agent = {
+      id: "agent-1",
+      companyId: "company-1",
+      name: "Agent 1",
+      adapterConfig: {
+        instructionsBundleMode: "managed",
+        instructionsRootPath: foreignRoot,
+        instructionsEntryFile: "AGENTS.md",
+        instructionsFilePath: path.join(foreignRoot, "AGENTS.md"),
+      },
+      instructionsBundleContent: {
+        entryFile: "AGENTS.md",
+        files: { "AGENTS.md": "# Durable Agent\n", "SOUL.md": "# Soul\n" },
+      },
+    };
+
+    const result = await svc.writeFile(agent, "docs/NOTES.md", "## Notes\n");
+
+    // Stored foreign root rewritten to the host-portable managed root.
+    expect(result.adapterConfig).toMatchObject({
+      instructionsBundleMode: "managed",
+      instructionsRootPath: managedRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(managedRoot, "AGENTS.md"),
+    });
+    // New file landed under the managed root, not the (non-existent) foreign path.
+    await expect(fs.readFile(path.join(managedRoot, "docs", "NOTES.md"), "utf8")).resolves.toBe("## Notes\n");
+    // Durable content was materialized, not clobbered.
+    await expect(fs.readFile(path.join(managedRoot, "AGENTS.md"), "utf8")).resolves.toBe("# Durable Agent\n");
+    await expect(fs.readFile(path.join(managedRoot, "SOUL.md"), "utf8")).resolves.toBe("# Soul\n");
+    expect(result.bundle.files.map((file) => file.path)).toEqual(["AGENTS.md", "docs/NOTES.md", "SOUL.md"]);
+    // The foreign absolute path was never created.
+    await expect(fs.stat("/paperclip")).rejects.toThrow();
+  });
+
+  it("materializes durable content to the local managed root when deleting on a host without the bundle", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-foreign-delete-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+    const managedRoot = path.join(
+      paperclipHome,
+      "instances",
+      "test-instance",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "instructions",
+    );
+    const foreignRoot = "/paperclip/instances/default/companies/company-1/agents/agent-1/instructions";
+
+    const svc = agentInstructionsService();
+    const agent = {
+      id: "agent-1",
+      companyId: "company-1",
+      name: "Agent 1",
+      adapterConfig: {
+        instructionsBundleMode: "managed",
+        instructionsRootPath: foreignRoot,
+        instructionsEntryFile: "AGENTS.md",
+        instructionsFilePath: path.join(foreignRoot, "AGENTS.md"),
+      },
+      instructionsBundleContent: {
+        entryFile: "AGENTS.md",
+        files: { "AGENTS.md": "# Durable Agent\n", "SOUL.md": "# Soul\n" },
+      },
+    };
+
+    const result = await svc.deleteFile(agent, "SOUL.md");
+
+    expect(result.adapterConfig).toMatchObject({
+      instructionsBundleMode: "managed",
+      instructionsRootPath: managedRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(managedRoot, "AGENTS.md"),
+    });
+    await expect(fs.stat(path.join(managedRoot, "SOUL.md"))).rejects.toThrow();
+    await expect(fs.readFile(path.join(managedRoot, "AGENTS.md"), "utf8")).resolves.toBe("# Durable Agent\n");
+    expect(result.bundle.files.map((file) => file.path)).toEqual(["AGENTS.md"]);
+  });
+
+  it("preserves durable content when re-pointing to managed mode on a host without the bundle", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-foreign-update-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+    const managedRoot = path.join(
+      paperclipHome,
+      "instances",
+      "test-instance",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "instructions",
+    );
+    const foreignRoot = "/paperclip/instances/default/companies/company-1/agents/agent-1/instructions";
+
+    const svc = agentInstructionsService();
+    const agent = {
+      id: "agent-1",
+      companyId: "company-1",
+      name: "Agent 1",
+      adapterConfig: {
+        instructionsBundleMode: "managed",
+        instructionsRootPath: foreignRoot,
+        instructionsEntryFile: "AGENTS.md",
+        instructionsFilePath: path.join(foreignRoot, "AGENTS.md"),
+      },
+      instructionsBundleContent: {
+        entryFile: "AGENTS.md",
+        files: { "AGENTS.md": "# Durable Agent\n", "SOUL.md": "# Soul\n" },
+      },
+    };
+
+    const result = await svc.updateBundle(agent, { mode: "managed" });
+
+    expect(result.bundle.mode).toBe("managed");
+    expect(result.bundle.rootPath).toBe(managedRoot);
+    // Durable content materialized, NOT replaced by an empty placeholder.
+    expect(result.bundle.files.map((file) => file.path)).toEqual(["AGENTS.md", "SOUL.md"]);
+    await expect(fs.readFile(path.join(managedRoot, "AGENTS.md"), "utf8")).resolves.toBe("# Durable Agent\n");
+    await expect(fs.readFile(path.join(managedRoot, "SOUL.md"), "utf8")).resolves.toBe("# Soul\n");
+  });
 });

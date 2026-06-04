@@ -577,9 +577,19 @@ export function agentInstructionsService() {
     agent: AgentLike,
     options?: { clearLegacyPromptTemplate?: boolean },
   ): Promise<{ adapterConfig: Record<string, unknown>; state: BundleState }> {
+    // Self-heal: if the agent carries durable bundle content (DB column) but the
+    // local managed root is missing/empty, write it to THIS host's managed root
+    // first. Without this, edits on a host that did not create the bundle (e.g. a
+    // dev Mac editing an agent first materialized on Cloud Run) would start from
+    // an empty/foreign root.
+    await materializeFromContentIfMissing(agent);
+
     const derived = deriveBundleState(agent);
     const current = await recoverManagedBundleState(agent, derived);
-    if (current.rootPath && current.mode) {
+
+    // External bundles point at an explicit absolute path the operator chose;
+    // keep honoring it.
+    if (current.mode === "external" && current.rootPath) {
       const adapterConfig = buildPersistedBundleConfig(derived, current, options);
       return {
         adapterConfig,
@@ -587,6 +597,13 @@ export function agentInstructionsService() {
       };
     }
 
+    // Managed bundles (and unconfigured agents) ALWAYS write to the host-portable
+    // managed root — never the stored rootPath, which may be an absolute path
+    // from another host (e.g. "/paperclip/..." created on Cloud Run). Writing
+    // there fails with ENOENT (mkdir '/paperclip'). recoverManagedBundleState
+    // only rewrites the stored root once the managed dir already has files, so a
+    // fresh host with no materialized bundle would otherwise keep the foreign
+    // path. Forcing the managed root here closes that gap.
     const managedRoot = resolveManagedInstructionsRoot(agent);
     const entryFile = current.entryFile || ENTRY_FILE_DEFAULT;
     const nextConfig = applyBundleConfig(current.config, {
@@ -622,6 +639,10 @@ export function agentInstructionsService() {
       clearLegacyPromptTemplate?: boolean;
     },
   ): Promise<{ bundle: AgentInstructionsBundle; adapterConfig: Record<string, unknown> }> {
+    // Self-heal first so exportFiles below reads the real durable content from
+    // the materialized managed root instead of a missing foreign root (which
+    // would fall back to a placeholder and clobber the bundle).
+    await materializeFromContentIfMissing(agent);
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
     const nextMode = input.mode ?? state.mode ?? "managed";
     const nextEntryFile = input.entryFile ? normalizeRelativeFilePath(input.entryFile) : state.entryFile;
@@ -704,21 +725,24 @@ export function agentInstructionsService() {
     bundle: AgentInstructionsBundle;
     adapterConfig: Record<string, unknown>;
   }> {
-    const derived = deriveBundleState(agent);
-    const state = await recoverManagedBundleState(agent, derived);
     if (relativePath === LEGACY_PROMPT_TEMPLATE_PATH) {
       throw unprocessable("Cannot delete the legacy promptTemplate pseudo-file");
     }
-    if (!state.rootPath) throw notFound("Agent instructions bundle is not configured");
+    // Self-heal + resolve the target to the host-portable managed root (see
+    // ensureWritableBundle); never operate on a stored foreign rootPath, which
+    // may not exist on this host.
+    const prepared = await ensureWritableBundle(agent);
+    const rootPath = prepared.state.rootPath;
+    if (!rootPath) throw notFound("Agent instructions bundle is not configured");
     const normalizedPath = normalizeRelativeFilePath(relativePath);
-    if (normalizedPath === state.entryFile) {
+    if (normalizedPath === prepared.state.entryFile) {
       throw unprocessable("Cannot delete the bundle entry file");
     }
-    const absolutePath = resolvePathWithinRoot(state.rootPath, normalizedPath);
+    const absolutePath = resolvePathWithinRoot(rootPath, normalizedPath);
     await fs.rm(absolutePath, { force: true });
-    const adapterConfig = buildPersistedBundleConfig(derived, state);
-    const bundle = await getBundle({ ...agent, adapterConfig });
-    return { bundle, adapterConfig };
+    const nextAgent = { ...agent, adapterConfig: prepared.adapterConfig };
+    const bundle = await getBundle(nextAgent);
+    return { bundle, adapterConfig: prepared.adapterConfig };
   }
 
   async function exportFiles(agent: AgentLike): Promise<{

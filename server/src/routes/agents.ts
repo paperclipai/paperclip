@@ -2539,8 +2539,16 @@ export function agentRoutes(
 
     const actor = getActorInfo(req);
     const result = await instructions.deleteFile(existing, relativePath);
+    const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+      existing.companyId,
+      result.adapterConfig,
+      { strictMode: strictSecretsMode },
+    );
+    // Persist the corrected adapterConfig too: deleteFile may have rewritten a
+    // stale host-specific instructionsRootPath to this host's managed root.
     const exported = await instructions.exportFiles({ ...existing, adapterConfig: result.adapterConfig });
     await svc.update(id, {
+      adapterConfig: normalizedAdapterConfig,
       instructionsBundleContent: { entryFile: exported.entryFile, files: exported.files },
     });
     await logActivity(db, {
