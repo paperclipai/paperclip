@@ -3,12 +3,42 @@
  * so all requests go through the capability-gated host proxy.
  */
 
+import crypto from "node:crypto";
+
 const LINEAR_API = "https://api.linear.app/graphql";
 const LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token";
 const LINEAR_REVOKE_URL = "https://api.linear.app/oauth/revoke";
 
 interface LinearFetch {
   (url: string, init?: RequestInit): Promise<Response>;
+}
+
+// ---------------------------------------------------------------------------
+// TTL cache for near-static workspace reads (teams, org, workflow states).
+//
+// These rarely change but were re-fetched from Linear on every webhook, tool
+// call, and sync operation. At fleet scale that multiplied Linear API calls and
+// helped exhaust the workspace's 2500 req/hr limit (HTTP -32603), which in turn
+// made identifier->issue resolution and status sync fail intermittently. The
+// plugin worker is long-lived (module-level state), so an in-process TTL cache
+// survives across events. Keyed by a token fingerprint so raw OAuth tokens are
+// never retained as map keys.
+// ---------------------------------------------------------------------------
+const STATIC_READ_TTL_MS = 10 * 60_000;
+const staticReadCache = new Map<string, { value: unknown; at: number }>();
+
+function tokenFingerprint(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex").slice(0, 16);
+}
+
+async function cachedStaticRead<T>(key: string, load: () => Promise<T>): Promise<T> {
+  const hit = staticReadCache.get(key);
+  if (hit && Date.now() - hit.at < STATIC_READ_TTL_MS) {
+    return hit.value as T;
+  }
+  const value = await load();
+  staticReadCache.set(key, { value, at: Date.now() });
+  return value;
 }
 
 // --- OAuth helpers ---
@@ -430,17 +460,19 @@ export async function getWorkflowStates(
   token: string,
   teamId: string,
 ): Promise<Array<{ id: string; name: string; type: string }>> {
-  const data = await gql<{
-    workflowStates: { nodes: Array<{ id: string; name: string; type: string }> };
-  }>(fetch, token, `
-    query GetStates($teamId: ID!) {
-      workflowStates(filter: { team: { id: { eq: $teamId } } }) {
-        nodes { id name type }
+  return cachedStaticRead(`states:${tokenFingerprint(token)}:${teamId}`, async () => {
+    const data = await gql<{
+      workflowStates: { nodes: Array<{ id: string; name: string; type: string }> };
+    }>(fetch, token, `
+      query GetStates($teamId: ID!) {
+        workflowStates(filter: { team: { id: { eq: $teamId } } }) {
+          nodes { id name type }
+        }
       }
-    }
-  `, { teamId });
+    `, { teamId });
 
-  return data.workflowStates.nodes;
+    return data.workflowStates.nodes;
+  });
 }
 
 export async function listComments(
@@ -599,15 +631,17 @@ export async function getTeams(
   fetch: LinearFetch,
   token: string,
 ): Promise<LinearTeam[]> {
-  const data = await gql<{
-    teams: { nodes: LinearTeam[] };
-  }>(fetch, token, `
-    query GetTeams {
-      teams { nodes { id name key } }
-    }
-  `);
+  return cachedStaticRead(`teams:${tokenFingerprint(token)}`, async () => {
+    const data = await gql<{
+      teams: { nodes: LinearTeam[] };
+    }>(fetch, token, `
+      query GetTeams {
+        teams { nodes { id name key } }
+      }
+    `);
 
-  return data.teams.nodes;
+    return data.teams.nodes;
+  });
 }
 
 export interface LinearOrganization {
@@ -626,15 +660,17 @@ export async function getOrganization(
   fetch: LinearFetch,
   token: string,
 ): Promise<LinearOrganization | null> {
-  const data = await gql<{
-    organization: LinearOrganization | null;
-  }>(fetch, token, `
-    query GetOrganization {
-      organization { id urlKey name }
-    }
-  `);
+  return cachedStaticRead(`org:${tokenFingerprint(token)}`, async () => {
+    const data = await gql<{
+      organization: LinearOrganization | null;
+    }>(fetch, token, `
+      query GetOrganization {
+        organization { id urlKey name }
+      }
+    `);
 
-  return data.organization ?? null;
+    return data.organization ?? null;
+  });
 }
 
 /**
