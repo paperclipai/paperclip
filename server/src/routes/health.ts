@@ -153,12 +153,17 @@ export function healthRoutes(
       });
     }
 
+    const googleAuthEnabled =
+      Boolean(process.env.GOOGLE_CLIENT_ID?.trim()) &&
+      Boolean(process.env.GOOGLE_CLIENT_SECRET?.trim());
+
     if (!exposeFullDetails) {
       res.json({
         status: "ok",
         deploymentMode: opts.deploymentMode,
         bootstrapStatus,
         bootstrapInviteActive,
+        googleAuthEnabled,
         ...(devServer ? { devServer } : {}),
       });
       return;
@@ -172,6 +177,7 @@ export function healthRoutes(
       authReady: opts.authReady,
       bootstrapStatus,
       bootstrapInviteActive,
+      googleAuthEnabled,
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },

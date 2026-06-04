@@ -354,6 +354,18 @@ export function InviteLandingPage() {
     acceptMutation.mutate();
   }, [acceptMutation, autoAcceptStarted, shouldAutoAcceptHumanInvite]);
 
+  const googleAuthEnabled = healthQuery.data?.googleAuthEnabled === true;
+  const googleMutation = useMutation({
+    mutationFn: () =>
+      authApi.signInSocial({ provider: "google", callbackURL: `/invite/${token}` }),
+    onError: (err) => {
+      setAuthFeedback({
+        tone: "error",
+        message: err instanceof Error ? err.message : "Google sign-in failed",
+      });
+    },
+  });
+
   const authMutation = useMutation({
     mutationFn: async () => {
       if (authMode === "sign_in") {
@@ -559,8 +571,14 @@ export function InviteLandingPage() {
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="border border-zinc-800 p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Company</div>
-                <div className="mt-1 text-sm text-zinc-100">{companyDisplayName}</div>
+                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">
+                  {invite.inviteType === "bootstrap_ceo" ? "Scope" : "Company"}
+                </div>
+                <div className="mt-1 text-sm text-zinc-100">
+                  {invite.inviteType === "bootstrap_ceo"
+                    ? "ValAdrien OS instance (owner setup)"
+                    : companyDisplayName}
+                </div>
               </div>
               <div className="border border-zinc-800 p-3">
                 <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Invited by</div>
@@ -569,7 +587,11 @@ export function InviteLandingPage() {
               <div className="border border-zinc-800 p-3">
                 <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Requested access</div>
                 <div className="mt-1 text-sm text-zinc-100">
-                  {showsAgentForm ? "Agent join request" : requestedHumanRole ?? "Company access"}
+                  {showsAgentForm
+                    ? "Agent join request"
+                    : invite.inviteType === "bootstrap_ceo"
+                      ? "Instance owner (admin)"
+                      : requestedHumanRole ?? "Company access"}
                 </div>
               </div>
               <div className="border border-zinc-800 p-3">
@@ -767,6 +789,29 @@ export function InviteLandingPage() {
                         : "Create account and continue"}
                   </Button>
                 </form>
+
+                {googleAuthEnabled ? (
+                  <>
+                    <div className="flex items-center gap-3">
+                      <span className="h-px flex-1 bg-zinc-800" />
+                      <span className="text-xs text-zinc-500">or</span>
+                      <span className="h-px flex-1 bg-zinc-800" />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full rounded-none"
+                      disabled={googleMutation.isPending}
+                      onClick={() => {
+                        if (googleMutation.isPending) return;
+                        setAuthFeedback(null);
+                        googleMutation.mutate();
+                      }}
+                    >
+                      {googleMutation.isPending ? "Redirecting..." : "Continue with Google"}
+                    </Button>
+                  </>
+                ) : null}
 
                 <p className="text-xs leading-5 text-zinc-500">
                   {authMode === "sign_up"

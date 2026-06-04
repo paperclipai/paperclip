@@ -113,6 +113,21 @@ export const authApi = {
     await authPost("/sign-up/email", input);
   },
 
+  // Starts a social OAuth flow (e.g. Google). Better Auth returns a provider
+  // authorization URL; we send the browser there. After consent the provider
+  // redirects back to /api/auth/callback/<provider>, which lands the user on
+  // callbackURL with an active session.
+  signInSocial: async (input: { provider: "google"; callbackURL: string }) => {
+    const payload = (await authPost("/sign-in/social", input)) as
+      | { url?: string; redirect?: boolean }
+      | null;
+    if (payload?.url) {
+      window.location.href = payload.url;
+      return;
+    }
+    throw new Error("Social sign-in did not return a redirect URL");
+  },
+
   getProfile: async (): Promise<CurrentUserProfile> => {
     const res = await fetch("/api/auth/profile", {
       credentials: "include",

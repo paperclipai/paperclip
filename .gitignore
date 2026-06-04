@@ -60,3 +60,4 @@ tests/release-smoke/playwright-report/
 .claude/worktrees/
 .herenow
 .vercel
+.mcp.json

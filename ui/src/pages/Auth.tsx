@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
+import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { getRememberedInvitePath } from "../lib/invite-memory";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,20 @@ export function AuthPage() {
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
     retry: false,
+  });
+  const { data: health } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+  });
+  const googleAuthEnabled = health?.googleAuthEnabled === true;
+
+  const googleMutation = useMutation({
+    mutationFn: () =>
+      authApi.signInSocial({ provider: "google", callbackURL: nextPath }),
+    onError: (err) => {
+      setError(err instanceof Error ? err.message : "Google sign-in failed");
+    },
   });
 
   useEffect(() => {
@@ -158,6 +173,29 @@ export function AuthPage() {
                   : "Create Account"}
             </Button>
           </form>
+
+          {googleAuthEnabled && (
+            <>
+              <div className="my-5 flex items-center gap-3">
+                <span className="h-px flex-1 bg-border" />
+                <span className="text-xs text-muted-foreground">or</span>
+                <span className="h-px flex-1 bg-border" />
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={googleMutation.isPending}
+                onClick={() => {
+                  if (googleMutation.isPending) return;
+                  setError(null);
+                  googleMutation.mutate();
+                }}
+              >
+                {googleMutation.isPending ? "Redirecting…" : "Continue with Google"}
+              </Button>
+            </>
+          )}
 
           <div className="mt-5 text-sm text-muted-foreground">
             {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}

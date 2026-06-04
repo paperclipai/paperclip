@@ -99,6 +99,28 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
   return Array.from(trustedOrigins);
 }
 
+/**
+ * Builds Better Auth social provider config from env. Returns undefined when no
+ * provider is configured so email/password stays the sole method. Google login
+ * is enabled only when BOTH GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set;
+ * the OAuth callback is served at <baseURL>/api/auth/callback/google.
+ */
+export function buildSocialProviders():
+  | { google: { clientId: string; clientSecret: string } }
+  | undefined {
+  const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim();
+  const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+  if (googleClientId && googleClientSecret) {
+    return {
+      google: {
+        clientId: googleClientId,
+        clientSecret: googleClientSecret,
+      },
+    };
+  }
+  return undefined;
+}
+
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.VALADRIEN_OS_AGENT_JWT_SECRET;
@@ -109,6 +131,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     );
   }
   const disableSecureCookies = shouldDisableSecureAuthCookies(config);
+  const socialProviders = buildSocialProviders();
 
   const authConfig = {
     baseURL: baseUrl,
@@ -128,6 +151,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
+    ...(socialProviders ? { socialProviders } : {}),
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
   };
 
