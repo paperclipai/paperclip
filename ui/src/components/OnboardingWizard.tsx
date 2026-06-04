@@ -262,6 +262,34 @@ export function OnboardingWizard() {
   const defaultResolvesTo = detectedDefaultId
     ? (adapterModels ?? []).find((m) => m.id === detectedDefaultId)?.label ?? detectedDefaultId
     : null;
+
+  // Why the "Next" button is disabled — shown beside it so users aren't left
+  // guessing what's missing.
+  const nextBlockedReason: string | null = loading
+    ? null
+    : step === 1
+      ? !companyName.trim() && !companyGoal.trim()
+        ? "Name your company and add a mission"
+        : !companyName.trim()
+          ? "Add a company name"
+          : !companyGoal.trim()
+            ? "Add a mission"
+            : null
+      : step === 2
+        ? !agentName.trim()
+          ? "Name your agent"
+          : adapterEnvLoading
+            ? "Checking the adapter…"
+            : null
+        : step === 3
+          ? !taskTitle.trim() && !taskDescription.trim()
+            ? "Add a task title and description"
+            : !taskTitle.trim()
+              ? "Add a task title"
+              : !taskDescription.trim()
+                ? "Add a description"
+                : null
+          : null;
   const hasAnthropicApiKeyOverrideCheck =
     adapterEnvResult?.checks.some(
       (check) =>
@@ -1146,9 +1174,20 @@ export function OnboardingWizard() {
                               ))}
                             </div>
                             {filteredModels.length === 0 && (
-                              <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                                No models discovered.
-                              </p>
+                              <div className="px-2 py-3 text-center">
+                                <p className="text-xs text-muted-foreground">
+                                  {modelSearch.trim()
+                                    ? `No models match “${modelSearch.trim()}”.`
+                                    : "No models discovered."}
+                                </p>
+                                {!modelSearch.trim() &&
+                                  adapterType !== "opencode_local" && (
+                                    <p className="mt-0.5 text-[11px] text-muted-foreground/70">
+                                      The adapter uses its default
+                                      {defaultResolvesTo ? ` (${defaultResolvesTo})` : ""}.
+                                    </p>
+                                  )}
+                              </div>
                             )}
                           </PopoverContent>
                         </Popover>
@@ -1418,7 +1457,12 @@ export function OnboardingWizard() {
                     </Button>
                   )}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-3">
+                  {nextBlockedReason && step !== 4 && (
+                    <span className="text-[11px] text-muted-foreground">
+                      {nextBlockedReason}
+                    </span>
+                  )}
                   {step === 1 && (
                     <Button
                       size="sm"
