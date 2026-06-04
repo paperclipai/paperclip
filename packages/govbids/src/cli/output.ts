@@ -8,6 +8,7 @@ import type {
   ServiceCategory,
 } from "../core/types.js";
 import { SERVICE_CATEGORY_LABELS } from "../core/constants.js";
+import { classifyOpportunity, OPP_TYPE_LABEL } from "../core/classify.js";
 
 /**
  * Write scored opportunities to a JSON file.
@@ -318,6 +319,7 @@ function populateLawyerSheet(
 ): void {
   ws.columns = [
     { header: "Rank", key: "rank", width: 6 },
+    { header: "Type", key: "otype", width: 12 },
     { header: "Score", key: "score", width: 8 },
     { header: "Tier", key: "tier", width: 10 },
     { header: "Title", key: "title", width: 55 },
@@ -348,11 +350,13 @@ function populateLawyerSheet(
   for (let i = 0; i < sorted.length; i++) {
     const opp = sorted[i];
     const tier = tierOf(opp);
+    const cls = classifyOpportunity(opp);
     const dueDate = opp.dueDate ? new Date(opp.dueDate) : null;
     const releasedDate = opp.postedDate ? new Date(opp.postedDate) : null;
 
     const row = ws.addRow({
       rank: i + 1,
+      otype: cls.ongoing && cls.type === "rfp" ? "RFP (Ongoing)" : OPP_TYPE_LABEL[cls.type],
       score: opp.score,
       tier,
       title: opp.title,
@@ -361,8 +365,8 @@ function populateLawyerSheet(
       value: valueOf(opp),
       released: releasedDate ?? "",
       age: releasedDate ? relativeDays(releasedDate, today) : "",
-      due: dueDate ?? "",
-      days: dueDate ? relativeDays(dueDate, today) : "",
+      due: dueDate ?? (cls.ongoing ? "Ongoing / open" : ""),
+      days: dueDate ? relativeDays(dueDate, today) : (cls.ongoing ? "Ongoing" : ""),
       method: opp.extracted?.submissionPortal ?? "",
       why: opp.reasoning,
       concerns: opp.disqualifiers.join("; "),
@@ -417,6 +421,7 @@ export async function writeLawyerXlsx(
   opportunities: ScoredOpportunity[],
   filepath: string,
   addenda: ScoredOpportunity[] = [],
+  other: ScoredOpportunity[] = [],
 ): Promise<void> {
   const wb = new ExcelJS.Workbook();
   wb.creator = "govbids daily";
@@ -435,6 +440,15 @@ export async function writeLawyerXlsx(
       views: [{ state: "frozen", ySplit: 1 }],
     });
     populateLawyerSheet(addendaSheet, addenda, today);
+  }
+
+  // US-7/8/9: federal, job-postings, and RFIs — visible but separate, excluded
+  // from the Qualified sheet and its count. The "Type" column labels each.
+  if (other.length > 0) {
+    const otherSheet = wb.addWorksheet("Other Opportunity Types", {
+      views: [{ state: "frozen", ySplit: 1 }],
+    });
+    populateLawyerSheet(otherSheet, other, today);
   }
 
   await wb.xlsx.writeFile(filepath);

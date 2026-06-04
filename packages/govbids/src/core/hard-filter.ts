@@ -5,6 +5,7 @@ import {
   DUE_DATE_RANGE,
   EXCLUDED_AGENCY_PATTERNS,
 } from "./constants.js";
+import { isOngoing } from "./classify.js";
 import type {
   NormalizedOpportunity,
   FilterResult,
@@ -63,6 +64,11 @@ const filterByValueRange: FilterFn = (opp, config) => {
 /**
  * Filter: drop opportunities with expired or too-far-out due dates.
  * Passes if no due date is specified.
+ *
+ * US-10: ongoing / as-needed / master-contract vehicles legitimately carry a
+ * far-future deadline (the contract end, e.g. 2031). They are exempt from the
+ * upper "too far out" cap so they surface (tagged `ongoing` downstream). They
+ * are still dropped if the deadline is already in the past.
  */
 const filterByDueDate: FilterFn = (opp, config) => {
   if (!opp.dueDate) return null; // Pass if no due date
@@ -73,7 +79,10 @@ const filterByDueDate: FilterFn = (opp, config) => {
   if (daysFromNow < config.dueDateRange.minDaysFromNow) {
     return `Due date ${opp.dueDate} is in the past`;
   }
-  if (daysFromNow > config.dueDateRange.maxDaysFromNow) {
+  if (
+    daysFromNow > config.dueDateRange.maxDaysFromNow &&
+    !isOngoing({ dueDate: opp.dueDate, title: opp.title })
+  ) {
     return `Due date ${opp.dueDate} is more than ${config.dueDateRange.maxDaysFromNow} days out`;
   }
   return null;

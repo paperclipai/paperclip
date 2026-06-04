@@ -25,7 +25,8 @@ import {
 import type { NormalizedOpportunity, PipelineResult, ScoredOpportunity } from "../core/types.js";
 import { loadState, saveState, getStateDir } from "./state.js";
 import { loadSeenStore, saveSeenStore, filterSeen, markSeen } from "./seen-set.js";
-import { isAddendumOrRepost, isQandA } from "../core/addendum.js";
+import { isQandA } from "../core/addendum.js";
+import { classifyOpportunity } from "../core/classify.js";
 import { writeJson, writeCsv, writeLawyerCsv, writeLawyerXlsx, writeQualifiedCsv, printSummary, printQuota } from "./output.js";
 import { SlackClient } from "../core/slack-client.js";
 
@@ -1030,28 +1031,44 @@ program
     //     agency-similarity), OR an already-shown RFP re-surfaced on a deadline
     //     change (reshownDeadline).
     //   - Everything else fresh = new Qualified RFPs.
-    const droppedQandA = filtered.fresh.filter((o) => isQandA(o.title));
-    const freshNonQandA = filtered.fresh.filter((o) => !isQandA(o.title));
-    const freshCandidates = freshNonQandA.filter(
-      (o) => !isAddendumOrRepost(o.title),
-    );
-    const freshAddenda = freshNonQandA.filter((o) => isAddendumOrRepost(o.title));
+    // Round-5: unified classifier routes each fresh opp by type.
+    //   qanda    → dropped (not biddable)
+    //   addendum → "Addenda & Updates"
+    //   federal / job-posting / rfi → "Other Opportunity Types" (visible, not Qualified)
+    //   rfp      → Qualified sheet
+    const droppedQandA: typeof filtered.fresh = [];
+    const freshAddenda: typeof filtered.fresh = [];
+    const other: typeof filtered.fresh = [];
+    const freshCandidates: typeof filtered.fresh = [];
+    for (const o of filtered.fresh) {
+      const { type } = classifyOpportunity(o);
+      if (type === "qanda") droppedQandA.push(o);
+      else if (type === "addendum") freshAddenda.push(o);
+      else if (type === "federal" || type === "job-posting" || type === "rfi")
+        other.push(o);
+      else freshCandidates.push(o);
+    }
     const strictQualified = freshCandidates.sort((a, b) => b.score - a.score);
-    // repost/reshown that are actually Q&A should be dropped, not shown as addenda.
+    // Seen-set reposts/deadline-reshows go to Addenda (minus any Q&A).
     const addenda = [
       ...freshAddenda,
       ...filtered.repost.filter((o) => !isQandA(o.title)),
       ...filtered.reshownDeadline.filter((o) => !isQandA(o.title)),
     ].sort((a, b) => b.score - a.score);
+    other.sort((a, b) => b.score - a.score);
 
+    const otherByType = (t: string) =>
+      other.filter((o) => classifyOpportunity(o).type === t).length;
     console.log(
-      `  Seen-set filter: ${strictQualified.length} new RFPs · ${addenda.length} addenda/updates (${freshAddenda.length} titled, ${filtered.repost.length} re-post, ${filtered.reshownDeadline.length} deadline) · ${droppedQandA.length} Q&A dropped · ${filtered.suppressed.length} suppressed as repeats`,
+      `  Classify+seen filter: ${strictQualified.length} RFPs · ${addenda.length} addenda · ` +
+        `${other.length} other (federal ${otherByType("federal")}, job ${otherByType("job-posting")}, rfi ${otherByType("rfi")}) · ` +
+        `${droppedQandA.length} Q&A dropped · ${filtered.suppressed.length} suppressed`,
     );
 
     // Mark everything we surfaced (new + addenda) as seen for future runs.
     // Dropped Q&A is intentionally NOT marked — if it ever re-appears as a real
     // amendment we still want to evaluate it.
-    markSeen([...strictQualified, ...addenda], seenStore);
+    markSeen([...strictQualified, ...addenda, ...other], seenStore);
     await saveSeenStore(seenStore);
 
     const result: PipelineResult = {
@@ -1080,7 +1097,7 @@ program
     const fullCsv = join(dailyDir, `qualified-${dateStr}-full.csv`);
     const jsonFile = join(dailyDir, `scored-${dateStr}.json`);
 
-    await writeLawyerXlsx(strictQualified, lawyerXlsx, addenda);
+    await writeLawyerXlsx(strictQualified, lawyerXlsx, addenda, other);
     await writeLawyerCsv(strictQualified, lawyerCsv);
     await writeCsv(strictQualified, fullCsv);
     await writeJson(result, jsonFile);
