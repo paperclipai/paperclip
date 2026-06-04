@@ -361,4 +361,106 @@ describe("paperclip MCP tools", () => {
 
     expect(response.content[0]?.text).toContain("must not contain '..'");
   });
+
+  it("falls back to the default company when no override is given", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipListIssues");
+    await tool.execute({});
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/issues",
+    );
+  });
+
+  it("uses an explicit company UUID override without listing companies", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipListIssues");
+    await tool.execute({ companyId: "99999999-9999-9999-9999-999999999999" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/companies/99999999-9999-9999-9999-999999999999/issues",
+    );
+    expect((init.headers as Record<string, string>)["X-Paperclip-Company"]).toBe(
+      "99999999-9999-9999-9999-999999999999",
+    );
+  });
+
+  it("resolves a company prefix override via the membership-scoped company list", async () => {
+    const penId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const fetchMock = vi
+      .fn()
+      // First call: GET /companies (membership list)
+      .mockResolvedValueOnce(
+        mockJsonResponse([
+          { id: "11111111-1111-1111-1111-111111111111", issuePrefix: "BLO" },
+          { id: penId, issuePrefix: "PEN" },
+        ]),
+      )
+      // Second call: the actual issues request
+      .mockResolvedValueOnce(mockJsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipListIssues");
+    await tool.execute({ companyId: "PEN" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [companiesUrl] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(companiesUrl)).toBe("http://localhost:3100/api/companies");
+    const [issuesUrl] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(String(issuesUrl)).toBe(`http://localhost:3100/api/companies/${penId}/issues`);
+  });
+
+  it("derives the target company from a cross-company issue identifier prefix", async () => {
+    const penId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        mockJsonResponse([{ id: penId, issuePrefix: "PEN" }]),
+      )
+      .mockResolvedValueOnce(mockJsonResponse({ id: "PEN-307" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipGetIssue");
+    await tool.execute({ issueId: "PEN-307" });
+
+    const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)["X-Paperclip-Company"]).toBe(penId);
+  });
+
+  it("prefers an explicit company override over the issue-id prefix", async () => {
+    const bloId = "11111111-1111-1111-1111-111111111111";
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ id: "PEN-307" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipGetIssue");
+    // Override is already a UUID, so no company list fetch is needed.
+    await tool.execute({ issueId: "PEN-307", company: bloId });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)["X-Paperclip-Company"]).toBe(bloId);
+  });
+
+  it("errors when a prefix override is not an accessible company", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        mockJsonResponse([{ id: "11111111-1111-1111-1111-111111111111", issuePrefix: "BLO" }]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipListIssues");
+    const response = await tool.execute({ companyId: "PEN" });
+
+    expect(response.content[0]?.text).toContain("No accessible company with prefix");
+    // Only the company-list call happened; no cross-company request was attempted.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

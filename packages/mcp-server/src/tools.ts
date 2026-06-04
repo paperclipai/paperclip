@@ -50,7 +50,9 @@ function parseOptionalJson(raw: string | undefined | null): unknown {
   return JSON.parse(raw);
 }
 
-const companyIdOptional = z.string().uuid().optional().nullable();
+// Accept either a company UUID or a human issue-prefix (e.g. "PEN", "BLO").
+// Prefixes are resolved against the auth token's company memberships server-side.
+const companyIdOptional = z.string().trim().min(1).optional().nullable();
 const agentIdOptional = z.string().uuid().optional().nullable();
 const issueIdSchema = z.string().min(1);
 const projectIdSchema = z.string().min(1);
@@ -239,15 +241,21 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipListAgents",
       "List agents in a company",
       z.object({ companyId: companyIdOptional }),
-      async ({ companyId }) => client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/agents`),
+      async ({ companyId }) => {
+        const resolved = await client.resolveCompany({ override: companyId });
+        return client.requestJson("GET", `/companies/${resolved}/agents`, { companyId: resolved });
+      },
     ),
     makeTool(
       "paperclipGetAgent",
       "Get a single agent by id",
       z.object({ agentId: z.string().min(1), companyId: companyIdOptional }),
       async ({ agentId, companyId }) => {
-        const qs = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
-        return client.requestJson("GET", `/agents/${encodeURIComponent(agentId)}${qs}`);
+        const resolved = await client.resolveCompany({ override: companyId });
+        const qs = companyId ? `?companyId=${encodeURIComponent(resolved)}` : "";
+        return client.requestJson("GET", `/agents/${encodeURIComponent(agentId)}${qs}`, {
+          companyId: resolved,
+        });
       },
     ),
     makeTool(
@@ -255,21 +263,26 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "List issues for a company with optional filters",
       listIssuesSchema,
       async (input) => {
-        const companyId = client.resolveCompanyId(input.companyId);
+        const companyId = await client.resolveCompany({ override: input.companyId });
         const params = new URLSearchParams();
         for (const [key, value] of Object.entries(input)) {
           if (key === "companyId" || value === undefined || value === null) continue;
           params.set(key, String(value));
         }
         const qs = params.toString();
-        return client.requestJson("GET", `/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
+        return client.requestJson("GET", `/companies/${companyId}/issues${qs ? `?${qs}` : ""}`, {
+          companyId,
+        });
       },
     ),
     makeTool(
       "paperclipGetIssue",
-      "Get a single issue by UUID or identifier",
-      z.object({ issueId: issueIdSchema }),
-      async ({ issueId }) => client.requestJson("GET", `/issues/${encodeURIComponent(issueId)}`),
+      "Get a single issue by UUID or identifier. Cross-company identifiers (e.g. PEN-307) are routed by prefix; the optional company override takes precedence.",
+      z.object({ issueId: issueIdSchema, company: companyIdOptional }),
+      async ({ issueId, company }) => {
+        const companyId = await client.resolveCompany({ override: company, issueId });
+        return client.requestJson("GET", `/issues/${encodeURIComponent(issueId)}`, { companyId });
+      },
     ),
     makeTool(
       "paperclipGetHeartbeatContext",
@@ -333,15 +346,21 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipListProjects",
       "List projects in a company",
       z.object({ companyId: companyIdOptional }),
-      async ({ companyId }) => client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/projects`),
+      async ({ companyId }) => {
+        const resolved = await client.resolveCompany({ override: companyId });
+        return client.requestJson("GET", `/companies/${resolved}/projects`, { companyId: resolved });
+      },
     ),
     makeTool(
       "paperclipGetProject",
       "Get a project by id or company-scoped short reference",
       z.object({ projectId: projectIdSchema, companyId: companyIdOptional }),
       async ({ projectId, companyId }) => {
-        const qs = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
-        return client.requestJson("GET", `/projects/${encodeURIComponent(projectId)}${qs}`);
+        const resolved = await client.resolveCompany({ override: companyId });
+        const qs = companyId ? `?companyId=${encodeURIComponent(resolved)}` : "";
+        return client.requestJson("GET", `/projects/${encodeURIComponent(projectId)}${qs}`, {
+          companyId: resolved,
+        });
       },
     ),
     makeTool(
@@ -397,7 +416,10 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipListGoals",
       "List goals in a company",
       z.object({ companyId: companyIdOptional }),
-      async ({ companyId }) => client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/goals`),
+      async ({ companyId }) => {
+        const resolved = await client.resolveCompany({ override: companyId });
+        return client.requestJson("GET", `/companies/${resolved}/goals`, { companyId: resolved });
+      },
     ),
     makeTool(
       "paperclipGetGoal",
@@ -410,18 +432,24 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "List approvals in a company",
       z.object({ companyId: companyIdOptional, status: z.string().optional() }),
       async ({ companyId, status }) => {
+        const resolved = await client.resolveCompany({ override: companyId });
         const qs = status ? `?status=${encodeURIComponent(status)}` : "";
-        return client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/approvals${qs}`);
+        return client.requestJson("GET", `/companies/${resolved}/approvals${qs}`, {
+          companyId: resolved,
+        });
       },
     ),
     makeTool(
       "paperclipCreateApproval",
       "Create a board approval request, optionally linked to one or more issues",
       createApprovalToolSchema,
-      async ({ companyId, ...body }) =>
-        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/approvals`, {
+      async ({ companyId, ...body }) => {
+        const resolved = await client.resolveCompany({ override: companyId });
+        return client.requestJson("POST", `/companies/${resolved}/approvals`, {
           body,
-        }),
+          companyId: resolved,
+        });
+      },
     ),
     makeTool(
       "paperclipGetApproval",
@@ -445,8 +473,10 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipCreateIssue",
       "Create a new issue",
       createIssueToolSchema,
-      async ({ companyId, ...body }) =>
-        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, { body }),
+      async ({ companyId, ...body }) => {
+        const resolved = await client.resolveCompany({ override: companyId });
+        return client.requestJson("POST", `/companies/${resolved}/issues`, { body, companyId: resolved });
+      },
     ),
     makeTool(
       "paperclipUpdateIssue",
