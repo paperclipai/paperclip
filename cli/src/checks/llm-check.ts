@@ -1,6 +1,10 @@
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 
+function openAiBaseUrl(config: PaperclipConfig): string {
+  return (config.llm?.baseUrl?.trim() || "https://api.openai.com/v1").replace(/\/+$/, "");
+}
+
 export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
   if (!config.llm) {
     return {
@@ -51,11 +55,18 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
         message: `Claude API returned status ${res.status}`,
       };
     } else {
-      const res = await fetch("https://api.openai.com/v1/models", {
+      const baseUrl = openAiBaseUrl(config);
+      const res = await fetch(`${baseUrl}/models`, {
         headers: { Authorization: `Bearer ${config.llm.apiKey}` },
       });
       if (res.ok) {
-        return { name: "LLM provider", status: "pass", message: "OpenAI API key is valid" };
+        return {
+          name: "LLM provider",
+          status: "pass",
+          message: baseUrl.includes("localhost:11434") || baseUrl.includes("127.0.0.1:11434")
+            ? "Ollama OpenAI-compatible endpoint is reachable"
+            : "OpenAI API key is valid",
+        };
       }
       if (res.status === 401) {
         return {
