@@ -66,6 +66,7 @@ import {
   credentialTypesForAdapterType,
   hasAlternateCredentialOfType,
   isCredentialFailure,
+  persistCodexRefreshedTokens,
   recordCredentialFailure,
   recordCredentialSuccess,
   resolveAllCredentialEnv,
@@ -2044,6 +2045,10 @@ async function buildPaperclipWakePayload(input: {
       : null,
     interactionKind: readNonEmptyString(input.contextSnapshot.interactionKind),
     interactionStatus: readNonEmptyString(input.contextSnapshot.interactionStatus),
+    interactionResult: (() => {
+      const r = parseObject(input.contextSnapshot.interactionResult);
+      return Object.keys(r).length > 0 ? r : null;
+    })(),
     checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
     dependencyBlockedInteraction: input.contextSnapshot.dependencyBlockedInteraction === true,
     treeHoldInteraction: input.contextSnapshot.treeHoldInteraction === true,
@@ -2190,6 +2195,7 @@ async function terminateHeartbeatRunProcess(input: {
   pid: number | null | undefined;
   processGroupId: number | null | undefined;
   graceMs?: number;
+  force?: boolean;
 }) {
   const pid = input.pid ?? null;
   const processGroupId = input.processGroupId ?? null;
@@ -2206,7 +2212,12 @@ async function terminateHeartbeatRunProcess(input: {
           ? processGroupId
           : null,
     },
-    input.graceMs ? { forceAfterMs: input.graceMs } : undefined,
+    // force => SIGKILL immediately (no SIGTERM grace). Otherwise honor graceMs.
+    input.force
+      ? { signal: "SIGKILL", forceAfterMs: 0 }
+      : input.graceMs
+        ? { forceAfterMs: input.graceMs }
+        : undefined,
   );
 }
 
@@ -7939,6 +7950,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let seamlessFailoverRetry = false;
       if (runActiveCredentialId) {
         try {
+          // Per-run auth diagnostic: surfaces which credential a run used and
+          // whether it carried an account_id, so an intermittent Codex failure
+          // can be traced to a specific (e.g. account_id-less) pool member.
+          logger.info(
+            {
+              agentId: agent.id,
+              runId: run.id,
+              adapterType: agent.adapterType,
+              credentialId: runActiveCredentialId,
+              credentialType: runActiveCredentialType,
+              outcome,
+              errorCode: adapterResult.errorCode ?? null,
+            },
+            "run credential usage",
+          );
+          // Codex token refresh write-back: the Codex CLI may have refreshed the
+          // OAuth token in CODEX_HOME during the run; persist it so the next run
+          // doesn't reuse a stale token (fixes the intermittent works-then-fails).
+          if (runActiveCredentialType === "codex_oauth") {
+            const writeback = await persistCodexRefreshedTokens(db, agent.id, runActiveCredentialId);
+            if (writeback.updated) {
+              logger.info(
+                { agentId: agent.id, runId: run.id, credentialId: runActiveCredentialId },
+                "persisted refreshed codex tokens to credential",
+              );
+            }
+          }
           if (
             outcome === "failed" &&
             isCredentialFailure({
@@ -9533,7 +9571,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function cancelRunInternal(
     runId: string,
     reason = "Cancelled by control plane",
-    options: { suppressImmediateRecovery?: boolean } = {},
+    options: { suppressImmediateRecovery?: boolean; force?: boolean } = {},
   ) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
@@ -9565,11 +9603,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         pid: running.child.pid ?? run.processPid,
         processGroupId: running.processGroupId ?? run.processGroupId,
         graceMs: Math.max(1, running.graceSec) * 1000,
+        force: options.force,
       });
     } else if (run.processPid || run.processGroupId) {
       await terminateHeartbeatRunProcess({
         pid: run.processPid,
         processGroupId: run.processGroupId,
+        force: options.force,
       });
     }
 
@@ -9978,9 +10018,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     },
 
-    cancelRun: (runId: string, options?: { suppressImmediateRecovery?: boolean }) =>
-      cancelRunInternal(runId, "Cancelled by control plane", {
+    cancelRun: (runId: string, options?: { suppressImmediateRecovery?: boolean; force?: boolean; reason?: string }) =>
+      cancelRunInternal(runId, options?.reason ?? "Cancelled by control plane", {
         suppressImmediateRecovery: options?.suppressImmediateRecovery ?? true,
+        force: options?.force,
       }),
 
     cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),

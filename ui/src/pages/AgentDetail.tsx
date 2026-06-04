@@ -3058,8 +3058,20 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     setCodexLoginStartError(null);
   }, [run.id]);
 
+  // "Cancel run": force-stop THIS run (SIGKILL, no grace). The issue stays open
+  // and may be picked up again later.
   const cancelRun = useMutation({
-    mutationFn: () => heartbeatsApi.cancel(run.id),
+    mutationFn: () => heartbeatsApi.cancel(run.id, { force: true }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
+    },
+  });
+  // "Cancel issue": stop the run AND move the issue to cancelled (terminal) so
+  // the recovery sweep won't re-pick it. PATCH status=cancelled cancels the
+  // active run server-side too, so this one call does both. (runIssueId is
+  // already derived above from the run's contextSnapshot.)
+  const cancelIssue = useMutation({
+    mutationFn: () => issuesApi.update(runIssueId!, { status: "cancelled" }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
     },
@@ -3267,15 +3279,34 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             <div className="flex items-center gap-2">
               <StatusBadge status={run.status} />
               {(run.status === "running" || run.status === "queued") && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-destructive hover:text-destructive text-xs h-6 px-2"
-                  onClick={() => cancelRun.mutate()}
-                  disabled={cancelRun.isPending}
-                >
-                  {cancelRun.isPending ? "Cancelling…" : "Cancel"}
-                </Button>
+                <>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive hover:text-destructive text-xs h-6 px-2"
+                    onClick={() => cancelRun.mutate()}
+                    disabled={cancelRun.isPending}
+                    title="Force-stop this run now. The issue stays open and may run again later."
+                  >
+                    {cancelRun.isPending ? "Cancelling…" : "Cancel run"}
+                  </Button>
+                  {runIssueId && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-destructive hover:text-destructive text-xs h-6 px-2"
+                      onClick={() => {
+                        if (window.confirm("Cancel this issue? The running agent is stopped and the issue is moved to Cancelled — it won't be picked up again. Reopen by changing its status.")) {
+                          cancelIssue.mutate();
+                        }
+                      }}
+                      disabled={cancelIssue.isPending}
+                      title="Stop the run AND mark the issue cancelled so it won't resume."
+                    >
+                      {cancelIssue.isPending ? "Cancelling…" : "Cancel issue"}
+                    </Button>
+                  )}
+                </>
               )}
               {canResumeLostRun && (
                 <Button

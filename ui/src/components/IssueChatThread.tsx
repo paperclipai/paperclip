@@ -4071,8 +4071,10 @@ export function IssueChatThread({
 
       const el = document.getElementById(latestCommentAnchor);
       if (!el) {
-        // Row hasn't been rendered into the virtualizer's buffer yet — nudge
-        // the offset (instant) so it gets mounted, then keep settling.
+        // The latest-comment row isn't mounted in the virtualizer buffer yet —
+        // nudge the offset (instant) so it mounts and its real height is
+        // measured, then keep settling. This is what fixes the progressive-load
+        // short-fall: as trailing rows mount the layout grows and we re-converge.
         virtualizedThreadRef.current?.scrollToIndex(latestCommentIndex, {
           align: "end",
           behavior: "auto",
