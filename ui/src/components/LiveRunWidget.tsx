@@ -45,6 +45,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
   const runs = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
     for (const run of liveRuns ?? []) {
+      if (run.issueId !== issueId) continue;
       deduped.set(run.id, run);
     }
     if (activeRun) {

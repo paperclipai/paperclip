@@ -153,6 +153,7 @@ import {
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
+import { resumeQueuedAgentsWithTimeout } from "./queued-run-resume.js";
 import {
   redactCurrentUserText,
   redactCurrentUserValue,
@@ -213,6 +214,7 @@ const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_r
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
+const QUEUED_RUN_RESUME_AGENT_TIMEOUT_MS = 30_000;
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -6840,9 +6842,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ));
 
     const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
-    for (const agentId of agentIds) {
-      await startNextQueuedRunForAgent(agentId);
+    const resumed = await resumeQueuedAgentsWithTimeout(agentIds, startNextQueuedRunForAgent, {
+      timeoutMs: QUEUED_RUN_RESUME_AGENT_TIMEOUT_MS,
+    });
+    if (resumed.timedOut > 0 || resumed.failed > 0) {
+      logger.warn(resumed, "queued-run resume completed with agent-level failures");
     }
+    return resumed;
   }
 
   async function reconcileStrandedAssignedIssues() {

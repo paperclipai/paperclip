@@ -262,6 +262,46 @@ describe("agent live run routes", () => {
     expect(res.body).not.toHaveProperty("logRef");
   }, 10_000);
 
+  it("does not expose active runs for terminal issues", async () => {
+    mockIssueService.getByIdentifier.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      executionRunId: "run-1",
+      assigneeAgentId: "agent-1",
+      status: "done",
+    });
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/issues/pc1a2-1295/active-run"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toBeNull();
+    expect(mockHeartbeatService.getRunIssueSummary).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.getActiveRunIssueSummaryForAgent).not.toHaveBeenCalled();
+  });
+
+  it("does not expose live runs for terminal issues", async () => {
+    mockIssueService.getByIdentifier.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      executionRunId: null,
+      assigneeAgentId: "agent-1",
+      status: "done",
+    });
+    const db = { select: vi.fn() };
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/issues/pc1a2-1295/live-runs"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual([]);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
   it("ignores a stale execution run from another issue and falls back to the assignee's matching run", async () => {
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
       id: "run-foreign",

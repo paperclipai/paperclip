@@ -816,6 +816,7 @@ function normalizeLiveRuns(
 ) {
   const deduped = new Map<string, LiveRunForIssue>();
   for (const run of liveRuns) {
+    if (issueId && run.issueId !== issueId) continue;
     deduped.set(run.id, run);
   }
   if (activeRun) {
