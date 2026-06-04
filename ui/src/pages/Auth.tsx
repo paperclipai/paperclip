@@ -6,8 +6,7 @@ import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { getRememberedInvitePath } from "../lib/invite-memory";
 import { Button } from "@/components/ui/button";
-import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
-import { Sparkles } from "lucide-react";
+import { AuthAtlas } from "@/components/AuthAtlas";
 
 type AuthMode = "sign_in" | "sign_up";
 
@@ -93,12 +92,14 @@ export function AuthPage() {
       <div className="w-full md:w-1/2 flex flex-col overflow-y-auto">
         <div className="w-full max-w-md mx-auto my-auto px-8 py-12">
           <div className="flex items-center gap-2 mb-8">
-            <Sparkles className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm font-medium">ValadrienOs</span>
+            <span className="flex h-[22px] w-[22px] items-center justify-center rounded-[3px] border border-primary font-serif text-[13px] leading-none text-primary">
+              V
+            </span>
+            <span className="text-sm font-semibold tracking-tight">ValAdrien OS</span>
           </div>
 
-          <h1 className="text-xl font-semibold">
-            {mode === "sign_in" ? "Sign in to ValadrienOs" : "Create your ValadrienOs account"}
+          <h1 className="font-serif text-2xl font-medium tracking-tight">
+            {mode === "sign_in" ? "Sign in to ValAdrien OS" : "Create your ValAdrien OS account"}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {mode === "sign_in"
@@ -213,9 +214,9 @@ export function AuthPage() {
         </div>
       </div>
 
-      {/* Right half — ASCII art animation (hidden on mobile) */}
-      <div className="hidden md:block w-1/2 overflow-hidden">
-        <AsciiArtAnimation />
+      {/* Right half — live obsidian-brain atlas (hidden on mobile) */}
+      <div className="hidden md:block w-1/2 overflow-hidden border-l border-border">
+        <AuthAtlas />
       </div>
     </div>
   );
