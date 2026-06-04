@@ -7740,7 +7740,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
     }
-    const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
+    const adapterChanged = runtime.adapterType !== agent.adapterType;
+    const runtimeSessionFallback = taskKey || resetTaskSession || adapterChanged ? null : runtime.sessionId;
+    if (adapterChanged && runtime.sessionId) {
+      runtimeWorkspaceWarnings.push(
+        `Adapter changed from ${runtime.adapterType} to ${agent.adapterType} — discarding previous session to start fresh.`,
+      );
+    }
     let previousSessionDisplayId = truncateDisplayId(
       explicitResumeSessionDisplayId ??
         taskSessionForRun?.sessionDisplayId ??
