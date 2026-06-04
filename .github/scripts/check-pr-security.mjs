@@ -211,7 +211,7 @@ export function buildAdvisoryPayload(prNumber, prTitle, flags) {
     '> This advisory was created automatically by commitperclip. Review and dismiss if not a real concern.',
     ].join('\n'),
     severity: worstSeverity(flags),
-    vulnerabilities: [],
+    // vulnerabilities intentionally omitted — GitHub 422s on POST/PATCH with vulnerabilities:[]
   };
 }
 
@@ -225,11 +225,24 @@ export async function syncDraftAdvisory(fetchImpl, token, repo, prNumber, prTitl
       throw new Error(`Existing advisory for PR #${prNumber} is missing both ghsa_id and id.`);
     }
 
-    return fetchImpl(`/repos/${repo}/security-advisories/${advisoryId}`, token, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    // Omit vulnerabilities on PATCH — GitHub 422s if you try to set it to []
+    // on an advisory that already has vulnerabilities recorded.
+    const { vulnerabilities: _v, ...patchPayload } = payload;
+    try {
+      return await fetchImpl(`/repos/${repo}/security-advisories/${advisoryId}`, token, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patchPayload),
+      });
+    } catch (err) {
+      // 422 on advisory update is non-fatal — the advisory already exists and
+      // captures the security flag; swallow so the check-run still gets posted.
+      if (err.message && err.message.includes('422')) {
+        console.warn(`[security] existing draft advisory ${advisoryId} could not be updated due to GitHub validation; continuing so the PR check can complete.`);
+        return null;
+      }
+      throw err;
+    }
   }
 
   return fetchImpl(`/repos/${repo}/security-advisories`, token, {

@@ -182,6 +182,36 @@ test('syncDraftAdvisory: creates a new advisory when none exists', async () => {
   assert.deepEqual(JSON.parse(calls[1].options.body), buildAdvisoryPayload(6469, 'My PR', flags));
 });
 
+test('buildAdvisoryPayload: does not include vulnerabilities field', () => {
+  const flags = [{ check: 'ci-tampering', file: '.github/workflows/pr.yml' }];
+  const payload = buildAdvisoryPayload(1, 'Test PR', flags);
+  assert.ok(!('vulnerabilities' in payload), 'vulnerabilities must be absent — GitHub 422s on POST/PATCH with []');
+});
+
+test('syncDraftAdvisory: tolerates 422 on PATCH and still resolves', async () => {
+  const flags = [{ check: 'ci-tampering', file: '.github/workflows/pr.yml' }];
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (message) => warnings.push(message);
+
+  try {
+    const result = await syncDraftAdvisory(async (path) => {
+      if (path.includes('/security-advisories?state=draft')) {
+        return [{ ghsa_id: 'GHSA-test-1234', summary: '🚨 Security flag — PR #6469: ci-tampering' }];
+      }
+      throw new Error('GitHub API PATCH /repos/... -> 422: Advisory must have at least one vulnerability');
+    }, 'token', 'paperclipai/paperclip', 6469, 'My PR', flags);
+
+    assert.equal(result, null);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.deepEqual(warnings, [
+    '[security] existing draft advisory GHSA-test-1234 could not be updated due to GitHub validation; continuing so the PR check can complete.',
+  ]);
+});
+
 test('postSecurityCheckRun: uses the injected fetch implementation', async () => {
   const calls = [];
 
