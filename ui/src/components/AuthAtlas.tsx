@@ -14,7 +14,17 @@ const AMBER: [number, number, number] = [240, 162, 60]; // --primary (sodium)
 const N = 150;
 const HUBS = 7;
 
-interface Node { x: number; y: number; vx: number; vy: number; hub: boolean; r: number; tw: number; }
+// Amber lobes = the kinds of company the OS runs. Focusing one reveals the
+// teal agent/task nodes (LEAF_LABELS) that make that company run itself.
+const HUB_LABELS = ["Tech Founder", "Small Business", "Agency", "Creator", "E-commerce", "Consultant", "Local Shop"];
+const LEAF_LABELS = [
+  "CEO", "Engineer", "Designer", "Marketing", "Sales", "Support", "Bookkeeping",
+  "Research", "Outreach", "Content", "QA", "Deploy", "Invoicing", "Analytics",
+  "Hiring", "Ops", "Social", "SEO", "Email", "Roadmap", "Payroll", "Inventory",
+  "CRM", "Reports", "Standup", "Ads", "Pricing", "Onboarding",
+];
+
+interface Node { x: number; y: number; vx: number; vy: number; hub: boolean; r: number; tw: number; label: string; }
 
 export function AuthAtlas({ showTagline = true }: { showTagline?: boolean } = {}) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -36,9 +46,11 @@ export function AuthAtlas({ showTagline = true }: { showTagline?: boolean } = {}
     const edges: [number, number][] = [];
     const adj: number[][] = Array.from({ length: N }, () => []);
     for (let i = 0; i < N; i++) {
+      const hub = i < HUBS;
       nodes.push({
         x: (rng() - 0.5) * 600, y: (rng() - 0.5) * 440,
-        vx: 0, vy: 0, hub: i < HUBS, r: 0, tw: rng() * 6.28,
+        vx: 0, vy: 0, hub, r: 0, tw: rng() * 6.28,
+        label: hub ? HUB_LABELS[i] : LEAF_LABELS[(i - HUBS) % LEAF_LABELS.length],
       });
     }
     const link = (a: number, b: number) => {
@@ -80,7 +92,11 @@ export function AuthAtlas({ showTagline = true }: { showTagline?: boolean } = {}
     let alpha = 1;
     let drag: Node | null = null, hover = -1, mx = 0, my = 0;
     let panning = false, panSX = 0, panSY = 0, panCX = 0, panCY = 0;
-    let lastInteract = -1e9; // timestamp of last user input (for idle recenter)
+    let lastInteract = -1e9; // timestamp of last user input
+    // Auto-tour: cycle through the persona lobes, focusing each one.
+    const TOUR_ORDER = Array.from({ length: HUBS }, (_, i) => i);
+    let tourStep = -1, tourNextAt = 0, tourNode = 0;
+    const IDLE_MS = 4000; // resume the tour this long after the last input
 
     const tick = () => {
       if (alpha > 0.045) alpha *= 0.992; else alpha = 0.045; // floor keeps it gently alive
@@ -108,11 +124,21 @@ export function AuthAtlas({ showTagline = true }: { showTagline?: boolean } = {}
 
     const draw = (ts: number) => {
       tick();
-      // idle recenter: ease camera home when the user hasn't touched it for a beat
-      if (!drag && !panning && ts - lastInteract > 2600) {
-        cam.x += (home.x - cam.x) * 0.02;
-        cam.y += (home.y - cam.y) * 0.02;
-        cam.k += (home.k - cam.k) * 0.02;
+      // Auto-tour: when idle, fly node-to-node and focus each persona lobe so a
+      // viewer sees how the graph works without touching it. Any input pauses it.
+      const idle = !drag && !panning && ts - lastInteract > IDLE_MS;
+      if (idle) {
+        if (ts > tourNextAt) {
+          tourStep = (tourStep + 1) % TOUR_ORDER.length;
+          tourNode = TOUR_ORDER[tourStep];
+          tourNextAt = ts + 3600;
+          alpha = Math.max(alpha, 0.18); // a little life on each move
+        }
+        const t = nodes[tourNode], tk = home.k * 1.55;
+        cam.x += (-t.x - cam.x) * 0.045;
+        cam.y += (-t.y - cam.y) * 0.045;
+        cam.k += (tk - cam.k) * 0.045;
+        hover = tourNode; // reveal its label + neighbours
       }
 
       ctx.clearRect(0, 0, W, H);
@@ -149,6 +175,23 @@ export function AuthAtlas({ showTagline = true }: { showTagline?: boolean } = {}
         ctx.arc(n.x, n.y, Math.max(0.5, n.r / Math.sqrt(cam.k)), 0, 6.28); ctx.fill();
       }
       ctx.shadowBlur = 0;
+
+      // labels: persona lobes are always named; agent/task nodes reveal their
+      // names only when their lobe is in focus (hover or auto-tour).
+      ctx.textBaseline = "middle";
+      ctx.font = `${(12 / cam.k).toFixed(2)}px "JetBrains Mono", ui-monospace, monospace`;
+      for (let i = 0; i < N; i++) {
+        const n = nodes[i];
+        const focus = hi ? hi.has(i) : false;
+        if (!n.hub && !focus) continue;
+        let a = 0;
+        if (focus) a = i === hover ? 0.95 : 0.6;
+        else a = hi ? 0.2 : 0.4; // persona label, dimmed when another is focused
+        if (a <= 0) continue;
+        ctx.fillStyle = n.hub ? `rgba(240,200,150,${a})` : `rgba(232,230,225,${a})`;
+        ctx.fillText(n.label, n.x + (n.r + 6) / cam.k, n.y);
+      }
+
       ctx.restore();
     };
 
