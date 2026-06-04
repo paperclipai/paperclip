@@ -61,6 +61,7 @@ export const AGNB_SUBNAV = {
   ],
   ops: [
     { to: "/agnb-health", label: "Health" },
+    { to: "/producers", label: "Producers" },
     { to: "/agnb-sync", label: "Sync" },
     { to: "/quota", label: "Quota" },
   ],
