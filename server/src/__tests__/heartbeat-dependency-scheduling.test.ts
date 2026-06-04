@@ -21,6 +21,8 @@ import {
   issueRelations,
   issueTreeHolds,
   issues,
+  routines,
+  routineTriggers,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -135,6 +137,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.delete(documents);
     await db.delete(issueRelations);
     await db.delete(issueTreeHolds);
+    await db.delete(routineTriggers);
+    await db.delete(routines);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
@@ -397,6 +401,122 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       return rows.every((run) => run.status !== "queued" && run.status !== "running");
     }, 10_000);
     expect(noActiveRuns).toBe(true);
+  });
+
+  it("keeps scheduled routine hubs parked on system dependency wakes but allows user interaction wakes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const routineId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Weekly science hub",
+      status: "backlog",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      parentIssueId: issueId,
+      title: "Weekly science loop",
+      status: "active",
+      priority: "medium",
+    });
+    await db.insert(routineTriggers).values({
+      id: randomUUID(),
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      cronExpression: "0 9 * * 1",
+      timezone: "Europe/Prague",
+      nextRunAt: new Date("2026-03-23T08:00:00.000Z"),
+    });
+
+    const systemWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: { issueId },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: { issueId, wakeReason: "issue_blockers_resolved" },
+    });
+    expect(systemWake).toBeNull();
+
+    const skippedWake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, "routine_backlog_parked"))
+      .then((rows) => rows[0] ?? null);
+    expect(skippedWake).toMatchObject({ status: "skipped", reason: "routine_backlog_parked" });
+
+    let issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("backlog");
+    expect(issue?.checkoutRunId).toBeNull();
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(0);
+
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "board-user",
+      body: "Please pick this back up now.",
+    });
+
+    const userWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId, commentId },
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      contextSnapshot: {
+        issueId,
+        commentId,
+        wakeCommentId: commentId,
+        wakeReason: "issue_commented",
+        source: "issue.comment",
+      },
+    });
+    expect(userWake).not.toBeNull();
+
+    await waitForCondition(async () => {
+      const row = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      return row?.status === "in_progress";
+    }, 5_000);
+    issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.checkoutRunId).toBe(userWake?.id);
   });
 
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
