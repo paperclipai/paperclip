@@ -6,11 +6,12 @@
  */
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Cpu, Plus, Power, Trash2, FolderOpen, Package, RefreshCw, Download } from "lucide-react";
+import { AlertTriangle, Cpu, Plus, Power, Trash2, FolderOpen, Package, RefreshCw, Download, Sparkles, Save } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { adaptersApi } from "@/api/adapters";
 import type { AdapterInfo } from "@/api/adapters";
+import { agentPresetsApi, type AgentPreset, type AgentPresetApplyResult } from "@/api/agentPresets";
 import { getAdapterLabel } from "@/adapters/adapter-display-registry";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -248,6 +249,279 @@ function ReinstallDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function AgentPresetsSection({ companyId }: { companyId: string }) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [saveName, setSaveName] = useState("");
+  const [applyTarget, setApplyTarget] = useState<AgentPreset | null>(null);
+  const [applyPreview, setApplyPreview] = useState<AgentPresetApplyResult | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<AgentPreset | null>(null);
+
+  const { data } = useQuery({
+    queryKey: queryKeys.agentPresets.list(companyId),
+    queryFn: () => agentPresetsApi.list(companyId),
+  });
+  const presets = data?.items ?? [];
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.agentPresets.list(companyId) });
+  };
+
+  const saveMutation = useMutation({
+    mutationFn: (name: string) => agentPresetsApi.create(companyId, { name }),
+    onSuccess: (result) => {
+      invalidate();
+      setSaveDialogOpen(false);
+      setSaveName("");
+      pushToast({
+        title: "프리셋 저장 완료",
+        body: `"${result.preset.name}" (에이전트 ${result.preset.snapshot.length}대)`,
+        tone: "success",
+      });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "프리셋 저장 실패", body: err.message, tone: "error" });
+    },
+  });
+
+  const dryRunMutation = useMutation({
+    mutationFn: (preset: AgentPreset) =>
+      agentPresetsApi.apply(companyId, preset.id, { dryRun: true }).then((res) => ({ preset, res })),
+    onSuccess: ({ preset, res }) => {
+      setApplyTarget(preset);
+      setApplyPreview(res);
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "미리보기 실패", body: err.message, tone: "error" });
+    },
+  });
+
+  const applyMutation = useMutation({
+    mutationFn: (preset: AgentPreset) => agentPresetsApi.apply(companyId, preset.id),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+      setApplyTarget(null);
+      setApplyPreview(null);
+      pushToast({
+        title: "프리셋 적용 완료",
+        body: `${result.appliedAgentIds.length}/${result.total} 적용, ${result.unmatched.length} unmatched`,
+        tone: "success",
+      });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "프리셋 적용 실패", body: err.message, tone: "error" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (preset: AgentPreset) => agentPresetsApi.remove(companyId, preset.id),
+    onSuccess: () => {
+      invalidate();
+      setDeleteTarget(null);
+      pushToast({ title: "프리셋 삭제 완료", tone: "success" });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "프리셋 삭제 실패", body: err.message, tone: "error" });
+    },
+  });
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-5 w-5 text-muted-foreground" />
+          <h2 className="text-base font-semibold">에이전트 프리셋</h2>
+          <Badge variant="outline" className="text-xs">
+            원클릭 스왑
+          </Badge>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="gap-2"
+          onClick={() => setSaveDialogOpen(true)}
+        >
+          <Save className="h-4 w-4" />
+          현재 설정 저장
+        </Button>
+      </div>
+
+      <p className="text-sm text-muted-foreground">
+        회사 전체 에이전트의 <code className="text-xs bg-muted px-1 py-0.5 rounded">adapterType</code>
+        과 <code className="text-xs bg-muted px-1 py-0.5 rounded">adapterConfig</code>를 한 번에
+        저장된 프리셋으로 스왑합니다. agentNameKey 기준으로 매칭됩니다.
+      </p>
+
+      {presets.length === 0 ? (
+        <Card className="bg-muted/30">
+          <CardContent className="flex flex-col items-center justify-center py-10">
+            <Sparkles className="h-10 w-10 text-muted-foreground mb-4" />
+            <p className="text-sm font-medium">아직 저장된 프리셋이 없습니다</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              "현재 설정 저장"으로 첫 프리셋을 만들어 보세요.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {presets.map((preset) => (
+            <Card key={preset.id}>
+              <CardContent className="space-y-3 p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="font-medium">{preset.name}</div>
+                    <div className="text-xs text-muted-foreground">
+                      에이전트 {preset.snapshot.length}대
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-destructive"
+                    onClick={() => setDeleteTarget(preset)}
+                    title="삭제"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+                <Button
+                  size="sm"
+                  className="w-full"
+                  disabled={dryRunMutation.isPending && dryRunMutation.variables?.id === preset.id}
+                  onClick={() => dryRunMutation.mutate(preset)}
+                >
+                  Apply
+                </Button>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* Save dialog */}
+      <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>현재 설정을 프리셋으로 저장</DialogTitle>
+            <DialogDescription>
+              회사의 모든 에이전트의 어댑터 설정을 스냅샷으로 저장합니다.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2 py-2">
+            <Label htmlFor="presetName">프리셋 이름</Label>
+            <Input
+              id="presetName"
+              placeholder="예: Claude (Opus/Sonnet/Haiku)"
+              value={saveName}
+              onChange={(e) => setSaveName(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSaveDialogOpen(false)}>
+              취소
+            </Button>
+            <Button
+              disabled={saveMutation.isPending || saveName.trim().length === 0}
+              onClick={() => saveMutation.mutate(saveName.trim())}
+            >
+              {saveMutation.isPending ? "저장 중..." : "저장"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Apply confirm dialog */}
+      <Dialog
+        open={applyTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setApplyTarget(null);
+            setApplyPreview(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>프리셋 적용</DialogTitle>
+            <DialogDescription>
+              {applyTarget && applyPreview ? (
+                <>
+                  <strong>"{applyTarget.name}"</strong> 프리셋을 적용합니다.{" "}
+                  <strong>{applyPreview.appliedAgentIds.length}대</strong>의 에이전트의
+                  어댑터 설정이 변경됩니다.
+                  {applyPreview.unmatched.length > 0 && (
+                    <span className="block mt-2 text-amber-700">
+                      ⚠ 매칭되지 않는 에이전트 {applyPreview.unmatched.length}대 (이름 변경으로
+                      추정):{" "}
+                      <code className="text-xs">
+                        {applyPreview.unmatched.map((u) => u.agentNameKey).join(", ")}
+                      </code>
+                    </span>
+                  )}
+                </>
+              ) : (
+                "프리셋 적용 미리보기를 불러오는 중..."
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setApplyTarget(null);
+                setApplyPreview(null);
+              }}
+            >
+              취소
+            </Button>
+            <Button
+              disabled={!applyTarget || applyMutation.isPending}
+              onClick={() => {
+                if (applyTarget) applyMutation.mutate(applyTarget);
+              }}
+            >
+              {applyMutation.isPending ? "적용 중..." : "적용"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirm dialog */}
+      <Dialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>프리셋 삭제</DialogTitle>
+            <DialogDescription>
+              <strong>"{deleteTarget?.name}"</strong> 프리셋을 삭제합니다. 이 작업은 되돌릴 수
+              없습니다.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+              취소
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deleteMutation.isPending}
+              onClick={() => {
+                if (deleteTarget) deleteMutation.mutate(deleteTarget);
+              }}
+            >
+              {deleteMutation.isPending ? "삭제 중..." : "삭제"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </section>
   );
 }
 
@@ -523,6 +797,9 @@ export function AdapterManager() {
           </div>
         </div>
       </div>
+
+      {/* Agent presets — only rendered in company-scoped context */}
+      {selectedCompany?.id ? <AgentPresetsSection companyId={selectedCompany.id} /> : null}
 
       {/* External adapters */}
       <section className="space-y-3">
