@@ -18,7 +18,7 @@ interface Node {
 }
 interface Pulse { from: number; to: number; t: number; sp: number }
 
-export function AuthAtlas() {
+export function AuthAtlas({ showTagline = true }: { showTagline?: boolean } = {}) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -166,6 +166,7 @@ export function AuthAtlas() {
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden">
       <canvas ref={canvasRef} className="absolute inset-0 block" />
       {/* serif tagline + live marker, GLASSHOUSE */}
+      {showTagline && (
       <div className="absolute bottom-10 left-9 right-9">
         <p className="font-serif text-2xl leading-snug text-foreground max-w-sm">
           The company that <em className="not-italic text-primary italic">runs itself</em>. Watch it work.
@@ -175,6 +176,7 @@ export function AuthAtlas() {
           4 agents working now
         </span>
       </div>
+      )}
     </div>
   );
 }

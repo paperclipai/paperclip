@@ -45,7 +45,7 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@valadrien-os/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@valadrien-os/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@valadrien-os/adapter-opencode-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
-import { AsciiArtAnimation } from "./AsciiArtAnimation";
+import { AuthAtlas } from "./AuthAtlas";
 import {
   Building2,
   Bot,
@@ -1412,14 +1412,14 @@ export function OnboardingWizard() {
             </div>
           </div>
 
-          {/* Right half — ASCII art (hidden on mobile) */}
+          {/* Right half — live obsidian-brain atlas (hidden on mobile) */}
           <div
             className={cn(
-              "hidden md:block overflow-hidden bg-[#1d1d1d] transition-[width,opacity] duration-500 ease-in-out",
+              "hidden md:block overflow-hidden border-l border-border bg-background transition-[width,opacity] duration-500 ease-in-out",
               step === 1 ? "w-1/2 opacity-100" : "w-0 opacity-0"
             )}
           >
-            <AsciiArtAnimation />
+            <AuthAtlas showTagline={false} />
           </div>
         </div>
       </DialogPortal>
