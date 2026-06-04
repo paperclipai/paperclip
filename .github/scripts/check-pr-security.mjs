@@ -220,11 +220,14 @@ export async function syncDraftAdvisory(fetchImpl, token, repo, prNumber, prTitl
   const payload = buildAdvisoryPayload(prNumber, prTitle, flags);
 
   if (existing) {
-    const { vulnerabilities: _vulnerabilities, ...patchPayload } = payload;
     const advisoryId = existing.ghsa_id ?? existing.id;
     if (!advisoryId) {
       throw new Error(`Existing advisory for PR #${prNumber} is missing both ghsa_id and id.`);
     }
+
+    // PATCH rejects `vulnerabilities: []` with 422 ("Advisory must have at least one vulnerability").
+    // The field is only valid on POST when creating the draft; updates must omit it.
+    const { vulnerabilities: _vulnerabilities, ...patchPayload } = payload;
 
     return fetchImpl(`/repos/${repo}/security-advisories/${advisoryId}`, token, {
       method: 'PATCH',
@@ -267,10 +270,16 @@ export async function postSecurityCheckRun(fetchImpl, token, repo, headSha, hasF
     body: JSON.stringify(hasFlags ? {
       name: 'security-review',
       head_sha: headSha,
-      status: 'in_progress',
+      // `completed/neutral` instead of `in_progress` so the check doesn't put
+      // the PR in `mergeStateStatus: BLOCKED`. The draft advisory is the
+      // durable signal for maintainers; there is no completion path that
+      // could ever flip an `in_progress` check-run back to completed on the
+      // same head SHA, so it would hang forever.
+      status: 'completed',
+      conclusion: 'neutral',
       output: {
-        title: 'Security Review Pending',
-        summary: 'This PR has been flagged for manual security review by a maintainer. No action needed from you.',
+        title: 'Security Review Recommended',
+        summary: 'Draft advisory filed for maintainer review. Not a merge block — review the advisory at your leisure.',
       },
     } : {
       name: 'security-review',

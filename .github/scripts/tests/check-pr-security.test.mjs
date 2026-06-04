@@ -161,10 +161,10 @@ test('syncDraftAdvisory: patches an existing advisory with the latest flags', as
   assert.equal(calls.length, 2);
   assert.equal(calls[1].path, '/repos/paperclipai/paperclip/security-advisories/GHSA-test-1234');
   assert.equal(calls[1].options.method, 'PATCH');
-  const patchPayload = JSON.parse(calls[1].options.body);
-  const { vulnerabilities: _vulnerabilities, ...expectedPatchPayload } = buildAdvisoryPayload(6469, 'My PR', flags);
-  assert.deepEqual(patchPayload, expectedPatchPayload);
-  assert.ok(!Object.hasOwn(patchPayload, 'vulnerabilities'));
+  const patchBody = JSON.parse(calls[1].options.body);
+  const { vulnerabilities: _vulnerabilities, ...expectedPatch } = buildAdvisoryPayload(6469, 'My PR', flags);
+  assert.deepEqual(patchBody, expectedPatch);
+  assert.ok(!('vulnerabilities' in patchBody), 'PATCH must omit vulnerabilities (GitHub rejects empty array with 422)');
 });
 
 test('syncDraftAdvisory: creates a new advisory when none exists', async () => {
@@ -199,10 +199,11 @@ test('postSecurityCheckRun: uses the injected fetch implementation', async () =>
   assert.deepEqual(JSON.parse(calls[0].options.body), {
     name: 'security-review',
     head_sha: 'deadbeef',
-    status: 'in_progress',
+    status: 'completed',
+    conclusion: 'neutral',
     output: {
-      title: 'Security Review Pending',
-      summary: 'This PR has been flagged for manual security review by a maintainer. No action needed from you.',
+      title: 'Security Review Recommended',
+      summary: 'Draft advisory filed for maintainer review. Not a merge block — review the advisory at your leisure.',
     },
   });
 });
