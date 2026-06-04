@@ -960,4 +960,89 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       },
     });
   });
+
+  it("wakeOnAutomation:false suppresses automation wakes but still allows on_demand wakes", async () => {
+    // Regression for the independent automation-wake gate. Previously wakeOnAutomation was OR-folded
+    // into a single wakeOnDemand boolean, so there was no way to silence server-originated automation
+    // wakes (issue_children_completed / issue_blockers_resolved — the CEO token-burn pattern) without
+    // also killing legitimate on-demand / assignment wakes. The two gates are now independent.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const automationIssueId = randomUUID();
+    const onDemandIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CEO",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          // automation OFF, on_demand ON — the combination only expressible after the gate split.
+          wakeOnDemand: true,
+          wakeOnAutomation: false,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: automationIssueId,
+        companyId,
+        title: "Automation-woken issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: onDemandIssueId,
+        companyId,
+        title: "On-demand-woken issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+
+    // 1. An automation wake is suppressed by the independent wakeOnAutomation:false gate.
+    const automationWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_children_completed",
+      payload: { issueId: automationIssueId },
+      contextSnapshot: { issueId: automationIssueId, wakeReason: "issue_children_completed" },
+    });
+    expect(automationWake).toBeNull();
+    const skippedAutomation = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(sql`${agentWakeupRequests.payload} ->> 'issueId' = ${automationIssueId}`)
+      .then((rows) => rows[0] ?? null);
+    expect(skippedAutomation).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.wakeOnAutomation.disabled",
+    });
+
+    // 2. An on_demand wake on the SAME agent still fires — wakeOnDemand:true is unaffected.
+    const onDemandWake = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "issue_assigned",
+      payload: { issueId: onDemandIssueId },
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      contextSnapshot: { issueId: onDemandIssueId, wakeReason: "issue_assigned" },
+    });
+    expect(onDemandWake).not.toBeNull();
+  });
 });
