@@ -277,6 +277,22 @@ function secretResolutionErrorCode(error: unknown): SecretResolutionErrorCode {
   return "provider_error";
 }
 
+function secretResolutionErrorDetails(input: {
+  code: SecretResolutionErrorCode;
+  secretId: string;
+  secretKey?: string | null;
+  version?: number | "latest" | null;
+  configPath?: string | null;
+}) {
+  return {
+    code: input.code,
+    secretId: input.secretId,
+    ...(input.secretKey ? { secretKey: input.secretKey } : {}),
+    ...(input.version !== undefined && input.version !== null ? { version: input.version } : {}),
+    ...(input.configPath ? { configPath: input.configPath } : {}),
+  };
+}
+
 function assertSelectableProviderConfig(config: {
   provider: string;
   status: string;
@@ -357,10 +373,15 @@ export function secretService(db: Db) {
     companyId: string,
     secretId: string,
     context: SecretConsumerContext | undefined,
+    secretKey?: string | null,
   ) {
     if (!context) return;
     if (!context.configPath) {
-      throw unprocessable("Secret resolution requires a binding config path", { code: "binding_missing" });
+      throw unprocessable("Secret resolution requires a binding config path", secretResolutionErrorDetails({
+        code: "binding_missing",
+        secretId,
+        secretKey,
+      }));
     }
     const binding = await getBinding({
       companyId,
@@ -372,7 +393,12 @@ export function secretService(db: Db) {
     if (!binding) {
       throw unprocessable(
         `Secret is not bound to ${context.consumerType}:${context.consumerId} at ${context.configPath}`,
-        { code: "binding_missing" },
+        secretResolutionErrorDetails({
+          code: "binding_missing",
+          secretId,
+          secretKey,
+          configPath: context.configPath,
+        }),
       );
     }
   }
@@ -552,24 +578,57 @@ export function secretService(db: Db) {
     version: number | "latest",
     context?: SecretConsumerContext,
   ): Promise<RuntimeSecretResolution> {
+    const configPath = context?.configPath ?? null;
     const secret = await getById(secretId);
-    if (!secret) throw notFound("Secret not found");
+    if (!secret) {
+      throw new HttpError(404, "Secret not found", secretResolutionErrorDetails({
+        code: "secret_deleted",
+        secretId,
+        version,
+        configPath,
+      }));
+    }
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
     const resolvedVersion = version === "latest" ? secret.latestVersion : version;
     const providerId = secret.provider as SecretProvider;
-    const configPath = context?.configPath ?? null;
     try {
       if (secret.status === "deleted") {
-        throw new HttpError(404, "Secret not found", { code: "secret_deleted" });
+        throw new HttpError(404, "Secret not found", secretResolutionErrorDetails({
+          code: "secret_deleted",
+          secretId: secret.id,
+          secretKey: secret.key,
+          version: resolvedVersion,
+          configPath,
+        }));
       }
       if (secret.status !== "active") {
-        throw unprocessable("Secret is not active", { code: "secret_inactive" });
+        throw unprocessable("Secret is not active", secretResolutionErrorDetails({
+          code: "secret_inactive",
+          secretId: secret.id,
+          secretKey: secret.key,
+          version: resolvedVersion,
+          configPath,
+        }));
       }
-      await assertBindingContext(companyId, secret.id, context);
+      await assertBindingContext(companyId, secret.id, context, secret.key);
       const versionRow = await getSecretVersion(secret.id, resolvedVersion);
-      if (!versionRow) throw new HttpError(404, "Secret version not found", { code: "version_missing" });
+      if (!versionRow) {
+        throw new HttpError(404, "Secret version not found", secretResolutionErrorDetails({
+          code: "version_missing",
+          secretId: secret.id,
+          secretKey: secret.key,
+          version: resolvedVersion,
+          configPath,
+        }));
+      }
       if (versionRow.status === "disabled" || versionRow.status === "destroyed" || versionRow.revokedAt) {
-        throw unprocessable("Secret version is not active", { code: "version_inactive" });
+        throw unprocessable("Secret version is not active", secretResolutionErrorDetails({
+          code: "version_inactive",
+          secretId: secret.id,
+          secretKey: secret.key,
+          version: resolvedVersion,
+          configPath,
+        }));
       }
       const provider = getSecretProvider(providerId);
       const providerConfig = await getSelectableRuntimeProviderConfig({
