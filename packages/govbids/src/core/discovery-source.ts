@@ -12,6 +12,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { DEFAULT_SCORER_MODEL } from "./constants.js";
 import { stateAbbrFromText } from "./state.js";
 import type { NormalizedOpportunity } from "./types.js";
+import { BraveClient, looksLikeProcurementUrl } from "./brave-client.js";
+import type { UnicornTarget } from "./discovery-targets.js";
 
 export interface DiscoveryTarget {
   /** Procurement / bids page URL. */
@@ -152,6 +154,74 @@ function normalize(
     sourceUrl: toAbsolute(target.url, rfp.detailUrl) ?? target.url,
     placeOfPerformance: target.state,
   };
+}
+
+/**
+ * Search-driven discovery (Phase 2): for each unicorn target, replicate a
+ * human's "<town> <state> bids RFP IT" search via Brave, take the candidate
+ * procurement-page URLs, and fetch+extract them. No hardcoded bid URLs.
+ */
+export async function discoverBySearch(opts: {
+  anthropicKey: string;
+  braveKey: string;
+  targets: UnicornTarget[];
+  resultsPerTarget?: number;
+  pagesPerTarget?: number;
+  timeoutMs?: number;
+  throttleMs?: number;
+  onProgress?: (done: number, total: number, label: string) => void;
+}): Promise<{
+  opportunities: NormalizedOpportunity[];
+  targetsSearched: number;
+  pagesFetched: number;
+  pagesFailed: number;
+}> {
+  const brave = new BraveClient({ apiKey: opts.braveKey });
+  const client = new Anthropic({ apiKey: opts.anthropicKey });
+  const timeoutMs = opts.timeoutMs ?? 20_000;
+  const pagesPerTarget = opts.pagesPerTarget ?? 2;
+  const out: NormalizedOpportunity[] = [];
+  let pagesFetched = 0;
+  let pagesFailed = 0;
+
+  for (let i = 0; i < opts.targets.length; i++) {
+    const t = opts.targets[i];
+    opts.onProgress?.(i + 1, opts.targets.length, `${t.name}, ${t.state}`);
+    let results;
+    try {
+      results = await brave.search(
+        `${t.name} ${t.state} city bids RFP procurement information technology OR software OR ERP`,
+        opts.resultsPerTarget ?? 5,
+      );
+    } catch {
+      continue; // search failure for one target shouldn't kill the run
+    }
+    const urls = results
+      .map((r) => r.url)
+      .filter(looksLikeProcurementUrl)
+      .slice(0, pagesPerTarget);
+
+    for (const url of urls) {
+      const html = await fetchPage(url, timeoutMs);
+      if (html === null) {
+        pagesFailed++;
+        continue;
+      }
+      pagesFetched++;
+      const pageText = stripHtml(html);
+      if (pageText.length <= 50) continue;
+      const rfps = await extractRfps(client, pageText);
+      const target: DiscoveryTarget = { url, agency: `${t.name}, ${t.state}`, state: t.state };
+      for (const r of rfps) {
+        if (r.isItRelated && r.isBiddableSolicitation && r.title?.trim()) {
+          out.push(normalize(r, target));
+        }
+      }
+      if (opts.throttleMs) await new Promise((res) => setTimeout(res, opts.throttleMs));
+    }
+  }
+
+  return { opportunities: out, targetsSearched: opts.targets.length, pagesFetched, pagesFailed };
 }
 
 export async function discoverOpportunities(
