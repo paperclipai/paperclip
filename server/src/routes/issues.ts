@@ -1797,7 +1797,29 @@ export function issueRoutes(
       return { ok: true, uuid: issue.id };
     }
     const errorKey = paramName === "parentId" ? "invalid_parent_id" : "invalid_descendant_of";
-    return { ok: false, status: 400, body: { error: errorKey, value: raw } };
+    return { ok: false, status: 400, body: { error: errorKey, value: trimmed } };
+  }
+
+  // Pulls the two issue-pointing query params (`parentId`, `descendantOf`) off
+  // a request, resolves them via {@link resolveIssueIdQueryParam}, and writes
+  // the validation error to `res` itself when one fails. Returns `null` after
+  // writing the error so the handler can simply `return`.
+  async function resolveIssueIdListFilters(
+    req: Request,
+    res: Response,
+  ): Promise<{ parentId?: string; descendantOf?: string } | null> {
+    const out: { parentId?: string; descendantOf?: string } = {};
+    for (const paramName of ["parentId", "descendantOf"] as const) {
+      const raw = req.query[paramName] as string | undefined;
+      if (raw === undefined || raw === "") continue;
+      const resolved = await resolveIssueIdQueryParam(raw, paramName);
+      if (!resolved.ok) {
+        res.status(resolved.status).json(resolved.body);
+        return null;
+      }
+      out[paramName] = resolved.uuid;
+    }
+    return out;
   }
 
   async function resolveIssueProjectAndGoal(issue: {
@@ -1947,27 +1969,8 @@ export function issueRoutes(
     }
     const offset = parsedOffset ?? 0;
 
-    const parentIdRaw = req.query.parentId as string | undefined;
-    let parentId: string | undefined;
-    if (parentIdRaw !== undefined && parentIdRaw !== "") {
-      const resolved = await resolveIssueIdQueryParam(parentIdRaw, "parentId");
-      if (!resolved.ok) {
-        res.status(resolved.status).json(resolved.body);
-        return;
-      }
-      parentId = resolved.uuid;
-    }
-
-    const descendantOfRaw = req.query.descendantOf as string | undefined;
-    let descendantOf: string | undefined;
-    if (descendantOfRaw !== undefined && descendantOfRaw !== "") {
-      const resolved = await resolveIssueIdQueryParam(descendantOfRaw, "descendantOf");
-      if (!resolved.ok) {
-        res.status(resolved.status).json(resolved.body);
-        return;
-      }
-      descendantOf = resolved.uuid;
-    }
+    const issueIdFilters = await resolveIssueIdListFilters(req, res);
+    if (!issueIdFilters) return;
 
     const result = await svc.list(companyId, {
       attention: attention === "blocked" ? "blocked" : undefined,
@@ -1981,8 +1984,8 @@ export function issueRoutes(
       projectId: req.query.projectId as string | undefined,
       workspaceId: req.query.workspaceId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
-      parentId,
-      descendantOf,
+      parentId: issueIdFilters.parentId,
+      descendantOf: issueIdFilters.descendantOf,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
@@ -2040,27 +2043,8 @@ export function issueRoutes(
       return;
     }
 
-    const parentIdRaw = req.query.parentId as string | undefined;
-    let parentId: string | undefined;
-    if (parentIdRaw !== undefined && parentIdRaw !== "") {
-      const resolved = await resolveIssueIdQueryParam(parentIdRaw, "parentId");
-      if (!resolved.ok) {
-        res.status(resolved.status).json(resolved.body);
-        return;
-      }
-      parentId = resolved.uuid;
-    }
-
-    const descendantOfRaw = req.query.descendantOf as string | undefined;
-    let descendantOf: string | undefined;
-    if (descendantOfRaw !== undefined && descendantOfRaw !== "") {
-      const resolved = await resolveIssueIdQueryParam(descendantOfRaw, "descendantOf");
-      if (!resolved.ok) {
-        res.status(resolved.status).json(resolved.body);
-        return;
-      }
-      descendantOf = resolved.uuid;
-    }
+    const issueIdFilters = await resolveIssueIdListFilters(req, res);
+    if (!issueIdFilters) return;
 
     const count = await svc.count(companyId, {
       attention: "blocked",
@@ -2071,8 +2055,8 @@ export function issueRoutes(
       projectId: req.query.projectId as string | undefined,
       workspaceId: req.query.workspaceId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
-      parentId,
-      descendantOf,
+      parentId: issueIdFilters.parentId,
+      descendantOf: issueIdFilters.descendantOf,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
