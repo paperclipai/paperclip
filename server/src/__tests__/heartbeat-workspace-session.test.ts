@@ -310,6 +310,10 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assigned" })).toBe(true);
   });
 
+  it("resets session context on checkout wake (fresh work, e.g. a reviewer handed the issue)", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "issue_checked_out" })).toBe(true);
+  });
+
   it("resets session context on execution review wakes", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "execution_review_requested" })).toBe(true);
   });
