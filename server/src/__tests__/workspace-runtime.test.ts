@@ -2165,6 +2165,90 @@ describe("realizeExecutionWorkspace", () => {
       cleanupAction: "branch_delete",
     });
   });
+
+  it("restores a persisted worktree even when baseCwd is not a git repository (EIY-140)", async () => {
+    // Reproduces the heartbeat-setup crash: agents without a base git workspace
+    // (defaultEnvironmentId: null / adapterConfig: {}) have a baseCwd that points
+    // outside any git tree, so resolving repoRoot from baseCwd threw
+    // `fatal: not a git repository` and killed setup before any work ran. The
+    // persisted worktree itself is a valid git checkout, so resolution must come
+    // from there instead of baseCwd.
+    const repoRoot = await createTempRepo();
+    const branchName = "EIY-140-baseCwd-non-git";
+
+    await runGit(repoRoot, ["checkout", "-b", branchName]);
+    await fs.writeFile(path.join(repoRoot, "feature.txt"), "persisted\n", "utf8");
+    await runGit(repoRoot, ["add", "feature.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Add persisted feature"]);
+    await runGit(repoRoot, ["checkout", "main"]);
+
+    const initial = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "EIY-140",
+        title: "baseCwd non git",
+      },
+      agent: {
+        id: "agent-1",
+        name: "iOS Reviewer",
+        companyId: "company-1",
+      },
+    });
+
+    // A directory that exists but is NOT a git repository — exactly what baseCwd
+    // looks like for review/CTO/CEO agents with no base workspace.
+    const nonGitBaseCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-non-git-basecwd-"));
+
+    const restored = await ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: nonGitBaseCwd,
+        source: "task_session",
+        projectId: null,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: initial.cwd,
+        providerRef: initial.worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName: initial.branchName,
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "EIY-140",
+        title: "baseCwd non git",
+      },
+      agent: {
+        id: "agent-1",
+        name: "iOS Reviewer",
+        companyId: "company-1",
+      },
+    });
+
+    expect(restored).not.toBeNull();
+    expect(restored?.cwd).toBe(initial.cwd);
+    await expect(fs.readFile(path.join(initial.cwd, "feature.txt"), "utf8")).resolves.toBe("persisted\n");
+  }, 15_000);
 });
 
 describe("ensureRuntimeServicesForRun", () => {

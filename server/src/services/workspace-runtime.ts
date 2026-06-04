@@ -673,6 +673,39 @@ async function resolveGitOwnerRepoRoot(cwd: string): Promise<string> {
   return path.dirname(path.resolve(checkoutRoot, commonDir));
 }
 
+/**
+ * Resolve the owner repo root for a git_worktree execution workspace without
+ * depending on `base.baseCwd` being inside a git tree.
+ *
+ * Agents with `defaultEnvironmentId: null` / `adapterConfig: {}` (e.g. review,
+ * CTO, CEO roles) have a `baseCwd` that points outside any git checkout, so
+ * `git rev-parse --show-toplevel` on `baseCwd` throws `fatal: not a git
+ * repository` and previously killed heartbeat *setup* before any work could
+ * run (EIY-140). The persisted worktree itself is a valid git checkout, so we
+ * prefer resolving from there and only fall back to `baseCwd`.
+ *
+ * Returns `null` (instead of throwing) when no candidate resolves, so callers
+ * can recover (e.g. recreate the worktree) rather than crash the run.
+ */
+async function resolveExecutionWorkspaceRepoRoot(input: {
+  worktreePath: string | null;
+  cwd: string;
+  baseCwd: string;
+}): Promise<string | null> {
+  // Candidates ordered most-trustworthy first. A worktree/providerRef that
+  // already exists on disk is guaranteed to live inside the owner repo; baseCwd
+  // is the legacy path and may point outside any git tree.
+  const candidates = [input.worktreePath, input.cwd, input.baseCwd];
+  for (const candidate of candidates) {
+    const trimmed = (candidate ?? "").trim();
+    if (!trimmed) continue;
+    if (!(await directoryExists(trimmed))) continue;
+    const repoRoot = await resolveGitOwnerRepoRoot(trimmed).catch(() => null);
+    if (repoRoot) return repoRoot;
+  }
+  return null;
+}
+
 async function findRegisteredGitWorktreeByBranch(repoRoot: string, branchName: string): Promise<string | null> {
   const raw = await runGit(["worktree", "list", "--porcelain"], repoRoot).catch(() => null);
   if (!raw) return null;
@@ -1339,11 +1372,22 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   if (strategy !== "git_worktree") {
     return realized;
   }
-  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
+  // Resolve the owner repo root from the worktree itself rather than from
+  // `base.baseCwd`, which is not guaranteed to be inside a git tree for agents
+  // without a base workspace (EIY-140). This must never crash heartbeat setup.
+  const repoRoot = await resolveExecutionWorkspaceRepoRoot({
+    worktreePath: realized.worktreePath,
+    cwd,
+    baseCwd: input.base.baseCwd,
+  });
   const recordedBaseRefSha = readRecordedBaseRefSha(input.workspace.metadata);
   if (await directoryExists(cwd)) {
+    // The persisted worktree exists. If we somehow could not resolve an owner
+    // repo root above, fall back to operating from the worktree directory
+    // itself so setup still succeeds instead of throwing.
+    const effectiveRepoRoot = repoRoot ?? cwd;
     const baseDrift = await inspectExecutionWorkspaceBaseDrift({
-      repoRoot,
+      repoRoot: effectiveRepoRoot,
       worktreePath: realized.worktreePath ?? cwd,
       branchName: realized.branchName,
       baseRef: input.workspace.baseRef ?? input.base.repoRef ?? null,
@@ -1358,7 +1402,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
           provisionCommand,
         },
         base: input.base,
-        repoRoot,
+        repoRoot: effectiveRepoRoot,
         worktreePath: realized.worktreePath ?? cwd,
         branchName: realized.branchName ?? "",
         issue: input.issue,
@@ -1374,6 +1418,19 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   const branchName = asString(input.workspace.branchName, "").trim();
   if (!branchName) {
     throw new Error(`Execution workspace "${cwd}" is missing and cannot be restored because no branch name is recorded.`);
+  }
+
+  // The worktree does not exist on disk, so we cannot derive the owner repo
+  // from it — recreation requires a real owner repo root. If we could not
+  // resolve one (neither the worktree nor `baseCwd` is a git checkout), fail
+  // with an actionable message instead of the opaque `fatal: not a git
+  // repository` that previously surfaced from `git rev-parse` (EIY-140).
+  if (!repoRoot) {
+    throw new Error(
+      `Execution workspace "${cwd}" is missing and cannot be recreated: no owner git repository could be resolved `
+      + `from the worktree path, providerRef, or base cwd ("${input.base.baseCwd}"). `
+      + `The persisted workspace must reference a worktree inside a valid git repository.`,
+    );
   }
 
   await fs.mkdir(path.dirname(worktreePath), { recursive: true });
