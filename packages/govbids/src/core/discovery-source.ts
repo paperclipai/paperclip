@@ -12,7 +12,12 @@ import Anthropic from "@anthropic-ai/sdk";
 import { DEFAULT_SCORER_MODEL } from "./constants.js";
 import { stateAbbrFromText } from "./state.js";
 import type { NormalizedOpportunity } from "./types.js";
-import { BraveClient, looksLikeProcurementUrl } from "./brave-client.js";
+import {
+  BraveClient,
+  looksLikeProcurementUrl,
+  urlBelongsToTarget,
+  isBlockedDiscoveryDomain,
+} from "./brave-client.js";
 import type { UnicornTarget } from "./discovery-targets.js";
 
 export interface DiscoveryTarget {
@@ -187,18 +192,45 @@ export async function discoverBySearch(opts: {
   for (let i = 0; i < opts.targets.length; i++) {
     const t = opts.targets[i];
     opts.onProgress?.(i + 1, opts.targets.length, `${t.name}, ${t.state}`);
+
+    // Step 1: resolve the town's OWN official domain (.gov/.org), so we target
+    // its own bid page rather than whatever aggregator Brave ranks first.
+    let officialHost: string | null = null;
+    try {
+      const siteResults = await brave.search(
+        `City of ${t.name} ${t.state} official government website`,
+        5,
+      );
+      for (const r of siteResults) {
+        if (isBlockedDiscoveryDomain(r.url)) continue;
+        if (urlBelongsToTarget(r.url, t.name) && /\.(gov|org|us)\b/.test(r.url.toLowerCase())) {
+          officialHost = new URL(r.url).host;
+          break;
+        }
+      }
+    } catch {
+      /* fall through to generic search */
+    }
+
+    // Step 2: search for procurement pages, biased to the town's own domain.
     let results;
     try {
-      results = await brave.search(
-        `${t.name} ${t.state} city bids RFP procurement information technology OR software OR ERP`,
-        opts.resultsPerTarget ?? 5,
-      );
+      const q = officialHost
+        ? `site:${officialHost} bids RFP procurement solicitations`
+        : `${t.name} ${t.state} city bids RFP procurement information technology`;
+      results = await brave.search(q, opts.resultsPerTarget ?? 5);
     } catch {
       continue; // search failure for one target shouldn't kill the run
     }
+    // Keep the town's own procurement pages (or, when we resolved an official
+    // host, anything on that host). Drop aggregators / big-state portals.
     const urls = results
       .map((r) => r.url)
-      .filter(looksLikeProcurementUrl)
+      .filter((u) =>
+        officialHost
+          ? u.toLowerCase().includes(officialHost) && !isBlockedDiscoveryDomain(u)
+          : looksLikeProcurementUrl(u) && urlBelongsToTarget(u, t.name),
+      )
       .slice(0, pagesPerTarget);
 
     for (const url of urls) {
