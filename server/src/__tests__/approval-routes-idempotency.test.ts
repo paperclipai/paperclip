@@ -233,6 +233,73 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.approve).toHaveBeenCalledWith("approval-4", "user-1", "ship it");
   });
 
+  it("wakes the current linked issue assignee when approval requester changed", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-current-owner",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "stale-requester-agent",
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-current-owner",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: "stale-requester-agent",
+      },
+      applied: true,
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      {
+        id: "issue-current-owner",
+        assigneeAgentId: "current-closure-agent",
+      },
+    ]);
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-current-owner/approve")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "current-closure-agent",
+      expect.objectContaining({
+        reason: "approval_approved",
+        payload: expect.objectContaining({
+          approvalId: "approval-current-owner",
+          issueId: "issue-current-owner",
+          issueIds: ["issue-current-owner"],
+          targetIssueIds: ["issue-current-owner"],
+        }),
+        contextSnapshot: expect.objectContaining({
+          approvalId: "approval-current-owner",
+          issueId: "issue-current-owner",
+          taskId: "issue-current-owner",
+          wakeReason: "approval_approved",
+        }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      "stale-requester-agent",
+      expect.anything(),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "approval.linked_issue_assignee_wakeup_queued",
+        details: expect.objectContaining({
+          targetAgentId: "current-closure-agent",
+          requesterAgentId: "stale-requester-agent",
+        }),
+      }),
+    );
+  });
+
   it("derives approval attribution from the authenticated actor on reject", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-5",

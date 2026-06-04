@@ -147,6 +147,38 @@ export function approvalRoutes(
       const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
       const linkedIssueIds = linkedIssues.map((issue) => issue.id);
       const primaryIssueId = linkedIssueIds[0] ?? null;
+      const wakeTargets: Array<{
+        agentId: string;
+        issueIds: string[];
+        targetIssueId: string | null;
+        source: "linked_issue_assignee" | "requester";
+      }> = Array.from(
+        linkedIssues.reduce(
+          (targets, issue) => {
+            if (!issue.assigneeAgentId) return targets;
+            const existing = targets.get(issue.assigneeAgentId) ?? [];
+            existing.push(issue.id);
+            targets.set(issue.assigneeAgentId, existing);
+            return targets;
+          },
+          new Map<string, string[]>(),
+        ),
+        ([agentId, issueIds]) => ({
+          agentId,
+          issueIds,
+          targetIssueId: issueIds[0] ?? primaryIssueId,
+          source: "linked_issue_assignee",
+        }),
+      );
+
+      if (wakeTargets.length === 0 && approval.requestedByAgentId) {
+        wakeTargets.push({
+          agentId: approval.requestedByAgentId,
+          issueIds: linkedIssueIds,
+          targetIssueId: primaryIssueId,
+          source: "requester" as const,
+        });
+      }
 
       await logActivity(db, {
         companyId: approval.companyId,
@@ -162,17 +194,18 @@ export function approvalRoutes(
         },
       });
 
-      if (approval.requestedByAgentId) {
+      for (const wakeTarget of wakeTargets) {
         try {
-          const wakeRun = await heartbeat.wakeup(approval.requestedByAgentId, {
+          const wakeRun = await heartbeat.wakeup(wakeTarget.agentId, {
             source: "automation",
             triggerDetail: "system",
             reason: "approval_approved",
             payload: {
               approvalId: approval.id,
               approvalStatus: approval.status,
-              issueId: primaryIssueId,
+              issueId: wakeTarget.targetIssueId,
               issueIds: linkedIssueIds,
+              targetIssueIds: wakeTarget.issueIds,
             },
             requestedByActorType: "user",
             requestedByActorId: req.actor.userId ?? "board",
@@ -180,9 +213,10 @@ export function approvalRoutes(
               source: "approval.approved",
               approvalId: approval.id,
               approvalStatus: approval.status,
-              issueId: primaryIssueId,
+              issueId: wakeTarget.targetIssueId,
               issueIds: linkedIssueIds,
-              taskId: primaryIssueId,
+              targetIssueIds: wakeTarget.issueIds,
+              taskId: wakeTarget.targetIssueId,
               wakeReason: "approval_approved",
             },
           });
@@ -191,10 +225,15 @@ export function approvalRoutes(
             companyId: approval.companyId,
             actorType: "user",
             actorId: req.actor.userId ?? "board",
-            action: "approval.requester_wakeup_queued",
+            action:
+              wakeTarget.source === "requester"
+                ? "approval.requester_wakeup_queued"
+                : "approval.linked_issue_assignee_wakeup_queued",
             entityType: "approval",
             entityId: approval.id,
             details: {
+              targetAgentId: wakeTarget.agentId,
+              targetIssueIds: wakeTarget.issueIds,
               requesterAgentId: approval.requestedByAgentId,
               wakeRunId: wakeRun?.id ?? null,
               linkedIssueIds,
@@ -205,18 +244,23 @@ export function approvalRoutes(
             {
               err,
               approvalId: approval.id,
-              requestedByAgentId: approval.requestedByAgentId,
+              targetAgentId: wakeTarget.agentId,
             },
-            "failed to queue requester wakeup after approval",
+            "failed to queue approval wakeup",
           );
           await logActivity(db, {
             companyId: approval.companyId,
             actorType: "user",
             actorId: req.actor.userId ?? "board",
-            action: "approval.requester_wakeup_failed",
+            action:
+              wakeTarget.source === "requester"
+                ? "approval.requester_wakeup_failed"
+                : "approval.linked_issue_assignee_wakeup_failed",
             entityType: "approval",
             entityId: approval.id,
             details: {
+              targetAgentId: wakeTarget.agentId,
+              targetIssueIds: wakeTarget.issueIds,
               requesterAgentId: approval.requestedByAgentId,
               linkedIssueIds,
               error: err instanceof Error ? err.message : String(err),
