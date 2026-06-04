@@ -135,4 +135,11 @@ export const agnbPagesApi = {
   invoices: () =>
     ported<{ ok: boolean; error?: string; invoices: InvoiceRow[] }>("/invoices")
       .then((r) => unwrap(r).invoices),
+  // Read-only deal board from the agnb.hubspot_deals mirror (Sales-Ops Analyst keeps it current).
+  pipelineBoard: () =>
+    ported<{ ok: boolean; error?: string; columns: PipelineColumn[] }>("/pipeline/board")
+      .then((r) => unwrap(r).columns),
 };
+
+export interface PipelineCard { id: string; name: string; amount: number; closeDate: string | null }
+export interface PipelineColumn { id: string; label: string; cards: PipelineCard[]; total: number }

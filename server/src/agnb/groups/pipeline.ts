@@ -122,4 +122,72 @@ export function registerPipeline(router: Router, db: Db) {
     if (!dealId) return res.status(400).json({ ok: false, error: "deal_id required" });
     res.json({ ok: true, lineItems: [], quotes: [], tickets: [] });
   });
+
+  /**
+   * GET /api/agnb/pipeline/board — read-only deal board from the agnb.hubspot_deals
+   * mirror (the live-HubSpot board was decommissioned). Groups deals by dealstage
+   * into columns; the Sales-Ops Analyst agent keeps the mirror current via
+   * POST /pipeline/deals.
+   */
+  router.get("/agnb/pipeline/board", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const result = await db.execute(sql`
+      SELECT id, dealname, dealstage, amount_usd, close_date
+      FROM agnb.hubspot_deals
+      ORDER BY amount_usd DESC NULLS LAST
+    `);
+    type Deal = { id: string; dealname: string | null; dealstage: string | null; amount_usd: number | string | null; close_date: string | null };
+    const deals = rows<Deal>(result);
+    const byStage = new Map<string, { id: string; label: string; cards: Array<{ id: string; name: string; amount: number; closeDate: string | null }>; total: number }>();
+    for (const d of deals) {
+      const stage = (d.dealstage ?? "unknown").trim() || "unknown";
+      if (!byStage.has(stage)) byStage.set(stage, { id: stage, label: stage, cards: [], total: 0 });
+      const col = byStage.get(stage)!;
+      const amount = Number(d.amount_usd ?? 0) || 0;
+      col.cards.push({ id: d.id, name: d.dealname ?? "(unnamed deal)", amount, closeDate: d.close_date });
+      col.total += amount;
+    }
+    res.json({ ok: true, columns: [...byStage.values()] });
+  });
+
+  /**
+   * POST /api/agnb/pipeline/deals — Sales-Ops Analyst agent ingests/refreshes
+   * deals into the mirror. Body: { deals: Array<{ id, dealname, dealstage,
+   * amount_usd?, close_date? }> }. Upsert by id (the HubSpot deal id; no live
+   * HubSpot write).
+   */
+  router.post("/agnb/pipeline/deals", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const body = (req.body ?? {}) as { deals?: Array<Record<string, unknown>> };
+    const list = Array.isArray(body.deals) ? body.deals : [];
+    if (list.length === 0) {
+      res.status(400).json({ ok: false, error: "deals[] required" });
+      return;
+    }
+    let upserted = 0;
+    for (const d of list) {
+      const id = String(d?.id ?? "").trim();
+      const dealname = String(d?.dealname ?? "").trim();
+      const dealstage = String(d?.dealstage ?? "").trim();
+      if (!id || !dealname || !dealstage) continue;
+      const amountUsd = typeof d?.amount_usd === "number" ? d.amount_usd : null;
+      const closeDate = typeof d?.close_date === "string" ? d.close_date : null;
+      const upd = await db.execute(sql`
+        UPDATE agnb.hubspot_deals
+        SET dealname = ${dealname}, dealstage = ${dealstage},
+            amount_usd = COALESCE(${amountUsd}, amount_usd),
+            close_date = COALESCE(${closeDate}::timestamptz, close_date)
+        WHERE id = ${id}
+        RETURNING id
+      `);
+      if (rows(upd).length === 0) {
+        await db.execute(sql`
+          INSERT INTO agnb.hubspot_deals (id, dealname, dealstage, amount_usd, close_date)
+          VALUES (${id}, ${dealname}, ${dealstage}, ${amountUsd}, ${closeDate}::timestamptz)
+        `);
+      }
+      upserted++;
+    }
+    res.json({ ok: true, upserted });
+  });
 }
