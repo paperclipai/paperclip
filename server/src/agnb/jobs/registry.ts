@@ -20,6 +20,7 @@ import { backlinkHealth } from "./backlink-health.js";
 import { linkStrength } from "./link-strength.js";
 // Analytics / daily family
 import { posthogSync } from "./posthog-sync.js";
+import { hubspotDealsSync } from "./hubspot-deals-sync.js";
 import { dailyBrief } from "./daily-brief.js";
 import { dailyDigest } from "./daily-digest.js";
 import { notificationDispatcher } from "./notification-dispatcher.js";
@@ -61,7 +62,8 @@ export const AGNB_JOBS: AgnbJobDef[] = [
   { key: "backlink-prospector", intervalMs: 1 * DAY, handler: backlinkProspector, requiresEnv: ["GEMINI_API_KEY"], enabledByDefault: true },
   { key: "backlink-health", intervalMs: 6 * HOUR, handler: backlinkHealth, enabledByDefault: true },
   { key: "link-strength", intervalMs: 1 * DAY, handler: linkStrength, enabledByDefault: true },
-  { key: "posthog-sync", intervalMs: 1 * HOUR, handler: posthogSync, enabledByDefault: true },
+  { key: "posthog-sync", intervalMs: 1 * HOUR, handler: posthogSync, requiresEnv: ["POSTHOG_PROJECT_ID", "POSTHOG_PERSONAL_API_KEY"], enabledByDefault: true },
+  { key: "hubspot-deals-sync", intervalMs: 1 * HOUR, handler: hubspotDealsSync, requiresEnv: ["HUBSPOT_TOKEN"], enabledByDefault: true },
   { key: "daily-brief", intervalMs: 1 * DAY, handler: dailyBrief, enabledByDefault: true },
   { key: "daily-digest", intervalMs: 1 * DAY, handler: dailyDigest, enabledByDefault: true },
   { key: "renewal-reminders", intervalMs: 1 * DAY, handler: renewalReminders, enabledByDefault: true },
