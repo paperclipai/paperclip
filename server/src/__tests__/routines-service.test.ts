@@ -223,7 +223,13 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(allRoutines.map((entry) => entry.id)).toEqual(expect.arrayContaining([routine.id, otherRoutine.id]));
   });
 
-  it("creates a fresh execution issue when the previous routine issue is open but idle", async () => {
+  it("coalesces with the existing execution issue when the previous routine issue is open but has no live run (BUY-22791)", async () => {
+    // Scenario: a routine run completed (status="issue_created") but the resulting issue
+    // is still open ("todo") — no live heartbeat run is bound to it. Under
+    // coalesce_if_active / skip_if_active the scheduler must reuse that open issue
+    // instead of creating a duplicate dispatch. Previously findLiveExecutionIssue()
+    // missed this case and created a second issue, causing "Agent is not invokable"
+    // errors when the assignee was at maxConcurrentRuns=1.
     const { companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();
     const previousIssue = await issueSvc.create(companyId, {
@@ -250,12 +256,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       completedAt: new Date("2026-03-20T12:00:00.000Z"),
     });
 
+    // After the fix: the open routine issue (no live run) is surfaced as activeIssue.
     const detailBefore = await svc.getDetail(routine.id);
-    expect(detailBefore?.activeIssue).toBeNull();
+    expect(detailBefore?.activeIssue).not.toBeNull();
+    expect(detailBefore?.activeIssue?.id).toBe(previousIssue.id);
 
+    // New dispatch should coalesce into the existing open issue, not create a second one.
     const run = await svc.runRoutine(routine.id, { source: "manual" });
-    expect(run.status).toBe("issue_created");
-    expect(run.linkedIssueId).not.toBe(previousIssue.id);
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
 
     const routineIssues = await db
       .select({
@@ -265,9 +274,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .from(issues)
       .where(eq(issues.originId, routine.id));
 
-    expect(routineIssues).toHaveLength(2);
-    expect(routineIssues.map((issue) => issue.id)).toContain(previousIssue.id);
-    expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
+    expect(routineIssues).toHaveLength(1);
+    expect(routineIssues[0].id).toBe(previousIssue.id);
   });
 
   it("creates draft routines without a project or default assignee", async () => {
