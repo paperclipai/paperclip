@@ -10,6 +10,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { ActivityRow } from "../components/ActivityRow";
+import { SectionErrorBoundary } from "../components/SectionErrorBoundary";
 import { PageSkeleton } from "../components/PageSkeleton";
 import {
   Select,
@@ -144,14 +145,15 @@ export function Activity() {
       {filtered && filtered.length > 0 && (
         <div className="border border-border divide-y divide-border">
           {filtered.map((event) => (
-            <ActivityRow
-              key={event.id}
-              event={event}
-              agentMap={agentMap}
-              userProfileMap={userProfileMap}
-              entityNameMap={entityNameMap}
-              entityTitleMap={entityTitleMap}
-            />
+            <SectionErrorBoundary key={event.id} label="Activity row" resetKey={event.id} fallback={null}>
+              <ActivityRow
+                event={event}
+                agentMap={agentMap}
+                userProfileMap={userProfileMap}
+                entityNameMap={entityNameMap}
+                entityTitleMap={entityTitleMap}
+              />
+            </SectionErrorBoundary>
           ))}
         </div>
       )}

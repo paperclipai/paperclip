@@ -77,6 +77,7 @@ import { IssueReferenceActivitySummary } from "../components/IssueReferenceActiv
 import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
 import { IssueMonitorActivityCard } from "../components/IssueMonitorActivityCard";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
+import { SectionErrorBoundary } from "../components/SectionErrorBoundary";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
@@ -3913,24 +3914,26 @@ export function IssueDetail() {
 
         <TabsContent value="activity">
           {detailTab === "activity" ? (
-            <IssueDetailActivityTab
-              issue={issue}
-              issueId={issue.id}
-              companyId={issue.companyId}
-              issueStatus={issue.status}
-              childIssues={childIssues}
-              agentMap={agentMap}
-              hasLiveRuns={hasLiveRuns}
-              currentUserId={currentUserId}
-              userProfileMap={userProfileMap}
-              pendingApprovalAction={pendingApprovalAction}
-              handoffFocusSignal={handoffFocusSignal}
-              onApprovalAction={(approvalId, action) => {
-                approvalDecision.mutate({ approvalId, action });
-              }}
-              onCheckMonitorNow={() => checkIssueMonitorNow.mutate()}
-              checkingMonitorNow={checkIssueMonitorNow.isPending}
-            />
+            <SectionErrorBoundary label="Activity" resetKey={issue.id}>
+              <IssueDetailActivityTab
+                issue={issue}
+                issueId={issue.id}
+                companyId={issue.companyId}
+                issueStatus={issue.status}
+                childIssues={childIssues}
+                agentMap={agentMap}
+                hasLiveRuns={hasLiveRuns}
+                currentUserId={currentUserId}
+                userProfileMap={userProfileMap}
+                pendingApprovalAction={pendingApprovalAction}
+                handoffFocusSignal={handoffFocusSignal}
+                onApprovalAction={(approvalId, action) => {
+                  approvalDecision.mutate({ approvalId, action });
+                }}
+                onCheckMonitorNow={() => checkIssueMonitorNow.mutate()}
+                checkingMonitorNow={checkIssueMonitorNow.isPending}
+              />
+            </SectionErrorBoundary>
           ) : null}
         </TabsContent>
 
