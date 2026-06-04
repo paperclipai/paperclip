@@ -1,0 +1,1 @@
+CREATE INDEX "issues_company_created_by_agent_idx" ON "issues" USING btree ("company_id","created_by_agent_id","parent_id","created_at");

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -3653,6 +3653,46 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
+
+    // Duplicate-issue guard: reject same-agent same-parent same-title creates within the dedup window.
+    if (actor.agentId) {
+      const windowSeconds = Math.max(1, parseInt(process.env["PAPERCLIP_DEDUP_WINDOW_SECONDS"] ?? "30", 10) || 30);
+      const since = new Date(Date.now() - windowSeconds * 1000);
+      const normalizedIncoming = String(req.body.title ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+      const parentId: string | null = req.body.parentId ?? null;
+
+      const candidates = await db
+        .select({ id: issueRows.id, identifier: issueRows.identifier, title: issueRows.title, createdAt: issueRows.createdAt })
+        .from(issueRows)
+        .where(
+          and(
+            eq(issueRows.companyId, companyId),
+            eq(issueRows.createdByAgentId, actor.agentId),
+            parentId ? eq(issueRows.parentId, parentId) : isNull(issueRows.parentId),
+            inArray(issueRows.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+            gte(issueRows.createdAt, since),
+          ),
+        )
+        .limit(20);
+
+      const match = candidates.find(
+        (c) => c.title.trim().replace(/\s+/g, " ").toLowerCase() === normalizedIncoming,
+      );
+      if (match) {
+        const ageSec = Math.round((Date.now() - match.createdAt.getTime()) / 1000);
+        logger.warn(
+          `[dedup-guard] Rejected duplicate issue creation: agent=${actor.agentId} title=${req.body.title} existingId=${match.id} window=${windowSeconds}s`,
+        );
+        res.status(409).json({
+          error: "duplicate_issue",
+          existingIssueId: match.id,
+          existingIssueIdentifier: match.identifier,
+          message: `An issue with this title under the same parent was created ${ageSec}s ago by the same agent`,
+        });
+        return;
+      }
+    }
+
     const executionPolicy = applyActorMonitorScheduledBy(
       normalizeIssueExecutionPolicy(req.body.executionPolicy),
       actor.actorType,
