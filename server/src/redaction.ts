@@ -1,7 +1,7 @@
 import { redactCommandText } from "@paperclipai/adapter-utils";
 
 const SECRET_FIELD_NAME_PATTERN =
-  String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*`;
+  String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring|database[-_]?url|db[-_]?url|dsn)[A-Za-z0-9_-]*`;
 
 const SECRET_PAYLOAD_KEY_RE = new RegExp(SECRET_FIELD_NAME_PATTERN, "i");
 const COMMAND_PAYLOAD_KEY_RE =
@@ -17,6 +17,12 @@ const ESCAPED_JSON_SECRET_FIELD_TEXT_RE = new RegExp(
   String.raw`((?:\\")?${SECRET_FIELD_NAME_PATTERN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
   "gi",
 );
+const SECRET_ENV_NAME_RE = new RegExp(
+  String.raw`^(?:${SECRET_FIELD_NAME_PATTERN}|DATABASE_URL|HELP2DAY_QA_BYPASS_TOKEN|PAPERCLIP_API_KEY)$`,
+  "i",
+);
+const SECRET_ENV_ASSIGNMENT_LINE_RE =
+  /^([ \t]*(?:export[ \t]+|declare[ \t]+-x[ \t]+)?)([A-Za-z_][A-Za-z0-9_]*)(=)(.*)$/;
 const SECRET_TEXT_HINTS = [
   "api",
   "key",
@@ -30,6 +36,10 @@ const SECRET_TEXT_HINTS = [
   "private",
   "cookie",
   "connectionstring",
+  "database_url",
+  "db_url",
+  "postgres://",
+  "postgresql://",
   "sk-",
   "ghp_",
   "gho_",
@@ -52,6 +62,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function sanitizeValue(value: unknown): unknown {
   if (value === null || value === undefined) return value;
+  if (typeof value === "string") return redactSensitiveText(value);
   if (Array.isArray(value)) return value.map(sanitizeValue);
   if (isSecretRefBinding(value)) return value;
   if (isPlainBinding(value)) return { type: "plain", value: sanitizeValue(value.value) };
@@ -123,10 +134,28 @@ export function redactEventPayload(payload: Record<string, unknown> | null): Rec
   return sanitizeRecord(payload);
 }
 
+export function redactSensitiveValue<T>(value: T): T {
+  return sanitizeValue(value) as T;
+}
+
+function redactSecretBearingEnvAssignments(input: string): string {
+  return input
+    .split(/(\r?\n)/)
+    .map((line) => {
+      if (line === "\n" || line === "\r\n") return line;
+      const match = line.match(SECRET_ENV_ASSIGNMENT_LINE_RE);
+      if (!match) return line;
+      const [, prefix, name, equals] = match;
+      if (!SECRET_ENV_NAME_RE.test(name)) return line;
+      return `${prefix}${name}${equals}${REDACTED_EVENT_VALUE}`;
+    })
+    .join("");
+}
+
 export function redactSensitiveText(input: string): string {
   if (!maybeContainsSecretText(input)) return input;
   return redactCommandText(
-    input
+    redactSecretBearingEnvAssignments(input)
       .replace(JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
       .replace(ESCAPED_JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`),
     REDACTED_EVENT_VALUE,

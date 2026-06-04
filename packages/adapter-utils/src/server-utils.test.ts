@@ -9,6 +9,7 @@ import {
   buildPersistentSkillSnapshot,
   buildRuntimeMountedSkillSnapshot,
   buildInvocationEnvForLogs,
+  createRuntimeSecretValueStreamRedactor,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
@@ -64,6 +65,25 @@ describe("buildInvocationEnvForLogs", () => {
     expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
       "env OPENAI_API_KEY=***REDACTED*** PAPERCLIP_API_KEY='***REDACTED***' custom-acp --paperclip-api-key=***REDACTED*** --token ***REDACTED***",
     );
+  });
+});
+
+describe("createRuntimeSecretValueStreamRedactor", () => {
+  it("redacts runtime secret values even when a curl auth header spans chunks", () => {
+    const redactor = createRuntimeSecretValueStreamRedactor({
+      PAPERCLIP_API_KEY: "paperclipRuntimeSecretValue",
+      SAFE_VALUE: "visible",
+    });
+
+    const output = [
+      redactor.push('header = "Authorization: Bearer paperclipRuntime'),
+      redactor.push('SecretValue"\nSAFE_VALUE=visible\n'),
+      redactor.flush(),
+    ].join("");
+
+    expect(output).toContain('header = "Authorization: Bearer ***REDACTED***"');
+    expect(output).toContain("SAFE_VALUE=visible");
+    expect(output).not.toContain("paperclipRuntimeSecretValue");
   });
 });
 

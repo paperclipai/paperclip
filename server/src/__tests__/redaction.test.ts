@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_EVENT_VALUE, redactEventPayload, redactSensitiveText, sanitizeRecord } from "../redaction.js";
+import {
+  REDACTED_EVENT_VALUE,
+  redactEventPayload,
+  redactSensitiveText,
+  redactSensitiveValue,
+  sanitizeRecord,
+} from "../redaction.js";
 
 describe("redaction", () => {
   it("redacts sensitive keys and nested secret values", () => {
@@ -87,6 +93,47 @@ describe("redaction", () => {
     expect(result).not.toContain("paperclip-shell-secret");
     expect(result).not.toContain(githubToken);
     expect(result).not.toContain(jwt);
+  });
+
+  it("redacts secret-bearing environment assignment lines from env dumps", () => {
+    const input = [
+      "DATABASE_URL=postgres://fixture-user:fixture-pass@db.example.invalid/paperclip",
+      "PAPERCLIP_API_KEY=fixture-paperclip-api-key",
+      "HELP2DAY_QA_BYPASS_TOKEN=fixture-help2day-bypass-token",
+      "AWS_REGION=us-east-1",
+    ].join("\n");
+
+    const result = redactSensitiveText(input);
+
+    expect(result).toContain(`DATABASE_URL=${REDACTED_EVENT_VALUE}`);
+    expect(result).toContain(`PAPERCLIP_API_KEY=${REDACTED_EVENT_VALUE}`);
+    expect(result).toContain(`HELP2DAY_QA_BYPASS_TOKEN=${REDACTED_EVENT_VALUE}`);
+    expect(result).toContain("AWS_REGION=us-east-1");
+    expect(result).not.toContain("fixture-pass");
+    expect(result).not.toContain("fixture-paperclip-api-key");
+    expect(result).not.toContain("fixture-help2day-bypass-token");
+  });
+
+  it("recursively redacts text fields that carry env dump output", () => {
+    const result = redactSensitiveValue({
+      stdout: [
+        "DATABASE_URL=postgres://fixture-user:fixture-pass@db.example.invalid/paperclip",
+        "PAPERCLIP_API_KEY=fixture-paperclip-api-key",
+      ].join("\n"),
+      nested: {
+        HELP2DAY_QA_BYPASS_TOKEN: "fixture-help2day-bypass-token",
+        safe: "ok",
+      },
+    });
+
+    expect(result.stdout).toContain(`DATABASE_URL=${REDACTED_EVENT_VALUE}`);
+    expect(result.stdout).toContain(`PAPERCLIP_API_KEY=${REDACTED_EVENT_VALUE}`);
+    expect(result.stdout).not.toContain("fixture-pass");
+    expect(result.stdout).not.toContain("fixture-paperclip-api-key");
+    expect(result.nested).toEqual({
+      HELP2DAY_QA_BYPASS_TOKEN: REDACTED_EVENT_VALUE,
+      safe: "ok",
+    });
   });
 
   it("redacts inline secrets from command metadata without hiding safe command text", () => {

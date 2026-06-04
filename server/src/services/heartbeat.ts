@@ -160,7 +160,12 @@ import {
   redactCurrentUserValue,
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
-import { REDACTED_EVENT_VALUE, redactEventPayload, redactSensitiveText } from "../redaction.js";
+import {
+  REDACTED_EVENT_VALUE,
+  redactEventPayload,
+  redactSensitiveText,
+  redactSensitiveValue,
+} from "../redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -1076,6 +1081,10 @@ export function compactRunLogChunk(
   const omittedChars = Math.max(0, normalized.length - headChars - tailChars);
   const marker = `\n[paperclip truncated run log chunk: omitted ${omittedChars} chars]\n`;
   return `${normalized.slice(0, headChars)}${marker}${normalized.slice(normalized.length - tailChars)}`;
+}
+
+export function sanitizeAdapterResultJsonForStorage(resultJson: AdapterExecutionResult["resultJson"] | null) {
+  return resultJson == null ? null : redactSensitiveValue(resultJson);
 }
 
 function normalizeMaxConcurrentRuns(value: unknown) {
@@ -6163,7 +6172,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
+      const wakeReason = readNonEmptyString(context.wakeReason);
+      const allowsBlockedSourceRecoveryWake = wakeReason === "source_scoped_recovery_action";
+      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context) && !allowsBlockedSourceRecoveryWake) {
         await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
         logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
         return null;
@@ -8309,7 +8320,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         mergeRunStopMetadataForAgent(agent, outcome, {
           resultJson: mergeModelProfileRunMetadata(
             mergeAdapterRecoveryMetadata({
-              resultJson: adapterResult.resultJson ?? null,
+              resultJson: sanitizeAdapterResultJsonForStorage(adapterResult.resultJson ?? null),
               errorFamily: adapterResult.errorFamily ?? null,
               retryNotBefore: adapterResult.retryNotBefore ?? null,
             }),

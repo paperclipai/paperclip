@@ -83,6 +83,7 @@ const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
 const PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 const REDACTED_LOG_VALUE = "***REDACTED***";
+const MIN_RUNTIME_SECRET_REDACTION_LENGTH = 8;
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
@@ -899,6 +900,69 @@ export function redactEnvForLogs(env: Record<string, string>): Record<string, st
 
 export function redactCommandTextForLogs(command: string): string {
   return redactCommandText(command, REDACTED_LOG_VALUE);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function collectRuntimeSecretValues(env: Record<string, string>): string[] {
+  return [
+    ...new Set(
+      Object.entries(env)
+        .filter(([key]) => SENSITIVE_ENV_KEY.test(key))
+        .map(([, value]) => value.trim())
+        .filter((value) => value.length >= MIN_RUNTIME_SECRET_REDACTION_LENGTH),
+    ),
+  ].sort((a, b) => b.length - a.length);
+}
+
+export function redactRuntimeSecretValues(
+  text: string,
+  env: Record<string, string>,
+  redactedValue = REDACTED_LOG_VALUE,
+): string {
+  if (!text) return text;
+  const secretValues = collectRuntimeSecretValues(env);
+  if (secretValues.length === 0) return text;
+
+  let redacted = text;
+  for (const value of secretValues) {
+    redacted = redacted.replace(new RegExp(escapeRegExp(value), "g"), redactedValue);
+  }
+  return redacted;
+}
+
+export function createRuntimeSecretValueStreamRedactor(
+  env: Record<string, string>,
+  redactedValue = REDACTED_LOG_VALUE,
+) {
+  const secretValues = collectRuntimeSecretValues(env);
+  const maxSecretLength = secretValues.reduce((max, value) => Math.max(max, value.length), 0);
+  let pending = "";
+
+  const redact = (text: string) => {
+    let redacted = text;
+    for (const value of secretValues) {
+      redacted = redacted.replace(new RegExp(escapeRegExp(value), "g"), redactedValue);
+    }
+    return redacted;
+  };
+
+  return {
+    push(chunk: string): string {
+      if (secretValues.length === 0) return chunk;
+      const combined = redact(pending + chunk);
+      const keepLength = Math.min(Math.max(0, maxSecretLength - 1), combined.length);
+      pending = keepLength > 0 ? combined.slice(-keepLength) : "";
+      return keepLength > 0 ? combined.slice(0, -keepLength) : combined;
+    },
+    flush(): string {
+      const flushed = pending;
+      pending = "";
+      return flushed;
+    },
+  };
 }
 
 export function buildInvocationEnvForLogs(
@@ -2112,6 +2176,8 @@ export async function runChildProcess(
     }
 
     const mergedEnv = ensurePathInEnv(rawMerged);
+    const stdoutRedactor = createRuntimeSecretValueStreamRedactor(mergedEnv);
+    const stderrRedactor = createRuntimeSecretValueStreamRedactor(mergedEnv);
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
       remoteExecution: opts.remoteExecution ?? null,
       remoteEnv: opts.remoteExecution ? opts.env : null,
@@ -2205,7 +2271,11 @@ export async function runChildProcess(
           const readable = child.stdout;
           if (!readable) return;
           readable.pause();
-          const text = String(chunk);
+          const text = stdoutRedactor.push(String(chunk));
+          if (!text) {
+            resumeReadable(readable);
+            return;
+          }
           stdout = appendWithCap(stdout, text);
           maybeArmTerminalResultCleanup();
           logChain = logChain
@@ -2221,7 +2291,11 @@ export async function runChildProcess(
           const readable = child.stderr;
           if (!readable) return;
           readable.pause();
-          const text = String(chunk);
+          const text = stderrRedactor.push(String(chunk));
+          if (!text) {
+            resumeReadable(readable);
+            return;
+          }
           stderr = appendWithCap(stderr, text);
           maybeArmTerminalResultCleanup();
           logChain = logChain
@@ -2264,6 +2338,21 @@ export async function runChildProcess(
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
+          const flushedStdout = stdoutRedactor.flush();
+          if (flushedStdout) {
+            stdout = appendWithCap(stdout, flushedStdout);
+            logChain = logChain
+              .then(() => opts.onLog("stdout", flushedStdout))
+              .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"));
+          }
+          const flushedStderr = stderrRedactor.flush();
+          if (flushedStderr) {
+            stderr = appendWithCap(stderr, flushedStderr);
+            logChain = logChain
+              .then(() => opts.onLog("stderr", flushedStderr))
+              .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"));
+          }
+          maybeArmTerminalResultCleanup();
           void logChain.finally(() => {
             void Promise.resolve()
               .then(() => target.cleanup?.())
