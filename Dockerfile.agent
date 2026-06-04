@@ -61,6 +61,19 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends python3-pip python3-venv python3-dev \
   && rm -rf /var/lib/apt/lists/*
 
+# Java runtime (BLO-4469 / BLO-1446) — shaka-player's `build/all.py` compiles
+# the Shaka MSF bundle with the Closure Compiler, a Java JAR, and probes
+# `java -version` (build/compiler.py:_get_java_major_version) at bootstrap;
+# without a JRE an agent rebuilding public/shaka-player.compiled.js fails on
+# the first step. Headless OpenJDK only — agents run the Closure JAR, not a
+# desktop JVM. Karma browser tests (build/test.py) still drive the remote-CDP
+# browser seam (agent-browser / CCROTATE_DESIGNER_LEASE_HOST), so no Chrome is
+# bundled here — that stays a deliberate non-goal of this image.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends default-jre-headless \
+  && rm -rf /var/lib/apt/lists/* \
+  && java -version
+
 # ---------------------------------------------------------------------------
 # Container + cluster tooling
 # ---------------------------------------------------------------------------
