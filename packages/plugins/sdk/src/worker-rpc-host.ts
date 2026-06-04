@@ -419,8 +419,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       config: {
         async get(params) {
-          const companyId =
-            params?.companyId ?? runtimeCompanyContext.getStore()?.companyId ?? null;
+          if (params && "companyId" in params) {
+            return callHost("config.get", { companyId: params.companyId ?? null });
+          }
+          const companyId = runtimeCompanyContext.getStore()?.companyId ?? null;
           return callHost("config.get", companyId ? { companyId } : {});
         },
       },
@@ -572,7 +574,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       secrets: {
         async resolve(secretRef: string, companyId?: string | null): Promise<string> {
-          const scopedCompanyId = companyId ?? runtimeCompanyContext.getStore()?.companyId ?? null;
+          const scopedCompanyId = arguments.length >= 2
+            ? companyId ?? null
+            : runtimeCompanyContext.getStore()?.companyId ?? null;
           return callHost("secrets.resolve", { secretRef, companyId: scopedCompanyId });
         },
       },

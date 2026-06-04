@@ -355,65 +355,163 @@ describe("startWorkerRpcHost runtime company context", () => {
 
     const host = startWorkerRpcHost({ plugin, stdin, stdout });
 
-    writeMessage(stdin, {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "initialize",
-      params: {
-        manifest: { id: "test-plugin", name: "test-plugin", version: "1.0.0" },
-        config: {},
-        instanceInfo: { instanceId: "inst-1", hostVersion: "0.0.0-test" },
-        apiVersion: 1,
-      },
-    });
-    await expect(nextMessage()).resolves.toMatchObject({ id: 1, result: { ok: true } });
-
-    writeMessage(stdin, {
-      jsonrpc: "2.0",
-      id: 2,
-      method: "executeTool",
-      params: {
-        toolName: "check-context",
-        parameters: {},
-        runContext: {
-          agentId: "agent-1",
-          runId: "run-1",
-          companyId: "company-1",
-          projectId: "project-1",
+    try {
+      writeMessage(stdin, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          manifest: { id: "test-plugin", name: "test-plugin", version: "1.0.0" },
+          config: {},
+          instanceInfo: { instanceId: "inst-1", hostVersion: "0.0.0-test" },
+          apiVersion: 1,
         },
+      });
+      await expect(nextMessage()).resolves.toMatchObject({ id: 1, result: { ok: true } });
+
+      writeMessage(stdin, {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "executeTool",
+        params: {
+          toolName: "check-context",
+          parameters: {},
+          runContext: {
+            agentId: "agent-1",
+            runId: "run-1",
+            companyId: "company-1",
+            projectId: "project-1",
+          },
+        },
+      });
+
+      const configRequest = await nextMessage();
+      expect(configRequest).toMatchObject({
+        method: "config.get",
+        params: { companyId: "company-1" },
+      });
+      writeMessage(stdin, {
+        jsonrpc: "2.0",
+        id: configRequest.id,
+        result: { mode: "company-config" },
+      });
+
+      const secretRequest = await nextMessage();
+      expect(secretRequest).toMatchObject({
+        method: "secrets.resolve",
+        params: {
+          secretRef: "77777777-7777-4777-8777-777777777777",
+          companyId: "company-1",
+        },
+      });
+      writeMessage(stdin, {
+        jsonrpc: "2.0",
+        id: secretRequest.id,
+        result: "company-secret",
+      });
+
+      await expect(nextMessage()).resolves.toMatchObject({
+        id: 2,
+        result: { content: "company-config:company-secret" },
+      });
+    } finally {
+      host.stop();
+      stdin.destroy();
+      stdout.destroy();
+    }
+  });
+
+  it("preserves explicit null company context in config and secret host calls", async () => {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const nextMessage = collectJsonLines(stdout);
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.tools.register(
+          "check-explicit-null",
+          {
+            displayName: "Check Explicit Null",
+            description: "Checks explicit null runtime context propagation",
+            parametersSchema: { type: "object", properties: {} },
+          },
+          async () => {
+            const config = await ctx.config.get({ companyId: null });
+            const token = await ctx.secrets.resolve(
+              "77777777-7777-4777-8777-777777777777",
+              null,
+            );
+            return { content: `${config.mode}:${token}` };
+          },
+        );
       },
     });
 
-    const configRequest = await nextMessage();
-    expect(configRequest).toMatchObject({
-      method: "config.get",
-      params: { companyId: "company-1" },
-    });
-    writeMessage(stdin, {
-      jsonrpc: "2.0",
-      id: configRequest.id,
-      result: { mode: "company-config" },
-    });
+    const host = startWorkerRpcHost({ plugin, stdin, stdout });
 
-    const secretRequest = await nextMessage();
-    expect(secretRequest).toMatchObject({
-      method: "secrets.resolve",
-      params: {
-        secretRef: "77777777-7777-4777-8777-777777777777",
-        companyId: "company-1",
-      },
-    });
-    writeMessage(stdin, {
-      jsonrpc: "2.0",
-      id: secretRequest.id,
-      result: "company-secret",
-    });
+    try {
+      writeMessage(stdin, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          manifest: { id: "test-plugin", name: "test-plugin", version: "1.0.0" },
+          config: {},
+          instanceInfo: { instanceId: "inst-1", hostVersion: "0.0.0-test" },
+          apiVersion: 1,
+        },
+      });
+      await expect(nextMessage()).resolves.toMatchObject({ id: 1, result: { ok: true } });
 
-    await expect(nextMessage()).resolves.toMatchObject({
-      id: 2,
-      result: { content: "company-config:company-secret" },
-    });
+      writeMessage(stdin, {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "executeTool",
+        params: {
+          toolName: "check-explicit-null",
+          parameters: {},
+          runContext: {
+            agentId: "agent-1",
+            runId: "run-1",
+            companyId: "company-1",
+            projectId: "project-1",
+          },
+        },
+      });
 
-    host.stop();
+      const configRequest = await nextMessage();
+      expect(configRequest).toMatchObject({
+        method: "config.get",
+        params: { companyId: null },
+      });
+      writeMessage(stdin, {
+        jsonrpc: "2.0",
+        id: configRequest.id,
+        result: { mode: "global-config" },
+      });
+
+      const secretRequest = await nextMessage();
+      expect(secretRequest).toMatchObject({
+        method: "secrets.resolve",
+        params: {
+          secretRef: "77777777-7777-4777-8777-777777777777",
+          companyId: null,
+        },
+      });
+      writeMessage(stdin, {
+        jsonrpc: "2.0",
+        id: secretRequest.id,
+        result: "global-secret",
+      });
+
+      await expect(nextMessage()).resolves.toMatchObject({
+        id: 2,
+        result: { content: "global-config:global-secret" },
+      });
+    } finally {
+      host.stop();
+      stdin.destroy();
+      stdout.destroy();
+    }
   });
 });

@@ -2169,23 +2169,24 @@ export function pluginRoutes(
       res.status(400).json({ error: '"configJson" is required and must be an object' });
       return;
     }
+    const configJson = body.configJson;
     const companyId = resolvePluginConfigCompanyId(req);
 
     // Strip devUiUrl unless the caller is an instance admin. devUiUrl activates
     // a dev-proxy in the static file route that could be abused for SSRF if any
     // board-level user were allowed to set it.
     if (
-      "devUiUrl" in body.configJson &&
+      "devUiUrl" in configJson &&
       !(req.actor.type === "board" && req.actor.isInstanceAdmin)
     ) {
-      delete body.configJson.devUiUrl;
+      delete configJson.devUiUrl;
     }
 
     // Validate configJson against the plugin's instanceConfigSchema (if declared).
     // This ensures CLI/API callers get the same validation the UI performs client-side.
     const schema = plugin.manifestJson?.instanceConfigSchema;
     if (schema && Object.keys(schema).length > 0) {
-      const validation = validateInstanceConfig(body.configJson, schema);
+      const validation = validateInstanceConfig(configJson, schema);
       if (!validation.valid) {
         res.status(400).json({
           error: "Configuration does not match the plugin's instanceConfigSchema",
@@ -2196,30 +2197,45 @@ export function pluginRoutes(
     }
 
     try {
-      const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
+      const secretRefsByPath = extractSecretRefPathsFromConfig(configJson, schema);
       if (secretRefsByPath.size > 0 && !companyId) {
         res.status(422).json({ error: "Plugin secret references require companyId" });
         return;
       }
-      if (companyId) {
-        const refs = [...secretRefsByPath.entries()].flatMap(([secretId, paths]) =>
-          [...paths].map((configPath) => ({ secretId, configPath })),
-        );
-        await secrets.syncSecretRefsForTarget(
-          companyId,
-          { targetType: "plugin", targetId: plugin.id },
-          refs,
-        );
-      }
-
-      const result = await registry.upsertConfig(plugin.id, {
-        configJson: body.configJson,
-      }, companyId);
+      const refs = [...secretRefsByPath.entries()].flatMap(([secretId, paths]) =>
+        [...paths].map((configPath) => ({ secretId, configPath })),
+      );
+      const persistConfig = async (
+        scopedSecrets: typeof secrets,
+        scopedRegistry: typeof registry,
+        secretDb?: Db,
+      ) => {
+        if (companyId) {
+          const target = { targetType: "plugin" as const, targetId: plugin.id };
+          if (secretDb) {
+            await scopedSecrets.syncSecretRefsForTarget(companyId, target, refs, { db: secretDb });
+          } else {
+            await scopedSecrets.syncSecretRefsForTarget(companyId, target, refs);
+          }
+        }
+        return scopedRegistry.upsertConfig(plugin.id, {
+          configJson,
+        }, companyId);
+      };
+      const result = typeof db.transaction === "function"
+        ? await db.transaction((tx) =>
+          persistConfig(
+            secretService(tx as unknown as Db),
+            pluginRegistryService(tx as unknown as Db),
+            tx as unknown as Db,
+          )
+        )
+        : await persistConfig(secrets, registry);
       await logPluginMutationActivity(req, "plugin.config.updated", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
         companyId,
-        configKeyCount: Object.keys(body.configJson).length,
+        configKeyCount: Object.keys(configJson).length,
       });
 
       // Only legacy/global config is still pushed into the process-global worker state.
@@ -2229,7 +2245,7 @@ export function pluginRoutes(
           await bridgeDeps.workerManager.call(
             plugin.id,
             "configChanged",
-            { config: body.configJson },
+            { config: configJson },
           );
         } catch (rpcErr) {
           if (

@@ -2034,6 +2034,7 @@ export function secretService(db: Db) {
         required?: boolean;
         label?: string | null;
       }>,
+      options?: { db?: SecretBindingDb },
     ) => {
       const normalizedRefs: Array<{
         secretId: string;
@@ -2042,8 +2043,9 @@ export function secretService(db: Db) {
         required: boolean;
         label: string | null;
       }> = [];
+      const bindingDb = options?.db ?? db;
       for (const ref of refs) {
-        await assertSecretInCompany(companyId, ref.secretId);
+        await assertSecretInCompany(companyId, ref.secretId, bindingDb);
         normalizedRefs.push({
           secretId: ref.secretId,
           configPath: ref.configPath,
@@ -2055,10 +2057,10 @@ export function secretService(db: Db) {
 
       const pathPrefixes = [...new Set(normalizedRefs.map((ref) => ref.configPath.split(".")[0]))];
 
-      await db.transaction(async (tx) => {
+      const writeBindings = async (targetDb: SecretBindingDb) => {
         if (pathPrefixes.length > 0) {
           for (const pathPrefix of pathPrefixes) {
-            await tx
+            await targetDb
               .delete(companySecretBindings)
               .where(
                 and(
@@ -2070,7 +2072,7 @@ export function secretService(db: Db) {
               );
           }
         } else {
-          await tx
+          await targetDb
             .delete(companySecretBindings)
             .where(
               and(
@@ -2081,7 +2083,7 @@ export function secretService(db: Db) {
             );
         }
         if (normalizedRefs.length === 0) return;
-        await tx.insert(companySecretBindings).values(
+        await targetDb.insert(companySecretBindings).values(
           normalizedRefs.map((ref) => ({
             companyId,
             secretId: ref.secretId,
@@ -2093,7 +2095,13 @@ export function secretService(db: Db) {
             label: ref.label,
           })),
         );
-      });
+      };
+
+      if (options?.db) {
+        await writeBindings(options.db);
+      } else {
+        await db.transaction(async (tx) => writeBindings(tx));
+      }
       return normalizedRefs;
     },
 
