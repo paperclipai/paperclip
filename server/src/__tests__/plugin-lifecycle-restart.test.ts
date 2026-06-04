@@ -126,4 +126,35 @@ describe("pluginLifecycleManager.restartWorker", () => {
     expect(started).toHaveBeenCalledTimes(1);
     expect(started).toHaveBeenCalledWith({ pluginId: "plugin-1", pluginKey: "example.plugin" });
   });
+
+  it("uses a late-bound runtime loader after bootstrap wiring completes", async () => {
+    mockRegistry.getById.mockResolvedValue(pluginRecord);
+    mockRegistry.updateStatus.mockResolvedValue(pluginRecord);
+
+    const { handle, workerManager } = makeWorkerManagerStub();
+    let runtimeLoader: Partial<PluginLoader> | undefined;
+    const lifecycle = pluginLifecycleManager(
+      {} as never,
+      {
+        resolveLoader: () => runtimeLoader as PluginLoader | undefined,
+        workerManager,
+      },
+    );
+
+    runtimeLoader = {
+      hasRuntimeServices: vi.fn().mockReturnValue(true) as PluginLoader["hasRuntimeServices"],
+      loadSingle: vi.fn().mockResolvedValue({
+        success: true,
+        plugin: pluginRecord,
+        registered: { worker: true, eventSubscriptions: 0, jobs: 0, webhooks: 0, tools: 0 },
+      }) as PluginLoader["loadSingle"],
+      unloadSingle: vi.fn().mockResolvedValue(undefined) as PluginLoader["unloadSingle"],
+    };
+
+    await lifecycle.restartWorker("plugin-1");
+
+    expect(runtimeLoader.unloadSingle).toHaveBeenCalledWith("plugin-1", "example.plugin");
+    expect(runtimeLoader.loadSingle).toHaveBeenCalledWith("plugin-1");
+    expect(handle.restart).not.toHaveBeenCalled();
+  });
 });

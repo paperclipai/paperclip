@@ -242,7 +242,11 @@ export async function createApp(
   const eventBus = createPluginEventBus();
   setPluginEventBus(eventBus);
   const jobStore = pluginJobStore(db);
-  const lifecycle = pluginLifecycleManager(db, { workerManager });
+  let loader: ReturnType<typeof pluginLoader>;
+  const lifecycle = pluginLifecycleManager(db, {
+    workerManager,
+    resolveLoader: () => loader,
+  });
   const scheduler = createPluginJobScheduler({
     db,
     jobStore,
@@ -261,7 +265,7 @@ export async function createApp(
   });
   const hostServiceCleanup = createPluginHostServiceCleanup(lifecycle, hostServicesDisposers);
   let viteHtmlRenderer: ReturnType<typeof createCachedViteHtmlRenderer> | null = null;
-  const loader = pluginLoader(
+  loader = pluginLoader(
     db,
     {
       localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
