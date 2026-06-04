@@ -197,4 +197,43 @@ describeEmbeddedPostgres("recordSuccessfulRunDisposition", () => {
     const resolvedRows = await svc.list(companyId, { attention: "blocked" });
     expect(resolvedRows.find((entry) => entry.id === issueId)).toBeUndefined();
   });
+
+  it("does not treat the actor's own run as already-dispositioned (no row.runId fallback)", async () => {
+    // Regression: the resolved activity row stores the *actor* run in
+    // activityLog.runId and the dispositioned *source* run in details.sourceRunId.
+    // Dispositioning source run X via actor run R must NOT later report run R
+    // itself as already-dispositioned just because R authored X's resolution.
+    const { companyId, agentId } = await createCompany("DSC");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "DSC-1",
+      title: "Needs disposition",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    const sourceRunId = await insertRun({ companyId, agentId, issueId });
+    const actorRunId = await insertRun({ companyId, agentId, issueId });
+    await seedHandoffRequired({ companyId, agentId, issueId, sourceRunId });
+
+    // Disposition source run X, attributing the action to actor run R.
+    const first = await recordSuccessfulRunDisposition(db, {
+      companyId,
+      issueId,
+      runId: sourceRunId,
+      disposition: "done",
+      actor: { actorType: "agent", actorId: agentId, agentId, runId: actorRunId },
+    });
+    expect(first.alreadyDispositioned).toBe(false);
+
+    // Now a genuinely new disposition targeting the actor run R must be treated
+    // as fresh, not falsely short-circuited by a row.runId fallback.
+    const second = await recordSuccessfulRunDisposition(db, {
+      companyId,
+      issueId,
+      runId: actorRunId,
+      disposition: "done",
+      actor: { actorType: "user", actorId: "board", agentId: null, runId: null },
+    });
+    expect(second.alreadyDispositioned).toBe(false);
+  });
 });

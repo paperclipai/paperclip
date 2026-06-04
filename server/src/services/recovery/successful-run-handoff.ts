@@ -490,11 +490,16 @@ function dispositionAlreadyRecorded(
 ): boolean {
   for (const row of rows) {
     const details = row.details ?? {};
+    // Only match on the dispositioned *source* run recorded in details. Do NOT
+    // fall back to row.runId: that column stores the *actor* run that cleared the
+    // disposition, so matching it would falsely report a later disposition of the
+    // actor's own run as already-recorded. Every row written by
+    // recordSuccessfulRunDisposition always sets details.sourceRunId, so no
+    // fallback is needed for correctness.
     const detailRunId =
       (typeof details.sourceRunId === "string" ? details.sourceRunId : null)
       ?? (typeof details.source_run_id === "string" ? (details.source_run_id as string) : null)
       ?? (typeof details.resumeFromRunId === "string" ? (details.resumeFromRunId as string) : null)
-      ?? row.runId
       ?? null;
     if (detailRunId === sourceRunId) return true;
   }
