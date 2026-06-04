@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactRunLogChunk } from "../services/heartbeat.js";
+import { buildRunLogForbiddenValues, compactRunLogChunk } from "../services/heartbeat.js";
 
 describe("compactRunLogChunk", () => {
   it("redacts inline base64 image data from structured log chunks", () => {
@@ -37,5 +37,29 @@ describe("compactRunLogChunk", () => {
     expect(compacted).not.toContain("paperclip-shell-secret");
     expect(compacted).not.toContain("paperclip-json-secret");
     expect(compacted).not.toContain("paperclip-flag-secret");
+  });
+
+  it("redacts resolved secret env values from persisted run-log chunks while preserving normal output", () => {
+    const forbiddenValue = "ful7589SyntheticPlainEnvValueNoTokenShape";
+    const normalOutput = "normal output remains visible";
+    const forbiddenValues = buildRunLogForbiddenValues(
+      {
+        SECRET_ENV: forbiddenValue,
+        NORMAL_ENV: "normal-env-value",
+      },
+      new Set(["SECRET_ENV"]),
+    );
+    const chunk = [
+      normalOutput,
+      `bare=${forbiddenValue}`,
+      `json={"value":"${forbiddenValue}"}`,
+    ].join("\n");
+
+    const compacted = compactRunLogChunk(chunk, 16_384, forbiddenValues);
+
+    expect((compacted.match(new RegExp(forbiddenValue, "g")) ?? []).length).toBe(0);
+    expect(compacted).toContain("***REDACTED***");
+    expect(compacted).toContain(normalOutput);
+    expect(compacted).not.toContain("normal-env-value");
   });
 });

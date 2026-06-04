@@ -160,7 +160,7 @@ import {
   redactCurrentUserValue,
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
-import { redactEventPayload, redactSensitiveText } from "../redaction.js";
+import { REDACTED_EVENT_VALUE, redactEventPayload, redactSensitiveText } from "../redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -333,6 +333,7 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "pi_local",
 ]);
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
+const MIN_RUN_LOG_FORBIDDEN_VALUE_CHARS = 8;
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
@@ -1023,8 +1024,51 @@ function redactInlineBase64ImageData(chunk: string) {
   );
 }
 
-export function compactRunLogChunk(chunk: string, maxChars = MAX_PERSISTED_LOG_CHUNK_CHARS) {
-  const normalized = redactSensitiveText(redactInlineBase64ImageData(chunk));
+function uniqueForbiddenRunLogValues(values: Iterable<string>) {
+  return [...new Set(
+    [...values]
+      .map((value) => value.trim())
+      .filter((value) => value.length >= MIN_RUN_LOG_FORBIDDEN_VALUE_CHARS),
+  )].sort((left, right) => right.length - left.length);
+}
+
+function escapedJsonStringValue(value: string) {
+  return JSON.stringify(value).slice(1, -1);
+}
+
+export function buildRunLogForbiddenValues(
+  env: Record<string, string>,
+  secretKeys: Iterable<string>,
+) {
+  const values: string[] = [];
+  for (const key of secretKeys) {
+    const value = env[key];
+    if (typeof value !== "string") continue;
+    values.push(value);
+    const escaped = escapedJsonStringValue(value);
+    if (escaped !== value) values.push(escaped);
+  }
+  return uniqueForbiddenRunLogValues(values);
+}
+
+function redactForbiddenRunLogValues(chunk: string, forbiddenValues: readonly string[]) {
+  let redacted = chunk;
+  for (const value of forbiddenValues) {
+    if (!redacted.includes(value)) continue;
+    redacted = redacted.split(value).join(REDACTED_EVENT_VALUE);
+  }
+  return redacted;
+}
+
+export function compactRunLogChunk(
+  chunk: string,
+  maxChars = MAX_PERSISTED_LOG_CHUNK_CHARS,
+  forbiddenValues: readonly string[] = [],
+) {
+  const normalized = redactForbiddenRunLogValues(
+    redactSensitiveText(redactInlineBase64ImageData(chunk)),
+    forbiddenValues,
+  );
   if (normalized.length <= maxChars) return normalized;
 
   const headChars = Math.max(0, Math.floor(maxChars * 0.6));
@@ -7908,10 +7952,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(eq(heartbeatRuns.id, runId));
 
+      const adapterEnv = Object.fromEntries(
+        Object.entries(parseObject(resolvedConfig.env)).filter(
+          (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",
+        ),
+      );
+      const forbiddenRunLogValues = buildRunLogForbiddenValues(adapterEnv, secretKeys);
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
         const sanitizedChunk = compactRunLogChunk(
           redactCurrentUserText(chunk, currentUserRedactionOptions),
+          MAX_PERSISTED_LOG_CHUNK_CHARS,
+          forbiddenRunLogValues,
         );
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
@@ -7963,11 +8015,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const logEntry = formatRuntimeWorkspaceWarningLog(warning);
         await onLog(logEntry.stream, logEntry.chunk);
       }
-      const adapterEnv = Object.fromEntries(
-        Object.entries(parseObject(resolvedConfig.env)).filter(
-          (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",
-        ),
-      );
       const runtimeServices = await ensureRuntimeServicesForRun({
         db,
         runId: run.id,
