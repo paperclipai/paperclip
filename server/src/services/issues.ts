@@ -76,6 +76,7 @@ import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallbac
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import { ghFetch, gitHubApiBase } from "./github-fetch.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
@@ -100,6 +101,8 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
 const DELETED_ISSUE_COMMENT_BODY = "";
+const REPO_BACKED_TERMINAL_GATE_EXEMPTION_KIND = "repo_backed_terminal_state_gate";
+const REPO_BACKED_TERMINAL_GATE_CODE = "repo_backed_terminal_state_gate_failed";
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -129,6 +132,182 @@ function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+type RepoCoordinates = {
+  host: string;
+  owner: string;
+  repo: string;
+};
+
+function parseRepoCoordinates(rawUrl: string | null | undefined): RepoCoordinates | null {
+  const trimmed = rawUrl?.trim();
+  if (!trimmed) return null;
+  try {
+    const sshMatch = trimmed.match(/^git@([^:]+):([^/]+)\/(.+?)(?:\.git)?$/i);
+    if (sshMatch) {
+      return {
+        host: sshMatch[1]!.toLowerCase(),
+        owner: sshMatch[2]!,
+        repo: sshMatch[3]!.replace(/\.git$/i, ""),
+      };
+    }
+
+    const parsed = new URL(trimmed);
+    const parts = parsed.pathname.replace(/\/+$/, "").split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    return {
+      host: parsed.hostname.toLowerCase(),
+      owner: parts[0]!,
+      repo: parts[1]!.replace(/\.git$/i, ""),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function repoCoordinatesEqual(expected: RepoCoordinates | null, actual: RepoCoordinates | null) {
+  if (!expected || !actual) return false;
+  return expected.host === actual.host && expected.owner === actual.owner && expected.repo === actual.repo;
+}
+
+function extractMatchingPullRequestNumbers(text: string | null | undefined, repo: RepoCoordinates): number[] {
+  if (!text) return [];
+  const escapedHost = repo.host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedOwner = repo.owner.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedRepo = repo.repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(
+    `https?://${escapedHost}/${escapedOwner}/${escapedRepo}/pull/(\\d+)`,
+    "gi",
+  );
+  const matches = new Set<number>();
+  for (const match of text.matchAll(pattern)) {
+    const value = Number.parseInt(match[1] ?? "", 10);
+    if (Number.isFinite(value) && value > 0) matches.add(value);
+  }
+  return Array.from(matches);
+}
+
+function readTerminalStateExemption(value: unknown) {
+  if (!value || typeof value !== "object") return null;
+  const exemption = (value as Record<string, unknown>).terminalStateExemption;
+  if (!exemption || typeof exemption !== "object") return null;
+  const record = exemption as Record<string, unknown>;
+  const kind = typeof record.kind === "string" ? record.kind.trim() : "";
+  const reason = typeof record.reason === "string" ? record.reason.trim() : "";
+  const grantedByUserId = typeof record.grantedByUserId === "string" ? record.grantedByUserId.trim() : "";
+  const grantedByAgentId = typeof record.grantedByAgentId === "string" ? record.grantedByAgentId.trim() : "";
+  if (kind !== REPO_BACKED_TERMINAL_GATE_EXEMPTION_KIND || !reason) return null;
+  if (!grantedByUserId && !grantedByAgentId) return null;
+  return {
+    kind,
+    reason,
+    grantedByUserId: grantedByUserId || null,
+    grantedByAgentId: grantedByAgentId || null,
+    createdAt: typeof record.createdAt === "string" ? record.createdAt : null,
+  };
+}
+
+async function resolveIssueRepoBinding(input: {
+  dbOrTx: any;
+  companyId: string;
+  projectId: string | null;
+  projectWorkspaceId: string | null;
+  executionWorkspaceId: string | null;
+}) {
+  if (input.executionWorkspaceId) {
+    const executionWorkspace = await input.dbOrTx
+      .select({ repoUrl: executionWorkspaces.repoUrl })
+      .from(executionWorkspaces)
+      .where(
+        and(
+          eq(executionWorkspaces.id, input.executionWorkspaceId),
+          eq(executionWorkspaces.companyId, input.companyId),
+        ),
+      )
+      .then((rows: Array<{ repoUrl: string | null }>) => rows[0] ?? null);
+    const executionRepo = parseRepoCoordinates(executionWorkspace?.repoUrl ?? null);
+    if (executionRepo) return executionRepo;
+  }
+
+  if (input.projectWorkspaceId) {
+    const workspace = await input.dbOrTx
+      .select({ repoUrl: projectWorkspaces.repoUrl })
+      .from(projectWorkspaces)
+      .where(
+        and(
+          eq(projectWorkspaces.id, input.projectWorkspaceId),
+          eq(projectWorkspaces.companyId, input.companyId),
+        ),
+      )
+      .then((rows: Array<{ repoUrl: string | null }>) => rows[0] ?? null);
+    const workspaceRepo = parseRepoCoordinates(workspace?.repoUrl ?? null);
+    if (workspaceRepo) return workspaceRepo;
+  }
+
+  if (!input.projectId) return null;
+  const primaryWorkspace = await input.dbOrTx
+    .select({ repoUrl: projectWorkspaces.repoUrl })
+    .from(projectWorkspaces)
+    .where(
+      and(
+        eq(projectWorkspaces.companyId, input.companyId),
+        eq(projectWorkspaces.projectId, input.projectId),
+        eq(projectWorkspaces.isPrimary, true),
+      ),
+    )
+    .then((rows: Array<{ repoUrl: string | null }>) => rows[0] ?? null);
+  return parseRepoCoordinates(primaryWorkspace?.repoUrl ?? null);
+}
+
+async function verifyMergedPullRequestForRepo(input: {
+  repo: RepoCoordinates;
+  pullNumber: number;
+}) {
+  const headers: Record<string, string> = {
+    accept: "application/vnd.github+json",
+  };
+  const token =
+    process.env.GITHUB_TOKEN?.trim()
+    || process.env.GITHUB_TOKEN_PERSONAL?.trim()
+    || process.env.GH_TOKEN?.trim()
+    || "";
+  if (token) headers.authorization = `Bearer ${token}`;
+  const response = await ghFetch(
+    `${gitHubApiBase(input.repo.host)}/repos/${input.repo.owner}/${input.repo.repo}/pulls/${input.pullNumber}`,
+    { headers },
+  );
+  if (!response.ok) {
+    throw new Error(`GitHub returned ${response.status} while verifying pull #${input.pullNumber}.`);
+  }
+  const payload = await response.json() as { merged?: boolean };
+  return payload.merged === true;
+}
+
+async function recordRepoBackedTerminalGateComment(input: {
+  dbHandle: Db;
+  issueId: string;
+  companyId: string;
+  body: string;
+}) {
+  await input.dbHandle.insert(issueComments).values({
+    companyId: input.companyId,
+    issueId: input.issueId,
+    authorAgentId: null,
+    authorUserId: null,
+    authorType: "system",
+    body: input.body,
+    presentation: {
+      kind: "system_notice",
+      tone: "warning",
+      title: "Repo-backed terminal-state gate",
+      detailsDefaultOpen: false,
+    },
+  });
+  await input.dbHandle
+    .update(issues)
+    .set({ updatedAt: new Date() })
+    .where(eq(issues.id, input.issueId));
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -5040,6 +5219,10 @@ export function issueService(db: Db) {
         issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
       const nextExecutionWorkspaceId =
         issueData.executionWorkspaceId !== undefined ? issueData.executionWorkspaceId : existing.executionWorkspaceId;
+      const nextExecutionState =
+        issueData.executionState !== undefined ? issueData.executionState : existing.executionState;
+      const nextDescription =
+        issueData.description !== undefined ? issueData.description : existing.description;
       const nextExecutionWorkspacePreference =
         issueData.executionWorkspacePreference !== undefined
           ? issueData.executionWorkspacePreference
@@ -5070,6 +5253,74 @@ export function issueService(db: Db) {
       if (nextExecutionWorkspaceId) {
         if (!validatedExecutionWorkspace) {
           await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
+        }
+      }
+
+      const nextStatus = issueData.status ?? existing.status;
+      const requiresRepoBackedTerminalGate =
+        !actorUserId && (nextStatus === "done" || (nextStatus === "in_review" && Boolean(nextAssigneeUserId)));
+      if (requiresRepoBackedTerminalGate) {
+        const explicitExemption = readTerminalStateExemption(nextExecutionState);
+        if (!explicitExemption) {
+          const repoBinding = await resolveIssueRepoBinding({
+            dbOrTx,
+            companyId: existing.companyId,
+            projectId: nextProjectId,
+            projectWorkspaceId: nextProjectWorkspaceId,
+            executionWorkspaceId: nextExecutionWorkspaceId,
+          });
+          if (repoBinding) {
+            const commentBodies = await dbOrTx
+              .select({ body: issueComments.body })
+              .from(issueComments)
+              .where(eq(issueComments.issueId, existing.id));
+            const pullNumbers = new Set<number>();
+            for (const pullNumber of extractMatchingPullRequestNumbers(nextDescription, repoBinding)) {
+              pullNumbers.add(pullNumber);
+            }
+            for (const row of commentBodies) {
+              for (const pullNumber of extractMatchingPullRequestNumbers(row.body, repoBinding)) {
+                pullNumbers.add(pullNumber);
+              }
+            }
+
+            let verifiedMergedPull = false;
+            let verificationFailure: string | null = null;
+            for (const pullNumber of pullNumbers) {
+              try {
+                if (await verifyMergedPullRequestForRepo({ repo: repoBinding, pullNumber })) {
+                  verifiedMergedPull = true;
+                  break;
+                }
+              } catch (error) {
+                verificationFailure = error instanceof Error ? error.message : String(error);
+                break;
+              }
+            }
+
+            if (!verifiedMergedPull) {
+              const repoLabel = `${repoBinding.owner}/${repoBinding.repo}`;
+              const reason = verificationFailure
+                ? `Paperclip could not verify a merged PR for repo-backed issue close on ${repoLabel}: ${verificationFailure}`
+                : pullNumbers.size === 0
+                  ? `Paperclip refused a terminal transition for repo-backed issue ${existing.identifier ?? existing.id} because the issue thread does not reference any PR URL for ${repoLabel}.`
+                  : `Paperclip refused a terminal transition for repo-backed issue ${existing.identifier ?? existing.id} because none of the referenced PRs for ${repoLabel} are verified merged.`;
+              await recordRepoBackedTerminalGateComment({
+                dbHandle: db,
+                issueId: existing.id,
+                companyId: existing.companyId,
+                body: reason,
+              });
+              throw unprocessable(
+                "Repo-backed issues may only move to a terminal state after a verified merged PR or explicit exemption.",
+                {
+                  code: REPO_BACKED_TERMINAL_GATE_CODE,
+                  repo: repoLabel,
+                  missing: verificationFailure ? "merged_pr_verification_failed" : "merged_pr",
+                },
+              );
+            }
+          }
         }
       }
 

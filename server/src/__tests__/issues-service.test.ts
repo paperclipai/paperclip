@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
@@ -147,6 +147,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueDocuments);
@@ -4581,5 +4583,195 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     );
     expect(record).not.toHaveProperty("requestedChildren");
     expect(record?.childIssues.every((child) => typeof child.title === "string")).toBe(true);
+  });
+});
+
+describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-terminal-gate-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("rejects terminal transitions for repo-backed issues without a verified merged PR", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Server",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "primary",
+      sourceType: "git_repo",
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      repoRef: "origin/main",
+      defaultRef: "origin/main",
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      title: "Close without proof",
+      description: "No PR linked here.",
+      status: "todo",
+      priority: "high",
+      identifier: "PAP-9001",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "merged_pr",
+      }),
+    });
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("does not reference any PR URL");
+  });
+
+  it("allows terminal transitions after verifying a merged PR in the issue thread", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const issueId = randomUUID();
+
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: true }),
+    } as Response)));
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Server",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "primary",
+      sourceType: "git_repo",
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      repoRef: "origin/main",
+      defaultRef: "origin/main",
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      title: "Close with merged PR",
+      description: "Reference: https://github.com/paperclipai/paperclip/pull/3303",
+      status: "todo",
+      priority: "high",
+      identifier: "PAP-9002",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
+  it("allows human-authored terminal transitions without repo-backed PR verification", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Server",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "primary",
+      sourceType: "git_repo",
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      repoRef: "origin/main",
+      defaultRef: "origin/main",
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      title: "Board can close directly",
+      description: "No PR linked here.",
+      status: "todo",
+      priority: "medium",
+      identifier: "PAP-9003",
+    });
+
+    const updated = await svc.update(issueId, { status: "done", actorUserId: "local-board" });
+    expect(updated?.status).toBe("done");
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
   });
 });

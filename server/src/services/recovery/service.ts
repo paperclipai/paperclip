@@ -175,6 +175,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "agent_not_found",
   "budget_blocked",
   "budget_exhausted",
+  "execution_workspace_freshness_failed",
   "issue_paused",
   "issue_dependencies_blocked",
 ]);

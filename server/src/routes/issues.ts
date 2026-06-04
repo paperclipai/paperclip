@@ -1235,7 +1235,7 @@ export function issueRoutes(
       if (readiness.unresolvedBlockerCount > 0) {
         return "Recovery action became stale because the source issue now has unresolved first-class blockers.";
       }
-      return null;
+      return "Recovery action became stale because the source issue's blocker state was updated without restoring a live execution path.";
     }
 
     if (issue.assigneeUserId && issue.status !== "done" && issue.status !== "cancelled") {

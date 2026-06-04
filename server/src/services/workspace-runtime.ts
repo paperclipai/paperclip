@@ -70,6 +70,40 @@ export interface RealizedExecutionWorkspace extends ExecutionWorkspaceInput {
   baseRefSha?: string | null;
 }
 
+const DEFAULT_STALE_BEHIND_THRESHOLD = 10;
+
+type RepoCoordinates = {
+  host: string;
+  owner: string;
+  repo: string;
+};
+
+export class ExecutionWorkspaceFreshnessError extends Error {
+  code = "execution_workspace_freshness_failed" as const;
+  details: {
+    failures: string[];
+    warnings: string[];
+    repoRoot: string | null;
+    currentBranchName: string | null;
+    originUrl: string | null;
+    behindCount: number | null;
+    dirtyEntryCount: number;
+    untrackedEntryCount: number;
+    expectedRepoUrl: string | null;
+    expectedBranchName: string | null;
+    expectedBaseRef: string | null;
+  };
+
+  constructor(
+    message: string,
+    details: ExecutionWorkspaceFreshnessError["details"],
+  ) {
+    super(message);
+    this.name = "ExecutionWorkspaceFreshnessError";
+    this.details = details;
+  }
+}
+
 export interface RuntimeServiceRef {
   id: string;
   companyId: string;
@@ -525,6 +559,57 @@ async function runGit(args: string[], cwd: string): Promise<string> {
   return proc.stdout.trim();
 }
 
+function readTrimmedString(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function parseRepoCoordinates(rawUrl: string | null | undefined): RepoCoordinates | null {
+  const value = readTrimmedString(rawUrl);
+  if (!value) return null;
+  try {
+    const sshMatch = value.match(/^git@([^:]+):([^/]+)\/(.+?)(?:\.git)?$/i);
+    if (sshMatch) {
+      return {
+        host: sshMatch[1]!.toLowerCase(),
+        owner: sshMatch[2]!,
+        repo: sshMatch[3]!.replace(/\.git$/i, ""),
+      };
+    }
+
+    const parsed = new URL(value);
+    const parts = parsed.pathname.replace(/\/+$/, "").split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    return {
+      host: parsed.hostname.toLowerCase(),
+      owner: parts[0]!,
+      repo: parts[1]!.replace(/\.git$/i, ""),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function repoCoordinatesEqual(expected: RepoCoordinates | null, actual: RepoCoordinates | null) {
+  if (!expected || !actual) return false;
+  return expected.host === actual.host && expected.owner === actual.owner && expected.repo === actual.repo;
+}
+
+async function inspectGitWorkingTreeStatus(cwd: string) {
+  const statusOutput = await runGit(["status", "--porcelain=v1", "--untracked-files=all"], cwd);
+  let dirtyEntryCount = 0;
+  let untrackedEntryCount = 0;
+  for (const line of statusOutput.split(/\r?\n/)) {
+    if (!line) continue;
+    if (line.startsWith("??")) {
+      untrackedEntryCount += 1;
+      continue;
+    }
+    dirtyEntryCount += 1;
+  }
+  return { dirtyEntryCount, untrackedEntryCount };
+}
+
 function formatShortSha(value: string | null | undefined) {
   return value ? value.slice(0, 12) : "unknown";
 }
@@ -626,6 +711,121 @@ export async function inspectExecutionWorkspaceBaseDrift(input: {
   }
 
   return { warnings, currentBaseRefSha, branchBaseRefSha };
+}
+
+export async function inspectExecutionWorkspaceFreshness(input: {
+  cwd: string;
+  expectedRepoUrl?: string | null;
+  expectedBranchName?: string | null;
+  expectedBaseRef?: string | null;
+  staleBehindThreshold?: number;
+}): Promise<ExecutionWorkspaceFreshnessError["details"]> {
+  const failures: string[] = [];
+  const warnings: string[] = [];
+  const staleBehindThreshold = input.staleBehindThreshold ?? DEFAULT_STALE_BEHIND_THRESHOLD;
+  const expectedRepoUrl = readTrimmedString(input.expectedRepoUrl);
+  const expectedBranchName = readTrimmedString(input.expectedBranchName);
+  const expectedBaseRef = readTrimmedString(input.expectedBaseRef);
+
+  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.cwd).catch(() => null);
+  if (!repoRoot) {
+    failures.push(`"${input.cwd}" is not a git checkout.`);
+    return {
+      failures,
+      warnings,
+      repoRoot: null,
+      currentBranchName: null,
+      originUrl: null,
+      behindCount: null,
+      dirtyEntryCount: 0,
+      untrackedEntryCount: 0,
+      expectedRepoUrl,
+      expectedBranchName,
+      expectedBaseRef,
+    };
+  }
+
+  const currentBranchName = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], input.cwd).catch(() => null);
+  if (expectedBranchName && currentBranchName !== expectedBranchName) {
+    failures.push(
+      `checkout branch is "${currentBranchName ?? "<detached>"}" instead of expected "${expectedBranchName}".`,
+    );
+  }
+
+  const originUrl = await runGit(["remote", "get-url", "origin"], input.cwd).catch(() => null);
+  if (expectedRepoUrl) {
+    const expectedRepo = parseRepoCoordinates(expectedRepoUrl);
+    const actualRepo = parseRepoCoordinates(originUrl);
+    const matches =
+      (expectedRepo && actualRepo && repoCoordinatesEqual(expectedRepo, actualRepo))
+      || (!expectedRepo && !actualRepo && originUrl === expectedRepoUrl);
+    if (!matches) {
+      failures.push(`checkout origin "${originUrl ?? "<missing>"}" does not match expected repo "${expectedRepoUrl}".`);
+    }
+  }
+
+  const { dirtyEntryCount, untrackedEntryCount } = await inspectGitWorkingTreeStatus(input.cwd);
+  if (dirtyEntryCount > 0) {
+    failures.push(`checkout has ${dirtyEntryCount} tracked modification${dirtyEntryCount === 1 ? "" : "s"}.`);
+  }
+  if (untrackedEntryCount > 0) {
+    failures.push(`checkout has ${untrackedEntryCount} untracked file${untrackedEntryCount === 1 ? "" : "s"}.`);
+  }
+
+  let behindCount: number | null = null;
+  if (expectedBaseRef) {
+    warnings.push(...await refreshRemoteTrackingBaseRef(repoRoot, expectedBaseRef));
+    const resolvedBaseRef = await resolveBaseRefSha(repoRoot, expectedBaseRef);
+    if (!resolvedBaseRef) {
+      failures.push(`could not resolve base ref "${expectedBaseRef}" for freshness verification.`);
+    } else {
+      const behindRaw = await runGit(["rev-list", "--count", `HEAD..${expectedBaseRef}`], input.cwd).catch(() => null);
+      const parsedBehind = behindRaw == null ? Number.NaN : Number.parseInt(behindRaw, 10);
+      if (!Number.isFinite(parsedBehind)) {
+        failures.push(`could not compare checkout against "${expectedBaseRef}".`);
+      } else {
+        behindCount = parsedBehind;
+        if (behindCount >= staleBehindThreshold) {
+          failures.push(
+            `checkout is behind ${expectedBaseRef} by ${behindCount} commits (stale threshold ${staleBehindThreshold}).`,
+          );
+        } else if (behindCount > 0) {
+          warnings.push(
+            `Execution workspace branch is behind ${expectedBaseRef} by ${behindCount} commit${behindCount === 1 ? "" : "s"}.`,
+          );
+        }
+      }
+    }
+  }
+
+  return {
+    failures,
+    warnings,
+    repoRoot,
+    currentBranchName,
+    originUrl,
+    behindCount,
+    dirtyEntryCount,
+    untrackedEntryCount,
+    expectedRepoUrl,
+    expectedBranchName,
+    expectedBaseRef,
+  };
+}
+
+export async function assertExecutionWorkspaceFreshness(input: {
+  cwd: string;
+  expectedRepoUrl?: string | null;
+  expectedBranchName?: string | null;
+  expectedBaseRef?: string | null;
+  staleBehindThreshold?: number;
+}) {
+  const details = await inspectExecutionWorkspaceFreshness(input);
+  if (details.failures.length === 0) return details;
+  throw new ExecutionWorkspaceFreshnessError(
+    `Execution workspace freshness check failed: ${details.failures.join(" ")}`,
+    details,
+  );
 }
 
 

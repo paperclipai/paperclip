@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 import { and, eq, or, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -98,10 +102,28 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+const execFileAsync = promisify(execFile);
+
 function spawnAliveProcess() {
   return spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
     stdio: "ignore",
   });
+}
+
+async function runGit(cwd: string, args: string[]) {
+  await execFileAsync("git", args, { cwd });
+}
+
+async function createTempRepo(defaultBranch = "main") {
+  const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-heartbeat-repo-"));
+  await runGit(repoRoot, ["init"]);
+  await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
+  await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
+  await fs.writeFile(path.join(repoRoot, "README.md"), "hello\n", "utf8");
+  await runGit(repoRoot, ["add", "README.md"]);
+  await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
+  await runGit(repoRoot, ["checkout", "-B", defaultBranch]);
+  return repoRoot;
 }
 
 function isPidAlive(pid: number | null | undefined) {
@@ -358,6 +380,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
     }
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(activityLog);
       await db.delete(heartbeatRunEvents);
@@ -1992,6 +2016,101 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     if (runs[0]?.id) {
       await waitForRunToSettle(heartbeat, runs[0].id);
     }
+  });
+
+  it("leaves assigned todo work non-terminal and comments when native dispatch finds a stale repo-backed checkout", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    const repoRoot = await createTempRepo();
+    const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-heartbeat-remote-"));
+    await runGit(remoteRoot, ["init", "--bare"]);
+    await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
+    await runGit(repoRoot, ["push", "-u", "origin", "main"]);
+
+    const staleClone = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-heartbeat-stale-clone-"));
+    await runGit(staleClone, ["clone", remoteRoot, "."]);
+
+    for (let index = 0; index < 10; index += 1) {
+      await fs.writeFile(path.join(repoRoot, `commit-${index}.txt`), `${index}\n`, "utf8");
+      await runGit(repoRoot, ["add", `commit-${index}.txt`]);
+      await runGit(repoRoot, ["commit", "-m", `Commit ${index}`]);
+    }
+    await runGit(repoRoot, ["push", "origin", "main"]);
+    await fs.writeFile(path.join(staleClone, "leftover.txt"), "dirty\n", "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Repo-backed project",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "primary",
+      sourceType: "local_path",
+      cwd: staleClone,
+      repoUrl: remoteRoot,
+      repoRef: "origin/main",
+      defaultRef: "origin/main",
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Assigned todo work with stale checkout",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.assignmentDispatched).toBe(1);
+
+    const run = await waitForValue(async () =>
+      db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)).then((rows) => rows[0] ?? null),
+    );
+    expect(run?.id).toBeTruthy();
+    const settledRun = await waitForRunToSettle(heartbeat, run!.id, 5_000);
+    expect(settledRun?.errorCode).toBe("execution_workspace_freshness_failed");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("failed freshness validation");
+    expect(comments[0]?.body).toContain("untracked file");
+    expect(comments[0]?.body).toContain("behind origin/main by 10 commits");
   });
 
   it("does not duplicate initial assigned todo dispatch when a queued wake already exists", async () => {

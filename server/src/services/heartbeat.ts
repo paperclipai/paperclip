@@ -91,10 +91,12 @@ import {
 } from "./run-liveness.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import {
+  assertExecutionWorkspaceFreshness,
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
   ensureRuntimeServicesForRun,
+  ExecutionWorkspaceFreshnessError,
   persistAdapterManagedRuntimeServices,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
@@ -8272,6 +8274,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           recorder: workspaceOperationRecorder,
         });
+    if (executionWorkspace.repoUrl) {
+      try {
+        await assertExecutionWorkspaceFreshness({
+          cwd: executionWorkspace.cwd,
+          expectedRepoUrl: executionWorkspace.repoUrl,
+          expectedBranchName: executionWorkspace.branchName,
+          expectedBaseRef: executionWorkspace.repoRef,
+        });
+      } catch (error) {
+        if (error instanceof ExecutionWorkspaceFreshnessError && issueId) {
+          const detailLines = [
+            `Paperclip refused to start work because the repo-backed checkout for ${issueRef?.identifier ?? issueId} failed freshness validation.`,
+            ...error.details.failures.map((failure) => `- ${failure}`),
+          ];
+          if (error.details.warnings.length > 0) {
+            detailLines.push(...error.details.warnings.map((warning) => `- warning: ${warning}`));
+          }
+          await issuesSvc.addComment(
+            issueId,
+            detailLines.join("\n"),
+            { runId: run.id },
+            {
+              authorType: "system",
+              presentation: {
+                kind: "system_notice",
+                tone: "warning",
+                title: "Dispatch checkout freshness failed",
+                detailsDefaultOpen: false,
+              },
+            },
+          );
+          await issuesSvc.update(issueId, { status: "todo" });
+        }
+        throw error;
+      }
+    }
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace = null;
@@ -9327,15 +9365,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
           const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          const setupErrorCode =
+            outerErr instanceof ExecutionWorkspaceFreshnessError
+              ? outerErr.code
+              : "adapter_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           await setRunStatus(runId, "failed", {
             error: message,
-            errorCode: "adapter_failed",
+            errorCode: setupErrorCode,
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
-                errorCode: "adapter_failed",
+                errorCode: setupErrorCode,
                 errorMessage: message,
               }),
             } : {}),
@@ -9702,6 +9744,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled");
 
       if (!issueNeedsImmediateRecovery) {
+        return { kind: "released" as const };
+      }
+
+      if (run.errorCode === "execution_workspace_freshness_failed") {
         return { kind: "released" as const };
       }
 

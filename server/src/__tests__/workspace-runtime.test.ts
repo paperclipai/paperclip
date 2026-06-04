@@ -19,6 +19,7 @@ import {
 } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import {
+  assertExecutionWorkspaceFreshness,
   buildWorkspaceRuntimeDesiredStatePatch,
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
@@ -494,6 +495,44 @@ describe("realizeExecutionWorkspace", () => {
     expect(reused.warnings).toEqual([
       expect.stringContaining("is behind main by 1 commit"),
     ]);
+  });
+
+  it("fails freshness checks for a reused checkout that is dirty and stale", async () => {
+    const repoRoot = await createTempRepo();
+    const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
+    await runGit(remoteRoot, ["init", "--bare"]);
+    await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
+    await runGit(repoRoot, ["push", "-u", "origin", "main"]);
+
+    const staleClone = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-stale-clone-"));
+    await runGit(staleClone, ["clone", remoteRoot, "."]);
+
+    for (let index = 0; index < 10; index += 1) {
+      await fs.writeFile(path.join(repoRoot, `commit-${index}.txt`), `${index}\n`, "utf8");
+      await runGit(repoRoot, ["add", `commit-${index}.txt`]);
+      await runGit(repoRoot, ["commit", "-m", `Commit ${index}`]);
+    }
+    await runGit(repoRoot, ["push", "origin", "main"]);
+
+    await fs.writeFile(path.join(staleClone, "local-only.txt"), "dirty\n", "utf8");
+
+    await expect(
+      assertExecutionWorkspaceFreshness({
+        cwd: staleClone,
+        expectedBaseRef: "origin/main",
+      }),
+    ).rejects.toMatchObject({
+      code: "execution_workspace_freshness_failed",
+      details: expect.objectContaining({
+        behindCount: 10,
+        dirtyEntryCount: 0,
+        untrackedEntryCount: 1,
+        failures: expect.arrayContaining([
+          expect.stringContaining("untracked file"),
+          expect.stringContaining("behind origin/main by 10 commits"),
+        ]),
+      }),
+    });
   });
 
   it("rejects reusing an empty directory that only looks like a worktree because it sits inside the repo", async () => {
