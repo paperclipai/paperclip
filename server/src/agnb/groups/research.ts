@@ -1,7 +1,7 @@
 import type { Router } from "express";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows } from "../helpers.js";
 
 /**
@@ -20,7 +20,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** GET /api/agnb/bofu — BoFu page tracker. */
   router.get("/agnb/bofu", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, url, title, competitor, content_type, primary_keyword, status,
              current_rank, monthly_traffic, monthly_signups, last_checked_at, created_at
@@ -33,7 +33,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** POST /api/agnb/bofu — add a BoFu page. Body: { url, title, content_type?, competitor?, primary_keyword?, status? } */
   router.post("/agnb/bofu", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as Record<string, any>;
     if (!body.url?.trim() || !body.title?.trim()) {
@@ -50,7 +50,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** PATCH /api/agnb/bofu?id= — update fields. */
   router.patch("/agnb/bofu", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     const body = (req.body ?? {}) as Record<string, any>;
@@ -65,7 +65,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** DELETE /api/agnb/bofu?id= */
   router.delete("/agnb/bofu", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.bofu_pages WHERE id = ${id}`);
@@ -79,7 +79,7 @@ export function registerResearch(router: Router, db: Db) {
    * POST /bofu); a snapshot for an unknown url is a no-op.
    */
   router.post("/agnb/bofu/snapshot", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as Record<string, unknown>;
     const url = String(body.url ?? "").trim();
     if (!url) return res.status(400).json({ ok: false, error: "url required" });
@@ -102,7 +102,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** GET /api/agnb/competitors — competitors + content gaps. */
   router.get("/agnb/competitors", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const [competitors, gaps] = await Promise.all([
       db.execute(sql`
         SELECT id, name, domain, sitemap_url, status, last_scraped_at, last_error, total_blogs_seen, created_at
@@ -121,7 +121,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** POST /api/agnb/competitors — add a competitor. Body: { name, domain, sitemap_url, blog_path_pattern? } */
   router.post("/agnb/competitors", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as Record<string, any>;
     const name = body.name?.trim();
     const domain = body.domain?.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, "");
@@ -153,7 +153,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** PATCH /api/agnb/competitors?id= — toggle status / edit. */
   router.patch("/agnb/competitors", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     const body = (req.body ?? {}) as Record<string, any>;
@@ -169,7 +169,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** DELETE /api/agnb/competitors?id= */
   router.delete("/agnb/competitors", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.competitors WHERE id = ${id}`);
@@ -183,7 +183,7 @@ export function registerResearch(router: Router, db: Db) {
    * scan for an unknown domain is a no-op.
    */
   router.post("/agnb/competitors/scan", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as Record<string, unknown>;
     const domain = String(body.domain ?? "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, "");
     if (!domain) return res.status(400).json({ ok: false, error: "domain required" });
@@ -209,7 +209,7 @@ export function registerResearch(router: Router, db: Db) {
    * Idempotent on topic (a gap already tracked is skipped, not duplicated).
    */
   router.post("/agnb/content-gaps", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as { gaps?: Array<Record<string, unknown>> };
     const list = Array.isArray(body.gaps) ? body.gaps : [];
     if (list.length === 0) return res.status(400).json({ ok: false, error: "gaps[] required" });
@@ -246,7 +246,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** GET /api/agnb/content — content briefs (editorial calendar by stage). */
   router.get("/agnb/content", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, title, content_type, stage, primary_keyword, buyer_phrase, target_url,
              published_at, refresh_due_at, created_at, created_by
@@ -259,7 +259,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** POST /api/agnb/content — create a brief. Body: { title, content_type?, stage?, primary_keyword?, buyer_phrase? } */
   router.post("/agnb/content", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as Record<string, any>;
     if (!body.title?.trim()) return res.status(400).json({ ok: false, error: "title required" });
@@ -274,7 +274,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** PATCH /api/agnb/content?id= — update stage/fields. */
   router.patch("/agnb/content", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     const body = (req.body ?? {}) as Record<string, any>;
@@ -289,7 +289,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** DELETE /api/agnb/content?id= */
   router.delete("/agnb/content", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.content_briefs WHERE id = ${id}`);
@@ -300,7 +300,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** GET /api/agnb/idea-inbox — list blog ideas. */
   router.get("/agnb/idea-inbox", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, raw_text, source, status, related_topic, notes, created_by, created_at
       FROM agnb.blog_ideas
@@ -312,7 +312,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** POST /api/agnb/idea-inbox — capture a new idea. Body: { raw_text, source?, notes? } */
   router.post("/agnb/idea-inbox", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as Record<string, any>;
     const raw_text = String(body.raw_text ?? "").trim();
@@ -327,7 +327,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** PATCH /api/agnb/idea-inbox?id= — update status (promote/trash) or fields. */
   router.patch("/agnb/idea-inbox", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     const body = (req.body ?? {}) as Record<string, any>;
@@ -342,7 +342,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** DELETE /api/agnb/idea-inbox?id= */
   router.delete("/agnb/idea-inbox", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.blog_ideas WHERE id = ${id}`);
@@ -353,7 +353,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** GET /api/agnb/rss-feeds — feeds + recent items. */
   router.get("/agnb/rss-feeds", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const [feeds, items] = await Promise.all([
       db.execute(sql`
         SELECT id, name, url, category, status, last_synced_at, last_error, items_count
@@ -372,7 +372,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** POST /api/agnb/rss-feeds — add a feed. Body: { name, url, category? } */
   router.post("/agnb/rss-feeds", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as Record<string, any>;
     if (!body.name?.trim() || !body.url?.trim()) {
       return res.status(400).json({ ok: false, error: "name + url required" });
@@ -393,7 +393,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** PATCH /api/agnb/rss-feeds?id= — update status. */
   router.patch("/agnb/rss-feeds", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     const body = (req.body ?? {}) as Record<string, any>;
@@ -406,7 +406,7 @@ export function registerResearch(router: Router, db: Db) {
 
   /** DELETE /api/agnb/rss-feeds?id= */
   router.delete("/agnb/rss-feeds", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.rss_feeds WHERE id = ${id}`);

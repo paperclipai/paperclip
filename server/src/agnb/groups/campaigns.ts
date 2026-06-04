@@ -1,7 +1,7 @@
 import type { Router } from "express";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows } from "../helpers.js";
 
 /**
@@ -12,7 +12,7 @@ import { rows } from "../helpers.js";
 export function registerCampaigns(router: Router, db: Db) {
   /** GET /api/agnb/campaigns — Rocket campaigns + sender accounts. */
   router.get("/agnb/campaigns", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const [campaigns, senders] = await Promise.all([
       db.execute(sql`
         SELECT id, name, status, type, framework,

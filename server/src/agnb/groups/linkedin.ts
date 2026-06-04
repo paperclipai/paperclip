@@ -1,7 +1,7 @@
 import type { Router } from "express";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows } from "../helpers.js";
 
 /**
@@ -18,7 +18,7 @@ const VALID_ANGLES = ["contrarian", "personal", "stat", "question", "listicle"];
 export function registerLinkedin(router: Router, db: Db) {
   /** GET /api/agnb/linkedin-queue — full post queue (Queue / Scheduled / Performance). */
   router.get("/agnb/linkedin-queue", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, source_type, content, scheduled_at, posted_at, linkedin_post_url, status,
              x_variant, series_id, episode_num, impressions, reactions, comments_count,
@@ -32,7 +32,7 @@ export function registerLinkedin(router: Router, db: Db) {
 
   /** GET /api/agnb/linkedin-hooks — LinkedIn hook bank. */
   router.get("/agnb/linkedin-hooks", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, hook, angle, uses, notes, created_at
       FROM agnb.linkedin_hooks
@@ -44,7 +44,7 @@ export function registerLinkedin(router: Router, db: Db) {
 
   /** GET /api/agnb/linkedin-series — series + episode progress derived from the queue. */
   router.get("/agnb/linkedin-series", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const [seriesResult, queueResult] = await Promise.all([
       db.execute(sql`
         SELECT id, title, description, episodes, status, created_at
@@ -80,7 +80,7 @@ export function registerLinkedin(router: Router, db: Db) {
    * Body: { content, scheduled_at?, source_type?, source_id? } — add manual / repurposed post.
    */
   router.post("/agnb/linkedin/queue", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as {
       content?: string;
@@ -107,7 +107,7 @@ export function registerLinkedin(router: Router, db: Db) {
 
   /** PATCH /api/agnb/linkedin/queue?id=... — update content/scheduled_at/status. */
   router.patch("/agnb/linkedin/queue", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     const body = (req.body ?? {}) as {
@@ -133,7 +133,7 @@ export function registerLinkedin(router: Router, db: Db) {
 
   /** DELETE /api/agnb/linkedin/queue?id=... — remove a queued post. */
   router.delete("/agnb/linkedin/queue", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.linkedin_post_queue WHERE id = ${id}`);
@@ -144,7 +144,7 @@ export function registerLinkedin(router: Router, db: Db) {
 
   /** POST /api/agnb/linkedin/hooks — Body: { hook, angle, notes? }. */
   router.post("/agnb/linkedin/hooks", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as { hook?: string; angle?: string; notes?: string };
     if (!body.hook?.trim() || !body.angle) return res.status(400).json({ ok: false, error: "hook + angle required" });
     if (!VALID_ANGLES.includes(body.angle)) return res.status(400).json({ ok: false, error: "bad angle" });
@@ -158,7 +158,7 @@ export function registerLinkedin(router: Router, db: Db) {
 
   /** DELETE /api/agnb/linkedin/hooks?id=... */
   router.delete("/agnb/linkedin/hooks", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.linkedin_hooks WHERE id = ${id}`);
@@ -169,7 +169,7 @@ export function registerLinkedin(router: Router, db: Db) {
 
   /** POST /api/agnb/linkedin/series — Body: { title, description? }. */
   router.post("/agnb/linkedin/series", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as { title?: string; description?: string };
     if (!body.title?.trim()) return res.status(400).json({ ok: false, error: "title required" });
     const result = await db.execute(sql`
@@ -182,7 +182,7 @@ export function registerLinkedin(router: Router, db: Db) {
 
   /** PATCH /api/agnb/linkedin/series?id=... — Body: { title?, description?, status? }. */
   router.patch("/agnb/linkedin/series", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     const body = (req.body ?? {}) as { title?: string; description?: string; status?: string };
@@ -199,7 +199,7 @@ export function registerLinkedin(router: Router, db: Db) {
 
   /** DELETE /api/agnb/linkedin/series?id=... */
   router.delete("/agnb/linkedin/series", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.linkedin_series WHERE id = ${id}`);

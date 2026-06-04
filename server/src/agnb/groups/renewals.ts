@@ -1,7 +1,7 @@
 import type { Router } from "express";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows } from "../helpers.js";
 
 /**
@@ -19,7 +19,7 @@ export function registerRenewals(router: Router, db: Db) {
 
   /** GET /api/agnb/renewals — internal.renewals (vendor + compliance + tax + license). */
   router.get("/agnb/renewals", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, kind, name, vendor, amount_paise, currency, renewal_date, status,
              notes, owner_email, last_reminded_at, created_at
@@ -32,7 +32,7 @@ export function registerRenewals(router: Router, db: Db) {
 
   /** POST /api/agnb/renewals — create a renewal. */
   router.post("/agnb/renewals", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as Record<string, any>;
     if (!body.name || !body.renewal_date || !VALID_KINDS.has(body.kind)) {
@@ -56,7 +56,7 @@ export function registerRenewals(router: Router, db: Db) {
 
   /** PATCH /api/agnb/renewals?id= — update fields on a renewal. */
   router.patch("/agnb/renewals", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     const body = (req.body ?? {}) as Record<string, any>;
@@ -79,7 +79,7 @@ export function registerRenewals(router: Router, db: Db) {
 
   /** DELETE /api/agnb/renewals?id= */
   router.delete("/agnb/renewals", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.renewals WHERE id = ${id}`);
@@ -90,7 +90,7 @@ export function registerRenewals(router: Router, db: Db) {
 
   /** GET /api/agnb/newsletter — list newsletter_issues. */
   router.get("/agnb/newsletter", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, issue_number, period_start, period_end, subject, intro, blog_ids,
              body_html, status, sent_at, created_at
@@ -103,7 +103,7 @@ export function registerRenewals(router: Router, db: Db) {
 
   /** PATCH /api/agnb/newsletter?id= — publish/mark or edit. */
   router.patch("/agnb/newsletter", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     const body = (req.body ?? {}) as Record<string, any>;
@@ -124,7 +124,7 @@ export function registerRenewals(router: Router, db: Db) {
 
   /** DELETE /api/agnb/newsletter?id= */
   router.delete("/agnb/newsletter", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.newsletter_issues WHERE id = ${id}`);
@@ -135,7 +135,7 @@ export function registerRenewals(router: Router, db: Db) {
 
   /** GET /api/agnb/changelog-queue — list changelog_drafts. */
   router.get("/agnb/changelog-queue", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, version, period_start, period_end, commit_count, markdown, status,
              published_at, created_at
@@ -148,7 +148,7 @@ export function registerRenewals(router: Router, db: Db) {
 
   /** PATCH /api/agnb/changelog-queue?id= — publish/mark or edit. */
   router.patch("/agnb/changelog-queue", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     const body = (req.body ?? {}) as Record<string, any>;
@@ -165,7 +165,7 @@ export function registerRenewals(router: Router, db: Db) {
 
   /** DELETE /api/agnb/changelog-queue?id= */
   router.delete("/agnb/changelog-queue", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.changelog_drafts WHERE id = ${id}`);
@@ -176,7 +176,7 @@ export function registerRenewals(router: Router, db: Db) {
 
   /** GET /api/agnb/press-releases — list press_releases. */
   router.get("/agnb/press-releases", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, trigger_event, headline, subhead, body, quote, spokesperson_name,
              spokesperson_title, status, created_at
@@ -189,7 +189,7 @@ export function registerRenewals(router: Router, db: Db) {
 
   /** PATCH /api/agnb/press-releases?id= — publish/mark or edit. */
   router.patch("/agnb/press-releases", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     const body = (req.body ?? {}) as Record<string, any>;
@@ -206,7 +206,7 @@ export function registerRenewals(router: Router, db: Db) {
 
   /** DELETE /api/agnb/press-releases?id= */
   router.delete("/agnb/press-releases", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.press_releases WHERE id = ${id}`);

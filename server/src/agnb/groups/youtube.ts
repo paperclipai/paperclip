@@ -1,7 +1,7 @@
 import type { Router } from "express";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows } from "../helpers.js";
 
 /**
@@ -22,7 +22,7 @@ import { rows } from "../helpers.js";
 export function registerYoutube(router: Router, db: Db) {
   /** GET /api/agnb/youtube — all YouTube studio data (ideas/scripts/titles/thumbnails/shorts/performance). */
   router.get("/agnb/youtube", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const [ideas, scripts, titles, thumbnails, shorts, performance] = await Promise.all([
       db.execute(sql`

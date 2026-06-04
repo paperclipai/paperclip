@@ -1,7 +1,7 @@
 import type { Router } from "express";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows } from "../helpers.js";
 
 /**
@@ -30,7 +30,7 @@ function slugify(s: string): string {
 export function registerBlog(router: Router, db: Db) {
   /** GET /api/agnb/blog-automation — blog drafts (Draft blogs / Review queue / Calendar). */
   router.get("/agnb/blog-automation", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, title, slug, description, status, cluster_type, scheduled_at,
              published_at, deployment_url, github_pr_url, error_message,
@@ -44,7 +44,7 @@ export function registerBlog(router: Router, db: Db) {
 
   /** PATCH /api/agnb/blog-automation?id= — schedule / update draft. Body: { status?, scheduled_at?, title?, description? } */
   router.patch("/agnb/blog-automation", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -63,7 +63,7 @@ export function registerBlog(router: Router, db: Db) {
 
   /** DELETE /api/agnb/blog-automation?id= */
   router.delete("/agnb/blog-automation", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.blog_drafts WHERE id = ${id}`);
@@ -77,7 +77,7 @@ export function registerBlog(router: Router, db: Db) {
    * `slug` must be unique; returns 409 on collision.
    */
   router.post("/agnb/blog/save", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as {
       id?: string;
@@ -138,7 +138,7 @@ export function registerBlog(router: Router, db: Db) {
 
   /** POST /api/agnb/blog/ideas — insert a blog idea. Body: { raw_text, source?, related_topic?, notes? } */
   router.post("/agnb/blog/ideas", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as {
       raw_text?: string;
@@ -158,7 +158,7 @@ export function registerBlog(router: Router, db: Db) {
 
   /** PATCH /api/agnb/blog/ideas?id= — update status / notes. */
   router.patch("/agnb/blog/ideas", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     const body = (req.body ?? {}) as { status?: string; notes?: string };
@@ -173,7 +173,7 @@ export function registerBlog(router: Router, db: Db) {
 
   /** DELETE /api/agnb/blog/ideas?id= */
   router.delete("/agnb/blog/ideas", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.blog_ideas WHERE id = ${id}`);
@@ -182,7 +182,7 @@ export function registerBlog(router: Router, db: Db) {
 
   /** GET /api/agnb/blog/schedule-settings — singleton row (id=1). */
   router.get("/agnb/blog/schedule-settings", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT * FROM agnb.blog_schedule_settings WHERE id = 1
     `);
@@ -191,7 +191,7 @@ export function registerBlog(router: Router, db: Db) {
 
   /** PATCH /api/agnb/blog/schedule-settings — update cadence_days, preferred_dow, preferred_hour, timezone, enabled. */
   router.patch("/agnb/blog/schedule-settings", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as {
       cadence_days?: number;
       preferred_dow?: number;
@@ -218,7 +218,7 @@ export function registerBlog(router: Router, db: Db) {
 
   /** GET /api/agnb/content-audit — open content-audit issues (resolved_at IS NULL). */
   router.get("/agnb/content-audit", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, blog_path, blog_title, issue_type, severity, details, detected_at, resolved_at
       FROM agnb.content_audit_issues
@@ -231,7 +231,7 @@ export function registerBlog(router: Router, db: Db) {
 
   /** GET /api/agnb/utm-hygiene — open UTM-hygiene issues (resolved_at IS NULL). */
   router.get("/agnb/utm-hygiene", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, source_kind, source_id, source_name, url, issue_type, severity, details, detected_at, resolved_at
       FROM agnb.utm_hygiene_issues
@@ -249,7 +249,7 @@ export function registerBlog(router: Router, db: Db) {
 
   /** GET /api/agnb/content-gaps?min=25&limit=25&status=identified — top SEO gaps for briefing. */
   router.get("/agnb/content-gaps", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const min = Number(req.query.min ?? 25) || 0;
     const limit = Math.min(Number(req.query.limit ?? 25) || 25, 200);
     const status = typeof req.query.status === "string" ? req.query.status : "identified";
@@ -267,7 +267,7 @@ export function registerBlog(router: Router, db: Db) {
 
   /** PATCH /api/agnb/content-gaps/:id — mark a gap consumed. Body: { status?, ignored_reason? } */
   router.patch("/agnb/content-gaps/:id", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = req.params.id;
     const body = (req.body ?? {}) as Record<string, unknown>;
     const sets = [sql`updated_at = ${new Date().toISOString()}`];
@@ -279,7 +279,7 @@ export function registerBlog(router: Router, db: Db) {
 
   /** GET /api/agnb/competitor-blogs?q=<keyword>&limit=20 — corpus retrieval for draft grounding. */
   router.get("/agnb/competitor-blogs", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
     const limit = Math.min(Number(req.query.limit ?? 20) || 20, 100);
     const like = `%${q}%`;
@@ -300,7 +300,7 @@ export function registerBlog(router: Router, db: Db) {
 
   /** GET /api/agnb/gsc-rank-data?limit=100 — Search Console rank rows (feedback signal). */
   router.get("/agnb/gsc-rank-data", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const limit = Math.min(Number(req.query.limit ?? 100) || 100, 500);
     const result = await db.execute(sql`
       SELECT blog_url, query, position, clicks, impressions, ctr, capture_date

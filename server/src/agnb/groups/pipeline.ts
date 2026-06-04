@@ -1,7 +1,7 @@
 import type { Router } from "express";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows } from "../helpers.js";
 
 /**
@@ -22,7 +22,7 @@ import { rows } from "../helpers.js";
 export function registerPipeline(router: Router, db: Db) {
   /** GET /api/agnb/pipeline/comments?deal_id=… — comments for a deal (newest first). */
   router.get("/agnb/pipeline/comments", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const dealId = typeof req.query.deal_id === "string" ? req.query.deal_id : null;
     if (!dealId) return res.status(400).json({ ok: false, error: "deal_id required" });
     const result = await db.execute(sql`
@@ -37,7 +37,7 @@ export function registerPipeline(router: Router, db: Db) {
 
   /** POST /api/agnb/pipeline/comments — body: { deal_id, body }. */
   router.post("/agnb/pipeline/comments", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as { deal_id?: string; body?: string };
     if (!body.deal_id || !body.body?.trim()) {
@@ -55,7 +55,7 @@ export function registerPipeline(router: Router, db: Db) {
 
   /** DELETE /api/agnb/pipeline/comments?id=… — delete (author only). */
   router.delete("/agnb/pipeline/comments", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
@@ -71,7 +71,7 @@ export function registerPipeline(router: Router, db: Db) {
    * the feed is comments-only until that table lands in agnb.
    */
   router.get("/agnb/pipeline/activity", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const dealId = typeof req.query.deal_id === "string" ? req.query.deal_id : null;
     if (!dealId) return res.status(400).json({ ok: false, error: "deal_id required" });
 
@@ -101,7 +101,7 @@ export function registerPipeline(router: Router, db: Db) {
    * task mirror lands. (deal_id still validated to match the old contract.)
    */
   router.get("/agnb/pipeline/tasks", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const dealId = typeof req.query.deal_id === "string" ? req.query.deal_id : null;
     if (!dealId) return res.status(400).json({ ok: false, error: "deal_id required" });
     res.json({ ok: true, tasks: [] });
@@ -117,7 +117,7 @@ export function registerPipeline(router: Router, db: Db) {
    * lists until those mirrors land.
    */
   router.get("/agnb/pipeline/details", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const dealId = typeof req.query.deal_id === "string" ? req.query.deal_id : null;
     if (!dealId) return res.status(400).json({ ok: false, error: "deal_id required" });
     res.json({ ok: true, lineItems: [], quotes: [], tickets: [] });
@@ -130,7 +130,7 @@ export function registerPipeline(router: Router, db: Db) {
    * POST /pipeline/deals.
    */
   router.get("/agnb/pipeline/board", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, dealname, dealstage, amount_usd, close_date
       FROM agnb.hubspot_deals
@@ -157,7 +157,7 @@ export function registerPipeline(router: Router, db: Db) {
    * HubSpot write).
    */
   router.post("/agnb/pipeline/deals", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as { deals?: Array<Record<string, unknown>> };
     const list = Array.isArray(body.deals) ? body.deals : [];
     if (list.length === 0) {

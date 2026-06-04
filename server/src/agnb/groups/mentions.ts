@@ -1,7 +1,7 @@
 import type { Router } from "express";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows } from "../helpers.js";
 
 /**
@@ -23,7 +23,7 @@ import { rows } from "../helpers.js";
 export function registerMentions(router: Router, db: Db) {
   /** GET /api/agnb/mentions — community mentions (HN/Reddit/etc). */
   router.get("/agnb/mentions", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, source, url, context, sentiment, author, has_link, noticed_at
       FROM agnb.community_mentions
@@ -40,7 +40,7 @@ export function registerMentions(router: Router, db: Db) {
    * ingest source now that the standalone scraper is retired).
    */
   router.post("/agnb/mentions", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as {
       source?: string;
       url?: string;
@@ -72,7 +72,7 @@ export function registerMentions(router: Router, db: Db) {
 
   /** GET /api/agnb/reviews — review platforms + recent review log. */
   router.get("/agnb/reviews", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const [platforms, log] = await Promise.all([
       db.execute(sql`
         SELECT id, platform, profile_url, category, rating, review_count, ranked_position, last_checked_at
@@ -91,7 +91,7 @@ export function registerMentions(router: Router, db: Db) {
 
   /** POST /api/agnb/reviews/platforms — register a review platform to track. Body: { platform, profile_url, category? } */
   router.post("/agnb/reviews/platforms", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as { platform?: string; profile_url?: string; category?: string };
     const platform = String(body.platform ?? "").trim();
     const profile_url = String(body.profile_url ?? "").trim();
@@ -113,7 +113,7 @@ export function registerMentions(router: Router, db: Db) {
 
   /** DELETE /api/agnb/reviews/platforms?id= — stop tracking a platform. */
   router.delete("/agnb/reviews/platforms", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) {
       res.status(400).json({ ok: false, error: "id required" });
@@ -130,7 +130,7 @@ export function registerMentions(router: Router, db: Db) {
    * POST /reviews/platforms); a snapshot for an unknown platform is a no-op.
    */
   router.post("/agnb/reviews/snapshot", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as Record<string, unknown>;
     const platform = String(body.platform ?? "").trim();
     if (!platform) {
@@ -159,7 +159,7 @@ export function registerMentions(router: Router, db: Db) {
    * present (no dupes across sweeps).
    */
   router.post("/agnb/reviews/log", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as { reviews?: Array<Record<string, unknown>> };
     const list = Array.isArray(body.reviews) ? body.reviews : [];
     if (list.length === 0) {
@@ -191,7 +191,7 @@ export function registerMentions(router: Router, db: Db) {
 
   /** GET /api/agnb/sov — share-of-voice prompts + recent results. */
   router.get("/agnb/sov", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const [prompts, results] = await Promise.all([
       db.execute(sql`
         SELECT id, prompt, category
@@ -210,7 +210,7 @@ export function registerMentions(router: Router, db: Db) {
 
   /** POST /api/agnb/sov — add a share-of-voice prompt. Body: { prompt, category? } */
   router.post("/agnb/sov", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as { prompt?: string; category?: string };
     const prompt = String(body.prompt ?? "").trim();
     if (!prompt) {
@@ -227,7 +227,7 @@ export function registerMentions(router: Router, db: Db) {
 
   /** DELETE /api/agnb/sov?id= — remove a prompt (and its results via FK cascade). */
   router.delete("/agnb/sov", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) {
       res.status(400).json({ ok: false, error: "id required" });
@@ -245,7 +245,7 @@ export function registerMentions(router: Router, db: Db) {
    * /inbound/sov/run engine — the agent now runs prompts and posts results here.
    */
   router.post("/agnb/sov/results", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as { results?: Array<Record<string, unknown>> };
     const list = Array.isArray(body.results) ? body.results : [];
     if (list.length === 0) {
@@ -286,7 +286,7 @@ export function registerMentions(router: Router, db: Db) {
 
   /** GET /api/agnb/backlinks — earned/swapped/claimed backlink ledger. */
   router.get("/agnb/backlinks", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, source_url, source_domain, source_da, target_url, anchor_text, kind,
              acquired_at, acquired_by, partner_email, reciprocal, status
@@ -299,7 +299,7 @@ export function registerMentions(router: Router, db: Db) {
 
   /** GET /api/agnb/backlink-prospects — outreach candidate sites. */
   router.get("/agnb/backlink-prospects", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, source_domain, source_url, referring_to, competitor_name, domain_rank,
              discovered_via, status, outreach_subject, outreach_sent_at, notes, discovered_at
@@ -317,7 +317,7 @@ export function registerMentions(router: Router, db: Db) {
    * Idempotent on source_domain (no dupes across discovery sweeps).
    */
   router.post("/agnb/backlink-prospects", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as { prospects?: Array<Record<string, unknown>> };
     const list = Array.isArray(body.prospects) ? body.prospects : [];
     if (list.length === 0) {
@@ -351,7 +351,7 @@ export function registerMentions(router: Router, db: Db) {
    * anchor_text?, kind?, source_da? }> }. Idempotent on source_url.
    */
   router.post("/agnb/backlinks", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as { backlinks?: Array<Record<string, unknown>> };
     const list = Array.isArray(body.backlinks) ? body.backlinks : [];
     if (list.length === 0) {

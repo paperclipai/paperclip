@@ -1,7 +1,7 @@
 import type { Router } from "express";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows } from "../helpers.js";
 
 /**
@@ -15,7 +15,7 @@ import { rows } from "../helpers.js";
 export function registerExperiments(router: Router, db: Db) {
   /** GET /api/agnb/experiments — A/B experiments list. */
   router.get("/agnb/experiments", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, title, hypothesis, metric, outcome, started_at, ended_at,
              created_by, verdict, p_b_beats_a,
@@ -29,7 +29,7 @@ export function registerExperiments(router: Router, db: Db) {
 
   /** GET /api/agnb/csv — CSV upload history. */
   router.get("/agnb/csv", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, filename, rows_total, rows_kept, rows_dedup, rows_suppressed,
              status, rocket_file_id, uploaded_at
@@ -42,7 +42,7 @@ export function registerExperiments(router: Router, db: Db) {
 
   /** GET /api/agnb/subjects — subject-line performance, best reply rate first. */
   router.get("/agnb/subjects", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, subject, first_word, length_chars, campaign_name,
              sends, opens, replies, open_rate, reply_rate, pattern_tags, created_at
@@ -55,7 +55,7 @@ export function registerExperiments(router: Router, db: Db) {
 
   /** GET /api/agnb/cohorts — ICP×week positive-rate heatmap source (last 12w). */
   router.get("/agnb/cohorts", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const since = new Date(Date.now() - 84 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const [snapshots, buckets, icps] = await Promise.all([
       db.execute(sql`

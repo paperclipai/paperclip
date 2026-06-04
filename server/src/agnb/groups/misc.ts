@@ -2,7 +2,7 @@ import type { Router } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows, pgTextArray } from "../helpers.js";
 
 /**
@@ -31,7 +31,7 @@ function generateToken(): { plaintext: string; hash: string } {
 export function registerMisc(router: Router, db: Db) {
   /** GET /api/agnb/quota — Rocket SDR daily quota usage + 7d average. */
   router.get("/agnb/quota", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const startToday = new Date();
     startToday.setUTCHours(0, 0, 0, 0);
     const todayIso = startToday.toISOString();
@@ -68,7 +68,7 @@ export function registerMisc(router: Router, db: Db) {
    * Mirrors AGNB select exactly: never returns token_hash (no secret leak).
    */
   router.get("/agnb/tokens", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, name, scopes, active, created_at, created_by,
              last_used_at, request_count, requests_per_minute, rl_window_count
@@ -83,7 +83,7 @@ export function registerMisc(router: Router, db: Db) {
    * Body: { name, scopes?, requests_per_minute? }
    */
   router.post("/agnb/tokens", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as { name?: string; scopes?: string[]; requests_per_minute?: number };
     const name = String(body.name ?? "").trim();
@@ -114,7 +114,7 @@ export function registerMisc(router: Router, db: Db) {
 
   /** DELETE /api/agnb/tokens?id= — revoke (delete) a token. */
   router.delete("/agnb/tokens", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.api_tokens WHERE id = ${id}`);
@@ -123,7 +123,7 @@ export function registerMisc(router: Router, db: Db) {
 
   /** GET /api/agnb/workflow-recipes — list workflow recipes. */
   router.get("/agnb/workflow-recipes", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, name, trigger_event, trigger_filter, actions, active,
              created_at, created_by, last_fired_at, fire_count
@@ -138,7 +138,7 @@ export function registerMisc(router: Router, db: Db) {
    * Body: { name?, trigger_event?, trigger_filter?, actions?, active? }
    */
   router.post("/agnb/workflow-recipes", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as Record<string, unknown>;
     const name = String(body.name ?? "").trim() || "untitled";
@@ -159,7 +159,7 @@ export function registerMisc(router: Router, db: Db) {
 
   /** PATCH /api/agnb/workflow-recipes — toggle active. Body: { id, active } */
   router.patch("/agnb/workflow-recipes", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as { id?: string; active?: boolean };
     if (!body.id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`
@@ -170,7 +170,7 @@ export function registerMisc(router: Router, db: Db) {
 
   /** DELETE /api/agnb/workflow-recipes?id= — delete a recipe. */
   router.delete("/agnb/workflow-recipes", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.workflow_recipes WHERE id = ${id}`);
@@ -182,7 +182,7 @@ export function registerMisc(router: Router, db: Db) {
    * Mirrors AGNB select exactly; top 100 by views within the window.
    */
   router.get("/agnb/content-performance", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const raw = typeof req.query.days === "string" ? parseInt(req.query.days, 10) : 30;
     const days = Math.max(1, Math.min(365, Number.isFinite(raw) ? raw : 30));
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();

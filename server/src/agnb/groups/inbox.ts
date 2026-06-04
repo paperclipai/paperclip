@@ -1,7 +1,7 @@
 import type { Router } from "express";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows } from "../helpers.js";
 import { extractWhatsAppWork } from "../lib/whatsapp-extract.js";
 
@@ -13,7 +13,7 @@ import { extractWhatsAppWork } from "../lib/whatsapp-extract.js";
 export function registerInbox(router: Router, db: Db) {
   /** GET /api/agnb/inbox?status= — Rocket inbox threads (non-archived). */
   router.get("/agnb/inbox", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const status = typeof req.query.status === "string" ? req.query.status : null;
     const result =
       status && status !== "all"
@@ -43,7 +43,7 @@ export function registerInbox(router: Router, db: Db) {
    * with no positive_signal hit.
    */
   router.post("/agnb/inbox/triage-zero", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as { dry_run?: boolean; older_than_days?: number };
     const days = Math.max(1, Math.min(180, Number(body.older_than_days ?? 14)));
@@ -92,7 +92,7 @@ export function registerInbox(router: Router, db: Db) {
    * Body: { action: "archive" | "unarchive" | "mark_positive" }
    */
   router.post("/agnb/inbox/:thread_id/action", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const threadId = req.params.thread_id;
     const action = (req.body ?? {}).action as string | undefined;
@@ -143,7 +143,7 @@ export function registerInbox(router: Router, db: Db) {
 
   /** GET /api/agnb/comments?filter=unanswered|questions|negative — content comments for triage. */
   router.get("/agnb/comments", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const filter = typeof req.query.filter === "string" ? req.query.filter : null;
     const base = sql`
       SELECT id, platform, author, body, sentiment, is_question, replied, reply_draft, created_at, ingested_at
@@ -164,7 +164,7 @@ export function registerInbox(router: Router, db: Db) {
 
   /** PATCH /api/agnb/comments?id=...&replied= — toggle a comment's replied flag (defaults to true). */
   router.patch("/agnb/comments", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     const replied = req.query.replied !== "0";
@@ -179,7 +179,7 @@ export function registerInbox(router: Router, db: Db) {
 
   /** GET /api/agnb/replies — reply mining log (intent-tagged). Pure DB. */
   router.get("/agnb/replies", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, campaign_name, from_email, from_name, subject, body, intent,
              intent_confidence, objection_cluster, next_action, received_at, logged_by
@@ -192,7 +192,7 @@ export function registerInbox(router: Router, db: Db) {
 
   /** GET /api/agnb/reply-drafts?status= — composed reply drafts. Pure DB. */
   router.get("/agnb/reply-drafts", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const status = typeof req.query.status === "string" ? req.query.status : null;
     const result =
       status && status !== "all"
@@ -212,7 +212,7 @@ export function registerInbox(router: Router, db: Db) {
 
   /** PATCH /api/agnb/reply-drafts — Body: { id, status, sent_at? }. Pure DB. */
   router.patch("/agnb/reply-drafts", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as { id?: string; status?: string; sent_at?: string };
     if (!body.id || !body.status) return res.status(400).json({ ok: false, error: "id + status required" });
     if (!["draft", "queued", "sent", "cancelled"].includes(body.status)) {
@@ -238,7 +238,7 @@ export function registerInbox(router: Router, db: Db) {
    * lead while a draft for that lead is still pending.
    */
   router.post("/agnb/reply-drafts", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as Record<string, unknown>;
     const leadEmail = String(body.lead_email ?? "").trim();
     const draftBody = String(body.body ?? "").trim();
@@ -263,7 +263,7 @@ export function registerInbox(router: Router, db: Db) {
 
   /** GET /api/agnb/approval — campaign-draft approval queue. Pure DB. */
   router.get("/agnb/approval", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, name, product_id, persona_id, status, notes, rocket_campaign_id,
              created_at, created_by, approved_at
@@ -285,7 +285,7 @@ export function registerInbox(router: Router, db: Db) {
    *
    * Ported from agnb api/internal/whatsapp-intake. This is SIDECAR-called, not
    * a board-session request: auth is the shared bearer token (checked here);
-   * we do NOT call assertBoardOrgAccess. Flow: name gate → whitelist gate →
+   * we do NOT call assertAgnbAccess. Flow: name gate → whitelist gate →
    * dedup → Gemini classify → (if task) upsert work_item → insert raw message.
    */
   router.post("/agnb/whatsapp/ingest", async (req, res) => {

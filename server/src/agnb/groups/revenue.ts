@@ -1,7 +1,7 @@
 import type { Router } from "express";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows, pgTextArray } from "../helpers.js";
 
 /**
@@ -65,7 +65,7 @@ export function registerRevenue(router: Router, db: Db) {
    * global_ci, forecast, note }.
    */
   router.get("/agnb/forecast", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const probs = getProbs();
 
     const dealsR = await db.execute(sql`
@@ -164,7 +164,7 @@ export function registerRevenue(router: Router, db: Db) {
 
   /** GET /api/agnb/attribution — match-rate counts + recent unmatched events. */
   router.get("/agnb/attribution", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const [unmatchedCount, matchedCount, recent] = await Promise.all([
       db.execute(sql`
         SELECT COUNT(*)::int AS count
@@ -200,7 +200,7 @@ export function registerRevenue(router: Router, db: Db) {
    * Shape: { ok, scanned, matched }.
    */
   router.post("/agnb/attribution/rematch", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
 
     const eventsR = await db.execute(sql`
       SELECT id, email
@@ -259,7 +259,7 @@ export function registerRevenue(router: Router, db: Db) {
 
   /** GET /api/agnb/crm-hygiene — unresolved CRM data-quality issues. */
   router.get("/agnb/crm-hygiene", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, hubspot_object_type, hubspot_object_id, hubspot_object_name,
              issue_type, severity, details, detected_at, resolved_at
@@ -273,7 +273,7 @@ export function registerRevenue(router: Router, db: Db) {
 
   /** GET /api/agnb/demos — Cal.com bookings mirror (upcoming + past 30). */
   router.get("/agnb/demos", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const now = new Date().toISOString();
     const [upcoming, past] = await Promise.all([
       db.execute(sql`
@@ -301,7 +301,7 @@ export function registerRevenue(router: Router, db: Db) {
    * sources/pages here so the UI shape is preserved.)
    */
   router.get("/agnb/funnel", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT funnel_key, step_name, step_order, count, snapshot_date
       FROM agnb.funnel_snapshots
@@ -332,7 +332,7 @@ export function registerRevenue(router: Router, db: Db) {
 
   /** GET /api/agnb/win-loss?outcome= — win/loss interviews (read-only). */
   router.get("/agnb/win-loss", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const outcome = typeof req.query.outcome === "string" ? req.query.outcome : null;
     const base = sql`
       SELECT id, deal_id, customer_name, outcome, interview_date, contact_name, contact_title,
@@ -349,7 +349,7 @@ export function registerRevenue(router: Router, db: Db) {
 
   /** GET /api/agnb/invoices?status=&q= — Razorpay top-up invoices (read). */
   router.get("/agnb/invoices", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const status = typeof req.query.status === "string" ? req.query.status : null;
     const q = typeof req.query.q === "string" ? req.query.q.trim() : null;
     const base = sql`

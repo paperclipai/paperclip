@@ -1,7 +1,7 @@
 import type { Router } from "express";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows } from "../helpers.js";
 
 /**
@@ -25,7 +25,7 @@ export function registerOps(router: Router, db: Db) {
    * AGNB and are deferred). Response shape: { ok, checks: HealthCheck[] }.
    */
   router.get("/agnb/health", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const checks: HealthCheck[] = [];
 
     try {
@@ -105,7 +105,7 @@ export function registerOps(router: Router, db: Db) {
    * runs) stay cross-origin (Phase 5). Shape: { ok, counts, worker }.
    */
   router.get("/agnb/sync", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const [logR, unprocessedR, unmatchedR, inboxR, hbR] = await Promise.all([
       db.execute(sql`
         SELECT finished_at, ok, campaigns
@@ -141,7 +141,7 @@ export function registerOps(router: Router, db: Db) {
 
   /** GET /api/agnb/audit — recent api_audit rows. */
   router.get("/agnb/audit", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, method, ok, error, duration_ms, caller, called_at
       FROM agnb.api_audit
@@ -153,7 +153,7 @@ export function registerOps(router: Router, db: Db) {
 
   /** GET /api/agnb/entity-audit — recent entity_audit rows. */
   router.get("/agnb/entity-audit", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, entity_type, entity_id, action, diff, actor_email, created_at
       FROM agnb.entity_audit
@@ -165,7 +165,7 @@ export function registerOps(router: Router, db: Db) {
 
   /** GET /api/agnb/events — recent events (NOT /events/drain). */
   router.get("/agnb/events", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, event_type, payload, bucket_id, source, created_at, processed_at, processor_error
       FROM agnb.events
@@ -180,7 +180,7 @@ export function registerOps(router: Router, db: Db) {
    * Read-state is per-user (agnb.notification_reads), not shared.
    */
   router.get("/agnb/notifications", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const [notifications, reads] = await Promise.all([
       db.execute(sql`
@@ -201,7 +201,7 @@ export function registerOps(router: Router, db: Db) {
 
   /** GET /api/agnb/pending-actions — pending (undecided) actions. */
   router.get("/agnb/pending-actions", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, action_type, payload, bucket_id, proposed_by, proposed_at,
              decision, reviewed_by, reviewed_at, executed_at, execution_result

@@ -1,7 +1,7 @@
 import type { Router } from "express";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows, pgTextArray } from "../helpers.js";
 
 /**
@@ -19,7 +19,7 @@ export function registerTeam(router: Router, db: Db) {
    * GET /api/agnb/team — list team members + open-load + done-7d per member.
    */
   router.get("/agnb/team", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
 
     const sevenDaysAgo = new Date(Date.now() - 7 * 86400_000).toISOString();
     const [membersResult, openResult, done7dResult] = await Promise.all([
@@ -59,7 +59,7 @@ export function registerTeam(router: Router, db: Db) {
    * POST /api/agnb/team — create teammate.
    */
   router.post("/agnb/team", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as {
       name?: string;
       email?: string;
@@ -97,7 +97,7 @@ export function registerTeam(router: Router, db: Db) {
    * PATCH /api/agnb/team?id=… — edit teammate.
    */
   router.patch("/agnb/team", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
 
@@ -137,7 +137,7 @@ export function registerTeam(router: Router, db: Db) {
    * GET /api/agnb/team/work?assignee=…&status=…&kind=…&limit=… — list work items.
    */
   router.get("/agnb/team/work", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const assignee = typeof req.query.assignee === "string" ? req.query.assignee : null;
     const status = typeof req.query.status === "string" ? req.query.status : null;
     const kind = typeof req.query.kind === "string" ? req.query.kind : null;
@@ -171,7 +171,7 @@ export function registerTeam(router: Router, db: Db) {
    * Body: { reason?: string; assignee?: string }
    */
   router.patch("/agnb/team/work", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const id = typeof req.query.id === "string" ? req.query.id : null;
     const action = typeof req.query.action === "string" ? req.query.action : null;
@@ -252,7 +252,7 @@ export function registerTeam(router: Router, db: Db) {
    * GET /api/agnb/team/rules — list routing rules.
    */
   router.get("/agnb/team/rules", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT * FROM agnb.work_routing_rules
       ORDER BY kind, created_at
@@ -264,7 +264,7 @@ export function registerTeam(router: Router, db: Db) {
    * POST /api/agnb/team/rules — create rule.
    */
   router.post("/agnb/team/rules", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as {
       kind?: string;
       prefer_skills?: string[];
@@ -295,7 +295,7 @@ export function registerTeam(router: Router, db: Db) {
    * PATCH /api/agnb/team/rules?id=… — edit rule.
    */
   router.patch("/agnb/team/rules", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
 
@@ -331,7 +331,7 @@ export function registerTeam(router: Router, db: Db) {
    * DELETE /api/agnb/team/rules?id=… — soft-delete (set active=false).
    */
   router.delete("/agnb/team/rules", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
 

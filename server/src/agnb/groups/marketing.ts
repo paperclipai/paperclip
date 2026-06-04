@@ -1,7 +1,7 @@
 import type { Router } from "express";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows } from "../helpers.js";
 
 /**
@@ -121,7 +121,7 @@ interface BaseAssetRow {
 export function registerMarketing(router: Router, db: Db) {
   /** GET /api/agnb/marketing?q= — asset list + per-asset fill stats. */
   router.get("/agnb/marketing", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
 
     const assetsResult = q
@@ -179,7 +179,7 @@ export function registerMarketing(router: Router, db: Db) {
 
   /** GET /api/agnb/marketing/:id — single asset + recent fills. */
   router.get("/agnb/marketing/:id", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = req.params.id;
     const asset = rows<BaseAssetRow>(
       await db.execute(sql`
@@ -204,7 +204,7 @@ export function registerMarketing(router: Router, db: Db) {
 
   /** POST /api/agnb/marketing — create an asset. Returns { ok, id }. */
   router.post("/agnb/marketing", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as {
       title?: string;
@@ -234,7 +234,7 @@ export function registerMarketing(router: Router, db: Db) {
 
   /** PATCH /api/agnb/marketing?id= — update html / metadata / status. */
   router.patch("/agnb/marketing", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
 
@@ -275,7 +275,7 @@ export function registerMarketing(router: Router, db: Db) {
 
   /** POST /api/agnb/marketing/fill — record a fill. Returns { ok, id }. */
   router.post("/agnb/marketing/fill", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as {
       asset_id?: string;

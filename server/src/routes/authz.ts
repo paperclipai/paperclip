@@ -31,6 +31,22 @@ export function assertBoardOrgAccess(req: Request) {
   throw forbidden("Company membership or instance admin access required");
 }
 
+/**
+ * Access gate for the AGNB vertical (/api/agnb/*). Allows board users with org
+ * access (the dashboards) AND authenticated producer agents (the SoV/Reviews/
+ * Competitor/Backlink/BoFu/Sales-Ops/Outbound/Inbound/Brand Monitor agents that
+ * read state + ingest results). The agnb schema is single-tenant to this
+ * instance's company, and an agent key is itself company-scoped, so an
+ * authenticated agent is permitted; everyone else falls through to the existing
+ * board-org-access rules.
+ */
+export function assertAgnbAccess(req: Request) {
+  if (req.actor.type === "agent" && req.actor.agentId) {
+    return;
+  }
+  assertBoardOrgAccess(req);
+}
+
 export function assertInstanceAdmin(req: Request) {
   assertBoard(req);
   if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {

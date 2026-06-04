@@ -1,7 +1,7 @@
 import type { Router } from "express";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows, pgTextArray } from "../helpers.js";
 import {
   scrapeSingleUrl,
@@ -21,7 +21,7 @@ import { jdSearch, jdDetail } from "../lib/justdial-sidecar.js";
 export function registerCatalog(router: Router, db: Db) {
   /** GET /api/agnb/targeting — saved Rocket targeting queries. */
   router.get("/agnb/targeting", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, name, query, notes, tags, last_run_at, last_lead_count, created_at, created_by
       FROM agnb.saved_targetings
@@ -33,7 +33,7 @@ export function registerCatalog(router: Router, db: Db) {
 
   /** GET /api/agnb/studio/personas — Rocket buyer personas. */
   router.get("/agnb/studio/personas", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, name, title
       FROM agnb.rocket_personas
@@ -44,7 +44,7 @@ export function registerCatalog(router: Router, db: Db) {
 
   /** GET /api/agnb/studio/products — Rocket products. */
   router.get("/agnb/studio/products", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, name, description
       FROM agnb.rocket_products
@@ -55,7 +55,7 @@ export function registerCatalog(router: Router, db: Db) {
 
   /** POST /api/agnb/studio/personas — add a buyer persona (human or Outbound SDR agent). Body: { name, title? } */
   router.post("/agnb/studio/personas", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as { name?: string; title?: string };
     const name = String(body.name ?? "").trim();
     if (!name) return res.status(400).json({ ok: false, error: "name required" });
@@ -69,7 +69,7 @@ export function registerCatalog(router: Router, db: Db) {
 
   /** POST /api/agnb/studio/products — add a product. Body: { name, description? } */
   router.post("/agnb/studio/products", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const body = (req.body ?? {}) as { name?: string; description?: string };
     const name = String(body.name ?? "").trim();
     if (!name) return res.status(400).json({ ok: false, error: "name required" });
@@ -83,7 +83,7 @@ export function registerCatalog(router: Router, db: Db) {
 
   /** GET /api/agnb/leads/justdial — JustDial scrape jobs (paged). */
   router.get("/agnb/leads/justdial", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, category, city, max_pages, status, error, pages_scraped, leads_count,
              created_by, created_at, started_at, finished_at
@@ -96,7 +96,7 @@ export function registerCatalog(router: Router, db: Db) {
 
   /** GET /api/agnb/linkedin — scraped LinkedIn profiles (mirror). */
   router.get("/agnb/linkedin", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, source_url, full_name, headline, location, current_company, current_title,
              photo_url, scraped_at, added_at
@@ -109,7 +109,7 @@ export function registerCatalog(router: Router, db: Db) {
 
   /** GET /api/agnb/buckets — experiment buckets + rollup metrics + ICP names. */
   router.get("/agnb/buckets", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     // bucket_rollup view recreated via agnb migration 0001. Rollup metrics
     // populate once campaign_drafts links buckets to rocket_campaigns (Phase 5 sync).
     const [bucketsResult, rollupResult, icpsResult] = await Promise.all([
@@ -145,7 +145,7 @@ export function registerCatalog(router: Router, db: Db) {
 
   /** GET /api/agnb/icps — ICP definitions. */
   router.get("/agnb/icps", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const result = await db.execute(sql`
       SELECT id, name, industries, company_size_min, company_size_max, regions, functions,
              seniority, tier, signals, created_at
@@ -161,7 +161,7 @@ export function registerCatalog(router: Router, db: Db) {
    *         company_size_min?, company_size_max? }
    */
   router.post("/agnb/icps", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as {
       name?: string;
@@ -203,7 +203,7 @@ export function registerCatalog(router: Router, db: Db) {
    * Body: { name, query, notes?, tags? }
    */
   router.post("/agnb/targeting", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as { name?: string; query?: string; notes?: string; tags?: string[] };
     const name = String(body.name ?? "").trim();
@@ -227,7 +227,7 @@ export function registerCatalog(router: Router, db: Db) {
    * Also writes a best-effort entity_audit row (mirrors AGNB logEntityChange).
    */
   router.post("/agnb/buckets", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as {
       name?: string;
@@ -282,7 +282,7 @@ export function registerCatalog(router: Router, db: Db) {
   });
 
   /* ----------------------------------------------------------------------- *
-   * Sidecar-backed writes — same-origin, user-triggered (assertBoardOrgAccess).
+   * Sidecar-backed writes — same-origin, user-triggered (assertAgnbAccess).
    * Ported from agnb app/.../api/agnb/{linkedin,leads/justdial}.
    * ----------------------------------------------------------------------- */
 
@@ -292,7 +292,7 @@ export function registerCatalog(router: Router, db: Db) {
    * /api/search. Returns immediately; caller follows with /linkedin/sync.
    */
   router.post("/agnb/linkedin/scrape", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     if (!scraperConfigured()) {
       return res.status(400).json({ ok: false, error: "LINKEDIN_SIDECAR_URL not set" });
     }
@@ -319,7 +319,7 @@ export function registerCatalog(router: Router, db: Db) {
    * agnb.linkedin_profiles keyed on source_url. Returns counts.
    */
   router.post("/agnb/linkedin/sync", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     if (!scraperConfigured()) {
       return res.status(400).json({ ok: false, error: "LINKEDIN_SIDECAR_URL not set" });
@@ -393,7 +393,7 @@ export function registerCatalog(router: Router, db: Db) {
    * Body: { category, city, max_pages? }
    */
   router.post("/agnb/leads/justdial", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const email = req.actor.userEmail ?? req.actor.userId ?? "board";
     const body = (req.body ?? {}) as { category?: string; city?: string; max_pages?: number };
     const category = body.category?.trim();
@@ -417,7 +417,7 @@ export function registerCatalog(router: Router, db: Db) {
    * Idempotent on source_url. Marks job done|error|blocked.
    */
   router.post("/agnb/leads/justdial/run", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAgnbAccess(req);
     const id = typeof req.query.id === "string" ? req.query.id : null;
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
 
