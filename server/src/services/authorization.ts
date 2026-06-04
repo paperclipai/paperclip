@@ -87,7 +87,7 @@ function companyIdForResource(resource: AuthorizationResource) {
 
 function permissionForAction(action: AuthorizationAction): PermissionKey | null {
   if (action === "agent_config:read" || action === "agent_config:update") return "agents:create";
-  if (action === "issue:mutate") return null;
+  if (action === "issue:mutate") return "issues:write";
   return action;
 }
 
