@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import { contentDispositionFilename } from "../lib/content-disposition.js";
 
 describe("contentDispositionFilename", () => {
-  it("keeps a plain ASCII filename intact in both parameters", () => {
+  it("emits only the canonical filename= form for a plain ASCII name", () => {
     const value = contentDispositionFilename("report.pdf");
-    expect(value).toBe("filename=\"report.pdf\"; filename*=UTF-8''report.pdf");
+    expect(value).toBe('filename="report.pdf"');
   });
 
   it("encodes a Korean filename via RFC 5987 with an ASCII fallback", () => {
@@ -32,7 +32,9 @@ describe("contentDispositionFilename", () => {
   });
 
   it("percent-encodes RFC 5987 attr-char exceptions left raw by encodeURIComponent", () => {
-    const value = contentDispositionFilename("a'b(c)*!.txt");
+    // A non-ASCII codepoint forces the filename* form; the ASCII attr-char exceptions that
+    // ride along must still be percent-encoded, never left literal in the ext-value.
+    const value = contentDispositionFilename("한'(c)*!.txt");
     const extValue = value.split("filename*=UTF-8''")[1];
     // None of ' ( ) * ! may appear literally in the ext-value.
     expect(extValue).not.toMatch(/['()*!]/);
