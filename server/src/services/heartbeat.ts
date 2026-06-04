@@ -1418,25 +1418,46 @@ type ResumeSessionRow = {
 };
 
 export function buildExplicitResumeSessionOverride(input: {
+  adapterType?: string | null;
   resumeFromRunId: string;
   resumeRunSessionIdBefore: string | null;
   resumeRunSessionIdAfter: string | null;
+  resumeRunSessionParams?: Record<string, unknown> | null;
   taskSession: ResumeSessionRow | null;
   sessionCodec: AdapterSessionCodec;
 }) {
-  const desiredDisplayId = truncateDisplayId(
-    input.resumeRunSessionIdAfter ?? input.resumeRunSessionIdBefore,
-  );
-  const taskSessionParams = normalizeSessionParams(
+  const resumeRunSessionIdAfter = truncateDisplayId(input.resumeRunSessionIdAfter);
+  const resumeRunSessionIdBefore = truncateDisplayId(input.resumeRunSessionIdBefore);
+  const desiredDisplayId = requiresCanonicalSessionIds(input.adapterType)
+    ? isCanonicalSessionIdForAdapter(input.adapterType, resumeRunSessionIdAfter)
+      ? resumeRunSessionIdAfter
+      : isCanonicalSessionIdForAdapter(input.adapterType, resumeRunSessionIdBefore)
+        ? resumeRunSessionIdBefore
+        : null
+    : resumeRunSessionIdAfter ?? resumeRunSessionIdBefore;
+  const runSessionParams = requiresCanonicalSessionIds(input.adapterType)
+    ? normalizeResumeParamsForAdapter(
+        input.adapterType,
+        input.sessionCodec.deserialize(input.resumeRunSessionParams ?? null),
+      )
+    : null;
+  const runSessionDisplayId = truncateDisplayId(readNonEmptyString(runSessionParams?.sessionId));
+  const taskSessionParams = normalizeResumeParamsForAdapter(
+    input.adapterType,
     input.sessionCodec.deserialize(input.taskSession?.sessionParamsJson ?? null),
   );
+  const taskSessionRawDisplayId = input.taskSession?.sessionDisplayId ?? null;
   const taskSessionDisplayId = truncateDisplayId(
-    input.taskSession?.sessionDisplayId ??
-      (input.sessionCodec.getDisplayId ? input.sessionCodec.getDisplayId(taskSessionParams) : null) ??
-      readNonEmptyString(taskSessionParams?.sessionId),
+    requiresCanonicalSessionIds(input.adapterType)
+      ? readNonEmptyString(taskSessionParams?.sessionId) ??
+        (isCanonicalSessionIdForAdapter(input.adapterType, taskSessionRawDisplayId) ? taskSessionRawDisplayId : null)
+      : taskSessionRawDisplayId ??
+        (input.sessionCodec.getDisplayId ? input.sessionCodec.getDisplayId(taskSessionParams) : null) ??
+        readNonEmptyString(taskSessionParams?.sessionId),
   );
   const canReuseTaskSessionParams =
     input.taskSession != null &&
+    (!requiresCanonicalSessionIds(input.adapterType) || taskSessionParams != null) &&
     (
       input.taskSession.lastRunId === input.resumeFromRunId ||
       (!!desiredDisplayId && taskSessionDisplayId === desiredDisplayId)
@@ -1444,10 +1465,16 @@ export function buildExplicitResumeSessionOverride(input: {
   const sessionParams =
     canReuseTaskSessionParams
       ? taskSessionParams
-      : desiredDisplayId
-        ? { sessionId: desiredDisplayId }
-        : null;
-  const sessionDisplayId = desiredDisplayId ?? (canReuseTaskSessionParams ? taskSessionDisplayId : null);
+      : runSessionParams
+        ? runSessionParams
+        : desiredDisplayId
+          ? { sessionId: desiredDisplayId }
+          : null;
+  const sessionDisplayId = canReuseTaskSessionParams
+    ? taskSessionDisplayId
+    : runSessionParams
+      ? runSessionDisplayId
+      : desiredDisplayId;
 
   if (!sessionDisplayId && !sessionParams) return null;
   return {
@@ -2377,14 +2404,45 @@ function normalizeSessionParams(params: Record<string, unknown> | null | undefin
   return Object.keys(params).length > 0 ? params : null;
 }
 
-function resolveNextSessionState(input: {
+type RunSessionOutcome = "succeeded" | "failed" | "cancelled" | "timed_out";
+
+const HERMES_ADAPTER_TYPE = "hermes_local";
+const HERMES_SESSION_ID_REGEX = /^(?:\d{8}_\d{6}_[A-Za-z0-9_-]{4,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+function requiresCanonicalSessionIds(adapterType: string | null | undefined) {
+  return adapterType === HERMES_ADAPTER_TYPE;
+}
+
+function isCanonicalSessionIdForAdapter(
+  adapterType: string | null | undefined,
+  sessionId: string | null | undefined,
+) {
+  if (!sessionId) return false;
+  if (!requiresCanonicalSessionIds(adapterType)) return true;
+  return HERMES_SESSION_ID_REGEX.test(sessionId);
+}
+
+function normalizeResumeParamsForAdapter(
+  adapterType: string | null | undefined,
+  params: Record<string, unknown> | null | undefined,
+) {
+  const normalized = normalizeSessionParams(params);
+  if (!normalized) return null;
+  if (!requiresCanonicalSessionIds(adapterType)) return normalized;
+  const sessionId = readNonEmptyString(normalized.sessionId);
+  return isCanonicalSessionIdForAdapter(adapterType, sessionId) ? normalized : null;
+}
+
+export function resolveNextSessionState(input: {
+  adapterType?: string | null;
   codec: AdapterSessionCodec;
   adapterResult: AdapterExecutionResult;
+  outcome?: RunSessionOutcome;
   previousParams: Record<string, unknown> | null;
   previousDisplayId: string | null;
   previousLegacySessionId: string | null;
 }) {
-  const { codec, adapterResult, previousParams, previousDisplayId, previousLegacySessionId } = input;
+  const { adapterType, codec, adapterResult, previousParams, previousDisplayId, previousLegacySessionId } = input;
 
   if (adapterResult.clearSession) {
     return {
@@ -2394,38 +2452,109 @@ function resolveNextSessionState(input: {
     };
   }
 
+  if (!requiresCanonicalSessionIds(adapterType)) {
+    const explicitParams = adapterResult.sessionParams;
+    const hasExplicitParams = adapterResult.sessionParams !== undefined;
+    const hasExplicitSessionId = adapterResult.sessionId !== undefined;
+    const explicitSessionId = readNonEmptyString(adapterResult.sessionId);
+    const hasExplicitDisplay = adapterResult.sessionDisplayId !== undefined;
+    const explicitDisplayId = readNonEmptyString(adapterResult.sessionDisplayId);
+    const shouldUsePrevious = !hasExplicitParams && !hasExplicitSessionId && !hasExplicitDisplay;
+
+    const candidateParams =
+      hasExplicitParams
+        ? explicitParams
+        : hasExplicitSessionId
+          ? (explicitSessionId ? { sessionId: explicitSessionId } : null)
+          : previousParams;
+
+    const serialized = normalizeSessionParams(codec.serialize(normalizeSessionParams(candidateParams) ?? null));
+    const deserialized = normalizeSessionParams(codec.deserialize(serialized));
+
+    const displayId = truncateDisplayId(
+      explicitDisplayId ??
+        (codec.getDisplayId ? codec.getDisplayId(deserialized) : null) ??
+        readNonEmptyString(deserialized?.sessionId) ??
+        (shouldUsePrevious ? previousDisplayId : null) ??
+        explicitSessionId ??
+        (shouldUsePrevious ? previousLegacySessionId : null),
+    );
+
+    const legacySessionId =
+      explicitSessionId ??
+      readNonEmptyString(deserialized?.sessionId) ??
+      displayId ??
+      (shouldUsePrevious ? previousLegacySessionId : null);
+
+    return {
+      params: serialized,
+      displayId,
+      legacySessionId,
+    };
+  }
+
+  const previousSerializedParams = normalizeResumeParamsForAdapter(
+    adapterType,
+    codec.serialize(normalizeResumeParamsForAdapter(adapterType, previousParams)),
+  );
+  const validPreviousDisplayId = isCanonicalSessionIdForAdapter(adapterType, previousDisplayId)
+    ? previousDisplayId
+    : null;
+  const validPreviousLegacySessionId = isCanonicalSessionIdForAdapter(adapterType, previousLegacySessionId)
+    ? previousLegacySessionId
+    : null;
+  const previousState = () => {
+    const displayId = truncateDisplayId(
+      readNonEmptyString(previousSerializedParams?.sessionId) ??
+        validPreviousDisplayId ??
+        validPreviousLegacySessionId,
+    );
+    return {
+      params: previousSerializedParams,
+      displayId,
+      legacySessionId: readNonEmptyString(previousSerializedParams?.sessionId) ?? displayId ?? validPreviousLegacySessionId,
+    };
+  };
+
+  if (input.outcome && input.outcome !== "succeeded") {
+    return previousState();
+  }
+
   const explicitParams = adapterResult.sessionParams;
   const hasExplicitParams = adapterResult.sessionParams !== undefined;
-  const hasExplicitSessionId = adapterResult.sessionId !== undefined;
   const explicitSessionId = readNonEmptyString(adapterResult.sessionId);
-  const hasExplicitDisplay = adapterResult.sessionDisplayId !== undefined;
+  const validExplicitSessionId = isCanonicalSessionIdForAdapter(adapterType, explicitSessionId)
+    ? explicitSessionId
+    : null;
   const explicitDisplayId = readNonEmptyString(adapterResult.sessionDisplayId);
-  const shouldUsePrevious = !hasExplicitParams && !hasExplicitSessionId && !hasExplicitDisplay;
+  const validExplicitDisplayId = isCanonicalSessionIdForAdapter(adapterType, explicitDisplayId)
+    ? explicitDisplayId
+    : null;
+  const explicitSerializedParams = hasExplicitParams
+    ? normalizeResumeParamsForAdapter(
+        adapterType,
+        codec.serialize(normalizeSessionParams(explicitParams) ?? null),
+      )
+    : null;
+  const explicitCanonicalSessionId =
+    readNonEmptyString(explicitSerializedParams?.sessionId) ??
+    validExplicitSessionId ??
+    validExplicitDisplayId;
 
-  const candidateParams =
-    hasExplicitParams
-      ? explicitParams
-      : hasExplicitSessionId
-        ? (explicitSessionId ? { sessionId: explicitSessionId } : null)
-        : previousParams;
+  if (!explicitCanonicalSessionId) {
+    return previousState();
+  }
 
-  const serialized = normalizeSessionParams(codec.serialize(normalizeSessionParams(candidateParams) ?? null));
-  const deserialized = normalizeSessionParams(codec.deserialize(serialized));
-
-  const displayId = truncateDisplayId(
-    explicitDisplayId ??
-      (codec.getDisplayId ? codec.getDisplayId(deserialized) : null) ??
-      readNonEmptyString(deserialized?.sessionId) ??
-      (shouldUsePrevious ? previousDisplayId : null) ??
-      explicitSessionId ??
-      (shouldUsePrevious ? previousLegacySessionId : null),
+  const serialized = normalizeResumeParamsForAdapter(
+    adapterType,
+    codec.serialize({ sessionId: explicitCanonicalSessionId }),
   );
-
-  const legacySessionId =
-    explicitSessionId ??
-    readNonEmptyString(deserialized?.sessionId) ??
-    displayId ??
-    (shouldUsePrevious ? previousLegacySessionId : null);
+  const displayId = truncateDisplayId(
+    readNonEmptyString(serialized?.sessionId) ??
+      (codec.getDisplayId ? codec.getDisplayId(serialized) : null) ??
+      explicitCanonicalSessionId,
+  );
+  const legacySessionId = readNonEmptyString(serialized?.sessionId) ?? explicitCanonicalSessionId;
 
   return {
     params: serialized,
@@ -3559,6 +3688,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .select({
         id: heartbeatRuns.id,
         contextSnapshot: heartbeatRuns.contextSnapshot,
+        resultJson: heartbeatRuns.resultJson,
         sessionIdBefore: heartbeatRuns.sessionIdBefore,
         sessionIdAfter: heartbeatRuns.sessionIdAfter,
       })
@@ -3579,10 +3709,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, resumeTaskKey)
       : null;
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
+    const resumeRunResult = parseObject(resumeRun.resultJson);
+    const resumeRunSessionId = requiresCanonicalSessionIds(agent.adapterType)
+      ? readNonEmptyString(resumeRunResult.sessionId) ?? readNonEmptyString(resumeRunResult.session_id)
+      : null;
     const sessionOverride = buildExplicitResumeSessionOverride({
+      adapterType: agent.adapterType,
       resumeFromRunId,
       resumeRunSessionIdBefore: resumeRun.sessionIdBefore,
       resumeRunSessionIdAfter: resumeRun.sessionIdAfter,
+      resumeRunSessionParams: resumeRunSessionId ? { sessionId: resumeRunSessionId } : null,
       taskSession: resumeTaskSession,
       sessionCodec,
     });
@@ -7066,7 +7202,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resetTaskSession = shouldResetTaskSessionForWake(context);
     const sessionResetReason = describeSessionResetReason(context);
     const taskSessionForRun = resetTaskSession ? null : taskSession;
-    const explicitResumeSessionParams = normalizeSessionParams(
+    const explicitResumeSessionParams = normalizeResumeParamsForAdapter(
+      agent.adapterType,
       sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
     );
     const explicitResumeSessionDisplayId = truncateDisplayId(
@@ -7076,8 +7213,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
     const previousSessionParams =
       explicitResumeSessionParams ??
-      (explicitResumeSessionDisplayId ? { sessionId: explicitResumeSessionDisplayId } : null) ??
-      normalizeSessionParams(sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null));
+      (isCanonicalSessionIdForAdapter(agent.adapterType, explicitResumeSessionDisplayId)
+        ? { sessionId: explicitResumeSessionDisplayId }
+        : null) ??
+      normalizeResumeParamsForAdapter(
+        agent.adapterType,
+        sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
+      );
     const config = parseObject(agent.adapterConfig);
     const requestedExecutionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
@@ -7608,14 +7750,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
     }
-    const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
-    let previousSessionDisplayId = truncateDisplayId(
+    const runtimeSessionFallback = taskKey || resetTaskSession
+      ? null
+      : isCanonicalSessionIdForAdapter(agent.adapterType, runtime.sessionId)
+        ? runtime.sessionId
+        : null;
+    const runtimeSessionDisplayId = truncateDisplayId(
       explicitResumeSessionDisplayId ??
         taskSessionForRun?.sessionDisplayId ??
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(runtimeSessionParams) : null) ??
         readNonEmptyString(runtimeSessionParams?.sessionId) ??
         runtimeSessionFallback,
     );
+    let previousSessionDisplayId = requiresCanonicalSessionIds(agent.adapterType)
+      ? truncateDisplayId(
+          readNonEmptyString(previousSessionParams?.sessionId) ??
+            (isCanonicalSessionIdForAdapter(agent.adapterType, runtimeSessionDisplayId) ? runtimeSessionDisplayId : null) ??
+            runtimeSessionFallback,
+        )
+      : runtimeSessionDisplayId;
     let runtimeSessionIdForAdapter =
       readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback;
     let runtimeSessionParamsForAdapter = runtimeSessionParams;
@@ -7955,9 +8108,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
+      let outcome: RunSessionOutcome;
+      const latestRun = await getRun(run.id);
+      if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
+        outcome = latestRun.status;
+      } else if (adapterResult.timedOut) {
+        outcome = "timed_out";
+      } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
+        outcome = "succeeded";
+      } else {
+        outcome = "failed";
+      }
+
       const nextSessionState = resolveNextSessionState({
+        adapterType: agent.adapterType,
         codec: sessionCodec,
         adapterResult,
+        outcome,
         previousParams: previousSessionParams,
         previousDisplayId: runtimeForAdapter.sessionDisplayId,
         previousLegacySessionId: runtimeForAdapter.sessionId,
@@ -7970,18 +8137,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         rawUsage,
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
-
-      let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
-      const latestRun = await getRun(run.id);
-      if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
-        outcome = latestRun.status;
-      } else if (adapterResult.timedOut) {
-        outcome = "timed_out";
-      } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
-        outcome = "succeeded";
-      } else {
-        outcome = "failed";
-      }
       const runErrorMessage =
         outcome === "cancelled"
           ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
