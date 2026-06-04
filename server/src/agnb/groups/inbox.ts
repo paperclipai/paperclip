@@ -231,6 +231,36 @@ export function registerInbox(router: Router, db: Db) {
     res.json({ ok: true });
   });
 
+  /**
+   * POST /api/agnb/reply-drafts — Inbound Responder agent composes a draft reply.
+   * Body: { lead_email, body, lead_name?, subject?, mailto_url? }. Lands as a
+   * 'draft' for a human to approve/send (via the PATCH above). Idempotent per
+   * lead while a draft for that lead is still pending.
+   */
+  router.post("/agnb/reply-drafts", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const leadEmail = String(body.lead_email ?? "").trim();
+    const draftBody = String(body.body ?? "").trim();
+    if (!leadEmail || !draftBody) {
+      res.status(400).json({ ok: false, error: "lead_email and body required" });
+      return;
+    }
+    const leadName = typeof body.lead_name === "string" ? body.lead_name : null;
+    const subject = typeof body.subject === "string" ? body.subject : null;
+    const mailtoUrl = typeof body.mailto_url === "string" ? body.mailto_url : null;
+    const result = await db.execute(sql`
+      INSERT INTO agnb.reply_drafts (lead_email, lead_name, subject, body, status, mailto_url)
+      SELECT ${leadEmail}, ${leadName}, ${subject}, ${draftBody}, 'draft', ${mailtoUrl}
+      WHERE NOT EXISTS (
+        SELECT 1 FROM agnb.reply_drafts WHERE lead_email = ${leadEmail} AND status IN ('draft', 'queued')
+      )
+      RETURNING id
+    `);
+    const inserted = rows(result);
+    res.json({ ok: true, inserted: inserted.length > 0, id: inserted[0]?.id ?? null });
+  });
+
   /** GET /api/agnb/approval — campaign-draft approval queue. Pure DB. */
   router.get("/agnb/approval", async (req, res) => {
     assertBoardOrgAccess(req);

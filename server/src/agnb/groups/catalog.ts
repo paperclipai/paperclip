@@ -53,6 +53,34 @@ export function registerCatalog(router: Router, db: Db) {
     res.json({ ok: true, products: rows(result) });
   });
 
+  /** POST /api/agnb/studio/personas — add a buyer persona (human or Outbound SDR agent). Body: { name, title? } */
+  router.post("/agnb/studio/personas", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const body = (req.body ?? {}) as { name?: string; title?: string };
+    const name = String(body.name ?? "").trim();
+    if (!name) return res.status(400).json({ ok: false, error: "name required" });
+    const result = await db.execute(sql`
+      INSERT INTO agnb.rocket_personas (id, name, title)
+      VALUES (gen_random_uuid(), ${name}, ${body.title ?? null})
+      RETURNING id
+    `);
+    res.json({ ok: true, id: rows<{ id: string }>(result)[0]?.id ?? null });
+  });
+
+  /** POST /api/agnb/studio/products — add a product. Body: { name, description? } */
+  router.post("/agnb/studio/products", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const body = (req.body ?? {}) as { name?: string; description?: string };
+    const name = String(body.name ?? "").trim();
+    if (!name) return res.status(400).json({ ok: false, error: "name required" });
+    const result = await db.execute(sql`
+      INSERT INTO agnb.rocket_products (id, name, description)
+      VALUES (gen_random_uuid(), ${name}, ${body.description ?? null})
+      RETURNING id
+    `);
+    res.json({ ok: true, id: rows<{ id: string }>(result)[0]?.id ?? null });
+  });
+
   /** GET /api/agnb/leads/justdial — JustDial scrape jobs (paged). */
   router.get("/agnb/leads/justdial", async (req, res) => {
     assertBoardOrgAccess(req);
