@@ -32,6 +32,7 @@ import {
   acceptInviteSchema,
   createCliAuthChallengeSchema,
   claimJoinRequestApiKeySchema,
+  createBoardApiKeySchema,
   createCompanyInviteSchema,
   createOpenClawInvitePromptSchema,
   listCompanyInvitesQuerySchema,
@@ -43,7 +44,8 @@ import {
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
-  PERMISSION_KEYS
+  PERMISSION_KEYS,
+  isUuidLike,
 } from "@paperclipai/shared";
 import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey } from "@paperclipai/shared";
 import {
@@ -139,20 +141,17 @@ function buildCliAuthApprovalPath(challengeId: string, token: string) {
 
 function readSkillMarkdown(skillName: string): string | null {
   const normalized = skillName.trim().toLowerCase();
-  if (
-    normalized !== "paperclip" &&
-    normalized !== "paperclip-create-agent" &&
-    normalized !== "paperclip-create-plugin" &&
-    normalized !== "paperclip-converting-plans-to-tasks" &&
-    normalized !== "para-memory-files"
-  )
+  if (!isSafeSkillName(normalized)) {
     return null;
+  }
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const claudeSkillsDir = resolveClaudeSkillsDir();
   const candidates = [
+    claudeSkillsDir ? path.resolve(claudeSkillsDir, normalized, "SKILL.md") : null,
     path.resolve(moduleDir, "../../skills", normalized, "SKILL.md"), // published: dist/routes/ -> <pkg>/skills/
     path.resolve(process.cwd(), "skills", normalized, "SKILL.md"), // cwd (e.g. monorepo root)
     path.resolve(moduleDir, "../../../skills", normalized, "SKILL.md") // dev: src/routes/ -> repo root/skills/
-  ];
+  ].filter((candidate): candidate is string => Boolean(candidate));
   for (const skillPath of candidates) {
     try {
       return fs.readFileSync(skillPath, "utf8");
@@ -161,6 +160,10 @@ function readSkillMarkdown(skillName: string): string | null {
     }
   }
   return null;
+}
+
+function isSafeSkillName(skillName: string): boolean {
+  return /^[a-z0-9][a-z0-9._-]*$/.test(skillName);
 }
 
 /** Resolve the Paperclip repo skills directory (built-in / managed skills). */
@@ -206,10 +209,17 @@ interface AvailableSkill {
   isPaperclipManaged: boolean;
 }
 
-/** Discover all available Claude Code skills from ~/.claude/skills/. */
+/** Discover all available Claude Code skills from CLAUDE_HOME or ~/.claude. */
+function resolveClaudeSkillsDir(): string {
+  const configuredClaudeHome = process.env.CLAUDE_HOME?.trim();
+  const claudeHome = configuredClaudeHome
+    ? path.resolve(configuredClaudeHome)
+    : path.join(process.env.HOME || process.env.USERPROFILE || "", ".claude");
+  return path.join(claudeHome, "skills");
+}
+
 function listAvailableSkills(): AvailableSkill[] {
-  const homeDir = process.env.HOME || process.env.USERPROFILE || "";
-  const claudeSkillsDir = path.join(homeDir, ".claude", "skills");
+  const claudeSkillsDir = resolveClaudeSkillsDir();
   const paperclipSkillsDir = resolvePaperclipSkillsDir();
 
   // Build set of Paperclip-managed skill names
@@ -241,7 +251,27 @@ function listAvailableSkills(): AvailableSkill[] {
         isPaperclipManaged: paperclipSkillNames.has(entry.name),
       });
     }
-  } catch { /* ~/.claude/skills/ doesn't exist */ }
+  } catch { /* Claude skills directory doesn't exist */ }
+
+  if (paperclipSkillsDir) {
+    const existingNames = new Set(skills.map((skill) => skill.name));
+    try {
+      for (const entry of fs.readdirSync(paperclipSkillsDir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.name.startsWith(".") || existingNames.has(entry.name)) continue;
+        const skillMdPath = path.join(paperclipSkillsDir, entry.name, "SKILL.md");
+        let description = "";
+        try {
+          const md = fs.readFileSync(skillMdPath, "utf8");
+          description = parseSkillFrontmatter(md).description;
+        } catch { /* no SKILL.md or unreadable */ }
+        skills.push({
+          name: entry.name,
+          description,
+          isPaperclipManaged: true,
+        });
+      }
+    } catch { /* skip Paperclip skills directory */ }
+  }
 
   skills.sort((a, b) => a.name.localeCompare(b.name));
   return skills;
@@ -2608,6 +2638,95 @@ export function accessRoutes(
       source: req.actor.source ?? "none",
       keyId: req.actor.source === "board_key" ? req.actor.keyId ?? null : null,
     });
+  });
+
+  router.get("/board-api-keys", async (req, res) => {
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      throw unauthorized("Board authentication required");
+    }
+    const keys = await boardAuth.listBoardApiKeys(req.actor.userId, {
+      includeInactive: req.query.includeInactive === "true",
+    });
+    res.json(keys);
+  });
+
+  router.post(
+    "/board-api-keys",
+    validate(createBoardApiKeySchema),
+    async (req, res) => {
+      if (req.actor.type !== "board" || !req.actor.userId) {
+        throw unauthorized("Board authentication required");
+      }
+
+      if (req.body.requestedCompanyId) {
+        assertCompanyAccess(req, req.body.requestedCompanyId);
+      }
+
+      const key = await boardAuth.createNamedBoardApiKey({
+        userId: req.actor.userId,
+        name: req.body.name,
+        expiresAt: req.body.expiresAt === undefined ? undefined : req.body.expiresAt,
+      });
+      const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
+        userId: req.actor.userId,
+        requestedCompanyId: req.body.requestedCompanyId ?? null,
+        boardApiKeyId: key.id,
+      });
+      for (const companyId of companyIds) {
+        await logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId: req.actor.userId,
+          action: "board_api_key.created",
+          entityType: "user",
+          entityId: req.actor.userId,
+          details: {
+            boardApiKeyId: key.id,
+            name: key.name,
+            requestedCompanyId: req.body.requestedCompanyId ?? null,
+            expiresAt: key.expiresAt?.toISOString() ?? null,
+          },
+        });
+      }
+
+      res.status(201).json(key);
+    },
+  );
+
+  router.delete("/board-api-keys/:keyId", async (req, res) => {
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      throw unauthorized("Board authentication required");
+    }
+    const keyId = (req.params.keyId as string).trim();
+    if (!isUuidLike(keyId)) {
+      throw badRequest("Invalid board API key ID");
+    }
+    const key = await boardAuth.getBoardApiKeyForUser(keyId, req.actor.userId);
+    if (!key) throw notFound("Board API key not found");
+    const revoked = await boardAuth.revokeBoardApiKey(key.id);
+    if (!revoked) throw notFound("Board API key not found");
+
+    const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
+      userId: req.actor.userId,
+      boardApiKeyId: key.id,
+    });
+    for (const companyId of companyIds) {
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId,
+        action: "board_api_key.revoked",
+        entityType: "user",
+        entityId: req.actor.userId,
+        details: {
+          boardApiKeyId: key.id,
+          name: key.name,
+          revokedVia: "board_api_key_lifecycle",
+        },
+      });
+    }
+
+    res.json({ ok: true, keyId: key.id });
   });
 
   router.post("/cli-auth/revoke-current", async (req, res) => {

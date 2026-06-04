@@ -477,6 +477,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       replayWindowSec: 300,
     }, {});
     await svc.deleteTrigger(created.trigger.id, {});
+    await expect(db.select().from(companySecrets).where(eq(companySecrets.id, created.trigger.secretId!))).resolves.toHaveLength(0);
+    await expect(db.select().from(companySecretBindings).where(eq(companySecretBindings.secretId, created.trigger.secretId!))).resolves.toHaveLength(0);
 
     const restored = await svc.restoreRevision(routine.id, created.revision.id, {});
 
@@ -563,6 +565,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     const deleted = await svc.deleteTrigger(created.trigger.id, {});
     expect(deleted.revision?.revisionNumber).toBe(5);
+    await expect(db.select().from(companySecrets).where(eq(companySecrets.id, created.trigger.secretId!))).resolves.toHaveLength(0);
+    await expect(db.select().from(companySecretBindings).where(eq(companySecretBindings.secretId, created.trigger.secretId!))).resolves.toHaveLength(0);
 
     const revisions = await svc.listRevisions(routine.id);
     const serialized = JSON.stringify(revisions.map((revision) => revision.snapshot));

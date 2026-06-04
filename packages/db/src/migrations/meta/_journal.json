@@ -663,8 +663,15 @@
     {
       "idx": 94,
       "version": "7",
+      "when": 1780533900000,
+      "tag": "0094_backfill_archived_company_agent_pauses",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
       "when": 1778966210569,
-      "tag": "0094_plugin_config_company_scope",
+      "tag": "0095_plugin_config_company_scope",
       "breakpoints": true
     }
   ]

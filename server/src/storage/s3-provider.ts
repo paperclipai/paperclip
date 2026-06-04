@@ -99,6 +99,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
           new GetObjectCommand({
             Bucket: bucket,
             Key: key,
+            Range: input.range ? `bytes=${input.range.start}-${input.range.end}` : undefined,
           }),
         );
 
