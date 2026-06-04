@@ -45,6 +45,7 @@ import {
   runDatabaseRestore,
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
+  prepareEmbeddedPostgresNativeRuntime,
 } from "@paperclipai/db";
 import type { Command } from "commander";
 import { ensureAgentJwtSecret, loadPaperclipEnvFile, mergePaperclipEnvEntries, readPaperclipEnvEntries, resolvePaperclipEnvFile } from "../config/env.js";
@@ -1059,6 +1060,7 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
       "Embedded PostgreSQL support requires dependency `embedded-postgres`. Reinstall dependencies and try again.",
     );
   }
+  await prepareEmbeddedPostgresNativeRuntime();
 
   const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
   const runningPid = readRunningPostmasterPid(postmasterPidFile);
@@ -1385,7 +1387,12 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   }
 
   if (opts.force) {
-    rmSync(paths.repoConfigDir, { recursive: true, force: true });
+    // Only remove the specific files we're about to rewrite, not the whole
+    // repoConfigDir — that directory can contain sibling state such as
+    // <repo>/.paperclip/worktrees/ holding every repo-managed worktree
+    // checkout, and a recursive rmSync here would nuke them all.
+    rmSync(paths.configPath, { force: true });
+    rmSync(paths.envPath, { force: true });
     rmSync(paths.instanceRoot, { recursive: true, force: true });
   }
 
@@ -1561,11 +1568,31 @@ export async function worktreeMakeCommand(nameArg: string, opts: WorktreeMakeOpt
   }
 }
 
+type PnpmInstallInvocation = {
+  command: string;
+  argsPrefix: string[];
+};
+
+export function resolvePnpmInstallInvocation(
+  env: NodeJS.ProcessEnv = process.env,
+  nodeExecPath = process.execPath,
+): PnpmInstallInvocation {
+  const npmExecPath = nonEmpty(env.npm_execpath);
+  if (npmExecPath && npmExecPath.toLowerCase().includes("pnpm")) {
+    if (/\.(cjs|mjs|js)$/i.test(npmExecPath)) {
+      return { command: nodeExecPath, argsPrefix: [npmExecPath] };
+    }
+    return { command: npmExecPath, argsPrefix: [] };
+  }
+  return { command: "pnpm", argsPrefix: [] };
+}
+
 function installDependenciesBestEffort(targetPath: string): void {
   const installSpinner = p.spinner();
   installSpinner.start("Installing dependencies...");
+  const pnpm = resolvePnpmInstallInvocation();
   try {
-    execFileSync("pnpm", ["install"], {
+    execFileSync(pnpm.command, [...pnpm.argsPrefix, "install"], {
       cwd: targetPath,
       stdio: ["ignore", "pipe", "pipe"],
     });

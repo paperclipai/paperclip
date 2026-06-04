@@ -6,6 +6,7 @@ import {
   PLUGIN_UI_SLOT_TYPES,
   PLUGIN_UI_SLOT_ENTITY_TYPES,
   PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS,
+  PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS,
   PLUGIN_LAUNCHER_PLACEMENT_ZONES,
   PLUGIN_LAUNCHER_ACTIONS,
   PLUGIN_LAUNCHER_BOUNDS,
@@ -39,7 +40,7 @@ import { routineVariableSchema } from "./routine.js";
  *
  * @see PLUGIN_SPEC.md §10.1 — Manifest shape
  */
-export const jsonSchemaSchema = z.record(z.unknown()).refine(
+export const jsonSchemaSchema = z.record(z.string(), z.unknown()).refine(
   (val) => {
     // Must have a "type" field if non-empty, or be a valid JSON Schema object
     if (Object.keys(val).length === 0) return true;
@@ -143,9 +144,9 @@ export const pluginManagedAgentDeclarationSchema = z.object({
   capabilities: z.string().max(2000).nullable().optional(),
   adapterType: z.string().min(1).max(100).optional(),
   adapterPreference: z.array(z.string().min(1).max(100)).max(10).optional(),
-  adapterConfig: z.record(z.unknown()).optional(),
-  runtimeConfig: z.record(z.unknown()).optional(),
-  permissions: z.record(z.unknown()).optional(),
+  adapterConfig: z.record(z.string(), z.unknown()).optional(),
+  runtimeConfig: z.record(z.string(), z.unknown()).optional(),
+  permissions: z.record(z.string(), z.unknown()).optional(),
   status: z.enum(["idle", "paused"]).optional(),
   budgetMonthlyCents: z.number().int().min(0).optional(),
   instructions: z.object({
@@ -166,7 +167,7 @@ export const pluginManagedProjectDeclarationSchema = z.object({
   description: z.string().max(2000).nullable().optional(),
   status: z.enum(["backlog", "planned", "in_progress", "completed", "cancelled"]).optional(),
   color: z.string().max(32).nullable().optional(),
-  settings: z.record(z.unknown()).optional(),
+  settings: z.record(z.string(), z.unknown()).optional(),
 });
 
 export type PluginManagedProjectDeclarationInput = z.infer<typeof pluginManagedProjectDeclarationSchema>;
@@ -322,10 +323,10 @@ export const pluginUiSlotDeclarationSchema = z.object({
       path: ["entityTypes"],
     });
   }
-  if (value.routePath && value.type !== "page" && value.type !== "routeSidebar") {
+  if (value.routePath && value.type !== "page" && value.type !== "routeSidebar" && value.type !== "companySettingsPage") {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "routePath is only supported for page and routeSidebar slots",
+      message: "routePath is only supported for page, routeSidebar, and companySettingsPage slots",
       path: ["routePath"],
     });
   }
@@ -336,10 +337,28 @@ export const pluginUiSlotDeclarationSchema = z.object({
       path: ["routePath"],
     });
   }
+  if (value.type === "companySettingsPage" && !value.routePath) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "companySettingsPage slots require routePath",
+      path: ["routePath"],
+    });
+  }
   if (value.routePath && PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS.includes(value.routePath as (typeof PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS)[number])) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: `routePath "${value.routePath}" is reserved by the host`,
+      path: ["routePath"],
+    });
+  }
+  if (
+    value.type === "companySettingsPage"
+    && value.routePath
+    && PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS.includes(value.routePath as (typeof PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS)[number])
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `company settings routePath "${value.routePath}" is reserved by the host`,
       path: ["routePath"],
     });
   }
@@ -373,7 +392,7 @@ const launcherBoundsByEnvironment: Record<
 export const pluginLauncherActionDeclarationSchema = z.object({
   type: z.enum(PLUGIN_LAUNCHER_ACTIONS),
   target: z.string().min(1),
-  params: z.record(z.unknown()).optional(),
+  params: z.record(z.string(), z.unknown()).optional(),
 }).superRefine((value, ctx) => {
   if (value.type === "performAction" && value.target.includes("/")) {
     ctx.addIssue({
@@ -993,7 +1012,7 @@ export type InstallPlugin = z.infer<typeof installPluginSchema>;
  * the plugin's instanceConfigSchema is done at the service layer.
  */
 export const upsertPluginConfigSchema = z.object({
-  configJson: z.record(z.unknown()),
+  configJson: z.record(z.string(), z.unknown()),
 });
 
 export type UpsertPluginConfig = z.infer<typeof upsertPluginConfigSchema>;
@@ -1003,7 +1022,7 @@ export type UpsertPluginConfig = z.infer<typeof upsertPluginConfigSchema>;
  * Allows a partial merge of config values.
  */
 export const patchPluginConfigSchema = z.object({
-  configJson: z.record(z.unknown()),
+  configJson: z.record(z.string(), z.unknown()),
 });
 
 export type PatchPluginConfig = z.infer<typeof patchPluginConfigSchema>;

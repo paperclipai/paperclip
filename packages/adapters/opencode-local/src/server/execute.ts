@@ -17,6 +17,7 @@ import {
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   readAdapterExecutionTargetHomeDir,
+  resolveAdapterExecutionTargetTimeoutSec,
   resolveAdapterExecutionTargetCommandForLogs,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
@@ -76,6 +77,7 @@ function resolveOpenCodeBiller(env: Record<string, string>, provider: string | n
 }
 
 const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 20;
+const REMOTE_OPENCODE_MODELS_PROBE_SANDBOX_TIMEOUT_SEC = 120;
 
 async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   runId: string;
@@ -88,9 +90,13 @@ async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   graceSec: number;
 }) {
   const model = requireOpenCodeModelId(input.model);
+  const defaultProbeTimeoutSec =
+    input.executionTarget.kind === "remote" && input.executionTarget.transport === "sandbox"
+      ? REMOTE_OPENCODE_MODELS_PROBE_SANDBOX_TIMEOUT_SEC
+      : REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC;
   const probeTimeoutSec = input.timeoutSec > 0
-    ? Math.min(input.timeoutSec, REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC)
-    : REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC;
+    ? Math.min(input.timeoutSec, defaultProbeTimeoutSec)
+    : defaultProbeTimeoutSec;
   const probe = await runAdapterExecutionTargetProcess(
     input.runId,
     input.executionTarget,
@@ -300,7 +306,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
-    const timeoutSec = asNumber(config.timeoutSec, 0);
+    const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
+      executionTarget,
+      asNumber(config.timeoutSec, 0),
+    );
     const graceSec = asNumber(config.graceSec, 20);
     await ensureAdapterExecutionTargetRuntimeCommandInstalled({
       runId,
@@ -313,7 +322,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onLog,
     });
-    await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, { installCommand: SANDBOX_INSTALL_COMMAND });
+    await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, {
+      installCommand: SANDBOX_INSTALL_COMMAND,
+      timeoutSec,
+    });
     const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
     let loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
       runtimeEnv,
@@ -349,6 +361,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         runId,
         target: executionTarget,
         adapterKey: "opencode",
+        timeoutSec,
         workspaceLocalDir: cwd,
         installCommand: SANDBOX_INSTALL_COMMAND,
         detectCommand: command,
@@ -425,6 +438,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         target: runtimeExecutionTarget,
         runtimeRootDir: remoteRuntimeRootDir,
         adapterKey: "opencode",
+        timeoutSec,
         hostApiToken: preparedRuntimeConfig.env.PAPERCLIP_API_KEY,
         onLog,
       });

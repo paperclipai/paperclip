@@ -145,6 +145,8 @@ interface IssuePropertiesProps {
   inline?: boolean;
 }
 
+const ISSUE_BLOCKER_SEARCH_LIMIT = 50;
+
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3 py-1.5">
@@ -405,6 +407,7 @@ export function IssueProperties({
   const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
   const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
+  const normalizedBlockedBySearch = blockedBySearch.trim();
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -443,10 +446,21 @@ export function IssueProperties({
     enabled: !!companyId,
   });
 
-  const { data: allIssues } = useQuery({
+  const { data: allIssues, isFetching: isFetchingIssuePickerIssues } = useQuery({
     queryKey: queryKeys.issues.list(companyId!),
     queryFn: () => issuesApi.list(companyId!),
-    enabled: !!companyId && (blockedByOpen || parentOpen),
+    enabled: !!companyId && (parentOpen || (blockedByOpen && normalizedBlockedBySearch.length === 0)),
+  });
+
+  const { data: searchedBlockedByIssues, isFetching: isFetchingSearchedBlockedByIssues } = useQuery({
+    queryKey: companyId
+      ? queryKeys.issues.search(companyId, normalizedBlockedBySearch, undefined, ISSUE_BLOCKER_SEARCH_LIMIT)
+      : ["issues", "blocker-search", normalizedBlockedBySearch, ISSUE_BLOCKER_SEARCH_LIMIT],
+    queryFn: () => issuesApi.list(companyId!, {
+      q: normalizedBlockedBySearch,
+      limit: ISSUE_BLOCKER_SEARCH_LIMIT,
+    }),
+    enabled: !!companyId && blockedByOpen && normalizedBlockedBySearch.length > 0,
   });
 
   const createLabel = useMutation({
@@ -1648,27 +1662,28 @@ export function IssueProperties({
     </>
   );
   const blockingIssues = issue.blocks ?? [];
-  const blockerOptions = (allIssues ?? [])
-    .filter((candidate) => candidate.id !== issue.id)
-    .filter((candidate) => {
-      if (!blockedBySearch.trim()) return true;
-      const query = blockedBySearch.toLowerCase();
-      return (
-        (candidate.identifier ?? "").toLowerCase().includes(query) ||
-        candidate.title.toLowerCase().includes(query)
-      );
-    })
-    .sort((a, b) => {
+  const blockerSearchActive = normalizedBlockedBySearch.length > 0;
+  const blockerSourceIssues = blockerSearchActive ? searchedBlockedByIssues : allIssues;
+  const blockerOptions = (blockerSourceIssues ?? [])
+    .filter((candidate) => candidate.id !== issue.id);
+  if (!blockerSearchActive) {
+    blockerOptions.sort((a, b) => {
       const aLabel = `${a.identifier ?? ""} ${a.title}`.trim();
       const bLabel = `${b.identifier ?? ""} ${b.title}`.trim();
       return aLabel.localeCompare(bLabel);
     });
+  }
+  const blockerOptionsLoading = blockedByOpen && (
+    blockerSearchActive ? isFetchingSearchedBlockedByIssues : isFetchingIssuePickerIssues
+  );
 
   const toggleBlockedBy = (blockedByIssueId: string) => {
     const nextBlockedByIds = blockedByIds.includes(blockedByIssueId)
       ? blockedByIds.filter((candidate) => candidate !== blockedByIssueId)
       : [...blockedByIds, blockedByIssueId];
     onUpdate({ blockedByIssueIds: nextBlockedByIds });
+    setBlockedByOpen(false);
+    setBlockedBySearch("");
   };
   const removeBlockedBy = (blockedByIssueId: string) => {
     onUpdate({ blockedByIssueIds: blockedByIds.filter((candidate) => candidate !== blockedByIssueId) });
@@ -1682,6 +1697,7 @@ export function IssueProperties({
         value={blockedBySearch}
         onChange={(e) => setBlockedBySearch(e.target.value)}
         autoFocus={!inline}
+        aria-label="Search issues to add as blockers"
       />
       <div className="max-h-48 overflow-y-auto overscroll-contain">
         <button
@@ -1689,7 +1705,11 @@ export function IssueProperties({
             "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
             blockedByIds.length === 0 && "bg-accent",
           )}
-          onClick={() => onUpdate({ blockedByIssueIds: [] })}
+          onClick={() => {
+            onUpdate({ blockedByIssueIds: [] });
+            setBlockedByOpen(false);
+            setBlockedBySearch("");
+          }}
         >
           No blockers
         </button>
@@ -1709,9 +1729,15 @@ export function IssueProperties({
                 {candidate.identifier ? `${candidate.identifier} ` : ""}
                 {candidate.title}
               </span>
+              {selected && <Check className="ml-auto h-3.5 w-3.5 shrink-0 text-foreground" aria-hidden="true" />}
             </button>
           );
         })}
+        {blockerOptionsLoading ? (
+          <div className="px-2 py-2 text-xs text-muted-foreground">Searching issues...</div>
+        ) : blockerOptions.length === 0 ? (
+          <div className="px-2 py-2 text-xs text-muted-foreground">No matching issues.</div>
+        ) : null}
       </div>
     </>
   );

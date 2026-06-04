@@ -346,6 +346,39 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("renders footer content inside the thread viewport before the bottom anchor", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+            footer={<div>Sibling footer</div>}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const viewport = container.querySelector('[data-testid="thread-viewport"]');
+    const footer = container.querySelector('[data-testid="issue-chat-thread-footer"]');
+    expect(viewport).not.toBeNull();
+    expect(footer).not.toBeNull();
+    expect(footer?.textContent).toBe("Sibling footer");
+    expect(footer?.parentElement).toBe(viewport);
+    expect(footer?.nextElementSibling?.textContent).toBe("");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders the composer in planning mode when the issue is in planning mode", () => {
     const root = createRoot(container);
 

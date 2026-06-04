@@ -198,6 +198,10 @@ fi
 
 set_cleanup_trap
 
+# The release flow already prepares ui/dist before packaging. Reuse that output
+# so server prepack does not rebuild the UI a second time during preview/publish.
+export PAPERCLIP_RELEASE_REUSE_UI_DIST=1
+
 if [ "$skip_verify" = false ]; then
   release_info ""
   release_info "==> Step 1/7: Verification gate..."

@@ -29,9 +29,11 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - run: npx playwright install --with-deps chromium
+      - run: google-chrome --version
 
       - name: Run e2e tests
+        env:
+          PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
         run: pnpm run test:e2e
 
       - uses: actions/upload-artifact@v4

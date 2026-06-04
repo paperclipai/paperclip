@@ -5,6 +5,7 @@ import {
   activityLog,
   agents,
   companies,
+  companySecretBindings,
   companySecrets,
   companySecretVersions,
   createDb,
@@ -19,6 +20,7 @@ import {
   routineRuns,
   routines,
   routineTriggers,
+  secretAccessEvents,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -28,6 +30,7 @@ import { issueService } from "../services/issues.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import * as providerRegistry from "../secrets/provider-registry.ts";
 import { routineService } from "../services/routines.ts";
+import { secretService } from "../services/secrets.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -57,6 +60,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(activityLog);
     await db.delete(issueInboxArchives);
     await db.delete(issueReadStates);
+    await db.delete(secretAccessEvents);
+    await db.delete(companySecretBindings);
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(routines);
@@ -331,6 +336,89 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(revisions[1]?.snapshot.routine.description).toBe("Run the frog routine");
   });
 
+  it("stores routine env in revisions, syncs routine secret bindings, and stamps runs with the dispatch revision", async () => {
+    const { agentId, companyId, projectId, svc } = await seedFixture();
+    const secrets = secretService(db);
+    const secret = await secrets.create(companyId, {
+      name: `routine-api-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "secret-value",
+    });
+
+    const routine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "secret routine",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "always_enqueue",
+        catchUpPolicy: "skip_missed",
+        env: {
+          ROUTINE_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+          ROUTINE_PLAIN: { type: "plain", value: "plain-value" },
+        },
+      },
+      {},
+    );
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, routine.id));
+    expect(bindings).toMatchObject([
+      {
+        companyId,
+        secretId: secret.id,
+        targetType: "routine",
+        configPath: "env.ROUTINE_API_KEY",
+      },
+    ]);
+
+    const [initialRevision] = await svc.listRevisions(routine.id);
+    expect(initialRevision?.snapshot.routine.env).toEqual(routine.env);
+
+    await db.delete(companySecretBindings).where(eq(companySecretBindings.targetId, routine.id));
+    const repaired = await svc.update(routine.id, { env: routine.env }, {});
+    expect(repaired).not.toBeNull();
+    const repairedBindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, routine.id));
+    expect(repairedBindings).toMatchObject([
+      {
+        companyId,
+        secretId: secret.id,
+        targetType: "routine",
+        configPath: "env.ROUTINE_API_KEY",
+      },
+    ]);
+
+    const currentRoutine = repaired ?? routine;
+    const runBefore = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(runBefore.routineRevisionId).toBe(currentRoutine.latestRevisionId);
+
+    const updated = await svc.update(
+      routine.id,
+      {
+        env: {
+          ROUTINE_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+          ROUTINE_PLAIN: { type: "plain", value: "changed" },
+        },
+      },
+      {},
+    );
+    expect(updated?.latestRevisionNumber).toBe(currentRoutine.latestRevisionNumber + 1);
+
+    const runAfter = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(runAfter.routineRevisionId).toBe(updated?.latestRevisionId);
+    expect(runAfter.dispatchFingerprint).not.toBe(runBefore.dispatchFingerprint);
+  });
+
   it("rejects stale routine baseRevisionId updates", async () => {
     const { routine, svc } = await seedFixture();
     const updated = await svc.update(routine.id, { description: "new description" }, {});
@@ -389,6 +477,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       replayWindowSec: 300,
     }, {});
     await svc.deleteTrigger(created.trigger.id, {});
+    await expect(db.select().from(companySecrets).where(eq(companySecrets.id, created.trigger.secretId!))).resolves.toHaveLength(0);
+    await expect(db.select().from(companySecretBindings).where(eq(companySecretBindings.secretId, created.trigger.secretId!))).resolves.toHaveLength(0);
 
     const restored = await svc.restoreRevision(routine.id, created.revision.id, {});
 
@@ -475,6 +565,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     const deleted = await svc.deleteTrigger(created.trigger.id, {});
     expect(deleted.revision?.revisionNumber).toBe(5);
+    await expect(db.select().from(companySecrets).where(eq(companySecrets.id, created.trigger.secretId!))).resolves.toHaveLength(0);
+    await expect(db.select().from(companySecretBindings).where(eq(companySecretBindings.secretId, created.trigger.secretId!))).resolves.toHaveLength(0);
 
     const revisions = await svc.listRevisions(routine.id);
     const serialized = JSON.stringify(revisions.map((revision) => revision.snapshot));

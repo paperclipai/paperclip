@@ -17,7 +17,7 @@ import { issues } from "./issues.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
-import type { RoutineRevisionSnapshotV1, RoutineVariable } from "@paperclipai/shared";
+import type { RoutineEnvConfig, RoutineRevisionSnapshotV1, RoutineVariable } from "@paperclipai/shared";
 
 export const routines = pgTable(
   "routines",
@@ -35,6 +35,7 @@ export const routines = pgTable(
     concurrencyPolicy: text("concurrency_policy").notNull().default("coalesce_if_active"),
     catchUpPolicy: text("catch_up_policy").notNull().default("skip_missed"),
     variables: jsonb("variables").$type<RoutineVariable[]>().notNull().default([]),
+    env: jsonb("env").$type<RoutineEnvConfig>(),
     latestRevisionId: uuid("latest_revision_id"),
     latestRevisionNumber: integer("latest_revision_number").notNull().default(1),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
@@ -131,6 +132,7 @@ export const routineRuns = pgTable(
     source: text("source").notNull(),
     status: text("status").notNull().default("received"),
     triggeredAt: timestamp("triggered_at", { withTimezone: true }).notNull().defaultNow(),
+    routineRevisionId: uuid("routine_revision_id").references(() => routineRevisions.id, { onDelete: "set null" }),
     idempotencyKey: text("idempotency_key"),
     triggerPayload: jsonb("trigger_payload").$type<Record<string, unknown>>(),
     dispatchFingerprint: text("dispatch_fingerprint"),
@@ -143,6 +145,7 @@ export const routineRuns = pgTable(
   },
   (table) => ({
     companyRoutineIdx: index("routine_runs_company_routine_idx").on(table.companyId, table.routineId, table.createdAt),
+    routineRevisionIdx: index("routine_runs_revision_idx").on(table.routineRevisionId),
     triggerIdx: index("routine_runs_trigger_idx").on(table.triggerId, table.createdAt),
     dispatchFingerprintIdx: index("routine_runs_dispatch_fingerprint_idx").on(table.routineId, table.dispatchFingerprint),
     linkedIssueIdx: index("routine_runs_linked_issue_idx").on(table.linkedIssueId),

@@ -226,6 +226,21 @@ By default, agents run on scheduled heartbeats and event-based triggers (task as
 
 <br/>
 
+## Paperclip Cloud Sync
+
+Cloud upstream sync is behind the `Cloud Sync` experimental setting. Enable it in Instance Settings before pushing.
+
+```bash
+paperclipai cloud connect https://your-stack.paperclip.app
+paperclipai cloud connect https://your-stack.paperclip.app --no-browser
+paperclipai cloud push --company <local-company-id> --dry-run
+paperclipai cloud push --company <local-company-id>
+```
+
+`cloud connect` authorizes the local instance against the target stack and stores the upstream token in the local instance secret store. The default path opens a browser for consent; `--no-browser` uses the device-code flow and prints the verification URL and user code.
+
+`cloud push --dry-run` exports the selected local company, sends a preview bundle to the connected Cloud stack, and exits with code `2` when conflicts need user resolution. A schema mismatch exits with code `3`. Running without `--dry-run` stages chunks idempotently, applies the run, and prints the final summary and recent progress events.
+
 ## Development
 
 ```bash

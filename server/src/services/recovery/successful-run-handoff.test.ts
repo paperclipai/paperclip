@@ -10,6 +10,7 @@ import {
   decideSuccessfulRunHandoff,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
   isSuccessfulRunHandoffRequiredNoticeBody,
+  noticeMetadataReferencesRecoveryAction,
 } from "./successful-run-handoff.js";
 
 const run = {
@@ -75,11 +76,17 @@ describe("successful run handoff decision", () => {
       resumeIntent: true,
       resumeFromRunId: "run-1",
       modelProfile: "cheap",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
     });
     expect(decision.contextSnapshot).toMatchObject({
       wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
       handoffRequired: true,
       modelProfile: "cheap",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
     });
     expect(decision.instruction).toContain("Resolve the missing disposition before creating or revising any new artifacts");
     expect(decision.instruction).toContain("Choose **exactly one** outcome");
@@ -256,6 +263,7 @@ describe("successful run handoff decision", () => {
         title: "Recover missing next step PAP-1",
         status: "todo",
       } as any,
+      recoveryActionId: "77777777-7777-4777-8777-777777777777",
       recoveryOwner: { id: "66666666-6666-4666-8666-666666666666", name: "CTO" } as any,
       latestIssueStatus: "in_progress",
       latestHandoffRunStatus: "failed",
@@ -273,7 +281,7 @@ describe("successful run handoff decision", () => {
       expect.objectContaining({
         title: "Recovery owner",
         rows: expect.arrayContaining([
-          expect.objectContaining({ type: "issue_link", identifier: "PAP-2" }),
+          expect.objectContaining({ type: "key_value", label: "Recovery action", value: "77777777-7777-4777-8777-777777777777" }),
           expect.objectContaining({ type: "agent_link", label: "Recovery owner", name: "CTO" }),
         ]),
       }),
@@ -286,6 +294,8 @@ describe("successful run handoff decision", () => {
         ]),
       }),
     ]));
+    expect(noticeMetadataReferencesRecoveryAction(notice.metadata, "77777777-7777-4777-8777-777777777777")).toBe(true);
+    expect(noticeMetadataReferencesRecoveryAction(notice.metadata, "88888888-8888-4888-8888-888888888888")).toBe(false);
   });
 
   it("recognizes new notices and legacy markdown headings for fallback deduplication", () => {

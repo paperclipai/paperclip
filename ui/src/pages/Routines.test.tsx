@@ -456,7 +456,7 @@ describe("Routines page", () => {
     });
   });
 
-  it("shows a row-level run now button on the routines table", async () => {
+  it("shows an outlined row-level run now button on the routines table", async () => {
     routinesListMock.mockResolvedValue([createRoutine({ id: "routine-1", title: "Morning sync" })]);
     issuesListMock.mockResolvedValue([]);
 
@@ -489,6 +489,7 @@ describe("Routines page", () => {
     }
 
     expect(runNowButton).toBeTruthy();
+    expect(runNowButton?.getAttribute("data-variant")).toBe("outline");
 
     await act(async () => {
       root.unmount();

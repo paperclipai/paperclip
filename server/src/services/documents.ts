@@ -17,6 +17,20 @@ function isUniqueViolation(error: unknown): boolean {
   return !!error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "23505";
 }
 
+function nextAvailableDocumentKey(sourceKey: string, existingKeys: string[]) {
+  const usedKeys = new Set(existingKeys);
+  for (let index = 2; index < 1000; index += 1) {
+    const suffix = `-${index}`;
+    const baseMaxLength = 64 - suffix.length;
+    const base = sourceKey.slice(0, baseMaxLength).replace(/[-_]+$/g, "") || "document";
+    const candidate = `${base}${suffix}`;
+    if (!usedKeys.has(candidate) && issueDocumentKeySchema.safeParse(candidate).success) {
+      return candidate;
+    }
+  }
+  throw conflict("Unable to choose a new document key for locked document", { key: sourceKey });
+}
+
 export function extractLegacyPlanBody(description: string | null | undefined) {
   if (!description) return null;
   const match = /<plan>\s*([\s\S]*?)\s*<\/plan>/i.exec(description);
@@ -40,6 +54,9 @@ function mapIssueDocumentRow(
     createdByUserId: string | null;
     updatedByAgentId: string | null;
     updatedByUserId: string | null;
+    lockedAt: Date | null;
+    lockedByAgentId: string | null;
+    lockedByUserId: string | null;
     createdAt: Date;
     updatedAt: Date;
   },
@@ -59,6 +76,9 @@ function mapIssueDocumentRow(
     createdByUserId: row.createdByUserId,
     updatedByAgentId: row.updatedByAgentId,
     updatedByUserId: row.updatedByUserId,
+    lockedAt: row.lockedAt,
+    lockedByAgentId: row.lockedByAgentId,
+    lockedByUserId: row.lockedByUserId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -78,6 +98,9 @@ const issueDocumentSelect = {
   createdByUserId: documents.createdByUserId,
   updatedByAgentId: documents.updatedByAgentId,
   updatedByUserId: documents.updatedByUserId,
+  lockedAt: documents.lockedAt,
+  lockedByAgentId: documents.lockedByAgentId,
+  lockedByUserId: documents.lockedByUserId,
   createdAt: documents.createdAt,
   updatedAt: documents.updatedAt,
 };
@@ -179,6 +202,7 @@ export function documentService(db: Db) {
       createdByAgentId?: string | null;
       createdByUserId?: string | null;
       createdByRunId?: string | null;
+      lockedDocumentStrategy?: "conflict" | "create_new_document";
     }) => {
       const key = normalizeDocumentKey(input.key);
       const issue = await db
@@ -188,8 +212,10 @@ export function documentService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!issue) throw notFound("Issue not found");
 
-      try {
-        return await db.transaction(async (tx) => {
+      const maxAttempts = input.lockedDocumentStrategy === "create_new_document" ? 3 : 1;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        try {
+          return await db.transaction(async (tx) => {
           const now = new Date();
           const existing = await tx
             .select({
@@ -206,6 +232,9 @@ export function documentService(db: Db) {
               createdByUserId: documents.createdByUserId,
               updatedByAgentId: documents.updatedByAgentId,
               updatedByUserId: documents.updatedByUserId,
+              lockedAt: documents.lockedAt,
+              lockedByAgentId: documents.lockedByAgentId,
+              lockedByUserId: documents.lockedByUserId,
               createdAt: documents.createdAt,
               updatedAt: documents.updatedAt,
             })
@@ -215,6 +244,102 @@ export function documentService(db: Db) {
             .then((rows) => rows[0] ?? null);
 
           if (existing) {
+            if (existing.lockedAt) {
+              if (input.lockedDocumentStrategy === "create_new_document") {
+                const issueDocumentKeys = await tx
+                  .select({ key: issueDocuments.key })
+                  .from(issueDocuments)
+                  .where(eq(issueDocuments.issueId, issue.id));
+                const fallbackKey = nextAvailableDocumentKey(key, issueDocumentKeys.map((row) => row.key));
+
+                const [document] = await tx
+                  .insert(documents)
+                  .values({
+                    companyId: issue.companyId,
+                    title: input.title ?? null,
+                    format: input.format,
+                    latestBody: input.body,
+                    latestRevisionId: null,
+                    latestRevisionNumber: 1,
+                    createdByAgentId: input.createdByAgentId ?? null,
+                    createdByUserId: input.createdByUserId ?? null,
+                    updatedByAgentId: input.createdByAgentId ?? null,
+                    updatedByUserId: input.createdByUserId ?? null,
+                    lockedAt: null,
+                    lockedByAgentId: null,
+                    lockedByUserId: null,
+                    createdAt: now,
+                    updatedAt: now,
+                  })
+                  .returning();
+
+                const [revision] = await tx
+                  .insert(documentRevisions)
+                  .values({
+                    companyId: issue.companyId,
+                    documentId: document.id,
+                    revisionNumber: 1,
+                    title: input.title ?? null,
+                    format: input.format,
+                    body: input.body,
+                    changeSummary: input.changeSummary ?? null,
+                    createdByAgentId: input.createdByAgentId ?? null,
+                    createdByUserId: input.createdByUserId ?? null,
+                    createdByRunId: input.createdByRunId ?? null,
+                    createdAt: now,
+                  })
+                  .returning();
+
+                await tx
+                  .update(documents)
+                  .set({ latestRevisionId: revision.id })
+                  .where(eq(documents.id, document.id));
+
+                await tx.insert(issueDocuments).values({
+                  companyId: issue.companyId,
+                  issueId: issue.id,
+                  documentId: document.id,
+                  key: fallbackKey,
+                  createdAt: now,
+                  updatedAt: now,
+                });
+
+                return {
+                  created: true as const,
+                  redirectedFromLockedDocument: {
+                    id: existing.id,
+                    key: existing.key,
+                  },
+                  document: {
+                    id: document.id,
+                    companyId: issue.companyId,
+                    issueId: issue.id,
+                    key: fallbackKey,
+                    title: document.title,
+                    format: document.format,
+                    body: document.latestBody,
+                    latestRevisionId: revision.id,
+                    latestRevisionNumber: 1,
+                    createdByAgentId: document.createdByAgentId,
+                    createdByUserId: document.createdByUserId,
+                    updatedByAgentId: document.updatedByAgentId,
+                    updatedByUserId: document.updatedByUserId,
+                    lockedAt: null,
+                    lockedByAgentId: null,
+                    lockedByUserId: null,
+                    createdAt: document.createdAt,
+                    updatedAt: document.updatedAt,
+                  },
+                };
+              }
+
+              throw conflict("Document is locked", {
+                key: existing.key,
+                documentId: existing.id,
+                lockedAt: existing.lockedAt,
+              });
+            }
+
             if (!input.baseRevisionId) {
               throw conflict("Document update requires baseRevisionId", {
                 currentRevisionId: existing.latestRevisionId,
@@ -274,6 +399,9 @@ export function documentService(db: Db) {
                 latestRevisionNumber: nextRevisionNumber,
                 updatedByAgentId: input.createdByAgentId ?? null,
                 updatedByUserId: input.createdByUserId ?? null,
+                lockedAt: existing.lockedAt,
+                lockedByAgentId: existing.lockedByAgentId,
+                lockedByUserId: existing.lockedByUserId,
                 updatedAt: now,
               },
             };
@@ -296,6 +424,9 @@ export function documentService(db: Db) {
               createdByUserId: input.createdByUserId ?? null,
               updatedByAgentId: input.createdByAgentId ?? null,
               updatedByUserId: input.createdByUserId ?? null,
+              lockedAt: null,
+              lockedByAgentId: null,
+              lockedByUserId: null,
               createdAt: now,
               updatedAt: now,
             })
@@ -348,17 +479,26 @@ export function documentService(db: Db) {
               createdByUserId: document.createdByUserId,
               updatedByAgentId: document.updatedByAgentId,
               updatedByUserId: document.updatedByUserId,
+              lockedAt: document.lockedAt,
+              lockedByAgentId: document.lockedByAgentId,
+              lockedByUserId: document.lockedByUserId,
               createdAt: document.createdAt,
               updatedAt: document.updatedAt,
             },
           };
-        });
-      } catch (error) {
-        if (isUniqueViolation(error)) {
-          throw conflict("Document key already exists on this issue", { key });
+          });
+        } catch (error) {
+          if (isUniqueViolation(error)) {
+            if (input.lockedDocumentStrategy === "create_new_document" && attempt < maxAttempts - 1) {
+              continue;
+            }
+            throw conflict("Document key already exists on this issue", { key });
+          }
+          throw error;
         }
-        throw error;
       }
+
+      throw conflict("Unable to choose a new document key for locked document", { key });
     },
 
     restoreIssueDocumentRevision: async (input: {
@@ -378,6 +518,13 @@ export function documentService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!existing) throw notFound("Document not found");
+        if (existing.lockedAt) {
+          throw conflict("Document is locked", {
+            key: existing.key,
+            documentId: existing.id,
+            lockedAt: existing.lockedAt,
+          });
+        }
 
         const revision = await tx
           .select({
@@ -455,6 +602,105 @@ export function documentService(db: Db) {
       });
     },
 
+    lockIssueDocument: async (input: {
+      issueId: string;
+      key: string;
+      lockedByAgentId?: string | null;
+      lockedByUserId?: string | null;
+    }) => {
+      const key = normalizeDocumentKey(input.key);
+      return db.transaction(async (tx) => {
+        const existing = await tx
+          .select(issueDocumentSelect)
+          .from(issueDocuments)
+          .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+          .where(and(eq(issueDocuments.issueId, input.issueId), eq(issueDocuments.key, key)))
+          .then((rows) => rows[0] ?? null);
+
+        if (!existing) throw notFound("Document not found");
+        if (existing.lockedAt) {
+          return {
+            changed: false as const,
+            document: mapIssueDocumentRow(existing, true),
+          };
+        }
+
+        const now = new Date();
+        await tx
+          .update(documents)
+          .set({
+            lockedAt: now,
+            lockedByAgentId: input.lockedByAgentId ?? null,
+            lockedByUserId: input.lockedByUserId ?? null,
+            updatedAt: now,
+          })
+          .where(eq(documents.id, existing.id));
+
+        await tx
+          .update(issueDocuments)
+          .set({ updatedAt: now })
+          .where(eq(issueDocuments.documentId, existing.id));
+
+        return {
+          changed: true as const,
+          document: {
+            ...mapIssueDocumentRow(existing, true),
+            lockedAt: now,
+            lockedByAgentId: input.lockedByAgentId ?? null,
+            lockedByUserId: input.lockedByUserId ?? null,
+            updatedAt: now,
+          },
+        };
+      });
+    },
+
+    unlockIssueDocument: async (issueId: string, rawKey: string) => {
+      const key = normalizeDocumentKey(rawKey);
+      return db.transaction(async (tx) => {
+        const existing = await tx
+          .select(issueDocumentSelect)
+          .from(issueDocuments)
+          .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+          .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key)))
+          .then((rows) => rows[0] ?? null);
+
+        if (!existing) throw notFound("Document not found");
+        if (!existing.lockedAt) {
+          return {
+            changed: false as const,
+            document: mapIssueDocumentRow(existing, true),
+          };
+        }
+
+        const now = new Date();
+        await tx
+          .update(documents)
+          .set({
+            lockedAt: null,
+            lockedByAgentId: null,
+            lockedByUserId: null,
+            updatedAt: now,
+          })
+          .where(eq(documents.id, existing.id));
+
+        await tx
+          .update(issueDocuments)
+          .set({ updatedAt: now })
+          .where(eq(issueDocuments.documentId, existing.id));
+
+        return {
+          changed: true as const,
+          document: {
+            ...mapIssueDocumentRow(existing, true),
+            lockedAt: null,
+            lockedByAgentId: null,
+            lockedByUserId: null,
+            updatedAt: now,
+          },
+        };
+      });
+    },
+
     deleteIssueDocument: async (issueId: string, rawKey: string) => {
       const key = normalizeDocumentKey(rawKey);
       return db.transaction(async (tx) => {
@@ -466,6 +712,13 @@ export function documentService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!existing) return null;
+        if (existing.lockedAt) {
+          throw conflict("Document is locked", {
+            key: existing.key,
+            documentId: existing.id,
+            lockedAt: existing.lockedAt,
+          });
+        }
 
         await tx.delete(issueDocuments).where(eq(issueDocuments.documentId, existing.id));
         await tx.delete(documents).where(eq(documents.id, existing.id));

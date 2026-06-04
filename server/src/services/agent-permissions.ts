@@ -18,7 +18,9 @@ export function normalizeAgentPermissions(
   }
 
   const record = permissions as Record<string, unknown>;
+  const preserved = { ...record };
   return {
+    ...preserved,
     canCreateAgents:
       typeof record.canCreateAgents === "boolean"
         ? record.canCreateAgents

@@ -6,6 +6,7 @@ export { agentService, deduplicateAgentName } from "./agents.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
+export { documentAnnotationService } from "./document-annotations.js";
 export {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   buildContinuationSummaryMarkdown,
@@ -24,6 +25,7 @@ export { issueThreadInteractionService } from "./issue-thread-interactions.js";
 export { issueTreeControlService } from "./issue-tree-control.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
+export { issueRecoveryActionService } from "./issue-recovery-actions.js";
 export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
@@ -41,10 +43,25 @@ export { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recover
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferenceService } from "./sidebar-preferences.js";
+export { resourceMembershipService, type ResourceMembershipPolicyHook } from "./resource-memberships.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
 export { accessService } from "./access.js";
+export {
+  backfillPrincipalAccessCompatibility,
+  ensureHumanRoleDefaultGrants,
+  insertMissingPrincipalGrants,
+  type PrincipalAccessCompatibilityBackfillStats,
+} from "./principal-access-compatibility.js";
+export { authorizationService } from "./authorization.js";
+export type {
+  AuthorizationAction,
+  AuthorizationActor,
+  AuthorizationDecision,
+  AuthorizationResource,
+} from "./authorization.js";
 export { boardAuthService } from "./board-auth.js";
 export { instanceSettingsService } from "./instance-settings.js";
+export { cloudUpstreamService, reconcileCloudUpstreamRunsOnStartup } from "./cloud-upstreams.js";
 export { companyPortabilityService } from "./company-portability.js";
 export { environmentService } from "./environments.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";

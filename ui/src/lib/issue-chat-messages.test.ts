@@ -324,6 +324,72 @@ describe("buildIssueChatMessages", () => {
     });
   });
 
+  it("prefers derived agent attribution when a board-authored comment is proven to come from a run", () => {
+    const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "Claude")]]);
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          authorUserId: "user-1",
+          derivedAuthorAgentId: "agent-1",
+          derivedCreatedByRunId: "run-1",
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap,
+      currentUserId: "user-1",
+      userLabelMap: new Map([["user-1", "Dotta"]]),
+    });
+
+    expect(messages[0]).toMatchObject({
+      role: "assistant",
+      metadata: {
+        custom: {
+          authorName: "Claude",
+          authorType: "agent",
+          authorAgentId: "agent-1",
+          authorUserId: "user-1",
+          runId: "run-1",
+          runAgentId: "agent-1",
+        },
+      },
+    });
+  });
+
+  it("renders a comment as agent-authored when runAgentId is set from activity log", () => {
+    const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "Claude")]]);
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          authorUserId: "user-1",
+          runId: "run-1",
+          runAgentId: "agent-1",
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap,
+      currentUserId: "user-1",
+      userLabelMap: new Map([["user-1", "Dotta"]]),
+    });
+
+    expect(messages[0]).toMatchObject({
+      role: "assistant",
+      metadata: {
+        custom: {
+          authorName: "Claude",
+          authorType: "agent",
+          authorAgentId: "agent-1",
+          authorUserId: "user-1",
+          runId: "run-1",
+          runAgentId: "agent-1",
+        },
+      },
+    });
+  });
+
   it("orders events before comments and appends active live runs as running assistant messages", () => {
     const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "CodexCoder")]]);
     const comments = [

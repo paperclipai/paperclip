@@ -139,6 +139,58 @@ function createExportResult() {
   };
 }
 
+const importRequest = {
+  source: { type: "inline", files: { "COMPANY.md": "---\nname: Test\n---\n" } },
+  include: { company: true, agents: true, projects: false, issues: false },
+  target: { mode: "existing_company", companyId },
+  collisionStrategy: "rename",
+};
+
+const cloudHeaders = {
+  "x-paperclip-cloud-stack-id": "stack-alpha",
+  "x-paperclip-cloud-paperclip-company-id": companyId,
+};
+
+function cloudTenantActor() {
+  return {
+    type: "board",
+    userId: "cloud-user-1",
+    userName: "Cloud User",
+    userEmail: "cloud-user@example.com",
+    companyIds: [companyId],
+    memberships: [{ companyId, membershipRole: "owner", status: "active" }],
+    isInstanceAdmin: true,
+    source: "cloud_tenant",
+  };
+}
+
+function createImportResult(action = "updated") {
+  return {
+    company: { id: companyId, action },
+    agents: [{ id: "agent-1" }],
+    warnings: [],
+  };
+}
+
+async function waitForImportJobStatus(app: express.Express, statusUrl: string, status: string) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const res = await request(app).get(statusUrl).set(cloudHeaders);
+    if (res.body.job?.status === status) {
+      return res;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for import job to reach ${status}`);
+}
+
+async function waitForCondition(condition: () => boolean, label: string) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${label}`);
+}
+
 describe.sequential("company portability routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -425,5 +477,117 @@ describe.sequential("company portability routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Instance admin");
     expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+  });
+
+  it.sequential("accepts trusted Cloud async import jobs and reports success by job id", async () => {
+    let resolveImport: (value: ReturnType<typeof createImportResult>) => void = () => undefined;
+    const pendingImport = new Promise<ReturnType<typeof createImportResult>>((resolve) => {
+      resolveImport = resolve;
+    });
+    mockCompanyPortabilityService.importBundle.mockReturnValueOnce(pendingImport);
+    const app = await createApp(cloudTenantActor());
+
+    const accepted = await request(app)
+      .post("/api/companies/import")
+      .set("x-paperclip-cloud-async-import", "1")
+      .set(cloudHeaders)
+      .send(importRequest);
+
+    expect(accepted.status).toBe(202);
+    expect(accepted.body.job.status).toBe("running");
+    expect(accepted.body.statusUrl).toMatch(/^\/api\/companies\/import\/jobs\/tenant-import-/);
+    expect(accepted.body.retryAfterMs).toBe(1000);
+    await waitForCondition(() => mockCompanyPortabilityService.importBundle.mock.calls.length === 1, "import job start");
+    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(importRequest, "cloud-user-1");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+
+    resolveImport(createImportResult("updated"));
+    const succeeded = await waitForImportJobStatus(app, accepted.body.statusUrl, "succeeded");
+
+    expect(succeeded.status).toBe(200);
+    expect(succeeded.body.job.status).toBe("succeeded");
+    expect(succeeded.body.job.result.companyId).toBe(companyId);
+    expect(succeeded.body.retryAfterMs).toBeUndefined();
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.imported",
+      companyId,
+      details: expect.objectContaining({
+        agentCount: 1,
+        warningCount: 0,
+        companyAction: "updated",
+      }),
+    }));
+
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.parse(succeeded.body.job.completedAt) + (5 * 60 * 1000) + 1);
+    try {
+      const expired = await request(app).get(accepted.body.statusUrl).set(cloudHeaders);
+      expect(expired.status).toBe(404);
+      expect(expired.body.error).toBe("Import job not found");
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it.sequential("reports trusted Cloud async import job failures with the tenant error message", async () => {
+    mockCompanyPortabilityService.importBundle.mockRejectedValueOnce(new Error("tenant import exploded"));
+    const app = await createApp(cloudTenantActor());
+
+    const accepted = await request(app)
+      .post("/api/companies/import")
+      .set("x-paperclip-cloud-async-import", "1")
+      .set(cloudHeaders)
+      .send(importRequest);
+
+    expect(accepted.status).toBe(202);
+    const failed = await waitForImportJobStatus(app, accepted.body.statusUrl, "failed");
+
+    expect(failed.status).toBe(200);
+    expect(failed.body.job.status).toBe("failed");
+    expect(failed.body.job.error.message).toBe("tenant import exploded");
+    expect(failed.body.retryAfterMs).toBeUndefined();
+    expect(failed.body.message).toBe("tenant import exploded");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it.sequential("accepts trusted Cloud async import jobs before validating the full import payload", async () => {
+    const app = await createApp(cloudTenantActor());
+
+    const accepted = await request(app)
+      .post("/api/companies/import")
+      .set("x-paperclip-cloud-async-import", "1")
+      .set(cloudHeaders)
+      .send({ target: { mode: "existing_company", companyId } });
+
+    expect(accepted.status).toBe(202);
+    expect(accepted.body.job.status).toBe("running");
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+
+    const failed = await waitForImportJobStatus(app, accepted.body.statusUrl, "failed");
+
+    expect(failed.status).toBe(200);
+    expect(failed.body.job.status).toBe("failed");
+    expect(failed.body.job.error.message).toEqual(expect.any(String));
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it.sequential("keeps global import apply synchronous when Cloud async opt-in is absent", async () => {
+    mockCompanyPortabilityService.importBundle.mockResolvedValueOnce(createImportResult("created"));
+    const app = await createApp(cloudTenantActor());
+
+    const res = await request(app)
+      .post("/api/companies/import")
+      .set(cloudHeaders)
+      .send(importRequest);
+
+    expect(res.status).toBe(200);
+    expect(res.body.company.id).toBe(companyId);
+    expect(res.body.company.action).toBe("created");
+    expect(res.body.job).toBeUndefined();
+    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(importRequest, "cloud-user-1");
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.imported",
+      companyId,
+    }));
   });
 });

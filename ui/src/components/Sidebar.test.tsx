@@ -67,7 +67,15 @@ vi.mock("../hooks/useInboxBadge", () => ({
 }));
 
 vi.mock("@/plugins/slots", () => ({
-  PluginSlotOutlet: () => null,
+  PluginSlotOutlet: ({ slotTypes }: { slotTypes: string[] }) => (
+    <div data-plugin-slot-types={slotTypes.join(",")}>Plugin slot outlet</div>
+  ),
+}));
+
+vi.mock("@/plugins/launchers", () => ({
+  PluginLauncherOutlet: ({ placementZones }: { placementZones: string[] }) => (
+    <div data-plugin-launcher-zone={placementZones.join(",")}>Plugin launcher outlet</div>
+  ),
 }));
 
 vi.mock("./SidebarCompanyMenu", () => ({
@@ -129,10 +137,49 @@ describe("Sidebar", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     const root = await renderSidebar();
 
-    const topSearchLink = container.querySelector('a[aria-label="Search"]');
+    const topSearchLink = container.querySelector('a[aria-label="Open search"]');
     expect(topSearchLink?.getAttribute("href")).toBe("/search");
     const workLinks = [...container.querySelectorAll("nav a")].map((anchor) => anchor.textContent?.trim());
     expect(workLinks).not.toContain("Search");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders plugin sidebar launchers inside the Work section", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = await renderSidebar();
+
+    const workSection = [...container.querySelectorAll("nav [data-plugin-launcher-zone]")]
+      .find((node) => node.getAttribute("data-plugin-launcher-zone") === "sidebar");
+    expect(workSection?.textContent).toContain("Plugin launcher outlet");
+    const workSectionContainer = workSection?.parentElement?.parentElement;
+    expect(workSectionContainer?.textContent).toContain("Work");
+    expect(workSectionContainer?.textContent).toContain("Issues");
+    expect(workSectionContainer?.textContent).toContain("Goals");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders plugin sidebar slots in Work below Workspaces", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    const root = await renderSidebar();
+
+    const sidebarSlot = [...container.querySelectorAll("nav [data-plugin-slot-types]")]
+      .find((node) => node.getAttribute("data-plugin-slot-types") === "sidebar");
+    expect(sidebarSlot?.textContent).toContain("Plugin slot outlet");
+    const workSectionContainer = sidebarSlot?.parentElement?.parentElement;
+    const workText = workSectionContainer?.textContent ?? "";
+    expect(workText).toContain("Work");
+    expect(workText).toContain("Workspaces");
+    expect(workText.indexOf("Workspaces")).toBeLessThan(workText.indexOf("Plugin slot outlet"));
+
+    const primaryNavText = container.querySelector("nav > div:first-child")?.textContent ?? "";
+    expect(primaryNavText).toContain("Inbox");
+    expect(primaryNavText).not.toContain("Plugin slot outlet");
 
     await act(async () => {
       root.unmount();

@@ -31,7 +31,7 @@ export const upsertAgentInstructionsFileSchema = z.object({
 
 export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructionsFileSchema>;
 
-const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
+const adapterConfigSchema = z.record(z.string(), z.unknown()).superRefine((value, ctx) => {
   const envValue = value.env;
   if (envValue === undefined) return;
   const parsed = envConfigSchema.safeParse(envValue);
@@ -46,7 +46,7 @@ const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
 
 export const createAgentInstructionsBundleSchema = z.object({
   entryFile: z.string().trim().min(1).optional(),
-  files: z.record(z.string()).refine((files) => Object.keys(files).length > 0, {
+  files: z.record(z.string(), z.string()).refine((files) => Object.keys(files).length > 0, {
     message: "instructionsBundle.files must contain at least one file",
   }),
 });
@@ -78,7 +78,7 @@ export const createAgentSchema = z.object({
   defaultEnvironmentId: z.string().uuid().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
-  metadata: z.record(z.unknown()).optional().nullable(),
+  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;
@@ -126,7 +126,7 @@ export const wakeAgentSchema = z.object({
   source: z.enum(["timer", "assignment", "on_demand", "automation"]).optional().default("on_demand"),
   triggerDetail: z.enum(["manual", "ping", "callback", "system"]).optional(),
   reason: z.string().optional().nullable(),
-  payload: z.record(z.unknown()).optional().nullable(),
+  payload: z.record(z.string(), z.unknown()).optional().nullable(),
   idempotencyKey: z.string().optional().nullable(),
   forceFreshSession: z.preprocess(
     (value) => (value === null ? undefined : value),
