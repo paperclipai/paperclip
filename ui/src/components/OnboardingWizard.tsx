@@ -30,7 +30,7 @@ import { listUIAdapters } from "../adapters";
 import { isVisualAdapterChoice } from "../adapters/metadata";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
-import { getAdapterDisplay } from "../adapters/adapter-display-registry";
+import { getAdapterDisplay, type AdapterDisplayInfo } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import {
@@ -917,15 +917,11 @@ export function OnboardingWizard() {
                     </label>
                     <div className="grid grid-cols-2 gap-2">
                       {recommendedAdapters.map((opt) => (
-                        <button
+                        <AdapterCard
                           key={opt.type}
-                          className={cn(
-                            "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors relative",
-                            adapterType === opt.type
-                              ? "border-foreground bg-accent"
-                              : "border-border hover:bg-accent/50"
-                          )}
-                          onClick={() => {
+                          opt={opt}
+                          selected={adapterType === opt.type}
+                          onSelect={() => {
                             const nextType = opt.type;
                             setAdapterType(nextType);
                             if (nextType === "codex_local") {
@@ -940,18 +936,7 @@ export function OnboardingWizard() {
                             }
                             setModel("");
                           }}
-                        >
-                          {opt.recommended && (
-                            <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
-                              Recommended
-                            </span>
-                          )}
-                          <opt.icon className="h-4 w-4" />
-                          <span className="font-medium">{opt.label}</span>
-                          <span className="text-muted-foreground text-[10px]">
-                            {opt.description}
-                          </span>
-                        </button>
+                        />
                       ))}
                     </div>
 
@@ -971,20 +956,14 @@ export function OnboardingWizard() {
                     {showMoreAdapters && (
                       <div className="grid grid-cols-2 gap-2 mt-2">
                         {moreAdapters.map((opt) => (
-                           <button
-                             key={opt.type}
-                             disabled={!!opt.comingSoon}
-                             className={cn(
-                               "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors relative",
-                               opt.comingSoon
-                                 ? "border-border opacity-40 cursor-not-allowed"
-                                 : adapterType === opt.type
-                                 ? "border-foreground bg-accent"
-                                 : "border-border hover:bg-accent/50"
-                             )}
-                             onClick={() => {
-                               if (opt.comingSoon) return;
-                               const nextType = opt.type;
+                          <AdapterCard
+                            key={opt.type}
+                            opt={opt}
+                            selected={adapterType === opt.type}
+                            disabled={!!opt.comingSoon}
+                            onSelect={() => {
+                              if (opt.comingSoon) return;
+                              const nextType = opt.type;
                               setAdapterType(nextType);
                               if (nextType === "gemini_local" && !model) {
                                 setModel(DEFAULT_GEMINI_LOCAL_MODEL);
@@ -1000,15 +979,7 @@ export function OnboardingWizard() {
                               }
                               setModel("");
                             }}
-                          >
-                            <opt.icon className="h-4 w-4" />
-                            <span className="font-medium">{opt.label}</span>
-                            <span className="text-muted-foreground text-[10px]">
-                              {opt.comingSoon
-                                ? opt.disabledLabel ?? "Coming soon"
-                                : opt.description}
-                            </span>
-                          </button>
+                          />
                         ))}
                       </div>
                     )}
@@ -1148,19 +1119,19 @@ export function OnboardingWizard() {
 
                       {adapterEnvResult &&
                       adapterEnvResult.status === "pass" ? (
-                        <div className="flex items-center gap-2 rounded-md border border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10 px-3 py-2 text-xs text-green-700 dark:text-green-300 animate-in fade-in slide-in-from-bottom-1 duration-300">
+                        <div className="flex items-center gap-2 rounded-[3px] border border-status-success/40 bg-status-success/10 px-3 py-2 text-xs text-status-success animate-in fade-in slide-in-from-bottom-1 duration-300">
                           <Check className="h-3.5 w-3.5 shrink-0" />
-                          <span className="font-medium">Passed</span>
+                          <span className="font-medium">Environment ready</span>
                         </div>
                       ) : adapterEnvResult ? (
                         <AdapterEnvironmentResult result={adapterEnvResult} />
                       ) : null}
 
                       {shouldSuggestUnsetAnthropicApiKey && (
-                        <div className="rounded-md border border-amber-300/60 bg-amber-50/40 px-2.5 py-2 space-y-2">
-                          <p className="text-[11px] text-amber-900/90 leading-relaxed">
+                        <div className="rounded-[3px] border border-status-warning/40 bg-status-warning/10 px-2.5 py-2 space-y-2">
+                          <p className="text-[11px] text-foreground leading-relaxed">
                             Claude failed while{" "}
-                            <span className="font-mono">ANTHROPIC_API_KEY</span>{" "}
+                            <span className="font-mono text-status-warning">ANTHROPIC_API_KEY</span>{" "}
                             is set. You can clear it in this CEO adapter config
                             and retry the probe.
                           </p>
@@ -1458,6 +1429,66 @@ export function OnboardingWizard() {
   );
 }
 
+type AdapterOption = AdapterDisplayInfo & { type: string };
+
+/** A single adapter choice — icon + name + readable description, with calm
+ *  "Recommended" / "Experimental" markers and a Sodium-accent selected state. */
+function AdapterCard({
+  opt,
+  selected,
+  disabled,
+  onSelect,
+}: {
+  opt: AdapterOption;
+  selected: boolean;
+  disabled?: boolean;
+  onSelect: () => void;
+}) {
+  const Icon = opt.icon;
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onSelect}
+      aria-pressed={selected}
+      className={cn(
+        "group relative flex items-start gap-2.5 rounded-[3px] border p-3 text-left transition-colors",
+        disabled
+          ? "cursor-not-allowed border-border opacity-40"
+          : selected
+            ? "border-primary bg-primary/10"
+            : "border-border hover:border-primary/40 hover:bg-accent/40",
+      )}
+    >
+      <Icon
+        className={cn(
+          "mt-0.5 h-4 w-4 shrink-0",
+          selected ? "text-primary" : "text-muted-foreground",
+        )}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="text-sm font-medium text-foreground">{opt.label}</span>
+          {opt.recommended && (
+            <span className="inline-flex items-center rounded-[2px] bg-status-success/15 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-status-success">
+              Recommended
+            </span>
+          )}
+          {opt.experimental && !opt.recommended && (
+            <span className="inline-flex items-center rounded-[2px] bg-status-warning/15 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-status-warning">
+              Experimental
+            </span>
+          )}
+        </div>
+        <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+          {disabled ? opt.disabledLabel ?? "Coming soon" : opt.description}
+        </p>
+      </div>
+      {selected && <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />}
+    </button>
+  );
+}
+
 function AdapterEnvironmentResult({
   result
 }: {
@@ -1471,39 +1502,39 @@ function AdapterEnvironmentResult({
       : "Failed";
   const statusClass =
     result.status === "pass"
-      ? "text-green-700 dark:text-green-300 border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10"
+      ? "text-status-success border-status-success/40 bg-status-success/10"
       : result.status === "warn"
-      ? "text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10"
-      : "text-red-700 dark:text-red-300 border-red-300 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10";
+        ? "text-status-warning border-status-warning/40 bg-status-warning/10"
+        : "text-status-error border-status-error/40 bg-status-error/10";
 
   return (
-    <div className={`rounded-md border px-2.5 py-2 text-[11px] ${statusClass}`}>
+    <div className={cn("rounded-[3px] border px-3 py-2.5 text-[11px]", statusClass)}>
       <div className="flex items-center justify-between gap-2">
-        <span className="font-medium">{statusLabel}</span>
-        <span className="opacity-80">
+        <span className="font-semibold">{statusLabel}</span>
+        <span className="font-mono text-[10px] opacity-70">
           {new Date(result.testedAt).toLocaleTimeString()}
         </span>
       </div>
-      <div className="mt-1.5 space-y-1">
+      <div className="mt-2 space-y-2">
         {result.checks.map((check, idx) => (
-          <div
-            key={`${check.code}-${idx}`}
-            className="leading-relaxed break-words"
-          >
-            <span className="font-medium uppercase tracking-wide opacity-80">
-              {check.level}
-            </span>
-            <span className="mx-1 opacity-60">·</span>
-            <span>{check.message}</span>
-            {check.detail && (
-              <span className="block opacity-75 break-all">
-                ({check.detail})
+          <div key={`${check.code}-${idx}`}>
+            <div className="flex items-start gap-2">
+              <span className="mt-px inline-flex shrink-0 items-center rounded-[2px] border border-current/40 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide">
+                {check.level}
               </span>
+              <span className="break-words leading-relaxed text-foreground">
+                {check.message}
+              </span>
+            </div>
+            {check.detail && (
+              <p className="mt-1 break-all pl-1 font-mono text-[10px] text-muted-foreground">
+                {check.detail}
+              </p>
             )}
             {check.hint && (
-              <span className="block opacity-90 break-words">
-                Hint: {check.hint}
-              </span>
+              <p className="mt-1 break-words pl-1 text-[10.5px] text-muted-foreground">
+                <span className="font-medium text-foreground">Hint:</span> {check.hint}
+              </p>
             )}
           </div>
         ))}
