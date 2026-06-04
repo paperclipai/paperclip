@@ -114,7 +114,7 @@ ARG CCROTATE_REF=7cf84fccd07dd3bc8b11845cb0630ae825a008f9
 # cross-node retry; dedicated_pvc remains explicit opt-in. Verified in
 # cluster via BLO-8908.
 ARG CLAUDE_K8S_REF=1d6a08f7c814208caa3bf2333dd7c35ca50b95ae
-ARG OPENCODE_K8S_REF=3bbc0b39f79ce2d9ac08c93001780a495a37cafc
+ARG OPENCODE_K8S_REF=2dba034f28a98359c990d87c030d425a5c4e2173
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
