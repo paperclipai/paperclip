@@ -7,6 +7,11 @@ description: Generate SEO-optimized blog posts for ironnoodle.com, deploy via gi
 
 Autonomously write, deploy, and index a blog post on ironnoodle.com from a target keyword.
 
+> **Single-machine skill.** This skill is intentionally pinned to the host that owns the
+> `ironnoodle.com` working tree. Absolute paths below (`/Users/robertstanley/ironnoodle-site`,
+> the IndexNow key file, the GSC refresh script) are deliberate, not portable — update them if
+> the skill is re-deployed to a different machine or the site checkout moves.
+
 ## Inputs
 
 | Field | Required | Description |

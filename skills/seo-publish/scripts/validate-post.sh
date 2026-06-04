@@ -57,7 +57,7 @@ check "grep -q 'FAQPage' '$FILE'" "FAQPage structured data present"
 # Forbidden patterns
 check_not "grep -q 'href=\"[^\"]*ironnoodle\.com[^\"]*\.html' '$FILE'" "No .html in internal links"
 check_not "grep -qi 'synthflow\|elevenlabs\|openrouter\|gohighlevel\|anthropic\|openai\|docker\|tailscale\|zapier\|skillboss' '$FILE'" "No vendor names leaked"
-check_not "grep -q 'href=\"[^/]' '$FILE' | grep -v 'href=\"http\|href=\"mailto\|href=\"tel\|href=\"#'" "All paths absolute (start with /)"
+check_not "grep 'href=\"[^/]' '$FILE' | grep -v 'href=\"http\|href=\"mailto\|href=\"tel\|href=\"#'" "All paths absolute (start with /)"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

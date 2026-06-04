@@ -169,7 +169,15 @@ function falInput(brief) {
     input.duration = String(brief.duration || '5');
     input.aspect_ratio = brief.aspect_ratio || '16:9';
   }
-  if (mode === 'image-to-video') input.image_url = brief.image.startsWith('http') ? brief.image : `file://${path.resolve(brief.image)}`;
+  if (mode === 'image-to-video') {
+    if (!brief.image || !String(brief.image).startsWith('http')) {
+      throw new Error(
+        `image-to-video requires a publicly accessible URL for "image"; local path "${brief.image}" cannot be sent to the fal.ai API. ` +
+        `Upload the file first and provide the remote URL.`
+      );
+    }
+    input.image_url = brief.image;
+  }
   return input;
 }
 

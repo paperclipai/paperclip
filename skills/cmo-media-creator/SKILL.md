@@ -8,6 +8,10 @@ description: Create marketing images and short AI videos for Paperclip CMO workf
 Create draft marketing media quickly while preserving Iron Noodle brand, legal
 marketing compliance, white-label rules, and Paperclip traceability.
 
+> **Single-machine skill.** Absolute paths in this skill (e.g.
+> `/Users/bertostanley/paperclip/skills/cmo-media-creator`) are intentionally pinned to the
+> Paperclip host and are not portable — update them if the skill is re-deployed elsewhere.
+
 ## Ground Rules
 
 - Treat every generated image or video as a draft until reviewed.
