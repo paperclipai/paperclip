@@ -80,7 +80,10 @@ ENV NODE_ENV=production \
   VALADRIEN_OS_DEPLOYMENT_EXPOSURE=private \
   OPENCODE_ALLOW_ALL_MODELS=true
 
-VOLUME ["/valadrien-os"]
+# VOLUME removed for Railway: Railway provisions persistent storage via its own
+# Volume system (attached to the service), not the Dockerfile VOLUME instruction,
+# which it rejects ("docker VOLUME ... is not supported, use Railway Volumes").
+# Local docker-compose still mounts /valadrien-os via its own volume config.
 EXPOSE 3100
 
 ENTRYPOINT ["docker-entrypoint.sh"]

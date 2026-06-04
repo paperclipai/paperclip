@@ -35,6 +35,10 @@ server/src/**/*.js
 server/src/**/*.js.map
 server/src/**/*.d.ts
 server/src/**/*.d.ts.map
+# Hand-written source augmentation (force-tracked). Negate so build-context
+# uploaders (railway up) that filter by .gitignore still include it — without it
+# the server tsc build fails with "Property 'actor' does not exist on Request".
+!server/src/types/express.d.ts
 tmp/
 feedback-export-*
 diagnostics/
@@ -61,3 +65,4 @@ tests/release-smoke/playwright-report/
 .herenow
 .vercel
 .mcp.json
+.gstack/
