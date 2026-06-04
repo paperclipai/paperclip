@@ -507,6 +507,8 @@ describe("optimistic issue comments", () => {
             priority: "medium",
             assigneeAgentId: null,
             assigneeUserId: null,
+            createdByAgentId: null,
+            createdByUserId: null,
             projectId: null,
             goalId: null,
             project: null,

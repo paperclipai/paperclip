@@ -2221,6 +2221,27 @@ export function issueRoutes(
       actor: getActorInfo(req),
       activeRecoveryAction,
     });
+    const rootHumanRequesterAncestor = [...ancestors]
+      .reverse()
+      .find((ancestor) => ancestor.createdByUserId);
+    const rootHumanRequesterAncestorUserId = rootHumanRequesterAncestor?.createdByUserId ?? null;
+    const rootHumanRequester = rootHumanRequesterAncestor && rootHumanRequesterAncestorUserId
+      ? {
+          userId: rootHumanRequesterAncestorUserId,
+          issueId: rootHumanRequesterAncestor.id,
+          identifier: rootHumanRequesterAncestor.identifier,
+          title: rootHumanRequesterAncestor.title,
+          source: "ancestor",
+        }
+      : issue.createdByUserId
+        ? {
+            userId: issue.createdByUserId,
+            issueId: issue.id,
+            identifier: issue.identifier,
+            title: issue.title,
+            source: "current_issue",
+          }
+        : null;
 
     res.json({
       issue: {
@@ -2242,6 +2263,8 @@ export function issueRoutes(
         blocks: relationsWithRecoveryActions.blocks,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        createdByAgentId: issue.createdByAgentId,
+        createdByUserId: issue.createdByUserId,
         originKind: issue.originKind,
         originId: issue.originId,
         updatedAt: issue.updatedAt,
@@ -2252,7 +2275,12 @@ export function issueRoutes(
         title: ancestor.title,
         status: ancestor.status,
         priority: ancestor.priority,
+        assigneeAgentId: ancestor.assigneeAgentId,
+        assigneeUserId: ancestor.assigneeUserId,
+        createdByAgentId: ancestor.createdByAgentId,
+        createdByUserId: ancestor.createdByUserId,
       })),
+      rootHumanRequester,
       project: project
         ? {
             id: project.id,

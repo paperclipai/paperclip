@@ -288,6 +288,132 @@ describe.sequential("issue goal context routes", () => {
     expect(res.body.attachments).toEqual([]);
   });
 
+  it("surfaces the root human requester for agent-created child issue chains", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      id: "33333333-3333-4333-8333-333333333333",
+      identifier: "PAP-583",
+      title: "QA deployed ticket share links",
+      parentId: "22222222-2222-4222-8222-222222222222",
+      createdByAgentId: "qa-agent",
+      createdByUserId: null,
+    });
+    mockIssueService.getAncestors.mockResolvedValue([
+      {
+        id: "22222222-2222-4222-8222-222222222222",
+        identifier: "PAP-582",
+        title: "Build ticket share links",
+        description: null,
+        status: "done",
+        priority: "high",
+        assigneeAgentId: "cto-agent",
+        assigneeUserId: null,
+        createdByAgentId: "ceo-agent",
+        createdByUserId: null,
+        projectId: legacyProjectLinkedIssue.projectId,
+        goalId: null,
+        project: null,
+        goal: null,
+      },
+      {
+        id: "11111111-1111-4111-8111-111111111111",
+        identifier: "PAP-581",
+        title: "Sharing a ticket",
+        description: null,
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: "ceo-agent",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: "board-thomas",
+        projectId: legacyProjectLinkedIssue.projectId,
+        goalId: null,
+        project: null,
+        goal: null,
+      },
+    ]);
+
+    const res = await request(createApp()).get(
+      "/api/issues/33333333-3333-4333-8333-333333333333/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.issue.createdByAgentId).toBe("qa-agent");
+    expect(res.body.issue.createdByUserId).toBeNull();
+    expect(res.body.ancestors[0]).toEqual(expect.objectContaining({
+      identifier: "PAP-582",
+      createdByAgentId: "ceo-agent",
+      createdByUserId: null,
+    }));
+    expect(res.body.ancestors[1]).toEqual(expect.objectContaining({
+      identifier: "PAP-581",
+      createdByAgentId: null,
+      createdByUserId: "board-thomas",
+    }));
+    expect(res.body.rootHumanRequester).toEqual({
+      userId: "board-thomas",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      identifier: "PAP-581",
+      title: "Sharing a ticket",
+      source: "ancestor",
+    });
+  });
+
+  it("falls back to the current issue creator when no ancestor human requester exists", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      createdByAgentId: null,
+      createdByUserId: "board-current",
+    });
+    mockIssueService.getAncestors.mockResolvedValue([]);
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.rootHumanRequester).toEqual({
+      userId: "board-current",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      identifier: "PAP-581",
+      title: "Legacy onboarding task",
+      source: "current_issue",
+    });
+  });
+
+  it("returns null when the current issue and ancestors are agent-created", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      createdByAgentId: "qa-agent",
+      createdByUserId: null,
+    });
+    mockIssueService.getAncestors.mockResolvedValue([
+      {
+        id: "22222222-2222-4222-8222-222222222222",
+        identifier: "PAP-582",
+        title: "Agent-created implementation",
+        description: null,
+        status: "done",
+        priority: "high",
+        assigneeAgentId: "cto-agent",
+        assigneeUserId: null,
+        createdByAgentId: "ceo-agent",
+        createdByUserId: null,
+        projectId: legacyProjectLinkedIssue.projectId,
+        goalId: null,
+        project: null,
+        goal: null,
+      },
+    ]);
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.rootHumanRequester).toBeNull();
+  });
+
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue({
       key: "continuation-summary",

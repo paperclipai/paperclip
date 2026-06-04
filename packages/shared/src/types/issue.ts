@@ -60,6 +60,8 @@ export interface IssueAncestor {
   priority: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
   projectId: string | null;
   goalId: string | null;
   project: IssueAncestorProject | null;

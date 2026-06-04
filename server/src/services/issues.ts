@@ -5966,7 +5966,9 @@ export function issueService(db: Db) {
       const raw: Array<{
         id: string; identifier: string | null; title: string; description: string | null;
         status: string; priority: string;
-        assigneeAgentId: string | null; projectId: string | null; goalId: string | null;
+        assigneeAgentId: string | null; assigneeUserId: string | null;
+        createdByAgentId: string | null; createdByUserId: string | null;
+        projectId: string | null; goalId: string | null;
       }> = [];
       const visited = new Set<string>([issueId]);
       const start = await db.select().from(issues).where(eq(issues.id, issueId)).then(r => r[0] ?? null);
@@ -5976,7 +5978,9 @@ export function issueService(db: Db) {
         const parent = await db.select({
           id: issues.id, identifier: issues.identifier, title: issues.title, description: issues.description,
           status: issues.status, priority: issues.priority,
-          assigneeAgentId: issues.assigneeAgentId, projectId: issues.projectId,
+          assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId,
+          createdByAgentId: issues.createdByAgentId, createdByUserId: issues.createdByUserId,
+          projectId: issues.projectId,
           goalId: issues.goalId, parentId: issues.parentId,
         }).from(issues).where(eq(issues.id, currentId)).then(r => r[0] ?? null);
         if (!parent) break;
@@ -5984,6 +5988,9 @@ export function issueService(db: Db) {
           id: parent.id, identifier: parent.identifier ?? null, title: parent.title, description: parent.description ?? null,
           status: parent.status, priority: parent.priority,
           assigneeAgentId: parent.assigneeAgentId ?? null,
+          assigneeUserId: parent.assigneeUserId ?? null,
+          createdByAgentId: parent.createdByAgentId ?? null,
+          createdByUserId: parent.createdByUserId ?? null,
           projectId: parent.projectId ?? null, goalId: parent.goalId ?? null,
         });
         currentId = parent.parentId ?? null;
