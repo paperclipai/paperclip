@@ -22,13 +22,18 @@ jobs:
 
       - name: Block manual lockfile edits
         # Exemptions: (1) the dedicated chore/refresh-lockfile branch that CI
-        # itself uses to land refreshes; (2) any PR authored by the
-        # `blockcast-ci-packages[bot]` automation, which opens upstream-merge
-        # PRs (e.g. BLO-6287) that legitimately carry lockfile diffs picked
-        # up from the upstream `chore(lockfile): refresh pnpm-lock.yaml`
-        # commits. Both paths are bot-driven and trusted; human/agent PRs
-        # remain blocked.
-        if: github.head_ref != 'chore/refresh-lockfile' && github.event.pull_request.user.login != 'blockcast-ci-packages[bot]'
+        # itself uses to land refreshes; (2) any PR authored by the bot
+        # automation, which opens upstream-merge PRs (e.g. BLO-6287) that
+        # legitimately carry lockfile diffs picked up from the upstream
+        # `chore(lockfile): refresh pnpm-lock.yaml` commits. Both paths are
+        # bot-driven and trusted; human/agent PRs remain blocked.
+        # Both bot logins are accepted across the blockcast-ci-packages →
+        # allyblockcast rename (the `ally` app slug was globally taken) so the
+        # guard holds before and after the identity cutover.
+        if: >-
+          github.head_ref != 'chore/refresh-lockfile' &&
+          github.event.pull_request.user.login != 'blockcast-ci-packages[bot]' &&
+          github.event.pull_request.user.login != 'allyblockcast[bot]'
         run: |
           # Diff the PR branch against its merge base so recent base-branch commits
           # do not masquerade as changes made by the PR itself.

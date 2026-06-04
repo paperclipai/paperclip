@@ -1,0 +1,32 @@
+{
+  "name": "ally",
+  "url": "https://paperclip.blockcast.net",
+  "description": "Blockcast automation bot identity (formerly 'Blockcast CI Packages'). Mints the installation token paperclip injects into agent run pods (commits, PRs, review comments) and drives CI automation (upstream-merge PRs, package publishing). Renamed to 'ally' to match the agent fleet's friendly bot name.",
+  "public": false,
+  "redirect_url": "https://paperclip.blockcast.net/api/github/app-manifest-callback",
+  "hook_attributes": {
+    "active": false
+  },
+  "default_events": [],
+  "default_permissions": {
+    "actions": "write",
+    "checks": "write",
+    "contents": "write",
+    "deployments": "write",
+    "environments": "write",
+    "issues": "write",
+    "metadata": "read",
+    "packages": "write",
+    "pages": "write",
+    "pull_requests": "write",
+    "repository_hooks": "write",
+    "repository_projects": "write",
+    "secret_scanning_alerts": "write",
+    "security_events": "write",
+    "statuses": "write",
+    "vulnerability_alerts": "write",
+    "workflows": "write",
+    "organization_administration": "write",
+    "organization_self_hosted_runners": "write"
+  }
+}

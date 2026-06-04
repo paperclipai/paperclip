@@ -1,0 +1,33 @@
+<!doctype html>
+<!--
+  One-click GitHub App creation via the manifest flow.
+
+  HOW TO USE:
+   1. Log into GitHub in this browser as a Blockcast org OWNER.
+   2. Open this file (double-click / `open create-ally-app.html`).
+   3. Click the button → review the pre-filled "ally" settings → "Create GitHub App".
+   4. GitHub redirects to `…/app-manifest-callback?code=XXXX` (may 404 — fine).
+      COPY the `code` from the address bar and hand it to the assistant
+      (or run the exchange yourself — see ally-app-setup.md step 3).
+
+  The manifest is embedded directly in the hidden input's `value` (NO JavaScript),
+  so it submits even with scripts disabled or under file:// — an earlier JS-based
+  version POSTed an empty manifest and GitHub rejected it ("url wasn't supplied").
+  It mirrors the current `blockcast-ci-packages` app's permissions so the new app
+  is a faithful drop-in. The JSON sits in a single-quoted attribute so its
+  double-quotes are valid as-is.
+-->
+<html>
+  <head><meta charset="utf-8" /><title>Create the "ally" GitHub App</title></head>
+  <body style="font-family: system-ui; max-width: 640px; margin: 4rem auto; line-height: 1.5">
+    <h1>Create the &ldquo;ally&rdquo; GitHub App</h1>
+    <p>Logged into GitHub as a <strong>Blockcast org owner</strong>? Click below.</p>
+    <form action="https://github.com/organizations/Blockcast/settings/apps/new" method="post">
+      <input type="hidden" name="manifest" value='{"name":"ally","url":"https://paperclip.blockcast.net","description":"Blockcast automation bot identity (formerly Blockcast CI Packages). Mints the installation token paperclip injects into agent run pods and drives CI automation. Renamed to ally.","public":false,"redirect_url":"https://paperclip.blockcast.net/api/github/app-manifest-callback","hook_attributes":{"active":false},"default_events":[],"default_permissions":{"actions":"write","checks":"write","contents":"write","deployments":"write","environments":"write","issues":"write","metadata":"read","packages":"write","pages":"write","pull_requests":"write","repository_hooks":"write","repository_projects":"write","secret_scanning_alerts":"write","security_events":"write","statuses":"write","vulnerability_alerts":"write","workflows":"write","organization_administration":"write","organization_self_hosted_runners":"write"}}' />
+      <button type="submit" style="font-size:1.1rem;padding:.6rem 1.2rem;cursor:pointer">
+        Create &ldquo;ally&rdquo; on GitHub →
+      </button>
+    </form>
+    <p style="color:#666;margin-top:2rem">After creating, copy <code>code</code> from the redirect URL.</p>
+  </body>
+</html>

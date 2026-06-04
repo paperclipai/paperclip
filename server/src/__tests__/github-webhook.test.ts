@@ -171,6 +171,8 @@ describe("github-webhook pure helpers", () => {
     expect(__test_hasPrReviewerRequestMention("@ally re-review please")).toBe(true);
     expect(__test_hasPrReviewerRequestMention("cc @Ally after the fix")).toBe(true);
     expect(__test_hasPrReviewerRequestMention("@blockcast-ci-packages re-review please")).toBe(true);
+    expect(__test_hasPrReviewerRequestMention("@allyblockcast please review")).toBe(true);
+    expect(__test_hasPrReviewerRequestMention("cc @AllyBlockcast after the fix")).toBe(true);
     expect(__test_hasPrReviewerRequestMention("ally should not match without the tag")).toBe(false);
     expect(__test_hasPrReviewerRequestMention("email me at ops@ally.example")).toBe(false);
 

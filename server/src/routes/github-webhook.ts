@@ -80,7 +80,7 @@ const WAKE_DRIVING_EVENTS = new Set([
 // relying on GitHub account mention resolution; there may not be a real
 // GitHub user named "ally".
 const PR_REVIEWER_COMMENT_MENTION_PATTERN =
-  /(^|[^\w])@(?:ally|blockcast-ci-packages)(?![-\w])/i;
+  /(^|[^\w])@(?:ally|allyblockcast|blockcast-ci-packages)(?![-\w])/i;
 
 function hasPrReviewerRequestMention(body: string | null | undefined): boolean {
   return typeof body === "string" && PR_REVIEWER_COMMENT_MENTION_PATTERN.test(body);
