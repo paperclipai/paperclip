@@ -124,6 +124,9 @@ import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
+import { AgentFace } from "@/components/AgentFace";
+import { HeartbeatSpine } from "@/components/HeartbeatSpine";
+import { AgentPortrait } from "@/components/AgentPortrait";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -480,6 +483,75 @@ export function DesignGuide() {
             <IssueReferencePill issue={{ id: "demo-3", identifier: "PAP-789", title: "Done status", status: "done" }} />
             <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: "Blocked status", status: "blocked" }} />
             <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: "Removed (strikethrough)", status: "todo" }} />
+          </div>
+        </SubSection>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  GLASSHOUSE AGENT COMPONENTS                                  */}
+      {/* ============================================================ */}
+      <Section title="Agent System (GLASSHOUSE)">
+        <p className="text-sm text-muted-foreground">
+          The living layer. Rule: <span className="text-foreground">eyes lead live-work surfaces</span> (the
+          activity tape, run streams); <span className="text-foreground">the portrait leads identity surfaces</span>{" "}
+          (roster, org chart, the agent&apos;s office). Color means a state. See DESIGN.md.
+        </p>
+
+        <SubSection title="AgentPortrait — generated identity + status ring">
+          <div className="flex items-end gap-5 flex-wrap">
+            {[
+              ["Ti Claude", "ti-claude", "running"],
+              ["Sol", "sol", "thinking"],
+              ["Markét", "market", "blocked"],
+              ["Quill", "quill", "done"],
+              ["Finch", "finch", "idle"],
+            ].map(([name, file, state]) => (
+              <div key={file} className="flex flex-col items-center gap-2">
+                <AgentPortrait
+                  name={name}
+                  src={`/sample-agents/${file}.png`}
+                  state={state as "running" | "thinking" | "done" | "blocked" | "idle"}
+                  size={64}
+                />
+                <span className="text-[10px] font-mono text-muted-foreground">{state}</span>
+              </div>
+            ))}
+            <div className="flex flex-col items-center gap-2">
+              <AgentPortrait name="Unset" src={null} state="running" size={64} />
+              <span className="text-[10px] font-mono text-muted-foreground">no image → eyes</span>
+            </div>
+          </div>
+        </SubSection>
+
+        <SubSection title="AgentFace — the live-work icon (one glyph, five states)">
+          <div className="flex items-end gap-5 flex-wrap">
+            {[["running"], ["thinking"], ["done"], ["blocked"], ["idle"]].map(([state]) => (
+              <div key={state} className="flex flex-col items-center gap-2">
+                <AgentFace state={state as "running" | "thinking" | "done" | "blocked" | "idle"} size={40} />
+                <span className="text-[10px] font-mono text-muted-foreground">{state}</span>
+              </div>
+            ))}
+          </div>
+        </SubSection>
+
+        <SubSection title="HeartbeatSpine — EKG pulse on the agent's cadence">
+          <div className="flex items-stretch gap-6 h-16">
+            {[
+              ["running", 2.2, 0],
+              ["running", 3.0, 0.5],
+              ["blocked", 0, 0],
+              ["done", 0, 0],
+              ["idle", 0, 0],
+            ].map(([state, beat, delay], i) => (
+              <div key={i} className="flex items-stretch gap-2">
+                <HeartbeatSpine
+                  state={state as "running" | "blocked" | "done" | "idle"}
+                  beat={beat as number}
+                  delay={delay as number}
+                />
+                <span className="self-center text-[10px] font-mono text-muted-foreground">{state}</span>
+              </div>
+            ))}
           </div>
         </SubSection>
       </Section>

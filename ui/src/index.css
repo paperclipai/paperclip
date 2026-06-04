@@ -1075,3 +1075,87 @@ span.valadrien-os-project-mention-chip {
 [class*="_toolbarNodeKindSelectContainer_"] {
   z-index: 81 !important;
 }
+
+/* ============================================================
+   GLASSHOUSE agent components — the living layer. See DESIGN.md.
+   Color = state. Eyes lead live-work surfaces; portrait leads
+   identity surfaces. All motion is event-bound; honors reduced-motion.
+   ============================================================ */
+
+/* ----- Agent face: a tiny instrument screen, alive while working ----- */
+.agent-face {
+  position: relative; display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); background: var(--background);
+  border-radius: 3px; overflow: hidden; flex: none;
+}
+.agent-face .af-eyes { display: flex; gap: 16%; animation: af-look var(--af-look, 3.4s) cubic-bezier(.5,0,.5,1) infinite; }
+.agent-face .af-eye {
+  width: 14%; height: 36%; border-radius: 2.5px; background: var(--status-running);
+  box-shadow: 0 0 7px color-mix(in oklch, var(--status-running) 88%, transparent);
+  animation: af-blink var(--af-look, 3.4s) steps(1, end) infinite;
+}
+.agent-face .af-scan {
+  position: absolute; left: 0; right: 0; height: 32%; top: -32%;
+  background: linear-gradient(var(--status-running), transparent); opacity: .18;
+  animation: af-scan var(--af-scan, 2.6s) linear infinite;
+}
+.agent-face[data-state="done"] .af-eyes { animation: none; }
+.agent-face[data-state="done"] .af-eye { height: 14%; width: 16%; border-radius: 6px 6px 0 0; background: var(--status-success); box-shadow: none; animation: none; }
+.agent-face[data-state="blocked"] { border-color: color-mix(in oklch, var(--status-error) 38%, var(--border)); }
+.agent-face[data-state="blocked"] .af-eyes { animation: none; transform: none; }
+.agent-face[data-state="blocked"] .af-eye { height: 8%; width: 20%; background: var(--status-error); box-shadow: none; animation: none; }
+.agent-face[data-state="blocked"]::after { content: ""; position: absolute; inset: 0; background: var(--status-error); opacity: .06; }
+.agent-face[data-state="idle"] .af-eyes { animation: none; transform: none; }
+.agent-face[data-state="idle"] .af-eye { height: 7%; width: 17%; background: var(--status-idle); box-shadow: none; animation: none; }
+@keyframes af-look { 0%,13%{transform:translate(-12%,0)} 25%,38%{transform:translate(12%,0)} 50%,60%{transform:translate(0,9%)} 72%,100%{transform:translate(0,0)} }
+@keyframes af-blink { 0%,38%{transform:scaleY(1)} 40%{transform:scaleY(.08)} 43%{transform:scaleY(1)} 87%{transform:scaleY(1)} 89%{transform:scaleY(.08)} 91%{transform:scaleY(1)} 93%{transform:scaleY(.08)} 95%{transform:scaleY(1)} }
+@keyframes af-scan { 0%{top:-32%} 100%{top:100%} }
+
+/* ----- Heartbeat spine: an EKG line bound to the agent's pulse ----- */
+.heartbeat-spine { position: relative; width: 2px; align-self: stretch; background: var(--status-idle); overflow: hidden; border-radius: 1px; flex: none; }
+.heartbeat-spine[data-state="running"] { background: color-mix(in oklch, var(--status-running) 40%, var(--status-idle)); }
+.heartbeat-spine[data-state="running"]::after {
+  content: ""; position: absolute; inset: 0; background: var(--status-running); opacity: 0;
+  animation: hs-flash var(--hs-beat, 2.4s) ease-out infinite; animation-delay: var(--hs-delay, 0s);
+}
+.heartbeat-spine[data-state="running"] .hs-pulse {
+  position: absolute; left: -3px; width: 8px; height: 40px; border-radius: 4px; z-index: 1;
+  background: linear-gradient(to bottom, transparent,
+    color-mix(in oklch, var(--status-running) 38%, transparent) 42%, var(--status-running) 76%,
+    color-mix(in oklch, var(--status-running) 88%, white) 87%, var(--status-running) 95%, transparent);
+  box-shadow: 0 0 18px 2px color-mix(in oklch, var(--status-running) 82%, transparent);
+  animation: hs-travel var(--hs-beat, 2.4s) cubic-bezier(.45,0,.2,1) infinite; animation-delay: var(--hs-delay, 0s);
+}
+.heartbeat-spine[data-state="blocked"] { background: var(--status-error); box-shadow: 0 0 9px 0 color-mix(in oklch, var(--status-error) 45%, transparent); }
+.heartbeat-spine[data-state="done"] { background: color-mix(in oklch, var(--status-success) 30%, var(--status-idle)); }
+@keyframes hs-flash { 0%,7%{opacity:0} 10%{opacity:.55} 26%{opacity:0} 100%{opacity:0} }
+@keyframes hs-travel { 0%{top:-40px;opacity:0;transform:scaleY(.5)} 6%{opacity:1} 10%{transform:scaleY(1.3)} 16%{transform:scaleY(.85)} 85%{opacity:.9} 100%{top:100%;opacity:0;transform:scaleY(.5)} }
+
+/* ----- Agent portrait: the generated identity, framed + status ring ----- */
+.agent-portrait { position: relative; border: 1px solid var(--border); border-radius: 3px; overflow: hidden; flex: none; background: var(--card); }
+.agent-portrait .ap-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.agent-portrait .ap-ring { position: absolute; inset: 0; border: 2px solid color-mix(in oklch, var(--ap-c, transparent) 80%, transparent); border-radius: 3px; pointer-events: none; }
+.agent-portrait .ap-pip { position: absolute; top: 5%; right: 5%; width: 22%; max-width: 11px; aspect-ratio: 1; border-radius: 50%; background: var(--ap-c); border: 2px solid var(--card); }
+.agent-portrait[data-state="running"] .ap-scan {
+  position: absolute; left: 0; right: 0; height: 30%; top: -30%;
+  background: linear-gradient(var(--status-running), transparent); opacity: .14; animation: ap-scan 3.4s linear infinite;
+}
+.agent-portrait[data-state="idle"] { filter: grayscale(.9) brightness(.62); }
+.agent-portrait[data-state="blocked"]::after { content: ""; position: absolute; inset: 0; background: var(--status-error); opacity: .07; }
+@keyframes ap-scan { 0%{top:-30%} 100%{top:110%} }
+
+/* ----- Org collaboration wire: joint-work link, pulse travels from parent ----- */
+.org-collab-wire { position: absolute; top: 0; left: 50%; width: 6px; height: var(--ocw-h, 22px); transform: translateX(-50%); overflow: hidden; pointer-events: none; z-index: 1; }
+.org-collab-wire::after {
+  content: ""; position: absolute; left: 0; width: 6px; height: 12px; border-radius: 3px;
+  background: linear-gradient(var(--status-running), transparent);
+  box-shadow: 0 0 9px var(--status-running); animation: ocw-flow 1.3s linear infinite;
+}
+@keyframes ocw-flow { 0%{top:-12px;opacity:0} 20%{opacity:1} 100%{top:var(--ocw-h, 22px);opacity:0} }
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-face .af-eyes, .agent-face .af-eye, .agent-face .af-scan,
+  .heartbeat-spine[data-state="running"]::after, .heartbeat-spine .hs-pulse,
+  .agent-portrait .ap-scan, .org-collab-wire::after { animation: none; }
+  .agent-face .af-scan, .heartbeat-spine .hs-pulse, .agent-portrait .ap-scan, .org-collab-wire::after { display: none; }
+}

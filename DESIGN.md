@@ -154,6 +154,30 @@ faint 0.62`; `sodium 0.60 0.15 58`, `running 0.55 0.10 185`, `success 0.52 0.12 
 ---
 
 ## Signature components
+> Built as reusable React components: `ui/src/components/AgentFace.tsx`,
+> `HeartbeatSpine.tsx`, `AgentPortrait.tsx`; animations live in `ui/src/index.css`
+> (`.agent-face` / `.heartbeat-spine` / `.agent-portrait` / `.org-collab-wire`).
+> Showcased on the `/design-guide` page.
+
+### Portrait vs eyes — the contextual rule
+An agent has two faces, used by surface:
+- **Eyes (`AgentFace`) lead live-work surfaces** — the activity dashboard/tape, run
+  streams. You're watching work happen, so the animated instrument face is prominent;
+  the portrait is intentionally absent.
+- **Portrait (`AgentPortrait`) leads identity surfaces** — the roster, the company
+  org chart, and the agent's own office (direct chat). You're meeting / contemplating
+  the employee, so its generated character portrait comes forward.
+- Click an agent on a live-work surface → you step into its office → the portrait
+  resurfaces. `AgentPortrait` falls back to the eyes face when no portrait exists yet.
+
+### The agent portrait — generated identity
+A **generated character portrait** (stylized-realistic 3D, dark-charcoal background so
+it drops into the dark UI), framed in the instrument tile with a hairline border, a
+status **ring** + corner **pip**, a teal **scanline** while working, desaturate-grey
+when idle, a clay wash when blocked. Portraits are **unique per agent, per tenant** —
+each company's roster looks like its own team. Default identity pool: people of color,
+Caribbean and Latin American (tenant-configurable). Generated via **Imagen 4.0 Fast**;
+full pipeline + prompt template in `docs/portrait-generation.md`.
 
 ### The agent face — the living icon (one glyph, five states)
 The agent's avatar **is** its status icon: a tiny instrument screen (≈36×28px,
@@ -195,6 +219,15 @@ count-up). Money spent feels like a struck match, one charge at a time.
 ### Thinking cursor
 A working entity's run-stream line ends with a live **blinking terminal block
 cursor** (`1.05s` steps) in running-teal — you watch the agent actively composing.
+
+### Org chart & collaboration wire
+The company org chart uses `AgentPortrait` nodes with full, solid reporting lines
+(proper corners — no gaps, no dangling ends; the canonical CSS tree). The CEO node is
+emphasized (Sodium border + amber role tag). **When two agents work jointly on a
+task, the link between them goes teal and a pulse travels down it from the parent**
+(`.org-collab-wire`, `ocw-flow`) — the heartbeat concept extended to collaboration.
+Roster cards order identity as **name → role → model** (role under the name, above
+the model id).
 
 ### Standard components (shadcn, re-skinned)
 - **Buttons:** primary = solid Sodium amber, `sodium-fg` text, 2px radius. Secondary =
@@ -252,3 +285,4 @@ cursor** (`1.05s` steps) in running-teal — you watch the agent actively compos
 | 2026-06-04 | Initial design system **GLASSHOUSE** created | `/design-consultation`. Memorable thing = "AI actually runs this, watch it live." Peer scan (Linear/Vercel/Retool) + Claude design subagent; Codex unavailable (ChatGPT-auth model block) so single-model. |
 | 2026-06-04 | Dark-first; Sodium amber accent over blue; serif masthead; tape/blotter over card grid | Owner-approved via animated HTML preview (3 rounds). |
 | 2026-06-04 | Agent face (5-state living icon) + EKG heartbeat spine + thinking cursor | Owner asked to push the "alive" animation (Perplexity moving-eyes reference); approved at v3. |
+| 2026-06-04 | Portrait-vs-eyes rule; generated portraits (Imagen 4.0 Fast); org collab wire; roster name→role→model | Owner direction from Paperclip ref screenshots. Portraits = identity (roster/org/office), eyes = live work (activity). Diversity default: POC, Caribbean + Latin American. Built `AgentFace`/`HeartbeatSpine`/`AgentPortrait` + `docs/portrait-generation.md`. |
