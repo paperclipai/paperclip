@@ -321,6 +321,25 @@ export const resolveIssueRecoveryActionSchema = z.object({
 
 export type ResolveIssueRecoveryAction = z.infer<typeof resolveIssueRecoveryActionSchema>;
 
+export const SUCCESSFUL_RUN_DISPOSITIONS = [
+  "done",
+  "cancelled",
+  "continued",
+  "delegated",
+  "blocked_with_owner",
+  "review_pending_input",
+] as const;
+export type SuccessfulRunDisposition = (typeof SUCCESSFUL_RUN_DISPOSITIONS)[number];
+
+export const recordIssueDispositionSchema = z.object({
+  runId: z.string().uuid(),
+  disposition: z.enum(SUCCESSFUL_RUN_DISPOSITIONS),
+  note: multilineTextSchema.optional().nullable(),
+  actor: z.enum(["agent", "board"]).optional(),
+}).strict();
+
+export type RecordIssueDisposition = z.infer<typeof recordIssueDispositionSchema>;
+
 const issueRequestDepthInputSchema = z
   .number()
   .int()

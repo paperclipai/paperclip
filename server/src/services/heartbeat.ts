@@ -140,6 +140,9 @@ import {
   buildSuccessfulRunHandoffRequiredNotice,
   decideRunLivenessContinuation,
   decideSuccessfulRunHandoff,
+  dispositionForIssueStatus,
+  readFinishHandoffSourceRunId,
+  recordSuccessfulRunDisposition,
   findExistingFinishSuccessfulRunHandoffWake,
   findExistingRunLivenessContinuationWake,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
@@ -4283,6 +4286,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
       .then((rows) => rows[0] ?? null);
+
+    // AC#2: when the corrective `finish_successful_run_handoff` wake itself
+    // completes, the agent has responded to the handoff. Clear the original
+    // source run's `missing_successful_run_disposition` attention so it stops
+    // re-firing on subsequent heartbeats. Idempotent and status-mapped.
+    const finishHandoffSourceRunId = readFinishHandoffSourceRunId(run);
+    if (issue && finishHandoffSourceRunId) {
+      await recordSuccessfulRunDisposition(db, {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        runId: finishHandoffSourceRunId,
+        disposition: dispositionForIssueStatus(issue.status),
+        actor: { actorType: "system", actorId: "heartbeat", agentId: run.agentId, runId: run.id },
+      });
+      return;
+    }
+
     const idempotencyKey = issue
       ? buildFinishSuccessfulRunHandoffIdempotencyKey({
         issueId: issue.id,
