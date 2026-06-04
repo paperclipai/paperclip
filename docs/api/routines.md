@@ -75,11 +75,28 @@ Fields:
 ```
 PATCH /api/routines/{routineId}
 {
-  "status": "paused"
+  "status": "paused",
+  "baseRevisionId": "{latestRevisionId}"
 }
 ```
 
-All fields from create are updatable. **Agents can only update routines assigned to themselves and cannot reassign a routine to another agent.**
+All fields from create are updatable. `baseRevisionId` is optional for backward compatibility; when provided, stale values return `409 Conflict` with the current revision id. **Agents can only update routines assigned to themselves and cannot reassign a routine to another agent.**
+
+## List Revisions
+
+```
+GET /api/routines/{routineId}/revisions
+```
+
+Returns append-only routine definition revisions newest first. Snapshots include routine fields and safe trigger metadata only; webhook secret values and `secretId` are never returned.
+
+## Restore Revision
+
+```
+POST /api/routines/{routineId}/revisions/{revisionId}/restore
+```
+
+Restores a historical routine definition by creating a new latest revision copied from the selected revision. Historical revision rows, routine run history, and activity history are preserved. If restoring a deleted webhook trigger requires recreating it, the response can include one-time replacement secret material for that trigger.
 
 ## Add Trigger
 

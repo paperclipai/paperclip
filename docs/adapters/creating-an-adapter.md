@@ -203,6 +203,43 @@ export const sessionCodec: AdapterSessionCodec = {
 };
 ```
 
+## Capability Flags
+
+Adapters can declare what "local" capabilities they support by setting optional fields on the `ServerAdapterModule`. The server and UI use these flags to decide which features to enable for agents using the adapter (instructions bundle editor, skills sync, JWT auth, etc.).
+
+| Flag | Type | Default | What it controls |
+|------|------|---------|------------------|
+| `supportsLocalAgentJwt` | `boolean` | `false` | Whether heartbeat generates a local JWT for the agent |
+| `supportsInstructionsBundle` | `boolean` | `false` | Managed instructions bundle (AGENTS.md) — server-side resolution + UI editor |
+| `instructionsPathKey` | `string` | `"instructionsFilePath"` | The `adapterConfig` key that holds the instructions file path |
+| `requiresMaterializedRuntimeSkills` | `boolean` | `false` | Whether runtime skill entries must be written to disk before execution |
+
+These flags are exposed via `GET /api/adapters` in a `capabilities` object, along with a derived `supportsSkills` flag (true when `listSkills` or `syncSkills` is defined).
+
+### Example
+
+```ts
+export function createServerAdapter(): ServerAdapterModule {
+  return {
+    type: "my_k8s_adapter",
+    execute: myExecute,
+    testEnvironment: myTestEnvironment,
+    listSkills: myListSkills,
+    syncSkills: mySyncSkills,
+
+    // Capability flags
+    supportsLocalAgentJwt: true,
+    supportsInstructionsBundle: true,
+    instructionsPathKey: "instructionsFilePath",
+    requiresMaterializedRuntimeSkills: true,
+  };
+}
+```
+
+With these flags set, the Paperclip UI will automatically show the instructions bundle editor, skills management tab, and working directory field for agents using this adapter — no Paperclip source changes required.
+
+If capability flags are not set, the server falls back to legacy hardcoded lists for built-in adapter types. External adapters that omit the flags will default to `false` for all capabilities.
+
 ## Skills Injection
 
 Make Paperclip skills discoverable to your agent runtime without writing to the agent's working directory:
@@ -211,6 +248,23 @@ Make Paperclip skills discoverable to your agent runtime without writing to the 
 2. **Acceptable: global config dir** — symlink to the runtime's global plugins directory
 3. **Acceptable: env var** — point a skills path env var at the repo's `skills/` directory
 4. **Last resort: prompt injection** — include skill content in the prompt template
+
+## Cross-run workspace persistence (no-remote-git contract)
+
+The local execution-workspace cwd is the **only** persistence boundary across runs. No adapter may depend on a git remote for cross-run state.
+
+The supported round-trip:
+
+- **Per-run, on the remote side.** `prepareWorkspaceForSshExecution` (in `packages/adapter-utils/src/ssh.ts`) git-bundles the local worktree and ships it to the run's remote dir. No `git remote` is set anywhere; the bundle is the transport.
+- **End-of-run, in the adapter's `finally` block.** The adapter invokes `restoreRemoteWorkspace` (e.g. claude-local's `execute.ts`), which calls `restoreWorkspaceFromSshExecution` → `exportGitWorkspaceFromSsh` → `integrateImportedGitHead`. Remote commits made during the run land back in the local Mac worktree with no `git push` and no remote configured.
+
+The invariant adapters must preserve:
+
+- **Never `git push`** from adapter or runtime code. Operator-supplied configuration may opt in, but the default contract is no remote operations.
+- **Never assume a remote exists.** The local cwd is the source of truth between runs.
+- **Surface restore failures.** A failed sync-back must propagate as a run-level error, not a silent warning. The heartbeat records a `workspace_finalize` row (`succeeded`/`failed`) around `adapter.execute` so dependent issues do not wake on a stale worktree.
+
+The invariant is pinned by the "no-remote-git contract" case in `packages/adapter-utils/src/ssh-fixture.test.ts`: it asserts `git remote` is empty before and after the round-trip and that a remote-only commit still lands locally via restore alone.
 
 ## Security
 

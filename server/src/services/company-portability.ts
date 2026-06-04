@@ -16,6 +16,7 @@ import type {
   CompanyPortabilityImportResult,
   CompanyPortabilityInclude,
   CompanyPortabilityManifest,
+  CompanyPortabilityIssueCommentManifestEntry,
   CompanyPortabilityPreview,
   CompanyPortabilityPreviewAgentPlan,
   CompanyPortabilityPreviewResult,
@@ -31,6 +32,7 @@ import type {
   RoutineVariable,
 } from "@paperclipai/shared";
 import {
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
   PROJECT_STATUSES,
@@ -41,13 +43,18 @@ import {
   ROUTINE_TRIGGER_SIGNING_MODES,
   deriveProjectUrlKey,
   envConfigSchema,
+  issueCommentAuthorTypeSchema,
+  issueCommentMetadataSchema,
+  issueCommentPresentationSchema,
   normalizeAgentUrlKey,
 } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import { notFound, unprocessable } from "../errors.js";
+import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
+import { findServerAdapter } from "../adapters/index.js";
+import { forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
@@ -62,6 +69,13 @@ import { validateCron } from "./cron.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
+import { secretService } from "./secrets.js";
+import {
+  PORTABLE_CATALOG_PROVENANCE_STRING_KEYS,
+  readCatalogStringList,
+  readPortableCatalogProvenance,
+} from "./catalog-provenance.js";
+import { normalizePortablePath } from "./portable-path.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -117,6 +131,7 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
 };
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
+const IMPORT_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http"]);
 const execFileAsync = promisify(execFile);
 let bundledSkillsCommitPromise: Promise<string | null> | null = null;
 
@@ -217,6 +232,28 @@ function normalizeExportPathSegment(value: string | null | undefined, preserveCa
 function readSkillSourceKind(skill: CompanySkill) {
   const metadata = isPlainRecord(skill.metadata) ? skill.metadata : null;
   return asString(metadata?.sourceKind);
+}
+
+function buildPortableCatalogProvenance(skill: CompanySkill) {
+  if (skill.sourceType !== "catalog") return null;
+  const metadata = isPlainRecord(skill.metadata) ? skill.metadata : null;
+  const provenance: Record<string, unknown> = {
+    skillKey: skill.key,
+  };
+
+  const sourceRef = asString(skill.sourceRef) ?? asString(metadata?.originHash);
+  if (sourceRef) provenance.sourceRef = sourceRef;
+
+  for (const key of PORTABLE_CATALOG_PROVENANCE_STRING_KEYS) {
+    if (key === "sourceRef") continue;
+    const value = asString(metadata?.[key]);
+    if (value) provenance[key] = value;
+  }
+
+  const auditCodes = readCatalogStringList(metadata?.auditCodes);
+  if (auditCodes) provenance.auditCodes = auditCodes;
+
+  return Object.keys(provenance).length > 1 ? provenance : null;
 }
 
 function deriveLocalExportNamespace(skill: CompanySkill, slug: string) {
@@ -586,7 +623,7 @@ const RUNTIME_DEFAULT_RULES: Array<{ path: string[]; value: unknown }> = [
   { path: ["heartbeat", "wakeOnAssignment"], value: true },
   { path: ["heartbeat", "wakeOnAutomation"], value: true },
   { path: ["heartbeat", "wakeOnDemand"], value: true },
-  { path: ["heartbeat", "maxConcurrentRuns"], value: 3 },
+  { path: ["heartbeat", "maxConcurrentRuns"], value: AGENT_DEFAULT_MAX_CONCURRENT_RUNS },
 ];
 
 const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; value: unknown }>> = {
@@ -637,6 +674,96 @@ function asBoolean(value: unknown): boolean | null {
 
 function asInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) ? value : null;
+}
+
+function hasOwn(record: Record<string, unknown>, key: string) {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function readStringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const entries = value.filter((entry): entry is string => typeof entry === "string");
+  return entries.length === value.length ? entries : null;
+}
+
+function derivePortableCommentAuthorType(value: Record<string, unknown>) {
+  const explicit = issueCommentAuthorTypeSchema.safeParse(value.authorType);
+  if (explicit.success) return explicit.data;
+  return asString(value.authorAgentSlug) ? "agent" : asString(value.authorUserId) ? "user" : "system";
+}
+
+function readPortableIssueComments(
+  value: unknown,
+  warnings: string[],
+  sourceLabel: string,
+): CompanyPortabilityIssueCommentManifestEntry[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    warnings.push(`${sourceLabel} comments were ignored because they are not an array.`);
+    return [];
+  }
+
+  const comments: CompanyPortabilityIssueCommentManifestEntry[] = [];
+  for (const [index, entry] of value.entries()) {
+    if (!isPlainRecord(entry)) {
+      warnings.push(`${sourceLabel} comment ${index + 1} was ignored because it is not an object.`);
+      continue;
+    }
+    const body = asString(entry.body);
+    if (!body) {
+      warnings.push(`${sourceLabel} comment ${index + 1} was ignored because it has no body.`);
+      continue;
+    }
+    const presentation = entry.presentation == null ? null : issueCommentPresentationSchema.safeParse(entry.presentation);
+    if (presentation && !presentation.success) {
+      warnings.push(`${sourceLabel} comment ${index + 1} has invalid presentation metadata and was ignored.`);
+      continue;
+    }
+    const metadata = entry.metadata == null ? null : issueCommentMetadataSchema.safeParse(entry.metadata);
+    if (metadata && !metadata.success) {
+      warnings.push(`${sourceLabel} comment ${index + 1} has invalid hidden metadata and was ignored.`);
+      continue;
+    }
+    const createdAt = asString(entry.createdAt);
+    comments.push({
+      body,
+      authorType: derivePortableCommentAuthorType(entry),
+      authorAgentSlug: asString(entry.authorAgentSlug),
+      authorUserId: asString(entry.authorUserId),
+      presentation: presentation ? presentation.data : null,
+      metadata: metadata ? metadata.data : null,
+      createdAt: createdAt && Number.isNaN(Date.parse(createdAt)) ? null : createdAt,
+    });
+  }
+  return comments;
+}
+
+function appendCodexImportArg(adapterConfig: Record<string, unknown>, arg: string) {
+  const extraArgs = readStringArray(adapterConfig.extraArgs);
+  if (extraArgs) {
+    if (!extraArgs.includes(arg)) adapterConfig.extraArgs = [...extraArgs, arg];
+    return;
+  }
+
+  const legacyArgs = readStringArray(adapterConfig.args);
+  if (legacyArgs && legacyArgs.length > 0) {
+    if (!legacyArgs.includes(arg)) adapterConfig.args = [...legacyArgs, arg];
+    return;
+  }
+
+  if (legacyArgs?.includes(arg)) return;
+  adapterConfig.extraArgs = [arg];
+}
+
+function applyImportAdapterRunDefaults(
+  adapterType: string,
+  adapterConfig: Record<string, unknown>,
+) {
+  const next = { ...adapterConfig };
+  if (adapterType === "codex_local") {
+    appendCodexImportArg(next, "--skip-git-repo-check");
+  }
+  return next;
 }
 
 function normalizeRoutineTriggerExtension(value: unknown): CompanyPortabilityIssueRoutineTriggerManifestEntry | null {
@@ -737,10 +864,20 @@ function clonePortableRecord(value: unknown) {
   return structuredClone(value) as Record<string, unknown>;
 }
 
+function parseFiniteNumberLike(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+  const parsed = Number(value.trim());
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function disableImportedTimerHeartbeat(runtimeConfig: unknown) {
   const next = clonePortableRecord(runtimeConfig) ?? {};
   const heartbeat = isPlainRecord(next.heartbeat) ? { ...next.heartbeat } : {};
   heartbeat.enabled = false;
+  if (parseFiniteNumberLike(heartbeat.maxConcurrentRuns) == null) {
+    heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+  }
   next.heartbeat = heartbeat;
   return next;
 }
@@ -1304,20 +1441,6 @@ function normalizeInclude(input?: Partial<CompanyPortabilityInclude>): CompanyPo
     issues: input?.issues ?? DEFAULT_INCLUDE.issues,
     skills: input?.skills ?? DEFAULT_INCLUDE.skills,
   };
-}
-
-function normalizePortablePath(input: string) {
-  const normalized = input.replace(/\\/g, "/").replace(/^\.\/+/, "");
-  const parts: string[] = [];
-  for (const segment of normalized.split("/")) {
-    if (!segment || segment === ".") continue;
-    if (segment === "..") {
-      if (parts.length > 0) parts.pop();
-      continue;
-    }
-    parts.push(segment);
-  }
-  return parts.join("/");
 }
 
 function resolvePortablePath(fromPath: string, targetPath: string) {
@@ -2017,12 +2140,14 @@ async function withSkillSourceMetadata(skill: CompanySkill, markdown: string) {
   if (sourceEntry) {
     metadata.sources = [...existingSources, sourceEntry];
   }
+  const catalogProvenance = buildPortableCatalogProvenance(skill);
   metadata.skillKey = skill.key;
   metadata.paperclipSkillKey = skill.key;
   metadata.paperclip = {
     ...(isPlainRecord(metadata.paperclip) ? metadata.paperclip : {}),
     skillKey: skill.key,
     slug: skill.slug,
+    ...(catalogProvenance ? { catalog: catalogProvenance } : {}),
   };
   const frontmatter = {
     ...parsed.frontmatter,
@@ -2249,7 +2374,7 @@ function buildEnvInputMap(inputs: CompanyPortabilityEnvInput[]) {
 }
 
 function readCompanyApprovalDefault(_frontmatter: Record<string, unknown>) {
-  return true;
+  return false;
 }
 
 function readIncludeEntries(frontmatter: Record<string, unknown>): CompanyPackageIncludeEntry[] {
@@ -2413,6 +2538,10 @@ function buildManifestFromPackageFiles(
       description: asString(companyFrontmatter.description),
       brandColor: asString(paperclipCompany.brandColor),
       logoPath: asString(paperclipCompany.logoPath) ?? asString(paperclipCompany.logo),
+      attachmentMaxBytes:
+        typeof paperclipCompany.attachmentMaxBytes === "number" && Number.isFinite(paperclipCompany.attachmentMaxBytes)
+          ? Math.max(1, Math.floor(paperclipCompany.attachmentMaxBytes))
+          : null,
       requireBoardApprovalForNewAgents:
         typeof paperclipCompany.requireBoardApprovalForNewAgents === "boolean"
           ? paperclipCompany.requireBoardApprovalForNewAgents
@@ -2555,10 +2684,17 @@ function buildManifestFromPackageFiles(
       normalizedMetadata = {
         sourceKind: "url",
       };
-    } else if (metadata) {
-      normalizedMetadata = {
-        sourceKind: "catalog",
-      };
+    } else {
+      const catalogProvenance = readPortableCatalogProvenance(metadata);
+      if (catalogProvenance) {
+        sourceType = "catalog";
+        sourceRef = catalogProvenance.sourceRef;
+        normalizedMetadata = catalogProvenance.metadata;
+      } else if (metadata) {
+        normalizedMetadata = {
+          sourceKind: "catalog",
+        };
+      }
     }
     const key = deriveManifestSkillKey(frontmatter, slug, normalizedMetadata, sourceType, sourceLocator);
 
@@ -2666,6 +2802,7 @@ function buildManifestFromPackageFiles(
       assigneeAdapterOverrides: isPlainRecord(extension.assigneeAdapterOverrides)
         ? extension.assigneeAdapterOverrides
         : null,
+      comments: readPortableIssueComments(extension.comments, warnings, `Task ${slug}`),
       metadata: isPlainRecord(extension.metadata) ? extension.metadata : null,
     });
     if (frontmatter.kind && frontmatter.kind !== "task") {
@@ -2747,6 +2884,89 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const projects = projectService(db);
   const issues = issueService(db);
   const companySkills = companySkillService(db);
+  const secrets = secretService(db);
+  const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+
+  function assertKnownImportAdapterType(type: string | null | undefined): string {
+    const adapterType = typeof type === "string" ? type.trim() : "";
+    if (!adapterType) {
+      throw unprocessable("Adapter type is required");
+    }
+    if (!findServerAdapter(adapterType)) {
+      throw unprocessable(`Unknown adapter type: ${adapterType}`);
+    }
+    return adapterType;
+  }
+
+  async function assertImportAdapterConfigConstraints(
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+  ) {
+    if (adapterType !== "opencode_local") return;
+    try {
+      requireOpenCodeModelId(adapterConfig.model);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+    }
+  }
+
+  async function prepareImportedAgentAdapter(
+    companyId: string,
+    adapterType: string | null | undefined,
+    adapterConfig: Record<string, unknown>,
+    desiredSkills: string[],
+    mode: ImportMode,
+  ) {
+    const effectiveAdapterType = assertKnownImportAdapterType(adapterType);
+    if (mode === "agent_safe" && IMPORT_FORBIDDEN_ADAPTER_TYPES.has(effectiveAdapterType)) {
+      throw forbidden(`Adapter type "${effectiveAdapterType}" is not allowed in safe imports`);
+    }
+    const nextAdapterConfig = writePaperclipSkillSyncPreference(
+      applyImportAdapterRunDefaults(effectiveAdapterType, adapterConfig),
+      desiredSkills,
+    );
+    delete nextAdapterConfig.promptTemplate;
+    delete nextAdapterConfig.bootstrapPromptTemplate;
+    delete nextAdapterConfig.instructionsFilePath;
+    delete nextAdapterConfig.instructionsBundleMode;
+    delete nextAdapterConfig.instructionsRootPath;
+    delete nextAdapterConfig.instructionsEntryFile;
+    const normalizedAdapterConfig = await secrets.normalizeAdapterConfigForPersistence(
+      companyId,
+      nextAdapterConfig,
+      { strictMode: strictSecretsMode },
+    );
+    await assertImportAdapterConfigConstraints(effectiveAdapterType, normalizedAdapterConfig);
+    return {
+      adapterType: effectiveAdapterType,
+      adapterConfig: normalizedAdapterConfig,
+    };
+  }
+
+  function resolveImportedAssigneeAgentId(
+    assigneeSlug: string | null | undefined,
+    importedSlugToAgentId: Map<string, string>,
+    existingSlugToAgentId: Map<string, string>,
+    agentStatusById: Map<string, string | null | undefined>,
+    warnings: string[],
+    subjectLabel: string,
+  ) {
+    if (!assigneeSlug) return null;
+    const assigneeAgentId =
+      importedSlugToAgentId.get(assigneeSlug)
+      ?? existingSlugToAgentId.get(assigneeSlug)
+      ?? null;
+    if (!assigneeAgentId) return null;
+    const assigneeStatus = agentStatusById.get(assigneeAgentId) ?? null;
+    if (assigneeStatus === "pending_approval" || assigneeStatus === "terminated") {
+      warnings.push(
+        `${subjectLabel} assignee ${assigneeSlug} is ${assigneeStatus}; imported work was left unassigned.`,
+      );
+      return null;
+    }
+    return assigneeAgentId;
+  }
 
   async function resolveSource(source: CompanyPortabilityPreview["source"]): Promise<ResolvedSource> {
     if (source.type === "inline") {
@@ -3281,6 +3501,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           });
         }
       }
+      const comments = await issuesSvc.listComments(issue.id, { order: "asc" });
       files[taskPath] = buildMarkdown(
         {
           name: issue.title,
@@ -3298,6 +3519,20 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         projectWorkspaceKey: projectWorkspaceKey ?? undefined,
         executionWorkspaceSettings: issue.executionWorkspaceSettings ?? undefined,
         assigneeAdapterOverrides: issue.assigneeAdapterOverrides ?? undefined,
+        comments: comments.length > 0
+          ? comments.map((comment) => ({
+              body: comment.body,
+              authorType: comment.authorType,
+              authorAgentSlug: comment.authorAgentId ? (idToSlug.get(comment.authorAgentId) ?? null) : null,
+              // Portable bundles preserve author kind, but not raw board user ids.
+              authorUserId: null,
+              presentation: comment.presentation,
+              metadata: comment.metadata,
+              createdAt: comment.createdAt instanceof Date
+                ? comment.createdAt.toISOString()
+                : new Date(comment.createdAt).toISOString(),
+            }))
+          : undefined,
       });
       paperclipTasksOut[taskSlug] = isPlainRecord(extension) ? extension : {};
     }
@@ -3310,9 +3545,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     for (const routine of selectedRoutineRows) {
       const taskSlug = taskSlugByRoutineId.get(routine.id)!;
-      const projectSlug = projectSlugById.get(routine.projectId) ?? null;
+      const projectSlug = routine.projectId ? (projectSlugById.get(routine.projectId) ?? null) : null;
       const taskPath = `tasks/${taskSlug}/TASK.md`;
-      const assigneeSlug = idToSlug.get(routine.assigneeAgentId) ?? null;
+      const assigneeSlug = routine.assigneeAgentId ? (idToSlug.get(routine.assigneeAgentId) ?? null) : null;
       files[taskPath] = buildMarkdown(
         {
           name: routine.title,
@@ -3362,7 +3597,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         company: stripEmptyValues({
           brandColor: company.brandColor ?? null,
           logoPath: companyLogoPath,
-          requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents ? undefined : false,
+          attachmentMaxBytes: company.attachmentMaxBytes,
+          requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents ? true : undefined,
           feedbackDataSharingEnabled: company.feedbackDataSharingEnabled ? true : undefined,
           feedbackDataSharingConsentAt: company.feedbackDataSharingConsentAt?.toISOString() ?? null,
           feedbackDataSharingConsentByUserId: company.feedbackDataSharingConsentByUserId ?? null,
@@ -3856,7 +4092,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const warnings = [...plan.preview.warnings];
     const include = plan.include;
 
-    let targetCompany: { id: string; name: string } | null = null;
+    let targetCompany: {
+      id: string;
+      name: string;
+      requireBoardApprovalForNewAgents?: boolean | null;
+      attachmentMaxBytes?: number | null;
+    } | null = null;
     let companyAction: "created" | "updated" | "unchanged" = "unchanged";
 
     if (input.target.mode === "new_company") {
@@ -3878,9 +4119,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         name: companyName,
         description: include.company ? (sourceManifest.company?.description ?? null) : null,
         brandColor: include.company ? (sourceManifest.company?.brandColor ?? null) : null,
+        attachmentMaxBytes: include.company
+          ? (sourceManifest.company?.attachmentMaxBytes ?? undefined)
+          : undefined,
         requireBoardApprovalForNewAgents: include.company
-          ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? true)
-          : true,
+          ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? false)
+          : false,
         feedbackDataSharingEnabled: include.company
           ? (sourceManifest.company?.feedbackDataSharingEnabled ?? false)
           : false,
@@ -3897,7 +4141,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       if (mode === "agent_safe" && options?.sourceCompanyId) {
         await access.copyActiveUserMemberships(options.sourceCompanyId, created.id);
       } else {
-        await access.ensureMembership(created.id, "user", actorUserId ?? "board", "owner", "active");
+        const ownerPrincipalId = actorUserId ?? "board";
+        await access.ensureMembership(created.id, "user", ownerPrincipalId, "owner", "active");
+        await access.ensureRoleDefaultGrants(
+          created.id,
+          ownerPrincipalId,
+          "owner",
+          actorUserId ?? null,
+        );
       }
       targetCompany = created;
       companyAction = "created";
@@ -3909,6 +4160,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           name: sourceManifest.company.name,
           description: sourceManifest.company.description,
           brandColor: sourceManifest.company.brandColor,
+          attachmentMaxBytes: sourceManifest.company.attachmentMaxBytes ?? undefined,
           requireBoardApprovalForNewAgents: sourceManifest.company.requireBoardApprovalForNewAgents,
           feedbackDataSharingEnabled: sourceManifest.company.feedbackDataSharingEnabled,
           feedbackDataSharingConsentAt: sourceManifest.company.feedbackDataSharingConsentAt
@@ -3977,9 +4229,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const resultProjects: CompanyPortabilityImportResult["projects"] = [];
     const importedSlugToAgentId = new Map<string, string>();
     const existingSlugToAgentId = new Map<string, string>();
+    const agentStatusById = new Map<string, string | null | undefined>();
     const existingAgents = await agents.list(targetCompany.id);
     for (const existing of existingAgents) {
       existingSlugToAgentId.set(normalizeAgentUrlKey(existing.name) ?? existing.id, existing.id);
+      agentStatusById.set(existing.id, existing.status);
     }
     const importedSlugToProjectId = new Map<string, string>();
     const importedProjectWorkspaceIdByProjectSlug = new Map<string, Map<string, string>>();
@@ -4049,22 +4303,18 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
         // Apply adapter overrides from request if present
         const adapterOverride = input.adapterOverrides?.[planAgent.slug];
-        const effectiveAdapterType = adapterOverride?.adapterType ?? manifestAgent.adapterType;
         const baseAdapterConfig = adapterOverride?.adapterConfig
           ? { ...adapterOverride.adapterConfig }
           : { ...manifestAgent.adapterConfig } as Record<string, unknown>;
 
         const desiredSkills = (manifestAgent.skills ?? []).map((skillRef) => desiredSkillRefMap.get(skillRef) ?? skillRef);
-        const adapterConfigWithSkills = writePaperclipSkillSyncPreference(
+        const normalizedAdapter = await prepareImportedAgentAdapter(
+          targetCompany.id,
+          adapterOverride?.adapterType ?? manifestAgent.adapterType,
           baseAdapterConfig,
           desiredSkills,
+          mode,
         );
-        delete adapterConfigWithSkills.promptTemplate;
-        delete adapterConfigWithSkills.bootstrapPromptTemplate; // deprecated
-        delete adapterConfigWithSkills.instructionsFilePath;
-        delete adapterConfigWithSkills.instructionsBundleMode;
-        delete adapterConfigWithSkills.instructionsRootPath;
-        delete adapterConfigWithSkills.instructionsEntryFile;
         const patch = {
           name: planAgent.plannedName,
           role: manifestAgent.role,
@@ -4072,8 +4322,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           icon: manifestAgent.icon,
           capabilities: manifestAgent.capabilities,
           reportsTo: null,
-          adapterType: effectiveAdapterType,
-          adapterConfig: adapterConfigWithSkills,
+          adapterType: normalizedAdapter.adapterType,
+          adapterConfig: normalizedAdapter.adapterConfig,
           runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
           budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
           permissions: manifestAgent.permissions,
@@ -4102,6 +4352,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           } catch (err) {
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
+          agentStatusById.set(updated.id, updated.status ?? agentStatusById.get(updated.id) ?? null);
           importedSlugToAgentId.set(planAgent.slug, updated.id);
           existingSlugToAgentId.set(normalizeAgentUrlKey(updated.name) ?? updated.id, updated.id);
           resultAgents.push({
@@ -4114,7 +4365,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           continue;
         }
 
-        let created = await agents.create(targetCompany.id, patch);
+        const createdStatus = "idle";
+        let created = await agents.create(targetCompany.id, {
+          ...patch,
+          status: createdStatus,
+        });
         await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
         await access.setPrincipalPermission(
           targetCompany.id,
@@ -4133,6 +4388,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         } catch (err) {
           warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
         }
+        agentStatusById.set(created.id, created.status ?? createdStatus);
         importedSlugToAgentId.set(planAgent.slug, created.id);
         existingSlugToAgentId.set(normalizeAgentUrlKey(created.name) ?? created.id, created.id);
         resultAgents.push({
@@ -4275,11 +4531,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const markdownRaw = readPortableTextFile(plan.source.files, manifestIssue.path);
         const parsed = markdownRaw ? parseFrontmatterMarkdown(markdownRaw) : null;
         const description = parsed?.body || manifestIssue.description || null;
-        const assigneeAgentId = manifestIssue.assigneeAgentSlug
-          ? importedSlugToAgentId.get(manifestIssue.assigneeAgentSlug)
-            ?? existingSlugToAgentId.get(manifestIssue.assigneeAgentSlug)
-            ?? null
-          : null;
+        const assigneeAgentId = resolveImportedAssigneeAgentId(
+          manifestIssue.assigneeAgentSlug,
+          importedSlugToAgentId,
+          existingSlugToAgentId,
+          agentStatusById,
+          warnings,
+          `Task ${manifestIssue.slug}`,
+        );
         const projectId = manifestIssue.projectSlug
           ? importedSlugToProjectId.get(manifestIssue.projectSlug)
             ?? existingProjectSlugToId.get(manifestIssue.projectSlug)
@@ -4292,8 +4551,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           warnings.push(`Task ${manifestIssue.slug} references workspace key ${manifestIssue.projectWorkspaceKey}, but that workspace was not imported.`);
         }
         if (manifestIssue.recurring) {
-          if (!projectId || !assigneeAgentId) {
-            throw unprocessable(`Recurring task ${manifestIssue.slug} is missing the project or assignee required to create a routine.`);
+          if (!projectId) {
+            throw unprocessable(`Recurring task ${manifestIssue.slug} is missing the project required to create a routine.`);
           }
           const resolvedRoutine = resolvePortableRoutineDefinition(manifestIssue, parsed?.frontmatter.schedule);
           if (resolvedRoutine.errors.length > 0) {
@@ -4373,23 +4632,55 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           }
           continue;
         }
-        await issues.create(targetCompany.id, {
+        let issueStatus = manifestIssue.status && ISSUE_STATUSES.includes(manifestIssue.status as any)
+          ? manifestIssue.status as typeof ISSUE_STATUSES[number]
+          : "backlog";
+        if (!assigneeAgentId && issueStatus === "in_progress") {
+          warnings.push(`Task ${manifestIssue.slug} was downgraded to todo because its assignee could not be imported as assignable work.`);
+          issueStatus = "todo";
+        }
+        const createdIssue = await issues.create(targetCompany.id, {
           projectId,
           projectWorkspaceId,
           title: manifestIssue.title,
           description,
           assigneeAgentId,
-          status: manifestIssue.status && ISSUE_STATUSES.includes(manifestIssue.status as any)
-            ? manifestIssue.status as typeof ISSUE_STATUSES[number]
-            : "backlog",
+          status: issueStatus,
           priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
             ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
             : "medium",
           billingCode: manifestIssue.billingCode,
           assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides,
           executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings,
-          labelIds: [],
+          labelIds: manifestIssue.labelIds ?? [],
         });
+        for (const comment of manifestIssue.comments ?? []) {
+          const authorAgentId = comment.authorType === "agent" && comment.authorAgentSlug
+            ? importedSlugToAgentId.get(comment.authorAgentSlug)
+              ?? existingSlugToAgentId.get(comment.authorAgentSlug)
+              ?? null
+            : null;
+          if (comment.authorType === "agent" && comment.authorAgentSlug && !authorAgentId) {
+            warnings.push(`Comment on task ${manifestIssue.slug} was imported as a system comment because author agent ${comment.authorAgentSlug} was not imported.`);
+          }
+          if (comment.authorType === "user" && !actorUserId) {
+            warnings.push(`Comment on task ${manifestIssue.slug} was imported as a system comment because no importing user was available.`);
+          }
+          const authorType = authorAgentId
+            ? "agent"
+            : comment.authorType === "user" && actorUserId
+              ? "user"
+              : "system";
+          await issues.addComment(createdIssue.id, comment.body, {
+            agentId: authorAgentId ?? undefined,
+            userId: authorType === "user" ? actorUserId ?? undefined : undefined,
+          }, {
+            authorType,
+            presentation: comment.presentation,
+            metadata: comment.metadata,
+            createdAt: comment.createdAt,
+          });
+        }
       }
     }
 

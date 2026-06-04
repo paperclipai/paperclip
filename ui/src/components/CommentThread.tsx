@@ -9,6 +9,7 @@ import type {
   IssueComment,
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { ArrowRight, Check, Copy, Paperclip } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Identity } from "./Identity";
@@ -19,7 +20,7 @@ import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { ApprovalCard } from "./ApprovalCard";
 import { AgentIcon } from "./AgentIconPicker";
 import { formatAssigneeUserLabel } from "../lib/assignees";
-import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
+import { formatTimelineWorkspaceLabel, type IssueTimelineAssignee, type IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatDateTime } from "../lib/utils";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
@@ -32,6 +33,7 @@ interface CommentWithRunMeta extends IssueComment {
   clientStatus?: "pending" | "queued";
   queueState?: "queued";
   queueTargetRunId?: string | null;
+  followUpRequested?: boolean;
 }
 
 interface LinkedRunItem {
@@ -40,6 +42,22 @@ interface LinkedRunItem {
   agentId: string;
   createdAt: Date | string;
   startedAt: Date | string | null;
+  environment?: {
+    id: string;
+    name: string;
+    driver: string;
+  } | null;
+  environmentLease?: {
+    id: string;
+    status: string;
+    leasePolicy: string;
+    provider: string | null;
+    providerLeaseId: string | null;
+    executionWorkspaceId: string | null;
+    workspacePath: string | null;
+    failureReason: string | null;
+    cleanupStatus: string | null;
+  } | null;
   finishedAt?: Date | string | null;
 }
 
@@ -119,6 +137,16 @@ function clearDraft(draftKey: string) {
   }
 }
 
+function BreakablePath({ text }: { text: string }) {
+  const parts: React.ReactNode[] = [];
+  const segments = text.split(/(?<=[\/-])/);
+  for (let i = 0; i < segments.length; i++) {
+    if (i > 0) parts.push(<wbr key={i} />);
+    parts.push(segments[i]);
+  }
+  return <>{parts}</>;
+}
+
 function parseReassignment(target: string): CommentReassignment | null {
   if (!target || target === "__none__") {
     return { assigneeAgentId: null, assigneeUserId: null };
@@ -132,6 +160,11 @@ function parseReassignment(target: string): CommentReassignment | null {
     return assigneeUserId ? { assigneeAgentId: null, assigneeUserId } : null;
   }
   return null;
+}
+
+function shouldImplicitlyReopenComment(issueStatus: string | undefined, assigneeValue: string) {
+  const resumesToTodo = issueStatus === "done" || issueStatus === "cancelled" || issueStatus === "blocked";
+  return resumesToTodo && assigneeValue.startsWith("agent:");
 }
 
 function humanizeValue(value: string | null): string {
@@ -210,21 +243,71 @@ function runStatusClass(status: string) {
   }
 }
 
+async function copyTextWithFallback(text: string) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+
+  try {
+    textarea.select();
+    const success = document.execCommand("copy");
+    if (!success) throw new Error("execCommand copy failed");
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
 function CopyMarkdownButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
+  }, []);
+
+  const label = status === "copied" ? "Copied" : status === "failed" ? "Copy failed" : "Copy";
+
   return (
     <button
       type="button"
-      className="text-muted-foreground hover:text-foreground transition-colors"
-      title="Copy as markdown"
+      className={cn(
+        "inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors",
+        status === "copied"
+          ? "bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300"
+          : status === "failed"
+            ? "bg-destructive/10 text-destructive"
+            : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+      )}
+      title={label}
+      aria-label="Copy comment as markdown"
       onClick={() => {
-        navigator.clipboard.writeText(text).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        });
+        void copyTextWithFallback(text)
+          .then(() => setStatus("copied"))
+          .catch(() => setStatus("failed"));
+
+        if (timeoutRef.current) {
+          clearTimeout(timeoutRef.current);
+        }
+        timeoutRef.current = setTimeout(() => {
+          setStatus("idle");
+          timeoutRef.current = null;
+        }, 1500);
       }}
     >
-      {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+      {status === "copied" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      <span className="sm:hidden">{label}</span>
+      <span className="sr-only" aria-live="polite">
+        {label}
+      </span>
     </button>
   );
 }
@@ -260,6 +343,7 @@ function CommentCard({
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
   const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
+  const followUpRequested = comment.followUpRequested === true;
 
   return (
     <div
@@ -290,6 +374,11 @@ function CommentCard({
               Queued
             </span>
           ) : null}
+          {followUpRequested ? (
+            <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+              Follow-up
+            </Badge>
+          ) : null}
           {companyId && !isPending ? (
             <PluginSlotOutlet
               slotTypes={["commentContextMenuItem"]}
@@ -319,7 +408,7 @@ function CommentCard({
           <CopyMarkdownButton text={comment.body} />
         </span>
       </div>
-      <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
+      <MarkdownBody className="text-sm" softBreaks>{comment.body}</MarkdownBody>
       {companyId && !isPending ? (
         <div className="mt-2 space-y-2">
           <PluginSlotOutlet
@@ -397,6 +486,7 @@ function TimelineEventCard({
   currentUserId?: string | null;
 }) {
   const actorName = formatTimelineActorName(event.actorType, event.actorId, agentMap, currentUserId);
+  const actionLabel = event.followUpRequested ? "requested follow-up" : "updated this task";
 
   return (
     <div id={`activity-${event.id}`} className="flex items-start gap-2.5 py-1.5">
@@ -407,7 +497,7 @@ function TimelineEventCard({
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-sm">
           <span className="font-medium text-foreground">{actorName}</span>
-          <span className="text-muted-foreground">updated this task</span>
+          <span className="text-muted-foreground">{actionLabel}</span>
           <a
             href={`#activity-${event.id}`}
             className="text-sm text-muted-foreground transition-colors hover:text-foreground hover:underline"
@@ -442,6 +532,21 @@ function TimelineEventCard({
             <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="font-medium text-foreground">
               {formatTimelineAssigneeLabel(event.assigneeChange.to, agentMap, currentUserId)}
+            </span>
+          </div>
+        ) : null}
+
+        {event.workspaceChange ? (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="w-14 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              Workspace
+            </span>
+            <span className="text-muted-foreground">
+              {formatTimelineWorkspaceLabel(event.workspaceChange.from)}
+            </span>
+            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="font-medium text-foreground">
+              {formatTimelineWorkspaceLabel(event.workspaceChange.to)}
             </span>
           </div>
         ) : null}
@@ -556,6 +661,40 @@ const TimelineList = memo(function TimelineList({
                   </a>
                 </div>
               </div>
+              {run.environment || run.environmentLease ? (
+                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                  {run.environment ? (
+                    <span>
+                      Environment <span className="text-foreground">{run.environment.name}</span>
+                      <span> · {run.environment.driver}</span>
+                    </span>
+                  ) : null}
+                  {run.environmentLease?.provider ? (
+                    <span>
+                      Provider <span className="text-foreground">{run.environmentLease.provider}</span>
+                    </span>
+                  ) : null}
+                  {run.environmentLease ? (
+                    <span>
+                      Lease{" "}
+                      <span className="font-mono text-foreground">
+                        {run.environmentLease.id.slice(0, 8)}
+                      </span>
+                      <span> · {run.environmentLease.status}</span>
+                    </span>
+                  ) : null}
+                  {run.environmentLease?.workspacePath ? (
+                    <span className="min-w-0 font-mono" style={{ overflowWrap: "anywhere" }}>
+                      <BreakablePath text={run.environmentLease.workspacePath} />
+                    </span>
+                  ) : null}
+                  {run.environmentLease?.failureReason ? (
+                    <span className="text-destructive">
+                      Failure: {run.environmentLease.failureReason}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           );
         }
@@ -597,6 +736,7 @@ export function CommentThread({
   pendingApprovalAction = null,
   onVote,
   onAdd,
+  issueStatus,
   agentMap,
   currentUserId,
   imageUploadHandler,
@@ -613,7 +753,6 @@ export function CommentThread({
   composerDisabledReason = null,
 }: CommentThreadProps) {
   const [body, setBody] = useState("");
-  const [reopen, setReopen] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
@@ -627,12 +766,20 @@ export function CommentThread({
   const hasScrolledRef = useRef(false);
 
   const timeline = useMemo<TimelineItem[]>(() => {
-    const commentItems: TimelineItem[] = comments.map((comment) => ({
-      kind: "comment",
-      id: comment.id,
-      createdAtMs: new Date(comment.createdAt).getTime(),
-      comment,
-    }));
+    const followUpCommentIds = new Set(
+      timelineEvents
+        .filter((event) => event.followUpRequested && event.commentId)
+        .map((event) => event.commentId as string),
+    );
+    const commentItems: TimelineItem[] = comments.map((comment) => {
+      const followUpRequested = comment.followUpRequested === true || followUpCommentIds.has(comment.id);
+      return {
+        kind: "comment",
+        id: comment.id,
+        createdAtMs: new Date(comment.createdAt).getTime(),
+        comment: followUpRequested ? { ...comment, followUpRequested } : comment,
+      };
+    });
     const approvalItems: TimelineItem[] = linkedApprovals.map((approval) => ({
       kind: "approval",
       id: approval.id,
@@ -734,14 +881,17 @@ export function CommentThread({
     if (!trimmed) return;
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : null;
+    const reopen = shouldImplicitlyReopenComment(
+      issueStatus,
+      hasReassignment ? reassignTarget : currentAssigneeValue,
+    ) ? true : undefined;
     const submittedBody = trimmed;
 
     setSubmitting(true);
     setBody("");
     try {
-      await onAdd(submittedBody, reopen ? true : undefined, reassignment ?? undefined);
+      await onAdd(submittedBody, reopen, reassignment ?? undefined);
       if (draftKey) clearDraft(draftKey);
-      setReopen(true);
       setReassignTarget(effectiveSuggestedAssigneeValue);
     } catch {
       setBody((current) =>
@@ -885,15 +1035,6 @@ export function CommentThread({
                 </Button>
               </div>
             )}
-            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={reopen}
-                onChange={(e) => setReopen(e.target.checked)}
-                className="rounded border-border"
-              />
-              Re-open
-            </label>
             {enableReassign && reassignOptions.length > 0 && (
               <InlineEntitySelector
                 value={reassignTarget}

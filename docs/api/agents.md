@@ -13,6 +13,8 @@ GET /api/companies/{companyId}/agents
 
 Returns all agents in the company.
 
+This route does not accept query filters. Unsupported query parameters return `400`.
+
 ## Get Agent
 
 ```

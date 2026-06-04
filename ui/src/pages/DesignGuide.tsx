@@ -123,6 +123,78 @@ import { FilterBar, type FilterValue } from "@/components/FilterBar";
 import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
+import { IssueReferencePill } from "@/components/IssueReferencePill";
+import { MembershipAction } from "@/components/MembershipAction";
+import { IssueOutputSection } from "@/components/issue-output/IssueOutputSection";
+import type { IssueWorkProduct } from "@paperclipai/shared";
+
+/* ------------------------------------------------------------------ */
+/*  Sample data for the Issue Output surface showcase                  */
+/* ------------------------------------------------------------------ */
+
+function sampleOutput(
+  id: string,
+  attachmentId: string,
+  contentType: string,
+  filename: string,
+  opts: { byteSize: number; isPrimary?: boolean; createdAt: string },
+): IssueWorkProduct {
+  const contentPath = `/api/attachments/${attachmentId}/content`;
+  return {
+    id,
+    companyId: "demo-company",
+    projectId: null,
+    issueId: "demo-issue",
+    executionWorkspaceId: null,
+    runtimeServiceId: null,
+    type: "artifact",
+    provider: "paperclip",
+    externalId: null,
+    title: filename,
+    url: null,
+    status: "active",
+    reviewState: "none",
+    isPrimary: Boolean(opts.isPrimary),
+    healthStatus: "unknown",
+    summary: null,
+    createdByRunId: null,
+    createdAt: new Date(opts.createdAt),
+    updatedAt: new Date(opts.createdAt),
+    metadata: {
+      attachmentId,
+      contentType,
+      byteSize: opts.byteSize,
+      contentPath,
+      openPath: contentPath,
+      downloadPath: `${contentPath}?download=1`,
+      originalFilename: filename,
+    },
+  } as IssueWorkProduct;
+}
+
+const DESIGN_GUIDE_OUTPUTS: IssueWorkProduct[] = [
+  sampleOutput("wp-vid", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "video/mp4", "q3-summary.mp4", {
+    byteSize: 19_293_798,
+    isPrimary: true,
+    createdAt: "2026-05-30T12:00:00Z",
+  }),
+  sampleOutput("wp-pdf", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "application/pdf", "talking-points.pdf", {
+    byteSize: 421_888,
+    createdAt: "2026-05-30T11:52:00Z",
+  }),
+];
+
+const DESIGN_GUIDE_DEGRADED_OUTPUTS: IssueWorkProduct[] = [
+  {
+    ...sampleOutput("wp-broken", "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "video/mp4", "corrupt-output.mp4", {
+      byteSize: 0,
+      isPrimary: true,
+      createdAt: "2026-05-30T12:01:00Z",
+    }),
+    // Strip the path metadata so it fails the shared artifact schema.
+    metadata: { attachmentId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", contentType: "video/mp4" },
+  } as IssueWorkProduct,
+];
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -464,6 +536,21 @@ export function DesignGuide() {
                 {label}
               </span>
             ))}
+          </div>
+        </SubSection>
+
+        <SubSection title="IssueReferencePill">
+          <p className="text-xs text-muted-foreground">
+            Used wherever a task is referenced — in markdown, the Related Work tab, and activity summaries.
+            Pass <code className="font-mono">status</code> to show the target issue&apos;s state at a glance.
+            Use <code className="font-mono">strikethrough</code> for &quot;removed&quot; contexts.
+          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <IssueReferencePill issue={{ id: "demo-1", identifier: "PAP-123", title: "Identifier only — no status yet" }} />
+            <IssueReferencePill issue={{ id: "demo-2", identifier: "PAP-456", title: "With in_progress status", status: "in_progress" }} />
+            <IssueReferencePill issue={{ id: "demo-3", identifier: "PAP-789", title: "Done status", status: "done" }} />
+            <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: "Blocked status", status: "blocked" }} />
+            <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: "Removed (strikethrough)", status: "todo" }} />
           </div>
         </SubSection>
       </Section>
@@ -880,6 +967,66 @@ export function DesignGuide() {
             selected
           />
         </div>
+        <SubSection title="Membership action">
+          <div className="border border-border rounded-md">
+            <EntityRow
+              title="Joined resource"
+              subtitle="Hover or focus the row to reveal the reserved action slot."
+              className="group"
+              trailing={
+                <MembershipAction
+                  state="joined"
+                  resourceName="Joined resource"
+                  onJoin={() => {}}
+                  onLeave={() => {}}
+                />
+              }
+            />
+            <EntityRow
+              title="Left resource"
+              subtitle="Persistent action with dimmed row content."
+              className="group text-foreground/55"
+              trailing={
+                <MembershipAction
+                  state="left"
+                  resourceName="Left resource"
+                  onJoin={() => {}}
+                  onLeave={() => {}}
+                />
+              }
+            />
+            <EntityRow
+              title="Leaving resource"
+              subtitle="Disabled while the optimistic mutation is pending."
+              className="group text-foreground/55"
+              trailing={
+                <MembershipAction
+                  state="left"
+                  pending
+                  pendingState="left"
+                  resourceName="Leaving resource"
+                  onJoin={() => {}}
+                  onLeave={() => {}}
+                />
+              }
+            />
+            <EntityRow
+              title="Joining resource"
+              subtitle="The target state is visible immediately while the server confirms."
+              className="group"
+              trailing={
+                <MembershipAction
+                  state="joined"
+                  pending
+                  pendingState="joined"
+                  resourceName="Joining resource"
+                  onJoin={() => {}}
+                  onLeave={() => {}}
+                />
+              }
+            />
+          </div>
+        </SubSection>
       </Section>
 
       {/* ============================================================ */}
@@ -1324,6 +1471,21 @@ export function DesignGuide() {
             </div>
           ))}
         </div>
+      </Section>
+
+      <Section title="Issue Output Surface">
+        <SubSection title="Multiple outputs (primary video + 'Also produced')">
+          <IssueOutputSection workProducts={DESIGN_GUIDE_OUTPUTS} />
+        </SubSection>
+        <SubSection title="Degraded output (invalid / failed attachment metadata)">
+          <IssueOutputSection workProducts={DESIGN_GUIDE_DEGRADED_OUTPUTS} />
+        </SubSection>
+        <SubSection title="Empty state">
+          <p className="text-xs text-muted-foreground">
+            When an issue has produced no artifact work products, the Output section renders nothing
+            at all (no placeholder card).
+          </p>
+        </SubSection>
       </Section>
     </div>
   );

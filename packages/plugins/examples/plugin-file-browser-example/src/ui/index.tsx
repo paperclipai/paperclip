@@ -1,11 +1,12 @@
 import type {
+  FileTreeNode,
   PluginProjectSidebarItemProps,
   PluginDetailTabProps,
   PluginCommentAnnotationProps,
   PluginCommentContextMenuItemProps,
 } from "@paperclipai/plugin-sdk/ui";
-import { usePluginAction, usePluginData } from "@paperclipai/plugin-sdk/ui";
-import { useMemo, useState, useEffect, useRef, type MouseEvent, type RefObject } from "react";
+import { FileTree, usePluginAction, usePluginData } from "@paperclipai/plugin-sdk/ui";
+import { useCallback, useMemo, useState, useEffect, useRef, type MouseEvent, type RefObject } from "react";
 import { EditorView } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { javascript } from "@codemirror/lang-javascript";
@@ -129,15 +130,31 @@ const editorLightHighlightStyle = HighlightStyle.define([
 
 type Workspace = { id: string; projectId: string; name: string; path: string; isPrimary: boolean };
 type FileEntry = { name: string; path: string; isDirectory: boolean };
-type FileTreeNodeProps = {
-  entry: FileEntry;
-  companyId: string | null;
-  projectId: string;
-  workspaceId: string;
-  selectedPath: string | null;
-  onSelect: (path: string) => void;
-  depth?: number;
-};
+
+function entryToFileTreeNode(entry: FileEntry): FileTreeNode {
+  return {
+    name: entry.name,
+    path: entry.path,
+    kind: entry.isDirectory ? "dir" : "file",
+    children: [],
+  };
+}
+
+function entriesToFileTreeNodes(entries: FileEntry[]): FileTreeNode[] {
+  return entries.map(entryToFileTreeNode);
+}
+
+function setChildrenAtPath(nodes: FileTreeNode[], path: string, children: FileTreeNode[]): FileTreeNode[] {
+  return nodes.map((node) => {
+    if (node.path === path) {
+      return { ...node, children };
+    }
+    if (node.kind === "dir" && node.children.length > 0 && (path === node.path || path.startsWith(`${node.path}/`))) {
+      return { ...node, children: setChildrenAtPath(node.children, path, children) };
+    }
+    return node;
+  });
+}
 
 const PathLikePattern = /[\\/]/;
 const WindowsDrivePathPattern = /^[A-Za-z]:[\\/]/;
@@ -235,109 +252,6 @@ function useAvailableHeight(
   return height;
 }
 
-function FileTreeNode({
-  entry,
-  companyId,
-  projectId,
-  workspaceId,
-  selectedPath,
-  onSelect,
-  depth = 0,
-}: FileTreeNodeProps) {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const isSelected = selectedPath === entry.path;
-
-  if (entry.isDirectory) {
-    return (
-      <li>
-        <button
-          type="button"
-          className="flex w-full items-center gap-2 rounded-none px-2 py-1.5 text-left text-sm text-foreground hover:bg-accent/60"
-          style={{ paddingLeft: `${depth * 14 + 8}px` }}
-          onClick={() => setIsExpanded((value) => !value)}
-          aria-expanded={isExpanded}
-        >
-          <span className="w-3 text-xs text-muted-foreground">{isExpanded ? "▾" : "▸"}</span>
-          <span className="truncate font-medium">{entry.name}</span>
-        </button>
-        {isExpanded ? (
-          <ExpandedDirectoryChildren
-            directoryPath={entry.path}
-            companyId={companyId}
-            projectId={projectId}
-            workspaceId={workspaceId}
-            selectedPath={selectedPath}
-            onSelect={onSelect}
-            depth={depth}
-          />
-        ) : null}
-      </li>
-    );
-  }
-
-  return (
-    <li>
-      <button
-        type="button"
-        className={`block w-full rounded-none px-2 py-1.5 text-left text-sm transition-colors ${
-          isSelected ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-        }`}
-        style={{ paddingLeft: `${depth * 14 + 23}px` }}
-        onClick={() => onSelect(entry.path)}
-      >
-        <span className="truncate">{entry.name}</span>
-      </button>
-    </li>
-  );
-}
-
-function ExpandedDirectoryChildren({
-  directoryPath,
-  companyId,
-  projectId,
-  workspaceId,
-  selectedPath,
-  onSelect,
-  depth,
-}: {
-  directoryPath: string;
-  companyId: string | null;
-  projectId: string;
-  workspaceId: string;
-  selectedPath: string | null;
-  onSelect: (path: string) => void;
-  depth: number;
-}) {
-  const { data: childData } = usePluginData<{ entries: FileEntry[] }>("fileList", {
-    companyId,
-    projectId,
-    workspaceId,
-    directoryPath,
-  });
-  const children = childData?.entries ?? [];
-
-  if (children.length === 0) {
-    return null;
-  }
-
-  return (
-    <ul className="space-y-0.5">
-      {children.map((child) => (
-        <FileTreeNode
-          key={child.path}
-          entry={child}
-          companyId={companyId}
-          projectId={projectId}
-          workspaceId={workspaceId}
-          selectedPath={selectedPath}
-          onSelect={onSelect}
-          depth={depth + 1}
-        />
-      ))}
-    </ul>
-  );
-}
-
 /**
  * Project sidebar item: link "Files" that opens the project detail with the Files plugin tab.
  */
@@ -430,11 +344,60 @@ export function FilesTab({ context }: PluginDetailTabProps) {
     () => (selectedWorkspace ? { projectId, companyId, workspaceId: selectedWorkspace.id } : {}),
     [companyId, projectId, selectedWorkspace],
   );
-  const { data: fileListData, loading: fileListLoading } = usePluginData<{ entries: FileEntry[] }>(
+  const { data: fileListData, loading: fileListLoading, error: fileListError } = usePluginData<{ entries: FileEntry[] }>(
     "fileList",
     fileListParams,
   );
-  const entries = fileListData?.entries ?? [];
+
+  // Lazy-load directory children through an imperative action so the shared
+  // FileTree can reuse `expandedPaths` for state without spawning a hook per
+  // expanded directory.
+  const loadFileList = usePluginAction("loadFileList");
+  const [nodes, setNodes] = useState<FileTreeNode[]>([]);
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
+  const [loadedDirs, setLoadedDirs] = useState<Set<string>>(() => new Set());
+  const [loadingDirs, setLoadingDirs] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    setNodes(fileListData?.entries ? entriesToFileTreeNodes(fileListData.entries) : []);
+    setExpandedPaths(new Set());
+    setLoadedDirs(new Set());
+    setLoadingDirs(new Set());
+  }, [fileListData, selectedWorkspace?.id]);
+
+  const handleToggleDir = useCallback(
+    (dirPath: string) => {
+      setExpandedPaths((current) => {
+        const next = new Set(current);
+        if (next.has(dirPath)) next.delete(dirPath);
+        else next.add(dirPath);
+        return next;
+      });
+      if (!selectedWorkspace) return;
+      if (loadedDirs.has(dirPath) || loadingDirs.has(dirPath)) return;
+      setLoadingDirs((current) => new Set(current).add(dirPath));
+      void loadFileList({
+        projectId,
+        companyId,
+        workspaceId: selectedWorkspace.id,
+        directoryPath: dirPath,
+      })
+        .then((response) => {
+          const entries = (response as { entries?: FileEntry[] })?.entries ?? [];
+          const children = entriesToFileTreeNodes(entries);
+          setNodes((current) => setChildrenAtPath(current, dirPath, children));
+          setLoadedDirs((current) => new Set(current).add(dirPath));
+        })
+        .finally(() => {
+          setLoadingDirs((current) => {
+            const next = new Set(current);
+            next.delete(dirPath);
+            return next;
+          });
+        });
+    },
+    [companyId, loadFileList, loadedDirs, loadingDirs, projectId, selectedWorkspace],
+  );
 
   // Track the `?file=` query parameter across navigations (popstate).
   const [urlFilePath, setUrlFilePath] = useState<string | null>(() => {
@@ -610,28 +573,23 @@ export function FilesTab({ context }: PluginDetailTabProps) {
           </div>
           <div className="min-h-0 flex-1 overflow-auto p-2">
             {selectedWorkspace ? (
-              fileListLoading ? (
-                <p className="px-2 py-3 text-sm text-muted-foreground">Loading files...</p>
-              ) : entries.length > 0 ? (
-                <ul className="space-y-0.5">
-                  {entries.map((entry) => (
-                    <FileTreeNode
-                      key={entry.path}
-                      entry={entry}
-                      companyId={companyId}
-                      projectId={projectId}
-                      workspaceId={selectedWorkspace.id}
-                      selectedPath={selectedPath}
-                      onSelect={(path) => {
-                        setSelectedPath(path);
-                        setMobileView("editor");
-                      }}
-                    />
-                  ))}
-                </ul>
-              ) : (
-                <p className="px-2 py-3 text-sm text-muted-foreground">No files found in this workspace.</p>
-              )
+              <FileTree
+                nodes={nodes}
+                selectedFile={selectedPath}
+                expandedPaths={expandedPaths}
+                onToggleDir={handleToggleDir}
+                onSelectFile={(path: string) => {
+                  setSelectedPath(path);
+                  setMobileView("editor");
+                }}
+                loading={fileListLoading}
+                error={fileListError ? { message: fileListError.message } : null}
+                empty={{
+                  title: "No files",
+                  description: "No files found in this workspace.",
+                }}
+                ariaLabel="Workspace files"
+              />
             ) : (
               <p className="px-2 py-3 text-sm text-muted-foreground">Select a workspace to browse files.</p>
             )}

@@ -7,6 +7,8 @@ import {
   ChevronRight,
   Clock3,
   Copy,
+  History as HistoryIcon,
+  KeyRound,
   Play,
   RefreshCw,
   Repeat,
@@ -15,33 +17,41 @@ import {
   Webhook,
   Zap,
 } from "lucide-react";
-import { routinesApi, type RoutineTriggerResponse, type RotateRoutineTriggerResponse } from "../api/routines";
+import { ApiError } from "../api/client";
+import { routinesApi, type RoutineTriggerResponse, type RotateRoutineTriggerResponse, type RestoreRoutineRevisionResponse } from "../api/routines";
+import { secretsApi } from "../api/secrets";
+import { EnvVarEditor } from "../components/EnvVarEditor";
+import {
+  RoutineHistoryTab,
+  type RoutineHistoryDirtyFieldDescriptor,
+} from "../components/RoutineHistoryTab";
 import { heartbeatsApi } from "../api/heartbeats";
-import { instanceSettingsApi } from "../api/instanceSettings";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useToast } from "../context/ToastContext";
+import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { buildRoutineTriggerPatch } from "../lib/routine-trigger-patch";
+import { buildMarkdownMentionOptions } from "../lib/company-members";
 import { timeAgo } from "../lib/timeAgo";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../components/InlineEntitySelector";
-import { MarkdownEditor, type MarkdownEditorRef } from "../components/MarkdownEditor";
+import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "../components/MarkdownEditor";
 import {
   RoutineRunVariablesDialog,
-  routineRunNeedsConfiguration,
   type RoutineRunDialogSubmitData,
 } from "../components/RoutineRunVariablesDialog";
 import { RoutineVariablesEditor, RoutineVariablesHint } from "../components/RoutineVariablesEditor";
 import { ScheduleEditor, describeSchedule } from "../components/ScheduleEditor";
 import { RunButton } from "../components/AgentActionButtons";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
@@ -56,13 +66,19 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import type { RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
+import type {
+  EnvBinding,
+  RoutineDetail as RoutineDetailType,
+  RoutineEnvConfig,
+  RoutineTrigger,
+  RoutineVariable,
+} from "@paperclipai/shared";
 
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
 const triggerKinds = ["schedule", "webhook"];
 const signingModes = ["bearer", "hmac_sha256", "github_hmac", "none"];
-const routineTabs = ["triggers", "runs", "activity"] as const;
+const routineTabs = ["triggers", "runs", "activity", "secrets", "history"] as const;
 const concurrencyPolicyDescriptions: Record<string, string> = {
   coalesce_if_active: "Keep one follow-up run queued while an active run is still working.",
   always_enqueue: "Queue every trigger occurrence, even if several runs stack up.",
@@ -84,8 +100,10 @@ type RoutineTab = (typeof routineTabs)[number];
 
 type SecretMessage = {
   title: string;
-  webhookUrl: string;
-  webhookSecret: string;
+  entries: Array<{
+    webhookUrl: string;
+    webhookSecret: string;
+  }>;
 };
 
 function autoResizeTextarea(element: HTMLTextAreaElement | null) {
@@ -121,6 +139,26 @@ function getLocalTimezone(): string {
   } catch {
     return "UTC";
   }
+}
+
+function buildRoutineMutationPayload(input: {
+  title: string;
+  description: string;
+  projectId: string;
+  assigneeAgentId: string;
+  priority: string;
+  concurrencyPolicy: string;
+  catchUpPolicy: string;
+  variables: RoutineVariable[];
+  env: RoutineEnvConfig | null;
+}) {
+  return {
+    ...input,
+    description: input.description.trim() || null,
+    projectId: input.projectId || null,
+    assigneeAgentId: input.assigneeAgentId || null,
+    env: input.env && Object.keys(input.env).length > 0 ? input.env : null,
+  };
 }
 
 function TriggerEditor({
@@ -252,7 +290,7 @@ export function RoutineDetail() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const hydratedRoutineIdRef = useRef<string | null>(null);
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
@@ -260,6 +298,7 @@ export function RoutineDetail() {
   const projectSelectorRef = useRef<HTMLButtonElement | null>(null);
   const [secretMessage, setSecretMessage] = useState<SecretMessage | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [saveConflict, setSaveConflict] = useState(false);
   const [runVariablesOpen, setRunVariablesOpen] = useState(false);
   const [newTrigger, setNewTrigger] = useState({
     kind: "schedule",
@@ -276,6 +315,7 @@ export function RoutineDetail() {
     concurrencyPolicy: string;
     catchUpPolicy: string;
     variables: RoutineVariable[];
+    env: RoutineEnvConfig | null;
   }>({
     title: "",
     description: "",
@@ -285,6 +325,7 @@ export function RoutineDetail() {
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
     variables: [],
+    env: null,
   });
   const activeTab = useMemo(() => getRoutineTabFromSearch(location.search), [location.search]);
 
@@ -333,10 +374,25 @@ export function RoutineDetail() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
+  const { data: companyMembers } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const { data: availableSecrets = [] } = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.secrets.list(selectedCompanyId) : ["secrets", "none"],
+    queryFn: () => secretsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+  const createSecret = useMutation({
+    mutationFn: (input: { name: string; value: string }) => {
+      if (!selectedCompanyId) throw new Error("Select a company to create secrets");
+      return secretsApi.create(selectedCompanyId, input);
+    },
+    onSuccess: () => {
+      if (!selectedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+    },
   });
 
   const routineDefaults = useMemo(
@@ -345,29 +401,48 @@ export function RoutineDetail() {
         ? {
             title: routine.title,
             description: routine.description ?? "",
-            projectId: routine.projectId,
-            assigneeAgentId: routine.assigneeAgentId,
+            projectId: routine.projectId ?? "",
+            assigneeAgentId: routine.assigneeAgentId ?? "",
             priority: routine.priority,
             concurrencyPolicy: routine.concurrencyPolicy,
             catchUpPolicy: routine.catchUpPolicy,
             variables: routine.variables,
+            env: routine.env ?? null,
           }
         : null,
     [routine],
   );
-  const isEditDirty = useMemo(() => {
-    if (!routineDefaults) return false;
-    return (
-      editDraft.title !== routineDefaults.title ||
-      editDraft.description !== routineDefaults.description ||
-      editDraft.projectId !== routineDefaults.projectId ||
-      editDraft.assigneeAgentId !== routineDefaults.assigneeAgentId ||
-      editDraft.priority !== routineDefaults.priority ||
-      editDraft.concurrencyPolicy !== routineDefaults.concurrencyPolicy ||
-      editDraft.catchUpPolicy !== routineDefaults.catchUpPolicy ||
-      JSON.stringify(editDraft.variables) !== JSON.stringify(routineDefaults.variables)
-    );
+  const dirtyFields = useMemo<RoutineHistoryDirtyFieldDescriptor[]>(() => {
+    if (!routineDefaults) return [];
+    const result: RoutineHistoryDirtyFieldDescriptor[] = [];
+    if (editDraft.title !== routineDefaults.title) result.push({ key: "title", label: "the title" });
+    if (editDraft.description !== routineDefaults.description) {
+      result.push({ key: "description", label: "the description" });
+    }
+    if (editDraft.projectId !== routineDefaults.projectId) {
+      result.push({ key: "projectId", label: "the project" });
+    }
+    if (editDraft.assigneeAgentId !== routineDefaults.assigneeAgentId) {
+      result.push({ key: "assigneeAgentId", label: "the default agent" });
+    }
+    if (editDraft.priority !== routineDefaults.priority) {
+      result.push({ key: "priority", label: "the priority" });
+    }
+    if (editDraft.concurrencyPolicy !== routineDefaults.concurrencyPolicy) {
+      result.push({ key: "concurrencyPolicy", label: "the concurrency policy" });
+    }
+    if (editDraft.catchUpPolicy !== routineDefaults.catchUpPolicy) {
+      result.push({ key: "catchUpPolicy", label: "the catch-up policy" });
+    }
+    if (JSON.stringify(editDraft.variables) !== JSON.stringify(routineDefaults.variables)) {
+      result.push({ key: "variables", label: "the variables" });
+    }
+    if (JSON.stringify(editDraft.env ?? null) !== JSON.stringify(routineDefaults.env ?? null)) {
+      result.push({ key: "env", label: "the secrets" });
+    }
+    return result;
   }, [editDraft, routineDefaults]);
+  const isEditDirty = dirtyFields.length > 0;
 
   useEffect(() => {
     if (!routine) return;
@@ -418,19 +493,32 @@ export function RoutineDetail() {
 
   const saveRoutine = useMutation({
     mutationFn: () => {
+      const payload = buildRoutineMutationPayload(editDraft);
+      const baseRevisionId = routine?.latestRevisionId ?? null;
       return routinesApi.update(routineId!, {
-        ...editDraft,
-        description: editDraft.description.trim() || null,
+        ...payload,
+        ...(baseRevisionId ? { baseRevisionId } : {}),
       });
     },
     onSuccess: async () => {
+      setSaveConflict(false);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(selectedCompanyId!, routineId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.revisions(routineId!) }),
       ]);
     },
     onError: (error) => {
+      if (error instanceof ApiError && error.status === 409) {
+        setSaveConflict(true);
+        pushToast({
+          title: "Routine changed",
+          body: "Someone else updated this routine. Reload to see the latest revision.",
+          tone: "warn",
+        });
+        return;
+      }
       pushToast({
         title: "Failed to save routine",
         body: error instanceof Error ? error.message : "Paperclip could not save the routine.",
@@ -443,6 +531,8 @@ export function RoutineDetail() {
     mutationFn: (data?: RoutineRunDialogSubmitData) =>
       routinesApi.run(routineId!, {
         ...(data?.variables && Object.keys(data.variables).length > 0 ? { variables: data.variables } : {}),
+        ...(data?.assigneeAgentId !== undefined ? { assigneeAgentId: data.assigneeAgentId } : {}),
+        ...(data?.projectId !== undefined ? { projectId: data.projectId } : {}),
         ...(data?.executionWorkspaceId !== undefined ? { executionWorkspaceId: data.executionWorkspaceId } : {}),
         ...(data?.executionWorkspacePreference !== undefined
           ? { executionWorkspacePreference: data.executionWorkspacePreference }
@@ -515,8 +605,10 @@ export function RoutineDetail() {
       if (result.secretMaterial) {
         setSecretMessage({
           title: "Webhook trigger created",
-          webhookUrl: result.secretMaterial.webhookUrl,
-          webhookSecret: result.secretMaterial.webhookSecret,
+          entries: [{
+            webhookUrl: result.secretMaterial.webhookUrl,
+            webhookSecret: result.secretMaterial.webhookSecret,
+          }],
         });
       } else {
         pushToast({
@@ -590,8 +682,10 @@ export function RoutineDetail() {
     onSuccess: async (result) => {
       setSecretMessage({
         title: "Webhook secret rotated",
-        webhookUrl: result.secretMaterial.webhookUrl,
-        webhookSecret: result.secretMaterial.webhookSecret,
+        entries: [{
+          webhookUrl: result.secretMaterial.webhookUrl,
+          webhookSecret: result.secretMaterial.webhookSecret,
+        }],
       });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
@@ -616,6 +710,7 @@ export function RoutineDetail() {
     [projects],
   );
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [routine?.id]);
+  const recentProjectIds = useMemo(() => getRecentProjectIds(), [routine?.id]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () =>
       sortAgentsByRecency(
@@ -637,6 +732,13 @@ export function RoutineDetail() {
       })),
     [projects],
   );
+  const mentionOptions = useMemo<MentionOption[]>(() => {
+    return buildMarkdownMentionOptions({
+      agents,
+      projects,
+      members: companyMembers?.users,
+    });
+  }, [agents, companyMembers?.users, projects]);
   const currentAssignee = editDraft.assigneeAgentId ? agentById.get(editDraft.assigneeAgentId) ?? null : null;
   const currentProject = editDraft.projectId ? projectById.get(editDraft.projectId) ?? null : null;
 
@@ -657,14 +759,15 @@ export function RoutineDetail() {
   }
 
   const automationEnabled = routine.status === "active";
-  const selectedProject = projects?.find((project) => project.id === routine.projectId) ?? null;
-  const needsRunConfiguration = routineRunNeedsConfiguration({
-    variables: routine.variables ?? [],
-    project: selectedProject,
-    isolatedWorkspacesEnabled: experimentalSettings?.enableIsolatedWorkspaces === true,
-  });
+  const selectedProject = routine.projectId ? (projects?.find((project) => project.id === routine.projectId) ?? null) : null;
   const automationToggleDisabled = updateRoutineStatus.isPending || routine.status === "archived";
-  const automationLabel = routine.status === "archived" ? "Archived" : automationEnabled ? "Active" : "Paused";
+  const automationLabel = routine.status === "archived"
+    ? "Archived"
+    : !routine.assigneeAgentId
+      ? "Draft"
+      : automationEnabled
+        ? "Active"
+        : "Paused";
   const automationLabelClassName = routine.status === "archived"
     ? "text-muted-foreground"
     : automationEnabled
@@ -675,51 +778,65 @@ export function RoutineDetail() {
     <div className="max-w-2xl space-y-6">
       {/* Header: editable title + actions */}
       <div className="flex items-start gap-4">
-        <textarea
-          ref={titleInputRef}
-          className="flex-1 min-w-0 resize-none overflow-hidden bg-transparent text-xl font-bold outline-none placeholder:text-muted-foreground/50"
-          placeholder="Routine title"
-          rows={1}
-          value={editDraft.title}
-          onChange={(event) => {
-            setEditDraft((current) => ({ ...current, title: event.target.value }));
-            autoResizeTextarea(event.target);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              descriptionEditorRef.current?.focus();
-              return;
-            }
-            if (event.key === "Tab" && !event.shiftKey) {
-              event.preventDefault();
-              if (editDraft.assigneeAgentId) {
-                if (editDraft.projectId) {
-                  descriptionEditorRef.current?.focus();
-                } else {
-                  projectSelectorRef.current?.focus();
-                }
-              } else {
-                assigneeSelectorRef.current?.focus();
+        <div className="min-w-0 flex-1 space-y-2">
+          <textarea
+            ref={titleInputRef}
+            className="w-full resize-none overflow-hidden bg-transparent text-xl font-bold outline-none placeholder:text-muted-foreground/50"
+            placeholder="Routine title"
+            rows={1}
+            value={editDraft.title}
+            onChange={(event) => {
+              setEditDraft((current) => ({ ...current, title: event.target.value }));
+              autoResizeTextarea(event.target);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                descriptionEditorRef.current?.focus();
+                return;
               }
-            }
-          }}
-        />
+              if (event.key === "Tab" && !event.shiftKey) {
+                event.preventDefault();
+                if (editDraft.assigneeAgentId) {
+                  if (editDraft.projectId) {
+                    descriptionEditorRef.current?.focus();
+                  } else {
+                    projectSelectorRef.current?.focus();
+                  }
+                } else {
+                  assigneeSelectorRef.current?.focus();
+                }
+              }
+            }}
+          />
+          {routine.managedByPlugin ? (
+            <Badge variant="outline" className="gap-1 text-xs text-muted-foreground">
+              Managed by {routine.managedByPlugin.pluginDisplayName}
+              <span className="font-mono text-[10px]">{routine.managedByPlugin.resourceKey}</span>
+            </Badge>
+          ) : null}
+        </div>
         <div className="flex shrink-0 items-center gap-3 pt-1">
           <RunButton
             onClick={() => {
-              if (needsRunConfiguration) {
-                setRunVariablesOpen(true);
-                return;
-              }
-              runRoutine.mutate({});
+              setRunVariablesOpen(true);
             }}
             disabled={runRoutine.isPending}
           />
           <ToggleSwitch
             size="lg"
             checked={automationEnabled}
-            onCheckedChange={() => updateRoutineStatus.mutate(automationEnabled ? "paused" : "active")}
+            onCheckedChange={() => {
+              if (!automationEnabled && !routine.assigneeAgentId) {
+                pushToast({
+                  title: "Default agent required",
+                  body: "Set a default agent before enabling routine automation.",
+                  tone: "warn",
+                });
+                return;
+              }
+              updateRoutineStatus.mutate(automationEnabled ? "paused" : "active");
+            }}
             disabled={automationToggleDisabled}
             aria-label={automationEnabled ? "Pause automatic triggers" : "Enable automatic triggers"}
           />
@@ -736,24 +853,69 @@ export function RoutineDetail() {
             <p className="font-medium">{secretMessage.title}</p>
             <p className="text-xs text-muted-foreground">Save this now. Paperclip will not show the secret value again.</p>
           </div>
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Input value={secretMessage.webhookUrl} readOnly className="flex-1" />
-              <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook URL", secretMessage.webhookUrl)}>
-                <Copy className="h-3.5 w-3.5 mr-1" />
-                URL
-              </Button>
+          <div className="space-y-3">
+            {secretMessage.entries.map((entry, index) => (
+              <div key={`${entry.webhookUrl}-${index}`} className="space-y-2">
+                {secretMessage.entries.length > 1 && (
+                  <p className="text-xs font-medium text-muted-foreground">
+                    Webhook trigger {index + 1} of {secretMessage.entries.length}
+                  </p>
+                )}
+                <div className="flex items-center gap-2">
+                  <Input value={entry.webhookUrl} readOnly className="flex-1" />
+                  <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook URL", entry.webhookUrl)}>
+                    <Copy className="h-3.5 w-3.5 mr-1" />
+                    URL
+                  </Button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Input value={entry.webhookSecret} readOnly className="flex-1" />
+                  <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook secret", entry.webhookSecret)}>
+                    <Copy className="h-3.5 w-3.5 mr-1" />
+                    Secret
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Save conflict banner */}
+      {saveConflict && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <p className="font-medium text-amber-200">Out of date</p>
+              <p className="text-xs text-muted-foreground">
+                This routine changed while you were editing. Reload to merge the latest revision before
+                saving again.
+              </p>
             </div>
-            <div className="flex items-center gap-2">
-              <Input value={secretMessage.webhookSecret} readOnly className="flex-1" />
-              <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook secret", secretMessage.webhookSecret)}>
-                <Copy className="h-3.5 w-3.5 mr-1" />
-                Secret
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setSaveConflict(false);
+                  if (routineDefaults) {
+                    setEditDraft(routineDefaults);
+                  }
+                  queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) });
+                }}
+              >
+                Reload latest
               </Button>
             </div>
           </div>
         </div>
       )}
+
+      {!routine.assigneeAgentId ? (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-900 dark:text-amber-200">
+          Default agent required. This routine can stay as a draft and still run manually, but automation stays paused until you assign a default agent.
+        </div>
+      ) : null}
 
       {/* Assignment row */}
       <div className="overflow-x-auto overscroll-x-contain">
@@ -763,6 +925,7 @@ export function RoutineDetail() {
             ref={assigneeSelectorRef}
             value={editDraft.assigneeAgentId}
             options={assigneeOptions}
+            recentOptionIds={recentAssigneeIds}
             placeholder="Assignee"
             noneLabel="No assignee"
             searchPlaceholder="Search assignees..."
@@ -808,11 +971,15 @@ export function RoutineDetail() {
             ref={projectSelectorRef}
             value={editDraft.projectId}
             options={projectOptions}
+            recentOptionIds={recentProjectIds}
             placeholder="Project"
             noneLabel="No project"
             searchPlaceholder="Search projects..."
             emptyMessage="No projects found."
-            onChange={(projectId) => setEditDraft((current) => ({ ...current, projectId }))}
+            onChange={(projectId) => {
+              if (projectId) trackRecentProject(projectId);
+              setEditDraft((current) => ({ ...current, projectId }));
+            }}
             onConfirm={() => descriptionEditorRef.current?.focus()}
             renderTriggerValue={(option) =>
               option && currentProject ? (
@@ -852,14 +1019,16 @@ export function RoutineDetail() {
         placeholder="Add instructions..."
         bordered={false}
         contentClassName="min-h-[120px] text-[15px] leading-7"
+        mentions={mentionOptions}
         onSubmit={() => {
-          if (!saveRoutine.isPending && editDraft.title.trim() && editDraft.projectId && editDraft.assigneeAgentId) {
+          if (!saveRoutine.isPending && editDraft.title.trim()) {
             saveRoutine.mutate();
           }
         }}
       />
       <RoutineVariablesHint />
       <RoutineVariablesEditor
+        title={editDraft.title}
         description={editDraft.description}
         value={editDraft.variables}
         onChange={(variables) => setEditDraft((current) => ({ ...current, variables }))}
@@ -920,7 +1089,7 @@ export function RoutineDetail() {
         )}
         <Button
           onClick={() => saveRoutine.mutate()}
-          disabled={saveRoutine.isPending || !editDraft.title.trim() || !editDraft.projectId || !editDraft.assigneeAgentId}
+          disabled={saveRoutine.isPending || !editDraft.title.trim()}
         >
           <Save className="mr-2 h-4 w-4" />
           Save routine
@@ -944,6 +1113,14 @@ export function RoutineDetail() {
 <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
             Activity
+          </TabsTrigger>
+          <TabsTrigger value="secrets" className="gap-1.5">
+            <KeyRound className="h-3.5 w-3.5" />
+            Secrets
+          </TabsTrigger>
+          <TabsTrigger value="history" className="gap-1.5">
+            <HistoryIcon className="h-3.5 w-3.5" />
+            History
           </TabsTrigger>
         </TabsList>
 
@@ -1084,13 +1261,94 @@ export function RoutineDetail() {
             </div>
           )}
         </TabsContent>
+
+        <TabsContent value="secrets" className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            Routine secrets apply to every issue this routine creates. They override matching keys in
+            project and agent env. <span className="font-mono">PAPERCLIP_*</span> variables are reserved.
+          </p>
+          <EnvVarEditor
+            value={(editDraft.env ?? {}) as Record<string, EnvBinding>}
+            secrets={availableSecrets}
+            onCreateSecret={async (name, value) => {
+              const created = await createSecret.mutateAsync({ name, value });
+              return created;
+            }}
+            onChange={(env) =>
+              setEditDraft((current) => ({ ...current, env: env ?? null }))
+            }
+          />
+        </TabsContent>
+
+        <TabsContent value="history">
+          <RoutineHistoryTab
+            routine={routine}
+            isEditDirty={isEditDirty}
+            dirtyFields={dirtyFields}
+            onDiscardEdits={() => {
+              if (routineDefaults) setEditDraft(routineDefaults);
+            }}
+            onSaveEdits={() => {
+              if (!saveRoutine.isPending && editDraft.title.trim()) {
+                saveRoutine.mutate();
+              }
+            }}
+            agents={agentById}
+            projects={projectById}
+            secrets={availableSecrets}
+            onRestoreSecretMaterials={(response: RestoreRoutineRevisionResponse) => {
+              if (response.secretMaterials.length > 0) {
+                setSecretMessage({
+                  title: response.secretMaterials.length === 1
+                    ? "Webhook trigger restored"
+                    : `${response.secretMaterials.length} webhook triggers restored`,
+                  entries: response.secretMaterials.map((recreated) => ({
+                    webhookUrl: recreated.webhookUrl,
+                    webhookSecret: recreated.webhookSecret,
+                  })),
+                });
+              }
+            }}
+            onRestored={(response: RestoreRoutineRevisionResponse) => {
+              setSaveConflict(false);
+              queryClient.setQueryData<RoutineDetailType | undefined>(
+                queryKeys.routines.detail(routineId!),
+                (prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        ...response.routine,
+                        latestRevisionId: response.revision.id,
+                        latestRevisionNumber: response.revision.revisionNumber,
+                      }
+                    : prev,
+              );
+              setEditDraft({
+                title: response.routine.title,
+                description: response.routine.description ?? "",
+                projectId: response.routine.projectId ?? "",
+                assigneeAgentId: response.routine.assigneeAgentId ?? "",
+                priority: response.routine.priority,
+                concurrencyPolicy: response.routine.concurrencyPolicy,
+                catchUpPolicy: response.routine.catchUpPolicy,
+                variables: response.routine.variables,
+                env: response.routine.env ?? null,
+              });
+              hydratedRoutineIdRef.current = response.routine.id;
+            }}
+          />
+        </TabsContent>
       </Tabs>
 
       <RoutineRunVariablesDialog
         open={runVariablesOpen}
         onOpenChange={setRunVariablesOpen}
         companyId={routine.companyId}
-        project={selectedProject}
+        routineName={routine.title}
+        agents={agents ?? []}
+        projects={projects ?? []}
+        defaultProjectId={routine.projectId}
+        defaultAssigneeAgentId={routine.assigneeAgentId}
         variables={routine.variables ?? []}
         isPending={runRoutine.isPending}
         onSubmit={(data) => runRoutine.mutate(data)}

@@ -7,8 +7,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueRow } from "./IssueRow";
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, className, ...props }: React.ComponentProps<"a">) => (
-    <a className={className} {...props}>{children}</a>
+  Link: ({
+    children,
+    className,
+    disableIssueQuicklook: _disableIssueQuicklook,
+    issuePrefetch,
+    ...props
+  }: React.ComponentProps<"a"> & { disableIssueQuicklook?: boolean; issuePrefetch?: Issue | null }) => (
+    <a
+      className={className}
+      data-disable-issue-quicklook={_disableIssueQuicklook ? "true" : undefined}
+      data-issue-prefetch-id={issuePrefetch?.id}
+      {...props}
+    >
+      {children}
+    </a>
   ),
 }));
 
@@ -55,6 +68,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     lastExternalCommentAt: null,
     isUnreadForMe: false,
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 
@@ -135,6 +149,37 @@ describe("IssueRow", () => {
     });
   });
 
+  it("opts issue quicklook out for dense inbox rows", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} />);
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("data-disable-issue-quicklook")).toBe("true");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("passes the visible row issue into the navigation prefetch path", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} />);
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(link?.getAttribute("data-issue-prefetch-id")).toBe("issue-1");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders titleSuffix inline after the issue title", () => {
     const root = createRoot(container);
     const issue = createIssue({ title: "Parent task" });
@@ -158,6 +203,47 @@ describe("IssueRow", () => {
     });
   });
 
+  it("renders checklist step numbers beside the issue identifier", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={createIssue({ identifier: "PAP-42" })}
+          checklistStepNumber="2.1"
+          mobileMeta="updated now"
+        />,
+      );
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    const metaRow = Array.from(link?.querySelectorAll("span.flex.items-center.gap-2") ?? [])
+      .find((element) => element.textContent?.includes("PAP-42"));
+
+    expect(metaRow).not.toBeUndefined();
+    expect(metaRow?.textContent?.replace(/\s+/g, "")).toContain("2.1.PAP-42");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not render a planning mode marker for planning work mode issues", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue({ workMode: "planning" })} />);
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link?.textContent).not.toContain("Planning");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders without error when titleSuffix is omitted", () => {
     const root = createRoot(container);
 
@@ -167,6 +253,62 @@ describe("IssueRow", () => {
 
     const titleEl = container.querySelector(".line-clamp-2, .truncate");
     expect(titleEl?.textContent).toContain("Inbox item");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("flags rows blocked by an assigned-backlog leaf with a parked-work badge", () => {
+    const root = createRoot(container);
+    const issue = createIssue({
+      blockedBy: [
+        {
+          id: "blocker-1",
+          identifier: "PAP-2",
+          title: "Parked child",
+          status: "backlog",
+          priority: "high",
+          assigneeAgentId: "agent-99",
+          assigneeUserId: null,
+        },
+      ],
+    });
+
+    act(() => {
+      root.render(<IssueRow issue={issue} />);
+    });
+
+    const badges = container.querySelectorAll('[data-testid="issue-row-parked-blocker"]');
+    expect(badges.length).toBeGreaterThan(0);
+    expect(badges[0]?.textContent).toContain("Blocked by parked work");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not show the parked-work badge when assigned blocker is not in backlog", () => {
+    const root = createRoot(container);
+    const issue = createIssue({
+      blockedBy: [
+        {
+          id: "blocker-1",
+          identifier: "PAP-2",
+          title: "Active child",
+          status: "in_progress",
+          priority: "high",
+          assigneeAgentId: "agent-99",
+          assigneeUserId: null,
+        },
+      ],
+    });
+
+    act(() => {
+      root.render(<IssueRow issue={issue} />);
+    });
+
+    expect(container.querySelector('[data-testid="issue-row-parked-blocker"]')).toBeNull();
 
     act(() => {
       root.unmount();
