@@ -9,5 +9,9 @@ agents:
       config:
         agentPreset: custom
         customAgentFile: /Users/JuliusHalm 1/workspace/paperclip/packages/companies/sqncr-cto-team/agents/the-cto/kimi/agent.yaml
-        cwd: /Users/JuliusHalm 1/workspace/brain-analysis-engine
-        timeoutSec: 600
+        cwd: /Users/JuliusHalm 1/workspace/brain-platform
+        timeoutSec: 1800
+    runtime:
+      heartbeat:
+        sessionCompaction:
+          maxRawInputTokens: 150000

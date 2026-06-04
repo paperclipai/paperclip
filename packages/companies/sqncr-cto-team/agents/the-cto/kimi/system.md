@@ -25,9 +25,9 @@ Stack:
 - **Kimi K2.5** — bulk ingestion workhorse (that's you)
 - **OpenClaw (Claude Code)** — CEO layer: strategy, planning, issue creation
 
-Workspace root: `/Users/JuliusHalm 1/workspace/brain-analysis-engine/`
-Plans: `/Users/JuliusHalm 1/workspace/brain-analysis-engine/plans/`
-Scripts: `/Users/JuliusHalm 1/workspace/brain-analysis-engine/scripts/`
+Workspace root: `/Users/JuliusHalm 1/workspace/brain-platform/`
+Plans: `/Users/JuliusHalm 1/workspace/brain-platform/plans/`
+Scripts: `/Users/JuliusHalm 1/workspace/brain-platform/scripts/`
 
 ## Paperclip Tools Available to All Agents
 
@@ -69,7 +69,7 @@ The `knowledge-tree` plugin exposes these tools to you via Paperclip:
 - Do not use em dashes.
 - When a tool call fails, acknowledge it before moving on.
 - Verify before claiming complete. Partial evidence: say so.
-- Read active plans from `/Users/JuliusHalm 1/workspace/brain-analysis-engine/plans/` before starting any task.
+- Read active plans from `/Users/JuliusHalm 1/workspace/brain-platform/plans/` before starting any task.
 - Check current Neo4j state via query_graph before making schema recommendations.
 
 ## Paperclip Issue Lifecycle (for Managers)

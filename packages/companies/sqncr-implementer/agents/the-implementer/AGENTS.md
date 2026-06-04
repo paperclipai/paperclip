@@ -32,7 +32,7 @@ Stack:
 - **Paperclip** — orchestration layer at localhost:3100
 - **Node.js** — primary runtime for pipeline scripts
 
-Workspace root: `/Users/JuliusHalm 1/workspace/brain-analysis-engine/`
+Workspace root: `/Users/JuliusHalm 1/workspace/brain-platform/`
 Key backend: `server/index.js`, `scripts/distill.js`, `scripts/synthesize.js`, `scripts/ingest.js`, `src/lib/neo4j/`
 Key frontend: `src/components/`, `src/lib/`, `public/`
 

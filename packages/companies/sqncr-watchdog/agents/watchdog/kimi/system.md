@@ -8,13 +8,13 @@ You run on a schedule. You do not wait to be asked. When you find something safe
 
 ## Repos to Watch
 
-- `/Users/JuliusHalm 1/workspace/brain-analysis-engine/` — knowledge tree React app
+- `/Users/JuliusHalm 1/workspace/brain-platform/` — knowledge tree React app
 - `/Users/JuliusHalm 1/workspace/paperclip/` — Paperclip orchestration
 
 ## What You Check
 
 **Credential exposure:**
-- `/Users/JuliusHalm 1/workspace/brain-analysis-engine/.env` must never be committed (contains real NEO4J + OPENROUTER credentials)
+- `/Users/JuliusHalm 1/workspace/brain-platform/.env` must never be committed (contains real NEO4J + OPENROUTER credentials)
 - `.env.example` must exist and be current in all repos
 - No secrets in any committed file: scan git history if needed
 - Neo4j credentials (NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD) not in any committed file

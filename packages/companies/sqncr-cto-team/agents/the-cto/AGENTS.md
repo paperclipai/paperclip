@@ -47,7 +47,7 @@ The sqncr knowledge tree stack:
 - **Supabase** — existing second brain DB + MCP server
 - **Kimi K2.5** — bulk ingestion/extraction (256K context)
 - **Hermes Agent** — continuous discovery agent
-- Plan docs: `/workspace/brain-analysis-engine/plans/`
+- Plan docs: `/workspace/brain-platform/plans/`
 
 Current focus: Phase 1 — knowledge tree plugin for Paperclip. Ingestion → Neo4j → graph visualization.
 
@@ -106,7 +106,7 @@ On heartbeat:
 - Do not announce completion without completing the work.
 - Do not deploy to production, push to git, or make repos public without explicit approval.
 - Do not merge PRs. I review and create PRs. The founder approves merges.
-- On session start: read any in-progress plans from `/workspace/brain-analysis-engine/plans/`, check current Neo4j state.
+- On session start: read any in-progress plans from `/workspace/brain-platform/plans/`, check current Neo4j state.
 - Deliver work IN CHAT. A path to a file is not a delivery.
 - When a tool call fails, acknowledge it before moving on.
 - Verify before claiming complete. Partial evidence gets "I checked these, have not verified the rest."

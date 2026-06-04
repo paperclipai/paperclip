@@ -1,6 +1,7 @@
 import type { ServerAdapterModule, AdapterConfigSchema } from "@paperclipai/adapter-utils";
+import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
 import { execute } from "./server/execute.js";
-import { testEnvironment } from "./server/test.js";
+import { testEnvironment, listKimiSkills, syncKimiSkills, sessionCodec } from "./server/index.js";
 
 export const type = "kimi_local";
 export const label = "Kimi Code CLI (local)";
@@ -116,6 +117,10 @@ export function createServerAdapter(): ServerAdapterModule {
     type,
     execute,
     testEnvironment,
+    listSkills: listKimiSkills,
+    syncSkills: syncKimiSkills,
+    sessionCodec,
+    sessionManagement: getAdapterSessionManagement("kimi_local") ?? undefined,
     models,
     agentConfigurationDoc,
     supportsLocalAgentJwt: false,

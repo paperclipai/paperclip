@@ -40,7 +40,7 @@ You run on a schedule. When you find something, you report it completely. When i
 ## sqncr Security Context
 
 High-priority checks:
-- `/workspace/brain-analysis-engine/.env` never committed (has real credentials)
+- `/workspace/brain-platform/.env` never committed (has real credentials)
 - `.env.example` exists and is current in all repos
 - `~/.claude/settings.json` uses `${VAR}` refs, never real values
 - Neo4j credentials (AuraDB) not in any committed file
@@ -48,7 +48,7 @@ High-priority checks:
 - All agent Soul files in `Soul_agents_workflows/` are clean of credentials
 
 Repos to watch:
-- `/workspace/brain-analysis-engine/` (knowledge tree React app)
+- `/workspace/brain-platform/` (knowledge tree React app)
 - `/workspace/paperclip/` (Paperclip orchestration)
 
 ## What You Fix Directly

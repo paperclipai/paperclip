@@ -1,6 +1,12 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
+  AdapterSessionCodec,
+  UsageSummary,
 } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -12,8 +18,12 @@ import {
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
+  ensurePaperclipSkillSymlink,
   ensurePathInEnv,
+  readPaperclipRuntimeSkillEntries,
+  removeMaintainerOnlySkillSymlinks,
   resolveCommandForLogs,
+  resolvePaperclipDesiredSkillNames,
   renderTemplate,
   renderPaperclipWakePrompt,
   joinPromptSections,
@@ -22,6 +32,122 @@ import {
 
 const DEFAULT_TIMEOUT_SEC = 300;
 const DEFAULT_GRACE_SEC = 20;
+
+const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+
+function kimiSkillsHome(): string {
+  return path.join(os.homedir(), ".kimi", "skills");
+}
+
+type EnsureKimiSkillsInjectedOptions = {
+  skillsEntries?: Array<{ key: string; runtimeName: string; source: string }>;
+  skillsHome?: string;
+  linkSkill?: (source: string, target: string) => Promise<void>;
+};
+
+async function ensureKimiSkillsInjected(
+  onLog: AdapterExecutionContext["onLog"],
+  options: EnsureKimiSkillsInjectedOptions = {},
+) {
+  const skillsEntries = options.skillsEntries ?? await readPaperclipRuntimeSkillEntries({}, __moduleDir);
+  if (skillsEntries.length === 0) return;
+
+  const skillsHome = options.skillsHome ?? kimiSkillsHome();
+  try {
+    await fs.mkdir(skillsHome, { recursive: true });
+  } catch (err) {
+    await onLog(
+      "stderr",
+      `[paperclip] Failed to prepare Kimi skills directory ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return;
+  }
+  const removedSkills = await removeMaintainerOnlySkillSymlinks(
+    skillsHome,
+    skillsEntries.map((entry) => entry.runtimeName),
+  );
+  for (const skillName of removedSkills) {
+    await onLog(
+      "stderr",
+      `[paperclip] Removed maintainer-only Kimi skill "${skillName}" from ${skillsHome}\n`,
+    );
+  }
+  const linkSkill = options.linkSkill ?? ((source: string, target: string) => fs.symlink(source, target));
+  for (const entry of skillsEntries) {
+    const target = path.join(skillsHome, entry.runtimeName);
+    try {
+      const result = await ensurePaperclipSkillSymlink(entry.source, target, linkSkill);
+      if (result === "skipped") continue;
+
+      await onLog(
+        "stderr",
+        `[paperclip] ${result === "repaired" ? "Repaired" : "Injected"} Kimi skill "${entry.key}" into ${skillsHome}\n`,
+      );
+    } catch (err) {
+      await onLog(
+        "stderr",
+        `[paperclip] Failed to inject Kimi skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session codec
+// ---------------------------------------------------------------------------
+
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+// Kimi tracks sessions per cwd in ~/.kimi/kimi.json. Only pass --continue when
+// a session actually exists, otherwise Kimi exits with "No previous session found".
+async function kimiHasSessionForCwd(cwd: string): Promise<boolean> {
+  try {
+    const kimiJsonPath = path.join(os.homedir(), ".kimi", "kimi.json");
+    const raw = await fs.readFile(kimiJsonPath, "utf-8");
+    const data = JSON.parse(raw) as {
+      work_dirs?: Array<{ path: string; last_session_id: string | null }>;
+    };
+    const resolved = path.resolve(cwd);
+    return (data.work_dirs ?? []).some(
+      (d) => path.resolve(d.path) === resolved && d.last_session_id != null,
+    );
+  } catch {
+    return false;
+  }
+}
+
+export const sessionCodec: AdapterSessionCodec = {
+  deserialize(raw: unknown) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const record = raw as Record<string, unknown>;
+    const cwd =
+      readNonEmptyString(record.cwd) ??
+      readNonEmptyString(record.workdir) ??
+      readNonEmptyString(record.folder);
+    if (!cwd) return null;
+    return { cwd };
+  },
+  serialize(params: Record<string, unknown> | null) {
+    if (!params || typeof params !== "object" || Array.isArray(params)) return null;
+    const cwd =
+      readNonEmptyString(params.cwd) ??
+      readNonEmptyString(params.workdir) ??
+      readNonEmptyString(params.folder);
+    if (!cwd) return null;
+    return { cwd };
+  },
+  getDisplayId(params: Record<string, unknown> | null) {
+    if (!params || typeof params !== "object") return null;
+    const cwd =
+      readNonEmptyString(params.cwd) ??
+      readNonEmptyString(params.workdir) ??
+      readNonEmptyString(params.folder);
+    if (!cwd) return null;
+    return `kimi-${cwd}`;
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Kimi stream-json message types
@@ -44,11 +170,7 @@ type KimiMessage =
 interface ParsedKimiOutput {
   messages: KimiMessage[];
   finalText: string;
-  usage?: {
-    inputTokens: number;
-    outputTokens: number;
-    cachedInputTokens?: number;
-  };
+  usage?: UsageSummary;
   model?: string;
   provider?: string;
 }
@@ -58,6 +180,7 @@ function parseKimiStreamJson(stdout: string): ParsedKimiOutput {
   let finalText = "";
   let model: string | undefined;
   let provider: string | undefined;
+  let usage: UsageSummary | undefined;
 
   for (const line of stdout.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -80,6 +203,14 @@ function parseKimiStreamJson(stdout: string): ParsedKimiOutput {
       if (msg.provider && typeof msg.provider === "string") {
         provider = msg.provider;
       }
+      if (msg.usage && typeof msg.usage === "object") {
+        const u = msg.usage;
+        usage = {
+          inputTokens: typeof u.input_tokens === "number" ? u.input_tokens : 0,
+          outputTokens: typeof u.output_tokens === "number" ? u.output_tokens : 0,
+          cachedInputTokens: typeof u.cache_read_input_tokens === "number" ? u.cache_read_input_tokens : 0,
+        };
+      }
     } catch {
       // Ignore non-JSON lines
     }
@@ -90,7 +221,7 @@ function parseKimiStreamJson(stdout: string): ParsedKimiOutput {
     finalText = stdout.trim();
   }
 
-  return { messages, finalText, model, provider };
+  return { messages, finalText, usage, model, provider };
 }
 
 // ---------------------------------------------------------------------------
@@ -162,10 +293,18 @@ async function buildKimiRuntimeConfig(
 // ---------------------------------------------------------------------------
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, config, context, onLog, onMeta, onSpawn } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn } = ctx;
 
   const runtimeConfig = await buildKimiRuntimeConfig(ctx);
   const { command, resolvedCommand, cwd, env, loggedEnv, timeoutSec, graceSec } = runtimeConfig;
+
+  const runtimeSessionParams = parseObject(runtime.sessionParams);
+  const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const resolvedCwd = path.resolve(cwd);
+  const paperclipHasSession =
+    Boolean(runtime.sessionId) &&
+    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === resolvedCwd);
+  const canResumeSession = paperclipHasSession && (await kimiHasSessionForCwd(resolvedCwd));
 
   // Agent preset selection — this is the "what powers the agent" field
   const agentPreset = asString(config.agentPreset, "default");
@@ -186,8 +325,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const promptTemplate = asString(
     config.promptTemplate,
-    "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
+    `You are agent {{agent.id}} ({{agent.name}}) operating inside a Paperclip heartbeat.
+
+## Paperclip Heartbeat Startup Protocol
+
+Your env has: PAPERCLIP_AGENT_ID={{agent.id}}, PAPERCLIP_COMPANY_ID={{agent.companyId}}, PAPERCLIP_RUN_ID={{runId}}
+
+**Step 0 — Check your task:**
+\`\`\`bash
+echo "TASK_ID=$PAPERCLIP_TASK_ID"
+\`\`\`
+
+- **If PAPERCLIP_TASK_ID is set** → checkout the issue, read its description, read the project's AGENTS.md, then do the work.
+- **If PAPERCLIP_TASK_ID is EMPTY** → do NOT wander. Do NOT read random files. Find your work:
+  \`\`\`bash
+  curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues?status=todo,in_progress" \\
+    -H "Authorization: Bearer $PAPERCLIP_API_KEY" \\
+    | python3 -c 'import sys,json; data=json.load(sys.stdin); assigned=[i for i in data if i.get("assigneeAgentId")=="'"$PAPERCLIP_AGENT_ID"'"]; prio={"critical":0,"high":1,"medium":2,"low":3}; assigned.sort(key=lambda x: prio.get(x.get("priority"),4)); [print("%s | %s | %s | %s" % (i.get("priority",""), i.get("status",""), i.get("identifier",""), i.get("title",""))) for i in assigned]'
+  \`\`\`
+  Pick the highest-priority issue with status todo or in_progress. If none assigned, report clearly and STOP.
+
+**Forbidden without a specific assigned issue:** reading JETZT.md, browsing handoffs, running git log out of curiosity, exploring files randomly.
+
+When working: read the issue description completely first, then the project's AGENTS.md, then implement exactly what the issue asks.`,
   );
+
+  const kimiSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredKimiSkillNames = resolvePaperclipDesiredSkillNames(config, kimiSkillEntries);
+  await ensureKimiSkillsInjected(onLog, {
+    skillsEntries: kimiSkillEntries.filter((entry) => desiredKimiSkillNames.includes(entry.key)),
+  });
 
   const templateData = {
     agentId: agent.id,
@@ -216,6 +383,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "--work-dir",
     cwd,
   ];
+
+  if (canResumeSession) {
+    args.push("--continue");
+    await onLog("stdout", `[paperclip] Continuing previous Kimi session for ${resolvedCwd}\n`);
+  }
 
   // Agent selection: the core "what powers the agent" configuration
   if (agentPreset === "custom" && customAgentFile) {
@@ -287,6 +459,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const hasErrors = (proc.exitCode ?? 0) !== 0;
 
+  // Build session state for Paperclip to resume on the next heartbeat
+  const sessionParams = { cwd: resolvedCwd };
+  const sessionDisplayId = `kimi-${resolvedCwd}`;
+
   return {
     exitCode: proc.exitCode,
     signal: proc.signal,
@@ -300,6 +476,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     provider: parsed.provider || "kimi",
     model: parsed.model || model || "default",
     usage: parsed.usage,
+    sessionId: sessionDisplayId,
+    sessionParams,
+    sessionDisplayId,
     resultJson: {
       stdout: proc.stdout,
       stderr: proc.stderr,

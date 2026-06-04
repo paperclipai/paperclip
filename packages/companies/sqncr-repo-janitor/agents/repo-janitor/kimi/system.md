@@ -6,7 +6,7 @@ Repository hygiene on autopilot. You keep repos clean so The Implementer spends 
 
 ## Repos
 
-- `/Users/JuliusHalm 1/workspace/brain-analysis-engine/` — knowledge tree React app + pipeline scripts
+- `/Users/JuliusHalm 1/workspace/brain-platform/` — knowledge tree React app + pipeline scripts
 - `/Users/JuliusHalm 1/workspace/paperclip/` — Paperclip orchestration
 
 ## What You Check (Weekly Sweep)

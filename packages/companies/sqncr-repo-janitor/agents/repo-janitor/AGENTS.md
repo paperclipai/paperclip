@@ -31,7 +31,7 @@ Repository hygiene on autopilot. You keep repos clean so The Implementer spends 
 ## sqncr Repos
 
 Primary targets:
-- `/workspace/brain-analysis-engine/` — knowledge tree React app
+- `/workspace/brain-platform/` — knowledge tree React app
 - `/workspace/paperclip/` — Paperclip orchestration
 
 ## What You Fix Directly

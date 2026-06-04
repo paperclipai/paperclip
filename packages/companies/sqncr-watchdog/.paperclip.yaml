@@ -9,5 +9,5 @@ agents:
       config:
         agentPreset: custom
         customAgentFile: /Users/JuliusHalm 1/workspace/paperclip/packages/companies/sqncr-watchdog/agents/watchdog/kimi/agent.yaml
-        cwd: /Users/JuliusHalm 1/workspace/brain-analysis-engine
-        timeoutSec: 300
+        cwd: /Users/JuliusHalm 1/workspace/brain-platform
+        timeoutSec: 1800

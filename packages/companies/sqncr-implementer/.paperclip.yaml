@@ -3,11 +3,15 @@ schema: "paperclip/v1"
 agents:
   the-implementer:
     role: "engineer"
-    capabilities: "Full-stack implementation — backend APIs, Neo4j schema, Node.js pipelines, React UI, TypeScript, graph visualization, dark theme"
+    capabilities: "Full-stack implementation — Electron main process, SQLite/better-sqlite3, React 18 + Vite, Tailwind CSS, TypeScript strict, IPC architecture, dark theme"
     adapter:
       type: kimi_local
       config:
         agentPreset: custom
         customAgentFile: /Users/JuliusHalm 1/workspace/paperclip/packages/companies/sqncr-implementer/agents/the-implementer/kimi/agent.yaml
-        cwd: /Users/JuliusHalm 1/workspace/brain-analysis-engine
-        timeoutSec: 600
+        cwd: /Users/JuliusHalm 1/workspace/brain-platform
+        timeoutSec: 1800
+    runtime:
+      heartbeat:
+        sessionCompaction:
+          maxRawInputTokens: 150000
