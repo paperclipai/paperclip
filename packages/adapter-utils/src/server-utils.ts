@@ -2201,7 +2201,7 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
-        child.stdout?.on("data", (chunk: unknown) => {
+        child.stdout?.on("data", (chunk: string | Buffer) => {
           const readable = child.stdout;
           if (!readable) return;
           readable.pause();
@@ -2217,7 +2217,7 @@ export async function runChildProcess(
             });
         });
 
-        child.stderr?.on("data", (chunk: unknown) => {
+        child.stderr?.on("data", (chunk: string | Buffer) => {
           const readable = child.stderr;
           if (!readable) return;
           readable.pause();

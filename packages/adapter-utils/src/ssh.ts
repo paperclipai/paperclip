@@ -238,7 +238,7 @@ async function spawnText(
 
     const append = (
       streamName: "stdout" | "stderr",
-      chunk: unknown,
+      chunk: string | Buffer,
     ) => {
       const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
       if (streamName === "stdout") {
