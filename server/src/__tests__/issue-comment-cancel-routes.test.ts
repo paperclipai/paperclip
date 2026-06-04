@@ -7,6 +7,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   getComment: vi.fn(),
   removeComment: vi.fn(),
+  containSensitiveComment: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -188,6 +189,12 @@ describe.sequential("issue comment cancel routes", () => {
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getComment.mockResolvedValue(makeComment());
     mockIssueService.removeComment.mockResolvedValue(makeComment());
+    mockIssueService.containSensitiveComment.mockResolvedValue(
+      makeComment({
+        body: "[Security redaction: this published comment was quarantined by a board administrator. See activity log for containment metadata.]",
+        updatedAt: new Date("2026-04-11T15:05:00.000Z"),
+      }),
+    );
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
@@ -268,5 +275,68 @@ describe.sequential("issue comment cancel routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("Only the comment author can cancel queued comments");
     expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+  });
+
+  it("contains a published sensitive comment for a board actor and logs audit evidence without original body", async () => {
+    mockIssueService.getComment.mockResolvedValue(
+      makeComment({
+        body: "original placeholder sensitive material",
+        createdAt: new Date("2026-04-11T14:58:00.000Z"),
+        updatedAt: new Date("2026-04-11T14:58:00.000Z"),
+      }),
+    );
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1/admin/contain-sensitive")
+      .send({ reason: "Operator containment after confirmed credential exposure" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.containSensitiveComment).toHaveBeenCalledWith("comment-1", {
+      body: "[Security redaction: this published comment was quarantined by a board administrator. See activity log for containment metadata.]",
+    });
+    expect(res.body.body).toBe(
+      "[Security redaction: this published comment was quarantined by a board administrator. See activity log for containment metadata.]",
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.comment_sensitive_contained",
+        entityType: "issue_comment",
+        entityId: "comment-1",
+        details: expect.objectContaining({
+          commentId: "comment-1",
+          issueId: "11111111-1111-4111-8111-111111111111",
+          actorUserId: "local-board",
+          containmentReason: "Operator containment after confirmed credential exposure",
+          containedAt: "2026-04-11T15:05:00.000Z",
+        }),
+      }),
+    );
+    const activityDetails = mockLogActivity.mock.calls.at(-1)?.[1]?.details;
+    expect(JSON.stringify(activityDetails)).not.toContain("original placeholder sensitive material");
+  });
+
+  it("rejects sensitive published comment containment for non-board actors", async () => {
+    const res = await request(await installActor(createApp(), {
+      type: "agent",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      runId: "33333333-3333-4333-8333-333333333333",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1/admin/contain-sensitive")
+      .send({ reason: "Operator containment after confirmed credential exposure" });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.containSensitiveComment).not.toHaveBeenCalled();
+  });
+
+  it("routes queued comments to cancellation instead of admin containment", async () => {
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1/admin/contain-sensitive")
+      .send({ reason: "Operator containment after confirmed credential exposure" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Queued comments must use the cancellation route");
+    expect(mockIssueService.containSensitiveComment).not.toHaveBeenCalled();
   });
 });

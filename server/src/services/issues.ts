@@ -5689,6 +5689,32 @@ export function issueService(db: Db) {
       });
     },
 
+    containSensitiveComment: async (commentId: string, input: { body: string }) => {
+      const currentUserRedactionOptions = {
+        enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+      };
+
+      return db.transaction(async (tx) => {
+        const [comment] = await tx
+          .update(issueComments)
+          .set({
+            body: input.body,
+            updatedAt: new Date(),
+          })
+          .where(eq(issueComments.id, commentId))
+          .returning();
+
+        if (!comment) return null;
+
+        await tx
+          .update(issues)
+          .set({ updatedAt: new Date() })
+          .where(eq(issues.id, comment.issueId));
+
+        return redactIssueComment(comment, currentUserRedactionOptions.enabled);
+      });
+    },
+
     addComment: async (
       issueId: string,
       body: string,

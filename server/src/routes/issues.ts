@@ -120,6 +120,11 @@ import { parseIssueExecutionWorkspaceSettings } from "../services/execution-work
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const SENSITIVE_COMMENT_CONTAINMENT_MARKER =
+  "[Security redaction: this published comment was quarantined by a board administrator. See activity log for containment metadata.]";
+const containPublishedIssueCommentSchema = z.object({
+  reason: z.string().trim().min(3).max(2_000),
+});
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -5658,6 +5663,68 @@ export function issueRoutes(
 
     res.json(removed);
   });
+
+  router.post(
+    "/issues/:id/comments/:commentId/admin/contain-sensitive",
+    validate(containPublishedIssueCommentSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const commentId = req.params.commentId as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      assertBoard(req);
+
+      const comment = await svc.getComment(commentId);
+      if (!comment || comment.issueId !== id) {
+        res.status(404).json({ error: "Comment not found" });
+        return;
+      }
+
+      const activeRun = await resolveActiveIssueRun(issue);
+      if (activeRun && isQueuedIssueCommentForActiveRun({ comment, activeRun })) {
+        res.status(409).json({ error: "Queued comments must use the cancellation route" });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const contained = await svc.containSensitiveComment(commentId, {
+        body: SENSITIVE_COMMENT_CONTAINMENT_MARKER,
+      });
+      if (!contained) {
+        res.status(404).json({ error: "Comment not found" });
+        return;
+      }
+      await issueReferencesSvc.syncComment(contained.id);
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.comment_sensitive_contained",
+        entityType: "issue_comment",
+        entityId: contained.id,
+        details: {
+          commentId: contained.id,
+          issueId: issue.id,
+          identifier: issue.identifier,
+          actorUserId: req.actor.type === "board" ? (req.actor.userId ?? "board") : null,
+          actorAgentId: actor.agentId,
+          actorRunId: actor.runId,
+          containmentReason: req.body.reason,
+          containedAt: contained.updatedAt instanceof Date ? contained.updatedAt.toISOString() : contained.updatedAt,
+          marker: SENSITIVE_COMMENT_CONTAINMENT_MARKER,
+        },
+      });
+
+      res.json(contained);
+    },
+  );
 
   router.get("/issues/:id/feedback-votes", async (req, res) => {
     const id = req.params.id as string;

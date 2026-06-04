@@ -223,24 +223,21 @@ describe("InstanceSidebar", () => {
     await flushReact();
     await findPluginLinks(container, 1);
 
-    await vi.waitFor(() => {
-      const links = Array.from(
+    await vi.waitFor(async () => {
+      await flushReact();
+      const hrefs = Array.from(
         container.querySelectorAll<HTMLAnchorElement>('a[href^="/instance/settings/"]'),
-      );
-      expect(links.some((a) => a.getAttribute("href") === "/instance/settings/plugins/linear")).toBe(true);
+      ).map((a) => a.getAttribute("href"));
+
+      const pluginsIndex = hrefs.indexOf("/instance/settings/plugins");
+      const adaptersIndex = hrefs.indexOf("/instance/settings/adapters");
+      const linearIndex = hrefs.indexOf("/instance/settings/plugins/linear");
+
+      expect(pluginsIndex).toBeGreaterThanOrEqual(0);
+      expect(adaptersIndex).toBeGreaterThan(pluginsIndex);
+      expect(linearIndex).toBeGreaterThan(pluginsIndex);
+      expect(linearIndex).toBeLessThan(adaptersIndex);
     });
-
-    const topLevelLinks = Array.from(container.querySelectorAll<HTMLAnchorElement>('a[href^="/instance/settings/"]'));
-    const hrefs = topLevelLinks.map((a) => a.getAttribute("href"));
-
-    const pluginsIndex = hrefs.indexOf("/instance/settings/plugins");
-    const adaptersIndex = hrefs.indexOf("/instance/settings/adapters");
-    const linearIndex = hrefs.indexOf("/instance/settings/plugins/linear");
-
-    expect(pluginsIndex).toBeGreaterThanOrEqual(0);
-    expect(adaptersIndex).toBeGreaterThan(pluginsIndex);
-    expect(linearIndex).toBeGreaterThan(pluginsIndex);
-    expect(linearIndex).toBeLessThan(adaptersIndex);
   });
 
   it("does not render the indented group when every plugin is filtered out", async () => {
@@ -271,10 +268,7 @@ describe("InstanceSidebar", () => {
     queryClient = rendered.queryClient;
     await flushReact();
 
-    await vi.waitFor(() => {
-      expect(mockPluginsApi.list).toHaveBeenCalled();
-    });
-    const pluginLinks = Array.from(container.querySelectorAll('a[href^="/instance/settings/plugins/"]'));
+    const pluginLinks = await findPluginLinks(container, 0);
     expect(pluginLinks).toHaveLength(0);
   });
 });
