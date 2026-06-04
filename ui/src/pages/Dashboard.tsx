@@ -35,7 +35,7 @@ function getRecentIssues(issues: Issue[]): Issue[] {
 }
 
 export function Dashboard() {
-  const { selectedCompanyId, companies } = useCompany();
+  const { selectedCompanyId, selectedCompany, companies } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
@@ -176,7 +176,7 @@ export function Dashboard() {
       return (
         <EmptyState
           icon={LayoutDashboard}
-          message="Welcome to ValadrienOs. Set up your first company and agent to get started."
+          message="Welcome to ValAdrien OS. Set up your first company and agent to get started."
           action="Get Started"
           onAction={openOnboarding}
         />
@@ -197,17 +197,44 @@ export function Dashboard() {
     <div className="space-y-6">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
-      {hasNoAgents && (
-        <div className="flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-950/60">
-          <div className="flex items-center gap-2.5">
-            <Bot className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
-            <p className="text-sm text-amber-900 dark:text-amber-100">
-              You have no agents.
+      {/* Control-room masthead — frames the dashboard as a living company. */}
+      {selectedCompany && (
+        <div>
+          <h1 className="font-serif text-3xl font-medium tracking-tight">
+            {selectedCompany.name}
+          </h1>
+          {data && (
+            <p className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted-foreground">
+              <span className="relative mr-1 flex h-1.5 w-1.5">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-status-running opacity-70" />
+                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-status-running" />
+              </span>
+              <b className="font-medium text-foreground">{data.agents.running}</b> working
+              <span className="text-muted-foreground/50">·</span>
+              <b className="font-mono font-medium text-primary">{formatCents(data.costs.monthSpendCents)}</b> this month
+              <span className="text-muted-foreground/50">·</span>
+              <b className="font-medium text-foreground">{data.tasks.inProgress}</b> tasks in progress
+              {data.tasks.blocked > 0 && (
+                <>
+                  <span className="text-muted-foreground/50">·</span>
+                  <b className="font-medium text-status-error">{data.tasks.blocked}</b> blocked
+                </>
+              )}
             </p>
+          )}
+          <hr className="mt-4 border-border" />
+        </div>
+      )}
+
+      {hasNoAgents && (
+        <div className="flex items-center justify-between gap-3 border border-status-warning/40 bg-status-warning/10 px-4 py-3">
+          <div className="flex items-center gap-2.5">
+            <Bot className="h-4 w-4 shrink-0 text-status-warning" />
+            <p className="text-sm text-foreground">You have no agents yet.</p>
           </div>
           <button
             onClick={() => openOnboarding({ initialStep: 2, companyId: selectedCompanyId! })}
-            className="text-sm font-medium text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100 underline underline-offset-2 shrink-0"
+            className="shrink-0 text-sm font-medium text-status-warning underline underline-offset-2 hover:text-foreground"
           >
             Create one here
           </button>
@@ -219,19 +246,19 @@ export function Dashboard() {
       {data && (
         <>
           {data.budgets.activeIncidents > 0 ? (
-            <div className="flex items-start justify-between gap-3 rounded-xl border border-red-500/20 bg-[linear-gradient(180deg,rgba(255,80,80,0.12),rgba(255,255,255,0.02))] px-4 py-3">
+            <div className="flex items-start justify-between gap-3 border border-status-error/40 bg-status-error/10 px-4 py-3">
               <div className="flex items-start gap-2.5">
-                <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-300" />
+                <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-status-error" />
                 <div>
-                  <p className="text-sm font-medium text-red-50">
+                  <p className="text-sm font-medium text-foreground">
                     {data.budgets.activeIncidents} active budget incident{data.budgets.activeIncidents === 1 ? "" : "s"}
                   </p>
-                  <p className="text-xs text-red-100/70">
+                  <p className="text-xs text-muted-foreground">
                     {data.budgets.pausedAgents} agents paused · {data.budgets.pausedProjects} projects paused · {data.budgets.pendingApprovals} pending budget approvals
                   </p>
                 </div>
               </div>
-              <Link to="/costs" className="text-sm underline underline-offset-2 text-red-100">
+              <Link to="/costs" className="text-sm text-status-error underline underline-offset-2 hover:text-foreground">
                 Open budgets
               </Link>
             </div>
@@ -310,15 +337,19 @@ export function Dashboard() {
             slotTypes={["dashboardWidget"]}
             context={{ companyId: selectedCompanyId }}
             className="grid gap-4 md:grid-cols-2"
-            itemClassName="rounded-lg border bg-card p-4 shadow-sm"
+            itemClassName="border border-border bg-card p-4"
           />
 
           <div className="grid md:grid-cols-2 gap-4">
             {/* Recent Activity */}
             {recentActivity.length > 0 && (
               <div className="min-w-0">
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                  Recent Activity
+                <h3 className="mb-3 flex items-center gap-2 font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-status-running opacity-70" />
+                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-status-running" />
+                  </span>
+                  Live Activity
                 </h3>
                 <div className="border border-border divide-y divide-border overflow-hidden">
                   {recentActivity.map((event) => (
@@ -338,7 +369,7 @@ export function Dashboard() {
 
             {/* Recent Tasks */}
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+              <h3 className="mb-3 font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                 Recent Tasks
               </h3>
               {recentIssues.length === 0 ? (
