@@ -210,6 +210,88 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
   });
 
+  it("groups failed runs by failure classification in productivity review evidence", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const runRows: Array<typeof heartbeatRuns.$inferInsert> = [
+      {
+        status: "failed",
+        error: "Forbidden",
+        errorCode: "access_denied",
+        resultJson: { failureType: "permission" },
+      },
+      {
+        status: "failed",
+        error: "Permission denied",
+        errorCode: "adapter_failed",
+      },
+      {
+        status: "failed",
+        error: "Invalid API key",
+        errorCode: "adapter_failed",
+      },
+      {
+        status: "failed",
+        error: "Adapter missing config",
+        errorCode: "adapter_failed",
+      },
+      {
+        status: "failed",
+        error: "Required gateway URL not configured",
+        errorCode: "adapter_failed",
+      },
+      {
+        status: "failed",
+        error: "Provider overloaded",
+        errorCode: "adapter_failed",
+      },
+      {
+        status: "failed",
+        error: "Upstream service unavailable",
+        errorCode: "adapter_failed",
+      },
+      {
+        status: "timed_out",
+        error: "Timed out",
+        errorCode: "timeout",
+      },
+      {
+        status: "timed_out",
+        error: "Adapter timed out",
+        errorCode: "timeout",
+      },
+      {
+        status: "succeeded",
+      },
+    ].map((run, index) => {
+      const createdAt = new Date(now.getTime() - index * 60_000);
+      return {
+        id: randomUUID(),
+        companyId: seeded.companyId,
+        agentId: seeded.coderId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        startedAt: createdAt,
+        finishedAt: new Date(createdAt.getTime() + 30_000),
+        contextSnapshot: { issueId: seeded.issueId, taskId: seeded.issueId },
+        createdAt,
+        updatedAt: createdAt,
+        ...run,
+      };
+    });
+    await db.insert(heartbeatRuns).values(runRows);
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Failure types: permission=3, invalid_config=2, provider_error=2, timeout=2");
+    expect(review?.description).toContain("failure `permission`");
+  });
+
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();

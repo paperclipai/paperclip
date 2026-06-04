@@ -69,7 +69,7 @@ export function summarizeHeartbeatRunResultJson(
     }
   }
 
-  for (const key of ["stopReason", "timeoutSource"] as const) {
+  for (const key of ["stopReason", "timeoutSource", "failureType", "failureClassifiedFrom"] as const) {
     const value = readCommentText(resultJson[key]);
     if (value !== null) {
       summary[key] = value;

@@ -84,6 +84,10 @@ import {
   normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
 import {
+  classifyHeartbeatRunFailure,
+  mergeHeartbeatRunFailureClassification,
+} from "./heartbeat-failure-classification.js";
+import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
@@ -6931,24 +6935,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const failureMessage = shouldRetry ? `${baseMessage}; retrying once` : baseMessage;
+      const failureClassification = classifyHeartbeatRunFailure({
+        status: "failed",
+        errorCode: "process_lost",
+        errorMessage: failureMessage,
+      });
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: failureMessage,
         errorCode: "process_lost",
         finishedAt: now,
-        resultJson: mergeRunStopMetadataForAgent(
-          { adapterType, adapterConfig },
-          "failed",
-          {
-            resultJson: parseObject(run.resultJson),
-            errorCode: "process_lost",
-            errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-          },
+        resultJson: mergeHeartbeatRunFailureClassification(
+          mergeRunStopMetadataForAgent(
+            { adapterType, adapterConfig },
+            "failed",
+            {
+              resultJson: parseObject(run.resultJson),
+              errorCode: "process_lost",
+              errorMessage: failureMessage,
+            },
+          ),
+          failureClassification,
         ),
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: failureMessage,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
@@ -7212,10 +7225,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     try {
     const agent = await getAgent(run.agentId);
     if (!agent) {
+      const failureClassification = classifyHeartbeatRunFailure({
+        status: "failed",
+        errorCode: "agent_not_found",
+        errorMessage: "Agent not found",
+      });
       await setRunStatus(runId, "failed", {
         error: "Agent not found",
         errorCode: "agent_not_found",
         finishedAt: new Date(),
+        resultJson: mergeHeartbeatRunFailureClassification(null, failureClassification),
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
@@ -8402,19 +8421,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             } as Record<string, unknown>)
           : null;
 
+      const sanitizedAdapterResultJson = sanitizeAdapterResultJsonForStorage(adapterResult.resultJson ?? null);
+      const failureClassification = classifyHeartbeatRunFailure({
+        status,
+        timedOut: adapterResult.timedOut,
+        errorCode: runErrorCode,
+        errorFamily: adapterResult.errorFamily ?? null,
+        errorMessage: runErrorMessage,
+        exitCode: adapterResult.exitCode,
+        signal: adapterResult.signal,
+        resultJson: sanitizedAdapterResultJson,
+      });
       const persistedResultJson = mergeHeartbeatRunResultJson(
-        mergeRunStopMetadataForAgent(agent, outcome, {
-          resultJson: mergeModelProfileRunMetadata(
-            mergeAdapterRecoveryMetadata({
-              resultJson: sanitizeAdapterResultJsonForStorage(adapterResult.resultJson ?? null),
-              errorFamily: adapterResult.errorFamily ?? null,
-              retryNotBefore: adapterResult.retryNotBefore ?? null,
-            }),
-            modelProfileApplication,
-          ),
-          errorCode: runErrorCode,
-          errorMessage: runErrorMessage,
-        }),
+        mergeHeartbeatRunFailureClassification(
+          mergeRunStopMetadataForAgent(agent, outcome, {
+            resultJson: mergeModelProfileRunMetadata(
+              mergeAdapterRecoveryMetadata({
+                resultJson: sanitizedAdapterResultJson,
+                errorFamily: adapterResult.errorFamily ?? null,
+                retryNotBefore: adapterResult.retryNotBefore ?? null,
+              }),
+              modelProfileApplication,
+            ),
+            errorCode: runErrorCode,
+            errorMessage: runErrorMessage,
+          }),
+          failureClassification,
+        ),
         adapterResult.summary ?? null,
       );
 
@@ -8607,14 +8640,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logger.warn({ err: flushErr, runId }, "failed to flush run output progress after error");
       });
 
+      const failureClassification = classifyHeartbeatRunFailure({
+        status: "failed",
+        errorCode: "adapter_failed",
+        errorMessage: message,
+      });
       const failedRun = await setRunStatus(run.id, "failed", {
         error: message,
         errorCode: "adapter_failed",
         finishedAt: new Date(),
-        resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
-          errorCode: "adapter_failed",
-          errorMessage: message,
-        }),
+        resultJson: mergeHeartbeatRunFailureClassification(
+          mergeRunStopMetadataForAgent(agent, "failed", {
+            errorCode: "adapter_failed",
+            errorMessage: message,
+          }),
+          failureClassification,
+        ),
         stdoutExcerpt,
         stderrExcerpt,
         logBytes: logSummary?.bytes,
@@ -8669,16 +8710,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
+          const failureClassification = classifyHeartbeatRunFailure({
+            status: "failed",
+            errorCode: "adapter_failed",
+            errorMessage: message,
+          });
           await setRunStatus(runId, "failed", {
             error: message,
             errorCode: "adapter_failed",
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
-              resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
-                errorCode: "adapter_failed",
-                errorMessage: message,
-              }),
-            } : {}),
+              resultJson: mergeHeartbeatRunFailureClassification(
+                mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
+                  errorCode: "adapter_failed",
+                  errorMessage: message,
+                }),
+                failureClassification,
+              ),
+            } : {
+              resultJson: mergeHeartbeatRunFailureClassification(null, failureClassification),
+            }),
           }).catch(() => undefined);
           await setWakeupStatus(run.wakeupRequestId, "failed", {
             finishedAt: new Date(),

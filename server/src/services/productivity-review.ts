@@ -19,6 +19,10 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
+import {
+  classifyHeartbeatRunFailure,
+  type HeartbeatRunFailureType,
+} from "./heartbeat-failure-classification.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
 export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
@@ -42,6 +46,7 @@ type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type ProductivityReviewTrigger = "no_comment_streak" | "long_active_duration" | "high_churn";
+type FailureBreakdown = Array<{ failureType: HeartbeatRunFailureType; count: number }>;
 
 type ProductivityReviewThresholds = {
   noCommentStreakRuns: number;
@@ -71,6 +76,7 @@ type ProductivityReviewEvidence = {
   commentCountLastSixHours: number;
   elapsedMs: number | null;
   latestRuns: HeartbeatRunRow[];
+  failureBreakdown: FailureBreakdown;
   latestComments: Array<typeof issueComments.$inferSelect>;
   costCents: number;
   usageSamples: Array<{ runId: string; usageJson: Record<string, unknown> | null }>;
@@ -127,6 +133,43 @@ function truncateInline(value: string | null | undefined, max = 260) {
   if (!value) return "";
   const compact = value.replace(/\s+/g, " ").trim();
   return compact.length <= max ? compact : `${compact.slice(0, max - 3)}...`;
+}
+
+function parseObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function failureTypeForRun(run: HeartbeatRunRow): HeartbeatRunFailureType | null {
+  if (run.status !== "failed" && run.status !== "timed_out") return null;
+  return classifyHeartbeatRunFailure({
+    status: run.status,
+    timedOut: run.status === "timed_out",
+    errorCode: run.errorCode,
+    errorMessage: run.error,
+    exitCode: run.exitCode,
+    signal: run.signal,
+    resultJson: parseObject(run.resultJson),
+  })?.failureType ?? "unknown";
+}
+
+function buildFailureBreakdown(runs: HeartbeatRunRow[]): FailureBreakdown {
+  const counts = new Map<HeartbeatRunFailureType, number>();
+  for (const run of runs) {
+    const failureType = failureTypeForRun(run);
+    if (!failureType) continue;
+    counts.set(failureType, (counts.get(failureType) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([failureType, count]) => ({ failureType, count }))
+    .sort((left, right) => right.count - left.count || left.failureType.localeCompare(right.failureType));
+}
+
+function formatFailureBreakdown(breakdown: FailureBreakdown) {
+  return breakdown.length > 0
+    ? breakdown.map(({ failureType, count }) => `${failureType}=${count}`).join(", ")
+    : "none";
 }
 
 function readPositiveInteger(value: number, fallback: number) {
@@ -510,6 +553,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       commentCountLastSixHours: assigneeRunCommentCountLastSixHours,
       elapsedMs,
       latestRuns: latestRuns.slice(0, 5),
+      failureBreakdown: buildFailureBreakdown(terminalRuns),
       latestComments,
       costCents: costRow.costCents,
       usageSamples: latestRuns
@@ -559,7 +603,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   function buildReviewMarkdown(evidence: ProductivityReviewEvidence, prefix: string) {
     const latestRuns = evidence.latestRuns.length > 0
       ? evidence.latestRuns.map((run) =>
-        `- ${runUiLink(run, prefix)} \`${run.status}\` liveness \`${run.livenessState ?? "unknown"}\`, created ${run.createdAt.toISOString()}${run.nextAction ? `, next action: ${truncateInline(run.nextAction, 160)}` : ""}`,
+        `- ${runUiLink(run, prefix)} \`${run.status}\`${failureTypeForRun(run) ? ` failure \`${failureTypeForRun(run)}\`` : ""} liveness \`${run.livenessState ?? "unknown"}\`, created ${run.createdAt.toISOString()}${run.nextAction ? `, next action: ${truncateInline(run.nextAction, 160)}` : ""}`,
       ).join("\n")
       : "- none";
     const latestComments = evidence.latestComments.length > 0
@@ -586,6 +630,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       `- Total sampled issue-linked runs: ${evidence.totalRunCount}`,
       `- Terminal sampled runs: ${evidence.terminalRunCount}`,
       `- Active queued/running/scheduled runs: ${evidence.activeRunCount}`,
+      `- Failure types: ${formatFailureBreakdown(evidence.failureBreakdown)}`,
       `- No-comment completed-run streak: ${evidence.noCommentStreak}`,
       `- Current active elapsed time: ${msToHuman(evidence.elapsedMs)}`,
       `- Runs in rolling windows: ${evidence.runCountLastHour}/1h, ${evidence.runCountLastSixHours}/6h`,
@@ -628,6 +673,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       `- Trigger: \`${evidence.trigger}\` (${formatTrigger(evidence.trigger)})`,
       `- Reasons: ${evidence.triggerReasons.join("; ")}`,
       `- No-comment streak: ${evidence.noCommentStreak}`,
+      `- Failure types: ${formatFailureBreakdown(evidence.failureBreakdown)}`,
       `- Runs/assignee comments: ${evidence.runCountLastHour}/${evidence.commentCountLastHour} in 1h, ${evidence.runCountLastSixHours}/${evidence.commentCountLastSixHours} in 6h`,
       `- Next action: ${evidence.nextAction ? truncateInline(evidence.nextAction, 300) : "none recorded"}`,
     ].join("\n");
