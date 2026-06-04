@@ -282,6 +282,7 @@ export {
 export {
   createIssueWorkProductSchema,
   updateIssueWorkProductSchema,
+  attachmentArtifactWorkProductMetadataSchema,
   issueWorkProductTypeSchema,
   issueWorkProductStatusSchema,
   issueWorkProductReviewStateSchema,
@@ -402,6 +403,7 @@ export {
   boardCliAuthAccessLevelSchema,
   createCliAuthChallengeSchema,
   resolveCliAuthChallengeSchema,
+  createBoardApiKeySchema,
   currentUserProfileSchema,
   authSessionSchema,
   updateCurrentUserProfileSchema,
@@ -420,6 +422,7 @@ export {
   type BoardCliAuthAccessLevel,
   type CreateCliAuthChallenge,
   type ResolveCliAuthChallenge,
+  type CreateBoardApiKey,
   type CurrentUserProfile,
   type AuthSession,
   type UpdateCurrentUserProfile,

@@ -16,6 +16,7 @@ import {
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
+  attachmentArtifactWorkProductMetadataSchema,
   cancelIssueThreadInteractionSchema,
   companySearchQuerySchema,
   createIssueAttachmentMetadataSchema,
@@ -91,6 +92,7 @@ import {
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
   isInlineAttachmentContentType,
+  isAllowedContentType,
   normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
   SVG_CONTENT_TYPE,
@@ -178,6 +180,50 @@ function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => 
   }
   next();
 }
+
+function buildAttachmentContentPath(attachmentId: string): string {
+  return `/api/attachments/${attachmentId}/content`;
+}
+
+const GENERIC_ATTACHMENT_CONTENT_TYPES = new Set([
+  "application/octet-stream",
+  "binary/octet-stream",
+  "application/x-binary",
+]);
+
+function inferVideoContentTypeFromFilename(filename: string | null | undefined): string | null {
+  const lower = (filename ?? "").toLowerCase();
+  if (lower.endsWith(".mp4") || lower.endsWith(".m4v")) return "video/mp4";
+  if (lower.endsWith(".webm")) return "video/webm";
+  if (lower.endsWith(".mov") || lower.endsWith(".qt") || lower.endsWith(".quicktime")) return "video/quicktime";
+  return null;
+}
+
+function resolveAttachmentResponseContentType(input: {
+  storedContentType: string | null | undefined;
+  objectContentType?: string | null;
+  originalFilename?: string | null;
+}) {
+  const storedContentType = normalizeContentType(input.storedContentType || input.objectContentType);
+  if (!GENERIC_ATTACHMENT_CONTENT_TYPES.has(storedContentType)) return storedContentType;
+  return inferVideoContentTypeFromFilename(input.originalFilename) ?? storedContentType;
+}
+
+function requiresPaperclipAttachmentMetadata(input: {
+  type?: unknown;
+  provider?: unknown;
+}, fallback?: {
+  type?: string | null;
+  provider?: string | null;
+}) {
+  const type = typeof input.type === "string" ? input.type : fallback?.type ?? null;
+  const provider = typeof input.provider === "string" ? input.provider : fallback?.provider ?? null;
+  return type === "artifact" && provider === "paperclip";
+}
+
+const attachmentArtifactMetadataInputSchema = z.object({
+  attachmentId: z.string().uuid(),
+}).passthrough();
 
 function buildCreateIssueActivityStatusDetails(
   issue: { assigneeAgentId: string | null; status: string },
@@ -1103,10 +1149,44 @@ export function issueRoutes(
   }
 
   function withContentPath<T extends { id: string }>(attachment: T) {
+    const contentPath = `/api/attachments/${attachment.id}/content`;
     return {
       ...attachment,
-      contentPath: `/api/attachments/${attachment.id}/content`,
+      contentPath,
+      openPath: contentPath,
+      downloadPath: `${contentPath}?download=1`,
     };
+  }
+
+  type ParsedAttachmentRange =
+    | { kind: "none" }
+    | { kind: "invalid" }
+    | { kind: "range"; start: number; end: number };
+
+  function parseAttachmentRangeHeader(raw: string | undefined, contentLength: number): ParsedAttachmentRange {
+    if (!raw) return { kind: "none" };
+    if (!Number.isSafeInteger(contentLength) || contentLength <= 0) return { kind: "invalid" };
+
+    const prefix = "bytes=";
+    if (!raw.toLowerCase().startsWith(prefix)) return { kind: "invalid" };
+    const spec = raw.slice(prefix.length).trim();
+    if (!spec || spec.includes(",")) return { kind: "invalid" };
+
+    const [startRaw, endRaw] = spec.split("-", 2);
+    if (endRaw === undefined) return { kind: "invalid" };
+
+    if (startRaw === "") {
+      const suffixLength = Number.parseInt(endRaw, 10);
+      if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return { kind: "invalid" };
+      const start = Math.max(contentLength - suffixLength, 0);
+      return { kind: "range", start, end: contentLength - 1 };
+    }
+
+    const start = Number.parseInt(startRaw, 10);
+    if (!Number.isSafeInteger(start) || start < 0 || start >= contentLength) return { kind: "invalid" };
+    const end = endRaw === "" ? contentLength - 1 : Number.parseInt(endRaw, 10);
+    if (!Number.isSafeInteger(end) || end < start) return { kind: "invalid" };
+    return { kind: "range", start, end: Math.min(end, contentLength - 1) };
   }
 
   function parseBooleanQuery(value: unknown) {
@@ -1174,6 +1254,38 @@ export function issueRoutes(
       annotationThreadId: input.threadId,
       annotationCommentId: input.commentId,
     }, "failed to wake assignee on document annotation comment"));
+  }
+
+  async function canonicalizePaperclipArtifactMetadata(input: {
+    issue: { id: string; companyId: string };
+    metadata: Record<string, unknown> | null | undefined;
+  }) {
+    const parsed = attachmentArtifactMetadataInputSchema.safeParse(input.metadata);
+    if (!parsed.success) {
+      throw unprocessable("Invalid attachment artifact metadata", {
+        code: "invalid_attachment_artifact_metadata",
+        details: parsed.error.issues,
+      });
+    }
+
+    const attachment = await svc.getAttachmentById(parsed.data.attachmentId);
+    if (!attachment || attachment.companyId !== input.issue.companyId || attachment.issueId !== input.issue.id) {
+      throw unprocessable("Attachment artifact must reference an attachment on the same issue", {
+        code: "invalid_attachment_artifact_metadata",
+        attachmentId: parsed.data.attachmentId,
+      });
+    }
+
+    const contentPath = buildAttachmentContentPath(attachment.id);
+    return attachmentArtifactWorkProductMetadataSchema.parse({
+      attachmentId: attachment.id,
+      contentType: normalizeContentType(attachment.contentType),
+      byteSize: attachment.byteSize,
+      contentPath,
+      openPath: contentPath,
+      downloadPath: `${contentPath}?download=1`,
+      originalFilename: attachment.originalFilename ?? null,
+    });
   }
 
   async function assertIssueEnvironmentSelection(
@@ -3188,10 +3300,17 @@ export function issueRoutes(
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
-    const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, {
+    const createInput = {
       ...req.body,
       projectId: req.body.projectId ?? issue.projectId ?? null,
-    });
+    };
+    if (requiresPaperclipAttachmentMetadata(createInput)) {
+      createInput.metadata = await canonicalizePaperclipArtifactMetadata({
+        issue,
+        metadata: req.body.metadata ?? null,
+      });
+    }
+    const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, createInput);
     if (!product) {
       res.status(422).json({ error: "Invalid work product payload" });
       return;
@@ -3232,7 +3351,19 @@ export function issueRoutes(
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
-    const product = await workProductsSvc.update(id, req.body);
+    const patch = { ...req.body };
+    if (requiresPaperclipAttachmentMetadata(patch, existing)) {
+      if (patch.metadata !== undefined) {
+        patch.metadata = await canonicalizePaperclipArtifactMetadata({
+          issue,
+          metadata: patch.metadata ?? null,
+        });
+      } else if (!requiresPaperclipAttachmentMetadata(existing)) {
+        res.status(422).json({ error: "Attachment-backed artifact metadata is required" });
+        return;
+      }
+    }
+    const product = await workProductsSvc.update(id, patch);
     if (!product) {
       res.status(404).json({ error: "Work product not found" });
       return;
@@ -6081,6 +6212,10 @@ export function issueRoutes(
       res.status(422).json({ error: "Attachment is empty" });
       return;
     }
+    if (!isAllowedContentType(contentType)) {
+      res.status(422).json({ error: `Unsupported attachment content type: ${contentType}` });
+      return;
+    }
 
     const parsedMeta = createIssueAttachmentMetadataSchema.safeParse(req.body ?? {});
     if (!parsedMeta.success) {
@@ -6139,22 +6274,53 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, attachment.companyId);
 
-    const object = await storage.getObject(attachment.companyId, attachment.objectKey);
-    const responseContentType = normalizeContentType(attachment.contentType || object.contentType);
+    const contentLength = attachment.byteSize;
+    const range = parseAttachmentRangeHeader(
+      typeof req.headers.range === "string" ? req.headers.range : undefined,
+      contentLength,
+    );
+    res.setHeader("Accept-Ranges", "bytes");
+    if (range.kind === "invalid") {
+      res.setHeader("Content-Range", `bytes */${contentLength}`);
+      res.status(416).end();
+      return;
+    }
+
+    const object = await storage.getObject(
+      attachment.companyId,
+      attachment.objectKey,
+      range.kind === "range" ? { range: { start: range.start, end: range.end } } : undefined,
+    );
+    const responseContentType = resolveAttachmentResponseContentType({
+      storedContentType: attachment.contentType,
+      objectContentType: object.contentType,
+      originalFilename: attachment.originalFilename,
+    });
     res.setHeader("Content-Type", responseContentType);
-    res.setHeader("Content-Length", String(attachment.byteSize || object.contentLength || 0));
     res.setHeader("Cache-Control", "private, max-age=60");
     res.setHeader("X-Content-Type-Options", "nosniff");
     if (responseContentType === SVG_CONTENT_TYPE) {
       res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
     }
     const filename = attachment.originalFilename ?? "attachment";
-    const disposition = isInlineAttachmentContentType(responseContentType) ? "inline" : "attachment";
+    const disposition = parseBooleanQuery(req.query.download)
+      ? "attachment"
+      : isInlineAttachmentContentType(responseContentType) ? "inline" : "attachment";
     res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
 
     object.stream.on("error", (err) => {
       next(err);
     });
+    if (range.kind === "range") {
+      const rangeLength = range.end - range.start + 1;
+      res.status(206);
+      res.setHeader("Content-Length", String(rangeLength));
+      res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${contentLength}`);
+      object.stream.pipe(res);
+      return;
+    }
+
+    res.setHeader("Content-Length", String(contentLength || object.contentLength || 0));
     object.stream.pipe(res);
   });
 
