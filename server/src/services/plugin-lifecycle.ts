@@ -267,6 +267,8 @@ export interface PluginLifecycleManager {
 export interface PluginLifecycleManagerOptions {
   /** Plugin loader instance. Falls back to the default if omitted. */
   loader?: PluginLoader;
+  /** Resolve the loader lazily for bootstrap paths with circular wiring. */
+  resolveLoader?: () => PluginLoader | undefined;
 
   /**
    * Worker process manager. When provided, lifecycle transitions that bring
@@ -308,6 +310,7 @@ export function pluginLifecycleManager(
   // Support the legacy signature: pluginLifecycleManager(db, loader)
   // as well as the new options object form.
   let loaderArg: PluginLoader | undefined;
+  let resolveLoader: (() => PluginLoader | undefined) | undefined;
   let workerManager: PluginWorkerManager | undefined;
 
   if (options && typeof options === "object" && "discoverAll" in options) {
@@ -316,11 +319,12 @@ export function pluginLifecycleManager(
   } else if (options && typeof options === "object") {
     const opts = options as PluginLifecycleManagerOptions;
     loaderArg = opts.loader;
+    resolveLoader = opts.resolveLoader;
     workerManager = opts.workerManager;
   }
 
   const registry = pluginRegistryService(db);
-  const pluginLoaderInstance = loaderArg ?? pluginLoader(db);
+  const fallbackLoader = loaderArg ?? pluginLoader(db);
   const emitter = new EventEmitter();
   emitter.setMaxListeners(100); // plugins may have many listeners; 100 is a safe upper bound
 
@@ -386,6 +390,10 @@ export function pluginLifecycleManager(
     emitter.emit(event, payload);
   }
 
+  function currentLoader(): PluginLoader {
+    return resolveLoader?.() ?? loaderArg ?? fallbackLoader;
+  }
+
   // -----------------------------------------------------------------------
   // Worker management helpers
   // -----------------------------------------------------------------------
@@ -415,14 +423,15 @@ export function pluginLifecycleManager(
   }
 
   async function activateReadyPlugin(pluginId: string): Promise<void> {
+    const loader = currentLoader();
     const supportsRuntimeActivation =
-      typeof pluginLoaderInstance.hasRuntimeServices === "function"
-      && typeof pluginLoaderInstance.loadSingle === "function";
-    if (!supportsRuntimeActivation || !pluginLoaderInstance.hasRuntimeServices()) {
+      typeof loader.hasRuntimeServices === "function"
+      && typeof loader.loadSingle === "function";
+    if (!supportsRuntimeActivation || !loader.hasRuntimeServices()) {
       return;
     }
 
-    const loadResult = await pluginLoaderInstance.loadSingle(pluginId);
+    const loadResult = await loader.loadSingle(pluginId);
     if (!loadResult.success) {
       throw new Error(
         loadResult.error
@@ -435,12 +444,13 @@ export function pluginLifecycleManager(
     pluginId: string,
     pluginKey: string,
   ): Promise<void> {
+    const loader = currentLoader();
     const supportsRuntimeDeactivation =
-      typeof pluginLoaderInstance.hasRuntimeServices === "function"
-      && typeof pluginLoaderInstance.unloadSingle === "function";
+      typeof loader.hasRuntimeServices === "function"
+      && typeof loader.unloadSingle === "function";
 
-    if (supportsRuntimeDeactivation && pluginLoaderInstance.hasRuntimeServices()) {
-      await pluginLoaderInstance.unloadSingle(pluginId, pluginKey);
+    if (supportsRuntimeDeactivation && loader.hasRuntimeServices()) {
+      await loader.unloadSingle(pluginId, pluginKey);
       return;
     }
 
@@ -541,7 +551,7 @@ export function pluginLifecycleManager(
       // If already uninstalled and removeData, hard-delete
       if (plugin.status === "uninstalled") {
         if (removeData) {
-          await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
+          await currentLoader().cleanupInstallArtifacts(plugin);
           const deleted = await registry.uninstall(pluginId, true);
           log.info(
             { pluginId, pluginKey: plugin.pluginKey },
@@ -561,7 +571,7 @@ export function pluginLifecycleManager(
       }
 
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
-      await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
+      await currentLoader().cleanupInstallArtifacts(plugin);
 
       // Perform the uninstall via registry (handles soft/hard delete)
       const result = await registry.uninstall(pluginId, removeData);
@@ -656,7 +666,7 @@ export function pluginLifecycleManager(
 
       // 1. Download and validate new package via loader
       const { oldManifest, newManifest, discovered } =
-        await pluginLoaderInstance.upgradePlugin(pluginId, { version });
+        await currentLoader().upgradePlugin(pluginId, { version });
 
       log.info(
         {
@@ -777,10 +787,10 @@ export function pluginLifecycleManager(
       }
 
       const supportsRuntimeActivation =
-        typeof pluginLoaderInstance.hasRuntimeServices === "function"
-        && typeof pluginLoaderInstance.loadSingle === "function"
-        && typeof pluginLoaderInstance.unloadSingle === "function"
-        && pluginLoaderInstance.hasRuntimeServices();
+        typeof currentLoader().hasRuntimeServices === "function"
+        && typeof currentLoader().loadSingle === "function"
+        && typeof currentLoader().unloadSingle === "function"
+        && currentLoader().hasRuntimeServices();
 
       if (supportsRuntimeActivation) {
         log.info(
