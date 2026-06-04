@@ -42,6 +42,7 @@ import {
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   buildSuccessfulRunHandoffExhaustedNotice,
+  hasEventDrivenHubIdlePath,
   noticeMetadataReferencesRecoveryAction,
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
@@ -178,6 +179,8 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+const SOURCE_SCOPED_RECOVERY_MIN_REFIRE_INTERVAL_MS = 60_000;
+const MISSING_DISPOSITION_RECOVERY_MAX_ATTEMPTS = CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS;
 
 type ContinuationRetryClassification = {
   kind: "transient_infra" | "non_retryable" | "default";
@@ -2115,17 +2118,88 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           type: "wake_owner",
           reason: "source_scoped_recovery_action",
           ownerAgentId,
+          minRefireIntervalMs: SOURCE_SCOPED_RECOVERY_MIN_REFIRE_INTERVAL_MS,
         }
         : {
           type: "board_escalation",
           reason: "no_invokable_recovery_owner",
         },
       monitorPolicy: null,
-      maxAttempts: null,
+      maxAttempts: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+        ? MISSING_DISPOSITION_RECOVERY_MAX_ATTEMPTS
+        : CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS,
       lastAttemptAt: now,
     });
 
     return action;
+  }
+
+  async function foldActiveRecoveryAction(input: {
+    companyId: string;
+    sourceIssueId: string;
+    actionId: string;
+    outcome: "false_positive" | "restored" | "cancelled";
+    resolutionNote: string;
+  }) {
+    return recoveryActionsSvc.resolveActiveForIssue({
+      companyId: input.companyId,
+      sourceIssueId: input.sourceIssueId,
+      actionId: input.actionId,
+      status: "resolved",
+      outcome: input.outcome,
+      resolutionNote: input.resolutionNote,
+    });
+  }
+
+  async function shouldFoldOrDelayMissingDispositionRecovery(input: {
+    issue: typeof issues.$inferSelect;
+    action: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>> | null;
+  }) {
+    const action = input.action;
+    if (!action || action.kind !== "missing_disposition") return false;
+
+    if (input.issue.status !== "in_progress") {
+      await foldActiveRecoveryAction({
+        companyId: input.issue.companyId,
+        sourceIssueId: input.issue.id,
+        actionId: action.id,
+        outcome: "restored",
+        resolutionNote: `Missing-disposition recovery folded because the source issue is now ${input.issue.status}.`,
+      });
+      return true;
+    }
+
+    if (hasEventDrivenHubIdlePath(input.issue)) {
+      await foldActiveRecoveryAction({
+        companyId: input.issue.companyId,
+        sourceIssueId: input.issue.id,
+        actionId: action.id,
+        outcome: "false_positive",
+        resolutionNote: "Missing-disposition recovery folded because the source issue exposes an event-driven hub idle path.",
+      });
+      return true;
+    }
+
+    if (action.maxAttempts !== null && action.attemptCount >= action.maxAttempts) {
+      await foldActiveRecoveryAction({
+        companyId: input.issue.companyId,
+        sourceIssueId: input.issue.id,
+        actionId: action.id,
+        outcome: "false_positive",
+        resolutionNote: "Missing-disposition recovery reached its finite attempt bound; the status-only recovery wake cannot produce the demanded disposition.",
+      });
+      return true;
+    }
+
+    const lastAttemptAtMs = action.lastAttemptAt ? new Date(action.lastAttemptAt).getTime() : Number.NaN;
+    if (
+      Number.isFinite(lastAttemptAtMs) &&
+      Date.now() - lastAttemptAtMs < SOURCE_SCOPED_RECOVERY_MIN_REFIRE_INTERVAL_MS
+    ) {
+      return true;
+    }
+
+    return false;
   }
 
   async function enqueueSourceScopedStrandedRecoveryWake(input: {
@@ -2574,6 +2648,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const handoffEvidence = isExhaustedSuccessfulRunHandoff(latestRun);
       if (handoffEvidence) {
         if (!handoffEvidence.exhausted) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+        if (await shouldFoldOrDelayMissingDispositionRecovery({ issue, action: activeRecoveryAction })) {
           result.skipped += 1;
           continue;
         }

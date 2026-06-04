@@ -130,6 +130,33 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("does not queue when an in-progress hub exposes an event-driven idle path", () => {
+    expect(decide({
+      issue: {
+        ...issue,
+        executionPolicy: {
+          eventDrivenHubIdle: true,
+          reason: "standing hub waits for external events",
+        },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "issue has event-driven hub idle path",
+    });
+  });
+
+  it("does not queue when an in-progress issue has a future monitor wake", () => {
+    expect(decide({
+      issue: {
+        ...issue,
+        monitorNextCheckAt: new Date(Date.now() + 60_000),
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "issue has a future monitor wake",
+    });
+  });
+
   it("does not queue when a successful run has no progress signal", () => {
     expect(decide({ livenessState: null, detectedProgressSummary: null })).toEqual({
       kind: "skip",

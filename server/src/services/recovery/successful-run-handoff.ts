@@ -45,7 +45,16 @@ export function isIdempotentFinishSuccessfulRunHandoffWakeStatus(status: string)
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = Pick<
   typeof issues.$inferSelect,
-  "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId" | "executionState"
+  | "id"
+  | "companyId"
+  | "identifier"
+  | "title"
+  | "status"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "executionPolicy"
+  | "executionState"
+  | "monitorNextCheckAt"
 >;
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
@@ -91,6 +100,23 @@ function metadataText(value: unknown, fallback = "unknown") {
   const text = typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
   const resolved = text.length > 0 ? text : fallback;
   return resolved.length > 2000 ? `${resolved.slice(0, 1997)}...` : resolved;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function hasEventDrivenParkMarker(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.eventDrivenHubIdle === true || value.eventDrivenPark === true) return true;
+  if (value.kind === "event_driven_hub_idle" || value.kind === "event_driven_park") return true;
+  if (value.type === "event_driven_hub_idle" || value.type === "event_driven_park") return true;
+  return hasEventDrivenParkMarker(value.idlePath) || hasEventDrivenParkMarker(value.waitingPath);
+}
+
+export function hasEventDrivenHubIdlePath(issue: IssueRow | null | undefined) {
+  if (!issue || issue.status !== "in_progress") return false;
+  return hasEventDrivenParkMarker(issue.executionState) || hasEventDrivenParkMarker(issue.executionPolicy);
 }
 
 function keyValueRow(label: string, value: unknown): IssueCommentMetadata["sections"][number]["rows"][number] {
@@ -364,6 +390,10 @@ export function decideSuccessfulRunHandoff(input: {
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
   if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
+  if (hasEventDrivenHubIdlePath(issue)) return { kind: "skip", reason: "issue has event-driven hub idle path" };
+  if (issue.monitorNextCheckAt && issue.monitorNextCheckAt > new Date()) {
+    return { kind: "skip", reason: "issue has a future monitor wake" };
+  }
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
     return { kind: "skip", reason: `agent status ${agent.status} is not invokable` };
   }
