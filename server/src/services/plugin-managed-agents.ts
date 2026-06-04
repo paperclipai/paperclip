@@ -343,6 +343,7 @@ export function pluginManagedAgentService(
     );
     const updated = await agentSvc.update(agent.id, {
       adapterConfig: materialized.adapterConfig,
+      instructionsBundleContent: { entryFile: declared.entryFile, files: declared.files },
     }, {
       recordRevision: {
         source: `plugin:${optionsForRevisionSource()}:managed-agent-instructions`,

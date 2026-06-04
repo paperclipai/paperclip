@@ -26,6 +26,14 @@ export const agents = pgTable(
     adapterType: text("adapter_type").notNull().default("process"),
     adapterConfig: jsonb("adapter_config").$type<Record<string, unknown>>().notNull().default({}),
     runtimeConfig: jsonb("runtime_config").$type<Record<string, unknown>>().notNull().default({}),
+    // Durable, host-portable copy of a managed instructions bundle. The on-disk
+    // managed root (adapterConfig.instructionsRootPath) is host-specific and
+    // absent on other hosts (e.g. Cloud Run vs a dev Mac); this column is the
+    // source of truth, materialized to the local managed root before a run.
+    instructionsBundleContent: jsonb("instructions_bundle_content").$type<{
+      entryFile: string;
+      files: Record<string, string>;
+    }>(),
     defaultEnvironmentId: uuid("default_environment_id").references(() => environments.id, { onDelete: "set null" }),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),

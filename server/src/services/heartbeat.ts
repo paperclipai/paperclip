@@ -100,6 +100,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { agentInstructionsService } from "./agent-instructions.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -7412,6 +7413,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
+    // Managed instruction bundles live on disk under a host-specific root; the
+    // path stored in adapterConfig is meaningless on a different host (e.g. a
+    // fresh Cloud Run container). Materialize the durable DB copy to this host's
+    // managed root and point instructionsFilePath at it before executing.
+    const runtimeInstructionsConfig = await agentInstructionsService().resolveRuntimeAdapterConfig(agent);
+    if (runtimeInstructionsConfig) {
+      runtimeConfig = { ...runtimeConfig, ...runtimeInstructionsConfig };
+    }
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
       heartbeatRunId: run.id,

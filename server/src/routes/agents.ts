@@ -1097,18 +1097,22 @@ export function agentRoutes(
       return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
     }
 
+    const entryFile = input?.entryFile ?? "AGENTS.md";
     const files = input?.files
       ?? await loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(agent.role));
     const materialized = await instructions.materializeManagedBundle(
       agent,
       files,
-      { entryFile: input?.entryFile ?? "AGENTS.md", replaceExisting: false },
+      { entryFile, replaceExisting: false },
     );
     const nextAdapterConfig = { ...materialized.adapterConfig };
     delete nextAdapterConfig.promptTemplate;
     delete nextAdapterConfig.bootstrapPromptTemplate;
 
-    const updated = await svc.update(agent.id, { adapterConfig: nextAdapterConfig });
+    const updated = await svc.update(agent.id, {
+      adapterConfig: nextAdapterConfig,
+      instructionsBundleContent: { entryFile, files },
+    });
     return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
   }
 
@@ -2409,9 +2413,13 @@ export function agentRoutes(
       adapterConfig,
       { strictMode: strictSecretsMode },
     );
+    const exported = await instructions.exportFiles({ ...existing, adapterConfig });
     await svc.update(
       id,
-      { adapterConfig: normalizedAdapterConfig },
+      {
+        adapterConfig: normalizedAdapterConfig,
+        instructionsBundleContent: { entryFile: exported.entryFile, files: exported.files },
+      },
       {
         recordRevision: {
           createdByAgentId: actor.agentId,
@@ -2477,9 +2485,15 @@ export function agentRoutes(
       result.adapterConfig,
       { strictMode: strictSecretsMode },
     );
+    // Snapshot the on-disk bundle into the durable DB column so it survives to
+    // other hosts (e.g. Cloud Run) where the absolute managed path does not exist.
+    const exported = await instructions.exportFiles({ ...existing, adapterConfig: result.adapterConfig });
     await svc.update(
       id,
-      { adapterConfig: normalizedAdapterConfig },
+      {
+        adapterConfig: normalizedAdapterConfig,
+        instructionsBundleContent: { entryFile: exported.entryFile, files: exported.files },
+      },
       {
         recordRevision: {
           createdByAgentId: actor.agentId,
@@ -2525,6 +2539,10 @@ export function agentRoutes(
 
     const actor = getActorInfo(req);
     const result = await instructions.deleteFile(existing, relativePath);
+    const exported = await instructions.exportFiles({ ...existing, adapterConfig: result.adapterConfig });
+    await svc.update(id, {
+      instructionsBundleContent: { entryFile: exported.entryFile, files: exported.files },
+    });
     await logActivity(db, {
       companyId: existing.companyId,
       actorType: actor.actorType,

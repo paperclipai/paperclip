@@ -220,6 +220,11 @@ describe("agent instructions bundle routes", () => {
       virtual: false,
       content: "# Agent\n",
     });
+    mockAgentInstructionsService.exportFiles.mockResolvedValue({
+      entryFile: "AGENTS.md",
+      files: { "AGENTS.md": "# Agent\n" },
+      warnings: [],
+    });
     mockAgentInstructionsService.writeFile.mockResolvedValue({
       bundle: null,
       file: {

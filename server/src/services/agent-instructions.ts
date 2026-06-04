@@ -27,12 +27,34 @@ const IGNORED_INSTRUCTIONS_DIRECTORY_NAMES = new Set([
 
 type BundleMode = "managed" | "external";
 
+type InstructionsBundleContent = {
+  entryFile: string;
+  files: Record<string, string>;
+};
+
 type AgentLike = {
   id: string;
   companyId: string;
   name: string;
   adapterConfig: unknown;
+  /**
+   * Durable, host-portable copy of a managed bundle (DB column). When the local
+   * managed root is missing/empty (e.g. a fresh Cloud Run container, or an agent
+   * created on another host), this is materialized to disk before use.
+   */
+  instructionsBundleContent?: InstructionsBundleContent | null;
 };
+
+function readBundleContent(agent: AgentLike): InstructionsBundleContent | null {
+  const content = agent.instructionsBundleContent;
+  if (!content || typeof content !== "object") return null;
+  const files = content.files;
+  if (!files || typeof files !== "object" || Object.keys(files).length === 0) return null;
+  const entryFile = typeof content.entryFile === "string" && content.entryFile
+    ? content.entryFile
+    : ENTRY_FILE_DEFAULT;
+  return { entryFile, files };
+}
 
 type AgentInstructionsFileSummary = {
   path: string;
@@ -452,7 +474,52 @@ export function syncInstructionsBundleConfigFromFilePath(
 }
 
 export function agentInstructionsService() {
+  /**
+   * If the agent carries durable bundle content (DB column) but the local
+   * managed root is missing/empty, materialize the content to the portable
+   * managed root on THIS host. No-op when disk already has files (the local
+   * copy is authoritative for edits). Returns true when it wrote files.
+   */
+  async function materializeFromContentIfMissing(agent: AgentLike): Promise<boolean> {
+    const content = readBundleContent(agent);
+    if (!content) return false;
+    const managedRootPath = resolveManagedInstructionsRoot(agent);
+    const stat = await statIfExists(managedRootPath);
+    if (stat?.isDirectory()) {
+      const files = await listFilesRecursive(managedRootPath);
+      if (files.length > 0) return false;
+    }
+    await materializeManagedBundle(agent, content.files, {
+      entryFile: content.entryFile,
+      replaceExisting: true,
+    });
+    return true;
+  }
+
+  /**
+   * Resolve the adapterConfig an agent should RUN with: ensures managed
+   * instructions exist on the local disk (materializing from the durable DB
+   * copy when needed) and rewrites instructionsFilePath/Root to host-valid
+   * managed paths. Returns null when there is nothing to override.
+   */
+  async function resolveRuntimeAdapterConfig(
+    agent: AgentLike,
+  ): Promise<Record<string, unknown> | null> {
+    const wrote = await materializeFromContentIfMissing(agent);
+    const config = asRecord(agent.adapterConfig);
+    const mode = config[MODE_KEY];
+    if (!wrote && mode !== "managed") return null;
+    const managedRootPath = resolveManagedInstructionsRoot(agent);
+    const stat = await statIfExists(managedRootPath);
+    if (!stat?.isDirectory()) return null;
+    const content = readBundleContent(agent);
+    const entryFile = content?.entryFile
+      ?? (asString(config[ENTRY_KEY]) ? normalizeRelativeFilePath(asString(config[ENTRY_KEY])!) : ENTRY_FILE_DEFAULT);
+    return applyBundleConfig(config, { mode: "managed", rootPath: managedRootPath, entryFile });
+  }
+
   async function getBundle(agent: AgentLike): Promise<AgentInstructionsBundle> {
+    await materializeFromContentIfMissing(agent);
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
     if (!state.rootPath) return toBundle(agent, state, []);
     const stat = await statIfExists(state.rootPath);
@@ -468,6 +535,7 @@ export function agentInstructionsService() {
   }
 
   async function readFile(agent: AgentLike, relativePath: string): Promise<AgentInstructionsFileDetail> {
+    await materializeFromContentIfMissing(agent);
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
     if (relativePath === LEGACY_PROMPT_TEMPLATE_PATH) {
       const content = asString(state.config[PROMPT_KEY]);
@@ -731,5 +799,7 @@ export function agentInstructionsService() {
     exportFiles,
     ensureManagedBundle: ensureWritableBundle,
     materializeManagedBundle,
+    materializeFromContentIfMissing,
+    resolveRuntimeAdapterConfig,
   };
 }

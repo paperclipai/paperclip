@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ADD COLUMN "instructions_bundle_content" jsonb;
