@@ -31,6 +31,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import {
+  SCANNER_FINDING_ORIGIN_KIND,
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
   ISSUE_LIST_MAX_LIMIT,
@@ -894,6 +895,95 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(advancedIssueIds).toContain(operationIssueId);
     expect(advancedIssueIds).toContain(typedOperationIssueId);
     expect(advancedIssueIds).toContain(legacyContentMachineOperationIssueId);
+  });
+
+  it("reuses active scanner findings and creates new findings for done or changed source state", async () => {
+    const companyId = randomUUID();
+    const sourceIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Source issue",
+      status: "in_review",
+      priority: "high",
+    });
+
+    const first = await svc.ensureScannerFindingIssue(sourceIssueId, {
+      findingType: "stuck_ticket",
+      relatedId: "routing",
+      sourceStateFingerprint: "state-a",
+      title: "Stuck Ticket Scanner: Source issue",
+      description: "Initial scanner finding.",
+      status: "todo",
+      priority: "high",
+    });
+
+    expect(first.reused).toBe(false);
+    expect(first.issue).toMatchObject({
+      parentId: sourceIssueId,
+      originKind: SCANNER_FINDING_ORIGIN_KIND,
+      status: "todo",
+      priority: "high",
+    });
+
+    const reused = await svc.ensureScannerFindingIssue(sourceIssueId, {
+      findingType: "stuck_ticket",
+      relatedId: "routing",
+      sourceStateFingerprint: "state-a",
+      title: "Stuck Ticket Scanner: Source issue updated",
+      description: "Updated scanner evidence.",
+      status: "todo",
+      priority: "critical",
+    });
+
+    expect(reused.reused).toBe(true);
+    expect(reused.issue.id).toBe(first.issue.id);
+    expect(reused.issue.title).toBe("Stuck Ticket Scanner: Source issue updated");
+    expect(reused.issue.description).toBe("Updated scanner evidence.");
+    expect(reused.issue.priority).toBe("critical");
+
+    const changedState = await svc.ensureScannerFindingIssue(sourceIssueId, {
+      findingType: "stuck_ticket",
+      relatedId: "routing",
+      sourceStateFingerprint: "state-b",
+      title: "Stuck Ticket Scanner: Source issue state changed",
+      status: "todo",
+      priority: "high",
+    });
+
+    expect(changedState.reused).toBe(false);
+    expect(changedState.issue.id).not.toBe(first.issue.id);
+    expect(changedState.issue.originId).toBe(first.issue.originId);
+    expect(changedState.issue.originFingerprint).not.toBe(first.issue.originFingerprint);
+
+    await svc.update(first.issue.id, { status: "done" });
+
+    const afterDone = await svc.ensureScannerFindingIssue(sourceIssueId, {
+      findingType: "stuck_ticket",
+      relatedId: "routing",
+      sourceStateFingerprint: "state-a",
+      title: "Stuck Ticket Scanner: Source issue reopened",
+      status: "todo",
+      priority: "high",
+    });
+
+    expect(afterDone.reused).toBe(false);
+    expect(afterDone.issue.id).not.toBe(first.issue.id);
+    expect(afterDone.issue.originId).toBe(first.issue.originId);
+    expect(afterDone.issue.originFingerprint).toBe(first.issue.originFingerprint);
+
+    const scannerFindings = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.originKind, SCANNER_FINDING_ORIGIN_KIND));
+    expect(scannerFindings).toHaveLength(3);
   });
 
   it("excludes plugin operation issues from unread inbox counts", async () => {

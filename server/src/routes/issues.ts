@@ -28,6 +28,7 @@ import {
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   createChildIssueSchema,
+  createScannerFindingIssueSchema,
   createIssueSchema,
   resolveCreateIssueStatusDefault,
   resolveIssueRecoveryActionSchema,
@@ -3922,6 +3923,103 @@ export function issueRoutes(
     });
 
     res.status(201).json(issue);
+  });
+
+  router.post("/issues/:id/scanner-findings", applyCreateIssueStatusDefault, validate(createScannerFindingIssueSchema), async (req, res) => {
+    const sourceIssueId = req.params.id as string;
+    const sourceIssue = await svc.getById(sourceIssueId);
+    if (!sourceIssue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, sourceIssue.companyId);
+    assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, sourceIssue, req.body))) return;
+    if (req.body.assigneeAgentId || req.body.assigneeUserId) {
+      await assertCanAssignTasks(req, sourceIssue.companyId, {
+        projectId: req.body.projectId ?? sourceIssue.projectId ?? null,
+        parentIssueId: sourceIssue.id,
+        assigneeAgentId: req.body.assigneeAgentId ?? null,
+        assigneeUserId: req.body.assigneeUserId ?? null,
+      });
+    }
+    await assertIssueEnvironmentSelection(sourceIssue.companyId, req.body.executionWorkspaceSettings?.environmentId);
+
+    const actor = getActorInfo(req);
+    const executionPolicy = applyActorMonitorScheduledBy(
+      normalizeIssueExecutionPolicy(req.body.executionPolicy),
+      actor.actorType,
+    );
+    assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+
+    const result = await svc.ensureScannerFindingIssue(sourceIssue.id, {
+      ...req.body,
+      executionPolicy,
+      createdByAgentId: actor.agentId,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      actorAgentId: actor.agentId,
+      actorUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    await logActivity(db, {
+      companyId: sourceIssue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: result.reused ? "issue.scanner_finding_reused" : "issue.scanner_finding_created",
+      entityType: "issue",
+      entityId: result.issue.id,
+      details: {
+        sourceIssueId: sourceIssue.id,
+        identifier: result.issue.identifier,
+        title: result.issue.title,
+        findingType: req.body.findingType,
+        relatedInteractionId: req.body.relatedInteractionId ?? null,
+        relatedBlockerIssueId: req.body.relatedBlockerIssueId ?? null,
+        relatedId: req.body.relatedId ?? null,
+        sourceStateFingerprint: req.body.sourceStateFingerprint ?? null,
+        reused: result.reused,
+        ...buildCreateIssueActivityStatusDetails(result.issue, res),
+        ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
+      },
+    });
+
+    if (executionPolicy?.monitor) {
+      await logActivity(db, {
+        companyId: sourceIssue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.monitor_scheduled",
+        entityType: "issue",
+        entityId: result.issue.id,
+        details: {
+          identifier: result.issue.identifier,
+          sourceIssueId: sourceIssue.id,
+          nextCheckAt: executionPolicy.monitor.nextCheckAt,
+          notes: executionPolicy.monitor.notes,
+          scheduledBy: executionPolicy.monitor.scheduledBy,
+          serviceName: executionPolicy.monitor.serviceName ?? null,
+          timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
+          maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
+          recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+        },
+      });
+    }
+
+    void queueIssueAssignmentWakeup({
+      heartbeat,
+      issue: result.issue,
+      reason: "issue_assigned",
+      mutation: result.reused ? "scanner_finding_reused" : "scanner_finding_created",
+      contextSource: "issue.scanner_finding",
+      requestedByActorType: actor.actorType,
+      requestedByActorId: actor.actorId,
+    });
+
+    res.status(result.reused ? 200 : 201).json(result);
   });
 
   router.get("/issues/:id/accepted-plan-decompositions", async (req, res) => {

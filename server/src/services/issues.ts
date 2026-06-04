@@ -333,6 +333,17 @@ type IssueChildCreateInput = IssueCreateInput & {
   actorAgentId?: string | null;
   actorUserId?: string | null;
 };
+export type ScannerFindingIssueInput = IssueChildCreateInput & {
+  findingType: string;
+  relatedInteractionId?: string | null;
+  relatedBlockerIssueId?: string | null;
+  relatedId?: string | null;
+  sourceStateFingerprint?: string | null;
+};
+export type ScannerFindingIssueResult = {
+  issue: Awaited<ReturnType<ReturnType<typeof issueService>["create"]>>;
+  reused: boolean;
+};
 type AcceptedPlanDecompositionInput = {
   acceptedPlanRevisionId: string;
   children: IssueChildCreateInput[];
@@ -375,8 +386,67 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+const ACTIVE_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
+export const SCANNER_FINDING_ORIGIN_KIND = "scanner_finding";
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
+
+function setDefinedScannerFindingPatchValue(target: Record<string, unknown>, key: string, value: unknown) {
+  if (value !== undefined) {
+    target[key] = value;
+  }
+}
+
+function normalizeScannerFindingSegment(value: string | null | undefined, fallback: string) {
+  const normalized = value?.trim().toLowerCase().replace(/[^a-z0-9_.:-]+/g, "_").replace(/^_+|_+$/g, "");
+  return normalized && normalized.length > 0 ? normalized.slice(0, 160) : fallback;
+}
+
+function scannerFindingRelatedKey(input: Pick<
+  ScannerFindingIssueInput,
+  "relatedInteractionId" | "relatedBlockerIssueId" | "relatedId"
+>) {
+  if (input.relatedInteractionId) {
+    return `interaction:${normalizeScannerFindingSegment(input.relatedInteractionId, "unknown")}`;
+  }
+  if (input.relatedBlockerIssueId) {
+    return `blocker:${normalizeScannerFindingSegment(input.relatedBlockerIssueId, "unknown")}`;
+  }
+  if (input.relatedId) {
+    return `related:${normalizeScannerFindingSegment(input.relatedId, "unknown")}`;
+  }
+  return "source:current";
+}
+
+export function buildScannerFindingOriginId(input: {
+  sourceIssueId: string;
+  findingType: string;
+  relatedInteractionId?: string | null;
+  relatedBlockerIssueId?: string | null;
+  relatedId?: string | null;
+}) {
+  return [
+    "scanner_finding",
+    normalizeScannerFindingSegment(input.sourceIssueId, "source"),
+    normalizeScannerFindingSegment(input.findingType, "finding"),
+    scannerFindingRelatedKey(input),
+  ].join(":");
+}
+
+export function buildScannerFindingOriginFingerprint(input: {
+  sourceIssueId: string;
+  findingType: string;
+  relatedInteractionId?: string | null;
+  relatedBlockerIssueId?: string | null;
+  relatedId?: string | null;
+  sourceStateFingerprint?: string | null;
+}) {
+  return [
+    buildScannerFindingOriginId(input),
+    "state",
+    normalizeScannerFindingSegment(input.sourceStateFingerprint, "current"),
+  ].join(":");
+}
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -3728,7 +3798,7 @@ export function issueService(db: Db) {
     });
   }
 
-  return {
+  const service = {
     clearExecutionRunIfTerminal,
 
     list: async (companyId: string, filters?: IssueFilters) => {
@@ -4337,6 +4407,141 @@ export function issueService(db: Db) {
         issue: child,
         parentBlockerAdded: Boolean(blockParentUntilDone),
       };
+    },
+
+    ensureScannerFindingIssue: async (
+      sourceIssueId: string,
+      data: ScannerFindingIssueInput,
+    ): Promise<ScannerFindingIssueResult> => {
+      const {
+        acceptanceCriteria,
+        blockParentUntilDone,
+        actorAgentId,
+        actorUserId,
+        findingType,
+        relatedInteractionId,
+        relatedBlockerIssueId,
+        relatedId,
+        sourceStateFingerprint,
+        ...issueData
+      } = data;
+
+      return db.transaction(async (tx) => {
+        await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${sourceIssueId} for update`);
+        const sourceIssue = await tx
+          .select()
+          .from(issues)
+          .where(eq(issues.id, sourceIssueId))
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+        if (!sourceIssue) throw notFound("Source issue not found");
+
+        const originId = buildScannerFindingOriginId({
+          sourceIssueId: sourceIssue.id,
+          findingType,
+          relatedInteractionId,
+          relatedBlockerIssueId,
+          relatedId,
+        });
+        const originFingerprint = buildScannerFindingOriginFingerprint({
+          sourceIssueId: sourceIssue.id,
+          findingType,
+          relatedInteractionId,
+          relatedBlockerIssueId,
+          relatedId,
+          sourceStateFingerprint,
+        });
+
+        const existing = await tx
+          .select()
+          .from(issues)
+          .where(and(
+            eq(issues.companyId, sourceIssue.companyId),
+            eq(issues.originKind, SCANNER_FINDING_ORIGIN_KIND),
+            eq(issues.originId, originId),
+            eq(issues.originFingerprint, originFingerprint),
+            inArray(issues.status, ACTIVE_ISSUE_STATUSES),
+            isNull(issues.hiddenAt),
+          ))
+          .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+          .limit(1)
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+
+        if (existing) {
+          const updateData: Record<string, unknown> = {
+            actorAgentId,
+            actorUserId,
+          };
+          setDefinedScannerFindingPatchValue(updateData, "title", issueData.title);
+          setDefinedScannerFindingPatchValue(
+            updateData,
+            "description",
+            appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
+          );
+          setDefinedScannerFindingPatchValue(updateData, "status", issueData.status);
+          setDefinedScannerFindingPatchValue(updateData, "workMode", issueData.workMode);
+          setDefinedScannerFindingPatchValue(updateData, "priority", issueData.priority);
+          setDefinedScannerFindingPatchValue(updateData, "assigneeAgentId", issueData.assigneeAgentId);
+          setDefinedScannerFindingPatchValue(updateData, "assigneeUserId", issueData.assigneeUserId);
+          setDefinedScannerFindingPatchValue(updateData, "projectId", issueData.projectId ?? sourceIssue.projectId);
+          setDefinedScannerFindingPatchValue(updateData, "goalId", issueData.goalId ?? sourceIssue.goalId);
+          setDefinedScannerFindingPatchValue(updateData, "billingCode", issueData.billingCode);
+          setDefinedScannerFindingPatchValue(updateData, "assigneeAdapterOverrides", issueData.assigneeAdapterOverrides);
+          setDefinedScannerFindingPatchValue(updateData, "executionPolicy", issueData.executionPolicy);
+          setDefinedScannerFindingPatchValue(updateData, "executionWorkspaceId", issueData.executionWorkspaceId);
+          setDefinedScannerFindingPatchValue(updateData, "executionWorkspacePreference", issueData.executionWorkspacePreference);
+          setDefinedScannerFindingPatchValue(updateData, "executionWorkspaceSettings", issueData.executionWorkspaceSettings);
+          setDefinedScannerFindingPatchValue(updateData, "labelIds", issueData.labelIds);
+          setDefinedScannerFindingPatchValue(updateData, "blockedByIssueIds", issueData.blockedByIssueIds);
+
+          const updated = await service.update(existing.id, updateData, tx);
+          if (!updated) throw notFound("Scanner finding issue not found");
+          return { issue: updated, reused: true };
+        }
+
+        const childCount = await tx
+          .select({ childCount: sql<number>`count(*)::int` })
+          .from(issues)
+          .where(and(eq(issues.companyId, sourceIssue.companyId), eq(issues.parentId, sourceIssue.id)))
+          .then((rows: Array<{ childCount: number }>) => rows[0]?.childCount ?? 0);
+        if (childCount >= MAX_CHILD_ISSUES_CREATED_BY_HELPER) {
+          throw unprocessable(`Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} child issues for this helper`);
+        }
+
+        const created = await service.create(sourceIssue.companyId, {
+          ...issueData,
+          parentId: sourceIssue.id,
+          projectId: issueData.projectId ?? sourceIssue.projectId,
+          goalId: issueData.goalId ?? sourceIssue.goalId,
+          requestDepth: clampIssueRequestDepth(
+            Math.max(clampIssueRequestDepth(sourceIssue.requestDepth) + 1, issueData.requestDepth ?? 0),
+          ),
+          description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
+          inheritExecutionWorkspaceFromIssueId: sourceIssue.id,
+          originKind: SCANNER_FINDING_ORIGIN_KIND,
+          originId,
+          originFingerprint,
+        }, tx);
+
+        if (blockParentUntilDone) {
+          const existingBlockers = await tx
+            .select({ blockerIssueId: issueRelations.issueId })
+            .from(issueRelations)
+            .where(and(
+              eq(issueRelations.companyId, sourceIssue.companyId),
+              eq(issueRelations.relatedIssueId, sourceIssue.id),
+              eq(issueRelations.type, "blocks"),
+            ));
+          await syncBlockedByIssueIds(
+            sourceIssue.id,
+            sourceIssue.companyId,
+            [...new Set([...existingBlockers.map((row) => row.blockerIssueId), created.id])],
+            { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+            tx,
+          );
+        }
+
+        return { issue: created, reused: false };
+      });
     },
 
     decomposeAcceptedPlan: async (
@@ -6096,4 +6301,5 @@ export function issueService(db: Db) {
       }));
     },
   };
+  return service;
 }
