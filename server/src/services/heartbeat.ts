@@ -29,6 +29,7 @@ import {
   activityLog,
   approvals,
   companySkills as companySkillsTable,
+  companies,
   documentAnnotationComments,
   documentAnnotationThreads,
   documentRevisions,
@@ -3350,8 +3351,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const dueMonitors = await db
       .select(issueMonitorDispatchColumns)
       .from(issues)
+      .innerJoin(companies, eq(companies.id, issues.companyId))
       .where(
         and(
+          eq(companies.status, "active"),
           sql`${issues.monitorNextCheckAt} is not null`,
           lte(issues.monitorNextCheckAt, now),
           isNull(issues.assigneeUserId),
@@ -6830,7 +6833,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.status, "queued"));
+      .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
+      .where(and(
+        eq(heartbeatRuns.status, "queued"),
+        eq(companies.status, "active"),
+      ));
 
     const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
     for (const agentId of agentIds) {
@@ -9005,6 +9012,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+
+    const writeSkippedRequest = async (
+      skipReason: string,
+      patch: Partial<typeof agentWakeupRequests.$inferInsert> = {},
+    ) => {
+      await db.insert(agentWakeupRequests).values({
+        companyId: agent.companyId,
+        agentId,
+        source,
+        triggerDetail,
+        reason: skipReason,
+        payload,
+        status: "skipped",
+        requestedByActorType: opts.requestedByActorType ?? null,
+        requestedByActorId: opts.requestedByActorId ?? null,
+        idempotencyKey: opts.idempotencyKey ?? null,
+        finishedAt: new Date(),
+        ...patch,
+      });
+    };
+
+    const company = await db
+      .select({ status: companies.status })
+      .from(companies)
+      .where(eq(companies.id, agent.companyId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!company || company.status !== "active") {
+      const companyStatus = company?.status ?? "missing";
+      if (opts.requestedByActorType === "user") {
+        throw conflict("Company is not active", { status: companyStatus });
+      }
+      await writeSkippedRequest("company.inactive", {
+        error: `Wake suppressed because company status is ${companyStatus}`,
+      });
+      return null;
+    }
+
     const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, taskKey);
     if (explicitResumeSession) {
       enrichedContextSnapshot.resumeFromRunId = explicitResumeSession.resumeFromRunId;
@@ -9026,22 +9071,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       explicitResumeSession?.sessionDisplayId ??
       await resolveSessionBeforeForWakeup(agent, effectiveTaskKey);
     const continuationAttempt = readContinuationAttempt(enrichedContextSnapshot.livenessContinuationAttempt);
-
-    const writeSkippedRequest = async (skipReason: string) => {
-      await db.insert(agentWakeupRequests).values({
-        companyId: agent.companyId,
-        agentId,
-        source,
-        triggerDetail,
-        reason: skipReason,
-        payload,
-        status: "skipped",
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
-        finishedAt: new Date(),
-      });
-    };
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
     if (!projectId && issueId) {
@@ -10195,7 +10224,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     buildRunOutputSilence,
 
     tickTimers: async (now = new Date()) => {
-      const allAgents = await db.select().from(agents);
+      const allAgents = await db
+        .select({ ...getTableColumns(agents) })
+        .from(agents)
+        .innerJoin(companies, eq(companies.id, agents.companyId))
+        .where(eq(companies.status, "active"));
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
@@ -10235,9 +10268,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     },
 
-    cancelRun: (runId: string) => cancelRunInternal(runId),
+    cancelRun: (runId: string, reason?: string) => cancelRunInternal(runId, reason),
 
-    cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
+    cancelActiveForAgent: (agentId: string, reason?: string) => cancelActiveForAgentInternal(agentId, reason),
 
     cancelBudgetScopeWork,
 
