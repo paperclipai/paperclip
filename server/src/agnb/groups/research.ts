@@ -72,6 +72,32 @@ export function registerResearch(router: Router, db: Db) {
     res.json({ ok: true });
   });
 
+  /**
+   * POST /api/agnb/bofu/snapshot — BoFu Rank Monitor agent records current SERP
+   * + traffic metrics for a tracked page. Body: { url, current_rank?,
+   * monthly_traffic?, monthly_signups? }. Updates by url (add the page first via
+   * POST /bofu); a snapshot for an unknown url is a no-op.
+   */
+  router.post("/agnb/bofu/snapshot", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const url = String(body.url ?? "").trim();
+    if (!url) return res.status(400).json({ ok: false, error: "url required" });
+    const currentRank = typeof body.current_rank === "number" ? body.current_rank : null;
+    const monthlyTraffic = typeof body.monthly_traffic === "number" ? body.monthly_traffic : null;
+    const monthlySignups = typeof body.monthly_signups === "number" ? body.monthly_signups : null;
+    const result = await db.execute(sql`
+      UPDATE agnb.bofu_pages
+      SET current_rank = COALESCE(${currentRank}, current_rank),
+          monthly_traffic = COALESCE(${monthlyTraffic}, monthly_traffic),
+          monthly_signups = COALESCE(${monthlySignups}, monthly_signups),
+          last_checked_at = now()
+      WHERE url = ${url}
+      RETURNING id
+    `);
+    res.json({ ok: true, updated: rows(result).length });
+  });
+
   // ---------------------------------------------------------------- competitors
 
   /** GET /api/agnb/competitors — competitors + content gaps. */
@@ -148,6 +174,70 @@ export function registerResearch(router: Router, db: Db) {
     if (!id) return res.status(400).json({ ok: false, error: "id required" });
     await db.execute(sql`DELETE FROM agnb.competitors WHERE id = ${id}`);
     res.json({ ok: true });
+  });
+
+  /**
+   * POST /api/agnb/competitors/scan — Competitor Watcher agent records a scrape
+   * result for one competitor. Body: { domain, total_blogs_seen?, status?,
+   * last_error? }. Updates by domain (add it first via POST /competitors); a
+   * scan for an unknown domain is a no-op.
+   */
+  router.post("/agnb/competitors/scan", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const domain = String(body.domain ?? "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, "");
+    if (!domain) return res.status(400).json({ ok: false, error: "domain required" });
+    const totalBlogs = typeof body.total_blogs_seen === "number" ? body.total_blogs_seen : null;
+    const status = typeof body.status === "string" && ["active", "paused", "error"].includes(body.status) ? body.status : null;
+    const lastError = typeof body.last_error === "string" ? body.last_error : null;
+    const result = await db.execute(sql`
+      UPDATE agnb.competitors
+      SET total_blogs_seen = COALESCE(${totalBlogs}, total_blogs_seen),
+          status = COALESCE(${status}, status),
+          last_error = ${lastError},
+          last_scraped_at = now()
+      WHERE domain = ${domain}
+      RETURNING id
+    `);
+    res.json({ ok: true, updated: rows(result).length });
+  });
+
+  /**
+   * POST /api/agnb/content-gaps — Competitor Watcher agent ingests computed
+   * content gaps. Body: { gaps: Array<{ topic, gap_score, competitor_count?,
+   * our_coverage_count?, suggested_keywords?: string[], suggestion_type? }> }.
+   * Idempotent on topic (a gap already tracked is skipped, not duplicated).
+   */
+  router.post("/agnb/content-gaps", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const body = (req.body ?? {}) as { gaps?: Array<Record<string, unknown>> };
+    const list = Array.isArray(body.gaps) ? body.gaps : [];
+    if (list.length === 0) return res.status(400).json({ ok: false, error: "gaps[] required" });
+    let inserted = 0;
+    for (const g of list) {
+      const topic = String(g?.topic ?? "").trim();
+      if (!topic) continue;
+      const gapScore = typeof g?.gap_score === "number" ? g.gap_score : 0;
+      const competitorCount = typeof g?.competitor_count === "number" ? g.competitor_count : 0;
+      const ourCoverage = typeof g?.our_coverage_count === "number" ? g.our_coverage_count : 0;
+      const suggestionType = typeof g?.suggestion_type === "string" ? g.suggestion_type : "gap";
+      const keywords = Array.isArray(g?.suggested_keywords)
+        ? (g.suggested_keywords as unknown[]).map((k) => String(k))
+        : null;
+      const keywordsLiteral = keywords
+        ? `{${keywords.map((k) => `"${k.replace(/(["\\])/g, "\\$1")}"`).join(",")}}`
+        : null;
+      const result = await db.execute(sql`
+        INSERT INTO agnb.content_gaps
+          (topic, gap_score, competitor_count, our_coverage_count, suggested_keywords, status, suggestion_type)
+        SELECT ${topic}, ${gapScore}, ${competitorCount}, ${ourCoverage},
+               ${keywordsLiteral}::text[], 'identified', ${suggestionType}
+        WHERE NOT EXISTS (SELECT 1 FROM agnb.content_gaps WHERE topic = ${topic})
+        RETURNING id
+      `);
+      if (rows(result).length > 0) inserted++;
+    }
+    res.json({ ok: true, inserted });
   });
 
   // -------------------------------------------------------------------- content

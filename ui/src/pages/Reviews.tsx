@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Star } from "lucide-react";
+import { Star, Trash2 } from "lucide-react";
 import { mentionsApi } from "../api/agnbMentions";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -19,20 +19,22 @@ export function Reviews() {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.reviews, queryFn: () => mentionsApi.reviews() });
+  const refresh = () => qc.invalidateQueries({ queryKey: queryKeys.agnb.reviews });
+  const delPlatform = async (id: string) => { if (confirm("Stop tracking this platform?")) { await mentionsApi.deleteReviewPlatform(id).catch(() => {}); refresh(); } };
 
   return (
     <div className="space-y-4">
       <AgnbSubnav group="mentions" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Reviews radar</h1>
-        <Button size="sm" onClick={() => setOpen(true)}>Log review</Button>
+        <Button size="sm" onClick={() => setOpen(true)}>Track platform</Button>
       </div>
       {open && (
         <AgnbFormModal
-          title="Log review"
-          fields={[{ key: "platform", label: "Platform", required: true, placeholder: "G2 / Capterra / Trustpilot" }, { key: "rating", label: "Rating (1-5)", type: "number" }, { key: "reviewer_handle", label: "Reviewer" }, { key: "excerpt", label: "Excerpt", type: "textarea" }, { key: "review_url", label: "Review URL" }]}
+          title="Track a review platform"
+          fields={[{ key: "platform", label: "Platform", required: true, placeholder: "G2" }, { key: "profile_url", label: "Profile URL", required: true, placeholder: "https://g2.com/products/..." }, { key: "category", label: "Category", placeholder: "optional" }]}
           onClose={() => setOpen(false)}
-          onSubmit={async (v) => { await mentionsApi.logReview({ platform: v.platform, rating: v.rating || undefined, reviewer_handle: v.reviewer_handle || undefined, excerpt: v.excerpt || undefined, review_url: v.review_url || undefined }); qc.invalidateQueries({ queryKey: queryKeys.agnb.reviews }); }}
+          onSubmit={async (v) => { await mentionsApi.addReviewPlatform({ platform: v.platform, profile_url: v.profile_url, category: v.category || undefined }); refresh(); }}
         />
       )}
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
@@ -45,8 +47,11 @@ export function Reviews() {
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
             {data.platforms.map((p) => (
               <Card key={p.id}><CardContent className="p-3">
-                <div className="font-medium">{p.platform}</div>
-                <div className="text-xl font-semibold">{p.rating != null ? `${p.rating.toFixed(2)} ★` : "—"}</div>
+                <div className="flex items-start justify-between">
+                  <div className="font-medium">{p.platform}</div>
+                  <button onClick={() => delPlatform(p.id)}><Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" /></button>
+                </div>
+                <div className="text-xl font-semibold">{p.rating != null ? `${Number(p.rating).toFixed(2)} ★` : "—"}</div>
                 <div className="text-[11px] text-muted-foreground">{p.review_count ?? 0} reviews{p.ranked_position ? ` · #${p.ranked_position}` : ""}</div>
               </CardContent></Card>
             ))}

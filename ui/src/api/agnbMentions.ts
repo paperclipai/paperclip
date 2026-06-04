@@ -1,21 +1,4 @@
-import { agnb, unwrap } from "./agnbClient";
-
-/**
- * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
- * server (under /api/agnb/*). As each route group migrates off the standalone
- * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
- */
-async function ported<T>(path: string): Promise<T> {
-  const res = await fetch(`/api/agnb${path}`, {
-    credentials: "include",
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `AGNB request failed: ${res.status}`);
-  }
-  return res.json();
-}
+import { ported, unwrap } from "./agnbClient";
 
 export interface Mention {
   id: string; source: string; url: string; context: string | null; sentiment: string | null; author: string | null; has_link: boolean; noticed_at: string;
@@ -47,14 +30,11 @@ export const mentionsApi = {
   backlinks: () => ported<{ ok: boolean; error?: string; backlinks: Backlink[] }>("/backlinks").then((r) => unwrap(r).backlinks),
   prospects: () => ported<{ ok: boolean; error?: string; prospects: BacklinkProspect[] }>("/backlink-prospects").then((r) => unwrap(r).prospects),
 
-  // --- writes (stay cross-origin → standalone AGNB app, PHASE 5) ---
-  syncMentions: () => agnb.post("/inbound/mentions/sync", {}),
-  logReview: (b: { platform: string; rating?: string; reviewer_handle?: string; excerpt?: string; review_url?: string }) => agnb.post("/reviews", b),
-  addPrompt: (b: { prompt: string; category?: string }) => agnb.post("/sov", b),
-  deletePrompt: (id: string) => agnb.delete(`/sov?id=${id}`),
-  runSov: () => agnb.post("/inbound/sov/run", {}),
-  addBacklink: (b: { source_url: string; target_url: string; source_domain?: string; anchor_text?: string; kind?: string; source_da?: string }) => agnb.post("/backlinks", b),
-  deleteBacklink: (id: string) => agnb.delete(`/backlinks?id=${id}`),
-  prospectStatus: (id: string, status: string) => agnb.post(`/backlinks/prospect-status/${id}`, { status }),
-  draftOutreach: (id: string) => agnb.post(`/backlinks/draft-outreach/${id}`, {}),
+  // SoV prompt management (same-origin). Results are ingested by the SoV Monitor agent.
+  addPrompt: (b: { prompt: string; category?: string }) => ported("/sov", { method: "POST", body: b }),
+  deletePrompt: (id: string) => ported(`/sov?id=${id}`, { method: "DELETE" }),
+
+  // Review-platform tracking (same-origin). Stats + review entries are ingested by the Reviews Monitor agent.
+  addReviewPlatform: (b: { platform: string; profile_url: string; category?: string }) => ported("/reviews/platforms", { method: "POST", body: b }),
+  deleteReviewPlatform: (id: string) => ported(`/reviews/platforms?id=${id}`, { method: "DELETE" }),
 };

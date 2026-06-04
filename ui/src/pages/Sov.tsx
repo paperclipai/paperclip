@@ -18,11 +18,9 @@ export function Sov() {
   useEffect(() => setBreadcrumbs([{ label: "Mentions" }, { label: "Share of voice" }]), [setBreadcrumbs]);
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [running, setRunning] = useState(false);
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.sov, queryFn: () => mentionsApi.sov() });
   const refresh = () => qc.invalidateQueries({ queryKey: queryKeys.agnb.sov });
-  const run = async () => { setRunning(true); try { await mentionsApi.runSov(); refresh(); } catch (e) { alert(e instanceof Error ? e.message : "Failed"); } finally { setRunning(false); } };
-  const delPrompt = async (id: string) => { await mentionsApi.deletePrompt(id).catch(() => {}); refresh(); };
+  const delPrompt = async (id: string) => { if (confirm("Remove prompt?")) { await mentionsApi.deletePrompt(id).catch(() => {}); refresh(); } };
 
   const stats = useMemo(() => {
     const res = data?.results ?? [];
@@ -36,15 +34,12 @@ export function Sov() {
       <AgnbSubnav group="mentions" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Share of voice</h1>
-        <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={run} disabled={running}>{running ? "Running…" : "Run all"}</Button>
-          <Button size="sm" onClick={() => setOpen(true)}>Add prompt</Button>
-        </div>
+        <Button size="sm" onClick={() => setOpen(true)}>Add prompt</Button>
       </div>
       {open && (
         <AgnbFormModal
           title="Add SoV prompt"
-          fields={[{ key: "prompt", label: "Prompt", required: true, type: "textarea" }, { key: "category", label: "Category" }]}
+          fields={[{ key: "prompt", label: "Prompt", required: true, placeholder: "What are the best X tools?" }, { key: "category", label: "Category", placeholder: "optional" }]}
           onClose={() => setOpen(false)}
           onSubmit={async (v) => { await mentionsApi.addPrompt({ prompt: v.prompt, category: v.category || undefined }); refresh(); }}
         />
