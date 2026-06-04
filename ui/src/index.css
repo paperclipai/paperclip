@@ -36,47 +36,77 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
+  /* GLASSHOUSE status tokens — color = state, never decoration. See DESIGN.md.
+     Use as bg-status-running / text-status-error / border-status-idle etc. */
+  --color-status-running: var(--status-running);
+  --color-status-success: var(--status-success);
+  --color-status-warning: var(--status-warning);
+  --color-status-error: var(--status-error);
+  --color-status-idle: var(--status-idle);
+  --color-status-info: var(--status-info);
+  --color-surface-raised: var(--surface-raised);
+  /* Square containers, crisp 2px controls (GLASSHOUSE). Cards use lg/xl = 0. */
+  --radius-sm: 0.125rem;
+  --radius-md: 0.125rem;
   --radius-lg: 0px;
   --radius-xl: 0px;
 }
 
+/* Font families (non-inline so they register on :root for Preflight + utilities) */
+@theme {
+  --font-sans: "Hanken Grotesk", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-serif: "Newsreader", ui-serif, Georgia, "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* ====================================================================
+   GLASSHOUSE — light theme (SECONDARY). Dark is canonical (see .dark).
+   Raise lightness, drop accent/status chroma ~10-20%, keep hue.
+   ==================================================================== */
 :root {
   color-scheme: light;
   --radius: 0;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --background: oklch(0.97 0.003 250);
+  --foreground: oklch(0.24 0.006 250);
+  --card: oklch(0.99 0.002 250);
+  --card-foreground: oklch(0.24 0.006 250);
+  --popover: oklch(0.99 0.002 250);
+  --popover-foreground: oklch(0.24 0.006 250);
+  --primary: oklch(0.6 0.15 58);
+  --primary-foreground: oklch(0.99 0.01 75);
+  --secondary: oklch(0.94 0.004 250);
+  --secondary-foreground: oklch(0.24 0.006 250);
+  --muted: oklch(0.94 0.004 250);
+  --muted-foreground: oklch(0.48 0.006 250);
+  --accent: oklch(0.94 0.004 250);
+  --accent-foreground: oklch(0.24 0.006 250);
+  --destructive: oklch(0.55 0.18 28);
+  --destructive-foreground: oklch(0.99 0.01 75);
+  --border: oklch(0.89 0.004 250);
+  --input: oklch(0.89 0.004 250);
+  --ring: oklch(0.6 0.15 58);
+  --surface-raised: oklch(1 0 0);
+  /* status (light) */
+  --status-running: oklch(0.55 0.1 185);
+  --status-success: oklch(0.52 0.12 150);
+  --status-warning: oklch(0.62 0.13 75);
+  --status-error: oklch(0.55 0.18 28);
+  --status-idle: oklch(0.62 0.006 250);
+  --status-info: oklch(0.52 0.09 250);
+  /* charts: institutional set (accent, teal, slate, green, clay) — not the shadcn rainbow */
+  --chart-1: oklch(0.6 0.15 58);
+  --chart-2: oklch(0.55 0.1 185);
+  --chart-3: oklch(0.52 0.09 250);
+  --chart-4: oklch(0.52 0.12 150);
+  --chart-5: oklch(0.55 0.18 28);
+  --sidebar: oklch(0.99 0.002 250);
+  --sidebar-foreground: oklch(0.24 0.006 250);
+  --sidebar-primary: oklch(0.6 0.15 58);
+  --sidebar-primary-foreground: oklch(0.99 0.01 75);
+  --sidebar-accent: oklch(0.94 0.004 250);
+  --sidebar-accent-foreground: oklch(0.24 0.006 250);
+  --sidebar-border: oklch(0.89 0.004 250);
+  --sidebar-ring: oklch(0.6 0.15 58);
   --chip-match-title-bg: oklch(0.97 0.02 265);
   --chip-match-title-fg: oklch(0.4 0.13 265);
   --chip-match-title-border: oklch(0.85 0.05 265);
@@ -91,39 +121,53 @@
   --chip-match-identifier-border: var(--border);
 }
 
+/* ====================================================================
+   GLASSHOUSE — dark theme (CANONICAL). Dark institutional control room.
+   Near-black canvas, warm bone text, ONE Sodium-amber accent, disciplined
+   status palette. Color = state, never decoration. See DESIGN.md.
+   ==================================================================== */
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.985 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.637 0.237 25.331);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.269 0 0);
-  --input: oklch(0.269 0 0);
-  --ring: oklch(0.439 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.145 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(0.269 0 0);
-  --sidebar-ring: oklch(0.439 0 0);
+  --background: oklch(0.16 0.004 250);      /* canvas / void #0A0B0D */
+  --foreground: oklch(0.92 0.006 75);       /* warm bone, not pure white */
+  --card: oklch(0.19 0.005 250);            /* surface */
+  --card-foreground: oklch(0.92 0.006 75);
+  --popover: oklch(0.19 0.005 250);
+  --popover-foreground: oklch(0.92 0.006 75);
+  --primary: oklch(0.76 0.14 65);           /* Sodium amber — rationed ~3% */
+  --primary-foreground: oklch(0.18 0.02 65);
+  --secondary: oklch(0.23 0.006 250);       /* raised */
+  --secondary-foreground: oklch(0.92 0.006 75);
+  --muted: oklch(0.23 0.006 250);
+  --muted-foreground: oklch(0.66 0.006 75);
+  --accent: oklch(0.23 0.006 250);
+  --accent-foreground: oklch(0.92 0.006 75);
+  --destructive: oklch(0.66 0.15 30);       /* clay red (error/blocked) */
+  --destructive-foreground: oklch(0.92 0.006 75);
+  --border: oklch(0.27 0.006 250);          /* hairline */
+  --input: oklch(0.27 0.006 250);
+  --ring: oklch(0.76 0.14 65);              /* Sodium focus ring */
+  --surface-raised: oklch(0.23 0.006 250);
+  /* status (dark) */
+  --status-running: oklch(0.72 0.09 185);   /* aerated teal — heartbeat */
+  --status-success: oklch(0.68 0.11 150);   /* muted forest */
+  --status-warning: oklch(0.78 0.11 85);    /* muted yellow, off the amber */
+  --status-error: oklch(0.66 0.15 30);      /* clay */
+  --status-idle: oklch(0.48 0.006 250);     /* grey — recedes */
+  --status-info: oklch(0.64 0.07 250);      /* slate-blue, chrome only */
+  /* charts: sodium, teal, slate, green, clay */
+  --chart-1: oklch(0.76 0.14 65);
+  --chart-2: oklch(0.72 0.09 185);
+  --chart-3: oklch(0.64 0.07 250);
+  --chart-4: oklch(0.68 0.11 150);
+  --chart-5: oklch(0.66 0.15 30);
+  --sidebar: oklch(0.175 0.004 250);        /* subtle lift off canvas */
+  --sidebar-foreground: oklch(0.92 0.006 75);
+  --sidebar-primary: oklch(0.76 0.14 65);
+  --sidebar-primary-foreground: oklch(0.18 0.02 65);
+  --sidebar-accent: oklch(0.23 0.006 250);
+  --sidebar-accent-foreground: oklch(0.92 0.006 75);
+  --sidebar-border: oklch(0.27 0.006 250);
+  --sidebar-ring: oklch(0.76 0.14 65);
   --chip-match-title-bg: oklch(0.27 0.04 265 / 0.5);
   --chip-match-title-fg: oklch(0.78 0.10 265);
   --chip-match-title-border: oklch(0.4 0.06 265);
@@ -147,7 +191,7 @@
     -webkit-tap-highlight-color: color-mix(in oklab, var(--foreground) 20%, transparent);
   }
   body {
-    @apply bg-background text-foreground antialiased;
+    @apply bg-background text-foreground font-sans antialiased;
     height: 100%;
     overflow: hidden;
   }
