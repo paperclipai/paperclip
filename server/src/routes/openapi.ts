@@ -20,6 +20,7 @@ import {
   createIssueLabelSchema,
   addIssueCommentSchema,
   checkoutIssueSchema,
+  recordIssueDispositionSchema,
   linkIssueApprovalSchema,
   createIssueWorkProductSchema,
   updateIssueWorkProductSchema,
@@ -1441,6 +1442,18 @@ registry.registerPath({
   summary: "Delete an issue comment",
   request: { params: z.object({ id: z.string(), commentId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/disposition",
+  tags: ["issues"],
+  summary: "Record a successful-run disposition to clear the missing_successful_run_disposition attention flag",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(recordIssueDispositionSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
