@@ -40,6 +40,9 @@ importers:
       '@paperclipai/adapter-acpx-local':
         specifier: workspace:*
         version: link:../packages/adapters/acpx-local
+      '@paperclipai/adapter-amplifier-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/amplifier-local
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
@@ -126,6 +129,25 @@ importers:
         specifier: ^0.12.0
         version: 0.12.0
       acpx:
+        specifier: ^0.6.1
+        version: 0.6.1
+      picocolors:
+        specifier: ^1.1.1
+        version: 1.1.1
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/adapters/amplifier-local:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
+      amplifier-agent-ts:
         specifier: ^0.6.1
         version: 0.6.1
       picocolors:
@@ -622,6 +644,8 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/skills-catalog: {}
+
   server:
     dependencies:
       '@aws-sdk/client-s3':
@@ -630,6 +654,9 @@ importers:
       '@paperclipai/adapter-acpx-local':
         specifier: workspace:*
         version: link:../packages/adapters/acpx-local
+      '@paperclipai/adapter-amplifier-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/amplifier-local
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
@@ -796,6 +823,9 @@ importers:
       '@paperclipai/adapter-acpx-local':
         specifier: workspace:*
         version: link:../packages/adapters/acpx-local
+      '@paperclipai/adapter-amplifier-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/amplifier-local
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
@@ -4219,6 +4249,10 @@ packages:
 
   ajv@8.18.0:
     resolution: {integrity: sha512-PlXPeEWMXMZ7sPYOHqmDyCJzcfNrUr3fGNKtezX14ykXOEIvyK81d+qydx89KY5O71FKMPaQ2vBfBFI5NHR63A==}
+
+  amplifier-agent-ts@0.6.1:
+    resolution: {integrity: sha512-Csj2sZ7T3YXftTJ6cT3fWtLhxBJBgv0JOsaDgTXJuFHBdnrb6YHzbDYhDRuIahdXeDkR0/LgNujoySq/1hLg8w==}
+    engines: {node: '>=20'}
 
   anser@2.3.5:
     resolution: {integrity: sha512-vcZjxvvVoxTeR5XBNJB38oTu/7eDCZlwdz32N1eNgpyPF7j/Z7Idf+CUwQOkKKpJ7RJyjxgLHCM7vdIK0iCNMQ==}
@@ -11319,6 +11353,8 @@ snapshots:
       fast-uri: 3.1.0
       json-schema-traverse: 1.0.0
       require-from-string: 2.0.2
+
+  amplifier-agent-ts@0.6.1: {}
 
   anser@2.3.5: {}
 

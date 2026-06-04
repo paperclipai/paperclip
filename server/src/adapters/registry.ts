@@ -36,6 +36,15 @@ import {
   modelProfiles as claudeModelProfiles,
 } from "@paperclipai/adapter-claude-local";
 import {
+  execute as amplifierExecute,
+  testEnvironment as amplifierTestEnvironment,
+  sessionCodec as amplifierSessionCodec,
+} from "@paperclipai/adapter-amplifier-local/server";
+import {
+  agentConfigurationDoc as amplifierAgentConfigurationDoc,
+  models as amplifierModels,
+} from "@paperclipai/adapter-amplifier-local";
+import {
   execute as codexExecute,
   listCodexSkills,
   syncCodexSkills,
@@ -288,6 +297,19 @@ const acpxLocalAdapter: ServerAdapterModule = {
   getConfigSchema: getAcpxConfigSchema,
 };
 
+const amplifierLocalAdapter: ServerAdapterModule = {
+  type: "amplifier_local",
+  execute: amplifierExecute,
+  testEnvironment: amplifierTestEnvironment,
+  sessionCodec: amplifierSessionCodec,
+  models: amplifierModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: amplifierAgentConfigurationDoc,
+};
+
 const codexLocalAdapter: ServerAdapterModule = {
   type: "codex_local",
   execute: codexExecute,
@@ -514,6 +536,7 @@ function registerBuiltInAdapters() {
   for (const adapter of [
     acpxLocalAdapter,
     claudeLocalAdapter,
+    amplifierLocalAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,

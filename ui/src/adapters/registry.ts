@@ -1,6 +1,7 @@
 import type { UIAdapterModule } from "./types";
 import { acpxLocalUIAdapter } from "./acpx-local";
 import { claudeLocalUIAdapter } from "./claude-local";
+import { amplifierLocalUIAdapter } from "./amplifier-local";
 import { codexLocalUIAdapter } from "./codex-local";
 import { cursorCloudUIAdapter } from "./cursor-cloud";
 import { cursorLocalUIAdapter } from "./cursor";
@@ -54,6 +55,7 @@ function registerBuiltInUIAdapters() {
   for (const adapter of [
     acpxLocalUIAdapter,
     claudeLocalUIAdapter,
+    amplifierLocalUIAdapter,
     codexLocalUIAdapter,
     cursorCloudUIAdapter,
     geminiLocalUIAdapter,
