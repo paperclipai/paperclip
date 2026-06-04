@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   createSecretProviderConfigSchema,
+  createSecretBindingSchema,
   createSecretSchema,
   remoteSecretImportPreviewSchema,
   remoteSecretImportSchema,
@@ -299,6 +300,42 @@ export function secretRoutes(db: Db) {
       entityType: "secret",
       entityId: created.id,
       details: { name: created.name, provider: created.provider },
+    });
+
+    res.status(201).json(created);
+  });
+
+  router.post("/companies/:companyId/secret-bindings", validate(createSecretBindingSchema), async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const created = await svc.createBinding({
+      companyId,
+      secretId: req.body.secretId,
+      targetType: req.body.targetType,
+      targetId: req.body.targetId,
+      configPath: req.body.configPath,
+      versionSelector: req.body.versionSelector,
+      required: req.body.required,
+      label: req.body.label,
+    });
+
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "secret_binding.created",
+      entityType: "secret_binding",
+      entityId: created.id,
+      details: {
+        secretId: created.secretId,
+        targetType: created.targetType,
+        targetId: created.targetId,
+        configPath: created.configPath,
+        versionSelector: created.versionSelector,
+        required: created.required,
+      },
     });
 
     res.status(201).json(created);

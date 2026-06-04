@@ -28,6 +28,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { issueService } from "../services/issues.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { logger } from "../middleware/logger.ts";
 import * as providerRegistry from "../secrets/provider-registry.ts";
 import { routineService } from "../services/routines.ts";
 import { secretService } from "../services/secrets.ts";
@@ -1513,5 +1514,76 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
+  });
+
+  // THIAAAAAA-203 / THIAAAAAA-2176: a webhook trigger's company_secret_bindings
+  // join row can vanish while the secret itself stays live, which 422-rejects
+  // OpCo callbacks. The fire handler must self-heal by recreating the binding
+  // and retrying once, emitting an audit log line.
+  it("self-heals a missing webhook binding on fire and retries successfully", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "bearer",
+      },
+      {},
+    );
+    expect(secretMaterial?.webhookSecret).toBeTruthy();
+
+    // The binding exists immediately after trigger creation.
+    await expect(
+      db
+        .select()
+        .from(companySecretBindings)
+        .where(eq(companySecretBindings.secretId, trigger.secretId!)),
+    ).resolves.toHaveLength(1);
+
+    // Simulate the THIAAAAAA-203 drop: delete the join row, leaving the secret live.
+    await db.delete(companySecretBindings).where(eq(companySecretBindings.secretId, trigger.secretId!));
+    await expect(
+      db
+        .select()
+        .from(companySecretBindings)
+        .where(eq(companySecretBindings.secretId, trigger.secretId!)),
+    ).resolves.toHaveLength(0);
+
+    const warnSpy = vi.spyOn(logger, "warn");
+    try {
+      const run = await svc.firePublicTrigger(trigger.publicId!, {
+        authorizationHeader: `Bearer ${secretMaterial!.webhookSecret}`,
+        payload: { event: "binding.drop.recovered" },
+      });
+
+      // The fire succeeds on retry instead of 422-ing.
+      expect(run.source).toBe("webhook");
+      expect(run.status).toBe("issue_created");
+
+      // An audit log line was emitted for the auto-repair.
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ event: "webhook_binding_auto_repair", secretId: trigger.secretId }),
+        expect.stringContaining("self-heal"),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    // The binding row was recreated with the canonical config path.
+    const restored = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.secretId, trigger.secretId!));
+    expect(restored).toHaveLength(1);
+    expect(restored[0]?.configPath).toBe(`webhookSecret:${trigger.secretId}`);
+    expect(restored[0]?.targetType).toBe("routine");
+    expect(restored[0]?.targetId).toBe(routine.id);
+
+    // A subsequent fire reuses the restored binding without crashing on conflict.
+    const secondRun = await svc.firePublicTrigger(trigger.publicId!, {
+      authorizationHeader: `Bearer ${secretMaterial!.webhookSecret}`,
+      payload: { event: "binding.drop.recovered.again" },
+    });
+    expect(secondRun.source).toBe("webhook");
   });
 });

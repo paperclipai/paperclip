@@ -21,6 +21,7 @@ const mockSecretService = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
+  createBinding: vi.fn(),
   previewRemoteImport: vi.fn(),
   importRemoteSecrets: vi.fn(),
 }));
@@ -398,6 +399,72 @@ describe("secret routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockSecretService.previewRemoteImport).not.toHaveBeenCalled();
+  });
+
+  it("creates secret bindings for board callers and logs value-free details", async () => {
+    const createdAt = new Date("2026-06-04T00:00:00.000Z");
+    mockSecretService.createBinding.mockResolvedValue({
+      id: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      secretId: "22222222-2222-4222-8222-222222222222",
+      targetType: "routine",
+      targetId: "routine-1",
+      configPath: "webhookSecret:22222222-2222-4222-8222-222222222222",
+      versionSelector: "latest",
+      required: true,
+      label: "Portfolio callback webhook secret",
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    const res = await request(createApp()).post("/api/companies/company-1/secret-bindings").send({
+      secretId: "22222222-2222-4222-8222-222222222222",
+      targetType: "routine",
+      targetId: "routine-1",
+      configPath: "webhookSecret:22222222-2222-4222-8222-222222222222",
+      label: "Portfolio callback webhook secret",
+    });
+
+    expect(res.status).toBe(201);
+    expect(mockSecretService.createBinding).toHaveBeenCalledWith({
+      companyId: "company-1",
+      secretId: "22222222-2222-4222-8222-222222222222",
+      targetType: "routine",
+      targetId: "routine-1",
+      configPath: "webhookSecret:22222222-2222-4222-8222-222222222222",
+      versionSelector: "latest",
+      required: true,
+      label: "Portfolio callback webhook secret",
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "secret_binding.created",
+      entityType: "secret_binding",
+      entityId: "33333333-3333-4333-8333-333333333333",
+      details: {
+        secretId: "22222222-2222-4222-8222-222222222222",
+        targetType: "routine",
+        targetId: "routine-1",
+        configPath: "webhookSecret:22222222-2222-4222-8222-222222222222",
+        versionSelector: "latest",
+        required: true,
+      },
+    }));
+  });
+
+  it("rejects secret binding repair for non-board actors", async () => {
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+    })).post("/api/companies/company-1/secret-bindings").send({
+      secretId: "22222222-2222-4222-8222-222222222222",
+      targetType: "routine",
+      targetId: "routine-1",
+      configPath: "webhookSecret:22222222-2222-4222-8222-222222222222",
+    });
+
+    expect(res.status).toBe(403);
+    expect(mockSecretService.createBinding).not.toHaveBeenCalled();
   });
 
   it("previews remote imports and logs only aggregate metadata", async () => {

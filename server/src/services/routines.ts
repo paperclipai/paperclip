@@ -87,6 +87,26 @@ function routineWebhookSecretConfigPath(secretId: string) {
   return `webhookSecret:${secretId}`;
 }
 
+// THIAAAAAA-203 self-heal helpers: detect the specific failure modes that occur
+// when a webhook trigger's company_secret_bindings join row has vanished while
+// the underlying secret is still live.
+function isBindingMissingError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { status?: number }).status === 422 &&
+    (err as { details?: { code?: string } }).details?.code === "binding_missing"
+  );
+}
+
+function isConflictError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { status?: number }).status === 409
+  );
+}
+
 function assertTimeZone(timeZone: string) {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
@@ -1043,14 +1063,66 @@ export function routineService(
       .where(eq(companySecrets.id, trigger.secretId))
       .then((rows) => rows[0] ?? null);
     if (!secret || secret.companyId !== companyId) throw notFound("Routine trigger secret not found");
-    const value = await secretsSvc.resolveSecretValue(companyId, trigger.secretId, "latest", {
-      consumerType: "routine",
+    const configPath = routineWebhookSecretConfigPath(trigger.secretId);
+    const context = {
+      consumerType: "routine" as const,
       consumerId: trigger.routineId,
-      actorType: "system",
+      actorType: "system" as const,
       actorId: null,
-      configPath: routineWebhookSecretConfigPath(trigger.secretId),
-    });
-    return value;
+      configPath,
+    };
+    try {
+      return await secretsSvc.resolveSecretValue(companyId, trigger.secretId, "latest", context);
+    } catch (err) {
+      // Self-heal (THIAAAAAA-203): the (company_id, target_type='routine',
+      // target_id, config_path='webhookSecret:<id>') binding row has been
+      // observed vanishing from company_secret_bindings, which 422-rejects
+      // OpCo webhook callbacks and has twice forced manual SQL restores. When
+      // the underlying secret is still live and in-company, transparently
+      // recreate the missing binding and retry the resolve exactly once rather
+      // than failing the fire. Root-cause of the deletion continues on
+      // THIAAAAAA-203 / THIAAAAAA-206 and is independent of this recovery.
+      if (!isBindingMissingError(err) || secret.status !== "active") throw err;
+      logger.warn(
+        {
+          event: "webhook_binding_auto_repair",
+          companyId,
+          routineId: trigger.routineId,
+          triggerId: trigger.id,
+          triggerPublicId: trigger.publicId,
+          secretId: trigger.secretId,
+          configPath,
+        },
+        "recreating missing webhook secret binding before retrying trigger fire (THIAAAAAA-203 self-heal)",
+      );
+      try {
+        await secretsSvc.createBinding({
+          companyId,
+          secretId: trigger.secretId,
+          targetType: "routine",
+          targetId: trigger.routineId,
+          configPath,
+        });
+      } catch (repairErr) {
+        // A concurrent fire may have already recreated the binding (409) — that
+        // is success for our purposes. Any other repair failure means we cannot
+        // safely recover, so surface the original binding_missing error.
+        if (!isConflictError(repairErr)) {
+          logger.error(
+            {
+              event: "webhook_binding_auto_repair_failed",
+              err: repairErr,
+              companyId,
+              routineId: trigger.routineId,
+              triggerId: trigger.id,
+            },
+            "webhook binding auto-repair failed; surfacing original binding_missing error",
+          );
+          throw err;
+        }
+      }
+      return await secretsSvc.resolveSecretValue(companyId, trigger.secretId, "latest", context);
+    }
   }
 
   async function touchIssueForUserInbox(

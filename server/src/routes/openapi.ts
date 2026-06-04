@@ -47,6 +47,7 @@ import {
   updateGoalSchema,
   // Secret
   createSecretSchema,
+  createSecretBindingSchema,
   updateSecretSchema,
   rotateSecretSchema,
   // Approval
@@ -1824,6 +1825,18 @@ registry.registerPath({
     body: jsonBody(createSecretSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/secret-bindings",
+  tags: ["secrets"],
+  summary: "Create a secret binding repair row",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(createSecretBindingSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
