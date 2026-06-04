@@ -19,7 +19,7 @@
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
   "dependencies": {
-    "@codemirror/lang-javascript": "^6.2.2",
+    "@codemirror/lang-javascript": "^6.2.5",
     "@codemirror/language": "^6.11.0",
     "@codemirror/state": "^6.4.0",
     "@codemirror/view": "^6.28.0",
