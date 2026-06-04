@@ -8,6 +8,7 @@ import { logActivity } from "./activity-log.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import {
   DEFAULT_ACCOUNT_ID,
+  ensureFreshLocalToken,
   ensureFreshPoolToken,
   getDefaultAccountHealth,
   getPoolState,
@@ -176,7 +177,16 @@ export function accountPoolBalancer(db: Db, deps: BalancerDeps = {}) {
       status: "active",
     };
     try {
-      const token = await readClaudeToken();
+      // Refresh-on-use (Option 2): on a file-based login (Linux/Docker) this
+      // refreshes the on-disk token and writes it back so the probe and the
+      // running Claude CLI stay in sync. On macOS (Keychain-only, no file) it
+      // returns null and we fall back to readClaudeToken(), which the live CLI
+      // keeps fresh. Without this, an idle default token (~8h) → usage api 401.
+      const fresh = await ensureFreshLocalToken();
+      if (fresh.error) {
+        logger.warn({ err: fresh.error }, "default account token refresh failed; probing with existing token");
+      }
+      const token = fresh.accessToken ?? (await readClaudeToken());
       if (!token) {
         return { ...base, windows: [], usedPercent: null, resetsAt: null, capped: false, subscriptionType, email, error: "no local Claude login found on this machine" };
       }

@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { accountPoolState, companySecrets } from "@paperclipai/db";
 import { POOL_ACCOUNT_TYPE } from "@paperclipai/shared";
 import type { PoolAccount, PoolState, QuotaWindow, RotationReason } from "@paperclipai/shared";
+import { readClaudeCredentialFile, writeClaudeCredentialFile } from "@paperclipai/adapter-claude-local/server";
 import { secretService } from "./secrets.js";
 import { refreshToken as oauthRefreshToken } from "./claude-oauth.js";
 
@@ -448,6 +449,71 @@ export async function ensureFreshPoolToken(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { accessToken, credentialsJson: blob, refreshed: false, error: message };
+  }
+}
+
+/** Result of a default (local) account refresh-on-use attempt. */
+export interface FreshLocalToken {
+  /** non-expired access token to probe with, or null when there's no usable login */
+  accessToken: string | null;
+  /** true when a refresh actually happened (token rotated + written back) */
+  refreshed: boolean;
+  /** non-null when a refresh was attempted but failed (caller can surface/log it) */
+  error: string | null;
+}
+
+/**
+ * Refresh-on-use for the machine's DEFAULT (local) account — the on-disk twin of
+ * {@link ensureFreshPoolToken}. The default account is the live `~/.claude`
+ * login (the Claude CLI owns the file). When no agent has run for a while the
+ * file's access token goes stale (~8h), so a read-only quota probe gets a 401.
+ *
+ * Option 2 (mirror the CLI): read the file blob, and if the access token is at/
+ * near expiry, refresh via the stored refresh_token and write the fresh blob
+ * straight back to the file — keeping the probe AND the running CLI in sync,
+ * and persisting the rotated refresh token so the next refresh still works.
+ *
+ * FILE login only. On macOS the CLI keeps creds in the Keychain (no file) — this
+ * returns `accessToken: null` so the caller falls back to readClaudeToken(),
+ * which the live CLI keeps fresh. Best-effort throughout: any read/refresh/write
+ * failure degrades to the existing (possibly stale) token rather than throwing,
+ * so a quota probe never breaks the run path.
+ */
+export async function ensureFreshLocalToken(): Promise<FreshLocalToken> {
+  let file: Awaited<ReturnType<typeof readClaudeCredentialFile>>;
+  try {
+    file = await readClaudeCredentialFile();
+  } catch (error) {
+    return { accessToken: null, refreshed: false, error: error instanceof Error ? error.message : String(error) };
+  }
+  // No file-based login (e.g. macOS Keychain-only) — caller falls back.
+  if (!file) return { accessToken: null, refreshed: false, error: null };
+
+  const { accessToken, refreshToken: refreshTok, expiresAt } = file;
+  const needsRefresh = !!refreshTok && expiresAt != null && expiresAt - Date.now() < TOKEN_REFRESH_BUFFER_MS;
+  if (!needsRefresh) {
+    return { accessToken, refreshed: false, error: null };
+  }
+
+  try {
+    const fresh = await oauthRefreshToken(refreshTok!);
+    const nextBlob = JSON.stringify({
+      ...file.raw,
+      claudeAiOauth: {
+        ...file.oauth,
+        accessToken: fresh.accessToken,
+        // Anthropic may rotate the refresh token — persist the new one.
+        refreshToken: fresh.refreshToken ?? refreshTok,
+        expiresAt: fresh.expiresAt,
+        scopes: fresh.scopes.length > 0 ? fresh.scopes : file.oauth.scopes,
+      },
+    });
+    await writeClaudeCredentialFile(file.filePath, nextBlob);
+    return { accessToken: fresh.accessToken, refreshed: true, error: null };
+  } catch (error) {
+    // Refresh/write failed — fall back to the (possibly expired) token; an honest
+    // 401 on the probe beats crashing the default-account health path.
+    return { accessToken, refreshed: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 

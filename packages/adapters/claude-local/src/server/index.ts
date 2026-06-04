@@ -12,6 +12,8 @@ export {
   getQuotaWindows,
   readClaudeAuthStatus,
   readClaudeToken,
+  readClaudeCredentialFile,
+  writeClaudeCredentialFile,
   fetchClaudeQuota,
   fetchClaudeCliQuota,
   captureClaudeCliUsageText,
@@ -20,6 +22,7 @@ export {
   fetchWithTimeout,
   claudeConfigDir,
 } from "./quota.js";
+export type { ClaudeCredentialFile } from "./quota.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
 function readNonEmptyString(value: unknown): string | null {

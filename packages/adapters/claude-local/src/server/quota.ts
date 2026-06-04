@@ -190,6 +190,70 @@ export async function readClaudeToken(): Promise<string | null> {
   return readClaudeTokenFromKeychain();
 }
 
+/**
+ * The on-disk Claude login parsed into the pieces callers need for
+ * refresh-on-use: the `claudeAiOauth` fields plus the `filePath` it came from
+ * (so a refreshed blob can be written straight back). This is the FILE login
+ * only — it deliberately does NOT consult the macOS Keychain, because the live
+ * Claude CLI keeps the Keychain token fresh on its own; null here means "no
+ * file-based login" and the caller should fall back to readClaudeToken().
+ */
+export interface ClaudeCredentialFile {
+  /** absolute path the blob was read from (write fresh tokens back here) */
+  filePath: string;
+  /** the full parsed JSON object (preserve unknown keys on write-back) */
+  raw: Record<string, unknown>;
+  /** the `claudeAiOauth` sub-object */
+  oauth: Record<string, unknown>;
+  accessToken: string | null;
+  refreshToken: string | null;
+  /** epoch ms when the access token expires */
+  expiresAt: number | null;
+}
+
+export async function readClaudeCredentialFile(): Promise<ClaudeCredentialFile | null> {
+  const configDir = claudeConfigDir();
+  for (const filename of [".credentials.json", "credentials.json"]) {
+    const filePath = path.join(configDir, filename);
+    let rawText: string;
+    try {
+      rawText = await fs.readFile(filePath, "utf8");
+    } catch {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      continue;
+    }
+    if (typeof parsed !== "object" || parsed === null) continue;
+    const raw = parsed as Record<string, unknown>;
+    const oauthVal = raw["claudeAiOauth"];
+    const oauth = typeof oauthVal === "object" && oauthVal !== null ? (oauthVal as Record<string, unknown>) : {};
+    return {
+      filePath,
+      raw,
+      oauth,
+      accessToken: typeof oauth.accessToken === "string" && oauth.accessToken.length > 0 ? oauth.accessToken : null,
+      refreshToken: typeof oauth.refreshToken === "string" && oauth.refreshToken.length > 0 ? oauth.refreshToken : null,
+      expiresAt: typeof oauth.expiresAt === "number" ? oauth.expiresAt : null,
+    };
+  }
+  return null;
+}
+
+/**
+ * Write a refreshed credentials blob back to its file, exactly as the Claude CLI
+ * does after its own refresh. Owner-only perms (0600) and an atomic temp-file +
+ * rename so a concurrent reader (the running CLI) never sees a partial write.
+ */
+export async function writeClaudeCredentialFile(filePath: string, json: string): Promise<void> {
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  await fs.writeFile(tmp, json, { mode: 0o600 });
+  await fs.rename(tmp, filePath);
+}
+
 interface AnthropicUsageWindow {
   utilization?: number | null;
   resets_at?: string | null;
