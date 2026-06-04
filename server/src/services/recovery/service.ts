@@ -840,6 +840,44 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function findLatestClosedStaleRunEvaluation(companyId: string, runId: string) {
+    const [row] = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        createdAt: issues.createdAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(desc(issues.createdAt))
+      .limit(1);
+    return row ?? null;
+  }
+
+  async function hasWatchdogRewatchDecisionAfter(companyId: string, runId: string, after: Date) {
+    const [row] = await db
+      .select({ id: heartbeatRunWatchdogDecisions.id })
+      .from(heartbeatRunWatchdogDecisions)
+      .where(
+        and(
+          eq(heartbeatRunWatchdogDecisions.companyId, companyId),
+          eq(heartbeatRunWatchdogDecisions.runId, runId),
+          inArray(heartbeatRunWatchdogDecisions.decision, ["snooze", "continue"]),
+          gt(heartbeatRunWatchdogDecisions.createdAt, after),
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1529,6 +1567,44 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       return { kind: "existing" as const, evaluationIssueId: existing.id };
     }
 
+    // A prior evaluation for this run was already filed and then closed. Because the
+    // candidate scan only ever revisits runs that are still `running`, an orphaned run
+    // whose output has flatlined would otherwise get a brand-new issue on every tick once
+    // its alert is triaged-closed. Suppress the re-file unless the run produced new output
+    // since that evaluation, or an explicit continue/snooze re-watch decision was recorded
+    // after it (the intended re-arm path). This bounds alerts to one per run lifecycle.
+    const priorClosed = await findLatestClosedStaleRunEvaluation(input.run.companyId, input.run.id);
+    if (priorClosed?.createdAt) {
+      const runProgressedSincePriorAlert = Boolean(
+        input.run.lastOutputAt && input.run.lastOutputAt.getTime() > priorClosed.createdAt.getTime(),
+      );
+      const rewatchedSincePriorAlert = await hasWatchdogRewatchDecisionAfter(
+        input.run.companyId,
+        input.run.id,
+        priorClosed.createdAt,
+      );
+      if (!runProgressedSincePriorAlert && !rewatchedSincePriorAlert) {
+        await logActivity(db, {
+          companyId: input.run.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: input.run.agentId,
+          runId: input.run.id,
+          action: "heartbeat.output_stale_suppressed",
+          entityType: "heartbeat_run",
+          entityId: input.run.id,
+          details: {
+            source: "recovery.scan_silent_active_runs",
+            priorEvaluationIssueId: priorClosed.id,
+            priorEvaluationStatus: priorClosed.status,
+            reason: "already_flagged_run_closed_without_progress",
+            lastOutputAt: input.run.lastOutputAt?.toISOString() ?? null,
+          },
+        });
+        return { kind: "suppressed" as const };
+      }
+    }
+
     const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
     const description = buildStaleRunEvaluationDescription({
       run: input.run,
@@ -1636,6 +1712,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       escalated: 0,
       folded: 0,
       snoozed: 0,
+      suppressed: 0,
       skipped: 0,
       evaluationIssueIds: [] as string[],
     };
@@ -1650,6 +1727,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       else if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;
       else if (outcome.kind === "folded") result.folded += 1;
+      else if (outcome.kind === "suppressed") result.suppressed += 1;
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
         result.evaluationIssueIds.push(outcome.evaluationIssueId);
