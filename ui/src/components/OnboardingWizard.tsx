@@ -209,6 +209,14 @@ export function OnboardingWizard() {
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType, { environmentId: null }),
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2
   });
+  // What "Default" resolves to — the model the adapter detects from its config.
+  const { data: detectedModelData } = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.agents.detectModel(createdCompanyId, adapterType)
+      : ["agents", "none", "detect-model", adapterType],
+    queryFn: () => agentsApi.detectModel(createdCompanyId!, adapterType),
+    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2,
+  });
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocalAdapter = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
@@ -249,6 +257,11 @@ export function OnboardingWizard() {
   }, [step, adapterType, model, command, args, url]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
+  // Friendly label for what "Default" resolves to (faded hint in the dropdown).
+  const detectedDefaultId = detectedModelData?.model ?? null;
+  const defaultResolvesTo = detectedDefaultId
+    ? (adapterModels ?? []).find((m) => m.id === detectedDefaultId)?.label ?? detectedDefaultId
+    : null;
   const hasAnthropicApiKeyOverrideCheck =
     adapterEnvResult?.checks.some(
       (check) =>
@@ -1003,17 +1016,29 @@ export function OnboardingWizard() {
                             <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
                               <span
                                 className={cn(
+                                  "truncate",
                                   !model && "text-muted-foreground"
                                 )}
                               >
-                                {selectedModel
-                                  ? selectedModel.label
-                                  : model ||
-                                    (adapterType === "opencode_local"
-                                      ? "Select model (required)"
-                                      : "Default")}
+                                {selectedModel ? (
+                                  selectedModel.label
+                                ) : model ? (
+                                  model
+                                ) : adapterType === "opencode_local" ? (
+                                  "Select model (required)"
+                                ) : (
+                                  <>
+                                    Default
+                                    {defaultResolvesTo && (
+                                      <span className="text-muted-foreground/60">
+                                        {" · "}
+                                        {defaultResolvesTo}
+                                      </span>
+                                    )}
+                                  </>
+                                )}
                               </span>
-                              <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                              <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
                             </button>
                           </PopoverTrigger>
                           <PopoverContent
@@ -1030,7 +1055,7 @@ export function OnboardingWizard() {
                             {adapterType !== "opencode_local" && (
                               <button
                                 className={cn(
-                                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                                  "flex items-center justify-between gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
                                   !model && "bg-accent"
                                 )}
                                 onClick={() => {
@@ -1038,7 +1063,15 @@ export function OnboardingWizard() {
                                   setModelOpen(false);
                                 }}
                               >
-                                Default
+                                <span>Default</span>
+                                {defaultResolvesTo && (
+                                  <span
+                                    className="ml-auto truncate font-mono text-[11px] text-muted-foreground/70"
+                                    title={detectedDefaultId ?? undefined}
+                                  >
+                                    {defaultResolvesTo}
+                                  </span>
+                                )}
                               </button>
                             )}
                             <div className="max-h-[240px] overflow-y-auto">

@@ -1447,6 +1447,10 @@ function ModelDropdown({
   const [modelSearch, setModelSearch] = useState("");
   const [detectingModel, setDetectingModel] = useState(false);
   const selected = models.find((m) => m.id === value);
+  // What "Default" resolves to — surfaced as a faded hint on the Default option.
+  const defaultResolvesTo = detectedModel
+    ? models.find((m) => m.id === detectedModel)?.label ?? detectedModel
+    : null;
   const manualModel = modelSearch.trim();
   const canCreateManualModel = Boolean(
     creatable &&
@@ -1526,13 +1530,28 @@ function ModelDropdown({
       >
         <PopoverTrigger asChild>
           <button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-            <span className={cn(!value && "text-muted-foreground")}>
-              {selected
-                ? selected.label
-                : value
-                  || (allowDefault ? (defaultLabel ?? "Default") : required ? "Select model (required)" : "Select model")}
+            <span className={cn("truncate", !value && "text-muted-foreground")}>
+              {selected ? (
+                selected.label
+              ) : value ? (
+                value
+              ) : allowDefault ? (
+                <>
+                  {defaultLabel ?? "Default"}
+                  {defaultResolvesTo && (
+                    <span className="text-muted-foreground/60">
+                      {" · "}
+                      {defaultResolvesTo}
+                    </span>
+                  )}
+                </>
+              ) : required ? (
+                "Select model (required)"
+              ) : (
+                "Select model"
+              )}
             </span>
-            <ChevronDown className="h-3 w-3 text-muted-foreground" />
+            <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
           </button>
         </PopoverTrigger>
         <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
@@ -1658,7 +1677,7 @@ function ModelDropdown({
               <button
                 type="button"
                 className={cn(
-                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                  "flex items-center justify-between gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
                   !value && "bg-accent",
                 )}
                 onClick={() => {
@@ -1666,7 +1685,15 @@ function ModelDropdown({
                   onOpenChange(false);
                 }}
               >
-                Default
+                <span>Default</span>
+                {defaultResolvesTo && (
+                  <span
+                    className="ml-auto truncate font-mono text-[11px] text-muted-foreground/70"
+                    title={detectedModel ?? undefined}
+                  >
+                    {defaultResolvesTo}
+                  </span>
+                )}
               </button>
             )}
             {canCreateManualModel && (
