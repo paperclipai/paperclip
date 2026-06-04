@@ -8,15 +8,24 @@ export type RestartDrainSource = "operator" | "dev_server" | "signal";
 
 export type RestartDrainMode = "idle" | "draining";
 
+export type RestartDrainReason = "planned_restart" | "manual_restart_now" | "sigterm";
+
+export type RestartEmergencyCategory =
+  | "operator_override"
+  | "security_update"
+  | "service_recovery"
+  | "other";
+
 export type RestartDrainStatus = {
   mode: RestartDrainMode;
   source: RestartDrainSource | null;
-  reason: string | null;
+  reason: RestartDrainReason | null;
   startedAt: string | null;
   lastDeferredAt: string | null;
   deferredCount: number;
   emergencyOverrideAt: string | null;
-  emergencyReason: string | null;
+  emergencyReasonPresent: boolean;
+  emergencyReasonCategory: RestartEmergencyCategory | null;
   nextCheckAt: string | null;
 };
 
@@ -30,12 +39,13 @@ export type ActiveRunDrainSummary = {
 type RestartDrainState = {
   mode: RestartDrainMode;
   source: RestartDrainSource | null;
-  reason: string | null;
+  reason: RestartDrainReason | null;
   startedAt: Date | null;
   lastDeferredAt: Date | null;
   deferredCount: number;
   emergencyOverrideAt: Date | null;
-  emergencyReason: string | null;
+  emergencyReasonPresent: boolean;
+  emergencyReasonCategory: RestartEmergencyCategory | null;
 };
 
 const state: RestartDrainState = {
@@ -46,7 +56,8 @@ const state: RestartDrainState = {
   lastDeferredAt: null,
   deferredCount: 0,
   emergencyOverrideAt: null,
-  emergencyReason: null,
+  emergencyReasonPresent: false,
+  emergencyReasonCategory: null,
 };
 
 function toIso(value: Date | null): string | null {
@@ -60,7 +71,7 @@ function nextCheckAt(from: Date | null, intervalMs = DEFAULT_NEXT_CHECK_MS): str
 
 export function beginRestartDrain(input: {
   source: RestartDrainSource;
-  reason: string;
+  reason: RestartDrainReason;
   now?: Date;
 }) {
   const now = input.now ?? new Date();
@@ -85,12 +96,14 @@ export function markRestartDeferred(now = new Date()) {
 }
 
 export function recordEmergencyRestartOverride(input: {
-  reason: string;
+  reasonPresent: boolean;
+  reasonCategory?: RestartEmergencyCategory | null;
   now?: Date;
 }) {
   const now = input.now ?? new Date();
   state.emergencyOverrideAt = now;
-  state.emergencyReason = input.reason;
+  state.emergencyReasonPresent = input.reasonPresent;
+  state.emergencyReasonCategory = input.reasonCategory ?? null;
 }
 
 export function clearRestartDrain() {
@@ -115,7 +128,8 @@ export function getRestartDrainStatus(): RestartDrainStatus {
     lastDeferredAt: toIso(state.lastDeferredAt),
     deferredCount: state.deferredCount,
     emergencyOverrideAt: toIso(state.emergencyOverrideAt),
-    emergencyReason: state.emergencyReason,
+    emergencyReasonPresent: state.emergencyReasonPresent,
+    emergencyReasonCategory: state.emergencyReasonCategory,
     nextCheckAt: nextCheckAt(state.lastDeferredAt),
   };
 }
