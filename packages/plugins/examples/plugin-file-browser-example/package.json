@@ -31,7 +31,7 @@
     "@types/node": "^24.6.0",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
-    "esbuild": "^0.27.3",
+    "esbuild": "^0.28.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "^5.7.3"
