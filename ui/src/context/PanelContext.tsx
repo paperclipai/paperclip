@@ -36,6 +36,8 @@ export function PanelProvider({ children }: { children: ReactNode }) {
 
   const openPanel = useCallback((content: ReactNode) => {
     setPanelContent(content);
+    setPanelVisibleState(true);
+    writePreference(true);
   }, []);
 
   const closePanel = useCallback(() => {
