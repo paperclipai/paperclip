@@ -98,6 +98,21 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     return { companyId, goalId, issueId };
   }
 
+  async function insertAgent(companyId: string, id = randomUUID()) {
+    await db.insert(agents).values({
+      id,
+      companyId,
+      name: `Agent ${id.slice(0, 8)}`,
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return id;
+  }
+
   it("accepts suggested tasks by creating a rooted issue tree under the current issue", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
@@ -822,6 +837,82 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       assigneeAgentId: agentId,
       assigneeUserId: null,
     });
+  });
+
+  it("allows the creating agent to retire an externally satisfied request confirmation", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Retire stale confirmation");
+    const agentId = await insertAgent(companyId);
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Approve already-completed action?",
+      },
+    }, {
+      agentId,
+    });
+
+    const retired = await interactionsSvc.cancelInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      reason: "Requested action was completed externally.",
+    }, {
+      agentId,
+    });
+
+    expect(retired).toMatchObject({
+      id: created.id,
+      kind: "request_confirmation",
+      status: "cancelled",
+      resolvedByAgentId: agentId,
+      result: {
+        version: 1,
+        outcome: "retired",
+        reason: "Requested action was completed externally.",
+      },
+    });
+  });
+
+  it("forbids unrelated agents from retiring request confirmations", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Retire stale confirmation forbidden");
+    const creatorAgentId = await insertAgent(companyId);
+    const unrelatedAgentId = await insertAgent(companyId);
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Approve action?",
+      },
+    }, {
+      agentId: creatorAgentId,
+    });
+
+    await expect(interactionsSvc.cancelInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      reason: "Not the creator or assignee.",
+    }, {
+      agentId: unrelatedAgentId,
+    })).rejects.toMatchObject({
+      status: 403,
+    });
+
+    const [row] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, created.id));
+    expect(row?.status).toBe("pending");
   });
 
   it("expires request confirmations opted into user-comment supersede after creation", async () => {

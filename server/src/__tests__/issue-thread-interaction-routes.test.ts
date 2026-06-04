@@ -19,6 +19,7 @@ const mockInteractionService = vi.hoisted(() => ({
   rejectSuggestedTasks: vi.fn(),
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(),
   answerQuestions: vi.fn(),
+  cancelInteraction: vi.fn(),
   cancelQuestions: vi.fn(),
 }));
 
@@ -274,7 +275,7 @@ describe.sequential("issue thread interaction routes", () => {
       updatedAt: "2026-04-20T12:06:00.000Z",
       resolvedAt: "2026-04-20T12:06:00.000Z",
     });
-    mockInteractionService.cancelQuestions.mockResolvedValue({
+    const cancelledQuestion = {
       id: "interaction-2",
       companyId: "company-1",
       issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -303,7 +304,9 @@ describe.sequential("issue thread interaction routes", () => {
       createdAt: "2026-04-20T12:00:00.000Z",
       updatedAt: "2026-04-20T12:05:00.000Z",
       resolvedAt: "2026-04-20T12:05:00.000Z",
-    });
+    };
+    mockInteractionService.cancelInteraction.mockResolvedValue(cancelledQuestion);
+    mockInteractionService.cancelQuestions.mockResolvedValue(cancelledQuestion);
   });
 
   it("lists and creates board-authored interactions", async () => {
@@ -536,7 +539,7 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("cancelled");
-    expect(mockInteractionService.cancelQuestions).toHaveBeenCalledWith(
+    expect(mockInteractionService.cancelInteraction).toHaveBeenCalledWith(
       expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
       "interaction-2",
       {},
@@ -797,6 +800,177 @@ describe.sequential("issue thread interaction routes", () => {
           _previous: expect.objectContaining({
             assigneeUserId: "local-board",
           }),
+        }),
+      }),
+    );
+  });
+
+  it("forbids agents from accepting request confirmations", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-agent",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-3/accept")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+  });
+
+  it("allows the current assignee agent to retire a stale confirmation and emits audit plus wake", async () => {
+    mockInteractionService.cancelInteraction.mockResolvedValueOnce({
+      id: "interaction-stale-confirmation",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "cancelled",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: "confirmation:stale",
+      sourceCommentId: null,
+      sourceRunId: "run-original",
+      payload: {
+        version: 1,
+        prompt: "Approve obsolete action?",
+      },
+      result: {
+        version: 1,
+        outcome: "retired",
+        reason: "Requested action was completed externally.",
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-assignee",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-stale-confirmation/cancel")
+      .send({ reason: "Requested action was completed externally." });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.cancelInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-stale-confirmation",
+      { reason: "Requested action was completed externally." },
+      {
+        agentId: ASSIGNEE_AGENT_ID,
+        userId: null,
+      },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_cancelled",
+        details: expect.objectContaining({
+          interactionId: "interaction-stale-confirmation",
+          interactionKind: "request_confirmation",
+          interactionStatus: "cancelled",
+          cancellationReason: "Requested action was completed externally.",
+          result: expect.objectContaining({
+            outcome: "retired",
+          }),
+        }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          interactionId: "interaction-stale-confirmation",
+          interactionKind: "request_confirmation",
+          interactionStatus: "cancelled",
+        }),
+      }),
+    );
+  });
+
+  it("requeues and wakes the agent assignee when a retired confirmation was the last in_review wait path", async () => {
+    const issue = createIssue({
+      status: "in_review",
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      monitorNextCheckAt: null,
+    });
+    mockIssueService.getById.mockResolvedValueOnce(issue);
+    mockIssueService.update.mockResolvedValueOnce({
+      ...issue,
+      status: "todo",
+      updatedAt: new Date("2026-04-20T12:10:00.000Z"),
+    });
+    mockInteractionService.listForIssue.mockResolvedValueOnce([]);
+    mockInteractionService.cancelInteraction.mockResolvedValueOnce({
+      id: "interaction-stale-confirmation",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "cancelled",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: "confirmation:stale",
+      sourceCommentId: null,
+      sourceRunId: "run-original",
+      payload: {
+        version: 1,
+        prompt: "Approve obsolete action?",
+      },
+      result: {
+        version: 1,
+        outcome: "retired",
+        reason: "Requested action was completed externally.",
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-assignee",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-stale-confirmation/cancel")
+      .send({ reason: "Requested action was completed externally." });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "todo",
+        actorAgentId: ASSIGNEE_AGENT_ID,
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          status: "todo",
+          source: "issue.interaction.cancel",
+          reason: "retired_request_confirmation_removed_last_in_review_wait_path",
+          interactionId: "interaction-stale-confirmation",
+        }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        source: "assignment",
+        reason: "issue_assigned",
+        payload: expect.objectContaining({
+          issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          mutation: "request_confirmation_retired",
         }),
       }),
     );

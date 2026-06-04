@@ -1402,19 +1402,37 @@ export function issueRoutes(
     return approvals.some((approval) => ACTIVE_REVIEW_APPROVAL_STATUSES.has(String(approval.status)));
   }
 
-  async function requeueInReviewIssueAfterExpiredRequestConfirmations(input: {
+  function isRetiredRequestConfirmation(interaction: {
+    kind: string;
+    status: string;
+    result?: unknown;
+  }) {
+    if (interaction.kind !== "request_confirmation" || interaction.status !== "cancelled") return false;
+    const result = interaction.result;
+    return (
+      typeof result === "object"
+      && result !== null
+      && "outcome" in result
+      && (result as { outcome?: unknown }).outcome === "retired"
+    );
+  }
+
+  async function requeueInReviewIssueAfterResolvedRequestConfirmations(input: {
     issue: IssueRouteSnapshot;
-    interactions: Array<{ id: string; kind: string; status: string }>;
+    interactions: Array<{ id: string; kind: string; status: string; result?: unknown }>;
     actor: ReturnType<typeof getActorInfo>;
     source: string;
   }) {
     if (input.issue.status !== "in_review") return input.issue;
-    if (!input.interactions.some((interaction) =>
-      interaction.kind === "request_confirmation" && interaction.status === "expired"
-    )) {
+    const resolvedConfirmation = input.interactions.find((interaction) =>
+      (interaction.kind === "request_confirmation" && interaction.status === "expired")
+      || isRetiredRequestConfirmation(interaction)
+    );
+    if (!resolvedConfirmation) {
       return input.issue;
     }
     if (await issueHasActiveInReviewWaitPath({ issue: input.issue })) return input.issue;
+    const retired = isRetiredRequestConfirmation(resolvedConfirmation);
 
     const updated = await svc.update(input.issue.id, {
       status: "todo",
@@ -1436,7 +1454,10 @@ export function issueRoutes(
         identifier: input.issue.identifier,
         status: "todo",
         source: input.source,
-        reason: "expired_request_confirmation_removed_last_in_review_wait_path",
+        reason: retired
+          ? "retired_request_confirmation_removed_last_in_review_wait_path"
+          : "expired_request_confirmation_removed_last_in_review_wait_path",
+        interactionId: resolvedConfirmation.id,
         _previous: {
           status: input.issue.status,
           assigneeAgentId: input.issue.assigneeAgentId ?? null,
@@ -1450,7 +1471,7 @@ export function issueRoutes(
         heartbeat,
         issue: updated,
         reason: "issue_assigned",
-        mutation: "request_confirmation_expired",
+        mutation: retired ? "request_confirmation_retired" : "request_confirmation_expired",
         contextSource: input.source,
         requestedByActorType: input.actor.actorType,
         requestedByActorId: input.actor.actorId,
@@ -5338,7 +5359,7 @@ export function issueRoutes(
       actor,
       source: "issue.interactions.catchup_superseded_by_comment",
     });
-    await requeueInReviewIssueAfterExpiredRequestConfirmations({
+    await requeueInReviewIssueAfterResolvedRequestConfirmations({
       issue,
       interactions: expiredInteractions,
       actor,
@@ -5620,10 +5641,14 @@ export function issueRoutes(
         return;
       }
       assertCompanyAccess(req, issue.companyId);
-      assertBoard(req);
+      if (req.actor.type === "agent") {
+        if (!requireAgentRunId(req, res)) return;
+      } else {
+        assertBoard(req);
+      }
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).cancelQuestions(issue, interactionId, req.body, {
+      const interaction = await issueThreadInteractionService(db).cancelInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
@@ -5644,17 +5669,32 @@ export function issueRoutes(
           cancellationReason:
             interaction.kind === "ask_user_questions"
               ? (interaction.result?.cancellationReason ?? null)
+              : interaction.kind === "request_confirmation"
+                ? (interaction.result?.reason ?? null)
               : null,
+          result:
+            interaction.kind === "request_confirmation"
+              ? interaction.result
+              : undefined,
         },
       });
 
-      queueResolvedInteractionContinuationWakeup({
-        heartbeat,
+      const requeuedIssue = await requeueInReviewIssueAfterResolvedRequestConfirmations({
         issue,
-        interaction,
+        interactions: [interaction],
         actor,
         source: "issue.interaction.cancel",
       });
+
+      if (requeuedIssue === issue) {
+        queueResolvedInteractionContinuationWakeup({
+          heartbeat,
+          issue,
+          interaction,
+          actor,
+          source: "issue.interaction.cancel",
+        });
+      }
 
       res.json(interaction);
     },
