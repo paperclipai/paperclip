@@ -2407,7 +2407,7 @@ function normalizeSessionParams(params: Record<string, unknown> | null | undefin
 type RunSessionOutcome = "succeeded" | "failed" | "cancelled" | "timed_out";
 
 const HERMES_ADAPTER_TYPE = "hermes_local";
-const HERMES_SESSION_ID_REGEX = /^(?:\d{8}_\d{6}_[A-Za-z0-9_-]{4,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+const HERMES_SESSION_ID_REGEX = /^(?:\d{8}_\d{6}_[A-Za-z0-9_-]{4,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
 
 function requiresCanonicalSessionIds(adapterType: string | null | undefined) {
   return adapterType === HERMES_ADAPTER_TYPE;
@@ -2437,7 +2437,7 @@ export function resolveNextSessionState(input: {
   adapterType?: string | null;
   codec: AdapterSessionCodec;
   adapterResult: AdapterExecutionResult;
-  outcome?: RunSessionOutcome;
+  outcome: RunSessionOutcome;
   previousParams: Record<string, unknown> | null;
   previousDisplayId: string | null;
   previousLegacySessionId: string | null;
@@ -2516,7 +2516,7 @@ export function resolveNextSessionState(input: {
     };
   };
 
-  if (input.outcome && input.outcome !== "succeeded") {
+  if (input.outcome !== "succeeded") {
     return previousState();
   }
 
