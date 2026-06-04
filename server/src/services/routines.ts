@@ -58,6 +58,7 @@ import { parseCron, validateCron } from "./cron.js";
 import { heartbeatService } from "./heartbeat.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
+import { accountPoolBalancer } from "./account-pool-balancer.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
@@ -482,6 +483,14 @@ export function routineService(
   const heartbeat = deps.heartbeat ?? heartbeatService(db, {
     pluginWorkerManager: deps.pluginWorkerManager,
   });
+
+  // Account Pool & Rotation — Balancer Brain (Slice 2). Registered as a
+  // recurring job that rides the existing scheduler tick (tickScheduledTriggers
+  // is already invoked every scheduler interval from index.ts). We gate it to a
+  // ~5 minute cadence rather than creating a synthetic routine row, because the
+  // balancer is an internal system job (upserts account_pool_state), not a
+  // user-defined routine that dispatches issue-creating runs.
+  const balancer = accountPoolBalancer(db, { heartbeat });
 
   async function getRoutineById(id: string) {
     return db
@@ -2300,7 +2309,21 @@ export function routineService(
       }));
     },
 
+    // Force a balancer run regardless of cadence (manual trigger / tests /
+    // immediate rebalance after add/remove account). Returns per-company results.
+    tickAccountPoolBalancer: async () => {
+      return balancer.tick();
+    },
+
     tickScheduledTriggers: async (now: Date = new Date()) => {
+      // NOTE: proactive Account-Pool polling is intentionally DISABLED. Polling
+      // the Anthropic usage API every 5 min competed with the operator's own
+      // Claude Code usage on the same account and got rate-limited (429). Quota
+      // is now fetched ONLY on demand via the UI "Reload" button (probeCompany),
+      // and rotation is REACTIVE — triggered when a run actually hits quota
+      // (see heartbeat.ts run-completion → balancer.rotateOnCap). The
+      // `tickAccountPoolBalancer` method above remains for manual/test use.
+
       const due = await db
         .select({
           trigger: routineTriggers,

@@ -13,6 +13,31 @@ const SEEDED_SHARED_FILES = [
   "CLAUDE.md",
 ] as const;
 
+/**
+ * Files whose seed source is overridden by an active pool account. Only the
+ * credential blob is account-specific; settings.json / CLAUDE.md still come from
+ * the shared ~/.claude dir so non-credential config is preserved.
+ */
+const POOL_ACCOUNT_CREDENTIAL_FILES = new Set([".credentials.json", "credentials.json"]);
+
+/**
+ * Account Pool & Rotation (Slice 3 — credential injection).
+ *
+ * When a company is riding a pooled subscription account, the active account's
+ * decrypted `.credentials.json` blob is resolved server-side (heartbeat reads
+ * account_pool_state + decrypts via the secret service) and threaded down here.
+ *
+ * Critical constraint (Spec D4): we EXTEND THE SEED SOURCE — we never override
+ * env.CLAUDE_CONFIG_DIR from rotation code. A direct env override would bypass
+ * the container-sync guard at execute.ts:464-467 (useManagedRemoteClaudeConfig).
+ */
+export interface PoolAccountSeedInput {
+  /** company_secrets.id of the active pooled account */
+  accountId: string;
+  /** decrypted `.credentials.json` blob for that account */
+  credentialsJson: string;
+}
+
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -27,10 +52,13 @@ function isAlreadyExistsError(error: unknown): boolean {
   return code === "EEXIST" || code === "ENOTEMPTY";
 }
 
-async function collectSeedFiles(sourceDir: string): Promise<Array<{ name: string; sourcePath: string }>> {
+async function collectSeedFiles(
+  sourceDir: string,
+  overrides?: Map<string, string>,
+): Promise<Array<{ name: string; sourcePath: string }>> {
   const files: Array<{ name: string; sourcePath: string }> = [];
   for (const name of SEEDED_SHARED_FILES) {
-    const sourcePath = path.join(sourceDir, name);
+    const sourcePath = overrides?.get(name) ?? path.join(sourceDir, name);
     if (!(await pathExists(sourcePath))) continue;
     files.push({ name, sourcePath });
   }
@@ -102,10 +130,62 @@ export function resolveManagedClaudeConfigSeedDir(
     : path.resolve(instanceRoot, "claude-config-seed");
 }
 
+/**
+ * Deterministic per-account directory that holds the decrypted credential blob
+ * used as the seed SOURCE for `.credentials.json`. Keyed by company + account so
+ * two accounts (or two companies) resolve to two distinct source dirs; the
+ * downstream snapshot/hash system then guarantees per-content seed isolation.
+ */
+export function resolvePoolAccountSeedDir(
+  env: NodeJS.ProcessEnv,
+  companyId: string,
+  accountId: string,
+): string {
+  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
+    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+    env,
+  });
+  return path.resolve(
+    instanceRoot,
+    "companies",
+    companyId,
+    "pool-accounts",
+    accountId,
+    "credentials-src",
+  );
+}
+
+/**
+ * Materialize an active pool account's decrypted `.credentials.json` into its
+ * per-account source dir and return the map of seed-file name -> source path so
+ * only the credential blob is sourced from the account (everything else still
+ * comes from the shared ~/.claude dir).
+ */
+async function materializePoolAccountCredentialSource(input: {
+  env: NodeJS.ProcessEnv;
+  companyId: string;
+  poolAccount: PoolAccountSeedInput;
+}): Promise<Map<string, string>> {
+  const seedDir = resolvePoolAccountSeedDir(input.env, input.companyId, input.poolAccount.accountId);
+  await fs.mkdir(seedDir, { recursive: true });
+  const credentialsPath = path.join(seedDir, ".credentials.json");
+  const stagingPath = `${credentialsPath}.tmp-${process.pid}-${Date.now()}`;
+  await fs.writeFile(stagingPath, input.poolAccount.credentialsJson, { mode: 0o600 });
+  await fs.rename(stagingPath, credentialsPath);
+
+  const overrides = new Map<string, string>();
+  for (const name of POOL_ACCOUNT_CREDENTIAL_FILES) {
+    overrides.set(name, credentialsPath);
+  }
+  return overrides;
+}
+
 export async function prepareClaudeConfigSeed(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
   companyId?: string,
+  poolAccount?: PoolAccountSeedInput | null,
 ): Promise<string> {
   const sourceDir = resolveSharedClaudeConfigDir(env);
   const targetRootDir = resolveManagedClaudeConfigSeedDir(env, companyId);
@@ -114,7 +194,15 @@ export async function prepareClaudeConfigSeed(
     return targetRootDir;
   }
 
-  const copiedFiles = await collectSeedFiles(sourceDir);
+  // When a pooled account is active for this company, source `.credentials.json`
+  // from THAT account's decrypted blob instead of the shared ~/.claude dir.
+  // Backward-compat: no pool account => identical behavior to before.
+  const credentialOverrides =
+    poolAccount && companyId
+      ? await materializePoolAccountCredentialSource({ env, companyId, poolAccount })
+      : undefined;
+
+  const copiedFiles = await collectSeedFiles(sourceDir, credentialOverrides);
   const snapshotKey = await buildSeedSnapshotKey(copiedFiles);
   const targetDir = await materializeSeedSnapshot({
     rootDir: targetRootDir,
@@ -123,9 +211,12 @@ export async function prepareClaudeConfigSeed(
   });
 
   if (copiedFiles.length > 0) {
+    const poolNote = credentialOverrides
+      ? ` [pool account ${poolAccount!.accountId} credentials]`
+      : "";
     await onLog(
       "stdout",
-      `[paperclip] Prepared Claude config seed "${targetDir}" from "${sourceDir}" (${copiedFiles.map((file) => file.name).join(", ")}).\n`,
+      `[paperclip] Prepared Claude config seed "${targetDir}" from "${sourceDir}"${poolNote} (${copiedFiles.map((file) => file.name).join(", ")}).\n`,
     );
   } else {
     await onLog(

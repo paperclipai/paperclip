@@ -110,6 +110,10 @@ interface ClaudeAuthStatus {
   loggedIn: boolean;
   authMethod: string | null;
   subscriptionType: string | null;
+  /** the logged-in account email (`claude auth status` reports this) */
+  email: string | null;
+  /** organization display name, when present */
+  orgName: string | null;
 }
 
 export async function readClaudeAuthStatus(): Promise<ClaudeAuthStatus | null> {
@@ -124,6 +128,8 @@ export async function readClaudeAuthStatus(): Promise<ClaudeAuthStatus | null> {
       loggedIn: parsed.loggedIn === true,
       authMethod: typeof parsed.authMethod === "string" ? parsed.authMethod : null,
       subscriptionType: typeof parsed.subscriptionType === "string" ? parsed.subscriptionType : null,
+      email: typeof parsed.email === "string" ? parsed.email : null,
+      orgName: typeof parsed.orgName === "string" ? parsed.orgName : null,
     };
   } catch {
     return null;
@@ -137,13 +143,51 @@ function describeClaudeSubscriptionAuth(status: ClaudeAuthStatus | null): string
     : "Claude is logged in via claude.ai";
 }
 
+/** Pull the OAuth accessToken out of a `.credentials.json`-shaped blob. */
+function extractOauthAccessToken(raw: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const oauth = (parsed as Record<string, unknown>)["claudeAiOauth"];
+  if (typeof oauth !== "object" || oauth === null) return null;
+  const token = (oauth as Record<string, unknown>)["accessToken"];
+  return typeof token === "string" && token.length > 0 ? token : null;
+}
+
+/**
+ * On macOS the Claude CLI stores credentials in the login Keychain (service
+ * "Claude Code-credentials"), NOT in ~/.claude/.credentials.json. Without this,
+ * quota polling falls back to the slower CLI text-scrape path which omits the
+ * Extra-usage window. Best-effort + guarded: any failure returns null so the
+ * caller falls back exactly as before (no regression on non-macOS or when the
+ * item isn't present).
+ */
+async function readClaudeTokenFromKeychain(): Promise<string | null> {
+  if (process.platform !== "darwin") return null;
+  try {
+    const { stdout } = await execFileAsync(
+      "security",
+      ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+      { timeout: 5000 },
+    );
+    return extractOauthAccessToken(stdout.trim());
+  } catch {
+    return null;
+  }
+}
+
 export async function readClaudeToken(): Promise<string | null> {
   const configDir = claudeConfigDir();
   for (const filename of [".credentials.json", "credentials.json"]) {
     const token = await readClaudeTokenFromFile(path.join(configDir, filename));
     if (token) return token;
   }
-  return null;
+  // macOS Keychain fallback (Claude CLI's default storage on darwin).
+  return readClaudeTokenFromKeychain();
 }
 
 interface AnthropicUsageWindow {
