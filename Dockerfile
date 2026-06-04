@@ -172,16 +172,22 @@ RUN cd /vendor/adapter-utils-src \
 # caches let those resolutions reuse tarballs from prior builds across
 # all three vendored repos.
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store,sharing=locked \
-    git clone https://github.com/kkroo/ccrotate.git ccrotate \
-  && cd ccrotate && git checkout "${CCROTATE_REF}" \
+    --mount=type=secret,id=gh_token \
+    GH="$(cat /run/secrets/gh_token)" \
+ && git -c "url.https://x-access-token:${GH}@github.com/.insteadOf=https://github.com/" \
+      clone https://github.com/kkroo/ccrotate.git ccrotate \
+  && cd ccrotate && git checkout "${CCROTATE_REF}" && rm -rf .git \
   && pnpm install --frozen-lockfile \
   && pnpm run build \
   && cd dist && npm pack \
   && mv ccrotate-*.tgz /vendor/ccrotate.tgz
 
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-    git clone https://github.com/kkroo/paperclip-adapter-claude-k8s.git claude-k8s \
-  && cd claude-k8s && git checkout "${CLAUDE_K8S_REF}" \
+    --mount=type=secret,id=gh_token \
+    GH="$(cat /run/secrets/gh_token)" \
+ && git -c "url.https://x-access-token:${GH}@github.com/.insteadOf=https://github.com/" \
+      clone https://github.com/kkroo/paperclip-adapter-claude-k8s.git claude-k8s \
+  && cd claude-k8s && git checkout "${CLAUDE_K8S_REF}" && rm -rf .git \
   && npm ci \
   && npm install --no-save /vendor/adapter-utils.tgz \
   && npm run build \
@@ -189,8 +195,11 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
   && mv paperclip-adapter-claude-k8s-*.tgz /vendor/paperclip-adapter-claude-k8s.tgz
 
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-    git clone https://github.com/kkroo/paperclip-adapter-opencode-k8s.git opencode-k8s \
-  && cd opencode-k8s && git checkout "${OPENCODE_K8S_REF}" \
+    --mount=type=secret,id=gh_token \
+    GH="$(cat /run/secrets/gh_token)" \
+ && git -c "url.https://x-access-token:${GH}@github.com/.insteadOf=https://github.com/" \
+      clone https://github.com/kkroo/paperclip-adapter-opencode-k8s.git opencode-k8s \
+  && cd opencode-k8s && git checkout "${OPENCODE_K8S_REF}" && rm -rf .git \
   && npm ci \
   && npm install --no-save /vendor/adapter-utils.tgz \
   && npm run build \

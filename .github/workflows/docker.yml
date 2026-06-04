@@ -131,6 +131,8 @@ jobs:
           cache-to: type=registry,ref=harbor.blockcast.net/paperclip/paperclip:buildcache-v6,mode=max,image-manifest=true,oci-mediatypes=true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          secrets: |
+            gh_token=${{ secrets.PAPERCLIP_BOARD_TOKEN }}
 
       - name: Compute short sha
         id: sha
