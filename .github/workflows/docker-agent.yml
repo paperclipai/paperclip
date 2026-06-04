@@ -153,7 +153,13 @@ jobs:
         if: github.event_name != 'workflow_dispatch'
         env:
           PAPERCLIP_API: ${{ vars.PAPERCLIP_API_URL || 'https://paperclip.blockcast.net' }}
-          PAPERCLIP_BOARD_TOKEN: ${{ secrets.PAPERCLIP_BOARD_TOKEN }}
+          # Must be a paperclip BOARD token (pcp_board_…) — /admin/agents/bump-agent-image
+          # rejects anything whose actor.type != "board" with 403. This is a
+          # DIFFERENT credential from PAPERCLIP_BOARD_TOKEN, which #294 repurposed
+          # to a GitHub PAT for the private kkroo/* vendor clones in Dockerfile;
+          # a GitHub PAT is not a valid paperclip bearer, so the two cannot share
+          # one secret. Mint via POST /api/service-account-tokens (instance-admin).
+          PAPERCLIP_BUMP_TOKEN: ${{ secrets.PAPERCLIP_AGENT_BUMP_TOKEN }}
           NEW_IMAGE_SHORT: ${{ steps.sha.outputs.short }}
           BUILD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           # Production company id for Blockcast :: CEO. If we add more
@@ -162,15 +168,15 @@ jobs:
           COMPANY_ID: aaced805-3491-4ee5-9b14-cdf70cb81d47
         run: |
           set -euo pipefail
-          if [ -z "${PAPERCLIP_BOARD_TOKEN:-}" ]; then
-            echo "::warning::PAPERCLIP_BOARD_TOKEN not set; skipping agent image bump (manual operator PATCH still required)"
+          if [ -z "${PAPERCLIP_BUMP_TOKEN:-}" ]; then
+            echo "::warning::PAPERCLIP_AGENT_BUMP_TOKEN not set; skipping agent image bump (manual operator PATCH still required)"
             exit 0
           fi
           NEW_IMAGE="harbor.blockcast.net/paperclip-agent/paperclip-agent:sha-${NEW_IMAGE_SHORT}-k8s-vendored"
           response=$(mktemp)
           http=$(curl -sS -o "$response" -w "%{http_code}" \
             -X POST "${PAPERCLIP_API}/api/admin/agents/bump-agent-image" \
-            -H "Authorization: Bearer ${PAPERCLIP_BOARD_TOKEN}" \
+            -H "Authorization: Bearer ${PAPERCLIP_BUMP_TOKEN}" \
             -H "Content-Type: application/json" \
             -d "$(jq -n --arg image "$NEW_IMAGE" --arg sha "$BUILD_SHA" --arg cid "$COMPANY_ID" '
               { companyId: $cid, image: $image, source: "ci:docker-agent.yml", buildSha: $sha }
