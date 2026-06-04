@@ -517,6 +517,19 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("in_progress");
     expect(issue?.checkoutRunId).toBe(userWake?.id);
+
+    // Wait for the adapter run to reach a terminal status before the test ends.
+    // Without this, a lingering adapter call can fire after afterEach resets the mock,
+    // causing mock.calls.length to increment unexpectedly in the next test which
+    // asserts calls.length === 1 exactly.
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, userWake!.id))
+        .then((rows) => rows[0] ?? null);
+      return ["succeeded", "failed", "cancelled", "timed_out"].includes(run?.status ?? "");
+    }, 5_000);
   });
 
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
