@@ -3989,16 +3989,19 @@ export function IssueChatThread({
   // that element is at the scroll container's bottom (or scroll position
   // and content height stop changing).
   function scrollToLatestCommentWithSettle(messageSnapshot: readonly ThreadMessage[] = latestMessagesRef.current) {
-    const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
+    // These are re-targeted inside the settle loop below if a newer comment
+    // arrives mid-settle, so they must be mutable (not captured once).
+    let latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
     if (latestCommentIndex < 0) {
       jumpToLatestFallback();
       return;
     }
-    const latestCommentAnchor = issueChatMessageAnchorId(messageSnapshot[latestCommentIndex]);
-    if (!latestCommentAnchor) {
+    const initialLatestAnchor = issueChatMessageAnchorId(messageSnapshot[latestCommentIndex]);
+    if (!initialLatestAnchor) {
       jumpToLatestFallback();
       return;
     }
+    let latestCommentAnchor: string = initialLatestAnchor;
 
     const initial = scrollToThreadAnchor(
       latestCommentAnchor,
@@ -4067,6 +4070,25 @@ export function IssueChatThread({
       if (typeof document === "undefined") {
         finish();
         return;
+      }
+
+      // Re-target if a newer comment has arrived since we started settling. The
+      // loop captures the latest comment once, but a live update can append a
+      // newer one while the scroll is still converging — without re-checking we
+      // settle on the now-stale comment and stop short of the true newest. This
+      // is the real residual short-fall (the progressive-load case is already
+      // covered by the parent refetch + the mount-nudge below). PAP-2672 intent
+      // (land on the last *comment*) is preserved; we just track which one.
+      const currentLatestIndex = findLatestCommentMessageIndex(latestMessagesRef.current);
+      if (currentLatestIndex >= 0) {
+        const currentLatestAnchor = issueChatMessageAnchorId(
+          latestMessagesRef.current[currentLatestIndex],
+        );
+        if (currentLatestAnchor && currentLatestAnchor !== latestCommentAnchor) {
+          latestCommentAnchor = currentLatestAnchor;
+          latestCommentIndex = currentLatestIndex;
+          stableTicks = 0;
+        }
       }
 
       const el = document.getElementById(latestCommentAnchor);
