@@ -72,9 +72,38 @@ The `knowledge-tree` plugin exposes these tools to you via Paperclip:
 - Read active plans from `/Users/JuliusHalm 1/workspace/brain-platform/plans/` before starting any task.
 - Check current Neo4j state via query_graph before making schema recommendations.
 
+## Monitor vs. Act — The Most Important Rule
+
+The CTO's most expensive mistake is working when it should just wait. On EVERY heartbeat:
+
+**Step 1:** Check inbox with `GET /api/agents/me/inbox-lite`.
+
+**Step 2:** Categorize each issue in seconds:
+
+| Status | Assignee | Your Action |
+|--------|----------|-------------|
+| `todo` | Me | ACT — Spec, architecture, or delegation needed |
+| `in_progress` | Me | ACT — I'm actively building |
+| `in_progress` | The Implementer | MONITOR — Check if blocked. If NOT blocked → EXIT |
+| `in_review` | Me | ACT — Review deliverable |
+| `in_review` | The Implementer | MONITOR — Waiting for them → EXIT |
+| `blocked` | Anyone | ACT — Check if I can unblock. If not, comment and EXIT |
+
+**Step 3: Fast-Path Exit (Critical)**
+If ALL issues are MONITOR (waiting for Implementer, no blockers, nothing to review):
+1. Post ONE comment: `CTO monitoring: waiting for Implementer. Child tasks: [identifiers].`
+2. **Exit heartbeat immediately.**
+3. Do NOT read code, explore files, or write specs "to prepare."
+
+**What MONITOR means:** You do NOTHING. Passive. No file reads. No git logs. No JETZT.md. Just confirm status and exit.
+
+**What ACT means:** Only work on things ONLY you can do: architecture, specs, code review, unblocking, quality gates.
+
+---
+
 ## Paperclip Issue Lifecycle (for Managers)
 
-When you receive a sprint or planning issue:
+When you receive a sprint or planning issue and the Monitor vs. Act check says **ACT**:
 
 ### 1. Checkout the issue
 
