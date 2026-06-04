@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, ResourceMemberships } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarAgents } from "./SidebarAgents";
 
@@ -20,6 +20,11 @@ const mockAuthApi = vi.hoisted(() => ({
 
 const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
+}));
+
+const mockResourceMembershipsApi = vi.hoisted(() => ({
+  listMine: vi.fn(),
+  updateAgent: vi.fn(),
 }));
 
 const mockOpenNewAgent = vi.hoisted(() => vi.fn());
@@ -91,12 +96,24 @@ vi.mock("../api/heartbeats", () => ({
   heartbeatsApi: mockHeartbeatsApi,
 }));
 
+vi.mock("../api/resourceMemberships", () => ({
+  resourceMembershipsApi: mockResourceMembershipsApi,
+}));
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 if (!globalThis.PointerEvent) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).PointerEvent = MouseEvent;
+}
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
 }
 
 function makeAgent(overrides: Partial<Agent>): Agent {
@@ -177,6 +194,7 @@ describe("SidebarAgents", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot> | null;
   let queryClient: QueryClient;
+  let memberships: ResourceMemberships;
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -193,6 +211,27 @@ describe("SidebarAgents", () => {
       user: { id: "user-1" },
     });
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    memberships = {
+      projectMemberships: {},
+      agentMemberships: {},
+      updatedAt: null,
+    };
+    mockResourceMembershipsApi.listMine.mockImplementation(() => Promise.resolve(memberships));
+    mockResourceMembershipsApi.updateAgent.mockImplementation((_companyId, agentId, data) => {
+      memberships = {
+        ...memberships,
+        agentMemberships: {
+          ...memberships.agentMemberships,
+          [agentId]: data.state,
+        },
+        updatedAt: new Date(),
+      };
+      return Promise.resolve({
+        resourceType: "agent",
+        resourceId: agentId,
+        state: data.state,
+      });
+    });
     localStorage.clear();
   });
 
@@ -311,6 +350,31 @@ describe("SidebarAgents", () => {
     expect(agentLinkLabels(container)).toEqual(["Bravo", "Charlie", "Alpha"]);
   });
 
+  it("filters left agents only after membership state loads", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-1", name: "Alpha", urlKey: "alpha" }),
+      makeAgent({ id: "agent-2", name: "Beta", urlKey: "beta" }),
+    ]);
+    let resolveMemberships!: (value: unknown) => void;
+    mockResourceMembershipsApi.listMine.mockReturnValue(new Promise((resolve) => {
+      resolveMemberships = resolve;
+    }));
+
+    await renderSidebarAgents();
+    expect(agentLinkLabels(container)).toEqual(["Alpha", "Beta"]);
+
+    await act(async () => {
+      resolveMemberships({
+        projectMemberships: {},
+        agentMemberships: { "agent-1": "left" },
+        updatedAt: null,
+      });
+    });
+    await flushReact();
+
+    expect(agentLinkLabels(container)).toEqual(["Beta"]);
+  });
+
   it("shows edit and pause actions for an active sidebar agent", async () => {
     await renderSidebarAgents();
     await openAgentMenu();
@@ -331,6 +395,27 @@ describe("SidebarAgents", () => {
 
     expect(mockAgentsApi.pause).toHaveBeenCalledWith("agent-1", "company-1");
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Agent paused" }));
+  });
+
+  it("offers leave agent from each sidebar agent menu", async () => {
+    await renderSidebarAgents();
+    await openAgentMenu();
+
+    const leaveItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
+      .find((element) => element.textContent?.includes("Leave agent"));
+    expect(leaveItem).toBeTruthy();
+
+    await act(async () => {
+      leaveItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockResourceMembershipsApi.updateAgent).toHaveBeenCalledWith(
+      "company-1",
+      "agent-1",
+      { state: "left" },
+    );
+    expect(agentLinkLabels(container)).toEqual([]);
   });
 
   it("shows resume for paused sidebar agents", async () => {

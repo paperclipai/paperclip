@@ -412,6 +412,13 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBa
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
+export const createAcceptedPlanDecompositionSchema = z.object({
+  acceptedPlanRevisionId: z.string().uuid(),
+  children: z.array(createChildIssueSchema).min(1).max(25),
+});
+
+export type CreateAcceptedPlanDecomposition = z.infer<typeof createAcceptedPlanDecompositionSchema>;
+
 export const createIssueLabelSchema = z.object({
   name: z.string().trim().min(1).max(48),
   color: z.string().regex(/^#(?:[0-9a-fA-F]{6})$/, "Color must be a 6-digit hex value"),

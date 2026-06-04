@@ -170,6 +170,8 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
         provisionCommand: "bash ./scripts/provision.sh",
       },
       shouldReuseExisting: false,
+      baseRef: null,
+      baseRefSha: null,
     })).toEqual({
       source: "task_session",
       createdByRuntime: true,
@@ -200,6 +202,8 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
         provisionCommand: "bash ./scripts/new-provision.sh",
       },
       shouldReuseExisting: true,
+      baseRef: null,
+      baseRefSha: null,
     })).toEqual({
       config: {
         environmentId: "env-old",
@@ -207,6 +211,25 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
       },
       source: "task_session",
       createdByRuntime: false,
+    });
+  });
+
+  it("records the resolved base ref SHA for newly realized workspaces", () => {
+    expect(mergeExecutionWorkspaceMetadataForPersistence({
+      existingMetadata: null,
+      source: "task_session",
+      createdByRuntime: true,
+      configSnapshot: null,
+      shouldReuseExisting: false,
+      baseRef: "origin/main",
+      baseRefSha: "abc1234567890",
+    })).toEqual({
+      source: "task_session",
+      createdByRuntime: true,
+      baseRefSnapshot: {
+        baseRef: "origin/main",
+        resolvedSha: "abc1234567890",
+      },
     });
   });
 });

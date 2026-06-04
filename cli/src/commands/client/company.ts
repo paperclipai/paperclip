@@ -18,6 +18,7 @@ import { openUrl } from "../../client/board-auth.js";
 import { binaryContentTypeByExtension, readZipArchive } from "./zip.js";
 import {
   addCommonClientOptions,
+  apiPath,
   formatInlineRecord,
   handleCommandError,
   printOutput,
@@ -31,6 +32,10 @@ import {
 } from "./feedback.js";
 
 interface CompanyCommandOptions extends BaseClientOptions {}
+interface CompanyJsonOptions extends BaseClientOptions {
+  companyId?: string;
+  payloadJson?: string;
+}
 type CompanyDeleteSelectorMode = "auto" | "id" | "prefix";
 type CompanyImportTargetMode = "new" | "existing";
 type CompanyCollisionMode = "rename" | "skip" | "replace";
@@ -745,8 +750,8 @@ export function resolveCompanyImportApiPath(input: {
       throw new Error("Existing-company imports require a companyId to resolve the API route.");
     }
     return input.dryRun
-      ? `/api/companies/${companyId}/imports/preview`
-      : `/api/companies/${companyId}/imports/apply`;
+      ? apiPath`/api/companies/${companyId}/imports/preview`
+      : apiPath`/api/companies/${companyId}/imports/apply`;
   }
 
   return input.dryRun ? "/api/companies/import/preview" : "/api/companies/import";
@@ -952,12 +957,12 @@ export async function resolveInlineSourceFromPath(inputPath: string): Promise<{
   };
 }
 
-async function writeExportToFolder(outDir: string, exported: CompanyPortabilityExportResult): Promise<void> {
+export async function writeExportToFolder(outDir: string, exported: CompanyPortabilityExportResult): Promise<void> {
   const root = path.resolve(outDir);
   await mkdir(root, { recursive: true });
   for (const [relativePath, content] of Object.entries(exported.files)) {
     const normalized = relativePath.replace(/\\/g, "/");
-    const filePath = path.join(root, normalized);
+    const filePath = resolveExportOutputPath(root, normalized);
     await mkdir(path.dirname(filePath), { recursive: true });
     const writeValue = portableFileEntryToWriteValue(content);
     if (typeof writeValue === "string") {
@@ -966,6 +971,16 @@ async function writeExportToFolder(outDir: string, exported: CompanyPortabilityE
       await writeFile(filePath, writeValue);
     }
   }
+}
+
+export function resolveExportOutputPath(root: string, relativePath: string): string {
+  const resolvedRoot = path.resolve(root);
+  const filePath = path.resolve(resolvedRoot, relativePath);
+  const rootPrefix = resolvedRoot.endsWith(path.sep) ? resolvedRoot : `${resolvedRoot}${path.sep}`;
+  if (filePath !== resolvedRoot && !filePath.startsWith(rootPrefix)) {
+    throw new Error(`Refusing to write export file outside output directory: ${relativePath}`);
+  }
+  return filePath;
 }
 
 async function confirmOverwriteExportDirectory(outDir: string): Promise<void> {
@@ -1116,13 +1131,94 @@ export function registerCompanyCommands(program: Command): void {
       .action(async (companyId: string, opts: CompanyCommandOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const row = await ctx.api.get<Company>(`/api/companies/${companyId}`);
+          const row = await ctx.api.get<Company>(apiPath`/api/companies/${companyId}`);
           printOutput(row, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
       }),
   );
+
+  addCommonClientOptions(
+    company
+      .command("stats")
+      .description("Get company stats")
+      .action(async (opts: CompanyCommandOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.get("/api/companies/stats"), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    company
+      .command("create")
+      .description("Create a company")
+      .requiredOption("--payload-json <json>", "CreateCompany JSON payload")
+      .action(async (opts: CompanyJsonOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.post("/api/companies", parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    company
+      .command("update")
+      .description("Update a company")
+      .argument("<companyId>", "Company ID")
+      .requiredOption("--payload-json <json>", "UpdateCompany JSON payload")
+      .action(async (companyId: string, opts: CompanyJsonOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.patch(apiPath`/api/companies/${companyId}`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    company
+      .command("branding:update")
+      .description("Update company branding")
+      .argument("<companyId>", "Company ID")
+      .requiredOption("--payload-json <json>", "UpdateCompanyBranding JSON payload")
+      .action(async (companyId: string, opts: CompanyJsonOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.patch(apiPath`/api/companies/${companyId}/branding`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    company
+      .command("archive")
+      .description("Archive a company")
+      .argument("<companyId>", "Company ID")
+      .action(async (companyId: string, opts: CompanyCommandOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.post(apiPath`/api/companies/${companyId}/archive`, {}), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCompanyJsonPost(company, "export:preview", "Preview a portable company export", "exports/preview");
+  addCompanyJsonPost(company, "export:api", "Export a company through the raw API route", "exports");
+  addCompanyJsonPost(company, "import:preview", "Preview a safe company import through the raw API route", "imports/preview");
+  addCompanyJsonPost(company, "import:apply", "Apply a safe company import through the raw API route", "imports/apply");
 
   addCommonClientOptions(
     company
@@ -1142,7 +1238,7 @@ export function registerCompanyCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const traces = (await ctx.api.get<FeedbackTrace[]>(
-            `/api/companies/${ctx.companyId}/feedback-traces${buildFeedbackTraceQuery(opts)}`,
+            `${apiPath`/api/companies/${ctx.companyId}/feedback-traces`}${buildFeedbackTraceQuery(opts)}`,
           )) ?? [];
           if (ctx.json) {
             printOutput(traces, { json: true });
@@ -1186,7 +1282,7 @@ export function registerCompanyCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const traces = (await ctx.api.get<FeedbackTrace[]>(
-            `/api/companies/${ctx.companyId}/feedback-traces${buildFeedbackTraceQuery(opts, opts.includePayload ?? true)}`,
+            `${apiPath`/api/companies/${ctx.companyId}/feedback-traces`}${buildFeedbackTraceQuery(opts, opts.includePayload ?? true)}`,
           )) ?? [];
           const serialized = serializeFeedbackTraces(traces, opts.format);
           if (opts.out?.trim()) {
@@ -1226,7 +1322,7 @@ export function registerCompanyCommands(program: Command): void {
           const ctx = resolveCommandContext(opts);
           const include = parseInclude(opts.include);
           const exported = await ctx.api.post<CompanyPortabilityExportResult>(
-            `/api/companies/${companyId}/export`,
+            apiPath`/api/companies/${companyId}/export`,
             {
               include,
               skills: parseCsvValues(opts.skills),
@@ -1450,7 +1546,7 @@ export function registerCompanyCommands(program: Command): void {
           let companyUrl: string | undefined;
           if (!ctx.json) {
             try {
-              const importedCompany = await ctx.api.get<Company>(`/api/companies/${imported.company.id}`);
+              const importedCompany = await ctx.api.get<Company>(apiPath`/api/companies/${imported.company.id}`);
               const issuePrefix = importedCompany?.issuePrefix?.trim();
               if (issuePrefix) {
                 companyUrl = buildCompanyDashboardUrl(ctx.api.apiBase, issuePrefix);
@@ -1520,7 +1616,7 @@ export function registerCompanyCommands(program: Command): void {
           let target: Company | null = null;
           const shouldTryIdLookup = by === "id" || (by === "auto" && isUuidLike(normalizedSelector));
           if (shouldTryIdLookup) {
-            const byId = await ctx.api.get<Company>(`/api/companies/${normalizedSelector}`, { ignoreNotFound: true });
+            const byId = await ctx.api.get<Company>(apiPath`/api/companies/${normalizedSelector}`, { ignoreNotFound: true });
             if (byId) {
               target = byId;
             } else if (by === "id") {
@@ -1529,7 +1625,7 @@ export function registerCompanyCommands(program: Command): void {
           }
 
           if (!target && ctx.companyId) {
-            const scoped = await ctx.api.get<Company>(`/api/companies/${ctx.companyId}`, { ignoreNotFound: true });
+            const scoped = await ctx.api.get<Company>(apiPath`/api/companies/${ctx.companyId}`, { ignoreNotFound: true });
             if (scoped) {
               try {
                 target = resolveCompanyForDeletion([scoped], normalizedSelector, by);
@@ -1559,7 +1655,7 @@ export function registerCompanyCommands(program: Command): void {
 
           assertDeleteConfirmation(target, opts);
 
-          await ctx.api.delete<{ ok: true }>(`/api/companies/${target.id}`);
+          await ctx.api.delete<{ ok: true }>(apiPath`/api/companies/${target.id}`);
 
           printOutput(
             {
@@ -1575,4 +1671,26 @@ export function registerCompanyCommands(program: Command): void {
         }
       }),
   );
+}
+
+function addCompanyJsonPost(parent: Command, name: string, description: string, pathSuffix: string): void {
+  addCommonClientOptions(
+    parent
+      .command(name)
+      .description(description)
+      .argument("<companyId>", "Company ID")
+      .requiredOption("--payload-json <json>", "JSON payload")
+      .action(async (companyId: string, opts: CompanyJsonOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.post(`${apiPath`/api/companies/${companyId}`}/${pathSuffix}`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+}
+
+function parseJson(value: string): unknown {
+  return JSON.parse(value) as unknown;
 }

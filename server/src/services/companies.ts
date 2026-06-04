@@ -1,4 +1,4 @@
-import { and, count, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
@@ -35,11 +35,96 @@ import { notFound, unprocessable } from "../errors.js";
 import { loadConfig } from "../config.js";
 import { resolvePaperclipConfigPath } from "../paths.js";
 import { environmentService } from "./environments.js";
+import { heartbeatService } from "./heartbeat.js";
+import { logActivity } from "./activity-log.js";
+
+export interface CompanyActivityActor {
+  actorType: "user" | "agent" | "system" | "plugin";
+  actorId: string;
+  agentId?: string | null;
+  runId?: string | null;
+}
+
+const SYSTEM_COMPANY_ACTOR: CompanyActivityActor = {
+  actorType: "system",
+  actorId: "system",
+  agentId: null,
+  runId: null,
+};
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
   const COMPANY_ID_PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
   const environmentsSvc = environmentService(db);
+  const heartbeat = heartbeatService(db);
+
+  type CompanyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+  async function applyArchiveCascadeInTx(tx: CompanyTx, id: string) {
+    const pausedAgentRows = await tx
+      .update(agents)
+      .set({
+        status: "paused",
+        pauseReason: "company_archived",
+        pausedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(agents.companyId, id),
+        notInArray(agents.status, ["paused", "terminated", "pending_approval"]),
+      ))
+      .returning({ id: agents.id });
+
+    const activeRunIds = await tx
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, id),
+        inArray(heartbeatRuns.status, ["queued", "running"]),
+      ))
+      .then((rows) => rows.map((row) => row.id));
+
+    await tx
+      .update(agentWakeupRequests)
+      .set({
+        status: "cancelled",
+        error: "Cancelled because the company was archived",
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(agentWakeupRequests.companyId, id),
+        inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"]),
+        isNull(agentWakeupRequests.runId),
+      ));
+
+    return { agentsPaused: pausedAgentRows.length, activeRunIds };
+  }
+
+  async function finalizeArchive(
+    id: string,
+    actor: CompanyActivityActor,
+    cascade: { agentsPaused: number; activeRunIds: string[] },
+  ) {
+    for (const runId of cascade.activeRunIds) {
+      await heartbeat.cancelRun(runId, "Cancelled because the company was archived");
+    }
+
+    await logActivity(db, {
+      companyId: id,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId ?? null,
+      runId: actor.runId ?? null,
+      action: "company.archived",
+      entityType: "company",
+      entityId: id,
+      details: {
+        agentsPaused: cascade.agentsPaused,
+        runsCancelled: cascade.activeRunIds.length,
+      },
+    });
+  }
 
   const companySelection = {
     id: companies.id,
@@ -208,17 +293,20 @@ export function companyService(db: Db) {
       return enrichCompany(hydrated);
     },
 
-    update: (
+    update: async (
       id: string,
       data: Partial<typeof companies.$inferInsert> & { logoAssetId?: string | null },
-    ) =>
-      db.transaction(async (tx) => {
+      actor: CompanyActivityActor = SYSTEM_COMPANY_ACTOR,
+    ) => {
+      const result = await db.transaction(async (tx) => {
         const existing = await getCompanyQuery(tx)
           .where(eq(companies.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
         const { logoAssetId, ...companyPatch } = data;
+        const willReactivate = existing.status !== "active" && companyPatch.status === "active";
+        const willArchive = existing.status !== "archived" && companyPatch.status === "archived";
 
         if (logoAssetId !== undefined && logoAssetId !== null) {
           const nextLogoAsset = await tx
@@ -239,6 +327,27 @@ export function companyService(db: Db) {
           .returning()
           .then((rows) => rows[0] ?? null);
         if (!updated) return null;
+
+        let agentsRestored = 0;
+        if (willReactivate) {
+          const restoredRows = await tx
+            .update(agents)
+            .set({
+              status: "idle",
+              pauseReason: null,
+              pausedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(and(
+              eq(agents.companyId, id),
+              eq(agents.status, "paused"),
+              eq(agents.pauseReason, "company_archived"),
+            ))
+            .returning({ id: agents.id });
+          agentsRestored = restoredRows.length;
+        }
+
+        const archiveCascade = willArchive ? await applyArchiveCascadeInTx(tx, id) : null;
 
         if (logoAssetId === null) {
           await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
@@ -267,25 +376,73 @@ export function companyService(db: Db) {
           logoAssetId: logoAssetId === undefined ? existing.logoAssetId : logoAssetId,
         }], tx);
 
-        return enrichCompany(hydrated);
-      }),
+        const shouldLogReactivation = willReactivate &&
+          (existing.status === "archived" || agentsRestored > 0);
 
-    archive: (id: string) =>
-      db.transaction(async (tx) => {
-        const updated = await tx
-          .update(companies)
-          .set({ status: "archived", updatedAt: new Date() })
+        return {
+          company: enrichCompany(hydrated),
+          reactivated: shouldLogReactivation ? { agentsRestored } : null,
+          archiveCascade,
+        };
+      });
+      if (!result) return null;
+      if (result.reactivated) {
+        await logActivity(db, {
+          companyId: id,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId ?? null,
+          runId: actor.runId ?? null,
+          action: "company.reactivated",
+          entityType: "company",
+          entityId: id,
+          details: { agentsRestored: result.reactivated.agentsRestored },
+        });
+      }
+      if (result.archiveCascade) {
+        await finalizeArchive(id, actor, result.archiveCascade);
+      }
+      return result.company;
+    },
+
+    archive: async (id: string, actor: CompanyActivityActor = SYSTEM_COMPANY_ACTOR) => {
+      const result = await db.transaction(async (tx) => {
+        const existing = await tx
+          .select({ status: companies.status })
+          .from(companies)
           .where(eq(companies.id, id))
-          .returning()
           .then((rows) => rows[0] ?? null);
-        if (!updated) return null;
+        if (!existing) return null;
+
+        const wasAlreadyArchived = existing.status === "archived";
+
+        if (!wasAlreadyArchived) {
+          await tx
+            .update(companies)
+            .set({ status: "archived", updatedAt: new Date() })
+            .where(eq(companies.id, id));
+        }
+
+        const cascade = wasAlreadyArchived ? null : await applyArchiveCascadeInTx(tx, id);
+
         const row = await getCompanyQuery(tx)
           .where(eq(companies.id, id))
           .then((rows) => rows[0] ?? null);
         if (!row) return null;
         const [hydrated] = await hydrateCompanySpend([row], tx);
-        return enrichCompany(hydrated);
-      }),
+        return {
+          company: enrichCompany(hydrated),
+          cascade,
+        };
+      });
+      if (!result) return null;
+
+      if (result.cascade) {
+        await finalizeArchive(id, actor, result.cascade);
+      }
+
+      return result.company;
+    },
 
     remove: (id: string, options?: { deleteFiles?: boolean }) =>
       db.transaction(async (tx) => {

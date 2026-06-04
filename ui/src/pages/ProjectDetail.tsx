@@ -23,6 +23,7 @@ import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
+import { MembershipAction } from "../components/MembershipAction";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { projectRouteRef } from "../lib/utils";
@@ -30,6 +31,11 @@ import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
+import {
+  resourceMembershipState,
+  useResourceMembershipMutation,
+  useResourceMemberships,
+} from "../hooks/useResourceMemberships";
 
 /* ── Top-level tab types ── */
 
@@ -286,6 +292,7 @@ export function ProjectDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const [fieldSaveStates, setFieldSaveStates] = useState<Partial<Record<ProjectConfigFieldKey, ProjectFieldSaveState>>>({});
+  const [dismissedLeftProjectIds, setDismissedLeftProjectIds] = useState<Set<string>>(() => new Set());
   const fieldSaveRequestIds = useRef<Partial<Record<ProjectConfigFieldKey, number>>>({});
   const fieldSaveTimers = useRef<Partial<Record<ProjectConfigFieldKey, ReturnType<typeof setTimeout>>>>({});
   const routeProjectRef = projectId ?? "";
@@ -311,6 +318,11 @@ export function ProjectDetail() {
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const projectLookupRef = project?.id ?? routeProjectRef;
   const resolvedCompanyId = project?.companyId ?? selectedCompanyId;
+  const membershipsQuery = useResourceMemberships(resolvedCompanyId);
+  const membershipMutation = useResourceMembershipMutation(resolvedCompanyId);
+  const projectMembershipState = project?.id
+    ? resourceMembershipState(membershipsQuery.data, "project", project.id)
+    : "joined";
   const experimentalSettingsQuery = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -477,6 +489,16 @@ export function ProjectDetail() {
   }, [closePanel]);
 
   useEffect(() => {
+    if (!project?.id || projectMembershipState !== "joined") return;
+    setDismissedLeftProjectIds((current) => {
+      if (!current.has(project.id)) return current;
+      const next = new Set(current);
+      next.delete(project.id);
+      return next;
+    });
+  }, [project?.id, projectMembershipState]);
+
+  useEffect(() => {
     return () => {
       Object.values(fieldSaveTimers.current).forEach((timer) => {
         if (timer) clearTimeout(timer);
@@ -607,6 +629,12 @@ export function ProjectDetail() {
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!project) return null;
+  const showLeftProjectNotice =
+    projectMembershipState === "left" && !dismissedLeftProjectIds.has(project.id);
+  const projectMembershipPending =
+    membershipMutation.isPending &&
+    membershipMutation.variables?.resourceType === "project" &&
+    membershipMutation.variables.resourceId === project.id;
 
   const handleTabChange = (tab: ProjectTab) => {
     // Cache the active tab per project
@@ -634,6 +662,40 @@ export function ProjectDetail() {
 
   return (
     <div className="space-y-6">
+      {showLeftProjectNotice ? (
+        <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-100">
+          <p className="min-w-0 flex-1">
+            You left this project. It no longer appears in your sidebar.
+          </p>
+          <MembershipAction
+            compact
+            state="left"
+            pending={projectMembershipPending}
+            pendingState={projectMembershipPending ? membershipMutation.variables?.state : null}
+            resourceName={project.name}
+            onJoin={() => membershipMutation.mutate({
+              resourceType: "project",
+              resourceId: project.id,
+              resourceName: project.name,
+              state: "joined",
+            })}
+            onLeave={() => membershipMutation.mutate({
+              resourceType: "project",
+              resourceId: project.id,
+              resourceName: project.name,
+              state: "left",
+            })}
+          />
+          <button
+            type="button"
+            className="h-6 w-6 shrink-0 text-yellow-100/70 hover:text-yellow-100"
+            aria-label="Dismiss project membership notice"
+            onClick={() => setDismissedLeftProjectIds((current) => new Set(current).add(project.id))}
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
       <div className="flex items-start gap-3">
         <div className="h-7 flex items-center">
           <ColorPicker

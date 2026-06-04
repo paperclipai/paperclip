@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,13 +8,19 @@ import { companies, companySkills } from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import type {
+  CatalogSkill,
   CompanySkill,
+  CompanySkillAuditFinding,
+  CompanySkillAuditResult,
+  CompanySkillAuditVerdict,
   CompanySkillCreateRequest,
   CompanySkillCompatibility,
   CompanySkillDetail,
   CompanySkillFileDetail,
   CompanySkillFileInventoryEntry,
   CompanySkillImportResult,
+  CompanySkillInstallCatalogRequest,
+  CompanySkillInstallCatalogResult,
   CompanySkillListItem,
   CompanySkillProjectScanConflict,
   CompanySkillProjectScanRequest,
@@ -24,14 +30,28 @@ import type {
   CompanySkillSourceType,
   CompanySkillTrustLevel,
   CompanySkillUpdateStatus,
+  CompanySkillUpdateHoldReason,
   CompanySkillUsageAgent,
 } from "@paperclipai/shared";
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
-import { notFound, unprocessable } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
+import { normalizePortablePath } from "./portable-path.js";
+import {
+  copyCatalogSkillFile,
+  getCatalogPackageMetadata,
+  getCatalogSkillOrThrow,
+  readCatalogSkillFile,
+  resolveCatalogSkillReference,
+} from "./skills-catalog.js";
+import {
+  PORTABLE_CATALOG_PROVENANCE_STRING_KEYS,
+  readCatalogStringList,
+  readPortableCatalogProvenance,
+} from "./catalog-provenance.js";
 
 type CompanySkillRow = typeof companySkills.$inferSelect;
 type CompanySkillListDbRow = Pick<
@@ -122,6 +142,7 @@ type ParsedSkillImportSource = {
 type SkillSourceMeta = {
   skillKey?: string;
   sourceKind?: string;
+  missingSource?: SkillMissingSourceMarker;
   hostname?: string;
   owner?: string;
   repo?: string;
@@ -133,6 +154,28 @@ type SkillSourceMeta = {
   workspaceId?: string;
   workspaceName?: string;
   workspaceCwd?: string;
+  catalogId?: string;
+  catalogKind?: string;
+  originHash?: string;
+  packageName?: string;
+  packageVersion?: string;
+  originVersion?: string;
+  originSnapshotLocator?: string;
+  installedHash?: string;
+  userModifiedAt?: string | null;
+  updateHoldReason?: CompanySkillUpdateHoldReason | null;
+  auditVerdict?: CompanySkillAuditVerdict;
+  auditCodes?: string[];
+  auditScannedAt?: string;
+  auditScanVersion?: string;
+};
+
+type SkillMissingSourceMarker = {
+  reason: "local_source_missing";
+  sourceType: "local_path";
+  sourceLocator: string | null;
+  sourcePath: string | null;
+  detectedAt: string;
 };
 
 export type LocalSkillInventoryMode = "full" | "project_root";
@@ -148,6 +191,10 @@ export type ProjectSkillScanTarget = {
 type RuntimeSkillEntryOptions = {
   materializeMissing?: boolean;
 };
+
+type RuntimeSkillSourceResolution =
+  | { status: "available"; source: string }
+  | { status: "missing"; source: string; detail: string };
 
 const skillInventoryRefreshPromises = new Map<string, Promise<void>>();
 
@@ -215,6 +262,9 @@ const PROJECT_ROOT_SKILL_SUBDIRECTORIES = [
   "assets",
 ] as const;
 
+const SKILL_AUDIT_SCAN_VERSION = "skills-audit-v1";
+const MAX_CATALOG_FILE_BYTES = 1024 * 1024;
+
 function asString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -223,19 +273,6 @@ function asString(value: unknown): string | null {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function normalizePortablePath(input: string) {
-  const parts: string[] = [];
-  for (const segment of input.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "").split("/")) {
-    if (!segment || segment === ".") continue;
-    if (segment === "..") {
-      if (parts.length > 0) parts.pop();
-      continue;
-    }
-    parts.push(segment);
-  }
-  return parts.join("/");
 }
 
 function normalizePackageFileMap(files: Record<string, string>) {
@@ -275,6 +312,21 @@ export function normalizeGitHubSkillDirectory(
 
 function hashSkillValue(value: string) {
   return createHash("sha256").update(value).digest("hex").slice(0, 10);
+}
+
+function sha256Buffer(value: Buffer | string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function buildInventoryContentHash(entries: Array<{ path: string; sha256: string }>) {
+  const hashInput = entries
+    .map((entry) => ({ path: normalizePortablePath(entry.path), sha256: entry.sha256 }))
+    .sort((left, right) => {
+      if (left.path === "SKILL.md") return -1;
+      if (right.path === "SKILL.md") return 1;
+      return left.path.localeCompare(right.path);
+    });
+  return `sha256:${sha256Buffer(Buffer.from(JSON.stringify(hashInput)))}`;
 }
 
 function uniqueSkillSlug(baseSlug: string, usedSlugs: Set<string>) {
@@ -785,6 +837,16 @@ function deriveImportedSkillSource(
     }
   }
 
+  const catalogProvenance = readPortableCatalogProvenance(metadata, canonicalKey);
+  if (catalogProvenance) {
+    return {
+      sourceType: "catalog",
+      sourceLocator: null,
+      sourceRef: catalogProvenance.sourceRef,
+      metadata: catalogProvenance.metadata,
+    };
+  }
+
   return {
     sourceType: "catalog",
     sourceLocator: null,
@@ -1254,6 +1316,49 @@ function getSkillMeta(skill: Pick<CompanySkill, "metadata">): SkillSourceMeta {
   return isPlainRecord(skill.metadata) ? skill.metadata as SkillSourceMeta : {};
 }
 
+function resolveCatalogSkillIfPresent(reference: string): CatalogSkill | null {
+  const result = resolveCatalogSkillReference(reference);
+  if (result.ambiguous) {
+    throw conflict(`Catalog skill slug "${reference}" is ambiguous. Use an id or key.`);
+  }
+  return result.skill;
+}
+
+function getMissingSourceMarker(metadata: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!isPlainRecord(metadata)) return null;
+  return isPlainRecord(metadata.missingSource) ? metadata.missingSource : null;
+}
+
+function buildMissingLocalSourceMarker(
+  skill: Pick<CompanySkill, "sourceLocator" | "metadata">,
+): SkillMissingSourceMarker {
+  const existing = getMissingSourceMarker(skill.metadata);
+  return {
+    reason: "local_source_missing",
+    sourceType: "local_path",
+    sourceLocator: skill.sourceLocator ?? null,
+    sourcePath: normalizeSourceLocatorDirectory(skill.sourceLocator),
+    detectedAt: asString(existing?.detectedAt) ?? new Date().toISOString(),
+  };
+}
+
+function withMissingSourceMarker(
+  metadata: Record<string, unknown> | null,
+  marker: SkillMissingSourceMarker,
+) {
+  return {
+    ...(isPlainRecord(metadata) ? metadata : {}),
+    missingSource: marker,
+  };
+}
+
+function withoutMissingSourceMarker(metadata: Record<string, unknown> | null) {
+  if (!isPlainRecord(metadata) || !isPlainRecord(metadata.missingSource)) return metadata;
+  const next = { ...metadata };
+  delete next.missingSource;
+  return next;
+}
+
 function resolveSkillReference(
   skills: SkillReferenceTarget[],
   reference: string,
@@ -1359,6 +1464,22 @@ function normalizeSourceLocatorDirectory(sourceLocator: string | null) {
   return path.basename(resolved).toLowerCase() === "skill.md" ? path.dirname(resolved) : resolved;
 }
 
+async function resolveExistingSkillDirectory(skillDir: string | null) {
+  if (!skillDir) return null;
+  const dirStat = await statPath(skillDir);
+  const skillFileStat = await statPath(path.join(skillDir, "SKILL.md"));
+  return dirStat?.isDirectory() && skillFileStat?.isFile() ? skillDir : null;
+}
+
+function buildMissingRuntimeSourceDetail(skill: Pick<CompanySkill, "name" | "sourceLocator" | "metadata">) {
+  const marker = getMissingSourceMarker(skill.metadata);
+  const sourcePath = asString(marker?.sourcePath) ?? normalizeSourceLocatorDirectory(skill.sourceLocator);
+  if (sourcePath) {
+    return `Company skill "${skill.name}" is in the library, but Paperclip cannot find its local source at ${sourcePath}.`;
+  }
+  return `Company skill "${skill.name}" is in the library, but Paperclip cannot find a valid local runtime source for it.`;
+}
+
 export async function findMissingLocalSkillIds(
   skills: Array<Pick<CompanySkill, "id" | "sourceType" | "sourceLocator">>,
 ) {
@@ -1397,6 +1518,211 @@ function resolveLocalSkillFilePath(skill: CompanySkill, relativePath: string) {
   const fallbackRoot = path.resolve(skill.sourceLocator);
   const directPath = path.resolve(fallbackRoot, normalized);
   return directPath;
+}
+
+async function collectSkillFileBytes(skillDir: string): Promise<{
+  files: Array<{ path: string; bytes: Buffer; sizeBytes: number; kind: CompanySkillFileInventoryEntry["kind"] }>;
+  findings: CompanySkillAuditFinding[];
+}> {
+  const files: Array<{ path: string; bytes: Buffer; sizeBytes: number; kind: CompanySkillFileInventoryEntry["kind"] }> = [];
+  const findings: CompanySkillAuditFinding[] = [];
+  const root = path.resolve(skillDir);
+
+  async function visit(current: string) {
+    const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const absolutePath = path.resolve(current, entry.name);
+      const relativePath = normalizePortablePath(path.relative(root, absolutePath));
+      if (!relativePath || relativePath.split("/").includes("..") || path.isAbsolute(relativePath)) {
+        findings.push({
+          code: "path_out_of_tree",
+          severity: "error",
+          message: "Resolved file path is outside the skill directory.",
+          path: relativePath || null,
+        });
+        continue;
+      }
+
+      const lstat = await fs.lstat(absolutePath).catch(() => null);
+      if (!lstat) continue;
+      if (lstat.isSymbolicLink()) {
+        findings.push({
+          code: "symlink",
+          severity: "error",
+          message: "Skill files must not be symlinks.",
+          path: relativePath,
+        });
+        continue;
+      }
+      if (lstat.isDirectory()) {
+        await visit(absolutePath);
+        continue;
+      }
+      if (!lstat.isFile()) continue;
+      const bytes = await fs.readFile(absolutePath);
+      files.push({
+        path: relativePath,
+        bytes,
+        sizeBytes: lstat.size,
+        kind: classifyInventoryKind(relativePath),
+      });
+    }
+  }
+
+  await visit(root);
+  files.sort((left, right) => {
+    if (left.path === "SKILL.md") return -1;
+    if (right.path === "SKILL.md") return 1;
+    return left.path.localeCompare(right.path);
+  });
+  return { files, findings };
+}
+
+function contentLooksBinary(bytes: Buffer) {
+  if (bytes.includes(0)) return true;
+  const text = bytes.toString("utf8");
+  return text.includes("\uFFFD");
+}
+
+function extractMarkdownLinks(markdown: string) {
+  const links: string[] = [];
+  const regex = /\[[^\]]+\]\(([^)]+)\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(markdown)) !== null) {
+    const link = match[1]?.trim();
+    if (link) links.push(link);
+  }
+  return links;
+}
+
+function pushFinding(
+  findings: CompanySkillAuditFinding[],
+  code: string,
+  severity: CompanySkillAuditFinding["severity"],
+  message: string,
+  filePath: string | null,
+) {
+  findings.push({ code, severity, message, path: filePath });
+}
+
+async function auditInstalledSkillBytes(skill: CompanySkill): Promise<CompanySkillAuditResult> {
+  const skillDir = normalizeSkillDirectory(skill);
+  const scannedAt = new Date().toISOString();
+  const originHash = asString(getSkillMeta(skill).originHash);
+  if (!skillDir) {
+    return {
+      skillId: skill.id,
+      installedHash: null,
+      originHash,
+      verdict: "fail",
+      codes: ["origin_unavailable"],
+      findings: [{
+        code: "origin_unavailable",
+        severity: "error",
+        message: "Skill files are not available on disk for audit.",
+        path: null,
+      }],
+      scannedAt,
+      scanVersion: SKILL_AUDIT_SCAN_VERSION,
+    };
+  }
+
+  const { files, findings } = await collectSkillFileBytes(skillDir);
+  const actualPaths = files.map((file) => file.path).sort((left, right) => left.localeCompare(right));
+  const expectedPaths = skill.fileInventory.map((entry) => normalizePortablePath(entry.path)).sort((left, right) => left.localeCompare(right));
+  const installedHash = buildInventoryContentHash(files.map((file) => ({
+    path: file.path,
+    sha256: sha256Buffer(file.bytes),
+  })));
+
+  if (!actualPaths.includes("SKILL.md")) {
+    pushFinding(findings, "missing_skill_md", "error", "Skill inventory does not contain SKILL.md.", "SKILL.md");
+  }
+
+  const actualSet = new Set(actualPaths);
+  const expectedSet = new Set(expectedPaths);
+  for (const expected of expectedPaths) {
+    if (!actualSet.has(expected)) {
+      if (expected === "SKILL.md") continue;
+      pushFinding(findings, "inventory_mismatch", "error", "Expected inventory file is missing on disk.", expected);
+    }
+  }
+  for (const actual of actualPaths) {
+    if (!expectedSet.has(actual)) {
+      pushFinding(findings, "inventory_mismatch", "error", "Installed file is not present in recorded inventory.", actual);
+    }
+  }
+
+  const fileMap = new Map(files.map((file) => [file.path, file]));
+  const skillFile = fileMap.get("SKILL.md");
+  if (skillFile) {
+    const markdown = skillFile.bytes.toString("utf8");
+    const parsed = parseFrontmatterMarkdown(markdown);
+    if (!markdown.startsWith("---\n") || !asString(parsed.frontmatter.name)) {
+      pushFinding(findings, "invalid_frontmatter", "error", "SKILL.md must contain valid frontmatter with a name.", "SKILL.md");
+    }
+  }
+
+  const remoteExecPattern = /\b(?:curl|wget)\b[\s\S]{0,160}\|\s*(?:sh|bash)|\b(?:bash|sh)\s+-c\b|\beval\b|\bpython\s+-c\b|\bnode\s+-e\b/i;
+  const secretExfilPattern = /\b(?:cat|printenv|env|grep)\b[\s\S]{0,160}(?:\.aws\/credentials|\.ssh\/|\.npmrc|id_rsa|OPENAI_API_KEY|ANTHROPIC_API_KEY|API_KEY|TOKEN|SECRET)[\s\S]{0,160}\b(?:curl|wget|nc|netcat|scp)\b/i;
+  const networkPattern = /\b(?:curl|wget|fetch|httpie|nc|netcat|scp|ssh)\b|https?:\/\//i;
+  const secretReferencePattern = /\b(?:process\.env|printenv|\$[A-Z][A-Z0-9_]{2,}|API_KEY|TOKEN|SECRET|PASSWORD|\.env)\b/i;
+
+  for (const file of files) {
+    if (file.sizeBytes > MAX_CATALOG_FILE_BYTES) {
+      pushFinding(findings, "oversized_file", "error", `Skill file exceeds ${MAX_CATALOG_FILE_BYTES} bytes.`, file.path);
+    }
+    if (file.kind !== "asset" && contentLooksBinary(file.bytes)) {
+      pushFinding(findings, "non_text_file", "error", "Non-asset skill files must be UTF-8 text.", file.path);
+      continue;
+    }
+    if (file.kind === "asset" || file.kind === "script" || file.kind === "other") {
+      pushFinding(findings, `${file.kind}_trust`, "warning", `Skill includes a ${file.kind} file.`, file.path);
+    }
+    if (file.kind === "asset") continue;
+
+    const text = file.bytes.toString("utf8");
+    if (remoteExecPattern.test(text)) {
+      pushFinding(findings, "remote_fetch_exec", "error", "Remote-fetch or dynamic execution pattern is not allowed.", file.path);
+    }
+    if (secretExfilPattern.test(text)) {
+      pushFinding(findings, "secret_exfiltration", "error", "Secret exfiltration pattern is not allowed.", file.path);
+    }
+    if (networkPattern.test(text)) {
+      pushFinding(findings, "network_reference", "warning", "Skill content references network-capable commands or URLs.", file.path);
+    }
+    if (secretReferencePattern.test(text)) {
+      pushFinding(findings, "secret_reference", "warning", "Skill content references environment variables or secret-like values.", file.path);
+    }
+    if (isMarkdownPath(file.path)) {
+      for (const link of extractMarkdownLinks(text)) {
+        if (/^(?:https?:|mailto:|#)/i.test(link)) continue;
+        const linkTarget = normalizePortablePath(path.posix.join(path.posix.dirname(file.path), link.split("#")[0] ?? ""));
+        if (linkTarget && !actualSet.has(linkTarget)) {
+          pushFinding(findings, "broken_internal_link", "warning", `Markdown link target is missing: ${link}`, file.path);
+        }
+      }
+    }
+  }
+
+  if (originHash && installedHash !== originHash) {
+    pushFinding(findings, "local_modifications", "warning", "Installed catalog bytes differ from the pinned origin hash.", null);
+  }
+
+  findings.sort((left, right) => `${left.severity}:${left.code}:${left.path ?? ""}`.localeCompare(`${right.severity}:${right.code}:${right.path ?? ""}`));
+  const verdict: CompanySkillAuditVerdict = findings.some((finding) => finding.severity === "error")
+    ? "fail"
+    : findings.length > 0 ? "warning" : "pass";
+  return {
+    skillId: skill.id,
+    installedHash,
+    originHash,
+    verdict,
+    codes: Array.from(new Set(findings.map((finding) => finding.code))).sort(),
+    findings,
+    scannedAt,
+    scanVersion: SKILL_AUDIT_SCAN_VERSION,
+  };
 }
 
 function inferLanguageFromPath(filePath: string) {
@@ -1521,6 +1847,13 @@ function enrichSkill(skill: CompanySkill, attachedAgentCount: number, usedByAgen
 
 function toCompanySkillListItem(skill: CompanySkillListRow, attachedAgentCount: number): CompanySkillListItem {
   const source = deriveSkillSourceInfo(skill);
+  const metadata = getSkillMeta(skill);
+  const catalogKind = skill.sourceType === "catalog" && (metadata.catalogKind === "bundled" || metadata.catalogKind === "optional")
+    ? metadata.catalogKind
+    : null;
+  const originHash = skill.sourceType === "catalog" ? asString(metadata.originHash) : null;
+  const packageName = skill.sourceType === "catalog" ? asString(metadata.packageName) : null;
+  const packageVersion = skill.sourceType === "catalog" ? asString(metadata.packageVersion) : null;
   return {
     id: skill.id,
     companyId: skill.companyId,
@@ -1542,6 +1875,10 @@ function toCompanySkillListItem(skill: CompanySkillListRow, attachedAgentCount: 
     sourceLabel: source.sourceLabel,
     sourceBadge: source.sourceBadge,
     sourcePath: source.sourcePath,
+    catalogKind,
+    originHash,
+    packageName,
+    packageVersion,
   };
 }
 
@@ -1575,7 +1912,7 @@ export function companySkillService(db: Db) {
     return [];
   }
 
-  async function pruneMissingLocalPathSkills(companyId: string) {
+  async function reconcileLocalPathSkillSources(companyId: string) {
     const rows = await db
       .select({
         id: companySkills.id,
@@ -1583,18 +1920,48 @@ export function companySkillService(db: Db) {
         slug: companySkills.slug,
         sourceType: companySkills.sourceType,
         sourceLocator: companySkills.sourceLocator,
+        metadata: companySkills.metadata,
       })
       .from(companySkills)
       .where(eq(companySkills.companyId, companyId));
     const skills = rows.map((row) => ({
       ...row,
       sourceType: row.sourceType as CompanySkillSourceType,
+      metadata: isPlainRecord(row.metadata) ? row.metadata : null,
     }));
     const missingIds = new Set(await findMissingLocalSkillIds(skills));
-    if (missingIds.size === 0) return;
 
     for (const skill of skills) {
-      if (!missingIds.has(skill.id)) continue;
+      if (skill.sourceType !== "local_path") continue;
+
+      if (!missingIds.has(skill.id)) {
+        if (getMissingSourceMarker(skill.metadata)) {
+          await db
+            .update(companySkills)
+            .set({
+              metadata: withoutMissingSourceMarker(skill.metadata),
+              updatedAt: new Date(),
+            })
+            .where(eq(companySkills.id, skill.id));
+        }
+        continue;
+      }
+
+      const usedByAgents = await usage(companyId, skill.key);
+      if (usedByAgents.length > 0) {
+        const metadata = withMissingSourceMarker(
+          skill.metadata,
+          buildMissingLocalSourceMarker(skill),
+        );
+        if (JSON.stringify(metadata) !== JSON.stringify(skill.metadata ?? {})) {
+          await db
+            .update(companySkills)
+            .set({ metadata, updatedAt: new Date() })
+            .where(eq(companySkills.id, skill.id));
+        }
+        continue;
+      }
+
       await db
         .delete(companySkills)
         .where(eq(companySkills.id, skill.id));
@@ -1619,7 +1986,7 @@ export function companySkillService(db: Db) {
         throw notFound("Company not found");
       }
       await ensureBundledSkills(companyId);
-      await pruneMissingLocalPathSkills(companyId);
+      await reconcileLocalPathSkillSources(companyId);
     })();
 
     skillInventoryRefreshPromises.set(companyId, refreshPromise);
@@ -1706,6 +2073,54 @@ export function companySkillService(db: Db) {
     return row ? toCompanySkill(row) : null;
   }
 
+  async function updateSkillMetadata(
+    skill: CompanySkill,
+    metadataPatch: Record<string, unknown>,
+  ): Promise<CompanySkill> {
+    const metadata = {
+      ...(isPlainRecord(skill.metadata) ? skill.metadata : {}),
+      ...metadataPatch,
+    };
+    const row = await db
+      .update(companySkills)
+      .set({ metadata, updatedAt: new Date() })
+      .where(eq(companySkills.id, skill.id))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!row) throw notFound("Skill not found");
+    return toCompanySkill(row);
+  }
+
+  async function persistAuditMetadata(skill: CompanySkill, audit: CompanySkillAuditResult): Promise<CompanySkill> {
+    const userModifiedAt = audit.originHash && audit.installedHash !== audit.originHash
+      ? asString(getSkillMeta(skill).userModifiedAt) ?? audit.scannedAt
+      : null;
+    const updateHoldReason: CompanySkillUpdateHoldReason | null = audit.verdict === "fail"
+      ? "audit_hard_stop"
+      : userModifiedAt ? "local_modifications" : null;
+    return updateSkillMetadata(skill, {
+      installedHash: audit.installedHash,
+      userModifiedAt,
+      updateHoldReason,
+      auditVerdict: audit.verdict,
+      auditCodes: audit.codes,
+      auditScannedAt: audit.scannedAt,
+      auditScanVersion: audit.scanVersion,
+    });
+  }
+
+  async function auditSkill(companyId: string, skillId: string): Promise<CompanySkillAuditResult | null> {
+    await ensureSkillInventoryCurrent(companyId);
+    const skill = await getById(companyId, skillId);
+    if (!skill) return null;
+    if (skill.sourceType !== "catalog" && skill.sourceType !== "local_path") {
+      throw unprocessable("Only local-path and catalog-managed company skills support audit.");
+    }
+    const audit = await auditInstalledSkillBytes(skill);
+    await persistAuditMetadata(skill, audit);
+    return audit;
+  }
+
   async function usage(companyId: string, key: string): Promise<CompanySkillUsageAgent[]> {
     const skills = await listReferenceTargets(companyId);
     const agentRows = await agents.list(companyId);
@@ -1737,6 +2152,64 @@ export function companySkillService(db: Db) {
     await ensureSkillInventoryCurrent(companyId);
     const skill = await getById(companyId, skillId);
     if (!skill) return null;
+    const audit = skill.sourceType === "catalog" || skill.sourceType === "local_path"
+      ? await auditInstalledSkillBytes(skill)
+      : null;
+    const metadata = getSkillMeta(skill);
+    const statusMeta = {
+      installedHash: audit?.installedHash ?? asString(metadata.installedHash),
+      originHash: audit?.originHash ?? asString(metadata.originHash),
+      userModifiedAt: audit && audit.originHash && audit.installedHash !== audit.originHash
+        ? asString(metadata.userModifiedAt) ?? audit.scannedAt
+        : audit && audit.originHash
+          ? null
+        : asString(metadata.userModifiedAt),
+      updateHoldReason: (audit?.verdict === "fail"
+        ? "audit_hard_stop"
+        : audit && audit.originHash && audit.installedHash !== audit.originHash
+          ? "local_modifications"
+          : audit && audit.originHash
+            ? null
+          : asString(metadata.updateHoldReason)) as CompanySkillUpdateHoldReason | null,
+      auditVerdict: audit?.verdict ?? (asString(metadata.auditVerdict) as CompanySkillAuditVerdict | null),
+      auditCodes: audit?.codes ?? (Array.isArray(metadata.auditCodes) ? metadata.auditCodes.map(String) : []),
+    };
+
+    if (skill.sourceType === "catalog") {
+      const catalogId = asString(metadata.catalogId);
+      if (!catalogId) {
+        return {
+          supported: false,
+          reason: "This catalog skill does not have enough metadata to track updates.",
+          trackingRef: null,
+          currentRef: skill.sourceRef ?? statusMeta.originHash,
+          latestRef: null,
+          hasUpdate: false,
+          ...statusMeta,
+        };
+      }
+      const catalogSkill = resolveCatalogSkillIfPresent(catalogId);
+      if (!catalogSkill) {
+        return {
+          supported: false,
+          reason: "Catalog entry is no longer available in the shipped manifest.",
+          trackingRef: catalogId,
+          currentRef: skill.sourceRef ?? statusMeta.originHash,
+          latestRef: null,
+          hasUpdate: false,
+          ...statusMeta,
+        };
+      }
+      return {
+        supported: true,
+        reason: null,
+        trackingRef: catalogSkill.id,
+        currentRef: skill.sourceRef ?? statusMeta.originHash,
+        latestRef: catalogSkill.contentHash,
+        hasUpdate: catalogSkill.contentHash !== (skill.sourceRef ?? statusMeta.originHash),
+        ...statusMeta,
+      };
+    }
 
     if (skill.sourceType !== "github" && skill.sourceType !== "skills_sh") {
       return {
@@ -1746,10 +2219,10 @@ export function companySkillService(db: Db) {
         currentRef: skill.sourceRef ?? null,
         latestRef: null,
         hasUpdate: false,
+        ...statusMeta,
       };
     }
 
-    const metadata = getSkillMeta(skill);
     const owner = asString(metadata.owner);
     const repo = asString(metadata.repo);
     const trackingRef = asString(metadata.trackingRef) ?? asString(metadata.ref);
@@ -1761,6 +2234,7 @@ export function companySkillService(db: Db) {
         currentRef: skill.sourceRef ?? null,
         latestRef: null,
         hasUpdate: false,
+        ...statusMeta,
       };
     }
 
@@ -1774,6 +2248,7 @@ export function companySkillService(db: Db) {
       currentRef: skill.sourceRef ?? null,
       latestRef,
       hasUpdate: latestRef !== (skill.sourceRef ?? null),
+      ...statusMeta,
     };
   }
 
@@ -1915,7 +2390,7 @@ export function companySkillService(db: Db) {
     return detail;
   }
 
-  async function installUpdate(companyId: string, skillId: string): Promise<CompanySkill | null> {
+  async function installUpdate(companyId: string, skillId: string, options: { force?: boolean } = {}): Promise<CompanySkill | null> {
     await ensureSkillInventoryCurrent(companyId);
     const skill = await getById(companyId, skillId);
     if (!skill) return null;
@@ -1924,6 +2399,104 @@ export function companySkillService(db: Db) {
     if (!status?.supported) {
       throw unprocessable(status?.reason ?? "This skill does not support updates.");
     }
+    if (skill.sourceType === "catalog" || skill.sourceType === "local_path") {
+      const audit = await auditInstalledSkillBytes(skill);
+      await persistAuditMetadata(skill, audit);
+      if (audit.verdict === "fail") {
+        throw unprocessable("Skill update is blocked by hard-stop audit findings.", {
+          updateHoldReason: "audit_hard_stop",
+          audit,
+        });
+      }
+      if (audit.originHash && audit.installedHash !== audit.originHash && !options.force) {
+        throw unprocessable("Skill update is held because local modifications were detected; rerun with --force to discard them.", {
+          updateHoldReason: "local_modifications",
+          audit,
+        });
+      }
+    }
+
+    if (skill.sourceType === "catalog") {
+      const catalogId = asString(getSkillMeta(skill).catalogId);
+      if (!catalogId) {
+        throw unprocessable("Catalog skill metadata is incomplete.");
+      }
+      const catalogSkill = resolveCatalogSkillIfPresent(catalogId);
+      if (!catalogSkill) {
+        throw unprocessable("Catalog entry is no longer available in the shipped manifest.", {
+          updateHoldReason: "origin_unavailable",
+        });
+      }
+      assertCatalogSkillInstallable(catalogSkill);
+      const originSnapshotLocator = await materializeCatalogOriginSnapshot(companyId, catalogSkill, skill.slug);
+      const snapshotSkill = {
+        ...skill,
+        sourceLocator: originSnapshotLocator,
+        sourceRef: catalogSkill.contentHash,
+        fileInventory: catalogSkill.files.map((entry) => ({ path: entry.path, kind: entry.kind })),
+        metadata: {
+          ...(isPlainRecord(skill.metadata) ? skill.metadata : {}),
+          originHash: catalogSkill.contentHash,
+        },
+      };
+      const candidateAudit = await auditInstalledSkillBytes(snapshotSkill);
+      if (candidateAudit.verdict === "fail") {
+        throw unprocessable("Catalog update is blocked by hard-stop audit findings.", {
+          updateHoldReason: "audit_hard_stop",
+          audit: candidateAudit,
+        });
+      }
+      const materializedDir = path.resolve(
+        resolveManagedSkillsRoot(companyId),
+        "__catalog__",
+        buildSkillRuntimeName(catalogSkill.key, skill.slug),
+      );
+      await copySkillDirectory(originSnapshotLocator, materializedDir);
+      const markdown = (await readCatalogSkillFile(catalogSkill.id, catalogSkill.entrypoint)).content;
+      const nextMetadata = buildCatalogSkillMetadata(catalogSkill, skill, originSnapshotLocator);
+      const nextValues = {
+        name: catalogSkill.name,
+        description: catalogSkill.description,
+        markdown,
+        sourceLocator: materializedDir,
+        sourceRef: catalogSkill.contentHash,
+        trustLevel: catalogSkill.trustLevel,
+        compatibility: catalogSkill.compatibility,
+        fileInventory: serializeFileInventory(catalogSkill.files.map((entry) => ({
+          path: entry.path,
+          kind: entry.kind,
+        }))),
+        metadata: {
+          ...nextMetadata,
+          installedHash: catalogSkill.contentHash,
+          userModifiedAt: null,
+          updateHoldReason: null,
+          auditVerdict: "pass",
+          auditCodes: [],
+          auditScannedAt: new Date().toISOString(),
+          auditScanVersion: SKILL_AUDIT_SCAN_VERSION,
+        },
+        updatedAt: new Date(),
+      };
+      const row = await db
+        .update(companySkills)
+        .set(nextValues)
+        .where(and(eq(companySkills.id, skill.id), eq(companySkills.companyId, companyId)))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!row) throw notFound("Skill not found");
+      const updated = toCompanySkill(row);
+      const postAudit = await auditInstalledSkillBytes(updated);
+      if (postAudit.verdict === "fail") {
+        await persistAuditMetadata(updated, postAudit);
+        throw unprocessable("Catalog update produced hard-stop audit findings.", {
+          updateHoldReason: "audit_hard_stop",
+          audit: postAudit,
+        });
+      }
+      return persistAuditMetadata(updated, postAudit);
+    }
+
     if (!skill.sourceLocator) {
       throw unprocessable("Skill source locator is missing.");
     }
@@ -1933,9 +2506,107 @@ export function companySkillService(db: Db) {
     if (!matching) {
       throw unprocessable(`Skill ${skill.key} could not be re-imported from its source.`);
     }
-
     const imported = await upsertImportedSkills(companyId, [matching]);
     return imported[0] ?? null;
+  }
+
+  async function resetSkill(companyId: string, skillId: string, options: { force?: boolean } = {}): Promise<CompanySkill | null> {
+    await ensureSkillInventoryCurrent(companyId);
+    const skill = await getById(companyId, skillId);
+    if (!skill) return null;
+    if (skill.sourceType !== "catalog") {
+      throw unprocessable("Only catalog-managed company skills support reset.");
+    }
+
+    const metadata = getSkillMeta(skill);
+    const originHash = asString(metadata.originHash);
+    const snapshotLocator = asString(metadata.originSnapshotLocator);
+    const targetDir = normalizeSkillDirectory(skill);
+    if (!originHash || !targetDir) {
+      throw unprocessable("Catalog skill origin metadata is incomplete.", {
+        updateHoldReason: "origin_unavailable",
+      });
+    }
+
+    let sourceDir = snapshotLocator && (await statPath(path.join(snapshotLocator, "SKILL.md")))?.isFile()
+      ? snapshotLocator
+      : null;
+    if (!sourceDir) {
+      const catalogId = asString(metadata.catalogId);
+      const catalogSkill = catalogId ? resolveCatalogSkillIfPresent(catalogId) : null;
+      if (catalogSkill?.contentHash === originHash) {
+        sourceDir = await materializeCatalogOriginSnapshot(companyId, catalogSkill, skill.slug);
+      }
+    }
+    if (!sourceDir) {
+      throw conflict("Pinned catalog origin bytes are unavailable; run skills update explicitly instead.", {
+        updateHoldReason: "origin_unavailable",
+      });
+    }
+
+    const originAudit = await auditInstalledSkillBytes({
+      ...skill,
+      sourceLocator: sourceDir,
+      metadata: {
+        ...(isPlainRecord(skill.metadata) ? skill.metadata : {}),
+        originHash,
+      },
+    });
+    if (originAudit.installedHash !== originHash || originAudit.verdict === "fail") {
+      throw unprocessable("Pinned catalog origin failed audit and cannot be restored.", {
+        updateHoldReason: originAudit.verdict === "fail" ? "audit_hard_stop" : "origin_unavailable",
+        audit: originAudit,
+      });
+    }
+
+    const preAudit = await auditInstalledSkillBytes(skill);
+    await persistAuditMetadata(skill, preAudit);
+    if (preAudit.installedHash !== originHash && !options.force) {
+      throw unprocessable("Skill reset would discard local modifications; rerun with --force after confirming reset.", {
+        updateHoldReason: "local_modifications",
+        audit: preAudit,
+      });
+    }
+
+    await copySkillDirectory(sourceDir, targetDir);
+    const markdown = await fs.readFile(path.join(targetDir, "SKILL.md"), "utf8");
+    const inventory = await collectLocalSkillInventory(targetDir);
+    const trustLevel = deriveTrustLevel(inventory);
+    const row = await db
+      .update(companySkills)
+      .set({
+        markdown,
+        sourceRef: originHash,
+        trustLevel,
+        compatibility: "compatible",
+        fileInventory: serializeFileInventory(inventory),
+        metadata: {
+          ...(isPlainRecord(skill.metadata) ? skill.metadata : {}),
+          originSnapshotLocator: sourceDir,
+          installedHash: originHash,
+          userModifiedAt: null,
+          updateHoldReason: null,
+          auditVerdict: "pass",
+          auditCodes: [],
+          auditScannedAt: new Date().toISOString(),
+          auditScanVersion: SKILL_AUDIT_SCAN_VERSION,
+        },
+        updatedAt: new Date(),
+      })
+      .where(and(eq(companySkills.id, skill.id), eq(companySkills.companyId, companyId)))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!row) throw notFound("Skill not found");
+    const reset = toCompanySkill(row);
+    const postAudit = await auditInstalledSkillBytes(reset);
+    if (postAudit.installedHash !== originHash || postAudit.verdict === "fail") {
+      await persistAuditMetadata(reset, postAudit);
+      throw unprocessable("Catalog reset did not restore a passing pinned origin.", {
+        updateHoldReason: postAudit.verdict === "fail" ? "audit_hard_stop" : "origin_unavailable",
+        audit: postAudit,
+      });
+    }
+    return persistAuditMetadata(reset, postAudit);
   }
 
   async function scanProjectWorkspaces(
@@ -2141,18 +2812,292 @@ export function companySkillService(db: Db) {
     return skillDir;
   }
 
+  async function createDirectoryReplacement(targetDir: string) {
+    const parentDir = path.dirname(targetDir);
+    const baseName = path.basename(targetDir);
+    await fs.mkdir(parentDir, { recursive: true });
+    const stagingDir = path.join(parentDir, `.${baseName}.tmp-${randomUUID()}`);
+    const previousDir = path.join(parentDir, `.${baseName}.old-${randomUUID()}`);
+    await fs.rm(stagingDir, { recursive: true, force: true });
+    await fs.mkdir(stagingDir, { recursive: true });
+
+    return {
+      stagingDir,
+      async commit() {
+        let hasPrevious = false;
+        try {
+          await fs.rename(targetDir, previousDir);
+          hasPrevious = true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+
+        try {
+          await fs.rename(stagingDir, targetDir);
+        } catch (error) {
+          if (hasPrevious) {
+            await fs.rename(previousDir, targetDir).catch(() => undefined);
+          }
+          throw error;
+        }
+
+        if (hasPrevious) {
+          await fs.rm(previousDir, { recursive: true, force: true });
+        }
+      },
+      async cleanup() {
+        await fs.rm(stagingDir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  async function materializeCatalogManifestSkillFiles(
+    companyId: string,
+    catalogSkill: CatalogSkill,
+    slug: string,
+  ) {
+    const catalogRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__catalog__");
+    const skillDir = path.resolve(catalogRoot, buildSkillRuntimeName(catalogSkill.key, slug));
+    const replacement = await createDirectoryReplacement(skillDir);
+    try {
+      for (const entry of catalogSkill.files) {
+        const targetPath = path.resolve(replacement.stagingDir, entry.path);
+        if (targetPath !== replacement.stagingDir && !targetPath.startsWith(`${replacement.stagingDir}${path.sep}`)) {
+          throw unprocessable(`Catalog file path is invalid: ${entry.path}`);
+        }
+        await fs.mkdir(path.dirname(targetPath), { recursive: true });
+        await copyCatalogSkillFile(catalogSkill.id, entry.path, targetPath);
+      }
+      await replacement.commit();
+    } catch (error) {
+      await replacement.cleanup();
+      throw error;
+    }
+
+    return skillDir;
+  }
+
+  async function materializeCatalogOriginSnapshot(
+    companyId: string,
+    catalogSkill: CatalogSkill,
+    slug: string,
+  ) {
+    const originsRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__catalog_origins__");
+    const snapshotDir = path.resolve(
+      originsRoot,
+      buildSkillRuntimeName(catalogSkill.key, slug),
+      catalogSkill.contentHash.replace(/^sha256:/, ""),
+    );
+    const replacement = await createDirectoryReplacement(snapshotDir);
+    try {
+      for (const entry of catalogSkill.files) {
+        const targetPath = path.resolve(replacement.stagingDir, entry.path);
+        if (targetPath !== replacement.stagingDir && !targetPath.startsWith(`${replacement.stagingDir}${path.sep}`)) {
+          throw unprocessable(`Catalog file path is invalid: ${entry.path}`);
+        }
+        await fs.mkdir(path.dirname(targetPath), { recursive: true });
+        await copyCatalogSkillFile(catalogSkill.id, entry.path, targetPath);
+      }
+      await replacement.commit();
+    } catch (error) {
+      await replacement.cleanup();
+      throw error;
+    }
+
+    return snapshotDir;
+  }
+
+  async function copySkillDirectory(sourceDir: string, targetDir: string) {
+    const { files } = await collectSkillFileBytes(sourceDir);
+    const replacement = await createDirectoryReplacement(targetDir);
+    try {
+      for (const file of files) {
+        const targetPath = path.resolve(replacement.stagingDir, file.path);
+        if (targetPath !== replacement.stagingDir && !targetPath.startsWith(`${replacement.stagingDir}${path.sep}`)) {
+          throw unprocessable(`Skill file path is invalid: ${file.path}`);
+        }
+        await fs.mkdir(path.dirname(targetPath), { recursive: true });
+        await fs.writeFile(targetPath, file.bytes);
+      }
+      await replacement.commit();
+    } catch (error) {
+      await replacement.cleanup();
+      throw error;
+    }
+  }
+
+  function buildCatalogSkillMetadata(
+    catalogSkill: CatalogSkill,
+    existing: CompanySkill | null,
+    originSnapshotLocator: string,
+  ) {
+    const packageMetadata = getCatalogPackageMetadata();
+    const existingMetadata = existing && isPlainRecord(existing.metadata) ? existing.metadata : {};
+    return {
+      ...existingMetadata,
+      skillKey: catalogSkill.key,
+      sourceKind: "catalog",
+      catalogId: catalogSkill.id,
+      catalogKey: catalogSkill.key,
+      catalogKind: catalogSkill.kind,
+      catalogCategory: catalogSkill.category,
+      catalogPath: catalogSkill.path,
+      packageName: packageMetadata.packageName,
+      packageVersion: packageMetadata.packageVersion,
+      originHash: catalogSkill.contentHash,
+      originVersion: packageMetadata.packageVersion,
+      originSnapshotLocator,
+      userModifiedAt: existingMetadata.userModifiedAt ?? null,
+      updateHoldReason: existingMetadata.updateHoldReason ?? null,
+    };
+  }
+
+  function assertCatalogSkillInstallable(catalogSkill: CatalogSkill) {
+    if (catalogSkill.compatibility !== "compatible") {
+      throw unprocessable(`Catalog skill ${catalogSkill.id} is not compatible.`);
+    }
+    if (catalogSkill.trustLevel === "scripts_executables") {
+      throw unprocessable(
+        "Catalog skill contains executable scripts and cannot be force-installed until security review semantics allow it.",
+      );
+    }
+  }
+
+  async function installFromCatalog(
+    companyId: string,
+    input: CompanySkillInstallCatalogRequest,
+  ): Promise<CompanySkillInstallCatalogResult> {
+    await ensureSkillInventoryCurrent(companyId);
+    const catalogSkill = getCatalogSkillOrThrow(input.catalogSkillId);
+    assertCatalogSkillInstallable(catalogSkill);
+
+    const slug = normalizeSkillSlug(input.slug ?? catalogSkill.slug);
+    if (!slug) {
+      throw unprocessable("Catalog skill slug is invalid.");
+    }
+
+    const existingSkills = await listFull(companyId);
+    const existingByKey = existingSkills.find((skill) => skill.key === catalogSkill.key) ?? null;
+    const slugConflict = existingSkills.find((skill) => skill.slug === slug && skill.id !== existingByKey?.id) ?? null;
+    if (slugConflict) {
+      throw conflict(`Skill slug "${slug}" is already used by ${slugConflict.key}.`);
+    }
+
+    if (existingByKey) {
+      const metadata = getSkillMeta(existingByKey);
+      const existingCatalogId = asString(metadata.catalogId);
+      const sameCatalog = existingByKey.sourceType === "catalog" && existingCatalogId === catalogSkill.id;
+      const catalogManaged = existingByKey.sourceType === "catalog";
+      if (!sameCatalog && (!catalogManaged || !input.force)) {
+        throw conflict(
+          `Skill key "${catalogSkill.key}" is already used by ${existingByKey.sourceLocator ?? existingByKey.slug}.`,
+        );
+      }
+      if (
+        sameCatalog
+        && existingByKey.slug === slug
+        && asString(metadata.originHash) === catalogSkill.contentHash
+      ) {
+        const audit = await auditInstalledSkillBytes(existingByKey);
+        const audited = await persistAuditMetadata(existingByKey, audit);
+        if (audit.installedHash === catalogSkill.contentHash && audit.verdict !== "fail") {
+          return {
+            action: "unchanged",
+            skill: audited,
+            catalogSkill,
+            warnings: audit.findings.map((finding) => finding.message),
+          };
+        }
+        if (!input.force) {
+          const holdReason = audit.verdict === "fail" ? "audit_hard_stop" : "local_modifications";
+          const message = audit.verdict === "fail"
+            ? "Catalog skill has hard-stop audit findings; rerun with --force to replace it."
+            : "Catalog skill has local modifications; rerun with --force to replace it.";
+          throw unprocessable(message, {
+            updateHoldReason: holdReason,
+            audit,
+          });
+        }
+      }
+    }
+
+    const materializedDir = await materializeCatalogManifestSkillFiles(companyId, catalogSkill, slug);
+    const originSnapshotLocator = await materializeCatalogOriginSnapshot(companyId, catalogSkill, slug);
+    const markdown = (await readCatalogSkillFile(catalogSkill.id, catalogSkill.entrypoint)).content;
+    const metadata = buildCatalogSkillMetadata(catalogSkill, existingByKey, originSnapshotLocator);
+    const values = {
+      companyId,
+      key: catalogSkill.key,
+      slug,
+      name: catalogSkill.name,
+      description: catalogSkill.description,
+      markdown,
+      sourceType: "catalog",
+      sourceLocator: materializedDir,
+      sourceRef: catalogSkill.contentHash,
+      trustLevel: catalogSkill.trustLevel,
+      compatibility: catalogSkill.compatibility,
+      fileInventory: serializeFileInventory(catalogSkill.files.map((entry) => ({
+        path: entry.path,
+        kind: entry.kind,
+      }))),
+      metadata,
+      updatedAt: new Date(),
+    };
+
+    const row = existingByKey
+      ? await db
+        .update(companySkills)
+        .set(values)
+        .where(eq(companySkills.id, existingByKey.id))
+        .returning()
+        .then((rows) => rows[0] ?? null)
+      : await db
+        .insert(companySkills)
+        .values(values)
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+    if (!row) throw notFound("Failed to persist company skill");
+    const installed = toCompanySkill(row);
+    const postAudit = await auditInstalledSkillBytes(installed);
+    if (postAudit.verdict === "fail") {
+      await persistAuditMetadata(installed, postAudit);
+      throw unprocessable("Catalog install produced hard-stop audit findings.", {
+        updateHoldReason: "audit_hard_stop",
+        audit: postAudit,
+      });
+    }
+    const audited = await persistAuditMetadata(installed, postAudit);
+    return {
+      action: existingByKey ? "updated" : "created",
+      skill: audited,
+      catalogSkill,
+      warnings: postAudit.findings.map((finding) => finding.message),
+    };
+  }
+
   async function materializeRuntimeSkillFiles(companyId: string, skill: CompanySkill) {
     const runtimeRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__runtime__");
     const skillDir = path.resolve(runtimeRoot, buildSkillRuntimeName(skill.key, skill.slug));
     await fs.rm(skillDir, { recursive: true, force: true });
     await fs.mkdir(skillDir, { recursive: true });
 
+    let wroteSkillFile = false;
     for (const entry of skill.fileInventory) {
-      const detail = await readFile(companyId, skill.id, entry.path).catch(() => null);
-      if (!detail) continue;
+      const normalizedPath = normalizePortablePath(entry.path);
+      const detail = await readFile(companyId, skill.id, normalizedPath).catch(() => null);
+      const content = detail?.content ?? (normalizedPath === "SKILL.md" ? skill.markdown : null);
+      if (content === null) continue;
       const targetPath = path.resolve(skillDir, entry.path);
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
-      await fs.writeFile(targetPath, detail.content, "utf8");
+      await fs.writeFile(targetPath, content, "utf8");
+      if (normalizedPath === "SKILL.md") wroteSkillFile = true;
+    }
+
+    if (!wroteSkillFile) {
+      await fs.rm(skillDir, { recursive: true, force: true });
+      throw unprocessable("Company skill could not be materialized because its stored SKILL.md copy is missing.");
     }
 
     return skillDir;
@@ -2161,6 +3106,29 @@ export function companySkillService(db: Db) {
   function resolveRuntimeSkillMaterializedPath(companyId: string, skill: Pick<CompanySkill, "key" | "slug">) {
     const runtimeRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__runtime__");
     return path.resolve(runtimeRoot, buildSkillRuntimeName(skill.key, skill.slug));
+  }
+
+  async function resolveRuntimeSkillSource(
+    companyId: string,
+    skill: CompanySkill,
+    options: RuntimeSkillEntryOptions,
+  ): Promise<RuntimeSkillSourceResolution | null> {
+    const source = await resolveExistingSkillDirectory(normalizeSkillDirectory(skill));
+    if (source) return { status: "available", source };
+
+    if (options.materializeMissing === false) {
+      const materializedPath = resolveRuntimeSkillMaterializedPath(companyId, skill);
+      const materializedSource = await resolveExistingSkillDirectory(materializedPath);
+      if (materializedSource) return { status: "available", source: materializedSource };
+      return {
+        status: "missing",
+        source: materializedPath,
+        detail: buildMissingRuntimeSourceDetail(skill),
+      };
+    }
+
+    const materializedSource = await materializeRuntimeSkillFiles(companyId, skill).catch(() => null);
+    return materializedSource ? { status: "available", source: materializedSource } : null;
   }
 
   async function listRuntimeSkillEntries(
@@ -2172,19 +3140,16 @@ export function companySkillService(db: Db) {
     const out: PaperclipSkillEntry[] = [];
     for (const skill of skills) {
       const sourceKind = asString(getSkillMeta(skill).sourceKind);
-      let source = normalizeSkillDirectory(skill);
-      if (!source) {
-        source = options.materializeMissing === false
-          ? resolveRuntimeSkillMaterializedPath(companyId, skill)
-          : await materializeRuntimeSkillFiles(companyId, skill).catch(() => null);
-      }
-      if (!source) continue;
+      const sourceResolution = await resolveRuntimeSkillSource(companyId, skill, options);
+      if (!sourceResolution) continue;
 
       const required = sourceKind === "paperclip_bundled";
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
-        source,
+        source: sourceResolution.source,
+        sourceStatus: sourceResolution.status,
+        missingDetail: sourceResolution.status === "missing" ? sourceResolution.detail : null,
         required,
         requiredReason: required
           ? "Bundled Paperclip skills are always available for local adapters."
@@ -2470,9 +3435,12 @@ export function companySkillService(db: Db) {
     createLocalSkill,
     deleteSkill,
     importFromSource,
+    installFromCatalog,
     scanProjectWorkspaces,
     importPackageFiles,
+    auditSkill,
     installUpdate,
+    resetSkill,
     listRuntimeSkillEntries,
   };
 }

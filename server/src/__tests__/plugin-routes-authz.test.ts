@@ -139,6 +139,27 @@ describe.sequential("plugin install and upgrade authz", () => {
     vi.clearAllMocks();
   });
 
+  it("lists bundled monorepo plugin packages", async () => {
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app).get("/api/plugins/examples");
+
+    expect(res.status).toBe(200);
+    const packageNames = res.body.map((plugin: { packageName: string }) => plugin.packageName);
+    const byPackageName = new Map(
+      res.body.map((plugin: { packageName: string; experimental: boolean }) => [plugin.packageName, plugin]),
+    );
+    expect(packageNames).toContain("@paperclipai/plugin-workspace-diff");
+    expect(packageNames).toContain("@paperclipai/plugin-llm-wiki");
+    expect(packageNames).toContain("@paperclipai/plugin-modal");
+    expect(packageNames).toContain("@paperclipai/plugin-authoring-smoke-example");
+    expect(packageNames).not.toContain("@paperclipai/plugin-sdk");
+    expect(byPackageName.get("@paperclipai/plugin-workspace-diff")?.experimental).toBe(true);
+    expect(byPackageName.get("@paperclipai/plugin-llm-wiki")?.experimental).toBe(true);
+    expect(byPackageName.get("@paperclipai/plugin-modal")?.experimental).toBe(true);
+    expect(byPackageName.get("@paperclipai/plugin-authoring-smoke-example")?.experimental).toBe(false);
+  }, 20_000);
+
   it("rejects plugin installation for non-admin board users", async () => {
     const { app, loader } = await createApp({
       type: "board",
@@ -890,5 +911,145 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ runId: "run-1", jobId: "job-1" });
     expect(scheduler.triggerJob).toHaveBeenCalledWith("job-1", "manual");
+  });
+
+  // ─── Agent JWT tool execution (cherry-picked from #5549) ─────────────────────
+
+  it("rejects board users with no company memberships from listing plugin tools", async () => {
+    const listToolsForAgent = vi.fn(() => []);
+    const { app } = await createApp(
+      boardActor({ companyIds: [], isInstanceAdmin: false, source: "session" }),
+      {},
+      {
+        toolDeps: {
+          toolDispatcher: {
+            listToolsForAgent,
+            getTool: vi.fn(),
+            executeTool: vi.fn(),
+          },
+        },
+      },
+    );
+
+    const res = await request(app).get("/api/plugins/tools");
+
+    expect(res.status).toBe(403);
+    expect(listToolsForAgent).not.toHaveBeenCalled();
+  });
+
+  it("allows agent JWT to list available plugin tools", async () => {
+    const listToolsForAgent = vi.fn(() => []);
+    const { app } = await createApp(agentActor(), {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent,
+          getTool: vi.fn(),
+          executeTool: vi.fn(),
+        },
+      },
+    });
+
+    const res = await request(app).get("/api/plugins/tools");
+
+    expect(res.status).toBe(200);
+    expect(listToolsForAgent).toHaveBeenCalled();
+  });
+
+  it("allows agent JWT to execute a tool within its company scope", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    const { app } = await createApp(
+      agentActor(),
+      {},
+      {
+        db: createSelectQueueDb([
+          [{ companyId: companyA }],
+          [{ companyId: companyA, agentId: agentA }],
+          [{ companyId: companyA }],
+        ]),
+        toolDeps: {
+          toolDispatcher: {
+            listToolsForAgent: vi.fn(),
+            getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginDbId: pluginId })),
+            executeTool,
+          },
+        },
+      },
+    );
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: { q: "test" },
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalledWith(
+      "paperclip.example:search",
+      { q: "test" },
+      { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA },
+    );
+  });
+
+  it("rejects agent JWT when runContext.companyId is outside the agent's company scope", async () => {
+    const executeTool = vi.fn();
+    const { app } = await createApp(
+      agentActor(),
+      {},
+      {
+        db: createSelectQueueDb([]),
+        toolDeps: {
+          toolDispatcher: {
+            listToolsForAgent: vi.fn(),
+            getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginDbId: pluginId })),
+            executeTool,
+          },
+        },
+      },
+    );
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyB, projectId: projectA },
+      });
+
+    expect(res.status).toBe(403);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent JWT when runContext.agentId does not belong to runContext.companyId", async () => {
+    const otherAgent = "77777777-7777-4777-8777-777777777777";
+    const executeTool = vi.fn();
+    const { app } = await createApp(
+      agentActor(),
+      {},
+      {
+        db: createSelectQueueDb([
+          [{ companyId: companyB }],
+        ]),
+        toolDeps: {
+          toolDispatcher: {
+            listToolsForAgent: vi.fn(),
+            getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginDbId: pluginId })),
+            executeTool,
+          },
+        },
+      },
+    );
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: otherAgent, runId: runA, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).toBe(403);
+    expect(executeTool).not.toHaveBeenCalled();
   });
 });

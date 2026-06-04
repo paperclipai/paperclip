@@ -84,6 +84,39 @@ const scrollableBlockStyle: React.CSSProperties = {
   overflowX: "auto",
 };
 
+const codeBlockActionsStyle: React.CSSProperties = {
+  position: "absolute",
+  top: "0.4rem",
+  right: "0.4rem",
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "0.25rem",
+};
+
+const codeBlockActionStyle: React.CSSProperties = {
+  position: "static",
+  opacity: 1,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: "0.25rem",
+  minHeight: "1.55rem",
+  padding: "0.2rem 0.4rem",
+  borderRadius: "calc(var(--radius) - 4px)",
+  border: "1px solid color-mix(in oklab, var(--foreground) 14%, transparent)",
+  backgroundColor: "color-mix(in oklab, var(--muted) 92%, var(--background) 8%)",
+  color: "var(--muted-foreground)",
+  fontSize: "0.7rem",
+  lineHeight: 1,
+  cursor: "pointer",
+};
+
+const codeBlockWrapActionStyle: React.CSSProperties = {
+  ...codeBlockActionStyle,
+  width: "1.55rem",
+  paddingInline: 0,
+};
+
 const tableCellWrapStyle: React.CSSProperties = {
   overflowWrap: "anywhere",
   wordBreak: "normal",
@@ -426,6 +459,7 @@ function CodeBlock({
       </pre>
       <div
         className="paperclip-markdown-codeblock-actions"
+        style={codeBlockActionsStyle}
         data-active={copied || failed || wrapLines || undefined}
       >
         <button
@@ -434,11 +468,17 @@ function CodeBlock({
           aria-label={wrapLabel}
           title={wrapLabel}
           className="paperclip-markdown-codeblock-action paperclip-markdown-codeblock-wrap"
+          style={wrapLines
+            ? {
+                ...codeBlockWrapActionStyle,
+                borderColor: "color-mix(in oklab, var(--primary) 38%, transparent)",
+                color: "var(--primary)",
+              }
+            : codeBlockWrapActionStyle}
           aria-pressed={wrapLines}
           data-active={wrapLines || undefined}
         >
           <WrapText aria-hidden="true" className="h-3.5 w-3.5" />
-          <span className="paperclip-markdown-codeblock-action-label">{wrapLabel}</span>
         </button>
         <button
           type="button"
@@ -446,6 +486,7 @@ function CodeBlock({
           aria-label="Copy code"
           title={copyLabel}
           className="paperclip-markdown-codeblock-action paperclip-markdown-codeblock-copy"
+          style={codeBlockActionStyle}
           data-copied={copied || undefined}
           data-failed={failed || undefined}
         >
