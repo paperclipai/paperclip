@@ -22,7 +22,7 @@ import {
   RunActivityChart,
   SuccessRateChart,
 } from "@/components/ActivityCharts";
-import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
+import { AuthAtlas } from "@/components/AuthAtlas";
 import { CompanyPatternIcon } from "@/components/CompanyPatternIcon";
 import { EntityRow } from "@/components/EntityRow";
 import { FilterBar, type FilterValue } from "@/components/FilterBar";
@@ -590,10 +590,10 @@ function CompanyPatternIconMatrix() {
   );
 }
 
-function AsciiArtAnimationDemo({ loading = false }: { loading?: boolean }) {
+function AuthAtlasDemo({ loading = false }: { loading?: boolean }) {
   return (
     <StoryShell>
-      <Section eyebrow="AsciiArtAnimation" title={loading ? "Loading art surface" : "Animated ASCII valadrien-os field"}>
+      <Section eyebrow="AuthAtlas" title={loading ? "Loading art surface" : "Live obsidian-brain atlas"}>
         <div className="h-[360px] overflow-hidden rounded-xl border border-border bg-background">
           {loading ? (
             <div className="flex h-full items-center justify-center gap-3 text-sm text-muted-foreground">
@@ -601,7 +601,7 @@ function AsciiArtAnimationDemo({ loading = false }: { loading?: boolean }) {
               Preparing animation canvas
             </div>
           ) : (
-            <AsciiArtAnimation />
+            <AuthAtlas showTagline={false} />
           )}
         </div>
       </Section>
@@ -749,14 +749,14 @@ export const CompanyPatternIconSizes: Story = {
   render: () => <CompanyPatternIconMatrix />,
 };
 
-export const AsciiArtAnimationPopulated: Story = {
-  name: "AsciiArtAnimation / Populated",
-  render: () => <AsciiArtAnimationDemo />,
+export const AuthAtlasPopulated: Story = {
+  name: "AuthAtlas / Populated",
+  render: () => <AuthAtlasDemo />,
 };
 
-export const AsciiArtAnimationLoading: Story = {
-  name: "AsciiArtAnimation / Loading",
-  render: () => <AsciiArtAnimationDemo loading />,
+export const AuthAtlasLoading: Story = {
+  name: "AuthAtlas / Loading",
+  render: () => <AuthAtlasDemo loading />,
 };
 
 export const PageSkeletonLayouts: Story = {
