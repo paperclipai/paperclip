@@ -35,13 +35,12 @@ describe("GET /api/inference/local/health", () => {
     });
   });
 
-  it("passes optional probe query settings to the health probe", async () => {
+  it("ignores client-supplied baseUrl and passes timeout only", async () => {
     await request(createApp())
       .get("/api/inference/local/health")
-      .query({ baseUrl: "http://local.test/v1", timeoutSec: "4" });
+      .query({ baseUrl: "http://evil.test/v1", timeoutSec: "4" });
 
     expect(localHealthMock).toHaveBeenCalledWith({
-      baseUrl: "http://local.test/v1",
       timeoutSec: 4,
     });
   });

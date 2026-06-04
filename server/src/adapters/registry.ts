@@ -338,6 +338,7 @@ const localAdapter: ServerAdapterModule = {
   execute: async (ctx) => {
     const health = await getLocalInferenceHealth({
       baseUrl: readString(ctx.config.baseUrl),
+      apiKey: readString(ctx.config.apiKey),
     });
     if (health.available) return localExecute(ctx);
 
@@ -367,7 +368,7 @@ const localAdapter: ServerAdapterModule = {
   getConfigSchema: () => ({
     fields: [
       { key: "baseUrl", label: "Base URL", type: "text", default: "http://localhost:1234/v1" },
-      { key: "apiKey", label: "API key", type: "text" },
+      { key: "apiKey", label: "API key", type: "password" },
       { key: "maxTurns", label: "Max turns", type: "number" },
       { key: "instructionsFilePath", label: "Instructions file", type: "text", required: true },
     ],

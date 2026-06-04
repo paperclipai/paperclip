@@ -12,6 +12,7 @@ export interface LocalInferenceHealth {
 
 interface ProbeOptions {
   baseUrl?: string;
+  apiKey?: string;
   timeoutSec?: number;
 }
 
@@ -70,11 +71,13 @@ function parseModelIds(payload: unknown): string[] {
     .filter((id): id is string => typeof id === "string" && id.trim().length > 0);
 }
 
-async function fetchModels(url: string, timeoutMs: number): Promise<unknown> {
+async function fetchModels(url: string, timeoutMs: number, apiKey = ""): Promise<unknown> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const headers: Record<string, string> = {};
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
   try {
-    const response = await fetch(`${url}/models`, { signal: controller.signal });
+    const response = await fetch(`${url}/models`, { headers, signal: controller.signal });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return await response.json();
   } finally {
@@ -90,7 +93,11 @@ export async function getLocalInferenceHealth(
   if (forced) return forced;
 
   try {
-    const payload = await fetchModels(url, readTimeoutMs(options.timeoutSec ?? readEnvTimeoutSec()));
+    const payload = await fetchModels(
+      url,
+      readTimeoutMs(options.timeoutSec ?? readEnvTimeoutSec()),
+      options.apiKey,
+    );
     const models = parseModelIds(payload);
     return { available: true, url, models };
   } catch (error) {

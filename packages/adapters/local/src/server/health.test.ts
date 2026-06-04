@@ -47,6 +47,25 @@ describe("local inference health", () => {
     );
   });
 
+  it("sends the configured API key as a bearer token", async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      object: "list",
+      data: [{ id: "qwen/qwen3-coder-30b" }],
+    }), { status: 200 }));
+
+    await getLocalInferenceHealth({
+      apiKey: "local-secret",
+      baseUrl: "http://local.test/v1",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://local.test/v1/models",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer local-secret" },
+      }),
+    );
+  });
+
   it("keeps embedding models out of selectable chat models", async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({
       object: "list",

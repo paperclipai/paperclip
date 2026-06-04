@@ -61,7 +61,14 @@ function ApiKeyField({ isCreate, values, set, config, eff, mark, schemaValues }:
 
   return (
     <Field label="API key" hint="Optional bearer token for the local endpoint.">
-      <DraftInput value={value} onCommit={commit} immediate className={inputClass} placeholder="Optional" />
+      <DraftInput
+        value={value}
+        onCommit={commit}
+        immediate
+        className={inputClass}
+        placeholder="Optional"
+        type="password"
+      />
     </Field>
   );
 }
