@@ -5,6 +5,8 @@ import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
+import { assetsApi } from "../api/assets";
+import { CompanyLogoUpload } from "./CompanyLogoUpload";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
@@ -107,6 +109,10 @@ export function OnboardingWizard() {
   // Step 1
   const [companyName, setCompanyName] = useState("");
   const [companyGoal, setCompanyGoal] = useState("");
+  // Logo is chosen before the company exists, so stash the file + a local
+  // preview and upload it right after the company is created (handleStep1Next).
+  const [companyLogoFile, setCompanyLogoFile] = useState<File | null>(null);
+  const [companyLogoPreview, setCompanyLogoPreview] = useState<string | null>(null);
   const [websiteUrl, setWebsiteUrl] = useState("");
   const [founderUrl, setFounderUrl] = useState("");
 
@@ -407,6 +413,17 @@ export function OnboardingWizard() {
       setSelectedCompanyId(company.id);
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
 
+      // Optional logo — best-effort, never block onboarding on it.
+      if (companyLogoFile) {
+        try {
+          const asset = await assetsApi.uploadCompanyLogo(company.id, companyLogoFile);
+          await companiesApi.update(company.id, { logoAssetId: asset.assetId });
+          queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+        } catch {
+          /* logo is optional; ignore upload failures during onboarding */
+        }
+      }
+
       const parsedGoal = parseOnboardingGoalInput(companyGoal);
       const goal = await goalsApi.create(company.id, {
         title: parsedGoal.title,
@@ -694,6 +711,20 @@ export function OnboardingWizard() {
                       </p>
                     </div>
                   </div>
+                  <CompanyLogoUpload
+                    companyName={companyName || "Company"}
+                    logoUrl={companyLogoPreview}
+                    onFile={(file) => {
+                      if (companyLogoPreview) URL.revokeObjectURL(companyLogoPreview);
+                      setCompanyLogoFile(file);
+                      setCompanyLogoPreview(URL.createObjectURL(file));
+                    }}
+                    onRemove={() => {
+                      if (companyLogoPreview) URL.revokeObjectURL(companyLogoPreview);
+                      setCompanyLogoFile(null);
+                      setCompanyLogoPreview(null);
+                    }}
+                  />
                   <div className="mt-3 group">
                     <label
                       className={cn(

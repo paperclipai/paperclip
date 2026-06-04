@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
@@ -12,7 +12,7 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Settings, CloudUpload, Download, Upload } from "lucide-react";
-import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
+import { CompanyLogoUpload } from "../components/CompanyLogoUpload";
 import {
   Field,
   ToggleField,
@@ -112,13 +112,15 @@ export function CompanySettings() {
     }
   });
 
-  function handleLogoFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0] ?? null;
-    event.currentTarget.value = "";
-    if (!file) return;
-    setLogoUploadError(null);
-    logoUploadMutation.mutate(file);
-  }
+  const logoErrorMessage =
+    logoUploadError ??
+    (logoUploadMutation.isError
+      ? logoUploadMutation.error instanceof Error
+        ? logoUploadMutation.error.message
+        : "Logo upload failed"
+      : clearLogoMutation.isError
+        ? clearLogoMutation.error.message
+        : null);
 
   function handleClearLogo() {
     clearLogoMutation.mutate();
@@ -210,58 +212,20 @@ export function CompanySettings() {
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Appearance
         </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <div className="flex items-start gap-4">
-            <div className="shrink-0">
-              <CompanyPatternIcon
-                companyName={companyName || selectedCompany.name}
-                logoUrl={logoUrl || null}
-                brandColor={brandColor || null}
-                className="rounded-[14px]"
-              />
-            </div>
-            <div className="flex-1 space-y-3">
-              <Field
-                label="Logo"
-                hint="Upload a PNG, JPEG, WEBP, GIF, or SVG logo image."
-              >
-                <div className="space-y-2">
-                  <input
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
-                    onChange={handleLogoFileChange}
-                    className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none file:mr-4 file:rounded-md file:border-0 file:bg-muted file:px-2.5 file:py-1 file:text-xs"
-                  />
-                  {logoUrl && (
-                    <div className="flex items-center gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={handleClearLogo}
-                        disabled={clearLogoMutation.isPending}
-                      >
-                        {clearLogoMutation.isPending ? "Removing..." : "Remove logo"}
-                      </Button>
-                    </div>
-                  )}
-                  {(logoUploadMutation.isError || logoUploadError) && (
-                    <span className="text-xs text-destructive">
-                      {logoUploadError ??
-                        (logoUploadMutation.error instanceof Error
-                          ? logoUploadMutation.error.message
-                          : "Logo upload failed")}
-                    </span>
-                  )}
-                  {clearLogoMutation.isError && (
-                    <span className="text-xs text-destructive">
-                      {clearLogoMutation.error.message}
-                    </span>
-                  )}
-                  {logoUploadMutation.isPending && (
-                    <span className="text-xs text-muted-foreground">Uploading logo...</span>
-                  )}
-                </div>
-              </Field>
+        <div className="space-y-4 rounded-md border border-border px-4 py-4">
+          <CompanyLogoUpload
+            companyName={companyName || selectedCompany.name}
+            logoUrl={logoUrl || null}
+            brandColor={brandColor || null}
+            onFile={(file) => {
+              setLogoUploadError(null);
+              logoUploadMutation.mutate(file);
+            }}
+            onRemove={handleClearLogo}
+            uploading={logoUploadMutation.isPending || clearLogoMutation.isPending}
+            error={logoErrorMessage}
+          />
+          <div className="space-y-3">
               <Field
                 label="Brand color"
                 hint="Sets the hue for the company icon. Leave empty for auto-generated color."
@@ -321,7 +285,6 @@ export function CompanySettings() {
                   )}
                 </div>
               </Field>
-            </div>
           </div>
         </div>
       </div>
