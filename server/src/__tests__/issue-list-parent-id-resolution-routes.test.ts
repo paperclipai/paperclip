@@ -120,7 +120,11 @@ describe("GET /api/companies/:companyId/issues — parentId / descendantOf resol
   });
 
   it("resolves an identifier parentId to a UUID before calling the service", async () => {
-    mockIssueService.getByIdentifier.mockResolvedValueOnce({ id: parentUuid, identifier: parentIdentifier } as never);
+    mockIssueService.getByIdentifier.mockResolvedValueOnce(
+      { id: parentUuid, identifier: parentIdentifier } as unknown as Awaited<
+        ReturnType<(typeof mockIssueService)["getByIdentifier"]>
+      >,
+    );
 
     const app = await createApp();
     const res = await request(app)
@@ -161,7 +165,11 @@ describe("GET /api/companies/:companyId/issues — parentId / descendantOf resol
   });
 
   it("resolves an identifier descendantOf to a UUID before calling the service", async () => {
-    mockIssueService.getByIdentifier.mockResolvedValueOnce({ id: parentUuid, identifier: parentIdentifier } as never);
+    mockIssueService.getByIdentifier.mockResolvedValueOnce(
+      { id: parentUuid, identifier: parentIdentifier } as unknown as Awaited<
+        ReturnType<(typeof mockIssueService)["getByIdentifier"]>
+      >,
+    );
 
     const app = await createApp();
     const res = await request(app)
@@ -201,7 +209,11 @@ describe("GET /api/companies/:companyId/issues — parentId / descendantOf resol
   });
 
   it("applies the same resolution to GET /issues/count", async () => {
-    mockIssueService.getByIdentifier.mockResolvedValueOnce({ id: parentUuid, identifier: parentIdentifier } as never);
+    mockIssueService.getByIdentifier.mockResolvedValueOnce(
+      { id: parentUuid, identifier: parentIdentifier } as unknown as Awaited<
+        ReturnType<(typeof mockIssueService)["getByIdentifier"]>
+      >,
+    );
 
     const app = await createApp();
     const res = await request(app)
