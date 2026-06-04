@@ -238,17 +238,6 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     });
 
   await db
-    .insert(instanceUserRoles)
-    .values({
-      userId,
-      role: "instance_admin",
-      updatedAt: now,
-    })
-    .onConflictDoNothing({
-      target: [instanceUserRoles.userId, instanceUserRoles.role],
-    });
-
-  await db
     .insert(companies)
     .values({
       id: companyId,
@@ -303,7 +292,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
       membershipRole: membership.membershipRole,
       status: membership.status,
     }],
-    isInstanceAdmin: true,
+    isInstanceAdmin: false,
     source: "cloud_tenant",
   };
 }
