@@ -1,26 +1,4 @@
-import { agnb, unwrap } from "./agnbClient";
-
-/**
- * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
- * server (under /api/agnb/*). As each route group migrates off the standalone
- * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
- */
-async function ported<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
-  const res = await fetch(`/api/agnb${path}`, {
-    method: init?.method ?? "GET",
-    credentials: "include",
-    headers: {
-      Accept: "application/json",
-      ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
-  });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `AGNB request failed: ${res.status}`);
-  }
-  return res.json();
-}
+import { ported, unwrap } from "./agnbClient";
 
 export interface InboxThread {
   thread_id: string; subject: string | null; status: string | null;
@@ -51,9 +29,6 @@ export const inboxApi = {
 
   // Ported to All Gas No Brakes server — same-origin /api/agnb/approval (pure DB).
   approvals: () => ported<{ ok: boolean; error?: string; drafts: CampaignDraft[] }>("/approval").then((r) => unwrap(r).drafts),
-  // external: stays cross-origin / job-covered — finalize pushes to Rocket SDR.
-  approvalAction: (id: string, action: "approve" | "reject" | "finalize") =>
-    agnb.postAbs(`/all-gas-no-brakes/api/internal/approval/${id}`, { action }),
 
   // Ported to All Gas No Brakes server — same-origin /api/agnb/reply-drafts (pure DB).
   replyDrafts: (status?: string) =>

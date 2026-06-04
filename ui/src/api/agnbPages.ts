@@ -1,39 +1,4 @@
-import { agnb, unwrap } from "./agnbClient";
-
-/**
- * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
- * server (under /api/agnb/*). As each route group migrates off the standalone
- * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
- */
-async function ported<T>(path: string): Promise<T> {
-  const res = await fetch(`/api/agnb${path}`, {
-    credentials: "include",
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `AGNB request failed: ${res.status}`);
-  }
-  return res.json();
-}
-
-/** Same-origin POST variant for ported AGNB write endpoints. */
-async function portedPost<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`/api/agnb${path}`, {
-    method: "POST",
-    credentials: "include",
-    headers: {
-      Accept: "application/json",
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
-  if (!res.ok) {
-    const errBody = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(errBody?.error ?? `AGNB request failed: ${res.status}`);
-  }
-  return res.json();
-}
+import { ported, unwrap } from "./agnbClient";
 
 // ---- Forecast ----
 export interface ForecastRow {
@@ -66,17 +31,6 @@ export interface DemoRow {
   attendee_email: string | null;
   attendee_name: string | null;
   event_type_slug: string | null;
-}
-
-// ---- Channels ----
-export interface ChannelRow {
-  channel: string;
-  color: string;
-  meetings: number;
-  wins: number;
-  losses: number;
-  revenue_usd: number;
-  win_rate: number;
 }
 
 // ---- Attribution ----
@@ -134,13 +88,6 @@ export interface Interview {
   created_at: string;
 }
 
-export interface RematchSuggestion {
-  event_id: string;
-  bucket_id: string | null;
-  confidence: number;
-  reason: string;
-}
-
 // ---- Invoices ----
 export interface InvoiceRow {
   id: string;
@@ -168,11 +115,6 @@ export const agnbPagesApi = {
   demos: () =>
     ported<{ ok: boolean; error?: string; upcoming: DemoRow[]; past: DemoRow[] }>("/demos")
       .then((r) => unwrap(r)),
-  // /channels not yet ported — external (left cross-origin).
-  channels: (days = 90) =>
-    agnb
-      .get<{ ok: boolean; error?: string; days: number; channels: ChannelRow[] }>(`/channels?days=${days}`)
-      .then((r) => unwrap(r)),
   // Ported to All Gas No Brakes server — same-origin /api/agnb/attribution.
   attribution: () =>
     ported<{ ok: boolean; error?: string; matched: number; unmatched: number; recent_unmatched: UnmatchedEvent[] }>("/attribution")
@@ -193,40 +135,4 @@ export const agnbPagesApi = {
   invoices: () =>
     ported<{ ok: boolean; error?: string; invoices: InvoiceRow[] }>("/invoices")
       .then((r) => unwrap(r).invoices),
-  createInvoice: (body: {
-    customer_name: string;
-    customer_email?: string;
-    customer_phone?: string;
-    customer_gstin?: string;
-    customer_state?: string;
-    subtotal_inr: number;
-    plan_tier?: string;
-    description?: string;
-  }) =>
-    agnb
-      .post<{ ok: boolean; error?: string; row?: InvoiceRow; rzp?: { short_url?: string } }>("/invoices/create", body)
-      .then((r) => unwrap(r)),
-
-  // --- Win/loss write actions ---
-  winLossCreate: (body: { customer_name: string; outcome: string; interview_date: string; contact_name?: string; contact_title?: string; raw_transcript?: string }) =>
-    agnb.post<{ ok: boolean; error?: string; row?: Interview }>("/win-loss", body).then((r) => unwrap(r)),
-  winLossAnalyze: (id: string) =>
-    agnb.post<{ ok: boolean; error?: string; analysis?: Record<string, unknown> }>(`/win-loss/${encodeURIComponent(id)}/analyze`, {}).then((r) => unwrap(r)),
-  winLossDelete: (id: string) =>
-    agnb.delete<{ ok: boolean; error?: string }>(`/win-loss?id=${encodeURIComponent(id)}`),
-
-  // --- Attribution Gemini rematch (LLM) — stays cross-origin (Phase 5). ---
-  attributionRematch: (apply: boolean, limit = 25) =>
-    agnb
-      .post<{ ok: boolean; error?: string; suggestions: RematchSuggestion[]; applied?: number; note?: string }>("/attribution/gemini-rematch", { apply, limit })
-      .then((r) => unwrap(r)),
-  // Non-LLM email→bucket rematch. Ported to All Gas No Brakes server (group: revenue)
-  // — same-origin POST /api/agnb/attribution/rematch. Pure DB.
-  attributionRematchDb: () =>
-    portedPost<{ ok: boolean; error?: string; scanned: number; matched: number }>("/attribution/rematch")
-      .then((r) => unwrap(r)),
-
-  // --- CRM hygiene manual scan ---
-  crmScan: () =>
-    agnb.post<{ ok: boolean; error?: string }>("/crons/run?path=/all-gas-no-brakes/api/internal/crm-hygiene-scan", {}),
 };

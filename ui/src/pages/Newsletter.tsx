@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Newspaper, Send, Trash2 } from "lucide-react";
 import { renewalsApi } from "../api/agnbRenewals";
@@ -8,16 +8,13 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbSubnav } from "../components/AgnbSubnav";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 
 export function Newsletter() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Renewals" }, { label: "Newsletter" }]), [setBreadcrumbs]);
   const qc = useQueryClient();
-  const [drafting, setDrafting] = useState(false);
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.newsletter, queryFn: () => renewalsApi.newsletter() });
   const refresh = () => qc.invalidateQueries({ queryKey: queryKeys.agnb.newsletter });
-  const draft = async () => { setDrafting(true); try { await renewalsApi.draftNewsletter(); refresh(); } catch (e) { alert(e instanceof Error ? e.message : "Failed"); } finally { setDrafting(false); } };
   const sent = async (id: string) => { await renewalsApi.markNewsletterSent(id).catch(() => {}); refresh(); };
   const del = async (id: string) => { await renewalsApi.deleteNewsletter(id).catch(() => {}); refresh(); };
 
@@ -26,7 +23,6 @@ export function Newsletter() {
       <AgnbSubnav group="renewals" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Newsletter</h1>
-        <Button size="sm" variant="outline" onClick={draft} disabled={drafting}>{drafting ? "Drafting…" : "Draft this week"}</Button>
       </div>
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (

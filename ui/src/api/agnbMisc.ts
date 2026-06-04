@@ -1,26 +1,4 @@
-import { agnb, unwrap } from "./agnbClient";
-
-/**
- * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
- * server (under /api/agnb/*). As each route group migrates off the standalone
- * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
- */
-async function ported<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
-  const res = await fetch(`/api/agnb${path}`, {
-    method: init?.method ?? "GET",
-    credentials: "include",
-    headers: {
-      Accept: "application/json",
-      ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
-  });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `AGNB request failed: ${res.status}`);
-  }
-  return res.json();
-}
+import { ported, unwrap } from "./agnbClient";
 
 export interface ApiToken {
   id: string; name: string; scopes: string[] | null; active: boolean; created_at: string; created_by: string;
@@ -51,6 +29,4 @@ export const miscApi = {
   // Reuses the inbox group's already-ported handler — same-origin /api/agnb/comments (GET + PATCH).
   comments: (filter?: string) => ported<{ ok: boolean; error?: string; comments: ContentComment[] }>(`/comments${filter ? `?filter=${filter}` : ""}`).then((r) => unwrap(r).comments),
   markReplied: (id: string) => ported(`/comments?id=${id}&replied=1`, { method: "PATCH" }),
-  // PHASE 5: comments/draft-reply calls Gemini (LLM) — left cross-origin.
-  draftReply: (id: string) => agnb.post(`/comments/draft-reply?id=${id}`, {}),
 };

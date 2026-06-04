@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link2, Sparkles, X } from "lucide-react";
-import { agnbPagesApi, type RematchSuggestion } from "../api/agnbPages";
+import { useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Link2 } from "lucide-react";
+import { agnbPagesApi } from "../api/agnbPages";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
@@ -9,13 +9,11 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbSubnav } from "../components/AgnbSubnav";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { relativeTime } from "../lib/utils";
 
 export function Attribution() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Pipeline" }, { label: "Attribution" }]), [setBreadcrumbs]);
-  const [rematchOpen, setRematchOpen] = useState(false);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.agnb.attribution,
@@ -30,11 +28,7 @@ export function Attribution() {
       <AgnbSubnav group="pipeline" />
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">Attribution</h1>
-        <Button size="sm" variant="outline" onClick={() => setRematchOpen(true)}>
-          <Sparkles className="mr-1 h-3.5 w-3.5" /> Gemini rematch
-        </Button>
       </div>
-      {rematchOpen && <RematchModal onClose={() => setRematchOpen(false)} />}
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />
@@ -76,59 +70,4 @@ export function Attribution() {
 
 function cnNum(unmatched: number) {
   return unmatched > 5 ? "text-xl font-semibold text-amber-600" : "text-xl font-semibold";
-}
-
-function RematchModal({ onClose }: { onClose: () => void }) {
-  const qc = useQueryClient();
-  const [busy, setBusy] = useState(false);
-  const [suggestions, setSuggestions] = useState<RematchSuggestion[] | null>(null);
-  const [note, setNote] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  const preview = async () => {
-    setBusy(true); setErr(null);
-    try {
-      const r = await agnbPagesApi.attributionRematch(false);
-      setSuggestions(r.suggestions); setNote(r.note ?? null);
-    } catch (e) { setErr(e instanceof Error ? e.message : "Failed"); } finally { setBusy(false); }
-  };
-  const apply = async () => {
-    setBusy(true); setErr(null);
-    try {
-      const r = await agnbPagesApi.attributionRematch(true);
-      qc.invalidateQueries({ queryKey: queryKeys.agnb.attribution });
-      setNote(`Applied ${r.applied ?? 0} matches.`);
-      setSuggestions(null);
-    } catch (e) { setErr(e instanceof Error ? e.message : "Failed"); } finally { setBusy(false); }
-  };
-
-  useEffect(() => { preview(); /* eslint-disable-next-line */ }, []);
-
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
-      <div className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-lg border border-border bg-background p-4" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Gemini rematch</h3>
-          <button onClick={onClose}><X className="h-4 w-4 text-muted-foreground" /></button>
-        </div>
-        {busy && <p className="text-xs text-muted-foreground">Working…</p>}
-        {err && <p className="text-xs text-destructive">{err}</p>}
-        {note && <p className="text-xs text-muted-foreground">{note}</p>}
-        {suggestions && suggestions.length > 0 && (
-          <div className="mt-2 space-y-1">
-            {suggestions.map((s) => (
-              <div key={s.event_id} className="rounded-md border border-border p-2 text-xs">
-                <div className="flex justify-between"><span className="font-mono">{s.event_id.slice(0, 8)}</span><Badge variant="outline">{Math.round(s.confidence * 100)}%</Badge></div>
-                <div className="text-muted-foreground">{s.reason}</div>
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="mt-3 flex justify-end gap-2">
-          <Button variant="outline" size="sm" onClick={onClose}>Close</Button>
-          <Button size="sm" onClick={apply} disabled={busy || !suggestions?.length}>Apply (conf ≥ 0.7)</Button>
-        </div>
-      </div>
-    </div>
-  );
 }

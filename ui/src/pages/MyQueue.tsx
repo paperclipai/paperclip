@@ -10,14 +10,14 @@ import { AgnbSubnav } from "../components/AgnbSubnav";
 import { AgnbWorkCard } from "../components/AgnbWorkCard";
 import { cn } from "../lib/utils";
 
-const STATUSES = ["open", "queued", "in_progress", "done", "blocked", "all"];
+const STATUSES = ["queued", "in_progress", "done", "blocked", "all"];
 
 export function MyQueue() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Team" }, { label: "My queue" }]), [setBreadcrumbs]);
   const qc = useQueryClient();
-  const [status, setStatus] = useState("open");
-  const q = `?mine=1${status !== "open" && status !== "all" ? `&status=${status}` : ""}`;
+  const [status, setStatus] = useState("queued");
+  const q = status !== "all" ? `?status=${status}` : "";
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.work(`mine-${status}`), queryFn: () => teamApi.work(q) });
   const refresh = () => qc.invalidateQueries({ queryKey: queryKeys.agnb.work(`mine-${status}`) });
 

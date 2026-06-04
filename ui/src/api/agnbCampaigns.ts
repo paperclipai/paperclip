@@ -1,26 +1,4 @@
-import { agnb, unwrap } from "./agnbClient";
-
-/**
- * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
- * server (under /api/agnb/*). As each route group migrates off the standalone
- * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
- */
-async function ported<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
-  const res = await fetch(`/api/agnb${path}`, {
-    method: init?.method ?? "GET",
-    credentials: "include",
-    headers: {
-      Accept: "application/json",
-      ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
-  });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `AGNB request failed: ${res.status}`);
-  }
-  return res.json();
-}
+import { ported, unwrap } from "./agnbClient";
 
 export interface Campaign {
   id: string;
@@ -141,11 +119,6 @@ export const campaignsApi = {
   createBucket: (body: { name: string; icp_id?: string | null; target_reply_rate?: number }) =>
     ported<{ ok: boolean; error?: string; id?: string }>("/buckets", { method: "POST", body }).then((r) => unwrap(r)),
 
-  // --- left cross-origin (external Rocket SDR / scraper sidecars, not pure DB) → Phase 5 ---
-  createPersona: (body: { name: string; title?: string; description?: string }) =>
-    agnb.post<{ ok: boolean; error?: string }>("/rocket/personas/create", body).then((r) => unwrap(r)),
-  createProduct: (body: { name: string; description?: string }) =>
-    agnb.post<{ ok: boolean; error?: string }>("/rocket/products/create", body).then((r) => unwrap(r)),
   // Ported to All Gas No Brakes server (catalog group) — same-origin sidecar-backed writes.
   queueJustdial: (body: { category: string; city: string; max_pages: number }) =>
     ported<{ ok: boolean; error?: string }>("/leads/justdial", { method: "POST", body }).then((r) => unwrap(r)),

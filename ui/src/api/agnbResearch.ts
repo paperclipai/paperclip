@@ -1,30 +1,4 @@
-/**
- * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
- * server (under /api/agnb/*). As each route group migrates off the standalone
- * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
- */
-async function ported<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
-  const res = await fetch(`/api/agnb${path}`, {
-    method: init?.method ?? "GET",
-    credentials: "include",
-    headers: {
-      Accept: "application/json",
-      ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
-  });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `AGNB request failed: ${res.status}`);
-  }
-  return res.json();
-}
-
-/** Unwrap AGNB's { ok, ...payload } envelope or throw on { ok:false, error }. */
-function unwrap<T>(r: { ok: boolean; error?: string } & T): T {
-  if (!r.ok) throw new Error(r.error ?? "AGNB error");
-  return r;
-}
+import { ported, unwrap } from "./agnbClient";
 
 export interface Competitor {
   id: string; name: string; domain: string; sitemap_url: string; status: string;

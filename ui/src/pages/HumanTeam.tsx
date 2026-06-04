@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { UsersRound } from "lucide-react";
 import { teamApi } from "../api/agnbTeam";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -9,26 +9,17 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbSubnav } from "../components/AgnbSubnav";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 
 export function HumanTeam() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Team" }]), [setBreadcrumbs]);
-  const qc = useQueryClient();
-  const [busy, setBusy] = useState<string | null>(null);
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.team, queryFn: () => teamApi.members() });
-  const refresh = () => qc.invalidateQueries({ queryKey: queryKeys.agnb.team });
-  const run = async (k: string, fn: () => Promise<unknown>) => { setBusy(k); try { await fn(); refresh(); } catch (e) { alert(e instanceof Error ? e.message : "Failed"); } finally { setBusy(null); } };
 
   return (
     <div className="space-y-4">
       <AgnbSubnav group="team" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Team</h1>
-        <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => run("ingest", teamApi.ingest)} disabled={busy === "ingest"}>{busy === "ingest" ? "…" : "Ingest"}</Button>
-          <Button size="sm" onClick={() => run("route", teamApi.autoRoute)} disabled={busy === "route"}>{busy === "route" ? "…" : "Rebalance"}</Button>
-        </div>
       </div>
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (

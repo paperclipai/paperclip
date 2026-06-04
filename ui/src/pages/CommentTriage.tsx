@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { MessagesSquare, Check, Sparkles } from "lucide-react";
+import { MessagesSquare, Check } from "lucide-react";
 import { miscApi } from "../api/agnbMisc";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -18,10 +18,8 @@ export function CommentTriage() {
   useEffect(() => setBreadcrumbs([{ label: "Ops" }, { label: "Comments" }]), [setBreadcrumbs]);
   const qc = useQueryClient();
   const [filter, setFilter] = useState("all");
-  const [busy, setBusy] = useState<string | null>(null);
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.comments(filter), queryFn: () => miscApi.comments(filter === "all" ? undefined : filter) });
   const refresh = () => qc.invalidateQueries({ queryKey: queryKeys.agnb.comments(filter) });
-  const draft = async (id: string) => { setBusy(id); try { await miscApi.draftReply(id); refresh(); } catch (e) { alert(e instanceof Error ? e.message : "Failed"); } finally { setBusy(null); } };
   const replied = async (id: string) => { await miscApi.markReplied(id).catch(() => {}); refresh(); };
 
   return (
@@ -52,7 +50,6 @@ export function CommentTriage() {
               <p className="mt-1">{c.body}</p>
               {c.reply_draft && <div className="mt-1 rounded-md bg-muted/40 p-2 text-xs"><span className="text-muted-foreground">AI draft:</span> {c.reply_draft}</div>}
               <div className="mt-2 flex gap-2">
-                {!c.reply_draft && <Button size="sm" variant="outline" onClick={() => draft(c.id)} disabled={busy === c.id}><Sparkles className="mr-1 h-3.5 w-3.5" />{busy === c.id ? "Drafting…" : "Draft reply"}</Button>}
                 {!c.replied ? <Button size="sm" onClick={() => replied(c.id)}><Check className="mr-1 h-3.5 w-3.5" />Mark replied</Button> : <span className="text-xs text-emerald-600">✓ replied</span>}
               </div>
             </div>

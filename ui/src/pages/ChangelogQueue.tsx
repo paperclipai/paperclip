@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ScrollText, Send, Trash2 } from "lucide-react";
 import { renewalsApi } from "../api/agnbRenewals";
@@ -8,16 +8,13 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbSubnav } from "../components/AgnbSubnav";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 
 export function ChangelogQueue() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Renewals" }, { label: "Changelog" }]), [setBreadcrumbs]);
   const qc = useQueryClient();
-  const [drafting, setDrafting] = useState(false);
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.changelog, queryFn: () => renewalsApi.changelog() });
   const refresh = () => qc.invalidateQueries({ queryKey: queryKeys.agnb.changelog });
-  const draft = async () => { setDrafting(true); try { await renewalsApi.draftChangelog(); refresh(); } catch (e) { alert(e instanceof Error ? e.message : "Failed"); } finally { setDrafting(false); } };
   const publish = async (id: string) => { await renewalsApi.publishChangelog(id).catch(() => {}); refresh(); };
   const del = async (id: string) => { await renewalsApi.deleteChangelog(id).catch(() => {}); refresh(); };
 
@@ -26,7 +23,6 @@ export function ChangelogQueue() {
       <AgnbSubnav group="renewals" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Changelog</h1>
-        <Button size="sm" variant="outline" onClick={draft} disabled={drafting}>{drafting ? "Drafting…" : "Draft from git"}</Button>
       </div>
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (

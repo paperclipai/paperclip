@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { Sparkles, Download, FileText, Save, ArrowLeft, X } from "lucide-react";
+import { Download, Save, ArrowLeft } from "lucide-react";
 import { marketingApi } from "../api/marketing";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -28,9 +28,7 @@ export function AssetDetail() {
   const [values, setValues] = useState<Record<string, string>>({});
   const [customer, setCustomer] = useState("");
   const [html, setHtml] = useState("");
-  const [pdfBusy, setPdfBusy] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
-  const [aiOpen, setAiOpen] = useState(false);
   const initialHtml = useRef("");
 
   useEffect(() => {
@@ -95,23 +93,6 @@ export function AssetDetail() {
     URL.revokeObjectURL(url);
   };
 
-  const downloadPdf = async () => {
-    setPdfBusy(true);
-    try {
-      const blob = await marketingApi.pdf(rendered, `${asset.title}-${customer || "fill"}.pdf`);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${asset.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "PDF failed");
-    } finally {
-      setPdfBusy(false);
-    }
-  };
-
   const saveFill = async () => {
     setSaveBusy(true);
     try {
@@ -161,11 +142,6 @@ export function AssetDetail() {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-sm font-medium">Variables ({vars.length})</span>
-              {vars.length > 0 && (
-                <Button variant="outline" size="sm" onClick={() => setAiOpen(true)}>
-                  <Sparkles className="mr-1 h-3.5 w-3.5" /> Fill with AI
-                </Button>
-              )}
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Customer</label>
@@ -187,7 +163,6 @@ export function AssetDetail() {
           <div className="space-y-2">
             <div className="flex items-center justify-end gap-2">
               <Button variant="outline" size="sm" onClick={downloadHtml}><Download className="mr-1 h-3.5 w-3.5" /> HTML</Button>
-              <Button variant="outline" size="sm" onClick={downloadPdf} disabled={pdfBusy}><FileText className="mr-1 h-3.5 w-3.5" /> {pdfBusy ? "Generating…" : "PDF"}</Button>
               <Button size="sm" onClick={saveFill} disabled={saveBusy}><Save className="mr-1 h-3.5 w-3.5" /> Save fill</Button>
             </div>
             <iframe srcDoc={rendered || "<p style='font-family:sans-serif;color:#999;padding:24px'>No template HTML.</p>"} sandbox="" title="preview" className="h-[640px] w-full rounded-md border border-border bg-white" />
@@ -218,7 +193,6 @@ export function AssetDetail() {
         </div>
       )}
 
-      {aiOpen && <AiFillModal assetId={assetId} onClose={() => setAiOpen(false)} onApply={(r) => { setValues((p) => ({ ...p, ...r.values })); if (r.customer_name) setCustomer(r.customer_name); setAiOpen(false); }} />}
     </div>
   );
 }
@@ -243,47 +217,3 @@ function VarInput({ v, value, onChange }: { v: AssetVar; value: string; onChange
   );
 }
 
-function AiFillModal({ assetId, onClose, onApply }: { assetId: string; onClose: () => void; onApply: (r: import("../api/marketing").AiFillResult) => void }) {
-  const [prompt, setPrompt] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const run = async () => {
-    setBusy(true); setErr(null);
-    try {
-      const { marketingApi } = await import("../api/marketing");
-      const r = await marketingApi.aiFill(assetId, prompt);
-      onApply(r);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "AI fill failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
-      <div className="w-full max-w-lg rounded-lg border border-border bg-background p-4" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Fill with AI</h3>
-          <button onClick={onClose}><X className="h-4 w-4 text-muted-foreground" /></button>
-        </div>
-        <textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value.slice(0, 16000))}
-          rows={10}
-          placeholder="Paste deal brief / QBR notes / meeting summary — AI extracts the variable values."
-          className="w-full rounded-md border border-border bg-background p-2 font-mono text-xs"
-        />
-        {err && <p className="mt-1 text-xs text-destructive">{err}</p>}
-        <div className="mt-2 flex items-center justify-between">
-          <span className="text-[11px] text-muted-foreground">{prompt.length} / 16,000</span>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
-            <Button size="sm" onClick={run} disabled={busy || !prompt.trim()}><Sparkles className="mr-1 h-3.5 w-3.5" /> {busy ? "Extracting…" : "Extract values"}</Button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}

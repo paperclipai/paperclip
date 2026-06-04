@@ -1,21 +1,4 @@
-import { unwrap } from "./agnbClient";
-
-/**
- * Same-origin fetch for AGNB endpoints already ported into the All Gas No Brakes
- * server (under /api/agnb/*). As each route group migrates off the standalone
- * AGNB app, its client call moves here. See docs/migration/AGNB_CONSOLIDATION.md.
- */
-async function ported<T>(path: string): Promise<T> {
-  const res = await fetch(`/api/agnb${path}`, {
-    credentials: "include",
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `AGNB request failed: ${res.status}`);
-  }
-  return res.json();
-}
+import { ported, unwrap } from "./agnbClient";
 
 export interface CsvUpload {
   id: string; filename: string; rows_total: number | null; rows_kept: number | null; rows_dedup: number | null; rows_suppressed: number | null; status: string; rocket_file_id: string | null; uploaded_at: string;

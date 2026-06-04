@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bell, Check } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Bell } from "lucide-react";
 import { opsApi } from "../api/agnbOps";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbSubnav } from "../components/AgnbSubnav";
-import { Button } from "@/components/ui/button";
 import { cn, relativeTime } from "../lib/utils";
 
 const sevColor: Record<string, string> = { critical: "#dc2626", warn: "#d97706", info: "#1d4ed8" };
@@ -15,13 +14,9 @@ const sevColor: Record<string, string> = { critical: "#dc2626", warn: "#d97706",
 export function AgnbNotifications() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Ops" }, { label: "Notifications" }]), [setBreadcrumbs]);
-  const qc = useQueryClient();
   const [view, setView] = useState<"unread" | "all">("unread");
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.notifications, queryFn: () => opsApi.notifications() });
-  const refresh = () => qc.invalidateQueries({ queryKey: queryKeys.agnb.notifications });
   const readSet = useMemo(() => new Set(data?.readIds ?? []), [data]);
-  const markRead = async (id: string) => { await opsApi.markNotifRead(id).catch(() => {}); refresh(); };
-  const markAll = async () => { await opsApi.markAllNotifRead().catch(() => {}); refresh(); };
 
   const list = (data?.notifications ?? []).filter((n) => view === "all" || !readSet.has(n.id));
 
@@ -34,7 +29,6 @@ export function AgnbNotifications() {
           {(["unread", "all"] as const).map((v) => (
             <button key={v} onClick={() => setView(v)} className={cn("rounded-md border px-2 py-0.5 text-xs capitalize", view === v ? "border-foreground bg-foreground text-background" : "border-border text-muted-foreground")}>{v}</button>
           ))}
-          <Button size="sm" variant="outline" className="ml-1" onClick={markAll}>Mark all read</Button>
         </div>
       </div>
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
@@ -45,13 +39,12 @@ export function AgnbNotifications() {
       ) : (
         <div className="flex flex-col gap-2">
           {list.map((n) => (
-            <div key={n.id} className="flex items-start justify-between gap-2 rounded-md border border-border p-2.5 text-sm">
+            <div key={n.id} className="rounded-md border border-border p-2.5 text-sm">
               <div className="min-w-0">
                 <div className="flex items-center gap-2"><span className="inline-block size-2 shrink-0 rounded-full" style={{ background: sevColor[n.severity] ?? "#737373" }} /><span className="font-medium">{n.title}</span></div>
                 {n.body && <p className="mt-0.5 text-xs text-muted-foreground">{n.body}</p>}
                 <div className="mt-0.5 text-[11px] text-muted-foreground">{n.kind} · {relativeTime(n.created_at)}{n.link ? <> · <a href={n.link} className="underline">link</a></> : null}</div>
               </div>
-              {!readSet.has(n.id) && <button title="Mark read" onClick={() => markRead(n.id)}><Check className="h-4 w-4 text-muted-foreground hover:text-emerald-600" /></button>}
             </div>
           ))}
         </div>

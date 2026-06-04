@@ -28,7 +28,6 @@ export function AgnbWorkCard({ item, showAssignee, onChange }: { item: WorkItem;
         {item.status !== "done" && <Button size="sm" variant="outline" onClick={() => act("done")}>Done</Button>}
         {item.status === "done" && <Button size="sm" variant="outline" onClick={() => act("reopen")}>Reopen</Button>}
         {item.status !== "blocked" && item.status !== "done" && <Button size="sm" variant="outline" onClick={block}>Block</Button>}
-        <Button size="sm" variant="outline" onClick={() => act("reassign")}>Auto-route</Button>
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Newspaper, Send, Trash2 } from "lucide-react";
 import { renewalsApi } from "../api/agnbRenewals";
@@ -7,17 +7,12 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbSubnav } from "../components/AgnbSubnav";
-import { AgnbFormModal } from "../components/AgnbFormModal";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-
-const TRIGGERS = ["funding", "product_launch", "milestone", "partnership", "award"];
 
 export function PressReleases() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Renewals" }, { label: "Press releases" }]), [setBreadcrumbs]);
   const qc = useQueryClient();
-  const [open, setOpen] = useState(false);
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.pressReleases, queryFn: () => renewalsApi.pressReleases() });
   const refresh = () => qc.invalidateQueries({ queryKey: queryKeys.agnb.pressReleases });
   const publish = async (id: string) => { await renewalsApi.publishPress(id).catch(() => {}); refresh(); };
@@ -28,22 +23,7 @@ export function PressReleases() {
       <AgnbSubnav group="renewals" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Press releases</h1>
-        <Button size="sm" onClick={() => setOpen(true)}>Draft release</Button>
       </div>
-      {open && (
-        <AgnbFormModal
-          title="Draft press release"
-          submitLabel="Generate"
-          fields={[
-            { key: "trigger_event", label: "Trigger", type: "select", options: TRIGGERS.map((t) => ({ value: t, label: t })) },
-            { key: "details", label: "Details / milestone", required: true, type: "textarea" },
-            { key: "spokesperson_name", label: "Spokesperson" },
-            { key: "spokesperson_title", label: "Spokesperson title" },
-          ]}
-          onClose={() => setOpen(false)}
-          onSubmit={async (v) => { await renewalsApi.draftPress({ trigger_event: v.trigger_event || "milestone", details: v.details, spokesperson_name: v.spokesperson_name || undefined, spokesperson_title: v.spokesperson_title || undefined }); refresh(); }}
-        />
-      )}
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

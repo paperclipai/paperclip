@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { CheckSquare } from "lucide-react";
 import { inboxApi } from "../api/agnbInbox";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -8,7 +8,6 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbSubnav } from "../components/AgnbSubnav";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { relativeTime } from "../lib/utils";
 
 function tone(s: string): "default" | "secondary" | "destructive" | "outline" {
@@ -21,16 +20,7 @@ function tone(s: string): "default" | "secondary" | "destructive" | "outline" {
 export function Approval() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Inbox" }, { label: "Approval queue" }]), [setBreadcrumbs]);
-  const qc = useQueryClient();
-  const [busy, setBusy] = useState<string | null>(null);
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.approvals, queryFn: () => inboxApi.approvals() });
-  const refresh = () => qc.invalidateQueries({ queryKey: queryKeys.agnb.approvals });
-  const act = async (id: string, action: "approve" | "reject" | "finalize") => {
-    setBusy(id);
-    try { await inboxApi.approvalAction(id, action); refresh(); }
-    catch (e) { alert(e instanceof Error ? e.message : "Failed"); }
-    finally { setBusy(null); }
-  };
 
   const pending = (data ?? []).filter((d) => d.status === "pending" || d.status === "draft" || d.status === "approved");
   const history = (data ?? []).filter((d) => d.status === "finalized" || d.status === "rejected");
@@ -41,13 +31,6 @@ export function Approval() {
         <div className="flex items-center gap-2"><span className="font-medium">{d.name}</span><Badge variant={tone(d.status)}>{d.status}</Badge></div>
         <div className="mt-0.5 text-[11px] text-muted-foreground">{[d.product_id, d.persona_id, d.created_by].filter(Boolean).join(" · ")} · {relativeTime(d.created_at)}</div>
       </div>
-      {(d.status === "pending" || d.status === "draft" || d.status === "approved") && (
-        <div className="flex shrink-0 gap-1">
-          {d.status !== "approved" && <Button size="sm" variant="outline" onClick={() => act(d.id, "approve")} disabled={busy === d.id}>Approve</Button>}
-          <Button size="sm" onClick={() => act(d.id, "finalize")} disabled={busy === d.id}>Finalize</Button>
-          <Button size="sm" variant="outline" onClick={() => act(d.id, "reject")} disabled={busy === d.id}>Reject</Button>
-        </div>
-      )}
     </div>
   );
 

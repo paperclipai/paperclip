@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { AtSign, ExternalLink, Link as LinkIcon } from "lucide-react";
 import { mentionsApi } from "../api/agnbMentions";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -8,7 +8,6 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbSubnav } from "../components/AgnbSubnav";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { relativeTime } from "../lib/utils";
 
 function sentTone(s: string | null): "default" | "secondary" | "destructive" | "outline" {
@@ -20,17 +19,13 @@ function sentTone(s: string | null): "default" | "secondary" | "destructive" | "
 export function Mentions() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Mentions" }]), [setBreadcrumbs]);
-  const qc = useQueryClient();
-  const [syncing, setSyncing] = useState(false);
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.mentions, queryFn: () => mentionsApi.mentions() });
-  const sync = async () => { setSyncing(true); try { await mentionsApi.syncMentions(); qc.invalidateQueries({ queryKey: queryKeys.agnb.mentions }); } catch (e) { alert(e instanceof Error ? e.message : "Failed"); } finally { setSyncing(false); } };
 
   return (
     <div className="space-y-4">
       <AgnbSubnav group="mentions" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Mentions</h1>
-        <Button size="sm" variant="outline" onClick={sync} disabled={syncing}>{syncing ? "Syncing…" : "Sync"}</Button>
       </div>
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (

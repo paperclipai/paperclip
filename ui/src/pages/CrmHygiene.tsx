@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { ShieldAlert, ExternalLink } from "lucide-react";
 import { agnbPagesApi, type HygieneIssue } from "../api/agnbPages";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -8,7 +8,6 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbSubnav } from "../components/AgnbSubnav";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { cn } from "../lib/utils";
 
 const ISSUE_LABELS: Record<string, string> = {
@@ -26,21 +25,11 @@ export function CrmHygiene() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Pipeline" }, { label: "CRM hygiene" }]), [setBreadcrumbs]);
   const [sev, setSev] = useState<"all" | "fail" | "warn" | "info">("all");
-  const [scanning, setScanning] = useState(false);
-  const qc = useQueryClient();
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.agnb.crmHygiene,
     queryFn: () => agnbPagesApi.crmHygiene(),
   });
-
-  const runScan = async () => {
-    setScanning(true);
-    try {
-      await agnbPagesApi.crmScan();
-      await qc.invalidateQueries({ queryKey: queryKeys.agnb.crmHygiene });
-    } catch (e) { alert(e instanceof Error ? e.message : "Scan failed"); } finally { setScanning(false); }
-  };
 
   const issues: HygieneIssue[] = (data ?? []).filter((i) => sev === "all" || i.severity === sev);
 
@@ -57,9 +46,6 @@ export function CrmHygiene() {
               {s}
             </button>
           ))}
-          <Button size="sm" variant="outline" className="ml-1" onClick={runScan} disabled={scanning}>
-            {scanning ? "Scanning…" : "Run scan"}
-          </Button>
         </div>
       </div>
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}

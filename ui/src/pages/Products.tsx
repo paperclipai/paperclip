@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Package2 } from "lucide-react";
 import { campaignsApi } from "../api/agnbCampaigns";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -7,15 +7,11 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgnbSubnav } from "../components/AgnbSubnav";
-import { AgnbFormModal } from "../components/AgnbFormModal";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 
 export function Products() {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => setBreadcrumbs([{ label: "Campaigns" }, { label: "Products" }]), [setBreadcrumbs]);
-  const qc = useQueryClient();
-  const [open, setOpen] = useState(false);
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.products, queryFn: () => campaignsApi.products() });
 
   return (
@@ -23,16 +19,7 @@ export function Products() {
       <AgnbSubnav group="campaigns" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Products</h1>
-        <Button size="sm" onClick={() => setOpen(true)}>New product</Button>
       </div>
-      {open && (
-        <AgnbFormModal
-          title="New product"
-          fields={[{ key: "name", label: "Name", required: true }, { key: "description", label: "Description", type: "textarea" }]}
-          onClose={() => setOpen(false)}
-          onSubmit={async (v) => { await campaignsApi.createProduct({ name: v.name, description: v.description || undefined }); qc.invalidateQueries({ queryKey: queryKeys.agnb.products }); }}
-        />
-      )}
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />
