@@ -13,6 +13,7 @@ const recoveryActionId = "77777777-7777-4777-8777-777777777777";
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  count: vi.fn(),
   create: vi.fn(),
   createChild: vi.fn(),
   getAttachmentById: vi.fn(),
@@ -292,6 +293,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockCompanyService.getById.mockReset();
     mockIssueService.addComment.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
+    mockIssueService.count.mockReset();
     mockIssueService.create.mockReset();
     mockIssueService.createChild.mockReset();
     mockIssueService.getAttachmentById.mockReset();
@@ -368,6 +370,7 @@ describe("agent issue mutation checkout ownership", () => {
     ]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: null });
     mockCompanyService.getById.mockResolvedValue({ id: companyId, issuePrefix: "PAP" });
+    mockIssueService.count.mockResolvedValue(0);
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.getByIdentifier.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
@@ -720,6 +723,131 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  const parentIssueId = "88888888-8888-4888-8888-888888888888";
+
+  it("allows sibling agent to PATCH status to todo on a backlog sibling issue", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "backlog", assigneeAgentId: ownerAgentId, parentId: parentIssueId }),
+    );
+    mockIssueService.count.mockResolvedValue(1);
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.count).toHaveBeenCalledWith(companyId, {
+      parentId: parentIssueId,
+      assigneeAgentId: peerAgentId,
+    });
+  });
+
+  it("allows sibling agent to PATCH status to todo on a blocked sibling issue", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId, parentId: parentIssueId }),
+    );
+    mockIssueService.count.mockResolvedValue(1);
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+
+  it("allows sibling agent to comment on a backlog sibling issue", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "backlog", assigneeAgentId: ownerAgentId, parentId: parentIssueId }),
+    );
+    mockIssueService.count.mockResolvedValue(1);
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Handoff: review complete" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+  });
+
+  it("rejects sibling handoff when actor has no sibling issue under the same parent", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "backlog", assigneeAgentId: ownerAgentId, parentId: parentIssueId }),
+    );
+    mockIssueService.count.mockResolvedValue(0);
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+  });
+
+  it("rejects sibling handoff PATCH with fields beyond status and comment", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "backlog", assigneeAgentId: ownerAgentId, parentId: parentIssueId }),
+    );
+    mockIssueService.count.mockResolvedValue(1);
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo", title: "Hijacked" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+  });
+
+  it("rejects sibling handoff PATCH setting status to anything other than todo", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "backlog", assigneeAgentId: ownerAgentId, parentId: parentIssueId }),
+    );
+    mockIssueService.count.mockResolvedValue(1);
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_progress" });
+
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects sibling handoff on in_progress sibling issue", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId, parentId: parentIssueId }),
+    );
+    mockIssueService.count.mockResolvedValue(1);
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status).toBe(409);
+  });
+
+  it("rejects sibling handoff on issues without a parent", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "backlog", assigneeAgentId: ownerAgentId, parentId: null }),
+    );
+    mockIssueService.count.mockResolvedValue(1);
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects sibling handoff on non-comment POST routes (e.g. release)", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "backlog", assigneeAgentId: ownerAgentId, parentId: parentIssueId }),
+    );
+    mockIssueService.count.mockResolvedValue(1);
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/release`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
   });
 
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {

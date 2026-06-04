@@ -1493,10 +1493,40 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  async function isSiblingPipelineHandoff(
+    req: Request,
+    actorAgentId: string,
+    issue: { id: string; companyId: string; parentId?: string | null; status: string },
+  ): Promise<boolean> {
+    if (!issue.parentId) return false;
+
+    if (issue.status !== "backlog" && issue.status !== "blocked") return false;
+
+    if (req.method === "PATCH") {
+      const body = req.body as Record<string, unknown>;
+      if (body.status !== "todo") return false;
+      const mutationKeys = Object.keys(body).filter(
+        (k) => body[k] !== undefined && k !== "status" && k !== "comment",
+      );
+      if (mutationKeys.length > 0) return false;
+    } else if (req.method === "POST" && req.path.endsWith("/comments")) {
+      // allow sibling to post a comment
+    } else {
+      return false;
+    }
+
+    const siblingCount = await svc.count(issue.companyId, {
+      parentId: issue.parentId,
+      assigneeAgentId: actorAgentId,
+    });
+
+    return siblingCount > 0;
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null; parentId?: string | null },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1509,6 +1539,9 @@ export function issueRoutes(
     }
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
+        return true;
+      }
+      if (await isSiblingPipelineHandoff(req, actorAgentId, issue)) {
         return true;
       }
       if (issue.status === "in_progress") {
