@@ -122,4 +122,31 @@ describeEmbeddedPostgres("issue delete cascade (migration 0095)", () => {
     expect(survived, "finance_events row must survive the issue delete").toBeTruthy();
     expect(survived.issueId, "finance_events.issue_id must be nulled, not deleted").toBeNull();
   });
+
+  it("deleting a PARENT issue orphans its children (parent_id set null), not 500", async () => {
+    // The self-referential issues.parent_id FK was ON DELETE NO ACTION, so deleting any
+    // parent of a CEO-decomposed tree aborted with 23503. It is now set null: the parent
+    // delete succeeds and the child survives as a root issue (parent_id nulled).
+    const company = await companyService(db).create({ name: "Parent Delete Probe" });
+    const cid = company.id;
+    const [parent] = await db
+      .insert(issues)
+      .values({ companyId: cid, title: "parent" })
+      .returning({ id: issues.id });
+    const [child] = await db
+      .insert(issues)
+      .values({ companyId: cid, title: "child", parentId: parent.id })
+      .returning({ id: issues.id });
+
+    await expect(
+      db.execute(sql`DELETE FROM issues WHERE id = ${parent.id}`),
+    ).resolves.toBeTruthy();
+
+    const [survivedChild] = await db
+      .select({ id: issues.id, parentId: issues.parentId })
+      .from(issues)
+      .where(eq(issues.id, child.id));
+    expect(survivedChild, "child issue must survive the parent delete").toBeTruthy();
+    expect(survivedChild.parentId, "child.parent_id must be nulled, not the row deleted").toBeNull();
+  });
 });

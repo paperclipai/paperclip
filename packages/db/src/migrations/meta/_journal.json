@@ -666,6 +666,13 @@
       "when": 1780535930813,
       "tag": "0094_icy_lenny_balinger",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1780537436723,
+      "tag": "0095_steady_vector",
+      "breakpoints": true
     }
   ]
 }
