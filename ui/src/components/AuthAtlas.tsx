@@ -1,22 +1,20 @@
 import { useEffect, useRef } from "react";
 
 /**
- * GLASSHOUSE auth atlas — a live 3D knowledge-graph "brain" for the sign-in
- * screen. A node cloud tumbles on all three axes; signals fire continuously,
- * chaining branch to branch; each node flashes on its own clock. Replaces the
- * inherited Paperclip ASCII animation. Self-contained canvas, no dependencies.
- * Honors prefers-reduced-motion (renders a single static frame).
+ * GLASSHOUSE auth atlas — an interactive Obsidian-style knowledge graph for the
+ * sign-in screen. A force-directed graph of "notes" clustered around amber
+ * "lobes": it settles, then gently breathes. You can drag a node (the cluster
+ * reacts), drag empty space to pan, scroll to zoom, and hover to focus a node
+ * and its neighbours (the rest dims). When idle it eases back to a centered,
+ * composed frame. Self-contained canvas, no dependencies. Honors
+ * prefers-reduced-motion (settles once, statically, with no interaction).
  */
 const TEAL: [number, number, number] = [79, 184, 168]; // --status-running
 const AMBER: [number, number, number] = [240, 162, 60]; // --primary (sodium)
-const N = 210;
+const N = 150;
+const HUBS = 7;
 
-interface Node {
-  x: number; y: number; z: number; hub: boolean; base: number;
-  freq: number; phase: number; amp: number;
-  sx: number; sy: number; sz: number; ss: number;
-}
-interface Pulse { from: number; to: number; t: number; sp: number }
+interface Node { x: number; y: number; vx: number; vy: number; hub: boolean; r: number; tw: number; }
 
 export function AuthAtlas({ showTagline = true }: { showTagline?: boolean } = {}) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -30,152 +28,204 @@ export function AuthAtlas({ showTagline = true }: { showTagline?: boolean } = {}
     if (!ctx) return;
 
     // deterministic PRNG so the graph is stable across mounts
-    let s = 1337;
+    let s = 20260604;
     const rng = () => (s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
 
-    // build node cloud
+    // ---- build a clustered knowledge graph (amber lobes + teal notes) ----
     const nodes: Node[] = [];
+    const edges: [number, number][] = [];
+    const adj: number[][] = Array.from({ length: N }, () => []);
     for (let i = 0; i < N; i++) {
-      const u = rng(), v = rng(), w = Math.cbrt(rng());
-      const theta = u * Math.PI * 2, phi = Math.acos(2 * v - 1);
-      const x = w * Math.sin(phi) * Math.cos(theta) * 1.25;
-      const y = w * Math.sin(phi) * Math.sin(theta) * 0.95;
-      const z = w * Math.cos(phi);
-      const hub = rng() < 0.11;
-      const fast = rng() < 0.35;
       nodes.push({
-        x, y, z, hub, base: (hub ? 2.1 : 0.95) + rng() * 0.8,
-        freq: fast ? 1.8 + rng() * 2.2 : 0.3 + rng() * 0.8,
-        phase: rng() * 6.28, amp: 0.35 + rng() * 0.45,
-        sx: 0, sy: 0, sz: 0, ss: 1,
+        x: (rng() - 0.5) * 600, y: (rng() - 0.5) * 440,
+        vx: 0, vy: 0, hub: i < HUBS, r: 0, tw: rng() * 6.28,
       });
     }
-    // nearest-neighbour edges (stable graph) + adjacency
-    const edges: [number, number][] = [];
-    for (let i = 0; i < N; i++) {
-      const d: [number, number][] = [];
-      for (let j = 0; j < N; j++) if (i !== j) {
-        const dx = nodes[i].x - nodes[j].x, dy = nodes[i].y - nodes[j].y, dz = nodes[i].z - nodes[j].z;
-        d.push([dx * dx + dy * dy + dz * dz, j]);
-      }
-      d.sort((a, b) => a[0] - b[0]);
-      const k = 3 + (rng() < 0.4 ? 1 : 0);
-      for (let n = 0; n < k; n++) { const j = d[n][1]; if (j > i) edges.push([i, j]); }
-    }
-    const adj: number[][] = Array.from({ length: N }, () => []);
-    edges.forEach((e, idx) => { adj[e[0]].push(idx); adj[e[1]].push(idx); });
-
-    const pulses: Pulse[] = [];
-    const newPulseFrom = (i: number): Pulse | null => {
-      const es = adj[i]; if (!es.length) return null;
-      const e = edges[es[(rng() * es.length) | 0]];
-      return { from: i, to: e[0] === i ? e[1] : e[0], t: 0, sp: 0.7 + rng() * 1.0 };
+    const link = (a: number, b: number) => {
+      if (a === b || adj[a].includes(b)) return;
+      const idx = edges.length; edges.push([a, b]); adj[a].push(b); adj[b].push(a);
+      return idx;
     };
-    const seedPulse = () => { const p = newPulseFrom((rng() * N) | 0); if (p) pulses.push(p); };
+    const deg = new Array(N).fill(0);
+    const countDeg = (a: number, b: number) => { deg[a]++; deg[b]++; };
+    for (let i = HUBS; i < N; i++) {
+      const hub = (rng() * HUBS) | 0; if (link(i, hub) !== undefined) countDeg(i, hub);
+      const k = (rng() < 0.5 ? 1 : 0) + (rng() < 0.25 ? 1 : 0);
+      for (let n = 0; n < k; n++) { const j = HUBS + ((rng() * (N - HUBS)) | 0); if (link(i, j) !== undefined) countDeg(i, j); }
+    }
+    for (let h = 0; h < HUBS; h++) { const t = (rng() * HUBS) | 0; if (link(h, t) !== undefined) countDeg(h, t); }
+    for (let i = 0; i < N; i++) nodes[i].r = (nodes[i].hub ? 4.5 : 2.2) + Math.min(4, Math.sqrt(deg[i]) * 0.9);
 
+    // ---- canvas sizing + camera ----
     let W = 0, H = 0, DPR = 1;
-    const FOCAL = 2.6;
-    let SCALE = 1;
+    const cam = { x: 0, y: 0, k: 1 };
+    const home = { x: 0, y: 0, k: 1 };
     const resize = () => {
       DPR = Math.min(window.devicePixelRatio || 1, 2);
       W = wrap.clientWidth; H = wrap.clientHeight;
       cv.width = W * DPR; cv.height = H * DPR;
       cv.style.width = W + "px"; cv.style.height = H + "px";
       ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-      SCALE = Math.min(W, H);
+      home.k = Math.max(0.5, Math.min(W, H) / 660); // graph fills the panel
     };
     resize();
+    cam.k = home.k;
     const ro = new ResizeObserver(resize);
     ro.observe(wrap);
 
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    let angX = 0, angY = 0, angZ = 0, last = 0, raf = 0;
-    let cax = 1, sax = 0, cay = 1, say = 0, caz = 1, saz = 0;
 
-    const project = (n: Node, cx: number, cy: number, sc: number) => {
-      let x = n.x, y = n.y, z = n.z;
-      let x1 = x * caz - y * saz, y1 = x * saz + y * caz; x = x1; y = y1;
-      let x2 = x * cay - z * say, z2 = x * say + z * cay; x = x2; z = z2;
-      let y3 = y * cax - z * sax, z3 = y * sax + z * cax; y = y3; z = z3;
-      const persp = FOCAL / (FOCAL + z);
-      n.sx = cx + x * sc * persp; n.sy = cy + y * sc * persp; n.sz = z; n.ss = persp;
+    // ---- force sim ----
+    const CHARGE = 260, SPRING = 0.022, LINKLEN = 46, GRAVITY = 0.018, FRICTION = 0.84;
+    let alpha = 1;
+    let drag: Node | null = null, hover = -1, mx = 0, my = 0;
+    let panning = false, panSX = 0, panSY = 0, panCX = 0, panCY = 0;
+    let lastInteract = -1e9; // timestamp of last user input (for idle recenter)
+
+    const tick = () => {
+      if (alpha > 0.045) alpha *= 0.992; else alpha = 0.045; // floor keeps it gently alive
+      for (let i = 0; i < N; i++) {
+        const a = nodes[i];
+        for (let j = i + 1; j < N; j++) {
+          const b = nodes[j];
+          let dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy; if (d2 < 1) d2 = 1;
+          const d = Math.sqrt(d2), f = (CHARGE * alpha) / d2, fx = (dx / d) * f, fy = (dy / d) * f;
+          a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy;
+        }
+      }
+      for (const [i, j] of edges) {
+        const a = nodes[i], b = nodes[j];
+        let dx = b.x - a.x, dy = b.y - a.y; const d = Math.hypot(dx, dy) || 1;
+        const l = ((d - LINKLEN) / d) * SPRING * alpha; dx *= l; dy *= l;
+        a.vx += dx; a.vy += dy; b.vx -= dx; b.vy -= dy;
+      }
+      for (const n of nodes) {
+        if (n === drag) { n.x = mx; n.y = my; n.vx = 0; n.vy = 0; continue; }
+        n.vx -= n.x * GRAVITY * alpha; n.vy -= n.y * GRAVITY * alpha;
+        n.x += n.vx; n.y += n.vy; n.vx *= FRICTION; n.vy *= FRICTION;
+      }
     };
 
-    const frame = (ts: number) => {
-      const dt = last ? Math.min((ts - last) / 1000, 0.05) : 0.016; last = ts;
-      if (!reduce) { angY += dt * 0.17; angX += dt * 0.09; angZ += dt * 0.05; }
-      cax = Math.cos(angX); sax = Math.sin(angX);
-      cay = Math.cos(angY); say = Math.sin(angY);
-      caz = Math.cos(angZ); saz = Math.sin(angZ);
-      if (!reduce) { let g = 0; while (pulses.length < 32 && g++ < 40) seedPulse(); }
+    const draw = (ts: number) => {
+      tick();
+      // idle recenter: ease camera home when the user hasn't touched it for a beat
+      if (!drag && !panning && ts - lastInteract > 2600) {
+        cam.x += (home.x - cam.x) * 0.02;
+        cam.y += (home.y - cam.y) * 0.02;
+        cam.k += (home.k - cam.k) * 0.02;
+      }
 
       ctx.clearRect(0, 0, W, H);
       const grad = ctx.createRadialGradient(W * 0.5, H * 0.46, 0, W * 0.5, H * 0.46, Math.max(W, H) * 0.55);
       grad.addColorStop(0, "rgba(79,184,168,0.05)"); grad.addColorStop(1, "rgba(10,11,13,0)");
       ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
 
-      const cx = W * 0.5, cy = H * 0.46, sc = SCALE * 0.34;
-      for (const n of nodes) project(n, cx, cy, sc);
+      ctx.save();
+      ctx.translate(W / 2, H / 2); ctx.scale(cam.k, cam.k); ctx.translate(cam.x, cam.y);
 
-      ctx.lineWidth = 1;
+      const hi = hover >= 0 ? new Set<number>([hover, ...adj[hover]]) : null;
+
+      // edges
       for (const [i, j] of edges) {
         const a = nodes[i], b = nodes[j];
-        const al = 0.06 + ((a.ss + b.ss) * 0.5) * 0.16;
-        ctx.strokeStyle = `rgba(79,184,168,${al.toFixed(3)})`;
-        ctx.beginPath(); ctx.moveTo(a.sx, a.sy); ctx.lineTo(b.sx, b.sy); ctx.stroke();
+        const lit = hover >= 0 && (i === hover || j === hover);
+        const on = hi ? hi.has(i) && hi.has(j) : true;
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+        ctx.lineWidth = (lit ? 1.4 : 0.7) / cam.k;
+        ctx.strokeStyle = `rgba(79,184,168,${hi ? (on ? (lit ? 0.5 : 0.14) : 0.035) : 0.12})`;
+        ctx.stroke();
       }
-      for (let p = pulses.length - 1; p >= 0; p--) {
-        const pu = pulses[p]; pu.t += dt * pu.sp;
-        if (pu.t >= 1) {
-          if (!reduce && rng() < 0.85) {
-            const es = adj[pu.to];
-            const e = edges[es[(rng() * es.length) | 0]];
-            const nxt = e[0] === pu.to ? e[1] : e[0];
-            if (nxt !== pu.from || es.length === 1) { pu.from = pu.to; pu.to = nxt; pu.t = 0; pu.sp = 0.7 + rng() * 1.0; }
-            else pulses.splice(p, 1);
-          } else pulses.splice(p, 1);
-          continue;
-        }
-        const a = nodes[pu.from], b = nodes[pu.to];
-        const px = a.sx + (b.sx - a.sx) * pu.t, py = a.sy + (b.sy - a.sy) * pu.t;
-        const depth = 0.5 + 0.5 * ((a.ss + b.ss) * 0.5);
-        ctx.beginPath(); ctx.fillStyle = `rgba(150,240,220,${0.85 * depth})`;
-        ctx.shadowColor = "rgba(79,184,168,0.95)"; ctx.shadowBlur = 10;
-        ctx.arc(px, py, 1.7 * depth, 0, 6.28); ctx.fill(); ctx.shadowBlur = 0;
-      }
-      const order = [...nodes].sort((a, b) => a.sz - b.sz);
-      for (const n of order) {
-        const tw = Math.max(0.15, 0.55 + n.amp * Math.sin(ts * 0.001 * n.freq * 6.283 + n.phase));
+      // nodes
+      for (let i = 0; i < N; i++) {
+        const n = nodes[i];
+        const focus = hi ? hi.has(i) : true;
+        const tw = 0.72 + 0.28 * Math.sin(ts / 720 + n.tw);
         const col = n.hub ? AMBER : TEAL;
-        const rad = n.base * n.ss * (n.hub ? 1.3 : 1);
+        const a = (hi ? (focus ? 1 : 0.2) : 0.85) * tw;
         ctx.beginPath();
-        ctx.fillStyle = `rgba(${col[0]},${col[1]},${col[2]},${((0.55 + 0.35 * n.ss) * tw).toFixed(3)})`;
+        ctx.fillStyle = `rgba(${col[0]},${col[1]},${col[2]},${a.toFixed(3)})`;
         ctx.shadowColor = `rgba(${col[0]},${col[1]},${col[2]},0.9)`;
-        ctx.shadowBlur = (n.hub ? 14 : 8) * n.ss;
-        ctx.arc(n.sx, n.sy, Math.max(0.4, rad), 0, 6.28); ctx.fill();
+        ctx.shadowBlur = (n.hub ? 12 : 6) * (focus ? 1 : 0.3);
+        ctx.arc(n.x, n.y, Math.max(0.5, n.r / Math.sqrt(cam.k)), 0, 6.28); ctx.fill();
       }
       ctx.shadowBlur = 0;
-      if (!reduce) raf = requestAnimationFrame(frame);
+      ctx.restore();
     };
-    raf = requestAnimationFrame(frame);
 
-    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
+    let raf = 0;
+    const loop = (ts: number) => { draw(ts); raf = requestAnimationFrame(loop); };
+
+    // ---- interaction ----
+    const toWorld = (sx: number, sy: number) => ({ x: (sx - W / 2) / cam.k - cam.x, y: (sy - H / 2) / cam.k - cam.y });
+    const local = (e: MouseEvent) => { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    const pick = (sx: number, sy: number) => {
+      const w = toWorld(sx, sy); let best = -1, bd = 1e9;
+      for (let i = 0; i < N; i++) {
+        const n = nodes[i], d = Math.hypot(n.x - w.x, n.y - w.y), rr = n.r / Math.sqrt(cam.k) + 7 / cam.k;
+        if (d < rr && d < bd) { bd = d; best = i; }
+      }
+      return best;
+    };
+    const onMove = (e: MouseEvent) => {
+      const p = local(e); const w = toWorld(p.x, p.y); mx = w.x; my = w.y;
+      if (drag) { alpha = Math.max(alpha, 0.3); lastInteract = performance.now(); return; }
+      if (panning) { cam.x = panCX + (p.x - panSX) / cam.k; cam.y = panCY + (p.y - panSY) / cam.k; lastInteract = performance.now(); return; }
+      hover = pick(p.x, p.y);
+    };
+    const onDown = (e: MouseEvent) => {
+      const p = local(e); const hit = pick(p.x, p.y); lastInteract = performance.now();
+      if (hit >= 0) { drag = nodes[hit]; alpha = 0.5; cv.style.cursor = "grabbing"; }
+      else { panning = true; panSX = p.x; panSY = p.y; panCX = cam.x; panCY = cam.y; cv.style.cursor = "grabbing"; }
+    };
+    const onUp = () => { drag = null; panning = false; cv.style.cursor = "grab"; };
+    const onLeave = () => { hover = -1; };
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault(); lastInteract = performance.now();
+      const p = local(e);
+      const f = Math.exp(-e.deltaY * 0.0015);
+      const nk = Math.min(home.k * 3.5, Math.max(home.k * 0.4, cam.k * f));
+      const wx = (p.x - W / 2) / cam.k - cam.x, wy = (p.y - H / 2) / cam.k - cam.y;
+      cam.k = nk; cam.x = (p.x - W / 2) / cam.k - wx; cam.y = (p.y - H / 2) / cam.k - wy;
+    };
+
+    if (reduce) {
+      for (let i = 0; i < 420; i++) tick(); // settle synchronously
+      alpha = 0; draw(performance.now());
+    } else {
+      cv.style.cursor = "grab";
+      cv.addEventListener("mousemove", onMove);
+      cv.addEventListener("mousedown", onDown);
+      cv.addEventListener("mouseleave", onLeave);
+      cv.addEventListener("wheel", onWheel, { passive: false });
+      window.addEventListener("mouseup", onUp);
+      raf = requestAnimationFrame(loop);
+    }
+
+    return () => {
+      cancelAnimationFrame(raf); ro.disconnect();
+      cv.removeEventListener("mousemove", onMove);
+      cv.removeEventListener("mousedown", onDown);
+      cv.removeEventListener("mouseleave", onLeave);
+      cv.removeEventListener("wheel", onWheel);
+      window.removeEventListener("mouseup", onUp);
+    };
   }, []);
 
   return (
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden">
       <canvas ref={canvasRef} className="absolute inset-0 block" />
-      {/* serif tagline + live marker, GLASSHOUSE */}
+      {/* serif tagline + live marker, GLASSHOUSE — pointer-events-none so the
+          graph stays draggable underneath it */}
       {showTagline && (
-      <div className="absolute bottom-10 left-9 right-9">
-        <p className="font-serif text-2xl leading-snug text-foreground max-w-sm">
-          The company that <em className="not-italic text-primary italic">runs itself</em>. Watch it work.
-        </p>
-        <span className="mt-3 inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
-          <span className="h-[7px] w-[7px] rounded-full bg-status-running shadow-[0_0_8px_var(--status-running)]" />
-          4 agents working now
-        </span>
-      </div>
+        <div className="pointer-events-none absolute bottom-10 left-9 right-9">
+          <p className="font-serif text-2xl leading-snug text-foreground max-w-sm">
+            The company that <em className="not-italic text-primary italic">runs itself</em>. Watch it work.
+          </p>
+          <span className="mt-3 inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
+            <span className="h-[7px] w-[7px] rounded-full bg-status-running shadow-[0_0_8px_var(--status-running)]" />
+            4 agents working now
+          </span>
+        </div>
       )}
     </div>
   );
