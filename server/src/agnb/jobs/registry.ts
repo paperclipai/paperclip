@@ -10,6 +10,7 @@ import { blogAutoDrafter } from "./blog-auto-drafter.js";
 import { changelogDrafter } from "./changelog-drafter.js";
 import { newsletterDrafter } from "./newsletter-drafter.js";
 import { gapAnalyzer } from "./gap-analyzer.js";
+import { gapToIdea } from "./gap-to-idea.js";
 import { contentAudit } from "./content-audit.js";
 import { tagReplies } from "./tag-replies.js";
 // SEO / scrapers family
@@ -55,6 +56,7 @@ export const AGNB_JOBS: AgnbJobDef[] = [
   { key: "blog-auto-drafter", intervalMs: 1 * DAY, handler: blogAutoDrafter, requiresEnv: ["GEMINI_API_KEY"], enabledByDefault: false }, // disabled: blog drafting now owned by Paperclip "Blog" project agents (Content Strategist -> Blog Writer)
   { key: "changelog-drafter", intervalMs: 1 * DAY, handler: changelogDrafter, requiresEnv: ["GEMINI_API_KEY"], enabledByDefault: true },
   { key: "gap-analyzer", intervalMs: 1 * DAY, handler: gapAnalyzer, requiresEnv: ["GEMINI_API_KEY"], enabledByDefault: true },
+  { key: "gap-to-idea", intervalMs: 1 * DAY, handler: gapToIdea, enabledByDefault: true },
   { key: "content-audit", intervalMs: 1 * DAY, handler: contentAudit, enabledByDefault: true },
   { key: "tag-replies", intervalMs: 1 * HOUR, handler: tagReplies, requiresEnv: ["GEMINI_API_KEY"], enabledByDefault: true },
   { key: "gsc-rank-tracker", intervalMs: 1 * DAY, handler: gscRankTracker, enabledByDefault: true },
