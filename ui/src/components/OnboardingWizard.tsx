@@ -683,31 +683,66 @@ export function OnboardingWizard() {
             )}
           >
             <div className="w-full max-w-md mx-auto my-auto px-8 py-12 shrink-0">
-              {/* Progress tabs */}
-              <div className="flex items-center gap-0 mb-8 border-b border-border">
+              {/* Progress stepper */}
+              <div className="flex items-center mb-8" aria-label={`Step ${step} of 4`}>
                 {(
                   [
-                    { step: 1 as Step, label: "Company", icon: Building2 },
-                    { step: 2 as Step, label: "Agent", icon: Bot },
-                    { step: 3 as Step, label: "Task", icon: ListTodo },
-                    { step: 4 as Step, label: "Launch", icon: Rocket }
+                    { step: 1 as Step, label: "Company" },
+                    { step: 2 as Step, label: "Agent" },
+                    { step: 3 as Step, label: "Task" },
+                    { step: 4 as Step, label: "Launch" }
                   ] as const
-                ).map(({ step: s, label, icon: Icon }) => (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => setStep(s)}
-                    className={cn(
-                      "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer",
-                      s === step
-                        ? "border-foreground text-foreground"
-                        : "border-transparent text-muted-foreground hover:text-foreground/70 hover:border-border"
-                    )}
-                  >
-                    <Icon className="h-3.5 w-3.5" />
-                    {label}
-                  </button>
-                ))}
+                ).map(({ step: s, label }, i, arr) => {
+                  const done = step > s;
+                  const current = step === s;
+                  const last = i === arr.length - 1;
+                  return (
+                    <div
+                      key={s}
+                      className={cn("flex items-center", !last && "flex-1")}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setStep(s)}
+                        aria-current={current ? "step" : undefined}
+                        className="group flex shrink-0 items-center gap-2"
+                      >
+                        <span
+                          className={cn(
+                            "flex h-6 w-6 items-center justify-center rounded-full border text-[11px] font-semibold transition-colors",
+                            done
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : current
+                                ? "border-primary bg-primary/10 text-primary"
+                                : "border-border text-muted-foreground group-hover:border-primary/40"
+                          )}
+                        >
+                          {done ? <Check className="h-3.5 w-3.5" /> : s}
+                        </span>
+                        <span
+                          className={cn(
+                            "text-xs transition-colors",
+                            current
+                              ? "font-medium text-foreground"
+                              : done
+                                ? "text-foreground"
+                                : "text-muted-foreground group-hover:text-foreground/70"
+                          )}
+                        >
+                          {label}
+                        </span>
+                      </button>
+                      {!last && (
+                        <span
+                          className={cn(
+                            "mx-2 h-px flex-1 transition-colors",
+                            done ? "bg-primary" : "bg-border"
+                          )}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
               {/* Step content */}
