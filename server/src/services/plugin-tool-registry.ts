@@ -107,18 +107,13 @@ export interface PluginToolRegistry {
    * Called when a plugin worker starts and its manifest is loaded. Any
    * previously registered tools for the same plugin are replaced (idempotent).
    *
-   * @param pluginId - The plugin's unique identifier (e.g. `"acme.linear"`)
-   * @param manifest - The plugin manifest containing the `tools` array
+   * @param pluginId - The plugin's unique identifier (e.g. `"acme.linear"`).
+   * @param manifest - The plugin manifest containing the `tools` array.
    * @param pluginDbId - The plugin's database UUID, used for worker routing
-   *   and availability checks. REQUIRED — `workerManager` keys live workers
+   *   and availability checks. Required — `workerManager` keys live workers
    *   by the DB UUID, so omitting this guarantees that every subsequent
    *   `workerManager.isRunning(pluginDbId)` call returns false and every tool
-   *   dispatch fails with `worker for plugin X is not running`. Callers that
-   *   genuinely cannot supply a UUID (test scenarios using stub worker
-   *   managers) should pass the `pluginId` (pluginKey) explicitly so the
-   *   substitution is local + auditable rather than silently absorbed by the
-   *   registry. See MO-071 close — full path coverage (activation +
-   *   lifecycle + re-entry) requires this argument at every call site.
+   *   dispatch fails with `worker for plugin X is not running`.
    */
   registerPlugin(pluginId: string, manifest: PaperclipPluginManifestV1, pluginDbId: string): void;
 
@@ -304,11 +299,8 @@ export function createPluginToolRegistry(
 
   return {
     registerPlugin(pluginId: string, manifest: PaperclipPluginManifestV1, pluginDbId: string): void {
-      // pluginDbId is REQUIRED (MO-071): the silent fallback to `pluginId`
-      // pre-fix masked BUG-CORE-001 — worker lookups by UUID always failed
-      // because pluginId was the pluginKey, not the DB UUID. We still guard
-      // here so the contract violation surfaces with an explicit error at
-      // the registry boundary rather than as a downstream
+      // Guard at the registry boundary so a missing UUID surfaces as an
+      // explicit contract error instead of a downstream
       // `worker for plugin X is not running`.
       if (!pluginDbId) {
         throw new Error(

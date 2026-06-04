@@ -1932,14 +1932,6 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       const toolDeclarations = manifest.tools ?? [];
       if (toolDeclarations.length > 0) {
-        // Pass `pluginId` (the DB UUID) as the third argument so the
-        // dispatcher can route `workerManager.isRunning(pluginDbId)`
-        // correctly. Workers are keyed by DB UUID in the worker manager
-        // (see step 10 below: `workerManager.isRunning(pluginId)`), so
-        // without the UUID the tool dispatcher checks
-        // `workerManager.isRunning(pluginKey)` — which never resolves and
-        // every tool execute call fails with
-        // `worker for plugin X is not running`.
         toolDispatcher.registerPluginTools(pluginKey, manifest, pluginId);
         registered.tools = toolDeclarations.length;
 

@@ -2,44 +2,20 @@
  * Regression + lifecycle coverage for plugin-loader → plugin-tool-dispatcher
  * → plugin-tool-registry → plugin-worker-manager UUID-keyed routing.
  *
- * Bug shape (BUG-CORE-001, pre-MO-069 fix):
- *   - plugin-loader.ts called `toolDispatcher.registerPluginTools(pluginKey, manifest)`
- *     with only two args (activation path).
- *   - PluginToolDispatcher.registerPluginTools forwarded only those two args to
- *     `registry.registerPlugin(pluginKey, manifest)` — dropping the DB UUID.
- *   - PluginToolRegistry.executeTool calls `workerManager.isRunning(tool.pluginDbId)`
- *     for worker liveness — but pluginDbId fell back to `pluginKey` when undefined.
- *   - Workers are keyed by DB UUID in PluginWorkerManager, so isRunning(pluginKey)
- *     always returned false → every /api/plugins/tools/execute returned 502
- *     "worker for plugin X is not running" even when the worker was alive.
+ * Workers are keyed by DB UUID in PluginWorkerManager. If the dispatcher
+ * registers tools without the UUID, `workerManager.isRunning(...)` checks
+ * the pluginKey instead and always returns false, so every
+ * /api/plugins/tools/execute returns 502 "worker for plugin X is not
+ * running" even when the worker is alive. The dispatcher and registry
+ * both require `pluginDbId` so this contract violation surfaces at the
+ * call site instead of silently regressing.
  *
- * MO-069 (PR #5671) — initial commit:
- *   - Added optional `pluginDbId` parameter to dispatcher.registerPluginTools.
- *   - plugin-loader passes the DB UUID through.
- *   - Activation-path test fixture: this file, first test below.
- *
- * MO-070 TDD discovery (PR #5675 tests/mo070-...):
- *   - Path tracing surfaced that the public dispatcher method kept `pluginDbId?`
- *     OPTIONAL even though the production fix supplied it. Any future caller
- *     that omits the UUID — recovery path, plugin-routes admin tool, future
- *     plugin SDK — would silently regress the same bug.
- *
- * MO-071 (this commit) — full path coverage:
- *   - `pluginDbId` is REQUIRED on both `dispatcher.registerPluginTools` and
- *     `registry.registerPlugin`. The registry throws explicitly when the
- *     argument is empty/missing instead of silently substituting pluginKey.
- *   - This file now exercises all 4 path categories Ramon ratified in the
- *     MO-070→MO-071 enforcement rule:
- *
- *       1. Activation path  (plugin-loader.ts:1915)
- *       2. Lifecycle paths  (handlePluginEnabled / registerFromDb + initialize)
- *       3. Re-entry paths   (disable → enable cycle, worker re-spawn, idempotent
- *                            re-register)
- *       4. Edge cases       (missing UUID throws; pluginKey-substitution still
- *                            possible at the test boundary but must be explicit)
- *
- * All worker manager evidence in this file proves the UUID — not the
- * pluginKey — is the key used for liveness checks and tool dispatch.
+ * Covered paths:
+ *   1. Activation       (plugin-loader)
+ *   2. Lifecycle        (handlePluginEnabled / registerFromDb + initialize)
+ *   3. Re-entry         (disable → enable cycle, worker re-spawn,
+ *                        idempotent re-register)
+ *   4. Edge cases       (missing UUID throws explicitly)
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -131,20 +107,19 @@ function createDbStub(plugin: {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Activation path — plugin-loader.ts:1915
+// 1. Activation path
 // ---------------------------------------------------------------------------
 
-describe("dispatcher.registerPluginTools — activation path (BUG-CORE-001 fix verified)", () => {
+describe("dispatcher.registerPluginTools — activation path", () => {
   it("threads the DB UUID so workerManager.isRunning resolves correctly", async () => {
     const workerManager = createUuidKeyedWorkerManager();
     const dispatcher = createPluginToolDispatcher({ workerManager });
 
-    // Mirrors plugin-loader.ts:1915 — passes (pluginKey, manifest, pluginId).
+    // Mirrors plugin-loader: passes (pluginKey, manifest, pluginId).
     dispatcher.registerPluginTools(PLUGIN_KEY, MANIFEST, PLUGIN_DB_ID);
 
     const tool = dispatcher.getTool(`${PLUGIN_KEY}:ping`);
     expect(tool, "tool should be registered after registerPluginTools").not.toBeNull();
-    // FIX VERIFIED: pluginDbId is now the UUID, not the pluginKey.
     expect(tool!.pluginDbId).toBe(PLUGIN_DB_ID);
 
     await expect(
@@ -169,13 +144,13 @@ describe("dispatcher.registerPluginTools — activation path (BUG-CORE-001 fix v
   // Edge case — missing UUID is rejected explicitly (no silent fallback)
   // ---------------------------------------------------------------------------
 
-  it("throws when pluginDbId is empty — no silent fallback to pluginKey (MO-071 hardening)", () => {
+  it("throws when pluginDbId is empty — no silent fallback to pluginKey", () => {
     const workerManager = createUuidKeyedWorkerManager();
     const dispatcher = createPluginToolDispatcher({ workerManager });
 
-    // The previous OPTIONAL signature let callers omit the UUID and silently
-    // fall back to using pluginKey — that's the latent shape of BUG-CORE-001.
-    // Post-MO-071 the registry guards the contract explicitly.
+    // The previous optional signature let callers omit the UUID and silently
+    // fall back to pluginKey, masking missed plumbing as a runtime "worker
+    // not running" error. The registry now guards the contract explicitly.
     expect(() =>
       // @ts-expect-error — empty string is rejected at runtime; TS is happy
       // with the required-string signature, so we coerce in the test to prove

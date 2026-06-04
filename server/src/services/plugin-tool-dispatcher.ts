@@ -151,18 +151,12 @@ export interface PluginToolDispatcher {
    * Can also be called manually for testing or recovery scenarios.
    *
    * @param pluginKey - The plugin's namespaced key (e.g. `acme.linear`).
-   *   Used as the lookup key for tool registration and as a fallback for
-   *   worker routing when `pluginDbId` is not provided (test/recovery paths).
-   * @param manifest - The plugin manifest containing tool declarations
-   * @param pluginDbId - The plugin's database UUID. REQUIRED (MO-071 hardened):
+   *   Used as the lookup key for tool registration.
+   * @param manifest - The plugin manifest containing tool declarations.
+   * @param pluginDbId - The plugin's database UUID. Required:
    *   `workerManager` keys running workers by DB UUID, not by pluginKey, so
    *   without this `workerManager.isRunning(...)` always returns false and
    *   every tool dispatch fails with `worker for plugin X is not running`.
-   *   Tests using a stub worker manager should pass the `pluginKey` explicitly
-   *   so the substitution is local + auditable; the previous optional
-   *   signature silently masked BUG-CORE-001 for one MO cycle (MO-069 fixed
-   *   only the activation path; the type-level optional hid the same bug
-   *   waiting in lifecycle + future call sites).
    */
   registerPluginTools(
     pluginKey: string,
@@ -443,11 +437,6 @@ export function createPluginToolDispatcher(
       manifest: PaperclipPluginManifestV1,
       pluginDbId: string,
     ): void {
-      // pluginDbId is REQUIRED (MO-071): forwards to the registry, which
-      // throws on missing UUID. The signature was optional pre-MO-071 — the
-      // resulting silent fallback masked BUG-CORE-001 across the activation
-      // path for an entire MO cycle. Required now at every dispatcher
-      // boundary so the contract violation surfaces immediately.
       registry.registerPlugin(pluginKey, manifest, pluginDbId);
     },
 
