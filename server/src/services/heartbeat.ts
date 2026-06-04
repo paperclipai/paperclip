@@ -73,6 +73,7 @@ import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
+  evaluateHeartbeatRunIssueCommentGuard,
   HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
   HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS,
   HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES,
@@ -8283,11 +8284,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const skipRunIssueComment = parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
         if (issueId && outcome === "succeeded" && !skipRunIssueComment) {
           try {
-            const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, issueId);
-            if (!existingRunComment) {
-              const issueComment = buildHeartbeatRunIssueComment(persistedResultJson);
-              if (issueComment) {
-                await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id, runId: livenessRun.id });
+            const currentIssueContext = await getIssueExecutionContext(livenessRun.companyId, issueId);
+            const issueAssigneeAgentId = currentIssueContext?.assigneeAgentId ?? null;
+            const guard = evaluateHeartbeatRunIssueCommentGuard({
+              issueAssigneeAgentId,
+              runningAgentId: agent.id,
+            });
+            if (!guard.emit) {
+              const contextSnapshot = parseObject(livenessRun.contextSnapshot);
+              const wakeReason =
+                typeof contextSnapshot.wakeReason === "string" ? contextSnapshot.wakeReason : null;
+              await appendRunEvent(livenessRun, seq++, {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "info",
+                message: "heartbeat_end_auto_mirror_skipped",
+                payload: {
+                  reason: guard.skipReason,
+                  taskId: issueId,
+                  taskAssigneeAgentId: issueAssigneeAgentId,
+                  runningAgentId: agent.id,
+                  wakeReason,
+                },
+              });
+            } else {
+              const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, issueId);
+              if (!existingRunComment) {
+                const issueComment = buildHeartbeatRunIssueComment(persistedResultJson);
+                if (issueComment) {
+                  await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id, runId: livenessRun.id });
+                }
               }
             }
           } catch (err) {
