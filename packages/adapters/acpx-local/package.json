@@ -51,10 +51,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "^0.31.4",
+    "@agentclientprotocol/claude-agent-acp": "^0.40.0",
     "@paperclipai/adapter-utils": "workspace:*",
-    "@zed-industries/codex-acp": "^0.12.0",
-    "acpx": "^0.6.1",
+    "@zed-industries/codex-acp": "^0.15.0",
+    "acpx": "^0.10.0",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {

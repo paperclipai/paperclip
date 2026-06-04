@@ -23,10 +23,10 @@
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
-    "@types/react": "^19.0.8",
+    "@types/react": "^19.2.16",
     "@types/react-dom": "^19.0.3",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "typescript": "^5.7.3"
   },
   "peerDependencies": {
