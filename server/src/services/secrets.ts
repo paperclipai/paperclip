@@ -1018,6 +1018,29 @@ export function secretService(db: Db) {
     return { providerConfig, provider, runtimeConfig: toProviderVaultRuntimeConfig(providerConfig) };
   }
 
+  async function listSecrets(companyId: string) {
+    const [secrets, referenceCounts] = await Promise.all([
+      db
+        .select()
+        .from(companySecrets)
+        .where(and(eq(companySecrets.companyId, companyId), ne(companySecrets.status, "deleted")))
+        .orderBy(desc(companySecrets.createdAt)),
+      db
+        .select({
+          secretId: companySecretBindings.secretId,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(companySecretBindings)
+        .where(eq(companySecretBindings.companyId, companyId))
+        .groupBy(companySecretBindings.secretId),
+    ]);
+    const countsBySecretId = new Map(referenceCounts.map((row) => [row.secretId, row.count]));
+    return secrets.map((secret) => ({
+      ...secret,
+      referenceCount: countsBySecretId.get(secret.id) ?? 0,
+    }));
+  }
+
   return {
     listProviders: () => listSecretProviders(),
 
@@ -1269,26 +1292,26 @@ export function secretService(db: Db) {
       return { ...health, checkedAt };
     },
 
-    list: async (companyId: string) => {
-      const [secrets, referenceCounts] = await Promise.all([
-        db
-          .select()
-          .from(companySecrets)
-          .where(and(eq(companySecrets.companyId, companyId), ne(companySecrets.status, "deleted")))
-          .orderBy(desc(companySecrets.createdAt)),
-        db
-          .select({
-            secretId: companySecretBindings.secretId,
-            count: sql<number>`count(*)::int`,
-          })
-          .from(companySecretBindings)
-          .where(eq(companySecretBindings.companyId, companyId))
-          .groupBy(companySecretBindings.secretId),
-      ]);
-      const countsBySecretId = new Map(referenceCounts.map((row) => [row.secretId, row.count]));
+    list: listSecrets,
+
+    listMetadata: async (companyId: string) => {
+      const secrets = await listSecrets(companyId);
       return secrets.map((secret) => ({
-        ...secret,
-        referenceCount: countsBySecretId.get(secret.id) ?? 0,
+        id: secret.id,
+        companyId: secret.companyId,
+        name: secret.name,
+        key: secret.key,
+        provider: secret.provider,
+        providerConfigId: secret.providerConfigId,
+        managedMode: secret.managedMode,
+        status: secret.status,
+        latestVersion: secret.latestVersion,
+        description: secret.description,
+        lastResolvedAt: secret.lastResolvedAt,
+        lastRotatedAt: secret.lastRotatedAt,
+        createdAt: secret.createdAt,
+        updatedAt: secret.updatedAt,
+        referenceCount: secret.referenceCount,
       }));
     },
 

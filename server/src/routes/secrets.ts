@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   createSecretProviderConfigSchema,
@@ -10,15 +10,43 @@ import {
   updateSecretProviderConfigSchema,
   updateSecretSchema,
 } from "@paperclipai/shared";
+import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
-import { logActivity, secretService } from "../services/index.js";
+import { accessService, agentService, logActivity, secretService } from "../services/index.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 
 export function secretRoutes(db: Db) {
   const router = Router();
   const svc = secretService(db);
+  const agents = agentService(db);
+  const access = accessService(db);
   const defaultProvider = getConfiguredSecretProvider();
+  const secretMetadataAgentRoles = new Set(["ceo", "cto", "devops", "security"]);
+
+  function canCreateAgents(agent: { permissions: Record<string, unknown> | null | undefined }) {
+    if (!agent.permissions || typeof agent.permissions !== "object") return false;
+    return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  }
+
+  async function assertCanListSecretMetadata(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+
+    if (req.actor.type === "board") return;
+    if (!req.actor.agentId) throw forbidden("Agent authentication required");
+
+    const actorAgent = await agents.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== companyId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+
+    if (secretMetadataAgentRoles.has(actorAgent.role)) return;
+
+    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "environments:manage");
+    if (allowedByGrant || canCreateAgents(actorAgent)) return;
+
+    throw forbidden("Secret metadata access requires an infrastructure or admin agent role");
+  }
 
   router.get("/companies/:companyId/secret-providers", (req, res) => {
     assertBoard(req);
@@ -267,6 +295,13 @@ export function secretRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const secrets = await svc.list(companyId);
     res.json(secrets);
+  });
+
+  router.get("/companies/:companyId/secrets/metadata", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanListSecretMetadata(req, companyId);
+    const secrets = await svc.listMetadata(companyId);
+    res.json({ secrets });
   });
 
   router.post("/companies/:companyId/secrets", validate(createSecretSchema), async (req, res) => {

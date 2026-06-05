@@ -168,6 +168,65 @@ describeEmbeddedPostgres("secretService", () => {
     });
   });
 
+  it("lists agent-safe secret metadata without provider refs or version material", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const [secret] = await db
+      .insert(companySecrets)
+      .values({
+        companyId,
+        name: `metadata-${randomUUID()}`,
+        key: `metadata-${randomUUID()}`,
+        provider: "aws_secrets_manager",
+        managedMode: "external_reference",
+        externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+        providerMetadata: { description: "remote provider description", tagKeys: ["owner"] },
+        latestVersion: 1,
+        status: "active",
+        description: "Operator description",
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+      })
+      .returning();
+    await db.insert(companySecretVersions).values({
+      secretId: secret!.id,
+      version: 1,
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+      },
+      valueSha256: "value-hash",
+      fingerprintSha256: "fingerprint-hash",
+      providerVersionRef: "version-ref",
+      status: "current",
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
+    });
+
+    const metadata = await svc.listMetadata(companyId);
+    const listed = metadata.find((row) => row.id === secret!.id);
+
+    expect(listed).toMatchObject({
+      id: secret!.id,
+      companyId,
+      name: secret!.name,
+      key: secret!.key,
+      provider: "aws_secrets_manager",
+      managedMode: "external_reference",
+      status: "active",
+      latestVersion: 1,
+      description: "Operator description",
+      referenceCount: 0,
+    });
+    const serialized = JSON.stringify(listed);
+    expect(serialized).not.toContain("externalRef");
+    expect(serialized).not.toContain("providerMetadata");
+    expect(serialized).not.toContain("providerVersionRef");
+    expect(serialized).not.toContain("material");
+    expect(serialized).not.toContain("valueSha256");
+    expect(serialized).not.toContain("fingerprintSha256");
+    expect(serialized).not.toContain("prod/openai");
+  });
+
   it("enforces binding context and records value-free access events", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

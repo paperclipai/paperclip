@@ -18,16 +18,26 @@ const mockSecretService = vi.hoisted(() => ({
   setDefaultProviderConfig: vi.fn(),
   checkProviderConfigHealth: vi.fn(),
   getById: vi.fn(),
+  list: vi.fn(),
+  listMetadata: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
   previewRemoteImport: vi.fn(),
   importRemoteSecrets: vi.fn(),
 }));
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+const mockAccessService = vi.hoisted(() => ({
+  hasPermission: vi.fn(),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
+  agentService: () => mockAgentService,
+  accessService: () => mockAccessService,
   logActivity: mockLogActivity,
 }));
 
@@ -54,6 +64,8 @@ describe("secret routes", () => {
     for (const mock of Object.values(mockSecretService)) {
       mock.mockReset();
     }
+    mockAgentService.getById.mockReset();
+    mockAccessService.hasPermission.mockReset();
     mockLogActivity.mockReset();
   });
 
@@ -104,6 +116,94 @@ describe("secret routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockSecretService.listProviderConfigs).not.toHaveBeenCalled();
+  });
+
+  it("allows infrastructure agents to list secret metadata without sensitive fields", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      role: "devops",
+      permissions: {},
+    });
+    mockSecretService.listMetadata.mockResolvedValue([
+      {
+        id: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+        name: "OpenAI API key",
+        key: "openai-api-key",
+        provider: "local_encrypted",
+        providerConfigId: null,
+        managedMode: "paperclip_managed",
+        status: "active",
+        latestVersion: 1,
+        description: "Runtime credential",
+        lastResolvedAt: null,
+        lastRotatedAt: null,
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+        referenceCount: 0,
+      },
+    ]);
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+    })).get("/api/companies/company-1/secrets/metadata");
+
+    expect(res.status).toBe(200);
+    expect(mockSecretService.listMetadata).toHaveBeenCalledWith("company-1");
+    expect(res.body).toEqual({
+      secrets: [
+        expect.objectContaining({
+          id: "22222222-2222-4222-8222-222222222222",
+          name: "OpenAI API key",
+          key: "openai-api-key",
+          referenceCount: 0,
+        }),
+      ],
+    });
+    expect(JSON.stringify(res.body)).not.toContain("value");
+    expect(JSON.stringify(res.body)).not.toContain("material");
+    expect(JSON.stringify(res.body)).not.toContain("externalRef");
+    expect(JSON.stringify(res.body)).not.toContain("providerMetadata");
+  });
+
+  it("rejects secret metadata for non-infrastructure agents without a management grant", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      role: "engineer",
+      permissions: {},
+    });
+    mockAccessService.hasPermission.mockResolvedValue(false);
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+    })).get("/api/companies/company-1/secrets/metadata");
+
+    expect(res.status).toBe(403);
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      "agent-1",
+      "environments:manage",
+    );
+    expect(mockSecretService.listMetadata).not.toHaveBeenCalled();
+  });
+
+  it("keeps the full secrets listing route board-only for agents", async () => {
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+    })).get("/api/companies/company-1/secrets");
+
+    expect(res.status).toBe(403);
+    expect(mockSecretService.list).not.toHaveBeenCalled();
+    expect(mockSecretService.listMetadata).not.toHaveBeenCalled();
   });
 
   it("rejects provider vault cross-company access before calling the service", async () => {
