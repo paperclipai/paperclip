@@ -43,6 +43,7 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_LOCAL_MODEL } from "@paperclipai/adapter-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
@@ -224,6 +225,7 @@ export function OnboardingWizard() {
     claude_local: "claude",
     codex_local: "codex",
     gemini_local: "gemini",
+    local: "",
     pi_local: "pi",
     cursor: "agent",
     opencode_local: "opencode",
@@ -326,6 +328,8 @@ export function OnboardingWizard() {
           ? model || DEFAULT_CODEX_LOCAL_MODEL
           : adapterType === "gemini_local"
             ? model || DEFAULT_GEMINI_LOCAL_MODEL
+          : adapterType === "local"
+            ? model || DEFAULT_LOCAL_MODEL
           : adapterType === "cursor"
             ? model || DEFAULT_CURSOR_LOCAL_MODEL
             : adapterType === "opencode_local"
@@ -763,6 +767,10 @@ export function OnboardingWizard() {
                               setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
                               return;
                             }
+                            if (nextType === "local") {
+                              setModel(DEFAULT_LOCAL_MODEL);
+                              return;
+                            }
                             setModel("");
                           }}
                         >
@@ -809,8 +817,12 @@ export function OnboardingWizard() {
                              )}
                              onClick={() => {
                                if (opt.comingSoon) return;
-                               const nextType = opt.type;
+                              const nextType = opt.type;
                               setAdapterType(nextType);
+                              if (nextType === "local") {
+                                setModel(DEFAULT_LOCAL_MODEL);
+                                return;
+                              }
                               if (nextType === "gemini_local" && !model) {
                                 setModel(DEFAULT_GEMINI_LOCAL_MODEL);
                                 return;

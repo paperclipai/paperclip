@@ -315,7 +315,7 @@ export interface ConfigFieldOption {
 export interface ConfigFieldSchema {
   key: string;
   label: string;
-  type: "text" | "select" | "toggle" | "number" | "textarea" | "combobox";
+  type: "text" | "password" | "select" | "toggle" | "number" | "textarea" | "combobox";
   options?: ConfigFieldOption[];
   default?: unknown;
   hint?: string;

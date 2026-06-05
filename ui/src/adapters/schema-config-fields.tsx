@@ -275,6 +275,7 @@ function getDefaultValue(field: ConfigFieldSchema): unknown {
       return false;
     case "number":
       return 0;
+    case "password":
     case "text":
     case "textarea":
       return "";
@@ -493,6 +494,19 @@ export function SchemaConfigFields({
                 </Field>
               );
             }
+
+            case "password":
+              return (
+                <Field key={field.key} label={field.label} hint={field.hint}>
+                  <DraftInput
+                    value={String(readValue(field) ?? "")}
+                    onCommit={(v) => writeValue(field, v || undefined)}
+                    immediate
+                    className={inputClass}
+                    type="password"
+                  />
+                </Field>
+              );
 
             case "text":
             default:

@@ -20,6 +20,7 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_LOCAL_MODEL } from "@paperclipai/adapter-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import {
   Popover,
@@ -580,7 +581,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           : adapterType === "opencode_local"
             ? eff("adapterConfig", "variant", String(config.variant ?? ""))
             : eff("adapterConfig", "effort", String(config.effort ?? ""));
-  const showThinkingEffort = adapterType !== "gemini_local" && adapterType !== "cursor_cloud";
+  const showThinkingEffort = adapterType !== "gemini_local" && adapterType !== "cursor_cloud" && adapterType !== "local";
+  const showCommandFields = isLocal && adapterType !== "local";
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
@@ -857,6 +859,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
                     } else if (t === "gemini_local") {
                       nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
+                    } else if (t === "local") {
+                      nextValues.model = DEFAULT_LOCAL_MODEL;
                     } else if (t === "cursor") {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
@@ -876,6 +880,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                             ? DEFAULT_CODEX_LOCAL_MODEL
                             : t === "gemini_local"
                               ? DEFAULT_GEMINI_LOCAL_MODEL
+                            : t === "local"
+                              ? DEFAULT_LOCAL_MODEL
                             : t === "opencode_local"
                               ? DEFAULT_OPENCODE_LOCAL_MODEL
                             : t === "cursor"
@@ -949,40 +955,42 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-              <Field label="Command" hint={help.localCommand}>
-                <DraftInput
-                  value={
-                    isCreate
-                      ? val!.command
-                      : eff(
-                          "adapterConfig",
-                          adapterCommandField,
-                          String(
-                            (adapterType === "hermes_local"
-                              ? config.hermesCommand ?? config.command
-                              : config.command) ?? "",
-                          ),
-                        )
-                  }
-                  onCommit={(v) =>
-                    isCreate
-                      ? set!({ command: v })
-                      : mark("adapterConfig", adapterCommandField, v || null)
-                  }
-                  immediate
-                  className={inputClass}
-                  placeholder={
-                    ({
-                      claude_local: "claude",
-                      codex_local: "codex",
-                      gemini_local: "gemini",
-                      pi_local: "pi",
-                      cursor: "agent",
-                      opencode_local: "opencode",
-                    } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")
-                  }
-                />
-              </Field>
+              {showCommandFields && (
+                <Field label="Command" hint={help.localCommand}>
+                  <DraftInput
+                    value={
+                      isCreate
+                        ? val!.command
+                        : eff(
+                            "adapterConfig",
+                            adapterCommandField,
+                            String(
+                              (adapterType === "hermes_local"
+                                ? config.hermesCommand ?? config.command
+                                : config.command) ?? "",
+                            ),
+                          )
+                    }
+                    onCommit={(v) =>
+                      isCreate
+                        ? set!({ command: v })
+                        : mark("adapterConfig", adapterCommandField, v || null)
+                    }
+                    immediate
+                    className={inputClass}
+                    placeholder={
+                      ({
+                        claude_local: "claude",
+                        codex_local: "codex",
+                        gemini_local: "gemini",
+                        pi_local: "pi",
+                        cursor: "agent",
+                        opencode_local: "opencode",
+                      } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")
+                    }
+                  />
+                </Field>
+              )}
 
               {supportsModelProfiles && (
                 <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Primary model</div>
@@ -1101,23 +1109,25 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               )}
               <uiAdapter.ConfigFields {...adapterFieldProps} />
 
-              <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
-                <DraftInput
-                  value={
-                    isCreate
-                      ? val!.extraArgs
-                      : eff("adapterConfig", "extraArgs", formatArgList(config.extraArgs))
-                  }
-                  onCommit={(v) =>
-                    isCreate
-                      ? set!({ extraArgs: v })
-                      : mark("adapterConfig", "extraArgs", v?.trim() ? parseCommaArgs(v) : null)
-                  }
-                  immediate
-                  className={inputClass}
-                  placeholder="e.g. --verbose, --foo=bar"
-                />
-              </Field>
+              {showCommandFields && (
+                <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
+                  <DraftInput
+                    value={
+                      isCreate
+                        ? val!.extraArgs
+                        : eff("adapterConfig", "extraArgs", formatArgList(config.extraArgs))
+                    }
+                    onCommit={(v) =>
+                      isCreate
+                        ? set!({ extraArgs: v })
+                        : mark("adapterConfig", "extraArgs", v?.trim() ? parseCommaArgs(v) : null)
+                    }
+                    immediate
+                    className={inputClass}
+                    placeholder="e.g. --verbose, --foo=bar"
+                  />
+                </Field>
+              )}
 
               <Field label="Environment variables" hint={help.envVars}>
                 <EnvVarEditor

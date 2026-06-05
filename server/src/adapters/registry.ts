@@ -91,6 +91,13 @@ import {
   models as grokModels,
 } from "@paperclipai/adapter-grok-local";
 import {
+  execute as localExecute,
+  getLocalInferenceHealth,
+  listLocalModels,
+  testEnvironment as localTestEnvironment,
+} from "@paperclipai/adapter-local/server";
+import { agentConfigurationDoc as localAgentConfigurationDoc, models as localModels } from "@paperclipai/adapter-local";
+import {
   execute as openCodeExecute,
   listOpenCodeSkills,
   syncOpenCodeSkills,
@@ -309,6 +316,65 @@ const codexLocalAdapter: ServerAdapterModule = {
   getQuotaWindows: codexGetQuotaWindows,
 };
 
+function readString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function buildClaudeLocalFallbackConfig(config: Record<string, unknown>): Record<string, unknown> {
+  const fallback: Record<string, unknown> = {};
+  const instructionsFilePath = readString(config.instructionsFilePath);
+  const maxTurns = readNumber(config.maxTurns) ?? readNumber(config.maxTurnsPerRun);
+  if (instructionsFilePath) fallback.instructionsFilePath = instructionsFilePath;
+  if (maxTurns && maxTurns > 0) fallback.maxTurnsPerRun = maxTurns;
+  return fallback;
+}
+
+const localAdapter: ServerAdapterModule = {
+  type: "local",
+  execute: async (ctx) => {
+    const health = await getLocalInferenceHealth({
+      baseUrl: readString(ctx.config.baseUrl),
+      apiKey: readString(ctx.config.apiKey),
+    });
+    if (health.available) return localExecute(ctx);
+
+    await ctx.onLog(
+      "stdout",
+      `[paperclip] Local inference unavailable at ${health.url}; routing this run through claude_local fallback.\n`,
+    );
+    const fallbackConfig = buildClaudeLocalFallbackConfig(ctx.config);
+    return claudeExecute({
+      ...ctx,
+      agent: {
+        ...ctx.agent,
+        adapterType: "claude_local",
+        adapterConfig: fallbackConfig,
+      },
+      config: fallbackConfig,
+    });
+  },
+  testEnvironment: localTestEnvironment,
+  models: localModels,
+  listModels: listLocalModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: localAgentConfigurationDoc,
+  getConfigSchema: () => ({
+    fields: [
+      { key: "baseUrl", label: "Base URL", type: "text", default: "http://localhost:1234/v1" },
+      { key: "apiKey", label: "API key", type: "password" },
+      { key: "maxTurns", label: "Max turns", type: "number" },
+      { key: "instructionsFilePath", label: "Instructions file", type: "text", required: true },
+    ],
+  }),
+};
+
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
   execute: cursorExecute,
@@ -515,6 +581,7 @@ function registerBuiltInAdapters() {
     acpxLocalAdapter,
     claudeLocalAdapter,
     codexLocalAdapter,
+    localAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorCloudAdapter,
