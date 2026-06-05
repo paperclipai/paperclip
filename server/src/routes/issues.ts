@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { detectEnvironmentBlocker } from "../features/environment-blocker/detector.js";
+import { createProvisioningChildIssue } from "../features/environment-blocker/create-provisioning-issue.js";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
@@ -3658,12 +3660,50 @@ export function issueRoutes(
       actor.actorType,
     );
     assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+
+    // Detect environment blockers and inject auto-provisioning child issue if needed.
+    // Guarded by PAPERCLIP_ENV_BLOCKER_DETECTION=true (disabled by default for safe rollout).
+    const envBlockerDetectionEnabled = process.env.PAPERCLIP_ENV_BLOCKER_DETECTION === "true";
+    let injectedBlockerIssueId: string | null = null;
+    if (
+      envBlockerDetectionEnabled &&
+      req.body.description &&
+      (!Array.isArray(req.body.blockedByIssueIds) || req.body.blockedByIssueIds.length === 0)
+    ) {
+      const envBlocker = detectEnvironmentBlocker(req.body.description);
+      if (envBlocker.found) {
+        // We need the issue to exist first so we can set parentId on the child.
+        // Create issue without blockers, then create child, then update blockers.
+        injectedBlockerIssueId = "__pending__";
+      }
+    }
+
     const issue = await svc.create(companyId, {
       ...req.body,
       executionPolicy,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
+
+    if (injectedBlockerIssueId === "__pending__" && req.body.description) {
+      const envBlocker = detectEnvironmentBlocker(req.body.description);
+      if (envBlocker.found) {
+        try {
+          const childIssue = await createProvisioningChildIssue(
+            db,
+            companyId,
+            issue.id,
+            issue.identifier ?? issue.id,
+            envBlocker,
+            actor.agentId ?? null,
+          );
+          await svc.update(issue.id, { blockedByIssueIds: [childIssue.id], status: "blocked" });
+        } catch (err) {
+          // Log but don't fail the issue creation if auto-provisioning fails
+          logger.warn({ err, issueId: issue.id }, "env-blocker: failed to create provisioning child issue");
+        }
+      }
+    }
     await issueReferencesSvc.syncIssue(issue.id);
     const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
     const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
@@ -4300,6 +4340,37 @@ export function issueRoutes(
           assigneeAgentId: nextAssigneeAgentId,
           assigneeUserId: nextAssigneeUserId,
         });
+      }
+    }
+
+    // Detect environment blockers on description update and auto-create provisioning child issue.
+    // Guarded by PAPERCLIP_ENV_BLOCKER_DETECTION=true (disabled by default for safe rollout).
+    if (
+      process.env.PAPERCLIP_ENV_BLOCKER_DETECTION === "true" &&
+      updateFields.description !== undefined &&
+      !Array.isArray(req.body.blockedByIssueIds)
+    ) {
+      const existingBlockers = await svc.getRelationSummaries(existing.id);
+      if (existingBlockers.blockedBy.length === 0) {
+        const envBlocker = detectEnvironmentBlocker(updateFields.description as string);
+        if (envBlocker.found) {
+          try {
+            const childIssue = await createProvisioningChildIssue(
+              db,
+              existing.companyId,
+              existing.id,
+              existing.identifier ?? existing.id,
+              envBlocker,
+              actor.agentId ?? null,
+            );
+            updateFields.blockedByIssueIds = [childIssue.id];
+            if (updateFields.status === undefined) {
+              updateFields.status = "blocked";
+            }
+          } catch (err) {
+            logger.warn({ err, issueId: existing.id }, "env-blocker: failed to create provisioning child issue on update");
+          }
+        }
       }
     }
 
