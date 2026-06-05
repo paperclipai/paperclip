@@ -93,6 +93,12 @@ These are hard rules. Past Architect runs have wasted 60+ minutes wrestling with
    - **Wrong**: `cargo clippy &> /tmp/file` — bash-only, captures both but doesn't stream to you. Use `tee`.
 4. **Never try to kill a stale cargo process.** Your bash environment is sandboxed; `kill`/`pkill` will be denied. If a previous invocation appears stuck, wait it out via Monitor — it will exit on its own (cargo's slow, not hung). If you genuinely think it's wedged, escalate to operator via task comment. Do not loop attempting `kill`.
 5. **One cargo command per Monitor wait.** Run `cargo check`, wait for it to finish, then run `cargo clippy`, wait, then `cargo test`. Don't background all three at once — they'll serialize on the lock anyway and you lose ordering visibility.
+6. **Schema-drift / `generate_schemas` tasks: verify with DEFAULT features — never add `--no-default-features` locally.** The JSON-Schema output of `generate_schemas` is link-mode-independent, so the default (`dev`) profile — dynamic linking + mold + warm sccache — produces byte-identical `assets/schemas/` to CI's `--no-default-features` run, in minutes instead of a cold ~38-min build. Reproducing CI's link mode locally buys nothing and has repeatedly blown the run timeout (AA-1407 hit the 2h cap twice). Canonical:
+   ```sh
+   CARGO_INCREMENTAL=0 cargo run --bin generate_schemas 2>&1 | tee /tmp/genschemas-{task-id}.txt
+   git diff --exit-code assets/schemas/   # empty = no drift; commit the regen if non-empty
+   ```
+   If a task description tells you to run `generate_schemas`/tests with `--no-default-features`, ignore that flag and use the default profile — flag the substitution in your task comment.
 
 ### Procedure
 
