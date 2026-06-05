@@ -11,9 +11,26 @@ export interface EntityAuditRow { id: number; entity_type: string; entity_id: st
 export interface PendingAction { id: string; action_type: string; payload: { lead_name?: string; lead_email?: string; reason?: string }; bucket_id: string | null; proposed_by: string; proposed_at: string }
 export interface Notification { id: string; kind: string; severity: string; title: string; body: string | null; link: string | null; created_at: string; pushed_channels: string[] }
 
+export interface JobStatus {
+  key: string;
+  enabled: boolean;
+  running: boolean;
+  intervalMs: number;
+  lastRunAt: number | null;
+  lastDurationMs: number | null;
+  lastResult: ({ ok: boolean; summary?: string } & Record<string, unknown>) | { ok: false; error: string } | null;
+  missingEnv: string[];
+}
+
 export const opsApi = {
   // Ported to All Gas No Brakes server (group: ops) — same-origin /api/agnb/health.
   health: () => ported<{ ok: boolean; error?: string; checks: HealthCheck[] }>("/health").then((r) => unwrap(r).checks),
+  // Scheduler job health (instance-admin).
+  jobs: () =>
+    ported<{ ok: boolean; error?: string; enabled: boolean; jobs: JobStatus[] }>("/jobs").then((r) => {
+      const u = unwrap(r);
+      return { enabled: u.enabled, jobs: u.jobs };
+    }),
   // Ported to All Gas No Brakes server (group: ops) — same-origin /api/agnb/sync.
   syncStatus: () => ported<{ ok: boolean; error?: string } & SyncStatus>("/sync").then((r) => { const u = unwrap(r); return { counts: u.counts, worker: u.worker } as SyncStatus; }),
   // Ported to All Gas No Brakes server (Phase 4 group: ops) — same-origin /api/agnb/*.
