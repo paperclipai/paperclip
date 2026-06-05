@@ -234,6 +234,8 @@ async function selectLatestDeliverableMap(db: Db, workflowIds: string[]) {
 const WORKFLOW_DETAIL_RUN_LIMIT = 20;
 const WORKFLOW_RUN_CONSOLE_ENTRY_LIMIT = 600;
 const WORKFLOW_RUN_EXCERPT_CHAR_LIMIT = 16_000;
+const WORKFLOW_ADK_TIMEOUT_SEC = 24 * 60 * 60;
+const WORKFLOW_INTERRUPTED_ERROR = "Workflow process was interrupted before completion.";
 
 function appendWorkflowRunExcerpt(existing: string, chunk: string) {
   const next = `${existing}${chunk}`;
@@ -364,7 +366,10 @@ export function workflowService(db: Db) {
       workflowId: workflow.id,
       runId,
       companyId: workflow.companyId,
-      runnerConfig: workflow.runnerConfig,
+      runnerConfig: {
+        ...workflow.runnerConfig,
+        timeoutSec: WORKFLOW_ADK_TIMEOUT_SEC,
+      },
       analysis,
       runToken,
     });
@@ -528,6 +533,28 @@ export function workflowService(db: Db) {
   }
 
   return {
+    failInterruptedActiveRuns: async () => {
+      const now = new Date();
+      const rows = await db.update(workflowRuns).set({
+        status: "failed",
+        error: WORKFLOW_INTERRUPTED_ERROR,
+        finishedAt: now,
+        updatedAt: now,
+      }).where(inArray(workflowRuns.status, ["queued", "running", "awaiting_human"])).returning({ id: workflowRuns.id });
+      const runIds = rows.map((row) => row.id);
+      if (runIds.length > 0) {
+        await db.update(workflowRunPhases).set({
+          status: "failed",
+          finishedAt: now,
+          updatedAt: now,
+        }).where(and(
+          inArray(workflowRunPhases.workflowRunId, runIds),
+          notInArray(workflowRunPhases.status, ["succeeded", "failed", "cancelled"]),
+        ));
+      }
+      return { failed: rows.length, runIds };
+    },
+
     list: async (companyId: string): Promise<WorkflowListItem[]> => {
       const rows = await db.select().from(workflows).where(eq(workflows.companyId, companyId)).orderBy(desc(workflows.updatedAt));
       const items = rows.map(toWorkflow);

@@ -36,6 +36,7 @@ import {
   clickupBridgeService,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
+  workflowService,
 } from "./services/index.js";
 import { registerAwaitingHumanBridgeAdapter } from "./services/awaiting-human-bridge-registry.js";
 import { clickupAwaitingHumanBridgeAdapter } from "./services/clickup-awaiting-human-bridge-adapter.js";
@@ -672,6 +673,7 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any);
     const routines = routineService(db as any);
+    const workflows = workflowService(db as any);
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
@@ -681,12 +683,14 @@ export async function startServer(): Promise<StartedServer> {
       .then(async (promotion) => {
         await heartbeat.resumeQueuedRuns();
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+        const interruptedWorkflows = await workflows.failInterruptedActiveRuns();
         const approvals = await heartbeat.reconcileAwaitingHumanApprovals();
         if (
           promotion.promoted > 0 ||
           reconciled.dispatchRequeued > 0 ||
           reconciled.continuationRequeued > 0 ||
           reconciled.escalated > 0 ||
+          interruptedWorkflows.failed > 0 ||
           approvals.approved > 0 ||
           approvals.failed > 0
         ) {
@@ -695,6 +699,7 @@ export async function startServer(): Promise<StartedServer> {
               promotedScheduledRetries: promotion.promoted,
               promotedScheduledRetryRunIds: promotion.runIds,
               ...reconciled,
+              interruptedWorkflowRuns: interruptedWorkflows,
               clickupAwaitingHumanApprovals: approvals,
             },
             "startup heartbeat recovery changed assigned issue state",

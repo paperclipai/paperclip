@@ -147,6 +147,12 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
     expect(mockPrepareInstrumentedWorkflowRuntime.mock.calls[0]?.[0]).toMatchObject({
       analysis: expect.objectContaining({ sourceHash: "hash-1" }),
     });
+    expect(mockPrepareInstrumentedWorkflowRuntime.mock.calls[0]?.[0]).toMatchObject({
+      runnerConfig: expect.objectContaining({ timeoutSec: 86400 }),
+    });
+    expect(mockInvokeGoogleAdk).toHaveBeenCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ timeoutSec: 86400 }),
+    }));
 
     const phases = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, run.id));
     expect(phases).toHaveLength(1);
@@ -190,5 +196,79 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
     expect(updated?.status).toBe("succeeded");
     const phases = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, run.id));
     expect(phases[0]?.status).toBe("succeeded");
+  });
+
+  it("marks active workflow runs interrupted on startup recovery", async () => {
+    const companyId = randomUUID();
+    const workflowId = randomUUID();
+    const activeRunId = randomUUID();
+    const doneRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(workflows).values({
+      id: workflowId,
+      companyId,
+      title: "Brief generator",
+      status: "active",
+      runnerType: "google_adk",
+      runnerConfig: { agentPath: "/tmp/agent.py" },
+      pipelineDefinition: { entrypoint: "agent.py", generatedAt: new Date(0).toISOString(), phases: [] },
+      pipelineSourceHash: null,
+    });
+    await db.insert(workflowRuns).values([
+      {
+        id: activeRunId,
+        companyId,
+        workflowId,
+        status: "awaiting_human",
+        inputMarkdown: "generate",
+      },
+      {
+        id: doneRunId,
+        companyId,
+        workflowId,
+        status: "succeeded",
+        inputMarkdown: "done",
+      },
+    ]);
+    await db.insert(workflowRunPhases).values([
+      {
+        companyId,
+        workflowRunId: activeRunId,
+        phaseKey: "phase-1",
+        label: "Phase 1",
+        kind: "phase",
+        ordinal: 0,
+        status: "awaiting_human",
+      },
+      {
+        companyId,
+        workflowRunId: doneRunId,
+        phaseKey: "phase-1",
+        label: "Phase 1",
+        kind: "phase",
+        ordinal: 0,
+        status: "succeeded",
+      },
+    ]);
+
+    const result = await workflowService(db).failInterruptedActiveRuns();
+
+    expect(result).toMatchObject({ failed: 1, runIds: [activeRunId] });
+    const [activeRun] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, activeRunId));
+    expect(activeRun?.status).toBe("failed");
+    expect(activeRun?.error).toBe("Workflow process was interrupted before completion.");
+    const [activePhase] = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, activeRunId));
+    expect(activePhase?.status).toBe("failed");
+
+    const [doneRun] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, doneRunId));
+    expect(doneRun?.status).toBe("succeeded");
+    const [donePhase] = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, doneRunId));
+    expect(donePhase?.status).toBe("succeeded");
   });
 });
