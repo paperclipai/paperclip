@@ -593,7 +593,7 @@ async function maybeAutoRestartChild() {
   if (!manualRestartRequested && dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
 
   restartInFlight = true;
-  let health: { devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } } | null = null;
+  let health: { devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number; drainMode?: string } } | null = null;
   try {
     health = await getDevHealthPayload();
   } catch {
@@ -606,7 +606,8 @@ async function maybeAutoRestartChild() {
     restartInFlight = false;
     return;
   }
-  if (!manualRestartRequested && devServer.autoRestartEnabled !== true) {
+  const drainingRestart = devServer.drainMode === "draining";
+  if (!manualRestartRequested && !drainingRestart && devServer.autoRestartEnabled !== true) {
     restartInFlight = false;
     return;
   }

@@ -359,6 +359,68 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(wakeup?.status).toBe("skipped");
     expect(wakeup?.error).toContain("assignee changed");
     expect(countExecuteCallsForRun(runId)).toBe(0);
+
+    await waitForCondition(async () => {
+      const replacementWakeup = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(sql`
+          ${agentWakeupRequests.agentId} = ${replacementAgentId}
+          and ${agentWakeupRequests.payload} ->> 'replacementForRunId' = ${runId}
+        `)
+        .then((rows) => rows[0] ?? null);
+      return Boolean(replacementWakeup);
+    });
+
+    const replacementWakeup = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+        runId: agentWakeupRequests.runId,
+      })
+      .from(agentWakeupRequests)
+      .where(sql`
+        ${agentWakeupRequests.agentId} = ${replacementAgentId}
+        and ${agentWakeupRequests.payload} ->> 'replacementForRunId' = ${runId}
+      `)
+      .then((rows) => rows[0] ?? null);
+
+    expect(replacementWakeup).not.toBeNull();
+    expect(replacementWakeup?.reason).toBe("issue_assigned");
+    expect(replacementWakeup?.payload).toMatchObject({
+      issueId,
+      replacementForRunId: runId,
+      previousAssigneeAgentId: agentId,
+      currentAssigneeAgentId: replacementAgentId,
+    });
+
+    const replacementRun = replacementWakeup?.runId
+      ? await db
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, replacementWakeup.runId))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    expect(replacementRun?.contextSnapshot).toMatchObject({
+      issueId,
+      taskId: issueId,
+      wakeReason: "issue_assigned",
+      replacementForRunId: runId,
+      previousAssigneeAgentId: agentId,
+      currentAssigneeAgentId: replacementAgentId,
+    });
+
+    if (replacementWakeup?.runId) {
+      await waitForCondition(async () => {
+        const replacementRunStatus = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, replacementWakeup.runId))
+          .then((rows) => rows[0]?.status ?? null);
+        return replacementRunStatus !== "queued" && replacementRunStatus !== "running";
+      });
+    }
   });
 
   it("cancels queued runs when the issue reaches a terminal status before the run starts", async () => {

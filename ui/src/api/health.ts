@@ -2,6 +2,15 @@ export type DevServerHealthStatus = {
   enabled: true;
   restartRequired: boolean;
   reason: "backend_changes" | "pending_migrations" | "backend_changes_and_pending_migrations" | null;
+  drainMode: "idle" | "draining";
+  drainStartedAt: string | null;
+  drainReason: string | null;
+  restartDeferred: boolean;
+  restartDeferredAt: string | null;
+  nextRestartCheckAt: string | null;
+  oldestActiveRunStartedAt: string | null;
+  oldestActiveRunAgeMs: number | null;
+  emergencyOverrideAt: string | null;
   lastChangedAt: string | null;
   changedPathCount: number;
   changedPathsSample: string[];

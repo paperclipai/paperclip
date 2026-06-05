@@ -32,7 +32,7 @@ import {
   readIssueDetailHeaderSeed,
   rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
-import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
+import { filterIssueLiveRuns, resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
 import {
   hasBlockingShortcutDialog,
@@ -753,7 +753,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     refetchInterval: 3000,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId),
   });
-  const resolvedLiveRuns = liveRuns ?? [];
+  const resolvedLiveRuns = useMemo(
+    () => filterIssueLiveRuns({ id: issueId, status: issueStatus }, liveRuns),
+    [issueId, issueStatus, liveRuns],
+  );
   const liveRunCount = resolvedLiveRuns.length;
   const { data: activeRun = null } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueId),
@@ -1353,7 +1356,7 @@ export function IssueDetail() {
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
     enabled: !!issueId,
     refetchInterval: 3000,
-    select: (runs) => runs.length,
+    select: (runs) => filterIssueLiveRuns(issue, runs).length,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId ?? "pending"),
   });
 

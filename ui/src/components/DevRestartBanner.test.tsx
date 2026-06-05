@@ -23,6 +23,15 @@ const devServer = {
   enabled: true as const,
   restartRequired: true,
   reason: "backend_changes" as const,
+  drainMode: "idle" as const,
+  drainStartedAt: null,
+  drainReason: null,
+  restartDeferred: false,
+  restartDeferredAt: null,
+  nextRestartCheckAt: null,
+  oldestActiveRunStartedAt: null,
+  oldestActiveRunAgeMs: null,
+  emergencyOverrideAt: null,
   lastChangedAt: "2026-03-20T12:00:00.000Z",
   changedPathCount: 1,
   changedPathsSample: ["server/src/routes/health.ts"],
@@ -63,7 +72,7 @@ describe("DevRestartBanner", () => {
   it("confirms and requests an immediate restart while waiting for live runs", async () => {
     const node = render();
     const button = [...node.querySelectorAll("button")]
-      .find((entry) => entry.textContent?.includes("Restart now"));
+      .find((entry) => entry.textContent?.includes("Drain restart"));
 
     expect(node.textContent).toContain("Waiting for 1 live run to finish");
     expect(button).toBeTruthy();
@@ -72,7 +81,7 @@ describe("DevRestartBanner", () => {
       button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(window.confirm).toHaveBeenCalledWith("Restart Paperclip now? This may interrupt 1 live run.");
+    expect(window.confirm).toHaveBeenCalledWith("Drain and restart Paperclip after 1 live run finish?");
     expect(mockHealthApi.requestDevServerRestart).toHaveBeenCalledTimes(1);
     expect(node.textContent).toContain("Restart requested");
   });
@@ -81,7 +90,7 @@ describe("DevRestartBanner", () => {
     vi.mocked(window.confirm).mockReturnValue(false);
     const node = render();
     const button = [...node.querySelectorAll("button")]
-      .find((entry) => entry.textContent?.includes("Restart now"));
+      .find((entry) => entry.textContent?.includes("Drain restart"));
 
     await act(async () => {
       button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -94,7 +103,7 @@ describe("DevRestartBanner", () => {
     vi.useFakeTimers();
     const node = render();
     const button = [...node.querySelectorAll("button")]
-      .find((entry) => entry.textContent?.includes("Restart now")) as HTMLButtonElement | undefined;
+      .find((entry) => entry.textContent?.includes("Drain restart")) as HTMLButtonElement | undefined;
 
     await act(async () => {
       button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -108,6 +117,6 @@ describe("DevRestartBanner", () => {
     });
 
     expect(button?.disabled).toBe(false);
-    expect(node.textContent).toContain("Restart now");
+    expect(node.textContent).toContain("Drain restart");
   });
 });

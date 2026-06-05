@@ -51,7 +51,7 @@ export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthSta
   async function requestRestartNow() {
     const warning =
       currentDevServer.activeRunCount > 0
-        ? `Restart Paperclip now? This may interrupt ${activeRunLabel}.`
+        ? `Drain and restart Paperclip after ${activeRunLabel} finish?`
         : "Restart Paperclip now?";
     if (!window.confirm(warning)) return;
 
@@ -98,7 +98,12 @@ export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthSta
         </div>
 
         <div className="flex flex-wrap items-center gap-2 text-xs font-medium md:justify-end">
-          {devServer.waitingForIdle ? (
+          {devServer.drainMode === "draining" ? (
+            <div className="inline-flex items-center gap-2 rounded-full bg-amber-900/10 px-3 py-1.5 dark:bg-amber-100/10">
+              <TimerReset className="h-3.5 w-3.5" />
+              <span>Restart draining for {activeRunLabel}</span>
+            </div>
+          ) : devServer.waitingForIdle ? (
             <div className="inline-flex items-center gap-2 rounded-full bg-amber-900/10 px-3 py-1.5 dark:bg-amber-100/10">
               <TimerReset className="h-3.5 w-3.5" />
               <span>Waiting for {activeRunLabel} to finish</span>
@@ -123,7 +128,7 @@ export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthSta
             disabled={restartPending}
           >
             <RotateCcw className="h-3.5 w-3.5" />
-            <span>{restartPending ? "Restart requested" : "Restart now"}</span>
+            <span>{restartPending ? "Restart requested" : devServer.activeRunCount > 0 ? "Drain restart" : "Restart now"}</span>
           </button>
         </div>
       </div>

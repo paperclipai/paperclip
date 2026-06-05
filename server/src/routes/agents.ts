@@ -116,6 +116,10 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   return Math.min(max, Math.trunc(parsed));
 }
 
+function isTerminalIssueStatus(status: string | null | undefined) {
+  return status === "done" || status === "cancelled";
+}
+
 export function agentRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -3347,6 +3351,11 @@ export function agentRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
 
+    if (isTerminalIssueStatus(issue.status)) {
+      res.json([]);
+      return;
+    }
+
     const liveRuns = await db
       .select({
         id: heartbeatRuns.id,
@@ -3372,6 +3381,7 @@ export function agentRoutes(
         lastOutputStream: heartbeatRuns.lastOutputStream,
         lastOutputBytes: heartbeatRuns.lastOutputBytes,
         processStartedAt: heartbeatRuns.processStartedAt,
+        issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
       })
       .from(heartbeatRuns)
       .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
@@ -3400,6 +3410,11 @@ export function agentRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+
+    if (isTerminalIssueStatus(issue.status)) {
+      res.json(null);
+      return;
+    }
 
     let run = issue.executionRunId ? await heartbeat.getRunIssueSummary(issue.executionRunId) : null;
     if (

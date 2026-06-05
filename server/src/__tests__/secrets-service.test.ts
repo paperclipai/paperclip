@@ -168,6 +168,65 @@ describeEmbeddedPostgres("secretService", () => {
     });
   });
 
+  it("lists agent-safe secret metadata without provider refs or version material", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const [secret] = await db
+      .insert(companySecrets)
+      .values({
+        companyId,
+        name: `metadata-${randomUUID()}`,
+        key: `metadata-${randomUUID()}`,
+        provider: "aws_secrets_manager",
+        managedMode: "external_reference",
+        externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+        providerMetadata: { description: "remote provider description", tagKeys: ["owner"] },
+        latestVersion: 1,
+        status: "active",
+        description: "Operator description",
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+      })
+      .returning();
+    await db.insert(companySecretVersions).values({
+      secretId: secret!.id,
+      version: 1,
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+      },
+      valueSha256: "value-hash",
+      fingerprintSha256: "fingerprint-hash",
+      providerVersionRef: "version-ref",
+      status: "current",
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
+    });
+
+    const metadata = await svc.listMetadata(companyId);
+    const listed = metadata.find((row) => row.id === secret!.id);
+
+    expect(listed).toMatchObject({
+      id: secret!.id,
+      companyId,
+      name: secret!.name,
+      key: secret!.key,
+      provider: "aws_secrets_manager",
+      managedMode: "external_reference",
+      status: "active",
+      latestVersion: 1,
+      description: "Operator description",
+      referenceCount: 0,
+    });
+    const serialized = JSON.stringify(listed);
+    expect(serialized).not.toContain("externalRef");
+    expect(serialized).not.toContain("providerMetadata");
+    expect(serialized).not.toContain("providerVersionRef");
+    expect(serialized).not.toContain("material");
+    expect(serialized).not.toContain("valueSha256");
+    expect(serialized).not.toContain("fingerprintSha256");
+    expect(serialized).not.toContain("prod/openai");
+  });
+
   it("enforces binding context and records value-free access events", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -313,6 +372,91 @@ describeEmbeddedPostgres("secretService", () => {
     ]);
     expect(JSON.stringify(events)).not.toContain("routine-super-secret");
     expect(JSON.stringify(events)).not.toContain("provider leaked value");
+  });
+
+  it("adds value-free metadata to runtime secret resolution failures", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `runtime-failure-metadata-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-super-secret",
+    });
+    const env = {
+      RUNTIME_API_KEY: { type: "secret_ref" as const, secretId: secret.id, version: "latest" as const },
+    };
+    const context = {
+      consumerType: "routine" as const,
+      consumerId: "routine-metadata",
+      actorType: "agent" as const,
+      actorId: "agent-1",
+    };
+
+    await expect(
+      svc.resolveEnvBindings(companyId, env, { ...context, consumerId: "wrong-routine" }),
+    ).rejects.toMatchObject({
+      details: {
+        code: "binding_missing",
+        secretId: secret.id,
+        secretKey: secret.key,
+        configPath: "env.RUNTIME_API_KEY",
+      },
+    });
+
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "routine", targetId: context.consumerId }, env);
+
+    await db.update(companySecrets).set({ status: "disabled" }).where(eq(companySecrets.id, secret.id));
+    await expect(svc.resolveEnvBindings(companyId, env, context)).rejects.toMatchObject({
+      details: {
+        code: "secret_inactive",
+        secretId: secret.id,
+        secretKey: secret.key,
+        version: secret.latestVersion,
+        configPath: "env.RUNTIME_API_KEY",
+      },
+    });
+
+    await db.update(companySecrets).set({ status: "active" }).where(eq(companySecrets.id, secret.id));
+    await expect(
+      svc.resolveSecretValue(companyId, secret.id, 999, {
+        ...context,
+        configPath: "env.RUNTIME_API_KEY",
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        code: "version_missing",
+        secretId: secret.id,
+        secretKey: secret.key,
+        version: 999,
+        configPath: "env.RUNTIME_API_KEY",
+      },
+    });
+
+    const missingSecretId = randomUUID();
+    await expect(
+      svc.resolveSecretValue(companyId, missingSecretId, "latest", {
+        ...context,
+        configPath: "env.RUNTIME_API_KEY",
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        code: "secret_deleted",
+        secretId: missingSecretId,
+        version: "latest",
+        configPath: "env.RUNTIME_API_KEY",
+      },
+    });
+
+    await db.update(companySecrets).set({ status: "deleted" }).where(eq(companySecrets.id, secret.id));
+    await expect(svc.resolveEnvBindings(companyId, env, context)).rejects.toMatchObject({
+      details: {
+        code: "secret_deleted",
+        secretId: secret.id,
+        secretKey: secret.key,
+        version: secret.latestVersion,
+        configPath: "env.RUNTIME_API_KEY",
+      },
+    });
   });
 
   it("scopes env binding sync deletes to the env path prefix", async () => {

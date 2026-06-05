@@ -35,7 +35,7 @@ import {
   suggestTasksPayloadSchema,
   suggestTasksResultSchema,
 } from "@paperclipai/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { issueService, listUnfinalizedExecutionWorkspaceIds } from "./issues.js";
 
 type InteractionActor = {
@@ -160,6 +160,19 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
 
 function shouldSupersedeRequestConfirmationOnUserComment(interaction: RequestConfirmationInteraction) {
   return interaction.payload.supersedeOnUserComment === true;
+}
+
+function canActorRetireRequestConfirmation(args: {
+  issue: IssueResolutionContext;
+  current: IssueThreadInteractionRow;
+  actor: InteractionActor;
+}) {
+  if (args.actor.userId) return true;
+  if (!args.actor.agentId) return false;
+  return (
+    args.current.createdByAgentId === args.actor.agentId
+    || args.issue.assigneeAgentId === args.actor.agentId
+  );
 }
 
 function isCommentAtOrAfterInteraction(args: {
@@ -1293,6 +1306,15 @@ export function issueThreadInteractionService(db: Db) {
       input: CancelIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
+      return issueThreadInteractionService(db).cancelInteraction(issue, interactionId, input, actor);
+    },
+
+    cancelInteraction: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      input: CancelIssueThreadInteraction,
+      actor: InteractionActor,
+    ) => {
       const data = cancelIssueThreadInteractionSchema.parse(input);
       const current = await db
         .select()
@@ -1304,14 +1326,70 @@ export function issueThreadInteractionService(db: Db) {
       if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
         throw notFound("Interaction not found");
       }
-      if (current.kind !== "ask_user_questions") {
-        throw unprocessable("Only ask_user_questions interactions can be cancelled");
-      }
       if (current.status !== "pending") {
         throw conflict("Interaction has already been resolved");
       }
 
       const reason = data.reason?.trim() || null;
+      if (current.kind === "request_confirmation") {
+        const issueContext = await db
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            assigneeUserId: issues.assigneeUserId,
+          })
+          .from(issues)
+          .where(eq(issues.id, issue.id))
+          .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
+
+        if (!issueContext || issueContext.companyId !== issue.companyId) {
+          throw notFound("Issue not found");
+        }
+        if (!canActorRetireRequestConfirmation({ issue: issueContext, current, actor })) {
+          throw forbidden("Only a board user, the confirmation creator, or the current issue assignee can retire this confirmation");
+        }
+        if (!reason) {
+          throw unprocessable("A cancellation reason is required when retiring a confirmation");
+        }
+
+        const [updated] = await db
+          .update(issueThreadInteractions)
+          .set({
+            status: "cancelled",
+            result: {
+              version: 1,
+              outcome: "retired",
+              reason,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+
+        if (!updated) {
+          throw conflict("Interaction has already been resolved");
+        }
+
+        await touchIssue(db, issue.id);
+        return hydrateInteraction(updated);
+      }
+
+      if (current.kind !== "ask_user_questions") {
+        throw unprocessable(`Interactions of kind ${current.kind} cannot be cancelled`);
+      }
+
+      if (actor.agentId && !actor.userId) {
+        throw forbidden("Only board users can cancel question interactions");
+      }
+
       const [updated] = await db
         .update(issueThreadInteractions)
         .set({

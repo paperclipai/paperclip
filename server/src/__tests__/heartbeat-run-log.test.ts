@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { compactRunLogChunk } from "../services/heartbeat.js";
+import {
+  buildRunLogForbiddenValues,
+  compactRunLogChunk,
+  sanitizeAdapterResultJsonForStorage,
+} from "../services/heartbeat.js";
 
 describe("compactRunLogChunk", () => {
   it("redacts inline base64 image data from structured log chunks", () => {
@@ -37,5 +41,61 @@ describe("compactRunLogChunk", () => {
     expect(compacted).not.toContain("paperclip-shell-secret");
     expect(compacted).not.toContain("paperclip-json-secret");
     expect(compacted).not.toContain("paperclip-flag-secret");
+  });
+
+  it("redacts stdout-rendered curl config auth headers before persisting run-log chunks", () => {
+    const chunk = [
+      'header = "Authorization: Bearer paperclip-run-jwt-like-value"',
+      'header = "X-Paperclip-Run-Id: run-safe-id"',
+    ].join("\n");
+
+    const compacted = compactRunLogChunk(chunk);
+
+    expect(compacted).toContain('header = "Authorization: Bearer ***REDACTED***"');
+    expect(compacted).toContain('header = "X-Paperclip-Run-Id: run-safe-id"');
+    expect(compacted).not.toContain("paperclip-run-jwt-like-value");
+  });
+
+  it("redacts resolved secret env values from persisted run-log chunks while preserving normal output", () => {
+    const forbiddenValue = "ful7589SyntheticPlainEnvValueNoTokenShape";
+    const normalOutput = "normal output remains visible";
+    const forbiddenValues = buildRunLogForbiddenValues(
+      {
+        SECRET_ENV: forbiddenValue,
+        NORMAL_ENV: "normal-env-value",
+      },
+      new Set(["SECRET_ENV"]),
+    );
+    const chunk = [
+      normalOutput,
+      `bare=${forbiddenValue}`,
+      `json={"value":"${forbiddenValue}"}`,
+    ].join("\n");
+
+    const compacted = compactRunLogChunk(chunk, 16_384, forbiddenValues);
+
+    expect((compacted.match(new RegExp(forbiddenValue, "g")) ?? []).length).toBe(0);
+    expect(compacted).toContain("***REDACTED***");
+    expect(compacted).toContain(normalOutput);
+    expect(compacted).not.toContain("normal-env-value");
+  });
+
+  it("redacts env dumps before persisting adapter result JSON", () => {
+    const result = sanitizeAdapterResultJsonForStorage({
+      stdout: [
+        "DATABASE_URL=postgres://fixture-user:fixture-pass@db.example.invalid/paperclip",
+        "PAPERCLIP_API_KEY=fixture-paperclip-api-key",
+        "HELP2DAY_QA_BYPASS_TOKEN=fixture-help2day-bypass-token",
+      ].join("\n"),
+      stderr: "safe diagnostic",
+    });
+
+    expect(result?.stdout).toContain("DATABASE_URL=***REDACTED***");
+    expect(result?.stdout).toContain("PAPERCLIP_API_KEY=***REDACTED***");
+    expect(result?.stdout).toContain("HELP2DAY_QA_BYPASS_TOKEN=***REDACTED***");
+    expect(result?.stdout).not.toContain("fixture-pass");
+    expect(result?.stdout).not.toContain("fixture-paperclip-api-key");
+    expect(result?.stdout).not.toContain("fixture-help2day-bypass-token");
+    expect(result?.stderr).toBe("safe diagnostic");
   });
 });

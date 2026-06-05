@@ -1,12 +1,16 @@
 import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { clampIssueRequestDepth } from "@paperclipai/shared";
+import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, clampIssueRequestDepth } from "@paperclipai/shared";
 import {
   agents,
   companies,
   costEvents,
+  documentRevisions,
+  documents,
   heartbeatRuns,
   issueComments,
+  issueDocuments,
+  issueWorkProducts,
   issues,
   projects,
 } from "@paperclipai/db";
@@ -19,12 +23,17 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
+import {
+  classifyHeartbeatRunFailure,
+  type HeartbeatRunFailureType,
+} from "./heartbeat-failure-classification.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
 export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS = 6;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_HOURLY = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_SIX_HOURS = 30;
+export const DEFAULT_PRODUCTIVITY_REVIEW_PLAN_ONLY_STALE_DAYS = 5;
 export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 6 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
@@ -37,17 +46,21 @@ const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
 export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review evidence refreshed.";
+const IMPLEMENTATION_COMMENT_RE =
+  /\b(?:implemented|implementation|fixed|added|removed|refactored|tested|verified|committed|commit|code change|code changes|files changed|diff|pull request|opened pr|merged)\b/i;
 
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
-type ProductivityReviewTrigger = "no_comment_streak" | "long_active_duration" | "high_churn";
+type ProductivityReviewTrigger = "no_comment_streak" | "long_active_duration" | "high_churn" | "plan_only_stale";
+type FailureBreakdown = Array<{ failureType: HeartbeatRunFailureType; count: number }>;
 
 type ProductivityReviewThresholds = {
   noCommentStreakRuns: number;
   longActiveMs: number;
   highChurnHourly: number;
   highChurnSixHours: number;
+  planOnlyStaleMs: number;
   resolvedSnoozeMs: number;
   refreshIntervalMs: number;
   maxRefreshComments: number;
@@ -69,8 +82,13 @@ type ProductivityReviewEvidence = {
   commentCount: number;
   commentCountLastHour: number;
   commentCountLastSixHours: number;
+  planUpdatedAt: Date | null;
+  planAgeMs: number | null;
+  implementationFollowUpCount: number;
+  latestImplementationFollowUpAt: Date | null;
   elapsedMs: number | null;
   latestRuns: HeartbeatRunRow[];
+  failureBreakdown: FailureBreakdown;
   latestComments: Array<typeof issueComments.$inferSelect>;
   costCents: number;
   usageSamples: Array<{ runId: string; usageJson: Record<string, unknown> | null }>;
@@ -129,6 +147,43 @@ function truncateInline(value: string | null | undefined, max = 260) {
   return compact.length <= max ? compact : `${compact.slice(0, max - 3)}...`;
 }
 
+function parseObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function failureTypeForRun(run: HeartbeatRunRow): HeartbeatRunFailureType | null {
+  if (run.status !== "failed" && run.status !== "timed_out") return null;
+  return classifyHeartbeatRunFailure({
+    status: run.status,
+    timedOut: run.status === "timed_out",
+    errorCode: run.errorCode,
+    errorMessage: run.error,
+    exitCode: run.exitCode,
+    signal: run.signal,
+    resultJson: parseObject(run.resultJson),
+  })?.failureType ?? "unknown";
+}
+
+function buildFailureBreakdown(runs: HeartbeatRunRow[]): FailureBreakdown {
+  const counts = new Map<HeartbeatRunFailureType, number>();
+  for (const run of runs) {
+    const failureType = failureTypeForRun(run);
+    if (!failureType) continue;
+    counts.set(failureType, (counts.get(failureType) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([failureType, count]) => ({ failureType, count }))
+    .sort((left, right) => right.count - left.count || left.failureType.localeCompare(right.failureType));
+}
+
+function formatFailureBreakdown(breakdown: FailureBreakdown) {
+  return breakdown.length > 0
+    ? breakdown.map(({ failureType, count }) => `${failureType}=${count}`).join(", ")
+    : "none";
+}
+
 function readPositiveInteger(value: number, fallback: number) {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
@@ -156,6 +211,10 @@ function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): Pro
       overrides?.highChurnSixHours ?? DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_SIX_HOURS,
       DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_SIX_HOURS,
     ),
+    planOnlyStaleMs: readPositiveInteger(
+      overrides?.planOnlyStaleMs ?? DEFAULT_PRODUCTIVITY_REVIEW_PLAN_ONLY_STALE_DAYS * 24 * 60 * 60 * 1000,
+      DEFAULT_PRODUCTIVITY_REVIEW_PLAN_ONLY_STALE_DAYS * 24 * 60 * 60 * 1000,
+    ),
     resolvedSnoozeMs: readPositiveInteger(
       overrides?.resolvedSnoozeMs ?? DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
       DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
@@ -180,10 +239,12 @@ function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): Pro
 }
 
 function choosePrimaryTrigger(input: {
+  planOnlyStale: boolean;
   noComment: boolean;
   longActive: boolean;
   highChurn: boolean;
 }): ProductivityReviewTrigger | null {
+  if (input.planOnlyStale) return "plan_only_stale";
   if (input.noComment) return "no_comment_streak";
   if (input.highChurn) return "high_churn";
   if (input.longActive) return "long_active_duration";
@@ -197,6 +258,7 @@ function isSoftStopTrigger(trigger: ProductivityReviewTrigger) {
 function formatTrigger(trigger: ProductivityReviewTrigger) {
   if (trigger === "no_comment_streak") return "No-comment streak";
   if (trigger === "high_churn") return "High churn";
+  if (trigger === "plan_only_stale") return "Stale plan-only issue";
   return "Long active duration";
 }
 
@@ -380,6 +442,99 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .then((rows) => rows[0]?.count ?? 0);
   }
 
+  async function getLatestPlanUpdatedAt(sourceIssue: IssueRow) {
+    return db
+      .select({ updatedAt: documents.updatedAt })
+      .from(issueDocuments)
+      .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+      .where(
+        and(
+          eq(issueDocuments.companyId, sourceIssue.companyId),
+          eq(issueDocuments.issueId, sourceIssue.id),
+          eq(issueDocuments.key, "plan"),
+        ),
+      )
+      .orderBy(desc(documents.updatedAt), desc(documents.id))
+      .limit(1)
+      .then((rows) => rows[0]?.updatedAt ?? null);
+  }
+
+  async function collectImplementationFollowUp(sourceIssue: IssueRow, since: Date) {
+    const candidateComments = await db
+      .select({ body: issueComments.body, createdAt: issueComments.createdAt })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, sourceIssue.companyId),
+          eq(issueComments.issueId, sourceIssue.id),
+          gt(issueComments.createdAt, since),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+      .limit(50);
+    const implementationComments = candidateComments.filter((comment) => IMPLEMENTATION_COMMENT_RE.test(comment.body));
+
+    const [nonPlanDocumentStats] = await db
+      .select({
+        count: sql<number>`count(*)::int`,
+        latestAt: sql<Date | null>`max(${documentRevisions.createdAt})`,
+      })
+      .from(documentRevisions)
+      .innerJoin(issueDocuments, eq(documentRevisions.documentId, issueDocuments.documentId))
+      .where(
+        and(
+          eq(documentRevisions.companyId, sourceIssue.companyId),
+          eq(issueDocuments.companyId, sourceIssue.companyId),
+          eq(issueDocuments.issueId, sourceIssue.id),
+          sql`${issueDocuments.key} not in ('plan', ${ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY})`,
+          gt(documentRevisions.createdAt, since),
+        ),
+      );
+
+    const [workProductStats] = await db
+      .select({
+        count: sql<number>`count(*)::int`,
+        latestAt: sql<Date | null>`max(${issueWorkProducts.createdAt})`,
+      })
+      .from(issueWorkProducts)
+      .where(
+        and(
+          eq(issueWorkProducts.companyId, sourceIssue.companyId),
+          eq(issueWorkProducts.issueId, sourceIssue.id),
+          gt(issueWorkProducts.createdAt, since),
+        ),
+      );
+
+    const [livenessStats] = await db
+      .select({
+        count: sql<number>`count(*)::int`,
+        latestAt: sql<Date | null>`max(${heartbeatRuns.lastUsefulActionAt})`,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, sourceIssue.companyId),
+          issueRunScopeSql(sourceIssue.id),
+          inArray(heartbeatRuns.livenessState, ["advanced", "completed", "blocked"]),
+          gt(heartbeatRuns.lastUsefulActionAt, since),
+        ),
+      );
+
+    const commentLatestAt = implementationComments[0]?.createdAt ?? null;
+    const latestImplementationFollowUpAt = [commentLatestAt, nonPlanDocumentStats?.latestAt, workProductStats?.latestAt, livenessStats?.latestAt]
+      .filter((value): value is Date => value instanceof Date)
+      .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+
+    return {
+      count:
+        implementationComments.length +
+        Number(nonPlanDocumentStats?.count ?? 0) +
+        Number(workProductStats?.count ?? 0) +
+        Number(livenessStats?.count ?? 0),
+      latestAt: latestImplementationFollowUpAt,
+    };
+  }
+
   async function collectEvidence(
     sourceIssue: IssueRow,
     sourceAgent: AgentRow,
@@ -437,6 +592,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       assigneeRunCommentCountLastSixHours,
       latestComments,
       costRow,
+      planUpdatedAt,
     ] = await Promise.all([
       countIssueRunsSince(sourceIssue.companyId, sourceAgent.id, sourceIssue.id, oneHourAgo),
       countIssueRunsSince(sourceIssue.companyId, sourceAgent.id, sourceIssue.id, sixHoursAgo),
@@ -465,6 +621,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         .from(costEvents)
         .where(and(eq(costEvents.companyId, sourceIssue.companyId), eq(costEvents.issueId, sourceIssue.id)))
         .then((rows) => rows[0] ?? { costCents: 0 }),
+      getLatestPlanUpdatedAt(sourceIssue),
     ]);
 
     const activeRunCount = latestRuns.filter((run) =>
@@ -482,10 +639,16 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
       runCountLastSixHours >= thresholds.highChurnSixHours ||
       assigneeRunCommentCountLastSixHours >= thresholds.highChurnSixHours;
-    const trigger = choosePrimaryTrigger({ noComment, longActive, highChurn });
+    const planAgeMs = planUpdatedAt ? Math.max(0, now.getTime() - planUpdatedAt.getTime()) : null;
+    const implementationFollowUp = planUpdatedAt && planAgeMs !== null && planAgeMs >= thresholds.planOnlyStaleMs
+      ? await collectImplementationFollowUp(sourceIssue, planUpdatedAt)
+      : { count: 0, latestAt: null };
+    const planOnlyStale = planAgeMs !== null && planAgeMs >= thresholds.planOnlyStaleMs && implementationFollowUp.count === 0;
+    const trigger = choosePrimaryTrigger({ planOnlyStale, noComment, longActive, highChurn });
     if (!trigger) return null;
 
     const triggerReasons: string[] = [];
+    if (planOnlyStale) triggerReasons.push(`plan document has had no implementation follow-up for ${msToHuman(planAgeMs)}`);
     if (noComment) triggerReasons.push(`${noCommentStreak} consecutive completed issue-linked runs had no run-created issue comment`);
     if (longActive) triggerReasons.push(`current active episode has lasted ${msToHuman(elapsedMs)}`);
     if (highChurn) {
@@ -508,8 +671,13 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       commentCount: assigneeRunCommentCount,
       commentCountLastHour: assigneeRunCommentCountLastHour,
       commentCountLastSixHours: assigneeRunCommentCountLastSixHours,
+      planUpdatedAt,
+      planAgeMs,
+      implementationFollowUpCount: implementationFollowUp.count,
+      latestImplementationFollowUpAt: implementationFollowUp.latestAt,
       elapsedMs,
       latestRuns: latestRuns.slice(0, 5),
+      failureBreakdown: buildFailureBreakdown(terminalRuns),
       latestComments,
       costCents: costRow.costCents,
       usageSamples: latestRuns
@@ -559,7 +727,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   function buildReviewMarkdown(evidence: ProductivityReviewEvidence, prefix: string) {
     const latestRuns = evidence.latestRuns.length > 0
       ? evidence.latestRuns.map((run) =>
-        `- ${runUiLink(run, prefix)} \`${run.status}\` liveness \`${run.livenessState ?? "unknown"}\`, created ${run.createdAt.toISOString()}${run.nextAction ? `, next action: ${truncateInline(run.nextAction, 160)}` : ""}`,
+        `- ${runUiLink(run, prefix)} \`${run.status}\`${failureTypeForRun(run) ? ` failure \`${failureTypeForRun(run)}\`` : ""} liveness \`${run.livenessState ?? "unknown"}\`, created ${run.createdAt.toISOString()}${run.nextAction ? `, next action: ${truncateInline(run.nextAction, 160)}` : ""}`,
       ).join("\n")
       : "- none";
     const latestComments = evidence.latestComments.length > 0
@@ -586,8 +754,12 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       `- Total sampled issue-linked runs: ${evidence.totalRunCount}`,
       `- Terminal sampled runs: ${evidence.terminalRunCount}`,
       `- Active queued/running/scheduled runs: ${evidence.activeRunCount}`,
+      `- Failure types: ${formatFailureBreakdown(evidence.failureBreakdown)}`,
       `- No-comment completed-run streak: ${evidence.noCommentStreak}`,
       `- Current active elapsed time: ${msToHuman(evidence.elapsedMs)}`,
+      `- Plan document last updated: ${evidence.planUpdatedAt ? evidence.planUpdatedAt.toISOString() : "none"}`,
+      `- Plan-only age: ${msToHuman(evidence.planAgeMs)}`,
+      `- Implementation follow-up after plan: ${evidence.implementationFollowUpCount}${evidence.latestImplementationFollowUpAt ? `, latest ${evidence.latestImplementationFollowUpAt.toISOString()}` : ""}`,
       `- Runs in rolling windows: ${evidence.runCountLastHour}/1h, ${evidence.runCountLastSixHours}/6h`,
       `- Assignee run-linked comments total/window: ${evidence.commentCount} total, ${evidence.commentCountLastHour}/1h, ${evidence.commentCountLastSixHours}/6h`,
       `- Cost events total: ${evidence.costCents} cents`,
@@ -598,6 +770,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       `- No-comment streak: ${evidence.thresholds.noCommentStreakRuns} completed runs`,
       `- Long active duration: ${msToHuman(evidence.thresholds.longActiveMs)}`,
       `- High churn: ${evidence.thresholds.highChurnHourly}/1h or ${evidence.thresholds.highChurnSixHours}/6h runs/assignee-run comments`,
+      `- Plan-only stale threshold: ${msToHuman(evidence.thresholds.planOnlyStaleMs)}`,
       `- Resolved-review snooze: ${msToHuman(evidence.thresholds.resolvedSnoozeMs)}`,
       "",
       "## Latest Runs",
@@ -628,6 +801,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       `- Trigger: \`${evidence.trigger}\` (${formatTrigger(evidence.trigger)})`,
       `- Reasons: ${evidence.triggerReasons.join("; ")}`,
       `- No-comment streak: ${evidence.noCommentStreak}`,
+      `- Failure types: ${formatFailureBreakdown(evidence.failureBreakdown)}`,
+      `- Plan-only age/follow-up: ${msToHuman(evidence.planAgeMs)} / ${evidence.implementationFollowUpCount}`,
       `- Runs/assignee comments: ${evidence.runCountLastHour}/${evidence.commentCountLastHour} in 1h, ${evidence.runCountLastSixHours}/${evidence.commentCountLastSixHours} in 6h`,
       `- Next action: ${evidence.nextAction ? truncateInline(evidence.nextAction, 300) : "none recorded"}`,
     ].join("\n");
@@ -661,6 +836,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           sourceIssueId: evidence.sourceIssue.id,
           trigger: evidence.trigger,
           noCommentStreak: evidence.noCommentStreak,
+          planUpdatedAt: evidence.planUpdatedAt?.toISOString() ?? null,
+          planAgeMs: evidence.planAgeMs,
+          implementationFollowUpCount: evidence.implementationFollowUpCount,
           runCountLastHour: evidence.runCountLastHour,
           commentCountLastHour: evidence.commentCountLastHour,
         },
@@ -727,6 +905,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         sourceIssueId: evidence.sourceIssue.id,
         trigger: evidence.trigger,
         noCommentStreak: evidence.noCommentStreak,
+        planUpdatedAt: evidence.planUpdatedAt?.toISOString() ?? null,
+        planAgeMs: evidence.planAgeMs,
+        implementationFollowUpCount: evidence.implementationFollowUpCount,
         runCountLastHour: evidence.runCountLastHour,
         commentCountLastHour: evidence.commentCountLastHour,
       },

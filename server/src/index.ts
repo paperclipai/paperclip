@@ -47,6 +47,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { beginRestartDrain, waitForRestartDrain } from "./services/restart-drain.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -919,6 +920,41 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      if (signal === "SIGTERM") {
+        beginRestartDrain({ source: "signal", reason: "sigterm" });
+        await Promise.race([
+          new Promise<void>((resolve) => {
+            server.close((err) => {
+              if (err) logger.warn({ err }, "HTTP server close during restart drain failed");
+              resolve();
+            });
+          }),
+          new Promise<void>((resolve) => setTimeout(resolve, 1_000)),
+        ]);
+        const drainTimeoutMs = Math.max(
+          0,
+          Math.min(
+            5 * 60 * 1000,
+            Number(process.env.PAPERCLIP_RESTART_DRAIN_TIMEOUT_MS ?? 20_000) || 20_000,
+          ),
+        );
+        const drained = await waitForRestartDrain(db as any, {
+          timeoutMs: drainTimeoutMs,
+          pollMs: 1_000,
+        });
+        logger.info(
+          {
+            signal,
+            drained: drained.drained,
+            activeRunCount: drained.activeRunCount,
+            oldestRunStartedAt: drained.oldestRunStartedAt,
+            oldestRunAgeMs: drained.oldestRunAgeMs,
+            waitedMs: drained.waitedMs,
+          },
+          drained.drained ? "Restart drain completed before shutdown" : "Restart drain window elapsed before shutdown",
+        );
+      }
+
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();

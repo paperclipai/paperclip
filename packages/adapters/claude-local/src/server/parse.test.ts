@@ -1,16 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
+  isClaudeQuotaExhaustedError,
   isClaudeTransientUpstreamError,
 } from "./parse.js";
 
 describe("isClaudeTransientUpstreamError", () => {
-  it("classifies the 'out of extra usage' subscription window failure as transient", () => {
+  it("does not classify subscription quota failures as transient", () => {
     expect(
       isClaudeTransientUpstreamError({
         errorMessage: "You're out of extra usage · resets 4pm (America/Chicago)",
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isClaudeTransientUpstreamError({
         parsed: {
@@ -18,7 +19,7 @@ describe("isClaudeTransientUpstreamError", () => {
           result: "You're out of extra usage. Resets at 4pm (America/Chicago).",
         },
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("classifies Anthropic API rate_limit_error and overloaded_error as transient", () => {
@@ -50,17 +51,17 @@ describe("isClaudeTransientUpstreamError", () => {
     ).toBe(true);
   });
 
-  it("classifies the subscription 5-hour / weekly limit wording", () => {
+  it("does not classify subscription 5-hour / weekly limit wording as transient", () => {
     expect(
       isClaudeTransientUpstreamError({
         errorMessage: "Claude usage limit reached — weekly limit reached. Try again in 2 days.",
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isClaudeTransientUpstreamError({
         errorMessage: "5-hour limit reached.",
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("does not classify login/auth failures as transient", () => {
@@ -91,6 +92,42 @@ describe("isClaudeTransientUpstreamError", () => {
     expect(
       isClaudeTransientUpstreamError({
         errorMessage: "Invalid request_error: Unknown parameter 'foo'.",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isClaudeQuotaExhaustedError", () => {
+  it("classifies Claude subscription quota windows", () => {
+    expect(
+      isClaudeQuotaExhaustedError({
+        errorMessage: "You're out of extra usage · resets 4pm (America/Chicago)",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeQuotaExhaustedError({
+        errorMessage: "Claude usage limit reached — weekly limit reached. Try again in 2 days.",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeQuotaExhaustedError({
+        errorMessage: "5-hour limit reached.",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not classify Anthropic API transient overloads as quota exhausted", () => {
+    expect(
+      isClaudeQuotaExhaustedError({
+        parsed: {
+          is_error: true,
+          errors: [{ type: "overloaded_error", message: "Overloaded" }],
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isClaudeQuotaExhaustedError({
+        stderr: "HTTP 429: Too Many Requests",
       }),
     ).toBe(false);
   });

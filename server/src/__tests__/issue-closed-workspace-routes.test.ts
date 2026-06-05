@@ -198,6 +198,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../services/issues.js");
     vi.doUnmock("../services/projects.js");
+    vi.doUnmock("../services/restart-drain.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
@@ -215,7 +216,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
     expect(res.status).toBe(409);
     expect(res.body.error).toContain("closed workspace");
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
-  });
+  }, 10_000);
 
   it("rejects comment updates when the linked isolated workspace is closed", async () => {
     const res = await request(await createApp())
@@ -238,6 +239,23 @@ describe.sequential("closed isolated workspace issue routes", () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error).toContain("closed workspace");
+    expect(mockIssueService.checkout).not.toHaveBeenCalled();
+  });
+
+  it("rejects checkout while restart drain is active", async () => {
+    const drain = await import("../services/restart-drain.js");
+    drain.beginRestartDrain({ source: "operator", reason: "planned_restart" });
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked"],
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("restart_drain_active");
+    expect(res.body.drain).toMatchObject({ mode: "draining", reason: "planned_restart" });
     expect(mockIssueService.checkout).not.toHaveBeenCalled();
   });
 

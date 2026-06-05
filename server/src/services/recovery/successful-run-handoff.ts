@@ -55,6 +55,21 @@ type NullableNoticeAgent = NoticeAgent | null | undefined;
 type NullableNoticeIssue = NoticeIssue | null | undefined;
 type NullableNoticeRun = NoticeRun | null | undefined;
 
+const EXPLICIT_CONTINUATION_CONTRACT_MARKERS = [
+  "live continuation path",
+  "continuation path",
+  "standing log",
+  "running log",
+  "remain in_progress",
+  "remain `in_progress`",
+  "stay in_progress",
+  "stay `in_progress`",
+  "keep in_progress",
+  "keep `in_progress`",
+  "resume without re-confirmation",
+  "next wake",
+] as const;
+
 export type SuccessfulRunHandoffNotice = {
   body: string;
   presentation: IssueCommentPresentation;
@@ -282,6 +297,12 @@ function readString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+export function hasExplicitContinuationContractText(value: unknown) {
+  const text = readString(value)?.toLowerCase();
+  if (!text?.includes("do not close")) return false;
+  return EXPLICIT_CONTINUATION_CONTRACT_MARKERS.some((marker) => text.includes(marker));
+}
+
 function isCorrectiveHandoffRun(run: HeartbeatRunRow) {
   const context = readRecord(run.contextSnapshot);
   return context.handoffRequired === true ||
@@ -340,6 +361,7 @@ export function decideSuccessfulRunHandoff(input: {
   hasQueuedWake: boolean;
   hasPendingInteractionOrApproval: boolean;
   hasExplicitBlockerPath: boolean;
+  hasExplicitContinuationPath: boolean;
   hasOpenRecoveryIssue: boolean;
   hasPauseHold: boolean;
   budgetBlocked: boolean;
@@ -376,6 +398,9 @@ export function decideSuccessfulRunHandoff(input: {
     return { kind: "skip", reason: "pending interaction or approval owns the next action" };
   }
   if (input.hasExplicitBlockerPath) return { kind: "skip", reason: "explicit blocker path owns the next action" };
+  if (input.hasExplicitContinuationPath) {
+    return { kind: "skip", reason: "explicit continuation path owns the next action" };
+  }
   if (input.hasOpenRecoveryIssue) return { kind: "skip", reason: "open recovery issue owns the ambiguity" };
   if (input.hasPauseHold) return { kind: "skip", reason: "issue is under an active pause hold" };
   if (input.budgetBlocked) return { kind: "skip", reason: "budget hard stop blocks corrective wake" };

@@ -412,7 +412,6 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
           description: largeIssueDescription,
           status: "todo",
           projectId: sourceProject.id,
-          assigneeAgentId: sourceAgent.id,
         }),
       },
     );
@@ -430,6 +429,8 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
         exportDir,
         "--include",
         "company,agents,projects,issues",
+        "--issues",
+        sourceIssue.identifier,
       ],
       {
         apiBase,

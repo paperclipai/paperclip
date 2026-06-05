@@ -42,6 +42,7 @@ import {
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   buildSuccessfulRunHandoffExhaustedNotice,
+  hasExplicitContinuationContractText,
   noticeMetadataReferencesRecoveryAction,
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
@@ -578,6 +579,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
+  }
+
+  async function hasExplicitIssueContinuationContract(issue: Pick<typeof issues.$inferSelect, "companyId" | "id" | "description">) {
+    if (hasExplicitContinuationContractText(issue.description)) return true;
+    return db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(and(eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id)))
+      .orderBy(desc(issueComments.createdAt))
+      .limit(25)
+      .then((rows) => rows.some((row) => hasExplicitContinuationContractText(row.body)));
   }
 
   async function enqueueStrandedIssueRecovery(input: {
@@ -2195,7 +2207,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: "todo" | "in_progress";
     latestRun: LatestIssueRun;
   }) {
-    const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
+    const updated = await issuesSvc.update(input.issue.id, {
+      status: "blocked",
+      monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
     if (!updated) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
@@ -2568,6 +2583,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (!latestRun && !issue.checkoutRunId && !issue.executionRunId) {
+        result.skipped += 1;
+        continue;
+      }
+      if (latestRun?.status === "succeeded" && await hasExplicitIssueContinuationContract(issue)) {
         result.skipped += 1;
         continue;
       }

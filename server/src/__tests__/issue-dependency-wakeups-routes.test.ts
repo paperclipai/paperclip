@@ -144,22 +144,50 @@ describe("issue dependency wakeups in issue routes", () => {
       labels: [],
       labelIds: [],
     });
-    mockIssueService.update.mockResolvedValue({
-      id: "issue-1",
-      companyId: "company-1",
-      identifier: "PAP-100",
-      title: "Finish blocker",
-      description: null,
-      status: "done",
-      priority: "medium",
-      parentId: null,
-      assigneeAgentId: "agent-1",
-      assigneeUserId: null,
-      createdByAgentId: null,
-      createdByUserId: null,
-      executionWorkspaceId: null,
-      labels: [],
-      labelIds: [],
+    mockIssueService.update.mockImplementation(async (issueId, patch) => {
+      if (issueId === "issue-1") {
+        return {
+          id: "issue-1",
+          companyId: "company-1",
+          identifier: "PAP-100",
+          title: "Finish blocker",
+          description: null,
+          status: "done",
+          priority: "medium",
+          parentId: null,
+          assigneeAgentId: "agent-1",
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionWorkspaceId: null,
+          labels: [],
+          labelIds: [],
+        };
+      }
+      if (issueId === "issue-2") {
+        expect(patch).toMatchObject({
+          status: "todo",
+          blockedByIssueIds: [],
+        });
+        return {
+          id: "issue-2",
+          companyId: "company-1",
+          identifier: "PAP-101",
+          title: "Dependent issue",
+          description: null,
+          status: "todo",
+          priority: "medium",
+          parentId: null,
+          assigneeAgentId: "agent-2",
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionWorkspaceId: null,
+          labels: [],
+          labelIds: [],
+        };
+      }
+      return null;
     });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
       {
@@ -171,6 +199,13 @@ describe("issue dependency wakeups in issue routes", () => {
 
     const res = await request(await createApp()).patch("/api/issues/issue-1").send({ status: "done" });
     expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "issue-2",
+      expect.objectContaining({
+        status: "todo",
+        blockedByIssueIds: [],
+      }),
+    );
     await vi.waitFor(() => {
       expect(mockWakeup).toHaveBeenCalledWith(
         "agent-2",
@@ -183,6 +218,9 @@ describe("issue dependency wakeups in issue routes", () => {
         }),
       );
     });
+    const dependentCleanupOrder = mockIssueService.update.mock.invocationCallOrder[1];
+    const wakeOrder = mockWakeup.mock.invocationCallOrder[0];
+    expect(dependentCleanupOrder).toBeLessThan(wakeOrder);
   });
 
   it("wakes the parent when all direct children become terminal", async () => {

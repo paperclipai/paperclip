@@ -6,8 +6,11 @@ import {
   agents,
   companies,
   createDb,
+  documentRevisions,
+  documents,
   heartbeatRuns,
   issueComments,
+  issueDocuments,
   issues,
 } from "@paperclipai/db";
 import {
@@ -160,6 +163,46 @@ describeEmbeddedPostgres("productivity review service", () => {
     return runs;
   }
 
+  async function insertPlanDocument(input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    updatedAt: Date;
+  }) {
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    await db.insert(documents).values({
+      id: documentId,
+      companyId: input.companyId,
+      title: "Plan",
+      latestBody: "## Plan\n\n- Implement the requested behavior.",
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+      createdByAgentId: input.agentId,
+      updatedByAgentId: input.agentId,
+      createdAt: input.updatedAt,
+      updatedAt: input.updatedAt,
+    });
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId: input.companyId,
+      documentId,
+      revisionNumber: 1,
+      title: "Plan",
+      body: "## Plan\n\n- Implement the requested behavior.",
+      createdByAgentId: input.agentId,
+      createdAt: input.updatedAt,
+    });
+    await db.insert(issueDocuments).values({
+      companyId: input.companyId,
+      issueId: input.issueId,
+      documentId,
+      key: "plan",
+      createdAt: input.updatedAt,
+      updatedAt: input.updatedAt,
+    });
+  }
+
   async function listProductivityReviews(companyId: string) {
     return db
       .select()
@@ -208,6 +251,88 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
 
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
+  });
+
+  it("groups failed runs by failure classification in productivity review evidence", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const runRows: Array<typeof heartbeatRuns.$inferInsert> = [
+      {
+        status: "failed",
+        error: "Forbidden",
+        errorCode: "access_denied",
+        resultJson: { failureType: "permission" },
+      },
+      {
+        status: "failed",
+        error: "Permission denied",
+        errorCode: "adapter_failed",
+      },
+      {
+        status: "failed",
+        error: "Invalid API key",
+        errorCode: "adapter_failed",
+      },
+      {
+        status: "failed",
+        error: "Adapter missing config",
+        errorCode: "adapter_failed",
+      },
+      {
+        status: "failed",
+        error: "Required gateway URL not configured",
+        errorCode: "adapter_failed",
+      },
+      {
+        status: "failed",
+        error: "Provider overloaded",
+        errorCode: "adapter_failed",
+      },
+      {
+        status: "failed",
+        error: "Upstream service unavailable",
+        errorCode: "adapter_failed",
+      },
+      {
+        status: "timed_out",
+        error: "Timed out",
+        errorCode: "timeout",
+      },
+      {
+        status: "timed_out",
+        error: "Adapter timed out",
+        errorCode: "timeout",
+      },
+      {
+        status: "succeeded",
+      },
+    ].map((run, index) => {
+      const createdAt = new Date(now.getTime() - index * 60_000);
+      return {
+        id: randomUUID(),
+        companyId: seeded.companyId,
+        agentId: seeded.coderId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        startedAt: createdAt,
+        finishedAt: new Date(createdAt.getTime() + 30_000),
+        contextSnapshot: { issueId: seeded.issueId, taskId: seeded.issueId },
+        createdAt,
+        updatedAt: createdAt,
+        ...run,
+      };
+    });
+    await db.insert(heartbeatRuns).values(runRows);
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Failure types: permission=3, invalid_config=2, provider_error=2, timeout=2");
+    expect(review?.description).toContain("failure `permission`");
   });
 
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {
@@ -381,6 +506,101 @@ describeEmbeddedPostgres("productivity review service", () => {
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.description).toContain("Primary trigger: `high_churn`");
     expect(review?.description).toContain("Runs in rolling windows: 10/1h");
+  });
+
+  it("creates a review for a stale plan document with no implementation follow-up", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({ status: "todo" });
+    const planUpdatedAt = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
+    await insertPlanDocument({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      agentId: seeded.coderId,
+      updatedAt: planUpdatedAt,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `plan_only_stale`");
+    expect(review?.description).toContain("Plan-only age: 6d 0h");
+    expect(review?.description).toContain("Implementation follow-up after plan: 0");
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.productivity_review_created"));
+    expect(activities[0]?.details).toMatchObject({
+      trigger: "plan_only_stale",
+      implementationFollowUpCount: 0,
+    });
+  });
+
+  it("does not flag a stale plan after an implementation follow-up comment", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({ status: "todo" });
+    const planUpdatedAt = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
+    await insertPlanDocument({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      agentId: seeded.coderId,
+      updatedAt: planUpdatedAt,
+    });
+    await db.insert(issueComments).values({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      authorAgentId: seeded.coderId,
+      body: "Implemented the service path and verified the focused test.",
+      createdAt: new Date(planUpdatedAt.getTime() + 60 * 60 * 1000),
+      updatedAt: new Date(planUpdatedAt.getTime() + 60 * 60 * 1000),
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("does not flag a stale plan after concrete run liveness advances the issue", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({ status: "todo" });
+    const planUpdatedAt = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
+    const advancedAt = new Date(planUpdatedAt.getTime() + 60 * 60 * 1000);
+    await insertPlanDocument({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      agentId: seeded.coderId,
+      updatedAt: planUpdatedAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      status: "succeeded",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      startedAt: advancedAt,
+      finishedAt: new Date(advancedAt.getTime() + 30_000),
+      contextSnapshot: { issueId: seeded.issueId, taskId: seeded.issueId },
+      livenessState: "advanced",
+      lastUsefulActionAt: advancedAt,
+      createdAt: advancedAt,
+      updatedAt: advancedAt,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
   });
 
   it("ignores non-assignee comments when evaluating high-churn productivity reviews", async () => {

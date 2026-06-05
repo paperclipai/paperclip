@@ -453,6 +453,49 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(403);
   });
 
+  it("returns structured secret metadata when agent PATCH cannot resolve an adapter secret ref", async () => {
+    const { HttpError } = await import("../errors.js");
+    const missingSecretDetails = {
+      code: "binding_missing",
+      secretId: "33333333-3333-4333-8333-333333333333",
+      secretKey: "agent-runtime-key",
+      configPath: "env.OPENAI_API_KEY",
+    };
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockSecretService.normalizeAdapterConfigForPersistence.mockRejectedValue(
+      new HttpError(422, "Secret is not bound to agent", missingSecretDetails),
+    );
+
+    const app = await createApp({
+      type: "board",
+      userId: "admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({
+        adapterType: baseAgent.adapterType,
+        adapterConfig: {
+          env: {
+            OPENAI_API_KEY: {
+              type: "secret_ref",
+              secretId: missingSecretDetails.secretId,
+              version: "latest",
+            },
+          },
+        },
+      }));
+
+    expect(res.status).toBe(422);
+    expect(res.body).toEqual({
+      error: "Secret is not bound to agent",
+      details: missingSecretDetails,
+    });
+  }, 20_000);
+
   it("blocks api key creation for authenticated company members without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
 

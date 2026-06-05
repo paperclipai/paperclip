@@ -8,6 +8,7 @@ import {
   buildSuccessfulRunHandoffExhaustedNotice,
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
+  hasExplicitContinuationContractText,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
   isSuccessfulRunHandoffRequiredNoticeBody,
   noticeMetadataReferencesRecoveryAction,
@@ -50,6 +51,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasQueuedWake: false,
     hasPendingInteractionOrApproval: false,
     hasExplicitBlockerPath: false,
+    hasExplicitContinuationPath: false,
     hasOpenRecoveryIssue: false,
     hasPauseHold: false,
     budgetBlocked: false,
@@ -127,6 +129,10 @@ describe("successful run handoff decision", () => {
     expect(decide({ hasExplicitBlockerPath: true })).toEqual({
       kind: "skip",
       reason: "explicit blocker path owns the next action",
+    });
+    expect(decide({ hasExplicitContinuationPath: true })).toEqual({
+      kind: "skip",
+      reason: "explicit continuation path owns the next action",
     });
   });
 
@@ -303,5 +309,17 @@ describe("successful run handoff decision", () => {
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## Successful run missing issue disposition\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## This issue still needs a next step\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("Unrelated comment")).toBe(false);
+  });
+
+  it("recognizes only explicit do-not-close continuation contracts", () => {
+    expect(hasExplicitContinuationContractText(
+      "Do not close. Live continuation path: the standing provider-health log remains in_progress for the next wake.",
+    )).toBe(true);
+    expect(hasExplicitContinuationContractText(
+      "Do not close yet; I am still gathering evidence.",
+    )).toBe(false);
+    expect(hasExplicitContinuationContractText(
+      "Live continuation path: check this again on the next wake.",
+    )).toBe(false);
   });
 });

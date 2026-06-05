@@ -412,6 +412,23 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBa
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
+export const createScannerFindingIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema
+  .omit({
+    parentId: true,
+    inheritExecutionWorkspaceFromIssueId: true,
+  })
+  .extend({
+    findingType: z.string().trim().min(1).max(96),
+    relatedInteractionId: z.string().uuid().optional().nullable(),
+    relatedBlockerIssueId: z.string().uuid().optional().nullable(),
+    relatedId: z.string().trim().min(1).max(160).optional().nullable(),
+    sourceStateFingerprint: z.string().trim().min(1).max(160).optional().nullable(),
+    acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+    blockParentUntilDone: z.boolean().optional().default(false),
+  }));
+
+export type CreateScannerFindingIssue = z.infer<typeof createScannerFindingIssueSchema>;
+
 export const createAcceptedPlanDecompositionSchema = z.object({
   acceptedPlanRevisionId: z.string().uuid(),
   children: z.array(createChildIssueSchema).min(1).max(25),
@@ -725,7 +742,7 @@ export const requestConfirmationPayloadSchema = z.object({
 
 export const requestConfirmationResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target"]),
+  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target", "retired"]),
   reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
