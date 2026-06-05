@@ -496,6 +496,56 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
   });
 
+  it("persists per-run token counters above signed int32", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const overflowTokens = 2_147_483_648;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await expect(
+      costs.createEvent(companyId, {
+        agentId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: overflowTokens,
+        cachedInputTokens: overflowTokens,
+        outputTokens: overflowTokens,
+        costCents: 0,
+        occurredAt: new Date("2026-06-05T05:17:47.000Z"),
+      }),
+    ).resolves.toMatchObject({
+      inputTokens: overflowTokens,
+      cachedInputTokens: overflowTokens,
+      outputTokens: overflowTokens,
+    });
+
+    const [byAgentRow] = await costs.byAgent(companyId);
+    expect(byAgentRow).toMatchObject({
+      inputTokens: overflowTokens,
+      cachedInputTokens: overflowTokens,
+      outputTokens: overflowTokens,
+    });
+  });
+
   it("aggregates issue costs across recursive descendants only", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
