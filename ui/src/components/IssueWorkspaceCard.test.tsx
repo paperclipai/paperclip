@@ -110,6 +110,8 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     labelIds: [],
     currentExecutionWorkspace: null,
     ...overrides,
+    reviewerAgentId: overrides.reviewerAgentId ?? null,
+    reviewerUserId: overrides.reviewerUserId ?? null,
     workMode: overrides.workMode ?? "standard",
   };
 }

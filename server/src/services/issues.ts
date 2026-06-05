@@ -1905,6 +1905,8 @@ const issueListSelect = {
   priority: issues.priority,
   assigneeAgentId: issues.assigneeAgentId,
   assigneeUserId: issues.assigneeUserId,
+  reviewerAgentId: issues.reviewerAgentId,
+  reviewerUserId: issues.reviewerUserId,
   checkoutRunId: issues.checkoutRunId,
   executionRunId: issues.executionRunId,
   executionAgentNameKey: issues.executionAgentNameKey,
@@ -4630,11 +4632,20 @@ export function issueService(db: Db) {
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
+      if (data.reviewerAgentId && data.reviewerUserId) {
+        throw unprocessable("Issue can only have one reviewer");
+      }
       if (data.assigneeAgentId) {
         await assertAssignableAgent(companyId, data.assigneeAgentId);
       }
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
+      }
+      if (data.reviewerAgentId) {
+        await assertAssignableAgent(companyId, data.reviewerAgentId);
+      }
+      if (data.reviewerUserId) {
+        await assertAssignableUser(companyId, data.reviewerUserId);
       }
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
@@ -4895,6 +4906,13 @@ export function issueService(db: Db) {
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
+      const nextReviewerAgentId =
+        issueData.reviewerAgentId !== undefined ? issueData.reviewerAgentId : existing.reviewerAgentId;
+      const nextReviewerUserId =
+        issueData.reviewerUserId !== undefined ? issueData.reviewerUserId : existing.reviewerUserId;
+      if (nextReviewerAgentId && nextReviewerUserId) {
+        throw unprocessable("Issue can only have one reviewer");
+      }
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
@@ -4913,6 +4931,12 @@ export function issueService(db: Db) {
       }
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
+      }
+      if (issueData.reviewerAgentId) {
+        await assertAssignableAgent(existing.companyId, issueData.reviewerAgentId);
+      }
+      if (issueData.reviewerUserId) {
+        await assertAssignableUser(existing.companyId, issueData.reviewerUserId);
       }
       const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
       const nextProjectWorkspaceId =

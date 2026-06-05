@@ -572,6 +572,8 @@ function paperclipIssue(overrides: Partial<Issue> = {}): Issue {
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
+    reviewerAgentId: null,
+    reviewerUserId: null,
     checkoutRunId: null,
     executionRunId: null,
     executionAgentNameKey: null,

@@ -176,6 +176,8 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     updatedAt: new Date("2026-04-06T12:05:00.000Z"),
     ...overrides,
+    reviewerAgentId: overrides.reviewerAgentId ?? null,
+    reviewerUserId: overrides.reviewerUserId ?? null,
     workMode: overrides.workMode ?? "standard",
   };
 }
@@ -1146,7 +1148,11 @@ describe("IssueProperties", () => {
       runReviewButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(onUpdate).toHaveBeenCalledWith({ status: "in_review" });
+    expect(onUpdate).toHaveBeenCalledWith({
+      status: "in_review",
+      reviewerAgentId: null,
+      reviewerUserId: null,
+    });
 
     act(() => root.unmount());
   });
@@ -1172,6 +1178,45 @@ describe("IssueProperties", () => {
 
     expect(container.textContent).toContain("Run approval now");
     expect(container.textContent).not.toContain("Run review now");
+
+    act(() => root.unmount());
+  });
+
+  it("includes current reviewer in in_review status payload", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({
+        reviewerAgentId: "agent-1",
+        reviewerUserId: null,
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "review-stage",
+              type: "review",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-1", type: "agent", agentId: "agent-1", userId: null }],
+            },
+          ],
+        }),
+      }),
+      childIssues: [],
+      onUpdate,
+    });
+    await flush();
+
+    const runReviewButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Run review now"));
+    expect(runReviewButton).not.toBeUndefined();
+
+    await act(async () => {
+      runReviewButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      status: "in_review",
+      reviewerAgentId: "agent-1",
+      reviewerUserId: null,
+    });
 
     act(() => root.unmount());
   });

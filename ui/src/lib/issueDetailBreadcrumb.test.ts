@@ -114,6 +114,8 @@ describe("issueDetailBreadcrumb", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
       ...overrides,
+      reviewerAgentId: overrides.reviewerAgentId ?? null,
+      reviewerUserId: overrides.reviewerUserId ?? null,
       workMode: overrides.workMode ?? "standard",
     };
   }

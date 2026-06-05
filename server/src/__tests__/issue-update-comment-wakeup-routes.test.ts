@@ -314,4 +314,101 @@ describe("issue update comment wakeups", () => {
       }),
     );
   });
+
+  it("wakes reviewer agent when issue enters in_review with reviewerAgentId", async () => {
+    const reviewerAgentId = "22222222-2222-4222-8222-222222222222";
+    const existing = makeIssue({
+      status: "in_progress",
+      reviewerAgentId: null,
+      reviewerUserId: null,
+    });
+    const updated = makeIssue({
+      status: "in_review",
+      reviewerAgentId,
+      reviewerUserId: null,
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "in_review",
+        reviewerAgentId,
+        reviewerUserId: null,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      reviewerAgentId,
+      expect.objectContaining({
+        source: "assignment",
+        reason: "review_requested",
+        payload: expect.objectContaining({
+          issueId: existing.id,
+          mutation: "update",
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: existing.id,
+          taskId: existing.id,
+          wakeReason: "review_requested",
+          source: "issue.review_requested",
+        }),
+      }),
+    );
+  });
+
+  it("preserves comment context on reviewer wake when entering in_review", async () => {
+    const reviewerAgentId = "22222222-2222-4222-8222-222222222222";
+    const existing = makeIssue({
+      status: "in_progress",
+      reviewerAgentId: null,
+      reviewerUserId: null,
+    });
+    const updated = makeIssue({
+      status: "in_review",
+      reviewerAgentId,
+      reviewerUserId: null,
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-review-1",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "ready for review",
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "in_review",
+        reviewerAgentId,
+        reviewerUserId: null,
+        comment: "ready for review",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      reviewerAgentId,
+      expect.objectContaining({
+        source: "assignment",
+        reason: "review_requested",
+        payload: expect.objectContaining({
+          issueId: existing.id,
+          commentId: "comment-review-1",
+          mutation: "update",
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: existing.id,
+          taskId: existing.id,
+          commentId: "comment-review-1",
+          wakeCommentId: "comment-review-1",
+          wakeReason: "review_requested",
+          source: "issue.review_requested",
+        }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+  });
 });

@@ -60,6 +60,8 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     isUnreadForMe: false,
     workMode: "standard",
     ...overrides,
+    reviewerAgentId: overrides.reviewerAgentId ?? null,
+    reviewerUserId: overrides.reviewerUserId ?? null,
   };
 }
 
