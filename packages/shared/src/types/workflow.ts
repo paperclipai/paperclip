@@ -96,6 +96,8 @@ export interface WorkflowHandoff {
   decidedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  /** Present when a ClickUp bridge exists for this handoff. */
+  bridgeStatus: "waiting_for_human" | "closed" | null;
 }
 
 export interface WorkflowDeliverableSummary {

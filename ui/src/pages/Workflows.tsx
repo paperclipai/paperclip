@@ -1,9 +1,10 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@/lib/router";
-import { GitBranch, Play, Plus, Sparkles, Workflow as WorkflowIcon } from "lucide-react";
+import { AlertTriangle, GitBranch, Play, Plus, Sparkles, Workflow as WorkflowIcon, X } from "lucide-react";
 import type { WorkflowListItem } from "@paperclipai/shared";
 import { workflowsApi } from "../api/workflows";
+import { companyAwaitingHumanSettingsApi } from "../api/companyAwaitingHumanSettings";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
@@ -42,10 +43,30 @@ export function Workflows() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [draft, setDraft] = useState<WorkflowCreateDraft>(defaultDraft);
+  const [clickUpWarnDismissed, setClickUpWarnDismissed] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Workflows" }]);
   }, [setBreadcrumbs]);
+
+  const awaitingHumanQuery = useQuery({
+    queryKey: queryKeys.companies.awaitingHumanSettings(selectedCompanyId ?? ""),
+    queryFn: () => companyAwaitingHumanSettingsApi.get(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    staleTime: 60_000,
+  });
+
+  const clickUpNotConfigured = (() => {
+    const s = awaitingHumanQuery.data;
+    if (!s) return false;
+    return !(
+      s.enabled &&
+      s.provider === "clickup" &&
+      s.hasStoredAuthToken &&
+      s.providerConfig?.workspaceId &&
+      s.providerConfig?.channelId
+    );
+  })();
 
   const workflowsQuery = useQuery({
     queryKey: queryKeys.workflows.list(selectedCompanyId ?? ""),
@@ -101,6 +122,28 @@ export function Workflows() {
 
   return (
     <div className="space-y-6">
+      {clickUpNotConfigured && !clickUpWarnDismissed && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+          <p className="flex-1">
+            ClickUp integration is not fully configured. Workflows that use{" "}
+            <code className="rounded bg-amber-500/20 px-1 py-0.5 text-xs font-mono">input()</code>{" "}
+            handoffs will fail with a 503 until ClickUp is enabled.{" "}
+            <Link to="/company/settings/awaiting-human" className="font-medium underline underline-offset-2 hover:text-amber-100">
+              Configure in Company Settings
+            </Link>
+          </p>
+          <button
+            type="button"
+            onClick={() => setClickUpWarnDismissed(true)}
+            className="shrink-0 text-amber-400 hover:text-amber-200 transition-colors"
+            aria-label="Dismiss warning"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">Workflows</h1>

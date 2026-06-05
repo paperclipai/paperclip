@@ -818,10 +818,14 @@ export async function prepareInstrumentedWorkflowRuntime(input: {
   }
 
   await fs.writeFile(path.join(tempRoot, "bizbox_workflow_runtime.py"), buildRuntimeHelperModule(), "utf8");
-  // Use a .pth file instead of sitecustomize.py so we don't shadow any existing sitecustomize
-  // in the agent project or Python distribution. site.py executes lines beginning with "import"
-  // in every .pth file it finds on sys.path.
-  await fs.writeFile(path.join(tempRoot, "bizbox_workflow_runtime.pth"), "import bizbox_workflow_runtime\n", "utf8");
+  // Use sitecustomize.py so the monkey-patch fires unconditionally before any user code runs.
+  // .pth files are only processed from site-packages directories — not from arbitrary PYTHONPATH
+  // entries — so the .pth approach silently does nothing in venv environments. sitecustomize.py,
+  // by contrast, is searched across all of sys.path (including PYTHONPATH dirs) by the Python
+  // interpreter itself, making it reliable in venvs. If the agent project already ships its own
+  // sitecustomize.py it will be shadowed, but that is an acceptable trade-off given that the
+  // alternative (input() hitting EOF in a non-interactive subprocess) is a hard crash.
+  await fs.writeFile(path.join(tempRoot, "sitecustomize.py"), "import bizbox_workflow_runtime\n", "utf8");
 
   const copiedAgentPath = (() => {
     const mapped = maybeMapIntoCopiedTree(input.analysis.rootDir, copiedRoot, input.analysis.executionTargetPath);

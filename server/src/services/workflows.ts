@@ -3,6 +3,7 @@ import { and, asc, desc, eq, inArray, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   workflowDeliverables,
+  workflowHandoffBridges,
   workflowHandoffs,
   workflowRunPhases,
   workflowRuns,
@@ -144,7 +145,10 @@ function toWorkflowPhase(row: typeof workflowRunPhases.$inferSelect): WorkflowPh
   };
 }
 
-function toWorkflowHandoff(row: typeof workflowHandoffs.$inferSelect): WorkflowHandoff {
+function toWorkflowHandoff(
+  row: typeof workflowHandoffs.$inferSelect,
+  bridgeStatus: "waiting_for_human" | "closed" | null = null,
+): WorkflowHandoff {
   return {
     id: row.id,
     companyId: row.companyId,
@@ -158,6 +162,7 @@ function toWorkflowHandoff(row: typeof workflowHandoffs.$inferSelect): WorkflowH
     decidedAt: row.decidedAt ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    bridgeStatus,
   };
 }
 
@@ -440,25 +445,29 @@ export function workflowService(db: Db) {
       // must not corrupt the run's terminal status. The agent invocation already
       // succeeded, so we log and continue rather than letting the outer catch
       // stamp the run as "failed".
-      try {
-        await createWorkflowSummaryDeliverable(db, {
-          companyId: workflow.companyId,
-          workflowId: workflow.id,
-          runId,
-          title: `${workflow.title} output`,
-          summary: result.summary ?? null,
-        });
-        await createWorkflowArtifactDeliverables(db, storage, {
-          companyId: workflow.companyId,
-          workflowId: workflow.id,
-          runId,
-          artifacts,
-        });
-      } catch (deliverableErr) {
-        console.error(
-          `[workflows] deliverable persistence failed for run ${runId} (run will still be marked succeeded):`,
-          deliverableErr,
-        );
+      // Deliverables are only created on success — a failed run must not produce
+      // any deliverable output.
+      if (!result.errorMessage) {
+        try {
+          await createWorkflowSummaryDeliverable(db, {
+            companyId: workflow.companyId,
+            workflowId: workflow.id,
+            runId,
+            title: `${workflow.title} output`,
+            summary: result.summary ?? null,
+          });
+          await createWorkflowArtifactDeliverables(db, storage, {
+            companyId: workflow.companyId,
+            workflowId: workflow.id,
+            runId,
+            artifacts,
+          });
+        } catch (deliverableErr) {
+          console.error(
+            `[workflows] deliverable persistence failed for run ${runId} (run will still be marked succeeded):`,
+            deliverableErr,
+          );
+        }
       }
 
       const phases = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, runId)).orderBy(asc(workflowRunPhases.ordinal));
@@ -676,6 +685,25 @@ export function workflowService(db: Db) {
       if (!workflowRow) return null;
       const phases = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, runId)).orderBy(asc(workflowRunPhases.ordinal));
       const handoffs = await db.select().from(workflowHandoffs).where(eq(workflowHandoffs.workflowRunId, runId)).orderBy(asc(workflowHandoffs.createdAt));
+      const handoffIds = handoffs.map((h) => h.id);
+      const bridges = handoffIds.length > 0
+        ? await db.select({
+            workflowHandoffId: workflowHandoffBridges.workflowHandoffId,
+            status: workflowHandoffBridges.status,
+          }).from(workflowHandoffBridges)
+            .where(and(
+              inArray(workflowHandoffBridges.workflowHandoffId, handoffIds),
+              inArray(workflowHandoffBridges.status, ["pending_delivery", "waiting_for_human"]),
+            ))
+            .orderBy(desc(workflowHandoffBridges.createdAt))
+        : [];
+      const bridgeStatusByHandoffId = new Map(
+        bridges
+          .filter((b): b is typeof b & { status: "waiting_for_human" | "closed" } =>
+            b.status === "waiting_for_human" || b.status === "closed",
+          )
+          .map((b) => [b.workflowHandoffId, b.status]),
+      );
       const deliverables = await db.select().from(workflowDeliverables).where(eq(workflowDeliverables.workflowRunId, runId)).orderBy(desc(workflowDeliverables.createdAt));
       return {
         ...toWorkflowRun(runRow),
@@ -686,7 +714,7 @@ export function workflowService(db: Db) {
           runnerType: workflowRow.runnerType as "google_adk",
         },
         phases: phases.map(toWorkflowPhase),
-        handoffs: handoffs.map(toWorkflowHandoff),
+        handoffs: handoffs.map((h) => toWorkflowHandoff(h, bridgeStatusByHandoffId.get(h.id) ?? null)),
         deliverables: deliverables.map(toWorkflowDeliverableSummary),
       };
     },
@@ -772,7 +800,20 @@ export function workflowService(db: Db) {
 
     getHandoff: async (handoffId: string) => {
       const row = await db.select().from(workflowHandoffs).where(eq(workflowHandoffs.id, handoffId)).then((rows) => rows[0] ?? null);
-      return row ? toWorkflowHandoff(row) : null;
+      if (!row) return null;
+      const bridge = await db.select({ status: workflowHandoffBridges.status })
+        .from(workflowHandoffBridges)
+        .where(and(
+          eq(workflowHandoffBridges.workflowHandoffId, handoffId),
+          inArray(workflowHandoffBridges.status, ["pending_delivery", "waiting_for_human"]),
+        ))
+        .orderBy(desc(workflowHandoffBridges.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const bridgeStatus = bridge?.status === "waiting_for_human" || bridge?.status === "pending_delivery"
+        ? "waiting_for_human" as const
+        : null;
+      return toWorkflowHandoff(row, bridgeStatus);
     },
 
     resolveHandoff: async (

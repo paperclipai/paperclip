@@ -98,6 +98,7 @@ import { clickupBridgeService } from "./clickup-bridge.js";
 import { documentService } from "./documents.js";
 import { workProductService } from "./work-products.js";
 import { awaitingHumanBridgeService } from "./awaiting-human-bridge.js";
+import { workflowHandoffBridgeService } from "./workflow-handoff-bridge.js";
 import { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
 import {
   hasAnyAwaitingHumanBridgeAdapter,
@@ -2118,6 +2119,7 @@ export function heartbeatService(db: Db) {
       });
     },
   });
+  const workflowHandoffBridge = workflowHandoffBridgeService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentsSvc = environmentService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
@@ -5425,13 +5427,14 @@ export function heartbeatService(db: Db) {
     }
 
     const pendingResult = await awaitingHumanBridge.reconcilePendingConfirmations();
+    const handoffBridgeResult = await workflowHandoffBridge.pollActiveBridges();
     return {
-      checked: legacyResult.checked + pendingResult.checked,
+      checked: legacyResult.checked + pendingResult.checked + handoffBridgeResult.checked,
       approved: legacyResult.approved + pendingResult.approved,
       rejected: legacyResult.rejected + pendingResult.rejected,
-      failed: legacyResult.failed + pendingResult.failed,
+      failed: legacyResult.failed + pendingResult.failed + handoffBridgeResult.failed,
       skipped: legacyResult.skipped + pendingResult.skipped,
-      noApproval: legacyResult.noSignal + pendingResult.noApproval,
+      noApproval: legacyResult.noSignal + pendingResult.noApproval + handoffBridgeResult.noSignal,
       replies: legacyResult.replies + pendingResult.replies,
       issueIds: [...legacyResult.approvedIssueIds, ...pendingResult.issueIds],
       interactionIds: [...legacyResult.approvedInteractionIds, ...pendingResult.interactionIds],

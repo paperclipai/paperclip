@@ -12,7 +12,7 @@ import {
 } from "@paperclipai/shared";
 import { z } from "zod";
 import { validate } from "../middleware/validate.js";
-import { logActivity, workflowService } from "../services/index.js";
+import { logActivity, workflowHandoffBridgeService, workflowService } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 function readRuntimeToken(req: { body?: unknown; query?: unknown }) {
@@ -193,7 +193,28 @@ export function workflowRoutes(db: Db) {
       return;
     }
     const { token: _token, ...input } = req.body as CreateWorkflowHandoff & { token: string };
-    res.status(201).json(await svc.createRuntimeHandoff(runId, input));
+    const handoff = await svc.createRuntimeHandoff(runId, input);
+
+    // Attempt to open a ClickUp bridge for the handoff.
+    // If ClickUp is not configured, return 503 immediately so the caller knows.
+    try {
+      const bridgeSvc = workflowHandoffBridgeService(db);
+      await bridgeSvc.openForHandoff({
+        id: handoff.id,
+        companyId: handoff.companyId,
+        workflowRunId: handoff.workflowRunId,
+        kind: handoff.kind,
+        promptMarkdown: handoff.promptMarkdown,
+      });
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      const status = (error as { status?: number }).status ?? 500;
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(status).json({ error: message, code });
+      return;
+    }
+
+    res.status(201).json(handoff);
   });
 
   const getRuntimeHandoff = async (req: Request, res: Response) => {

@@ -37,6 +37,7 @@ export { issueReferenceMentions } from "./issue_reference_mentions.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineTriggers, routineRuns } from "./routines.js";
 export { workflows, workflowRuns, workflowRunPhases, workflowHandoffs, workflowDeliverables } from "./workflows.js";
+export { workflowHandoffBridges } from "./workflow_handoff_bridges.js";
 export { issueWorkProducts } from "./issue_work_products.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";

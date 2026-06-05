@@ -598,7 +598,15 @@ function GraphHumanNode({
           <div className="text-sm font-semibold text-foreground">
             {handoff.kind === "approval" ? "Human approval" : "Human response"}
           </div>
-          <div className="text-xs text-muted-foreground">{handoff.status.replaceAll("_", " ")}</div>
+          <div className="flex items-center gap-2">
+            <div className="text-xs text-muted-foreground">{handoff.status.replaceAll("_", " ")}</div>
+            {handoff.bridgeStatus === "waiting_for_human" && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/15 px-2 py-0.5 text-xs font-medium text-sky-600 dark:text-sky-400">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />
+                Waiting on ClickUp reply
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
