@@ -352,6 +352,12 @@ function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: 
   return retryAt;
 }
 
+function tryParseIsoTimestamp(value: unknown): Date | null {
+  if (typeof value !== "string" || !value) return null;
+  const ts = Date.parse(value);
+  return Number.isFinite(ts) ? new Date(ts) : null;
+}
+
 export function extractClaudeRetryNotBefore(
   input: {
     parsed?: Record<string, unknown> | null;
@@ -361,6 +367,12 @@ export function extractClaudeRetryNotBefore(
   },
   now = new Date(),
 ): Date | null {
+  // Prefer an explicit ISO timestamp from the structured result over text parsing.
+  const isoCandidate =
+    tryParseIsoTimestamp(input.parsed?.resetsAt) ??
+    tryParseIsoTimestamp(input.parsed?.resets_at);
+  if (isoCandidate) return isoCandidate;
+
   const haystack = buildClaudeTransientHaystack(input);
   const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
   if (!match) return null;

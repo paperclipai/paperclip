@@ -161,4 +161,25 @@ describe("extractClaudeRetryNotBefore", () => {
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
   });
+
+  it("prefers an ISO resetsAt field from parsed JSON over text parsing", () => {
+    const resetsAt = "2026-04-23T04:00:00.000Z";
+    const extracted = extractClaudeRetryNotBefore(
+      {
+        parsed: { is_error: true, resetsAt },
+        errorMessage: "Rate limit reached · resets 4pm (America/Chicago)",
+      },
+      new Date("2026-04-22T15:00:00.000Z"),
+    );
+    expect(extracted?.toISOString()).toBe(resetsAt);
+  });
+
+  it("falls back to text parsing when parsed.resetsAt is absent", () => {
+    const now = new Date("2026-04-22T15:15:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { parsed: { is_error: true }, errorMessage: "You're out of extra usage · resets 4pm (America/Chicago)" },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2026-04-22T21:00:00.000Z");
+  });
 });

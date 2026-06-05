@@ -948,11 +948,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `[paperclip] Claude resume session "${sessionId}" ${reason}; retrying with a fresh session.\n`,
         );
         const retry = await runAttempt(null);
-        return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+        const retryResult = toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+        if (retryResult.errorCode === "claude_transient_upstream") {
+          await onLog(
+            "stdout",
+            `[paperclip] ${JSON.stringify({ type: "rate_limit", resetsAt: retryResult.retryNotBefore ?? null, agentId: agent.id })}\n`,
+          );
+        }
+        return retryResult;
       }
     }
 
-    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    const result = toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    if (result.errorCode === "claude_transient_upstream") {
+      await onLog(
+        "stdout",
+        `[paperclip] ${JSON.stringify({ type: "rate_limit", resetsAt: result.retryNotBefore ?? null, agentId: agent.id })}\n`,
+      );
+    }
+    return result;
   } finally {
     if (paperclipBridge) {
       await paperclipBridge.stop();

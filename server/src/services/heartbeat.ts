@@ -6173,6 +6173,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    opts?: { isTransient?: boolean },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -6187,7 +6188,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const nextStatus =
       runningCount > 0
         ? "running"
-        : outcome === "succeeded" || outcome === "cancelled"
+        : outcome === "succeeded" || outcome === "cancelled" || (outcome === "failed" && opts?.isTransient)
           ? "idle"
           : "error";
 
@@ -7956,7 +7957,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, {
+        isTransient: outcome === "failed" && Boolean(finalizedRun && readTransientRecoveryContractFromRun(finalizedRun)),
+      });
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -9711,6 +9714,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!agent) return { outcome: "missing_agent" as const };
       return scheduleBoundedRetryForRun(run, agent, opts);
     },
+
+    finalizeAgentStatus,
 
     reconcileStrandedAssignedIssues,
 

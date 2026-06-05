@@ -1337,4 +1337,57 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       retryNotBefore.toISOString(),
     );
   });
+
+  it("sets agent status to idle (not error) after a transient rate-limit failure", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date(2026, 3, 22, 10, 0, 0);
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "claude_transient_upstream",
+      errorFamily: "transient_upstream",
+      adapterType: "claude_local",
+    });
+
+    await heartbeat.finalizeAgentStatus(agentId, "failed", { isTransient: true });
+
+    const agent = await db
+      .select({ status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(agent?.status).toBe("idle");
+  });
+
+  it("sets agent status to error for non-transient failures", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date(2026, 3, 22, 10, 0, 0);
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "adapter_failed",
+      adapterType: "claude_local",
+    });
+
+    await heartbeat.finalizeAgentStatus(agentId, "failed");
+
+    const agent = await db
+      .select({ status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(agent?.status).toBe("error");
+  });
 });
