@@ -117,6 +117,7 @@ describe("PATCH /api/companies/:companyId/awaiting-human-settings", () => {
   it("sends connection-test message to ClickUp channel", async () => {
     mockCompanyService.getById.mockResolvedValueOnce({
       id: "company-1",
+      slug: "CITAAAA",
       name: "Bizbox",
     });
     mockAwaitingHumanSettingsService.resolveClickUpRuntimeConfig.mockRejectedValueOnce(new Error("awaiting-human-bridge-disabled"));
@@ -152,6 +153,7 @@ describe("PATCH /api/companies/:companyId/awaiting-human-settings", () => {
         title: "Bizbox ClickUp bridge connection test",
         summary: "Bizbox completed a bridge transport test for ClickUp.",
         body: "The configured bridge successfully delivered a test payload to the target ClickUp channel.",
+        link: "http://localhost:3100/CITAAAA/company/settings/awaiting-human",
         cta: "No action is required.",
       }),
       {
