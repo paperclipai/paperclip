@@ -7870,9 +7870,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
 
+      // A confirmed adapter success is ground truth: claude exited 0 with no error, so the
+      // process did NOT die — it completed and did its work. The orphan reaper can race a
+      // long run and mark it `process_lost`/`failed` mid-flight when the tracked pid exits
+      // early while claude keeps running detached; without this guard, that stale terminal
+      // status would override the real success and re-stamp it as the generic "adapter_failed".
+      // So let a clear adapter success win over a stale terminal mark — but always respect a
+      // deliberate `cancelled` (and an already-`succeeded` row stays succeeded).
+      const adapterClearlySucceeded =
+        !adapterResult.timedOut &&
+        (adapterResult.exitCode ?? 0) === 0 &&
+        !adapterResult.errorMessage &&
+        !adapterResult.errorCode;
       let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
       const latestRun = await getRun(run.id);
-      if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
+      if (
+        isHeartbeatRunTerminalStatus(latestRun?.status) &&
+        !(adapterClearlySucceeded && latestRun!.status !== "cancelled")
+      ) {
         outcome = latestRun.status;
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
