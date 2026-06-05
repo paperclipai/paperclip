@@ -1420,16 +1420,21 @@ type ResumeSessionRow = {
 };
 
 export function buildExplicitResumeSessionOverride(input: {
+  adapterType?: string | null;
   resumeFromRunId: string;
   resumeRunSessionIdBefore: string | null;
   resumeRunSessionIdAfter: string | null;
   taskSession: ResumeSessionRow | null;
   sessionCodec: AdapterSessionCodec;
 }) {
-  const desiredDisplayId = truncateDisplayId(
+  const rawDesiredDisplayId = truncateDisplayId(
     input.resumeRunSessionIdAfter ?? input.resumeRunSessionIdBefore,
   );
-  const taskSessionParams = normalizeSessionParams(
+  const desiredDisplayId = isCanonicalSessionIdForAdapter(input.adapterType, rawDesiredDisplayId)
+    ? rawDesiredDisplayId
+    : null;
+  const taskSessionParams = normalizeResumeParamsForAdapter(
+    input.adapterType,
     input.sessionCodec.deserialize(input.taskSession?.sessionParamsJson ?? null),
   );
   const taskSessionDisplayId = truncateDisplayId(
@@ -1439,6 +1444,7 @@ export function buildExplicitResumeSessionOverride(input: {
   );
   const canReuseTaskSessionParams =
     input.taskSession != null &&
+    taskSessionParams != null &&
     (
       input.taskSession.lastRunId === input.resumeFromRunId ||
       (!!desiredDisplayId && taskSessionDisplayId === desiredDisplayId)
@@ -2442,14 +2448,38 @@ function normalizeSessionParams(params: Record<string, unknown> | null | undefin
   return Object.keys(params).length > 0 ? params : null;
 }
 
-function resolveNextSessionState(input: {
+const HERMES_SESSION_ID_REGEX = /^\d{8}_\d{6}_[A-Za-z0-9_-]+$/;
+
+function requiresCanonicalSessionIds(adapterType: string | null | undefined) {
+  return adapterType === "hermes_local";
+}
+
+function isCanonicalSessionIdForAdapter(adapterType: string | null | undefined, sessionId: string | null | undefined) {
+  if (!sessionId) return false;
+  if (requiresCanonicalSessionIds(adapterType)) return HERMES_SESSION_ID_REGEX.test(sessionId);
+  return true;
+}
+
+function normalizeResumeParamsForAdapter(
+  adapterType: string | null | undefined,
+  params: Record<string, unknown> | null | undefined,
+) {
+  const normalized = normalizeSessionParams(params);
+  if (!normalized) return null;
+  if (!requiresCanonicalSessionIds(adapterType)) return normalized;
+  const sessionId = readNonEmptyString(normalized.sessionId);
+  return isCanonicalSessionIdForAdapter(adapterType, sessionId) ? normalized : null;
+}
+
+export function resolveNextSessionState(input: {
+  adapterType?: string | null;
   codec: AdapterSessionCodec;
   adapterResult: AdapterExecutionResult;
   previousParams: Record<string, unknown> | null;
   previousDisplayId: string | null;
   previousLegacySessionId: string | null;
 }) {
-  const { codec, adapterResult, previousParams, previousDisplayId, previousLegacySessionId } = input;
+  const { adapterType, codec, adapterResult, previousParams, previousDisplayId, previousLegacySessionId } = input;
 
   if (adapterResult.clearSession) {
     return {
@@ -2463,31 +2493,49 @@ function resolveNextSessionState(input: {
   const hasExplicitParams = adapterResult.sessionParams !== undefined;
   const hasExplicitSessionId = adapterResult.sessionId !== undefined;
   const explicitSessionId = readNonEmptyString(adapterResult.sessionId);
+  const validExplicitSessionId = isCanonicalSessionIdForAdapter(adapterType, explicitSessionId)
+    ? explicitSessionId
+    : null;
   const hasExplicitDisplay = adapterResult.sessionDisplayId !== undefined;
   const explicitDisplayId = readNonEmptyString(adapterResult.sessionDisplayId);
-  const shouldUsePrevious = !hasExplicitParams && !hasExplicitSessionId && !hasExplicitDisplay;
+  const validExplicitDisplayId = isCanonicalSessionIdForAdapter(adapterType, explicitDisplayId)
+    ? explicitDisplayId
+    : null;
+  const shouldUsePrevious =
+    (!hasExplicitParams && !hasExplicitSessionId && !hasExplicitDisplay) ||
+    (hasExplicitSessionId && !validExplicitSessionId && !hasExplicitParams) ||
+    (hasExplicitDisplay && !validExplicitDisplayId && !hasExplicitParams && !hasExplicitSessionId);
 
+  const explicitSerializedParams = hasExplicitParams
+    ? normalizeResumeParamsForAdapter(
+        adapterType,
+        codec.serialize(normalizeSessionParams(explicitParams) ?? null),
+      )
+    : null;
   const candidateParams =
     hasExplicitParams
-      ? explicitParams
+      ? (explicitSerializedParams ?? previousParams)
       : hasExplicitSessionId
-        ? (explicitSessionId ? { sessionId: explicitSessionId } : null)
+        ? (validExplicitSessionId ? { sessionId: validExplicitSessionId } : previousParams)
         : previousParams;
 
-  const serialized = normalizeSessionParams(codec.serialize(normalizeSessionParams(candidateParams) ?? null));
-  const deserialized = normalizeSessionParams(codec.deserialize(serialized));
+  const serialized = normalizeResumeParamsForAdapter(
+    adapterType,
+    codec.serialize(normalizeSessionParams(candidateParams) ?? null),
+  );
+  const deserialized = normalizeResumeParamsForAdapter(adapterType, codec.deserialize(serialized));
 
   const displayId = truncateDisplayId(
-    explicitDisplayId ??
+    validExplicitDisplayId ??
       (codec.getDisplayId ? codec.getDisplayId(deserialized) : null) ??
       readNonEmptyString(deserialized?.sessionId) ??
       (shouldUsePrevious ? previousDisplayId : null) ??
-      explicitSessionId ??
+      validExplicitSessionId ??
       (shouldUsePrevious ? previousLegacySessionId : null),
   );
 
   const legacySessionId =
-    explicitSessionId ??
+    validExplicitSessionId ??
     readNonEmptyString(deserialized?.sessionId) ??
     displayId ??
     (shouldUsePrevious ? previousLegacySessionId : null);
@@ -3647,6 +3695,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : null;
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const sessionOverride = buildExplicitResumeSessionOverride({
+      adapterType: agent.adapterType,
       resumeFromRunId,
       resumeRunSessionIdBefore: resumeRun.sessionIdBefore,
       resumeRunSessionIdAfter: resumeRun.sessionIdAfter,
@@ -7168,7 +7217,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resetTaskSession = shouldResetTaskSessionForWake(context);
     const sessionResetReason = describeSessionResetReason(context);
     const taskSessionForRun = resetTaskSession ? null : taskSession;
-    const explicitResumeSessionParams = normalizeSessionParams(
+    const explicitResumeSessionParams = normalizeResumeParamsForAdapter(
+      agent.adapterType,
       sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
     );
     const explicitResumeSessionDisplayId = truncateDisplayId(
@@ -7178,8 +7228,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
     const previousSessionParams =
       explicitResumeSessionParams ??
-      (explicitResumeSessionDisplayId ? { sessionId: explicitResumeSessionDisplayId } : null) ??
-      normalizeSessionParams(sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null));
+      (isCanonicalSessionIdForAdapter(agent.adapterType, explicitResumeSessionDisplayId)
+        ? { sessionId: explicitResumeSessionDisplayId }
+        : null) ??
+      normalizeResumeParamsForAdapter(
+        agent.adapterType,
+        sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
+      );
     const config = parseObject(agent.adapterConfig);
     const requestedExecutionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
@@ -8137,6 +8192,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
       const nextSessionState = resolveNextSessionState({
+        adapterType: agent.adapterType,
         codec: sessionCodec,
         adapterResult,
         previousParams: previousSessionParams,

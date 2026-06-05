@@ -13,6 +13,7 @@ import {
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  resolveNextSessionState,
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
@@ -447,6 +448,23 @@ describe("comment wake batching", () => {
   });
 });
 
+const hermesSessionCodec = {
+  deserialize(raw: unknown) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+    const record = raw as Record<string, unknown>;
+    const sessionId = typeof record.sessionId === "string" && record.sessionId.trim() ? record.sessionId.trim() : null;
+    return sessionId ? { sessionId } : null;
+  },
+  serialize(params: Record<string, unknown> | null) {
+    if (!params) return null;
+    const sessionId = typeof params.sessionId === "string" && params.sessionId.trim() ? params.sessionId.trim() : null;
+    return sessionId ? { sessionId } : null;
+  },
+  getDisplayId(params: Record<string, unknown> | null) {
+    return typeof params?.sessionId === "string" && params.sessionId.trim() ? params.sessionId.trim() : null;
+  },
+};
+
 describe("buildExplicitResumeSessionOverride", () => {
   it("reuses saved task session params when they belong to the selected failed run", () => {
     const result = buildExplicitResumeSessionOverride({
@@ -494,6 +512,78 @@ describe("buildExplicitResumeSessionOverride", () => {
       sessionParams: {
         sessionId: "session-after",
       },
+    });
+  });
+
+  it("does not synthesize Hermes resume params from a truncated display id", () => {
+    const result = buildExplicitResumeSessionOverride({
+      adapterType: "hermes_local",
+      resumeFromRunId: "run-1",
+      resumeRunSessionIdBefore: null,
+      resumeRunSessionIdAfter: "20260519_102328_",
+      taskSession: {
+        sessionParamsJson: {
+          sessionId: "20260519_102000_abcdef",
+        },
+        sessionDisplayId: "20260519_102000_",
+        lastRunId: "run-2",
+      },
+      sessionCodec: hermesSessionCodec,
+    });
+
+    expect(result).toBeNull();
+  });
+});
+
+describe("resolveNextSessionState", () => {
+  it("ignores invalid Hermes session ids from failed adapter output and preserves previous state", () => {
+    const result = resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: hermesSessionCodec,
+      adapterResult: {
+        exitCode: 1,
+        sessionId: "from",
+        sessionDisplayId: "from",
+        errorMessage: "Session not found: 20260519_102328_",
+      },
+      previousParams: {
+        sessionId: "20260519_102328_0151e8",
+      },
+      previousDisplayId: "20260519_102328_0151e8",
+      previousLegacySessionId: "20260519_102328_0151e8",
+    });
+
+    expect(result).toEqual({
+      params: {
+        sessionId: "20260519_102328_0151e8",
+      },
+      displayId: "20260519_102328_0151e8",
+      legacySessionId: "20260519_102328_0151e8",
+    });
+  });
+
+  it("derives Hermes display state from canonical params instead of adapter-truncated display ids", () => {
+    const result = resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: hermesSessionCodec,
+      adapterResult: {
+        exitCode: 0,
+        sessionParams: {
+          sessionId: "20260519_102328_0151e8",
+        },
+        sessionDisplayId: "20260519_102328_",
+      },
+      previousParams: null,
+      previousDisplayId: null,
+      previousLegacySessionId: null,
+    });
+
+    expect(result).toEqual({
+      params: {
+        sessionId: "20260519_102328_0151e8",
+      },
+      displayId: "20260519_102328_0151e8",
+      legacySessionId: "20260519_102328_0151e8",
     });
   });
 });
