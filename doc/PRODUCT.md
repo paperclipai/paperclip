@@ -15,6 +15,7 @@ A company has:
 - **Org structure** — who reports to whom
 - **Revenue & expenses** — tracked at the company level
 - **Task hierarchy** — all work traces back to the company goal
+- **Workflows** — company-scoped multi-step runs that coordinate agents and surface run history and deliverables
 
 ### Employees & Agents
 
