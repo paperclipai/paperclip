@@ -38,7 +38,14 @@ function hasOwn(record: Record<string, unknown>, key: string) {
 }
 
 function defaultTimeoutSecForAdapter(adapterType: string) {
-  return adapterType === "openclaw_gateway" ? 120 : 0;
+  // Per-adapter wall-clock defaults used when an agent's `adapterConfig` does
+  // not carry an explicit `timeoutSec`. `opencode_local` defaults to 900s so
+  // a freshly created agent inherits the same stall guardrail the HNT-2664
+  // per-agent rollout applied — see HNT-2743. The 0 default for all other
+  // adapters preserves the historical "0 means no adapter timeout" behavior.
+  if (adapterType === "openclaw_gateway") return 120;
+  if (adapterType === "opencode_local") return 900;
+  return 0;
 }
 
 export function normalizeMaxTurnStopReason(value: unknown): Extract<HeartbeatRunStopReason, "max_turns_exhausted"> | null {
