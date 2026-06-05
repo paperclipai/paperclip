@@ -1249,6 +1249,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       })
     );
     expect(recoveryIssue?.assigneeAgentId).toBe(agentId);
+    expect(recoveryIssue?.monitorNextCheckAt).toBeInstanceOf(Date);
     expect(recoveryIssue?.originKind).toBe("stranded_issue_recovery");
     expect(recoveryIssue?.originId).toBe(sourceIssueId);
     expect(recoveryIssue?.executionRunId).toBeNull();
@@ -3038,6 +3039,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const recoveryIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(recoveryIssue?.status).toBe("blocked");
     expect(recoveryIssue?.assigneeAgentId).toBe(agentId);
+    expect(recoveryIssue?.monitorNextCheckAt).toBeInstanceOf(Date);
     expect(recoveryIssue?.originKind).toBe("stranded_issue_recovery");
     expect(recoveryIssue?.originId).toBe(sourceIssueId);
 
