@@ -2107,6 +2107,45 @@ describe("paperclip-plugin-linear", () => {
       expect((result.data as any).error).toBeTruthy();
       expect(markDuplicate).not.toHaveBeenCalled();
     });
+
+    it("success=false: surfaces the not-created warning without throwing", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+
+      const { getIssueByIdentifier, markDuplicate, parseLinearIssueRef } = await import("../src/linear.js");
+
+      (parseLinearIssueRef as ReturnType<typeof vi.fn>).mockImplementation((ref: string) => {
+        if (ref === "BLO-1184") return { identifier: "BLO-1184" };
+        if (ref === "BLO-2167") return { identifier: "BLO-2167" };
+        return null;
+      });
+
+      (getIssueByIdentifier as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ id: "lin-dupe", identifier: "BLO-1184", title: "Dupe", state: { type: "cancelled" }, url: "https://linear.app/t/BLO-1184" })
+        .mockResolvedValueOnce({ id: "lin-keep", identifier: "BLO-2167", title: "Keeper", state: { type: "started" }, url: "https://linear.app/t/BLO-2167" });
+
+      // Linear returned success=false without throwing (and not already related).
+      (markDuplicate as ReturnType<typeof vi.fn>).mockResolvedValue({
+        success: false,
+        issueRelationId: null,
+        alreadyRelated: false,
+      });
+
+      const result = await harness.executeTool(TOOL_NAMES.markDuplicate, {
+        dupeRef: "BLO-1184",
+        keeperRef: "BLO-2167",
+      });
+
+      expect(result.content).toContain("success=false");
+      expect(result.content).toContain("BLO-1184");
+      expect(result.content).toContain("BLO-2167");
+      expect((result.data as any).success).toBe(false);
+      expect((result.data as any).alreadyRelated).toBe(false);
+      expect((result.data as any).dupe).toBe("BLO-1184");
+      expect((result.data as any).keeper).toBe("BLO-2167");
+    });
   });
 
   // -----------------------------------------------------------------------
