@@ -1,4 +1,5 @@
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import { DEFAULT_OPENCODE_LOCAL_TIMEOUT_SEC } from "../index.js";
 
 function parseCommaArgs(value: string): string[] {
   return value
@@ -57,9 +58,13 @@ export function buildOpenCodeLocalConfig(v: CreateConfigValues): Record<string, 
   if (v.model) ac.model = v.model;
   if (v.thinkingEffort) ac.variant = v.thinkingEffort;
   ac.dangerouslySkipPermissions = v.dangerouslySkipPermissions;
-  // OpenCode sessions can run until the CLI exits naturally; keep timeout disabled (0)
-  // and rely on graceSec for termination handling when a timeout is configured elsewhere.
-  ac.timeoutSec = 0;
+  // Default to a 15-minute wall-clock cap (900s) for runs that don't set
+  // their own timeoutSec. Set timeoutSec explicitly to 0 to opt out and
+  // run unbounded. The default mirrors the per-agent cap that HNT-2664
+  // rolled out, so a freshly created agent inherits the same stall
+  // guardrail without a per-agent override. graceSec is the SIGTERM grace
+  // window that applies once the timeout fires.
+  ac.timeoutSec = DEFAULT_OPENCODE_LOCAL_TIMEOUT_SEC;
   ac.graceSec = 20;
   const env = parseEnvBindings(v.envBindings);
   const legacy = parseEnvVars(v.envVars);

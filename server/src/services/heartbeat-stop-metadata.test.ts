@@ -12,7 +12,6 @@ describe("heartbeat stop metadata", () => {
       "claude_local",
       "cursor",
       "gemini_local",
-      "opencode_local",
       "pi_local",
       "process",
     ]) {
@@ -22,6 +21,45 @@ describe("heartbeat stop metadata", () => {
         timeoutSource: "default",
       });
     }
+  });
+
+  it("applies the 900s opencode_local platform default to new agents (HNT-2743)", () => {
+    // HNT-2743 changes the opencode_local adapter's effective timeout
+    // default from 0 (unbounded) to 900s, so a freshly created agent
+    // reports the same stall guardrail the HNT-2664 per-agent rollout
+    // applied without needing a per-agent override. `timeoutSource` must
+    // be "default" — not "config" — because no explicit adapterConfig
+    // override is present.
+    expect(resolveHeartbeatRunTimeoutPolicy("opencode_local", {})).toEqual({
+      effectiveTimeoutSec: 900,
+      timeoutConfigured: true,
+      timeoutSource: "default",
+    });
+  });
+
+  it("preserves an explicit opencode_local opt-out of zero", () => {
+    // Agents that explicitly set `adapterConfig.timeoutSec: 0` are opting
+    // out of the platform default. The metadata must report the explicit
+    // override as "config" so operators can distinguish a deliberate
+    // unbounded run from a freshly created agent that just hasn't been
+    // tuned yet.
+    expect(
+      resolveHeartbeatRunTimeoutPolicy("opencode_local", { timeoutSec: 0 }),
+    ).toEqual({
+      effectiveTimeoutSec: 0,
+      timeoutConfigured: false,
+      timeoutSource: "config",
+    });
+  });
+
+  it("honors an explicit opencode_local override above the platform default", () => {
+    expect(
+      resolveHeartbeatRunTimeoutPolicy("opencode_local", { timeoutSec: 1800 }),
+    ).toEqual({
+      effectiveTimeoutSec: 1800,
+      timeoutConfigured: true,
+      timeoutSource: "config",
+    });
   });
 
   it("records configured timeout policy and timeout stop reason", () => {

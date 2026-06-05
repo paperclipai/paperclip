@@ -46,6 +46,16 @@ export const SANDBOX_INSTALL_COMMAND =
 
 export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
 
+// Wall-clock run timeout applied to opencode_local agents that do not set
+// their own `adapterConfig.timeoutSec`. 0 means "no adapter timeout" (the
+// pre-existing behaviour) and is preserved as an explicit opt-out for
+// agents that need an unbounded wall-clock ceiling. The 900s default matches
+// the cap the per-agent rollout applied in HNT-2664 / HNT-2743 so a freshly
+// created agent inherits the same stall guardrail without a per-agent
+// override. See `execution-target.ts#resolveAdapterExecutionTargetTimeoutSec`
+// for how this is composed with sandbox/remote defaults.
+export const DEFAULT_OPENCODE_LOCAL_TIMEOUT_SEC = 900;
+
 export function isValidOpenCodeModelId(value: unknown): value is string {
   if (typeof value !== "string") return false;
   const trimmed = value.trim();
@@ -100,7 +110,7 @@ Core fields:
 - env (object, optional): KEY=VALUE environment variables
 
 Operational fields:
-- timeoutSec (number, optional): run timeout in seconds
+- timeoutSec (number, optional): run timeout in seconds. Defaults to 900s (15 min); set to 0 to explicitly opt out and run unbounded.
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:

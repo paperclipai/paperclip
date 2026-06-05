@@ -52,7 +52,7 @@ import {
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
-import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { DEFAULT_OPENCODE_LOCAL_TIMEOUT_SEC, SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -306,9 +306,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
+    // Default `adapterConfig.timeoutSec` to 900s for agents that don't
+    // override it. The historical behaviour was 0 (= no adapter timeout);
+    // 0 is still honoured as an explicit opt-out. See
+    // packages/adapters/opencode-local/src/index.ts for the rationale.
     const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
       executionTarget,
-      asNumber(config.timeoutSec, 0),
+      asNumber(config.timeoutSec, DEFAULT_OPENCODE_LOCAL_TIMEOUT_SEC),
     );
     const graceSec = asNumber(config.graceSec, 20);
     await ensureAdapterExecutionTargetRuntimeCommandInstalled({
