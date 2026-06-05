@@ -175,7 +175,7 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store,sharing=locked \
     --mount=type=secret,id=gh_token \
     GH="$(cat /run/secrets/gh_token)" \
  && git -c "url.https://x-access-token:${GH}@github.com/.insteadOf=https://github.com/" \
-      clone https://github.com/kkroo/ccrotate.git ccrotate \
+      clone https://github.com/Blockcast/ccrotate.git ccrotate \
   && cd ccrotate && git checkout "${CCROTATE_REF}" && rm -rf .git \
   && pnpm install --frozen-lockfile \
   && pnpm run build \
