@@ -102,6 +102,33 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   }, 20_000);
 
   afterEach(async () => {
+    runningProcesses.clear();
+    // Drain to full quiescence BEFORE resetting the adapter spy. A test's runs can
+    // spawn an async bounded-liveness continuation run (enqueueWakeup) that invokes the
+    // adapter after the originating run is already terminal. If we reset the spy first
+    // (as the old order did), that late call increments the fresh count and leaks a
+    // phantom invocation into the next test, corrupting its toHaveBeenCalledTimes(...)
+    // assertions. We therefore wait until no heartbeat run is queued/running AND no
+    // wakeup request is still queued (continuations create a queued run), and only then
+    // reset the spy so the next test starts from a clean, stable count.
+    let idlePolls = 0;
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const [runs, wakeups] = await Promise.all([
+        db.select({ status: heartbeatRuns.status }).from(heartbeatRuns),
+        db.select({ status: agentWakeupRequests.status }).from(agentWakeupRequests),
+      ]);
+      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
+      const hasQueuedWakeup = wakeups.some((wakeup) => wakeup.status === "queued");
+      if (!hasActiveRun && !hasQueuedWakeup) {
+        idlePolls += 1;
+        if (idlePolls >= 3) break;
+      } else {
+        idlePolls = 0;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    runningProcesses.clear();
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
       exitCode: 0,
@@ -112,22 +139,6 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       provider: "test",
       model: "test-model",
     }));
-    runningProcesses.clear();
-    let idlePolls = 0;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns);
-      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
-      if (!hasActiveRun) {
-        idlePolls += 1;
-        if (idlePolls >= 3) break;
-      } else {
-        idlePolls = 0;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
     await db.delete(environmentLeases);
     await db.delete(activityLog);
     await db.delete(companySkills);
