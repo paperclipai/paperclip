@@ -194,6 +194,17 @@ describe("adapter routes", () => {
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: false,
     });
+
+    const freeMeshAdapter = res.body.find((a: any) => a.type === "free-mesh");
+    expect(freeMeshAdapter).toBeDefined();
+    expect(freeMeshAdapter.source).toBe("builtin");
+    expect(freeMeshAdapter.capabilities).toMatchObject({
+      supportsInstructionsBundle: false,
+      supportsSkills: false,
+      supportsLocalAgentJwt: false,
+      requiresMaterializedRuntimeSkills: false,
+      supportsModelProfiles: true,
+    });
   });
 
   it("GET /api/adapters derives supportsSkills from listSkills/syncSkills presence", async () => {

@@ -142,6 +142,7 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+import { freeMeshAdapter } from "./free-mesh/index.js";
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -523,6 +524,7 @@ function registerBuiltInAdapters() {
     grokLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    freeMeshAdapter,
     processAdapter,
     httpAdapter,
   ]) {
