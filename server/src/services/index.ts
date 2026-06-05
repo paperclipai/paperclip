@@ -62,6 +62,7 @@ export type {
 } from "./authorization.js";
 export { boardAuthService } from "./board-auth.js";
 export { instanceSettingsService } from "./instance-settings.js";
+export { bootstrapExecutionPolicyFromEnv } from "./execution-policy-bootstrap.js";
 export { cloudUpstreamService, reconcileCloudUpstreamRunsOnStartup } from "./cloud-upstreams.js";
 export { companyPortabilityService } from "./company-portability.js";
 export { teamsCatalogService } from "./teams-catalog.js";

@@ -19,11 +19,29 @@ export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
   monthlyMonths: 1,
 };
 
+/**
+ * Instance-wide execution policy.
+ *
+ * - `"any"` (default / absent): unrestricted. Any environment driver (local,
+ *   ssh, sandbox) may run agents. Preserves single-tenant / local-trusted
+ *   behavior.
+ * - `"kubernetes"`: force ALL agent execution onto the Kubernetes
+ *   sandbox-provider environment and REFUSE local/in-process execution. Useful
+ *   for shared/multi-tenant instances so untrusted agents can never run in the
+ *   server process or on an unsandboxed local/ssh adapter.
+ */
+export type InstanceExecutionMode = "kubernetes" | "any";
+
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
   keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
+  /**
+   * Execution policy. Absent/`"any"` = unrestricted; `"kubernetes"` forces the
+   * Kubernetes sandbox provider and denies local/ssh execution.
+   */
+  executionMode?: InstanceExecutionMode;
 }
 
 export interface InstanceExperimentalSettings {

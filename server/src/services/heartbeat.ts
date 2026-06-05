@@ -133,6 +133,10 @@ import {
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import {
+  evaluateExecutionAllowlist,
+  isExecutionForcedToKubernetes,
+} from "./execution-allowlist.js";
+import {
   RECOVERY_ORIGIN_KINDS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
@@ -4374,7 +4378,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const warnings: string[] = [];
     if (sessionCwd && sessionCwdLooksUnsafe) {
       warnings.push(
-        `Saved session workspace "${sessionCwd}" points at a system temp root and was rejected as untrusted. Using fallback workspace "${cwd}" for this run.`,
+        `Saved session workspace "${sessionCwd}" points at a system temp root and was rejected as untrusted (likely persisted from a previous remote-target run). Using fallback workspace "${cwd}" for this run.`,
       );
     } else if (sessionCwd) {
       warnings.push(
@@ -7985,7 +7989,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       persistedExecutionWorkspaceMode === "agent_default"
         ? persistedExecutionWorkspaceMode
         : requestedExecutionWorkspaceMode;
-    const selectedEnvironmentId = environmentResolution.environmentId;
+    // Execution allowlist (security-critical): on a shared cloud instance the
+    // operator sets instance executionMode="kubernetes" to FORCE all agent
+    // execution onto the Kubernetes sandbox provider and REFUSE local/in-process
+    // or ssh execution. When forced, we override the resolved environment to the
+    // company's managed Kubernetes environment (no silent fallback to local).
+    // The default ("any") path is unchanged. This runs before the low-trust
+    // preflight below so the preflight resolves the driver of the forced env.
+    const executionPolicy = { executionMode: (await instanceSettings.getGeneral()).executionMode };
+    let selectedEnvironmentId = environmentResolution.environmentId;
+    if (isExecutionForcedToKubernetes(executionPolicy)) {
+      const kubernetesEnvironment = await environmentsSvc.findKubernetesEnvironment(agent.companyId);
+      if (!kubernetesEnvironment) {
+        throw new Error(
+          "Instance execution policy requires the Kubernetes sandbox provider " +
+            "(executionMode=kubernetes) but no managed Kubernetes environment is " +
+            "configured for this company. Configure one (PAPERCLIP_K8S_* env on the " +
+            "cloud instance) before running agents; refusing to fall back to local execution.",
+        );
+      }
+      if (kubernetesEnvironment.id !== selectedEnvironmentId) {
+        logger.info(
+          {
+            runId: run.id,
+            issueId,
+            agentId: agent.id,
+            resolvedEnvironmentId: selectedEnvironmentId,
+            forcedKubernetesEnvironmentId: kubernetesEnvironment.id,
+          },
+          "Forcing run onto the managed Kubernetes environment (executionMode=kubernetes)",
+        );
+      }
+      selectedEnvironmentId = kubernetesEnvironment.id;
+    }
     const {
       selectedEnvironmentDriver: lowTrustPreflightEnvironmentDriver,
       workspace: resolvedWorkspace,
@@ -8306,7 +8342,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(eq(heartbeatRuns.id, run.id));
     }
-    const persistedEnvironmentId = persistedExecutionWorkspace?.config?.environmentId ?? selectedEnvironmentId;
+    // When execution is forced to Kubernetes, `selectedEnvironmentId` is already
+    // pinned to the managed k8s environment above; ignore any persisted workspace
+    // environmentId (which could point at a stale local/ssh env) so a reused
+    // workspace can never downgrade us off the sandbox.
+    const persistedEnvironmentId = isExecutionForcedToKubernetes(executionPolicy)
+      ? selectedEnvironmentId
+      : persistedExecutionWorkspace?.config?.environmentId ?? selectedEnvironmentId;
     const acquiredEnvironment = await envOrchestrator.acquireForRun({
       companyId: agent.companyId,
       selectedEnvironmentId: persistedEnvironmentId,
@@ -8318,6 +8360,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       persistedExecutionWorkspace,
     });
     const selectedEnvironment = acquiredEnvironment.environment;
+    // Defense-in-depth: re-check the actually-acquired environment against the
+    // execution allowlist. Even if selection were bypassed, a denied (local/ssh/
+    // non-k8s) environment FAILS the run here rather than executing untrusted.
+    const allowlistDecision = evaluateExecutionAllowlist(executionPolicy, {
+      driver: selectedEnvironment.driver,
+      provider:
+        typeof selectedEnvironment.config?.provider === "string"
+          ? selectedEnvironment.config.provider
+          : null,
+    });
+    if (!allowlistDecision.allowed) {
+      logger.error(
+        {
+          runId: run.id,
+          issueId,
+          agentId: agent.id,
+          environmentId: selectedEnvironment.id,
+          deniedDriver: allowlistDecision.deniedDriver,
+          deniedProvider: allowlistDecision.deniedProvider,
+        },
+        "Execution allowlist denied the resolved environment; failing run",
+      );
+      throw new Error(allowlistDecision.reason);
+    }
     let activeEnvironmentLease = {
       environment: acquiredEnvironment.environment,
       lease: acquiredEnvironment.lease,

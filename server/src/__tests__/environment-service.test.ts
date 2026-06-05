@@ -222,6 +222,74 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(rows[0]?.status).toBe("active");
   });
 
+  it("ensures, refreshes, and finds a managed Kubernetes sandbox environment", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // No managed k8s env yet.
+    expect(await svc.findKubernetesEnvironment(companyId)).toBeNull();
+
+    const created = await svc.ensureKubernetesEnvironment(companyId, {
+      backend: "job",
+      inCluster: true,
+      runtimeClassName: "gvisor",
+      egressMode: "cilium",
+      egressAllowFqdns: ["api.anthropic.com"],
+    });
+
+    expect(created.driver).toBe("sandbox");
+    expect(created.config.provider).toBe("kubernetes");
+    expect(created.config.backend).toBe("job");
+    expect(created.config.runtimeClassName).toBe("gvisor");
+    expect(created.metadata?.managedKubernetesSandbox).toBe(true);
+
+    // Idempotent: second call refreshes config in place, no new row.
+    const refreshed = await svc.ensureKubernetesEnvironment(companyId, {
+      backend: "job",
+      inCluster: true,
+      egressMode: "cilium",
+      egressAllowFqdns: ["api.anthropic.com", "api.openai.com"],
+    });
+    expect(refreshed.id).toBe(created.id);
+    expect(refreshed.config.egressAllowFqdns).toEqual([
+      "api.anthropic.com",
+      "api.openai.com",
+    ]);
+
+    const found = await svc.findKubernetesEnvironment(companyId);
+    expect(found?.id).toBe(created.id);
+
+    const rows = await db
+      .select()
+      .from(environments)
+      .where(eq(environments.companyId, companyId));
+    expect(rows.filter((row) => row.driver === "sandbox")).toHaveLength(1);
+  });
+
+  it("does not treat a non-kubernetes sandbox environment as the managed k8s env", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await svc.create(companyId, {
+      name: "Fake Sandbox",
+      driver: "sandbox",
+      config: { provider: "fake", image: "busybox", reuseLease: false },
+    });
+
+    expect(await svc.findKubernetesEnvironment(companyId)).toBeNull();
+  });
+
   it("allows multiple SSH environments for the same company", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
