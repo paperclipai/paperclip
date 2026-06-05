@@ -970,7 +970,15 @@ export async function startServer(): Promise<StartedServer> {
     });
   
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const heartbeat = heartbeatService(db as any, {
+      pluginWorkerManager,
+      // Failure-B fence (BLO-9089): only the workers/all tier claims+executes
+      // runs. The api tier skips bundled-adapter load, so dispatching there
+      // mis-resolves to the process adapter and fails with "Process adapter
+      // missing command". Mirrors the !== "api" gating used for the other
+      // singletons (plugins, reconciler, Linear tunnel) below.
+      paperclipNodeRole: config.paperclipNodeRole,
+    });
     const routines = routineService(db as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,

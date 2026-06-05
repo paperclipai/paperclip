@@ -3397,6 +3397,18 @@ export interface HeartbeatServiceOptions {
    * background executeRun's finally-block transactions. Production unaffected.
    */
   skipQueuedRunDispatch?: boolean;
+  /**
+   * Node role for this process (mirrors config.paperclipNodeRole; wired from
+   * index.ts). On the "api" tier, run dispatch (claim + `executeRun`) is fenced
+   * off entirely: the api tier intentionally skips bundled-adapter load — the
+   * workers tier owns the adapter-plugin lifecycle (see server/src/index.ts) —
+   * so executing a run there resolves every external adapter to the `process`
+   * fallback and dies with "Process adapter missing command", launching no
+   * agent pod (BLO-9089 incident). Only the "worker"/"all" tiers dispatch.
+   * Defaults to "all" (single-pod, pre-split behavior) when unset, so existing
+   * callers and tests are unaffected.
+   */
+  paperclipNodeRole?: "api" | "worker" | "all";
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
@@ -8874,6 +8886,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function startNextQueuedRunForAgent(agentId: string) {
     if (options.skipQueuedRunDispatch) return [];
+    // Failure-B fence (BLO-9089): the api tier never claims/executes runs — it
+    // does not own the adapter lifecycle, so dispatching here resolves to the
+    // process-fallback adapter and dies with "Process adapter missing command".
+    // The workers tier (paperclipNodeRole !== "api") owns run execution; leave
+    // the run queued for it. Worker stays a singleton until an atomic per-run
+    // claim (FOR UPDATE SKIP LOCKED / leader election) is added — do NOT scale
+    // workers >1 before then, or N workers will double-dispatch.
+    if (options.paperclipNodeRole === "api") {
+      logger.debug(
+        { agentId, role: options.paperclipNodeRole },
+        "startNextQueuedRunForAgent: dispatch fenced off on the API tier (workers tier owns run execution)",
+      );
+      return [];
+    }
     return withAgentStartLock(agentId, async () => {
       let agent = await getAgent(agentId);
       if (!agent) return [];
