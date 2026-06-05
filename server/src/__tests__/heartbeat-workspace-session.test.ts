@@ -1,8 +1,14 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  assertGitBackedProjectWorkspace,
   applyPersistedExecutionWorkspaceConfig,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
@@ -16,8 +22,11 @@ import {
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
+  WorkspaceRoutingError,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
+
+const execFile = promisify(execFileCallback);
 
 function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}): ResolvedWorkspaceForRun {
   return {
@@ -58,6 +67,79 @@ function buildAgent(adapterType: string, runtimeConfig: Record<string, unknown> 
     updatedAt: new Date(),
   } as unknown as typeof agents.$inferSelect;
 }
+
+describe("assertGitBackedProjectWorkspace", () => {
+  it("accepts a git-backed project workspace when cwd is a git checkout", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-workspace-"));
+    await execFile("git", ["init"], { cwd: dir });
+
+    await expect(assertGitBackedProjectWorkspace({
+      workspace: {
+        id: "workspace-1",
+        name: "Paperclip",
+        sourceType: "git_repo",
+        repoUrl: "https://github.com/paperclipai/paperclip",
+      },
+      cwd: dir,
+    })).resolves.toBeUndefined();
+  });
+
+  it("rejects a git-backed project workspace when cwd is missing", async () => {
+    await expect(assertGitBackedProjectWorkspace({
+      workspace: {
+        id: "workspace-1",
+        sourceType: "git_repo",
+        repoUrl: "https://github.com/paperclipai/paperclip",
+      },
+      cwd: path.join(os.tmpdir(), "paperclip-missing-workspace"),
+    })).rejects.toThrow(/checkout path is not available/);
+    await expect(assertGitBackedProjectWorkspace({
+      workspace: {
+        id: "workspace-1",
+        sourceType: "git_repo",
+        repoUrl: "https://github.com/paperclipai/paperclip",
+      },
+      cwd: path.join(os.tmpdir(), "paperclip-missing-workspace"),
+    })).rejects.toMatchObject({
+      code: "workspace_routing_failed",
+      workspaceId: "workspace-1",
+    });
+  });
+
+  it("rejects a repoUrl-backed project workspace when cwd is not a git checkout", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-non-git-workspace-"));
+
+    await expect(assertGitBackedProjectWorkspace({
+      workspace: {
+        id: "workspace-1",
+        sourceType: "local_path",
+        repoUrl: "https://github.com/paperclipai/paperclip",
+      },
+      cwd: dir,
+    })).rejects.toThrow(/not a git repository/);
+    await expect(assertGitBackedProjectWorkspace({
+      workspace: {
+        id: "workspace-1",
+        sourceType: "local_path",
+        repoUrl: "https://github.com/paperclipai/paperclip",
+      },
+      cwd: dir,
+    })).rejects.toBeInstanceOf(WorkspaceRoutingError);
+  });
+
+  it("allows non-git local_path project workspaces", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-local-workspace-"));
+
+    await expect(assertGitBackedProjectWorkspace({
+      workspace: {
+        id: "workspace-1",
+        sourceType: "local_path",
+        repoUrl: null,
+      },
+      cwd: dir,
+    })).resolves.toBeUndefined();
+  });
+});
 
 describe("resolveRuntimeSessionParamsForWorkspace", () => {
   it("migrates fallback workspace sessions to project workspace when project cwd becomes available", () => {

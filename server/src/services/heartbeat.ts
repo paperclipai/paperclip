@@ -151,6 +151,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
+import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
@@ -229,6 +230,7 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+const WORKSPACE_ROUTING_ERROR_CODE = "workspace_routing_failed";
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -1111,6 +1113,85 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+export class WorkspaceRoutingError extends Error {
+  readonly code = WORKSPACE_ROUTING_ERROR_CODE;
+  readonly workspaceId: string;
+  readonly cwd: string | null;
+
+  constructor(message: string, input: { workspaceId: string; cwd?: string | null; cause?: unknown }) {
+    super(message, input.cause === undefined ? undefined : { cause: input.cause });
+    this.name = "WorkspaceRoutingError";
+    this.workspaceId = input.workspaceId;
+    this.cwd = readNonEmptyString(input.cwd);
+  }
+}
+
+export function isGitBackedProjectWorkspace(input: {
+  sourceType?: string | null;
+  repoUrl?: string | null;
+}): boolean {
+  return input.sourceType === "git_repo" || Boolean(readNonEmptyString(input.repoUrl));
+}
+
+function describeProjectWorkspaceForError(input: {
+  id: string;
+  name?: string | null;
+  cwd?: string | null;
+}): string {
+  const name = readNonEmptyString(input.name);
+  const cwd = readNonEmptyString(input.cwd);
+  const parts = [`"${input.id}"`];
+  if (name) parts.push(`(${name})`);
+  if (cwd) parts.push(`at "${cwd}"`);
+  return parts.join(" ");
+}
+
+export async function assertGitBackedProjectWorkspace(input: {
+  workspace: {
+    id: string;
+    name?: string | null;
+    sourceType?: string | null;
+    repoUrl?: string | null;
+  };
+  cwd: string | null;
+}): Promise<void> {
+  if (!isGitBackedProjectWorkspace(input.workspace)) return;
+
+  const cwd = readNonEmptyString(input.cwd);
+  const workspaceLabel = describeProjectWorkspaceForError({
+    id: input.workspace.id,
+    name: input.workspace.name,
+    cwd,
+  });
+
+  if (!cwd) {
+    throw new WorkspaceRoutingError(
+      `Project workspace ${workspaceLabel} is git-backed but has no local checkout path. Restore or configure the project workspace checkout before running this issue.`,
+      { workspaceId: input.workspace.id, cwd },
+    );
+  }
+
+  const stats = await fs.stat(cwd).catch(() => null);
+  if (!stats?.isDirectory()) {
+    throw new WorkspaceRoutingError(
+      `Project workspace ${workspaceLabel} is git-backed but its checkout path is not available. Restore or clone the project workspace before running this issue.`,
+      { workspaceId: input.workspace.id, cwd },
+    );
+  }
+
+  const gitCheck = await execFile("git", ["rev-parse", "--is-inside-work-tree"], {
+    cwd,
+    env: sanitizeRuntimeServiceBaseEnv(process.env),
+    timeout: 10_000,
+  }).catch(() => null);
+  if (gitCheck?.stdout.trim() !== "true") {
+    throw new WorkspaceRoutingError(
+      `Project workspace ${workspaceLabel} is git-backed but its checkout path is not a git repository. Restore or clone the project workspace before running this issue.`,
+      { workspaceId: input.workspace.id, cwd },
+    );
+  }
 }
 
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
@@ -2527,6 +2608,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     environmentRuntime,
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
+  const recoveryActionsSvc = issueRecoveryActionService(db);
   const activeRunExecutions = new Set<string>();
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
@@ -3739,6 +3821,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             projectCwd = managedWorkspace.cwd;
             managedWorkspaceWarning = managedWorkspace.warning;
           } catch (error) {
+            if (isGitBackedProjectWorkspace(workspace)) {
+              throw new WorkspaceRoutingError(
+                `Project workspace ${describeProjectWorkspaceForError({
+                  id: workspace.id,
+                  name: workspace.name,
+                  cwd: projectCwd,
+                })} is git-backed but Paperclip could not prepare its checkout. Restore or clone the project workspace before running this issue. ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+                { workspaceId: workspace.id, cwd: projectCwd, cause: error },
+              );
+            }
             if (preferredWorkspace?.id === workspace.id) {
               preferredWorkspaceWarning = error instanceof Error ? error.message : String(error);
             }
@@ -3746,6 +3840,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
         hasConfiguredProjectCwd = true;
+        await assertGitBackedProjectWorkspace({
+          workspace,
+          cwd: projectCwd,
+        });
         const projectCwdExists = await fs
           .stat(projectCwd)
           .then((stats) => stats.isDirectory())
@@ -8491,15 +8589,116 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
           const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          const workspaceRoutingError = outerErr instanceof WorkspaceRoutingError ? outerErr : null;
+          const errorCode = workspaceRoutingError?.code ?? "adapter_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
+          let workspaceRoutingHandled = false;
+          if (workspaceRoutingError) {
+            const runContext = parseObject(run.contextSnapshot);
+            const contextIssueId = readNonEmptyString(runContext.issueId) ?? readNonEmptyString(runContext.taskId);
+            const sourceIssue = contextIssueId
+              ? await db
+                  .select()
+                  .from(issues)
+                  .where(and(eq(issues.id, contextIssueId), eq(issues.companyId, run.companyId)))
+                  .then((rows) => rows[0] ?? null)
+                  .catch(() => null)
+              : null;
+            if (sourceIssue) {
+              const recoveryAction = await recoveryActionsSvc.upsertSourceScoped({
+                companyId: sourceIssue.companyId,
+                sourceIssueId: sourceIssue.id,
+                kind: "stranded_assigned_issue",
+                ownerType: sourceIssue.assigneeAgentId ? "agent" : "board",
+                ownerAgentId: sourceIssue.assigneeAgentId,
+                previousOwnerAgentId: sourceIssue.assigneeAgentId,
+                returnOwnerAgentId: sourceIssue.assigneeAgentId,
+                cause: WORKSPACE_ROUTING_ERROR_CODE,
+                fingerprint: [
+                  "workspace_routing",
+                  sourceIssue.companyId,
+                  sourceIssue.id,
+                  workspaceRoutingError.workspaceId,
+                ].join(":"),
+                evidence: {
+                  sourceIssueId: sourceIssue.id,
+                  sourceIdentifier: sourceIssue.identifier,
+                  latestRunId: run.id,
+                  latestRunStatus: "failed",
+                  latestRunErrorCode: errorCode,
+                  workspaceId: workspaceRoutingError.workspaceId,
+                  cwd: workspaceRoutingError.cwd,
+                },
+                nextAction: "Restore or clone the selected git-backed project workspace checkout, then return the source issue to todo.",
+                wakePolicy: {
+                  type: "manual_unblock",
+                  reason: WORKSPACE_ROUTING_ERROR_CODE,
+                },
+                monitorPolicy: null,
+                maxAttempts: null,
+                lastAttemptAt: new Date(),
+              });
+              const updated = await db
+                .update(issues)
+                .set({
+                  status: "blocked",
+                  assigneeAgentId: sourceIssue.assigneeAgentId,
+                  checkoutRunId: null,
+                  executionRunId: null,
+                  executionAgentNameKey: null,
+                  executionLockedAt: null,
+                  updatedAt: new Date(),
+                })
+                .where(and(eq(issues.id, sourceIssue.id), eq(issues.companyId, sourceIssue.companyId)))
+                .returning()
+                .then((rows) => rows[0] ?? null);
+              workspaceRoutingHandled = Boolean(updated);
+              if (updated) {
+                await logActivity(db, {
+                  companyId: sourceIssue.companyId,
+                  actorType: "system",
+                  actorId: "system",
+                  agentId: run.agentId,
+                  runId,
+                  action: "issue.updated",
+                  entityType: "issue",
+                  entityId: sourceIssue.id,
+                  details: {
+                    identifier: sourceIssue.identifier,
+                    status: "blocked",
+                    previousStatus: sourceIssue.status,
+                    source: "workspace.routing_failure",
+                    recoveryActionId: recoveryAction.id,
+                    workspaceId: workspaceRoutingError.workspaceId,
+                  },
+                });
+              }
+              if (updated && recoveryAction.attemptCount === 1) {
+                await issuesSvc.addComment(sourceIssue.id, [
+                  "Paperclip stopped this run before adapter execution because the selected project workspace is git-backed but not usable.",
+                  "",
+                  `- Failure: ${message}`,
+                  `- Recovery action: \`${recoveryAction.id}\``,
+                  `- Workspace id: \`${workspaceRoutingError.workspaceId}\``,
+                  `- Workspace cwd: \`${workspaceRoutingError.cwd ?? "none"}\``,
+                  "- Next action: restore or clone the project workspace checkout, then return this issue to `todo`.",
+                ].join("\n"), {}, { authorType: "system" }).catch((commentErr) => {
+                  logger.warn(
+                    { err: commentErr, runId, issueId: sourceIssue.id, recoveryActionId: recoveryAction.id },
+                    "failed to write workspace routing recovery comment",
+                  );
+                });
+              }
+            }
+          }
           await setRunStatus(runId, "failed", {
             error: message,
-            errorCode: "adapter_failed",
+            errorCode,
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
-                errorCode: "adapter_failed",
+                errorCode,
                 errorMessage: message,
               }),
             } : {}),
@@ -8522,9 +8721,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             const failedAgent = setupFailureAgent ?? await getAgent(run.agentId).catch(() => null);
             if (failedAgent) {
               await refreshContinuationSummaryForRun(livenessRun, failedAgent).catch(() => undefined);
-              await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
             }
-            await releaseIssueExecutionAndPromote(livenessRun).catch(() => undefined);
+            if (workspaceRoutingError) {
+              if (!workspaceRoutingHandled) {
+                await releaseIssueExecutionAndPromote(livenessRun).catch(() => undefined);
+              }
+            } else {
+              if (failedAgent) {
+                await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
+              }
+              await releaseIssueExecutionAndPromote(livenessRun).catch(() => undefined);
+            }
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
