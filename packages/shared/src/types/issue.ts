@@ -661,6 +661,7 @@ export interface IssueThreadInteractionActorFields {
   createdByUserId?: string | null;
   resolvedByAgentId?: string | null;
   resolvedByUserId?: string | null;
+  withdrawnByAgentId?: string | null;
 }
 
 export interface SuggestedTaskDraft {
@@ -799,6 +800,7 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   createdAt: Date | string;
   updatedAt: Date | string;
   resolvedAt?: Date | string | null;
+  withdrawnAt?: Date | string | null;
 }
 
 export interface SuggestTasksInteraction extends IssueThreadInteractionBase {

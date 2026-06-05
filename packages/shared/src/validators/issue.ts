@@ -801,6 +801,9 @@ export const respondIssueThreadInteractionSchema = z.object({
 });
 export type RespondIssueThreadInteraction = z.infer<typeof respondIssueThreadInteractionSchema>;
 
+export const withdrawIssueThreadInteractionSchema = z.object({});
+export type WithdrawIssueThreadInteraction = z.infer<typeof withdrawIssueThreadInteractionSchema>;
+
 export const linkIssueApprovalSchema = z.object({
   approvalId: z.string().uuid(),
 });

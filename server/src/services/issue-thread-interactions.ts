@@ -22,6 +22,7 @@ import type {
   RespondIssueThreadInteraction,
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
+  WithdrawIssueThreadInteraction,
 } from "@paperclipai/shared";
 import {
   acceptIssueThreadInteractionSchema,
@@ -30,6 +31,7 @@ import {
   cancelIssueThreadInteractionSchema,
   createIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
+  withdrawIssueThreadInteractionSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
   suggestTasksPayloadSchema,
@@ -1352,6 +1354,59 @@ export function issueThreadInteractionService(db: Db) {
 
       if (!updated) {
         throw conflict("Interaction has already been resolved");
+      }
+
+      await touchIssue(db, issue.id);
+      return hydrateInteraction(updated);
+    },
+
+    withdrawInteraction: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      _input: WithdrawIssueThreadInteraction,
+      actor: InteractionActor & { isBoardActor?: boolean },
+    ) => {
+      withdrawIssueThreadInteractionSchema.parse(_input);
+      const current = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!current) throw notFound("Interaction not found");
+      if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
+        throw notFound("Interaction not found");
+      }
+
+      const actorIsCreator = actor.agentId != null && current.createdByAgentId === actor.agentId;
+      if (!actorIsCreator && !actor.isBoardActor) {
+        throw Object.assign(new Error("interaction_withdraw_not_permitted"), { statusCode: 403, code: "interaction_withdraw_not_permitted" });
+      }
+
+      if (current.status === "withdrawn") {
+        return hydrateInteraction(current);
+      }
+      if (current.status !== "pending") {
+        throw conflict("Interaction is not pending");
+      }
+
+      const now = new Date();
+      const [updated] = await db
+        .update(issueThreadInteractions)
+        .set({
+          status: "withdrawn",
+          withdrawnByAgentId: actor.agentId ?? null,
+          withdrawnAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
+
+      if (!updated) {
+        throw conflict("Interaction is not pending");
       }
 
       await touchIssue(db, issue.id);

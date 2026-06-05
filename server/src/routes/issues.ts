@@ -41,6 +41,7 @@ import {
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
+  withdrawIssueThreadInteractionSchema,
   updateIssueWorkProductSchema,
   updateDocumentAnnotationThreadSchema,
   upsertIssueDocumentSchema,
@@ -5589,6 +5590,55 @@ export function issueRoutes(
         interaction,
         actor,
         source: "issue.interaction.cancel",
+      });
+
+      res.json(interaction);
+    },
+  );
+
+  router.post(
+    "/issues/:id/interactions/:interactionId/withdraw",
+    validate(withdrawIssueThreadInteractionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+
+      const actor = getActorInfo(req);
+      let interaction;
+      try {
+        interaction = await issueThreadInteractionService(db).withdrawInteraction(issue, interactionId, req.body, {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          isBoardActor: actor.actorType === "user",
+        });
+      } catch (err: any) {
+        if (err?.code === "interaction_withdraw_not_permitted") {
+          res.status(403).json({ error: "interaction_withdraw_not_permitted" });
+          return;
+        }
+        throw err;
+      }
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.thread_interaction_withdrawn",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+        },
       });
 
       res.json(interaction);

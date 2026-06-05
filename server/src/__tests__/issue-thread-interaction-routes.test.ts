@@ -19,6 +19,7 @@ const mockInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(),
   answerQuestions: vi.fn(),
   cancelQuestions: vi.fn(),
+  withdrawInteraction: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -812,5 +813,175 @@ describe.sequential("issue thread interaction routes", () => {
         userId: null,
       },
     );
+  });
+
+  it("lets the creator agent withdraw their own pending interaction", async () => {
+    const withdrawnInteraction = {
+      id: "interaction-1",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "suggest_tasks",
+      status: "withdrawn",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: "run-1",
+      payload: { version: 1, tasks: [] },
+      result: null,
+      createdByAgentId: CREATED_AGENT_ID,
+      withdrawnByAgentId: CREATED_AGENT_ID,
+      withdrawnAt: "2026-04-20T12:10:00.000Z",
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:10:00.000Z",
+      resolvedAt: null,
+    };
+    mockInteractionService.withdrawInteraction.mockResolvedValueOnce(withdrawnInteraction);
+
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyIds: ["company-1"],
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-1/withdraw")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("withdrawn");
+    expect(mockInteractionService.withdrawInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-1",
+      {},
+      expect.objectContaining({ agentId: CREATED_AGENT_ID }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_withdrawn",
+        details: expect.objectContaining({
+          interactionId: "interaction-1",
+          interactionStatus: "withdrawn",
+        }),
+      }),
+    );
+  });
+
+  it("returns 403 when a non-creator agent tries to withdraw", async () => {
+    mockInteractionService.withdrawInteraction.mockRejectedValueOnce(
+      Object.assign(new Error("interaction_withdraw_not_permitted"), {
+        statusCode: 403,
+        code: "interaction_withdraw_not_permitted",
+      }),
+    );
+
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyIds: ["company-1"],
+      runId: "run-2",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-1/withdraw")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("interaction_withdraw_not_permitted");
+  });
+
+  it("returns 409 when the interaction is already resolved", async () => {
+    mockInteractionService.withdrawInteraction.mockRejectedValueOnce(
+      Object.assign(new Error("Interaction is not pending"), { status: 409 }),
+    );
+
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyIds: ["company-1"],
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-1/withdraw")
+      .send({});
+
+    expect(res.status).toBe(409);
+  });
+
+  it("is idempotent: re-withdrawing an already-withdrawn interaction returns 200", async () => {
+    const withdrawnInteraction = {
+      id: "interaction-1",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "suggest_tasks",
+      status: "withdrawn",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: "run-1",
+      payload: { version: 1, tasks: [] },
+      result: null,
+      createdByAgentId: CREATED_AGENT_ID,
+      withdrawnByAgentId: CREATED_AGENT_ID,
+      withdrawnAt: "2026-04-20T12:10:00.000Z",
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:10:00.000Z",
+      resolvedAt: null,
+    };
+    mockInteractionService.withdrawInteraction.mockResolvedValueOnce(withdrawnInteraction);
+
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyIds: ["company-1"],
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-1/withdraw")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("withdrawn");
+  });
+
+  it("board principals can also withdraw any pending interaction", async () => {
+    const withdrawnInteraction = {
+      id: "interaction-1",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "suggest_tasks",
+      status: "withdrawn",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: "run-1",
+      payload: { version: 1, tasks: [] },
+      result: null,
+      createdByAgentId: CREATED_AGENT_ID,
+      withdrawnByAgentId: null,
+      withdrawnAt: "2026-04-20T12:10:00.000Z",
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:10:00.000Z",
+      resolvedAt: null,
+    };
+    mockInteractionService.withdrawInteraction.mockResolvedValueOnce(withdrawnInteraction);
+
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-1/withdraw")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("withdrawn");
   });
 });

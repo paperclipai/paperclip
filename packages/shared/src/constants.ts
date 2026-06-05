@@ -190,6 +190,7 @@ export const ISSUE_THREAD_INTERACTION_STATUSES = [
   "cancelled",
   "expired",
   "failed",
+  "withdrawn",
 ] as const;
 export type IssueThreadInteractionStatus = (typeof ISSUE_THREAD_INTERACTION_STATUSES)[number];
 
