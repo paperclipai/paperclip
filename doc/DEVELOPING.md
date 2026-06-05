@@ -502,6 +502,73 @@ CI runs `pnpm --filter @paperclipai/skills-catalog validate` and the package's
 vitest suite, so always regenerate the manifest in the same commit as the
 catalog change.
 
+## Ollama Local Adapter
+
+Paperclip ships an `ollama_local` adapter that turns a heartbeat into a single
+HTTP roundtrip against a locally-installed [Ollama](https://ollama.com) server.
+It is chat-mode only (no tool calls) and posts the model response back to the
+triggering issue as a comment on the agent's behalf using the heartbeat's run
+JWT. Use it for cheap, fully on-prem pilots, or for agents that only need to
+nudge work along via the Paperclip API + bash/filesystem.
+
+### One-time setup
+
+```sh
+# 1) Install Ollama (Mac: brew install ollama, Linux: curl install script).
+ollama serve &                          # default endpoint: http://127.0.0.1:11434
+ollama pull qwen2.5:14b-instruct        # or another model you want to use
+```
+
+### Example agent adapter config
+
+```json
+{
+  "type": "ollama_local",
+  "endpoint": "http://127.0.0.1:11434",
+  "model": "qwen2.5:14b-instruct",
+  "options": { "temperature": 0.2, "num_ctx": 8192 },
+  "postCommentToIssue": true
+}
+```
+
+Fields:
+
+- `endpoint` (string, optional) — Ollama base URL. Defaults to
+  `http://127.0.0.1:11434`.
+- `model` (string, required) — Ollama model tag. Must already be pulled.
+- `options` (object, optional) — passed verbatim to Ollama as the
+  `options` block of the `/api/chat` request (temperature, num_ctx, top_p,
+  etc.).
+- `promptTemplate` (string, optional) — prepended to the rendered wake prompt.
+- `timeoutSec` (number, optional) — per-run timeout. Defaults to 300.
+- `postCommentToIssue` (boolean, optional) — when true (default) and the wake
+  carries an `issueId`, the adapter posts the model response to that issue as
+  a comment. Set to `false` to keep responses in the heartbeat run summary
+  only.
+
+Telemetry mapping:
+
+- `usage.inputTokens`  ← `prompt_eval_count`
+- `usage.outputTokens` ← `eval_count`
+- `costUsd` is always `0`.
+
+### Smoke test
+
+After a fresh build (`pnpm install && pnpm build`) and with Ollama running:
+
+```sh
+# 1) Start Paperclip:  npx paperclipai run
+# 2) Hire/create an agent with adapterType=ollama_local and the config above.
+# 3) Assign an issue to that agent so it has work to do, then trigger a wake:
+npx paperclipai heartbeat run --agent-id <agent-id>
+# 4) Verify in the issue thread that a comment from the agent appeared, and
+#    that the agent's run history shows tokensIn > 0 and tokensOut > 0.
+```
+
+Rollback is state-free: PATCH the agent's `adapterType` back to whatever it
+was before (for example `opencode_local`). The `ollama_local` adapter does not
+write migrations and does not store adapter-specific state.
+
 ## Quick Health Checks
 
 In another terminal:
