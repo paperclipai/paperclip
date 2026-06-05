@@ -229,6 +229,8 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+const PROCESS_LOST_RETRY_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+const PROCESS_LOST_RETRY_HOURLY_CAP = 3;
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -5035,6 +5037,48 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   ) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+
+    // Guard: if this issue has hit PROCESS_LOST_RETRY_HOURLY_CAP failures in the
+    // rolling window, block it instead of queueing another retry.
+    if (issueId) {
+      const windowStart = new Date(now.getTime() - PROCESS_LOST_RETRY_RATE_LIMIT_WINDOW_MS);
+      const [{ recentCount }] = await db
+        .select({ recentCount: sql<number>`count(*)::int` })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, run.companyId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+            eq(heartbeatRuns.status, "failed"),
+            eq(heartbeatRuns.errorCode, "process_lost"),
+            gt(heartbeatRuns.finishedAt, windowStart),
+          ),
+        );
+      if (recentCount >= PROCESS_LOST_RETRY_HOURLY_CAP) {
+        logger.warn(
+          {
+            issueId,
+            companyId: run.companyId,
+            errorClass: "process_lost",
+            retryCount: recentCount,
+            windowMs: PROCESS_LOST_RETRY_RATE_LIMIT_WINDOW_MS,
+            runId: run.id,
+          },
+          "process_lost retry rate limit exceeded: auto-blocking issue",
+        );
+        await db
+          .update(issues)
+          .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, status: "blocked", updatedAt: now })
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+        await issuesSvc.addComment(
+          issueId,
+          `Auto-paused: retry rate limit exceeded.\n\nThis issue has had ${recentCount} \`process_lost\` failures in the last hour and has been automatically moved to \`blocked\`.\n\nTo resume: investigate the root cause of the agent run failure, then manually unblock this issue.`,
+          { agentId: run.agentId, runId: run.id },
+        );
+        return null;
+      }
+    }
+
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot = withRecoveryModelProfileHint({
