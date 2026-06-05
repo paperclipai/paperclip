@@ -4,6 +4,7 @@ export const RECOVERY_ORIGIN_KINDS = {
   productivityReviewEscalation: "productivity_review_escalation",
   strandedIssueRecovery: "stranded_issue_recovery",
   staleActiveRunEvaluation: "stale_active_run_evaluation",
+  ccrotateCapacityExhausted: "ccrotate_capacity_exhausted",
 } as const;
 
 export const RECOVERY_REASON_KINDS = {

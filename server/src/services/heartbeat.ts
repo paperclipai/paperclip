@@ -6410,6 +6410,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 ccrotateTarget: capacity.target,
               },
             });
+            // Surface the stuck pool as a coalesced, operator-visible issue so a
+            // non-recovering pool gets attention instead of only a warn event
+            // buried in run history. Best-effort: never break the sweep. PEN-382.
+            try {
+              await recovery.escalateCcrotateCapacityExhausted({
+                companyId: dueRun.companyId,
+                ccrotateTarget: capacity.target,
+                agentId: dueRun.agentId,
+                agentName: agent?.name ?? null,
+                runId: exhausted.id,
+                attempts: dueRun.scheduledRetryAttempt ?? 0,
+              });
+            } catch (escalationError) {
+              logger.warn(
+                {
+                  err: escalationError,
+                  runId: exhausted.id,
+                  ccrotateTarget: capacity.target,
+                },
+                "ccrotate capacity exhaustion escalation failed",
+              );
+            }
           }
           return { outcome: "not_promoted", run: exhausted };
         }

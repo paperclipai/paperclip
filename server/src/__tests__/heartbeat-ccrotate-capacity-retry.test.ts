@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -279,5 +280,114 @@ describeEmbeddedPostgres("heartbeat ccrotate capacity-defer → scheduled retry"
       "scheduled_retry",
     );
     expect(row?.finishedAt, "terminated run is finished").not.toBeNull();
+
+    // Exhaustion files one operator-visible escalation issue for the stuck pool.
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "ccrotate_capacity_exhausted")));
+    expect(escalations.length, "exhaustion files exactly one escalation issue").toBe(1);
+    expect(escalations[0]?.originId, "escalation is keyed on the ccrotate target").toBe("claude");
+    expect(escalations[0]?.priority).toBe("high");
+    expect(escalations[0]?.status).toBe("todo");
+  });
+
+  it("coalesces escalation to one issue per pool when multiple agents exhaust the same target", async () => {
+    const { companyId, agentId: agentA } = await seedAgent();
+    const due = new Date("2026-04-20T03:02:00.000Z");
+    const heartbeat = heartbeatService(db, {
+      ccrotateGate: denyingGate(new Date("2026-04-20T09:00:00.000Z")),
+      skipQueuedRunDispatch: true,
+    });
+
+    const insertExhaustedRetry = async (agentId: string) =>
+      db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "scheduled_retry",
+        scheduledRetryReason: "ccrotate_capacity",
+        scheduledRetryAt: due,
+        scheduledRetryAttempt: CCROTATE_CAPACITY_MAX_RETRY_ATTEMPTS,
+        errorCode: "rate_limit_exhausted",
+        resultJson: { errorFamily: "rate_limit_exhausted" },
+        contextSnapshot: { wakeSource: "assignment" },
+      });
+
+    // First agent exhausts → first escalation.
+    await insertExhaustedRetry(agentA);
+    await heartbeat.promoteDueScheduledRetries(due);
+
+    // A second agent in the SAME company exhausts the SAME pool → must coalesce
+    // onto the existing open escalation, not spam a duplicate.
+    const agentB = randomUUID();
+    await db.insert(agents).values({
+      id: agentB,
+      companyId,
+      name: "ClaudeCoderB",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await insertExhaustedRetry(agentB);
+    await heartbeat.promoteDueScheduledRetries(due);
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "ccrotate_capacity_exhausted")));
+    expect(
+      escalations.length,
+      "both agents exhausting the same pool yield ONE coalesced escalation",
+    ).toBe(1);
+    expect(escalations[0]?.originId).toBe("claude");
+  });
+
+  it("enforces one open escalation per pool at the DB level (partial unique index)", async () => {
+    // The sequential coalescing above is only safe because the SELECT sees the
+    // prior INSERT; concurrent sweeps could both miss and both insert. The
+    // partial unique index is what makes the guarantee real, so assert it
+    // directly. PEN-382 (Ally review #307).
+    const { companyId } = await seedAgent();
+    const base = {
+      companyId,
+      title: "ccrotate pool exhausted — claude",
+      originKind: "ccrotate_capacity_exhausted",
+      originId: "claude",
+    };
+
+    // First open escalation inserts fine.
+    await db.insert(issues).values({ id: randomUUID(), status: "todo", ...base });
+
+    // A second OPEN escalation for the same pool is rejected by the index —
+    // this is the concurrent-race case the app-level SELECT can't cover.
+    // drizzle wraps the driver error, so unwrap to assert the real pg cause.
+    let dupError: unknown;
+    try {
+      await db.insert(issues).values({ id: randomUUID(), status: "in_progress", ...base });
+    } catch (error) {
+      dupError = error;
+    }
+    expect(dupError, "second open duplicate must be rejected by the unique index").toBeDefined();
+    const cause = ((dupError as { cause?: unknown })?.cause ?? dupError) as {
+      code?: string;
+      constraint?: string;
+      constraint_name?: string;
+    };
+    expect(cause.code, "rejection is a unique-violation (23505)").toBe("23505");
+    expect(
+      cause.constraint ?? cause.constraint_name ?? "",
+      "violated index is the ccrotate-exhaustion partial unique index",
+    ).toBe("issues_active_ccrotate_capacity_exhaustion_uq");
+
+    // A done duplicate is allowed — the index is partial (excludes done/cancelled),
+    // so a fresh outage after recovery can open a new escalation.
+    await expect(
+      db.insert(issues).values({ id: randomUUID(), status: "done", ...base }),
+    ).resolves.toBeDefined();
   });
 });

@@ -151,6 +151,14 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    activeCcrotateCapacityExhaustionIdx: uniqueIndex("issues_active_ccrotate_capacity_exhaustion_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(
+        sql`${table.originKind} = 'ccrotate_capacity_exhausted'
+          and ${table.originId} is not null
+          and ${table.hiddenAt} is null
+          and ${table.status} not in ('done', 'cancelled')`,
+      ),
     activeProductivityReviewIdx: uniqueIndex("issues_active_productivity_review_uq")
       .on(table.companyId, table.originKind, table.originId)
       .where(
