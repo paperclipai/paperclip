@@ -56,6 +56,9 @@ jobs:
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
 
+      - name: Lint
+        run: pnpm run lint
+
       - name: Verify release package bootstrap for changed manifests
         run: |
           mapfile -t changed_paths < <(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")
@@ -93,6 +96,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
 
       - name: Typecheck workspaces whose build scripts skip TypeScript
         run: pnpm run typecheck:build-gaps

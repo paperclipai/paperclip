@@ -31,20 +31,23 @@ describe("sandbox managed runtime", () => {
     const targetDir = path.join(rootDir, "target");
     await mkdir(path.join(sourceDir, "src"), { recursive: true });
     await mkdir(path.join(targetDir, ".claude"), { recursive: true });
+    await mkdir(path.join(targetDir, ".paperclip"), { recursive: true });
     await mkdir(path.join(targetDir, ".paperclip-runtime"), { recursive: true });
     await writeFile(path.join(sourceDir, "src", "app.ts"), "export const value = 2;\n", "utf8");
     await writeFile(path.join(targetDir, "stale.txt"), "remove me\n", "utf8");
     await writeFile(path.join(targetDir, ".claude", "settings.json"), "{\"keep\":true}\n", "utf8");
     await writeFile(path.join(targetDir, ".claude.json"), "{\"keep\":true}\n", "utf8");
+    await writeFile(path.join(targetDir, ".paperclip", "run-state.json"), "{}\n", "utf8");
     await writeFile(path.join(targetDir, ".paperclip-runtime", "state.json"), "{}\n", "utf8");
 
     await mirrorDirectory(sourceDir, targetDir, {
-      preserveAbsent: [".paperclip-runtime", ".claude", ".claude.json"],
+      preserveAbsent: [".paperclip", ".paperclip-runtime", ".claude", ".claude.json"],
     });
 
     await expect(readFile(path.join(targetDir, "src", "app.ts"), "utf8")).resolves.toBe("export const value = 2;\n");
     await expect(readFile(path.join(targetDir, ".claude", "settings.json"), "utf8")).resolves.toBe("{\"keep\":true}\n");
     await expect(readFile(path.join(targetDir, ".claude.json"), "utf8")).resolves.toBe("{\"keep\":true}\n");
+    await expect(readFile(path.join(targetDir, ".paperclip", "run-state.json"), "utf8")).resolves.toBe("{}\n");
     await expect(readFile(path.join(targetDir, ".paperclip-runtime", "state.json"), "utf8")).resolves.toBe("{}\n");
     await expect(readFile(path.join(targetDir, "stale.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -56,10 +59,12 @@ describe("sandbox managed runtime", () => {
     const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
     const localAssetsDir = path.join(rootDir, "local-assets");
     const linkedAssetPath = path.join(rootDir, "linked-skill.md");
+    await mkdir(path.join(localWorkspaceDir, ".paperclip", "DerivedData-WEI-1321"), { recursive: true });
     await mkdir(path.join(localWorkspaceDir, ".claude"), { recursive: true });
     await mkdir(localAssetsDir, { recursive: true });
     await writeFile(path.join(localWorkspaceDir, "README.md"), "local workspace\n", "utf8");
     await writeFile(path.join(localWorkspaceDir, "._README.md"), "appledouble\n", "utf8");
+    await writeFile(path.join(localWorkspaceDir, ".paperclip", "DerivedData-WEI-1321", "index.db"), "{}\n", "utf8");
     await writeFile(path.join(localWorkspaceDir, ".claude", "settings.json"), "{\"local\":true}\n", "utf8");
     await writeFile(linkedAssetPath, "skill body\n", "utf8");
     await symlink(linkedAssetPath, path.join(localAssetsDir, "skill.md"));
@@ -113,12 +118,16 @@ describe("sandbox managed runtime", () => {
 
     await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("local workspace\n");
     await expect(readFile(path.join(remoteWorkspaceDir, "._README.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(path.join(remoteWorkspaceDir, ".paperclip", "DerivedData-WEI-1321", "index.db"), "utf8")).rejects
+      .toMatchObject({ code: "ENOENT" });
     await expect(readFile(path.join(remoteWorkspaceDir, ".claude", "settings.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(path.join(prepared.assetDirs.skills, "skill.md"), "utf8")).resolves.toBe("skill body\n");
     expect((await lstat(path.join(prepared.assetDirs.skills, "skill.md"))).isFile()).toBe(true);
 
     await writeFile(path.join(remoteWorkspaceDir, "README.md"), "remote workspace\n", "utf8");
     await writeFile(path.join(remoteWorkspaceDir, "remote-only.txt"), "sync back\n", "utf8");
+    await mkdir(path.join(remoteWorkspaceDir, ".paperclip", "remote-run"), { recursive: true });
+    await writeFile(path.join(remoteWorkspaceDir, ".paperclip", "remote-run", "state.json"), "{\"remote\":true}\n", "utf8");
     await mkdir(path.join(localWorkspaceDir, ".paperclip-runtime"), { recursive: true });
     await writeFile(path.join(localWorkspaceDir, ".paperclip-runtime", "state.json"), "{}\n", "utf8");
     await writeFile(path.join(localWorkspaceDir, "local-stale.txt"), "remove\n", "utf8");
@@ -128,6 +137,10 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(localWorkspaceDir, "remote-only.txt"), "utf8")).resolves.toBe("sync back\n");
     await expect(readFile(path.join(localWorkspaceDir, "local-stale.txt"), "utf8")).resolves.toBe("remove\n");
     await expect(readFile(path.join(localWorkspaceDir, ".claude", "settings.json"), "utf8")).resolves.toBe("{\"local\":true}\n");
+    await expect(readFile(path.join(localWorkspaceDir, ".paperclip", "DerivedData-WEI-1321", "index.db"), "utf8")).resolves
+      .toBe("{}\n");
+    await expect(readFile(path.join(localWorkspaceDir, ".paperclip", "remote-run", "state.json"), "utf8")).rejects
+      .toMatchObject({ code: "ENOENT" });
     await expect(readFile(path.join(localWorkspaceDir, ".paperclip-runtime", "state.json"), "utf8")).resolves.toBe("{}\n");
   });
 });

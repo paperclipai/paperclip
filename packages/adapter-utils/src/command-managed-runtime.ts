@@ -1,5 +1,6 @@
 import path from "node:path";
 import {
+  mergeLocalOnlyWorkspaceExcludes,
   prepareSandboxManagedRuntime,
   type PreparedSandboxManagedRuntime,
   type SandboxManagedRuntimeAsset,
@@ -34,10 +35,6 @@ export type CommandManagedRuntimeAsset = SandboxManagedRuntimeAsset;
 
 function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
-}
-
-function mergeRuntimeExcludes(entries: string[] | undefined): string[] {
-  return [...new Set([".paperclip-runtime", ...(entries ?? [])])];
 }
 
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
@@ -190,7 +187,7 @@ export async function prepareCommandManagedRuntime(input: {
           adapterKey: input.adapterKey,
           workspaceLocalDir: input.workspaceLocalDir,
           workspaceRemoteDir,
-          workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
+          workspaceExclude: mergeLocalOnlyWorkspaceExcludes(input.workspaceExclude),
           preserveAbsentOnRestore: input.preserveAbsentOnRestore,
           assets: input.assets,
         });
@@ -224,7 +221,7 @@ export async function prepareCommandManagedRuntime(input: {
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir,
-    workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
+    workspaceExclude: mergeLocalOnlyWorkspaceExcludes(input.workspaceExclude),
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
   });

@@ -339,8 +339,10 @@ pnpm dev              # Full dev (API + UI, watch mode)
 pnpm dev:once         # Full dev without file watching
 pnpm dev:server       # Server only
 pnpm build            # Build all
+pnpm lint             # Lightweight lint/security guardrails
 pnpm typecheck        # Type checking
 pnpm test             # Cheap default test run (Vitest only)
+pnpm verify           # One-command local PR baseline (lint + typecheck + tests)
 pnpm test:watch       # Vitest watch mode
 pnpm test:e2e         # Playwright browser suite
 pnpm db:generate      # Generate DB migration
@@ -348,6 +350,8 @@ pnpm db:migrate       # Apply migrations
 ```
 
 `pnpm test` does not run Playwright. Browser suites stay separate and are typically run only when working on those flows or in CI.
+
+Before opening a pull request, run `pnpm verify` from the repo root. Pull request CI runs the same lint, typecheck, and test baseline, with broader build and browser checks where the workflow requires them.
 
 See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 
