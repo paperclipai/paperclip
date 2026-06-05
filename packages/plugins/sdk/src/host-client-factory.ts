@@ -627,8 +627,16 @@ export function createHostClientHandlers(
 
   return {
     // Config
-    "config.get": gated("config.get", async (params) => {
-      return services.config.get(params);
+    "config.get": gated("config.get", async (params, context) => {
+      const scopedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
+      const explicitCompanyId = Object.prototype.hasOwnProperty.call(params ?? {}, "companyId")
+        ? params.companyId ?? null
+        : undefined;
+      return services.config.get(
+        explicitCompanyId === undefined
+          ? (scopedCompanyId ? { companyId: scopedCompanyId } : {})
+          : { companyId: explicitCompanyId },
+      );
     }),
 
     "localFolders.declarations": gated("localFolders.declarations", async (params) => {
