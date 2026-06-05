@@ -412,6 +412,29 @@ function sanitizeBranchName(value: string): string {
     .slice(0, 120) || "paperclip-work";
 }
 
+/**
+ * Option (A) (BLO-9117): ensure the issue identifier is present in the branch
+ * name so a merged PR ref-links at merge time (the github-webhook forward-capture
+ * keys on the `BLO-` ref in the branch). The default branchTemplate already
+ * carries `{{issue.identifier}}`; this guarantees it even when a custom template
+ * omits it, by prepending the identifier when it's absent.
+ *
+ * sanitizeBranchName preserves case, so the uppercase `BLO-####` form the
+ * (uppercase-only) webhook extractor requires survives. A unit test asserts the
+ * result is extractor-matchable, locking this guarantee against a future
+ * sanitizer that lowercases.
+ */
+export function applyIssueIdentifierToBranchName(
+  renderedBranch: string,
+  issueIdentifier: string | null | undefined,
+): string {
+  const base = sanitizeBranchName(renderedBranch);
+  if (!issueIdentifier) return base;
+  const sanitizedIdentifier = sanitizeBranchName(issueIdentifier);
+  if (!sanitizedIdentifier || base.includes(sanitizedIdentifier)) return base;
+  return sanitizeBranchName(`${sanitizedIdentifier}-${renderedBranch}`);
+}
+
 function isAbsolutePath(value: string) {
   return path.isAbsolute(value) || value.startsWith("~");
 }
@@ -1191,21 +1214,10 @@ export async function realizeExecutionWorkspace(input: {
     projectId: input.base.projectId,
     repoRef: input.base.repoRef,
   });
-  const baseBranchName = sanitizeBranchName(renderedBranch);
   // Option (A) (BLO-9117): process-enforce the issue identifier into the branch
-  // name so a merged PR is reliably ref-linked at merge time (the github-webhook
-  // forward-capture keys on the BLO- ref in the branch). The default template
-  // already carries {{issue.identifier}}; this guarantees it even when a custom
-  // branchTemplate omits it. sanitizeBranchName preserves case, so the uppercase
-  // BLO- form the webhook extractor requires survives.
-  const issueIdentifierForBranch = input.issue?.identifier ?? null;
-  const sanitizedIssueIdentifier = issueIdentifierForBranch
-    ? sanitizeBranchName(issueIdentifierForBranch)
-    : null;
-  const branchName =
-    sanitizedIssueIdentifier && !baseBranchName.includes(sanitizedIssueIdentifier)
-      ? sanitizeBranchName(`${sanitizedIssueIdentifier}-${renderedBranch}`)
-      : baseBranchName;
+  // name so a merged PR reliably ref-links at merge time. See
+  // applyIssueIdentifierToBranchName.
+  const branchName = applyIssueIdentifierToBranchName(renderedBranch, input.issue?.identifier ?? null);
   const configuredParentDir = asString(rawStrategy.worktreeParentDir, "");
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)

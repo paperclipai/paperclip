@@ -137,22 +137,50 @@ export interface CoverageReport {
   unattributedMergedPrs: number;
   /** refLinked / total, 0..1; 1 when there are no PRs. */
   coverage: number;
+  /**
+   * Evidence that the no-ref tail has actually been enumerated for the window:
+   * at least one unattributed (issueId=null) row, or a row whose linkSource is
+   * the backfill 'reconciler'. The FORWARD webhook only ever stores ref-linked
+   * rows (it persists a link only for matched issues), so a window populated by
+   * forward-capture alone has no tail and `coverage` reads a vacuous ~100%.
+   */
+  reconciledTailObserved: boolean;
+  /**
+   * !reconciledTailObserved with PRs present: `coverage` reflects
+   * forward-captured (ref-linked) PRs ONLY and is almost certainly an
+   * overstatement — run `reconcileMergedPullRequests` over the window before
+   * treating `coverage` as the true ref-linked fraction. This is the option-(C)
+   * honesty signal: a 100% here means "not yet measured", not "fully linked".
+   */
+  forwardOnly: boolean;
 }
 
 /**
  * Honest option-(C) coverage. The denominator is every merged PR in the window
  * regardless of author (issue_pull_requests has no author column), so no
  * identity bucket is silently excluded. A null issueId is the unattributed tail.
+ *
+ * `forwardOnly` flags the case the reviewer flagged: with only forward-capture
+ * (no reconciler run), every stored row is by-construction ref-linked, so a raw
+ * `coverage` of ~1.0 would mask the 85%-unlinked reality this metric exists to
+ * surface. linkSource lets us detect a reconciler-populated window.
  */
-export function coverageForWindow(prs: Array<{ issueId: string | null }>): CoverageReport {
+export function coverageForWindow(
+  prs: Array<{ issueId: string | null; linkSource?: string | null }>,
+): CoverageReport {
   const totalMergedPrs = prs.length;
   const refLinkedMergedPrs = prs.filter((p) => p.issueId != null).length;
   const unattributedMergedPrs = totalMergedPrs - refLinkedMergedPrs;
+  const reconciledTailObserved = prs.some(
+    (p) => p.issueId == null || p.linkSource === "reconciler",
+  );
   return {
     totalMergedPrs,
     refLinkedMergedPrs,
     unattributedMergedPrs,
     coverage: totalMergedPrs === 0 ? 1 : refLinkedMergedPrs / totalMergedPrs,
+    reconciledTailObserved,
+    forwardOnly: totalMergedPrs > 0 && !reconciledTailObserved,
   };
 }
 
@@ -213,6 +241,17 @@ export interface IssueEfficiency {
   costSource: CostSource;
 }
 
+/**
+ * Per-issue, per-adapter token + cost totals from cost_events (adapter =
+ * agents.adapterType via costEvents.agentId — the executor, not the assignee).
+ *
+ * NOTE (intentional): cost is summed over ALL of an issue's cost_events, NOT
+ * clipped to the rollup's merged-PR window. So windowed $/authored-LOC divides
+ * window-bounded authored-LOC by the issue's full lifetime cost. This is
+ * deliberate — an issue's merged output should be charged its full cost — but
+ * it means the numerator (cost) and denominator (LOC) are not both
+ * window-clipped. Don't "fix" this into double-window-clipping without intent.
+ */
 async function adapterUsageForIssues(
   db: Db,
   companyId: string,
@@ -335,6 +374,7 @@ export function issueEfficiencyService(db: Db) {
           deletions: issuePullRequests.deletions,
           authoredAdditions: issuePullRequests.authoredAdditions,
           authoredDeletions: issuePullRequests.authoredDeletions,
+          linkSource: issuePullRequests.linkSource,
         })
         .from(issuePullRequests)
         .where(
@@ -345,7 +385,11 @@ export function issueEfficiencyService(db: Db) {
           ),
         );
 
-      const coverage = coverageForWindow(windowPrs.map((p) => ({ issueId: p.issueId })));
+      // linkSource is threaded through so coverage can flag a forward-only
+      // window (no reconciler tail) where `coverage` would read a vacuous 100%.
+      const coverage = coverageForWindow(
+        windowPrs.map((p) => ({ issueId: p.issueId, linkSource: p.linkSource })),
+      );
 
       // Per-issue authored-LOC + PR count (only ref-linked PRs can be apportioned
       // to an issue's adapters; the unattributed tail has no issue/adapters and

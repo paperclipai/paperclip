@@ -122,10 +122,36 @@ describe("coverage (pure) — data-wall #2: surface the unattributed tail", () =
     expect(cov.refLinkedMergedPrs).toBe(2);
     expect(cov.unattributedMergedPrs).toBe(3);
     expect(cov.coverage).toBeCloseTo(2 / 5, 9);
+    // The tail is present (null-issueId rows), so coverage is trustworthy.
+    expect(cov.reconciledTailObserved).toBe(true);
+    expect(cov.forwardOnly).toBe(false);
   });
 
-  it("is 100% when there are no PRs (no spurious 0/0)", () => {
-    expect(coverageForWindow([]).coverage).toBe(1);
+  it("flags a forward-only window so a vacuous 100% is not mistaken for real coverage", () => {
+    // Forward-capture stores ONLY ref-linked rows → every row has an issueId and
+    // no 'reconciler' linkSource. coverage reads 1.0 but it's not yet measured.
+    const cov = coverageForWindow([
+      { issueId: "a", linkSource: "branch_ref" },
+      { issueId: "b", linkSource: "title_ref" },
+    ]);
+    expect(cov.coverage).toBe(1);
+    expect(cov.reconciledTailObserved).toBe(false);
+    expect(cov.forwardOnly).toBe(true);
+  });
+
+  it("treats a 'reconciler'-sourced row as evidence the tail was enumerated", () => {
+    const cov = coverageForWindow([
+      { issueId: "a", linkSource: "branch_ref" },
+      { issueId: "b", linkSource: "reconciler" },
+    ]);
+    expect(cov.reconciledTailObserved).toBe(true);
+    expect(cov.forwardOnly).toBe(false);
+  });
+
+  it("is 100% when there are no PRs (no spurious 0/0), and not flagged forward-only", () => {
+    const cov = coverageForWindow([]);
+    expect(cov.coverage).toBe(1);
+    expect(cov.forwardOnly).toBe(false);
   });
 });
 

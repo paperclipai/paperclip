@@ -48,11 +48,6 @@ export function extractPaperclipIdentifiers(...sources: Array<string | null | un
 /** How an issue↔PR link was established. Author is deliberately NOT a source. */
 export type PullRequestLinkSource = "branch_ref" | "title_ref" | "body_ref" | "reconciler" | "manual";
 
-export interface ResolvedPrLink {
-  identifier: string;
-  linkSource: PullRequestLinkSource;
-}
-
 /**
  * Resolve which PR field carried a given target identifier, preferring the
  * branch (option (A): the branchTemplate injects the issue ref into the branch
@@ -67,37 +62,4 @@ export function resolveLinkSourceForIdentifier(
   if (extractPaperclipIdentifiers(fields.title).includes(identifier)) return "title_ref";
   if (extractPaperclipIdentifiers(fields.body).includes(identifier)) return "body_ref";
   return null;
-}
-
-/**
- * Pick the primary identifier for a PR (branch-first, then title, then body)
- * along with its link source. Multi-BLO PRs attribute to the primary; the rest
- * are still returned for callers that want them. Returns an empty array when the
- * PR carries no resolvable ref (the option-(C) unattributed tail).
- */
-export function resolvePrLinks(fields: {
-  branch?: string | null;
-  title?: string | null;
-  body?: string | null;
-}): ResolvedPrLink[] {
-  const all = extractPaperclipIdentifiers(fields.branch, fields.title, fields.body);
-  const links: ResolvedPrLink[] = [];
-  // Order by source strength: branch refs first.
-  for (const source of ["branch", "title", "body"] as const) {
-    for (const identifier of extractPaperclipIdentifiers(fields[source])) {
-      if (links.some((l) => l.identifier === identifier)) continue;
-      links.push({
-        identifier,
-        linkSource: source === "branch" ? "branch_ref" : source === "title" ? "title_ref" : "body_ref",
-      });
-    }
-  }
-  // Defensive: any identifier the combined pass found but the per-source pass
-  // missed (should not happen) is appended as body_ref rather than dropped.
-  for (const identifier of all) {
-    if (!links.some((l) => l.identifier === identifier)) {
-      links.push({ identifier, linkSource: "body_ref" });
-    }
-  }
-  return links;
 }
