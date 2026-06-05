@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildContinuationSummaryMarkdown } from "../issue-continuation-summary.js";
 import {
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
@@ -26,10 +27,12 @@ const issue = {
   companyId: "company-1",
   identifier: "PAP-1",
   title: "Finish backend handoff",
+  description: "Finish the implementation.",
   status: "in_progress",
   assigneeAgentId: "agent-1",
   assigneeUserId: null,
   executionState: null,
+  originKind: "manual",
 } as any;
 
 const agent = {
@@ -51,6 +54,8 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasPendingInteractionOrApproval: false,
     hasExplicitBlockerPath: false,
     hasOpenRecoveryIssue: false,
+    hasScheduledMonitor: false,
+    hasScheduledRetry: false,
     hasPauseHold: false,
     budgetBlocked: false,
     idempotentWakeExists: false,
@@ -117,6 +122,40 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "issue already has an active execution path",
     });
+  });
+
+  it("does not queue for an explicit standing issue that records a bounded next-cycle path", () => {
+    expect(decide({
+      issue: {
+        ...issue,
+        title: "[STANDING] Continuous macro watch",
+        description: "Never-done dispatcher-owned watch.",
+        originKind: "routine_execution",
+      } as any,
+      run: {
+        ...run,
+        nextAction: "Continue on the next dispatcher wake.",
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "standing issue recorded a bounded continuation path",
+    });
+  });
+
+  it("still queues for ordinary in-progress issues that only record work remaining", () => {
+    const decision = decide({
+      issue: {
+        ...issue,
+        title: "Implement backend handoff",
+        description: "Finish the implementation.",
+        originKind: "manual",
+      } as any,
+      run: {
+        ...run,
+        nextAction: "Continue implementation from the remaining acceptance criteria.",
+      } as any,
+    });
+    expect(decision.kind).toBe("enqueue");
   });
 
   it("does not queue when another wake or dependency path already owns the next action", () => {
@@ -303,5 +342,40 @@ describe("successful run handoff decision", () => {
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## Successful run missing issue disposition\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## This issue still needs a next step\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("Unrelated comment")).toBe(false);
+  });
+
+  it("replaces stale failed-run next actions after a successful standing handoff", () => {
+    const markdown = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "[STANDING] Continuous macro watch",
+        description: "Never-done dispatcher-owned watch.",
+        status: "in_progress",
+        priority: "medium",
+      },
+      run: {
+        id: "run-2",
+        status: "succeeded",
+        error: null,
+        finishedAt: new Date("2026-06-04T00:00:00.000Z"),
+        resultJson: { summary: "Successful handoff; next check will occur on the dispatcher wake." },
+      },
+      agent: {
+        id: "agent-1",
+        name: "Macro Watcher",
+        adapterType: "codex_local",
+      },
+      previousSummaryBody: [
+        "# Continuation Summary",
+        "",
+        "## Next Action",
+        "",
+        "- Inspect the failed run, fix the cause, and resume from the most recent concrete action above.",
+      ].join("\n"),
+    });
+
+    expect(markdown).toContain("Continue from the standing issue's next scheduled wake, monitor, or dispatcher cycle.");
+    expect(markdown).not.toContain("Inspect the failed run");
   });
 });

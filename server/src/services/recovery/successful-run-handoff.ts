@@ -29,6 +29,9 @@ const PRODUCTIVE_SUCCESS_LIVENESS_STATES = new Set<RunLivenessState>([
   "blocked",
   "needs_followup",
 ]);
+const STANDING_ISSUE_RE = /\b(?:standing|recurring|routine|continuous|watch|monitor|never[-\s]?done)\b/i;
+const STANDING_CONTINUATION_RE =
+  /\b(?:next\s+(?:cycle|heartbeat|wake|check|run)|dispatcher\s+wake|monitor\s+wake|scheduled\s+retry|scheduled\s+wake|wake\s+(?:again|later|next)|check\s+again|continue(?:s|d)?\s+(?:watch|monitoring|next)|resume\s+(?:on|at|in)\s+the\s+next)\b/i;
 
 const IDEMPOTENT_HANDOFF_WAKE_STATUSES = [
   "queued",
@@ -45,7 +48,16 @@ export function isIdempotentFinishSuccessfulRunHandoffWakeStatus(status: string)
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = Pick<
   typeof issues.$inferSelect,
-  "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId" | "executionState"
+  | "id"
+  | "companyId"
+  | "identifier"
+  | "title"
+  | "description"
+  | "status"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "executionState"
+  | "originKind"
 >;
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
@@ -282,6 +294,67 @@ function readString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function issueText(issue: IssueRow) {
+  return [
+    issue.identifier,
+    issue.title,
+    issue.description,
+    issue.originKind,
+  ]
+    .map((value) => readString(value))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function isStandingIssue(issue: IssueRow) {
+  return issue.originKind === "routine_execution" || STANDING_ISSUE_RE.test(issueText(issue));
+}
+
+function standingContinuationText(input: {
+  run: HeartbeatRunRow;
+  detectedProgressSummary: string | null;
+}) {
+  const result = readRecord(input.run.resultJson);
+  const context = readRecord(input.run.contextSnapshot);
+  return [
+    input.run.nextAction,
+    input.run.livenessReason,
+    input.detectedProgressSummary,
+    result.summary,
+    result.result,
+    result.message,
+    result.nextAction,
+    context.nextAction,
+    context.resumeCondition,
+    context.continuationPath,
+  ]
+    .map((value) => readString(value))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function hasStandingContinuationPath(input: {
+  run: HeartbeatRunRow;
+  issue: IssueRow | null;
+  detectedProgressSummary: string | null;
+  hasActiveExecutionPath: boolean;
+  hasQueuedWake: boolean;
+  hasScheduledMonitor: boolean;
+  hasScheduledRetry: boolean;
+}) {
+  return Boolean(
+    input.issue &&
+      isStandingIssue(input.issue) &&
+      (
+        input.hasActiveExecutionPath ||
+        input.hasQueuedWake ||
+        input.hasScheduledMonitor ||
+        input.hasScheduledRetry ||
+        STANDING_CONTINUATION_RE.test(standingContinuationText(input))
+      ),
+  );
+}
+
 function isCorrectiveHandoffRun(run: HeartbeatRunRow) {
   const context = readRecord(run.contextSnapshot);
   return context.handoffRequired === true ||
@@ -341,6 +414,8 @@ export function decideSuccessfulRunHandoff(input: {
   hasPendingInteractionOrApproval: boolean;
   hasExplicitBlockerPath: boolean;
   hasOpenRecoveryIssue: boolean;
+  hasScheduledMonitor: boolean;
+  hasScheduledRetry: boolean;
   hasPauseHold: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
@@ -379,6 +454,9 @@ export function decideSuccessfulRunHandoff(input: {
   if (input.hasOpenRecoveryIssue) return { kind: "skip", reason: "open recovery issue owns the ambiguity" };
   if (input.hasPauseHold) return { kind: "skip", reason: "issue is under an active pause hold" };
   if (input.budgetBlocked) return { kind: "skip", reason: "budget hard stop blocks corrective wake" };
+  if (hasStandingContinuationPath(input)) {
+    return { kind: "skip", reason: "standing issue recorded a bounded continuation path" };
+  }
   if (input.idempotentWakeExists) {
     return { kind: "skip", reason: "corrective handoff wake already exists for this source run" };
   }

@@ -3134,6 +3134,110 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
   });
 
+  it("keeps standing in-progress work unblocked when no first-class blockers exist", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+    });
+    await db
+      .update(issues)
+      .set({
+        title: "[STANDING] Continuous macro watch",
+        description: "Never-done dispatcher-owned watch.",
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
+
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)));
+    expect(recoveryActions).toHaveLength(1);
+    expect(recoveryActions[0]).toMatchObject({
+      ownerAgentId: agentId,
+      cause: "stranded_assigned_issue",
+    });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(activity.some((event) => event.action === "issue.recovery_standing_block_skipped")).toBe(true);
+    expect(runId).toBeTruthy();
+  });
+
+  it("keeps standing work blocked when real first-class blockers exist", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+    });
+    const blockerIssueId = randomUUID();
+    await db
+      .update(issues)
+      .set({
+        title: "[STANDING] Continuous macro watch",
+        description: "Never-done dispatcher-owned watch.",
+      })
+      .where(eq(issues.id, issueId));
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "Real upstream blocker",
+      status: "todo",
+      priority: "medium",
+      issueNumber: 2,
+      identifier: "BLOCKER-1",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([blockerIssueId]);
+
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)));
+    expect(recoveryActions).toHaveLength(1);
+    expect(recoveryActions[0]).toMatchObject({
+      ownerAgentId: agentId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      cause: "stranded_assigned_issue",
+    });
+    expect(recoveryActions[0]?.evidence).toMatchObject({
+      sourceIssueId: issueId,
+      previousStatus: "in_progress",
+      latestRunId: runId,
+      retryReason: "issue_continuation_needed",
+    });
+  });
+
   it("allows one productive-terminal recovery after regular continuation recovery made progress", async () => {
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
