@@ -748,6 +748,8 @@ export function createIssue(overrides: Partial<Issue> = {}): Issue {
     createdAt: recent(90),
     updatedAt: recent(3),
     ...overrides,
+    reviewerAgentId: overrides.reviewerAgentId ?? null,
+    reviewerUserId: overrides.reviewerUserId ?? null,
     workMode: overrides.workMode ?? "standard",
   };
 }

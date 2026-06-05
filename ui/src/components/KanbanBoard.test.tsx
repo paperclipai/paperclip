@@ -39,6 +39,8 @@ function createIssue(index: number, status: IssueStatus): Issue {
     priority: "medium",
     assigneeAgentId: index === 1 ? "agent-1" : null,
     assigneeUserId: null,
+    reviewerAgentId: null,
+    reviewerUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
     issueNumber: index,
