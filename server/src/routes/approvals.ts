@@ -356,6 +356,58 @@ export function approvalRoutes(
       details: { commentId: comment.id },
     });
 
+    // Wake the requesting agent when a non-agent actor (board user) comments
+    if (approval.requestedByAgentId && actor.actorType !== "agent") {
+      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+      const linkedIssueIds = linkedIssues.map((issue) => issue.id);
+      const primaryIssueId = linkedIssueIds[0] ?? null;
+      try {
+        const wakeRun = await heartbeat.wakeup(approval.requestedByAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "approval_comment_response",
+          payload: {
+            approvalId: approval.id,
+            approvalStatus: approval.status,
+            commentId: comment.id,
+            issueId: primaryIssueId,
+            issueIds: linkedIssueIds,
+          },
+          requestedByActorType: "user",
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            source: "approval.comment_added",
+            approvalId: approval.id,
+            approvalStatus: approval.status,
+            commentId: comment.id,
+            issueId: primaryIssueId,
+            issueIds: linkedIssueIds,
+            taskId: primaryIssueId,
+            wakeReason: "approval_comment_response",
+          },
+        });
+        await logActivity(db, {
+          companyId: approval.companyId,
+          actorType: "user",
+          actorId: actor.actorId,
+          action: "approval.requester_wakeup_queued",
+          entityType: "approval",
+          entityId: approval.id,
+          details: {
+            requesterAgentId: approval.requestedByAgentId,
+            wakeRunId: wakeRun?.id ?? null,
+            reason: "approval_comment_response",
+            linkedIssueIds,
+          },
+        });
+      } catch (err) {
+        logger.warn(
+          { err, approvalId: approval.id, requestedByAgentId: approval.requestedByAgentId },
+          "failed to queue requester wakeup after approval comment",
+        );
+      }
+    }
+
     res.status(201).json(comment);
   });
 
