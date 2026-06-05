@@ -225,34 +225,92 @@ describeEmbeddedPostgres("productivity review service", () => {
     await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
     const [review] = await listProductivityReviews(seeded.companyId);
 
-    const firstRefreshAt = new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS);
-    const firstRefresh = await service.reconcileProductivityReviews({
-      now: firstRefreshAt,
-      companyId: seeded.companyId,
-    });
+    // BLU-10308: the refresher now skips byte-identical reposts, so exercising the cap
+    // requires distinct evidence each interval. Add an increasing number of fresh
+    // no-comment runs (1, 2, 3) before each posting step so the windowed run counts in
+    // the rendered body differ and three distinct refreshes actually post.
+    const postingStep = async (intervals: number, freshRuns: number) => {
+      const stepNow = new Date(now.getTime() + intervals * DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS);
+      await insertRuns({
+        companyId: seeded.companyId,
+        agentId: seeded.coderId,
+        issueId: seeded.issueId,
+        count: freshRuns,
+        now: stepNow,
+      });
+      return service.reconcileProductivityReviews({ now: stepNow, companyId: seeded.companyId });
+    };
+
+    const firstRefresh = await postingStep(1, 1);
     const tooSoonRefresh = await service.reconcileProductivityReviews({
-      now: new Date(firstRefreshAt.getTime() + 30 * 60 * 1000),
+      now: new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS + 30 * 60 * 1000),
       companyId: seeded.companyId,
     });
-    await service.reconcileProductivityReviews({
-      now: new Date(firstRefreshAt.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
-      companyId: seeded.companyId,
-    });
-    await service.reconcileProductivityReviews({
-      now: new Date(firstRefreshAt.getTime() + 2 * DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
-      companyId: seeded.companyId,
-    });
-    const cappedRefresh = await service.reconcileProductivityReviews({
-      now: new Date(firstRefreshAt.getTime() + 3 * DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
-      companyId: seeded.companyId,
-    });
+    const secondRefresh = await postingStep(2, 2);
+    const thirdRefresh = await postingStep(3, 3);
+    const cappedRefresh = await postingStep(4, 4);
 
     expect(firstRefresh.updated).toBe(1);
     expect(tooSoonRefresh.updated).toBe(0);
     expect(tooSoonRefresh.existing).toBe(1);
+    expect(secondRefresh.updated).toBe(1);
+    expect(thirdRefresh.updated).toBe(1);
     expect(cappedRefresh.updated).toBe(0);
     expect(cappedRefresh.existing).toBe(1);
-    expect(await listRefreshComments(review!.id)).toHaveLength(DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS);
+    const refreshComments = await listRefreshComments(review!.id);
+    expect(refreshComments).toHaveLength(DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS);
+    // Every posted refresh carried distinct evidence (the dedup guard let them through).
+    expect(new Set(refreshComments.map((row) => row.body)).size).toBe(
+      DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS,
+    );
+  });
+
+  it("skips refreshing when rendered evidence is identical to the last refresh (BLU-10308)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+    // One extra run inside the first refresh's 1h window so its body differs from the
+    // later windows. After now+1h no run falls in any 1h window again, and the 6h
+    // window contents stay fixed — so now+2h and now+3h render identical bodies.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 1,
+      now: new Date(now.getTime() + 50 * 60 * 1000),
+    });
+
+    const service = productivityReviewService(db);
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review] = await listProductivityReviews(seeded.companyId);
+
+    const firstRefresh = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      companyId: seeded.companyId,
+    });
+    const secondRefresh = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + 2 * DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      companyId: seeded.companyId,
+    });
+    expect(firstRefresh.updated).toBe(1);
+    expect(secondRefresh.updated).toBe(1);
+    expect(await listRefreshComments(review!.id)).toHaveLength(2);
+
+    // now+3h renders the same body as now+2h (no new runs; both 1h windows empty, both
+    // 6h windows hold the same runs) — the dedup guard must skip the duplicate post.
+    const duplicateRefresh = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + 3 * DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      companyId: seeded.companyId,
+    });
+    expect(duplicateRefresh.updated).toBe(0);
+    expect(duplicateRefresh.existing).toBe(1);
+    expect(await listRefreshComments(review!.id)).toHaveLength(2);
   });
 
   it("holds the refresh-interval guard under concurrent reconciliation (BLU-7718)", async () => {

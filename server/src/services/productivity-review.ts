@@ -307,17 +307,29 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   }
 
   async function getRefreshCommentState(companyId: string, reviewIssueId: string) {
+    const refreshLike = `${PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX}%`;
     return db
       .select({
         count: sql<number>`count(*)::int`,
         latestCreatedAt: sql<Date | null>`max(${issueComments.createdAt})`,
+        // BLU-10308: surface the body of the most recent refresh comment so the
+        // caller can skip posting byte-identical evidence. Deterministic tiebreak
+        // (created_at desc, id desc) mirrors the ordering used elsewhere here.
+        latestBody: sql<string | null>`(
+          select c2.body from ${issueComments} c2
+          where c2.company_id = ${companyId}
+            and c2.issue_id = ${reviewIssueId}
+            and c2.body like ${refreshLike}
+          order by c2.created_at desc, c2.id desc
+          limit 1
+        )`,
       })
       .from(issueComments)
       .where(
         and(
           eq(issueComments.companyId, companyId),
           eq(issueComments.issueId, reviewIssueId),
-          sql`${issueComments.body} like ${`${PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX}%`}`,
+          sql`${issueComments.body} like ${refreshLike}`,
         ),
       )
       .then((rows) => {
@@ -325,6 +337,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         return {
           count: Number(row?.count ?? 0),
           latestCreatedAt: coerceDate(row?.latestCreatedAt),
+          latestBody: row?.latestBody ?? null,
         };
       });
   }
@@ -657,7 +670,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         ) {
           return { kind: "existing" as const, reviewIssueId: existing.id };
         }
-        await addRefreshComment(existing.id, buildRefreshComment(evidence, opts.prefix), evidence.generatedAt);
+        // BLU-10308: skip posting when the rendered evidence is byte-identical to the
+        // last refresh comment. The unguarded ~30s repost flooded threads (15-20k
+        // machine comments) and re-tripped the recovery loop. buildRefreshComment is
+        // timestamp-free, so identical evidence renders identical bodies.
+        const refreshBody = buildRefreshComment(evidence, opts.prefix);
+        if (refreshState.latestBody !== null && refreshState.latestBody === refreshBody) {
+          return { kind: "existing" as const, reviewIssueId: existing.id };
+        }
+        await addRefreshComment(existing.id, refreshBody, evidence.generatedAt);
         await logActivity(db, {
           companyId: evidence.sourceIssue.companyId,
           actorType: "system",
