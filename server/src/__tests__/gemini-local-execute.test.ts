@@ -432,4 +432,65 @@ describe("gemini execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("clears session after successful stale-session fallback even when retry emits a session ID", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-stale-fallback-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    const invocationCountPath = path.join(root, "invocations");
+    await fs.mkdir(workspace, { recursive: true });
+
+    // First invocation: fails with stale session error.
+    // Second invocation (fresh retry): succeeds and emits a new session ID.
+    const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+const count = (() => { try { return parseInt(fs.readFileSync(${JSON.stringify(invocationCountPath)}, "utf8")) + 1; } catch { return 1; } })();
+fs.writeFileSync(${JSON.stringify(invocationCountPath)}, String(count), "utf8");
+if (count === 1) {
+  console.error("No previous sessions found with id stale-session-abc");
+  process.exit(1);
+} else {
+  console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "fresh-session-xyz", model: "gemini-2.5-pro" }));
+  console.log(JSON.stringify({ type: "result", subtype: "success", session_id: "fresh-session-xyz", result: "done" }));
+  process.exit(0);
+}
+`;
+    await fs.writeFile(commandPath, script, "utf8");
+    await fs.chmod(commandPath, 0o755);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-stale-fallback",
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
+        runtime: {
+          sessionId: "stale-session-abc",
+          sessionParams: { sessionId: "stale-session-abc" },
+          sessionDisplayId: "stale-session-abc",
+          taskKey: null,
+        },
+        config: { command: commandPath, cwd: workspace },
+        context: {},
+        authToken: "t",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      // Session must be cleared unconditionally after stale-session fallback
+      // even when the retry emitted a fresh session ID.
+      expect(result.clearSession).toBe(true);
+      expect(result.sessionId).toBeUndefined();
+      expect(result.sessionParams).toBeUndefined();
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
