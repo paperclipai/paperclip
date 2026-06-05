@@ -1054,7 +1054,10 @@ export function buildHostServices(
   return {
     config: {
       async get(params) {
-        const configRow = await registry.getConfig(pluginId, params?.companyId ?? null);
+        const companyId = Object.prototype.hasOwnProperty.call(params ?? {}, "companyId")
+          ? params.companyId ?? null
+          : null;
+        const configRow = await registry.getConfigExactScope(pluginId, companyId);
         return configRow?.configJson ?? {};
       },
     },
