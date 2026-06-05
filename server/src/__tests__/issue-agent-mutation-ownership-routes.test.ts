@@ -530,6 +530,45 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it("preserves control characters in issue comments, patch comments, and document bodies", async () => {
+    const app = await createApp(ownerActor());
+    const body = "line 1\nline 2\twith tab\rcr segment";
+
+    await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body })
+      .expect(201);
+    await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: body })
+      .expect(200);
+    await request(app)
+      .put(`/api/issues/${issueId}/documents/plan`)
+      .send({ format: "markdown", body })
+      .expect(200);
+
+    expect(mockIssueService.addComment).toHaveBeenNthCalledWith(
+      1,
+      issueId,
+      body,
+      expect.objectContaining({ agentId: ownerAgentId, runId: ownerRunId }),
+      expect.any(Object),
+    );
+    expect(mockIssueService.addComment).toHaveBeenNthCalledWith(
+      2,
+      issueId,
+      body,
+      expect.objectContaining({ agentId: ownerAgentId, runId: ownerRunId }),
+    );
+    expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issueId,
+        key: "plan",
+        body,
+      }),
+    );
+  });
+
   it.each([
     [
       "work product create",
