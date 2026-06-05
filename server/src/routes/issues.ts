@@ -671,10 +671,10 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   actorType: "agent" | "user";
   actorId: string;
 }) {
-  // Only human comments should implicitly reopen finished work.
-  // Agent-authored comments remain communicative unless reopen was explicit.
+  // Only human comments on blocked issues should implicitly resume work.
+  // done/cancelled issues must be reopened explicitly via PATCH — not via comments.
   if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  if (input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -1671,9 +1671,9 @@ export function issueRoutes(
     res: Response,
     issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
   ) {
-    if (issue.status === "cancelled") {
+    if (issue.status === "done" || issue.status === "cancelled") {
       res.status(409).json({
-        error: "Cancelled issues must be restored through the dedicated restore flow",
+        error: "Terminal issues (done/cancelled) must be restored through the dedicated restore flow, not via comment follow-up",
         details: {
           issueId: issue.id,
           status: issue.status,
