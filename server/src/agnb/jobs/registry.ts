@@ -17,6 +17,7 @@ import { sovWatch } from "./sov-watch.js";
 import { backlinkOutreachDrafter } from "./backlink-outreach-drafter.js";
 import { crossChannelRepurpose } from "./cross-channel-repurpose.js";
 import { bofuRefreshFeedback } from "./bofu-refresh-feedback.js";
+import { ideaToBrief } from "./idea-to-brief.js";
 import { contentAudit } from "./content-audit.js";
 import { tagReplies } from "./tag-replies.js";
 // SEO / scrapers family
@@ -69,6 +70,7 @@ export const AGNB_JOBS: AgnbJobDef[] = [
   { key: "backlink-outreach-drafter", intervalMs: 1 * DAY, handler: backlinkOutreachDrafter, requiresEnv: ["GEMINI_API_KEY"], enabledByDefault: true },
   { key: "cross-channel-repurpose", intervalMs: 1 * DAY, handler: crossChannelRepurpose, enabledByDefault: true },
   { key: "bofu-refresh-feedback", intervalMs: 1 * DAY, handler: bofuRefreshFeedback, enabledByDefault: true },
+  { key: "idea-to-brief", intervalMs: 1 * HOUR, handler: ideaToBrief, enabledByDefault: true },
   { key: "content-audit", intervalMs: 1 * DAY, handler: contentAudit, enabledByDefault: true },
   { key: "tag-replies", intervalMs: 1 * HOUR, handler: tagReplies, requiresEnv: ["GEMINI_API_KEY"], enabledByDefault: true },
   { key: "gsc-rank-tracker", intervalMs: 1 * DAY, handler: gscRankTracker, enabledByDefault: true },
