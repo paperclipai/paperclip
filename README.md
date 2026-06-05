@@ -26,7 +26,7 @@
 
 **If OpenClaw is an _employee_, Bizbox is the _company_**
 
-Bizbox is an open-source, self-hosted Node.js server and React UI that orchestrates a team of AI agents to run a business — built with enterprise teams in mind. Bring your own agents, assign goals, run company-scoped workflows, and track your agents' work and costs from one secure, auditable dashboard.
+Bizbox is an open-source, self-hosted Node.js server and React UI that orchestrates a team of AI agents to run a business — built with enterprise teams in mind. Bring your own agents, assign goals, run company-scoped agent workflows, and track your agents' work and costs from one secure, auditable dashboard.
 
 It looks like a task manager — but under the hood it has org charts, budgets, governance, goal alignment, agent coordination, and the audit trails enterprises need.
 
@@ -54,11 +54,12 @@ It looks like a task manager — but under the hood it has org charts, budgets, 
     <td align="center"><img src="doc/assets/logos/cursor.svg" width="32" alt="Cursor" /><br/><sub>Cursor</sub></td>
     <td align="center"><img src="doc/assets/logos/bash.svg" width="32" alt="Bash" /><br/><sub>Bash</sub></td>
     <td align="center"><img src="doc/assets/logos/http.svg" width="32" alt="HTTP" /><br/><sub>HTTP</sub></td>
-    <td align="center"><sub>Google<br/>ADK</sub></td>
   </tr>
 </table>
 
 <em>If it can receive a heartbeat, it's hired.</em>
+
+<p align="center"><sub>Also works with Google ADK.</sub></p>
 
 </div>
 
@@ -180,7 +181,7 @@ Bizbox handles the hard orchestration details correctly — and adds the enterpr
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | **Not a chatbot.**           | Agents have jobs, not chat windows.                                                                                  |
 | **Not an agent framework.**  | We don't tell you how to build agents. We tell you how to run a company made of them.                                |
-| **Not a workflow builder.**  | No drag-and-drop pipelines. Bizbox models companies — with org charts, goals, budgets, and governance.            |
+| **Not a workflow builder.**  | No drag-and-drop pipelines. Bizbox models companies — with org charts, goals, budgets, and governance. Company-scoped Workflows exist, but they are not a general pipeline builder. |
 | **Not a prompt manager.**    | Agents bring their own prompts, models, and runtimes. Bizbox manages the organization they work in.               |
 | **Not a single-agent tool.** | This is for teams. If you have one agent, you probably don't need Bizbox. If you have twenty — you definitely do. |
 | **Not a code review tool.**  | Bizbox orchestrates work, not pull requests. Bring your own review process.                                       |
