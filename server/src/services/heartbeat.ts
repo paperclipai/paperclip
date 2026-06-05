@@ -285,6 +285,11 @@ const RATE_LIMIT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 // actually ran (and re-failed). Practical ceiling: 12 = ~18min of accumulated
 // post-gate retries before we give up and require operator intervention.
 const RATE_LIMIT_HEARTBEAT_RETRY_MAX_ATTEMPTS = 12;
+// When adapter resolution momentarily falls back to the no-op `process`
+// adapter for a non-process agent type (e.g. claude_k8s briefly unresolved),
+// we treat it as a transient miss and schedule a quick bounded retry instead
+// of hard-failing the agent.
+export const ADAPTER_RESOLUTION_RETRY_DELAY_MS = 30 * 1000;
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -10040,6 +10045,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
       const adapter = getServerAdapter(agent.adapterType);
+      // Guard: getServerAdapter falls back to the no-op `process` adapter when a
+      // type can't be resolved. For a non-process agent type (e.g. claude_k8s)
+      // this is never correct — it means the external adapter was momentarily
+      // unresolved, and running the process adapter throws "missing command",
+      // hard-failing the agent into `error`. Detect it, log diagnostics to pin
+      // the trigger, and synthesize a transient failure so the existing bounded
+      // retry path (shouldScheduleAutomaticRunRetry -> scheduleBoundedRetryForRun)
+      // re-runs it once resolution recovers — matching observed self-healing.
+      // PEN-382 / Ally adapter-down.
+      const adapterResolutionMissed =
+        adapter.type === "process" && agent.adapterType !== "process";
+      if (adapterResolutionMissed) {
+        logger.error(
+          {
+            runId: run.id,
+            agentId: agent.id,
+            companyId: agent.companyId,
+            invocationSource: run.invocationSource,
+            requestedAdapterType: agent.adapterType,
+            resolvedAdapterType: adapter.type,
+          },
+          "adapter resolution fell back to the process adapter for a non-process agent type; scheduling a transient retry instead of running the no-op process adapter",
+        );
+      }
       const authToken = adapter.supportsLocalAgentJwt
         ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
         : null;
@@ -10078,6 +10107,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
       try {
+        if (adapterResolutionMissed) {
+          // Do not run the no-op process adapter. Produce a transient failure
+          // (errorFamily transient_upstream + retryNotBefore) so the normal
+          // failed-result flow schedules a bounded retry rather than throwing
+          // "Process adapter missing command" and erroring the agent.
+          adapterResult = {
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            errorMessage: `Adapter "${agent.adapterType}" was momentarily unavailable (resolved to the process fallback); scheduling a transient retry.`,
+            errorCode: "adapter_failed",
+            errorFamily: "transient_upstream",
+            retryNotBefore: new Date(Date.now() + ADAPTER_RESOLUTION_RETRY_DELAY_MS).toISOString(),
+            summary: "adapter resolution unavailable",
+            resultJson: {},
+            provider: "paperclip",
+            model: "unknown",
+          } as Awaited<ReturnType<typeof adapter.execute>>;
+          await recordWorkspaceFinalize("failed", { errorMessage: adapterResult.errorMessage });
+        } else {
         adapterResult = await adapter.execute({
           runId: run.id,
           agent,
@@ -10110,6 +10159,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // rather than silently leaving dependents stranded behind a missing
         // finalize row.
         await recordWorkspaceFinalize("succeeded");
+        }
       } catch (adapterErr) {
         // Adapter (or its restore finally) threw — or the finalize record
         // write itself threw. Either way the workspace may be in a partial
