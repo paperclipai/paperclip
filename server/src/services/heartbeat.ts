@@ -164,6 +164,7 @@ import {
   resolveSessionCompactionPolicy,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
+import { evaluateSessionRefreshPolicy } from "./session-refresh-policy.js";
 import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
@@ -7176,11 +7177,53 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(explicitResumeSessionParams) : null) ??
         readNonEmptyString(explicitResumeSessionParams?.sessionId),
     );
-    const previousSessionParams =
+    let previousSessionParams =
       explicitResumeSessionParams ??
       (explicitResumeSessionDisplayId ? { sessionId: explicitResumeSessionDisplayId } : null) ??
       normalizeSessionParams(sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null));
+    let taskSessionRowForResume = taskSessionForRun;
+    let suppressRuntimeSessionFallback = false;
+    let sessionRefreshClearedPersistedSession = false;
+    let sessionRefreshLogReason: string | null = null;
+
+    const hasExplicitResume =
+      explicitResumeSessionParams != null || explicitResumeSessionDisplayId != null;
     const config = parseObject(agent.adapterConfig);
+    const adapterConfigForSessionRefresh = issueAssigneeOverrides?.adapterConfig
+      ? { ...config, ...parseObject(issueAssigneeOverrides.adapterConfig) }
+      : config;
+    const taskResumeParams = taskSessionForRun
+      ? normalizeSessionParams(sessionCodec.deserialize(taskSessionForRun.sessionParamsJson ?? null))
+      : null;
+    const taskHasResumeState =
+      !!taskSessionForRun && (taskResumeParams != null || !!taskSessionForRun.sessionDisplayId);
+    const wouldUseRuntimeFallback =
+      !hasExplicitResume && !taskKey && !resetTaskSession && !!runtime.sessionId;
+    const wouldResumeFromPersistence =
+      !hasExplicitResume &&
+      (previousSessionParams != null || taskHasResumeState || wouldUseRuntimeFallback);
+    let lastPersistedSessionTouch: Date | null = null;
+    if (!hasExplicitResume) {
+      if (taskHasResumeState && taskSessionForRun) {
+        lastPersistedSessionTouch = taskSessionForRun.updatedAt;
+      } else if (wouldUseRuntimeFallback) {
+        lastPersistedSessionTouch = runtime.updatedAt;
+      }
+    }
+    const sessionRefreshEval = evaluateSessionRefreshPolicy({
+      adapterConfig: adapterConfigForSessionRefresh,
+      now: new Date(),
+      hasExplicitResume,
+      wouldResumeFromPersistence,
+      lastPersistedSessionTouch,
+    });
+    if (sessionRefreshEval.clearPersistedSession) {
+      sessionRefreshClearedPersistedSession = true;
+      previousSessionParams = null;
+      taskSessionRowForResume = null;
+      suppressRuntimeSessionFallback = true;
+      sessionRefreshLogReason = sessionRefreshEval.logReason;
+    }
     const requestedExecutionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
       issueSettings: issueExecutionWorkspaceSettings,
@@ -7704,6 +7747,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               : `Skipping saved session resume because ${sessionResetReason}.`,
           ]
         : []),
+      ...(sessionRefreshLogReason
+        ? [`Starting a fresh session because ${sessionRefreshLogReason}.`]
+        : []),
     ];
     context.paperclipWorkspace = {
       cwd: executionWorkspace.cwd,
@@ -7740,10 +7786,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
     }
+    const runtimeSessionFallback =
+      taskKey || resetTaskSession || suppressRuntimeSessionFallback ? null : runtime.sessionId;
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: context,
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, run.id));
     const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
     let previousSessionDisplayId = truncateDisplayId(
       explicitResumeSessionDisplayId ??
-        taskSessionForRun?.sessionDisplayId ??
+        taskSessionRowForResume?.sessionDisplayId ??
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(runtimeSessionParams) : null) ??
         readNonEmptyString(runtimeSessionParams?.sessionId) ??
         runtimeSessionFallback,
@@ -8214,7 +8269,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 ? { persistedSessionId: nextSessionState.displayId ?? nextSessionState.legacySessionId }
                 : {}),
               sessionReused: runtimeForAdapter.sessionId != null || runtimeForAdapter.sessionDisplayId != null,
-              taskSessionReused: taskSessionForRun != null,
+              taskSessionReused:
+                taskSessionForRun != null &&
+                (runtimeForAdapter.sessionId != null || runtimeForAdapter.sessionDisplayId != null),
               freshSession: runtimeForAdapter.sessionId == null && runtimeForAdapter.sessionDisplayId == null,
               sessionRotated: sessionCompaction.rotate,
               sessionRotationReason: sessionCompaction.reason,
@@ -8472,13 +8529,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
 
         if (taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)) {
+          const taskRowForRestore = taskSessionForRun ?? taskSession;
+          const restoreParams = sessionRefreshClearedPersistedSession
+            ? normalizeSessionParams(sessionCodec.deserialize(taskRowForRestore?.sessionParamsJson ?? null))
+            : previousSessionParams;
+          const restoreDisplayId = sessionRefreshClearedPersistedSession
+            ? truncateDisplayId(
+                taskRowForRestore?.sessionDisplayId ??
+                  (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(restoreParams) : null) ??
+                  readNonEmptyString(restoreParams?.sessionId),
+              )
+            : previousSessionDisplayId;
           await upsertTaskSession({
             companyId: agent.companyId,
             agentId: agent.id,
             adapterType: agent.adapterType,
             taskKey,
-            sessionParamsJson: previousSessionParams,
-            sessionDisplayId: previousSessionDisplayId,
+            sessionParamsJson: restoreParams,
+            sessionDisplayId: restoreDisplayId,
             lastRunId: failedRun.id,
             lastError: message,
           });

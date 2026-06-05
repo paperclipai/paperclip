@@ -50,6 +50,9 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
+- sessionRefreshPolicy (string, optional): server-side rule for when to stop resuming the Claude session from Paperclip persistence — \`none\` (default, resume until max turns or adapter clear), \`per_run\` (fresh session every run), \`inactivity\` (fresh session after idle; see sessionInactivityTtlSec), \`daily\` (fresh session when the UTC refresh window rolls; see sessionDailyRefreshHour)
+- sessionInactivityTtlSec (number, optional): for \`inactivity\`, seconds since the last persisted session touch before starting fresh (default 1800)
+- sessionDailyRefreshHour (number, optional): for \`daily\`, UTC hour (0–23) when the logical day boundary starts (default 0)
 
 Notes:
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
