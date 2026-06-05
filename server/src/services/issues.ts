@@ -4745,7 +4745,7 @@ export function issueService(db: Db) {
           originKind: SCANNER_FINDING_ORIGIN_KIND,
           originId,
           originFingerprint,
-        }, tx);
+        });
 
         if (blockParentUntilDone) {
           const existingBlockers = await tx

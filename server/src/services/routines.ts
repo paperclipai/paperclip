@@ -169,6 +169,7 @@ function nextCronTickInTimeZone(expression: string, timeZone: string, after: Dat
 function nextResultText(status: string, issueId?: string | null) {
   if (status === "issue_created" && issueId) return `Created execution issue ${issueId}`;
   if (status === "coalesced") return "Coalesced into an existing live execution issue";
+  if (status === "skipped_paused") return "Skipped because the project is paused";
   if (status === "skipped") return "Skipped because a live execution issue already exists";
   if (status === COMPANY_ACTIVE_RUN_CONCURRENCY_BUDGET_THROTTLE_REASON) {
     return "Deferred by company active-run concurrency budget";
@@ -890,6 +891,66 @@ export function routineService(
         })
         .where(eq(routineTriggers.id, input.triggerId));
     }
+  }
+
+  // Records a skipped scheduled firing without creating an execution issue. Used when the
+  // routine's project is paused: the tick is still claimed/advanced upstream (no backfill),
+  // and run history + trigger audit reflect the pause-specific skip.
+  async function recordSuppressedScheduleRun(input: {
+    routine: typeof routines.$inferSelect;
+    trigger: typeof routineTriggers.$inferSelect;
+    reason: string;
+    nextRunAt: Date | null;
+  }) {
+    const triggeredAt = new Date();
+    const run = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const [createdRun] = await txDb
+        .insert(routineRuns)
+        .values({
+          companyId: input.routine.companyId,
+          routineId: input.routine.id,
+          triggerId: input.trigger.id,
+          source: "schedule",
+          status: "skipped",
+          triggeredAt,
+          failureReason: input.reason,
+          completedAt: triggeredAt,
+          linkedIssueId: null,
+          routineRevisionId: input.routine.latestRevisionId,
+        })
+        .returning();
+      await updateRoutineTouchedState({
+        routineId: input.routine.id,
+        triggerId: input.trigger.id,
+        triggeredAt,
+        status: "skipped_paused",
+        nextRunAt: input.nextRunAt,
+      }, txDb);
+      return createdRun;
+    });
+
+    try {
+      await logActivity(db, {
+        companyId: input.routine.companyId,
+        actorType: "system",
+        actorId: "routine-scheduler",
+        action: "routine.run_skipped",
+        entityType: "routine_run",
+        entityId: run.id,
+        details: {
+          routineId: input.routine.id,
+          triggerId: input.trigger.id,
+          source: "schedule",
+          status: "skipped",
+          reason: input.reason,
+        },
+      });
+    } catch (err) {
+      logger.warn({ err, routineId: input.routine.id, runId: run.id }, "failed to log skipped routine run");
+    }
+
+    return run;
   }
 
   function routineExecutionFingerprintCondition(dispatchFingerprint?: string | null) {
@@ -2350,9 +2411,11 @@ export function routineService(
         .select({
           trigger: routineTriggers,
           routine: routines,
+          projectPausedAt: projects.pausedAt,
         })
         .from(routineTriggers)
         .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+        .leftJoin(projects, eq(routines.projectId, projects.id))
         .where(
           and(
             eq(routineTriggers.kind, "schedule"),
@@ -2371,11 +2434,35 @@ export function routineService(
         const triggerCronExpression = row.trigger.cronExpression;
         const triggerTimezone = row.trigger.timezone;
 
+        // Suppress scheduled firings while the routine's project is paused. The tick is still
+        // claimed and advanced to the next single cron tick (no backfill), so resume continues
+        // at the next cron boundary instead of replaying missed firings. Routines with no
+        // project are never suppressed here.
+        const projectPaused = !!(row.routine.projectId && row.projectPausedAt);
+
         let dueRunTimes: Date[] = [triggerNextRunAt];
         let claimedNextRunAt = nextCronTickInTimeZone(triggerCronExpression, triggerTimezone, now);
 
         const claimed = await db.transaction(async (tx) => {
           const txDb = tx as unknown as Db;
+          if (projectPaused) {
+            return txDb
+              .update(routineTriggers)
+              .set({
+                nextRunAt: claimedNextRunAt,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(routineTriggers.id, row.trigger.id),
+                  eq(routineTriggers.enabled, true),
+                  eq(routineTriggers.nextRunAt, triggerNextRunAt),
+                ),
+              )
+              .returning({ id: routineTriggers.id })
+              .then((rows) => rows[0] ?? null);
+          }
+
           const budgetState = await getCompanyActiveRunBudgetState(txDb, row.routine.companyId, { lock: true });
           const availableSlots = getCompanyActiveRunBudgetAvailableSlots(budgetState);
           if (availableSlots <= 0) {
@@ -2421,6 +2508,16 @@ export function routineService(
             .then((rows) => rows[0] ?? null);
         });
         if (!claimed) continue;
+
+        if (projectPaused) {
+          await recordSuppressedScheduleRun({
+            routine: row.routine,
+            trigger: row.trigger,
+            reason: "paused",
+            nextRunAt: claimedNextRunAt,
+          });
+          continue;
+        }
 
         for (let i = 0; i < dueRunTimes.length; i += 1) {
           const dueAt = dueRunTimes[i];

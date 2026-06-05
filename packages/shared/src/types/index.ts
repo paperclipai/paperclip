@@ -70,6 +70,8 @@ export type {
   CatalogSkillKind,
   CatalogSkillFileKind,
   CatalogSkillFile,
+  CatalogSkillGitHubSource,
+  CatalogSkillSource,
   CatalogSkill,
   CatalogSkillListQuery,
   CatalogSkillFileDetail,
