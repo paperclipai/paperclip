@@ -80,20 +80,29 @@
 #       detect our four cherry-picks as previously-applied and drop them
 #       out cleanly.
 #   - paperclipai/paperclip#1177  Clarification: agent keys vs board session
-#                                 (downstream comment 4548879122 proposes
+#                                 (downstream comment 4548879122 proposed
 #                                 relaxing assertBoardOrgAccess →
 #                                 assertCompanyAccess on plugin action +
 #                                 tools-execute endpoints)
-#       No fork patch here — discussion-only. Tracking so we know when
-#       upstream changes the auth model on /api/plugins/:id/actions/:key
-#       and /api/plugins/tools/execute. When they do, the routine prompt's
-#       "loud warning for non-local_trusted modes" branch in
-#       packages/plugins/harper-cmo/scripts/install.ts:authInstructionsForMode
-#       becomes outdated — agents will be able to call action endpoints
-#       with their JWT in authenticated mode and the prompt should just
-#       say "send Authorization: Bearer \$PAPERCLIP_API_KEY".
-#       Watch trigger: any merge in paperclipai/paperclip that touches
-#       assertBoardOrgAccess calls inside server/src/routes/plugins.ts.
+#       PARTIALLY RESOLVED upstream by #6547 (merged 2026-05-22, "Harden
+#       plugin runtime invocation scope"). #6547 relaxed the two ACTION
+#       routes — /api/plugins/:id/actions/:key and /api/plugins/:id/bridge/
+#       action — from assertBoardOrgAccess to assertAuthenticated (NOT
+#       assertCompanyAccess as the comment guessed). Agent JWTs now pass the
+#       route gate; the company boundary moved deeper (assertPluginBridgeScope
+#       on the body companyId + server-derived actorContext + worker-host
+#       invocation scope), so an agent is confined to its own company.
+#       Our response: harper-cmo install.ts:authInstructionsForMode was
+#       rewritten (harper-cmo commit 684f8a7) — the authenticated branch now
+#       tells agents to send "Authorization: Bearer \$PAPERCLIP_AGENT_TOKEN"
+#       plus their own companyId instead of declaring the endpoints unusable.
+#       STILL OPEN to watch: /api/plugins/tools/execute remains board-only
+#       (assertBoardOrgAccess — unchanged by #6547; our carry fbd95c58 also
+#       keeps it). If upstream later relaxes tools/execute too, agents will
+#       be able to call it with their JWT and any prompt that routes tool
+#       calls through that endpoint needs the same treatment.
+#       Watch trigger: any further merge touching assertBoardOrgAccess on
+#       /plugins/tools/execute inside server/src/routes/plugins.ts.
 #
 # Plugin-side carries (separate private repos; same retire-on-merge logic):
 #   - gooseworks-ai/gooseworks-skills#2  quote argument-hint in
