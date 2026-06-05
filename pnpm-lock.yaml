@@ -174,8 +174,8 @@ importers:
   packages/adapters/cursor-cloud:
     dependencies:
       '@cursor/sdk':
-        specifier: ^1.0.12
-        version: 1.0.12
+        specifier: ^1.0.18
+        version: 1.0.18
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
@@ -1570,33 +1570,38 @@ packages:
     resolution: {integrity: sha512-QxULHAm7cNu72w97JUNCBFODFaXpbDg+dP8b/oWFAZ2MTRppA3U00Y2L1HqaS4J6yBqxwa/Y3nMBaxVKbB/NsA==}
     engines: {node: '>=20.19.0'}
 
-  '@cursor/sdk-darwin-arm64@1.0.12':
-    resolution: {integrity: sha512-AOFx+aX+4SntAeC66YncHACXk5duxp+HzDrxxF4Tl93N6nLjHaHEKSAXbt87ivL34MCHop4v/3c70QzBhamB2g==}
+  '@cursor/sdk-darwin-arm64@1.0.18':
+    resolution: {integrity: sha512-gXfNz+n3uf2hWCUcSdU/gBYT7TFlWwJjZAAjXFzBJ3jGu+l7ShQRa9QI2sEKvPNRtUMC/18EcQ26ks1o261Bnw==}
     cpu: [arm64]
     os: [darwin]
+    hasBin: true
 
-  '@cursor/sdk-darwin-x64@1.0.12':
-    resolution: {integrity: sha512-/ZDAYFUrnPd8hAGRky9ZGcROqZSZ2b5W+aEjTdINzLhJ8x5ZNXtjaz0ZYSHabOn2BeErjXgTcq+4bX2/To4C1A==}
+  '@cursor/sdk-darwin-x64@1.0.18':
+    resolution: {integrity: sha512-nzcPqCvPPnYsuz21olPgandVgGUzDZkHN4cUls4ukm7mddp6XqujFJv8lh9qKmVefl0/3UL2R6GFANggjwifnA==}
     cpu: [x64]
     os: [darwin]
+    hasBin: true
 
-  '@cursor/sdk-linux-arm64@1.0.12':
-    resolution: {integrity: sha512-kAxNqiB3dPtlW9fVjjIZEdbIGEGLA9moOM3zYwsXh8J1Qw942nJYMGDGR4o8x0zglwZ24a1JpovvZamrCaC3Yw==}
+  '@cursor/sdk-linux-arm64@1.0.18':
+    resolution: {integrity: sha512-MJyhVryN+0czP48SgMak/KA9xGneQ/gdsnDk1ZTJF+LemaFc+Tv7P1GT80h+3JBfu69kPyIX4epJVjroTMoFEA==}
     cpu: [arm64]
     os: [linux]
+    hasBin: true
 
-  '@cursor/sdk-linux-x64@1.0.12':
-    resolution: {integrity: sha512-RmBiBCPKMZC5McDerGk2Rk4P47xz2A+uzRoRgH6sMoOjklc33ry11iAZC0D5F5xH85chgY878086A/Q8+XrAuA==}
+  '@cursor/sdk-linux-x64@1.0.18':
+    resolution: {integrity: sha512-IaJqcKtXxtQEdPxivQjDWbvynw3UX31V8RdagcZ6RgHOo+B/i/P95D8svSNC4V9nbTHwVbNGfIDQ5S64gMS2hg==}
     cpu: [x64]
     os: [linux]
+    hasBin: true
 
-  '@cursor/sdk-win32-x64@1.0.12':
-    resolution: {integrity: sha512-uH4shdHrKOdtNLapy1uuScJ9lL2Pc8zc9I9ZKC6b6bx+0UX6xLAqjPP7dqVPfO6D9u61yLq1Hs86XOLs5ZVkPA==}
+  '@cursor/sdk-win32-x64@1.0.18':
+    resolution: {integrity: sha512-iqcGt1l/3xgnaT+PotY3237oyK3VnOZHtjUxSRP3Q7ahjaqsZVTnCwwljj+nal8ouvXidBHnxQLqGMSC2G6LTg==}
     cpu: [x64]
     os: [win32]
+    hasBin: true
 
-  '@cursor/sdk@1.0.12':
-    resolution: {integrity: sha512-jGx0wFY1N9uIdIKr303CfM6m/dLXmRCUnU/0yNP/oiOpkBXqgqaThGbgYbcOeVrYonMZc/DZJ9EydXOEPJLcbg==}
+  '@cursor/sdk@1.0.18':
+    resolution: {integrity: sha512-ha5EGHliMuTNuAqnPHzKFNnND4y6erddTqtxwIt9/p8ER+QsmMoRcP38PwA2sXfZnGvIBiozveBZqa4XwUddCw==}
     engines: {node: '>=18'}
 
   '@dnd-kit/accessibility@3.1.1':
@@ -4798,8 +4803,8 @@ packages:
   bowser@2.14.1:
     resolution: {integrity: sha512-tzPjzCxygAKWFOJP011oxFHs57HzIhOEracIgAePE4pqB3LikALKnSzUyU4MGs9/iCEUuHlAJTjTc5M+u7YEGg==}
 
-  brace-expansion@1.1.14:
-    resolution: {integrity: sha512-MWPGfDxnyzKU7rNOW9SP/c50vi3xrmrua/+6hfPbCS2ABNWfx24vPidzvC7krjU/RTo235sV776ymlsMtGKj8g==}
+  brace-expansion@1.1.15:
+    resolution: {integrity: sha512-EwOCDEex4quD37XhqM3omwtMoJjr//isUZz1JopUNWms+4Z2ViyM/k1YIRePpoVNnQhENnxtFjLaxNHrT7xIUg==}
 
   brace-expansion@5.0.5:
     resolution: {integrity: sha512-VZznLgtwhn+Mact9tfiwx64fA9erHH/MCXEUfB/0bX/6Fz6ny5EGTXYltMocqg4xFAQZtnO3DHWWXi8RiuN7cQ==}
@@ -6746,6 +6751,9 @@ packages:
   pump@3.0.3:
     resolution: {integrity: sha512-todwxLMY7/heScKmntwQG8CXVkWUOdYxIvY2s0VWAAMh/nd8SoYiRaKjlr7+iCs984f2P8zvrfWcDDYVb73NfA==}
 
+  pump@3.0.4:
+    resolution: {integrity: sha512-VS7sjc6KR7e1ukRFhQSY5LM2uBWAUPiOPa/A3mkKmiMwSmRFUITt0xuj+/lesgnCv+dPIEYlkzrcyXgquIHMcA==}
+
   punycode@2.3.1:
     resolution: {integrity: sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==}
     engines: {node: '>=6'}
@@ -7020,6 +7028,11 @@ packages:
 
   semver@7.7.4:
     resolution: {integrity: sha512-vFKC2IEtQnVhpT78h1Yp8wzwrf8CM+MzKMHGJZfBtzhZNycRFnXsHk6E5TxIkkMsgNS7mdX3AGB7x2QM2di4lA==}
+    engines: {node: '>=10'}
+    hasBin: true
+
+  semver@7.8.2:
+    resolution: {integrity: sha512-c8jsqUZm3omBOI66G90z1Dyw5z622G8oLG+omfsHBJf3CWQTlOcwOjvOG6wtiNfW6anKm/eA39LMwMtMez2TiQ==}
     engines: {node: '>=10'}
     hasBin: true
 
@@ -8539,7 +8552,7 @@ snapshots:
       jose: 6.1.3
       kysely: 0.28.11
       nanostores: 1.1.0
-      zod: 4.3.6
+      zod: 4.4.3
 
   '@better-auth/telemetry@1.4.18(@better-auth/core@1.4.18(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.8(zod@3.25.76))(jose@6.1.3)(kysely@0.28.11)(nanostores@1.1.0))':
     dependencies:
@@ -8960,22 +8973,22 @@ snapshots:
 
   '@csstools/css-tokenizer@4.0.0': {}
 
-  '@cursor/sdk-darwin-arm64@1.0.12':
+  '@cursor/sdk-darwin-arm64@1.0.18':
     optional: true
 
-  '@cursor/sdk-darwin-x64@1.0.12':
+  '@cursor/sdk-darwin-x64@1.0.18':
     optional: true
 
-  '@cursor/sdk-linux-arm64@1.0.12':
+  '@cursor/sdk-linux-arm64@1.0.18':
     optional: true
 
-  '@cursor/sdk-linux-x64@1.0.12':
+  '@cursor/sdk-linux-x64@1.0.18':
     optional: true
 
-  '@cursor/sdk-win32-x64@1.0.12':
+  '@cursor/sdk-win32-x64@1.0.18':
     optional: true
 
-  '@cursor/sdk@1.0.12':
+  '@cursor/sdk@1.0.18':
     dependencies:
       '@bufbuild/protobuf': 1.10.0
       '@connectrpc/connect': 1.7.0(@bufbuild/protobuf@1.10.0)
@@ -8984,11 +8997,11 @@ snapshots:
       sqlite3: 5.1.7
       zod: 3.25.76
     optionalDependencies:
-      '@cursor/sdk-darwin-arm64': 1.0.12
-      '@cursor/sdk-darwin-x64': 1.0.12
-      '@cursor/sdk-linux-arm64': 1.0.12
-      '@cursor/sdk-linux-x64': 1.0.12
-      '@cursor/sdk-win32-x64': 1.0.12
+      '@cursor/sdk-darwin-arm64': 1.0.18
+      '@cursor/sdk-darwin-x64': 1.0.18
+      '@cursor/sdk-linux-arm64': 1.0.18
+      '@cursor/sdk-linux-x64': 1.0.18
+      '@cursor/sdk-win32-x64': 1.0.18
     transitivePeerDependencies:
       - bluebird
       - supports-color
@@ -9972,7 +9985,7 @@ snapshots:
   '@npmcli/fs@1.1.1':
     dependencies:
       '@gar/promisify': 1.1.3
-      semver: 7.7.4
+      semver: 7.8.2
     optional: true
 
   '@npmcli/move-file@1.1.2':
@@ -12085,7 +12098,7 @@ snapshots:
 
   bowser@2.14.1: {}
 
-  brace-expansion@1.1.14:
+  brace-expansion@1.1.15:
     dependencies:
       balanced-match: 1.0.2
       concat-map: 0.0.1
@@ -14080,7 +14093,7 @@ snapshots:
 
   minimatch@3.1.5:
     dependencies:
-      brace-expansion: 1.1.14
+      brace-expansion: 1.1.15
     optional: true
 
   minimist@1.2.8: {}
@@ -14166,7 +14179,7 @@ snapshots:
 
   node-abi@3.92.0:
     dependencies:
-      semver: 7.7.4
+      semver: 7.8.2
 
   node-addon-api@7.1.1: {}
 
@@ -14179,7 +14192,7 @@ snapshots:
       nopt: 5.0.0
       npmlog: 6.0.2
       rimraf: 3.0.2
-      semver: 7.7.4
+      semver: 7.8.2
       tar: 6.2.1
       which: 2.0.2
     transitivePeerDependencies:
@@ -14432,7 +14445,7 @@ snapshots:
       mkdirp-classic: 0.5.3
       napi-build-utils: 2.0.0
       node-abi: 3.92.0
-      pump: 3.0.3
+      pump: 3.0.4
       rc: 1.2.8
       simple-get: 4.0.1
       tar-fs: 2.1.4
@@ -14471,6 +14484,11 @@ snapshots:
       ipaddr.js: 1.9.1
 
   pump@3.0.3:
+    dependencies:
+      end-of-stream: 1.4.5
+      once: 1.4.0
+
+  pump@3.0.4:
     dependencies:
       end-of-stream: 1.4.5
       once: 1.4.0
@@ -14851,6 +14869,8 @@ snapshots:
 
   semver@7.7.4: {}
 
+  semver@7.8.2: {}
+
   send@1.2.1:
     dependencies:
       debug: 4.4.3
@@ -15174,7 +15194,7 @@ snapshots:
     dependencies:
       chownr: 1.1.4
       mkdirp-classic: 0.5.3
-      pump: 3.0.3
+      pump: 3.0.4
       tar-stream: 2.2.0
 
   tar-stream@2.2.0:
