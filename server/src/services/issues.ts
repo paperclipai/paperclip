@@ -375,6 +375,12 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+// Liveness-aware staleness window. A heartbeat run with no activity (output or
+// status update) for this long is treated as stale even if its row is still
+// "running" — covers crash-before-setRunStatus paths where the reaper has not
+// yet flipped the status. Must be longer than the longest legitimate heartbeat
+// quiet period so we don't evict a live run.
+const LIVENESS_STALE_MS = 60_000;
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
@@ -3604,12 +3610,27 @@ export function issueService(db: Db) {
 
   async function isTerminalOrMissingHeartbeatRun(runId: string) {
     const run = await db
-      .select({ status: heartbeatRuns.status })
+      .select({
+        status: heartbeatRuns.status,
+        updatedAt: heartbeatRuns.updatedAt,
+        lastOutputAt: heartbeatRuns.lastOutputAt,
+      })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     if (!run) return true;
-    return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+    if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+    // Liveness fallback: a run that crashed before any code could call
+    // setRunStatus stays "running" until reapOrphanedRuns notices. Treat such
+    // runs as stale once their last observed activity is older than
+    // LIVENESS_STALE_MS so new heartbeats can adopt the issue without waiting
+    // for the reaper. See CLAAA-48 plan B.
+    const lastSignal = Math.max(
+      run.lastOutputAt ? new Date(run.lastOutputAt).getTime() : 0,
+      run.updatedAt ? new Date(run.updatedAt).getTime() : 0,
+    );
+    if (lastSignal > 0 && Date.now() - lastSignal > LIVENESS_STALE_MS) return true;
+    return false;
   }
 
   async function adoptStaleCheckoutRun(input: {

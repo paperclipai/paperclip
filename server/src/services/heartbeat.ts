@@ -4105,10 +4105,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return ensured;
   }
 
+  async function clearIssueLocksForTerminalRun(runId: string) {
+    // Invariant: when a heartbeat run reaches a terminal status, no issue should
+    // continue to hold checkout_run_id / execution_run_id pointing at it. Without
+    // this, abnormally-terminated runs leave stale locks that block later
+    // heartbeats from the same assignee with 409 conflicts (CLAAA-47/48/50).
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        or(eq(issues.checkoutRunId, runId), eq(issues.executionRunId, runId)),
+      );
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+    options?: { skipIssueLockClear?: boolean },
   ) {
     const updated = await db
       .update(heartbeatRuns)
@@ -4116,6 +4136,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(eq(heartbeatRuns.id, runId))
       .returning()
       .then((rows) => rows[0] ?? null);
+
+    if (
+      updated &&
+      !options?.skipIssueLockClear &&
+      HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+        updated.status as (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+      )
+    ) {
+      await clearIssueLocksForTerminalRun(updated.id);
+    }
 
     if (updated) {
       publishLiveEvent({
@@ -6899,20 +6929,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
-      let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-        errorCode: "process_lost",
-        finishedAt: now,
-        resultJson: mergeRunStopMetadataForAgent(
-          { adapterType, adapterConfig },
-          "failed",
-          {
-            resultJson: parseObject(run.resultJson),
-            errorCode: "process_lost",
-            errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-          },
-        ),
-      });
+      let finalizedRun = await setRunStatus(
+        run.id,
+        "failed",
+        {
+          error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+          errorCode: "process_lost",
+          finishedAt: now,
+          resultJson: mergeRunStopMetadataForAgent(
+            { adapterType, adapterConfig },
+            "failed",
+            {
+              resultJson: parseObject(run.resultJson),
+              errorCode: "process_lost",
+              errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+            },
+          ),
+        },
+        // Reaper manages issue locks via enqueueProcessLossRetry (CAS-swaps
+        // executionRunId to the retry run) or releaseIssueExecutionAndPromote.
+        // Skip the generic terminal-run lock clear to avoid wiping the lock
+        // before the retry-swap or release path runs.
+        { skipIssueLockClear: true },
+      );
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
@@ -7175,11 +7214,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     try {
     const agent = await getAgent(run.agentId);
     if (!agent) {
-      await setRunStatus(runId, "failed", {
-        error: "Agent not found",
-        errorCode: "agent_not_found",
-        finishedAt: new Date(),
-      });
+      // releaseIssueExecutionAndPromote (below) owns the issue-lock transition.
+      await setRunStatus(
+        runId,
+        "failed",
+        {
+          error: "Agent not found",
+          errorCode: "agent_not_found",
+          finishedAt: new Date(),
+        },
+        { skipIssueLockClear: true },
+      );
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
         error: "Agent not found",
@@ -8397,21 +8442,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         adapterResult.summary ?? null,
       );
 
-      let persistedRun = await setRunStatus(run.id, status, {
-        finishedAt: new Date(),
-        error: runErrorMessage,
-        errorCode: runErrorCode,
-        exitCode: adapterResult.exitCode,
-        signal: adapterResult.signal,
-        usageJson,
-        resultJson: persistedResultJson,
-        sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
-        stdoutExcerpt,
-        stderrExcerpt,
-        logBytes: logSummary?.bytes,
-        logSha256: logSummary?.sha256,
-        logCompressed: logSummary?.compressed ?? false,
-      });
+      // scheduleBoundedRetryForRun + releaseIssueExecutionAndPromote (below) own
+      // the issue-lock transition. Skip the generic terminal lock clear so the
+      // CAS swap to a scheduled-retry run still finds the prior run id.
+      let persistedRun = await setRunStatus(
+        run.id,
+        status,
+        {
+          finishedAt: new Date(),
+          error: runErrorMessage,
+          errorCode: runErrorCode,
+          exitCode: adapterResult.exitCode,
+          signal: adapterResult.signal,
+          usageJson,
+          resultJson: persistedResultJson,
+          sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
+          stdoutExcerpt,
+          stderrExcerpt,
+          logBytes: logSummary?.bytes,
+          logSha256: logSummary?.sha256,
+          logCompressed: logSummary?.compressed ?? false,
+        },
+        { skipIssueLockClear: true },
+      );
       if (persistedRun) {
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
       }
@@ -8586,20 +8639,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logger.warn({ err: flushErr, runId }, "failed to flush run output progress after error");
       });
 
-      const failedRun = await setRunStatus(run.id, "failed", {
-        error: message,
-        errorCode: "adapter_failed",
-        finishedAt: new Date(),
-        resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
+      // releaseIssueExecutionAndPromote (below) owns the issue-lock transition.
+      const failedRun = await setRunStatus(
+        run.id,
+        "failed",
+        {
+          error: message,
           errorCode: "adapter_failed",
-          errorMessage: message,
-        }),
-        stdoutExcerpt,
-        stderrExcerpt,
-        logBytes: logSummary?.bytes,
-        logSha256: logSummary?.sha256,
-        logCompressed: logSummary?.compressed ?? false,
-      });
+          finishedAt: new Date(),
+          resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
+            errorCode: "adapter_failed",
+            errorMessage: message,
+          }),
+          stdoutExcerpt,
+          stderrExcerpt,
+          logBytes: logSummary?.bytes,
+          logSha256: logSummary?.sha256,
+          logCompressed: logSummary?.compressed ?? false,
+        },
+        { skipIssueLockClear: true },
+      );
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
         error: message,
@@ -8648,17 +8707,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
-          await setRunStatus(runId, "failed", {
-            error: message,
-            errorCode: "adapter_failed",
-            finishedAt: new Date(),
-            ...(setupFailureAgent ? {
-              resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
-                errorCode: "adapter_failed",
-                errorMessage: message,
-              }),
-            } : {}),
-          }).catch(() => undefined);
+          // releaseIssueExecutionAndPromote (below) owns the issue-lock transition.
+          await setRunStatus(
+            runId,
+            "failed",
+            {
+              error: message,
+              errorCode: "adapter_failed",
+              finishedAt: new Date(),
+              ...(setupFailureAgent ? {
+                resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
+                  errorCode: "adapter_failed",
+                  errorMessage: message,
+                }),
+              } : {}),
+            },
+            { skipIssueLockClear: true },
+          ).catch(() => undefined);
           await setWakeupStatus(run.wakeupRequestId, "failed", {
             finishedAt: new Date(),
             error: message,
