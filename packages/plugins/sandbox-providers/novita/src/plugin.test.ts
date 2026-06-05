@@ -63,8 +63,19 @@ describe("Novita sandbox provider plugin", () => {
     expect(command).toContain("cd '/workspace/project'");
     expect(command).toContain("export MESSAGE='hello world';");
     expect(command).toContain("'node' '-e' 'console.log(process.env.MESSAGE)'");
-    expect(command).toContain("PAPERCLIP_STDIN");
+    expect(command).toContain("PAPERCLIP_STDIN_");
     expect(command).toContain("< /tmp/.paperclip-stdin");
+  });
+
+  it("does not use the fixed stdin heredoc delimiter", () => {
+    const command = buildShellCommand({
+      command: "cat",
+      stdin: "before\nPAPERCLIP_STDIN\nafter",
+    });
+
+    expect(command).toContain("before\nPAPERCLIP_STDIN\nafter");
+    expect(command).toMatch(/<<'PAPERCLIP_STDIN_[A-Z0-9]+'/);
+    expect(command).not.toContain("<<'PAPERCLIP_STDIN'\n");
   });
 
   it("rejects unsafe environment variable keys", () => {

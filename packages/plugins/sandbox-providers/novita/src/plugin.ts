@@ -99,6 +99,16 @@ function isValidShellEnvKey(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
+function buildStdinToken(stdin: string): string {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const token = `PAPERCLIP_STDIN_${Math.random().toString(36).slice(2, 14).toUpperCase()}`;
+    if (!stdin.split(/\r?\n/).includes(token)) {
+      return token;
+    }
+  }
+  throw new Error("Could not create a safe stdin heredoc delimiter.");
+}
+
 export function buildShellCommand(input: {
   command: string;
   args?: string[];
@@ -115,9 +125,10 @@ export function buildShellCommand(input: {
 
   const exports = envEntries.map(([key, value]) => `export ${key}=${shellQuote(value)};`);
   const argv = [input.command, ...(input.args ?? [])].map(shellQuote).join(" ");
+  const stdinToken = typeof input.stdin === "string" ? buildStdinToken(input.stdin) : null;
   const stdin =
-    typeof input.stdin === "string"
-      ? `cat > /tmp/.paperclip-stdin <<'PAPERCLIP_STDIN'\n${input.stdin}\nPAPERCLIP_STDIN\n`
+    stdinToken
+      ? `cat > /tmp/.paperclip-stdin <<'${stdinToken}'\n${input.stdin}\n${stdinToken}\n`
       : "";
   const stdinRedirect = typeof input.stdin === "string" ? " < /tmp/.paperclip-stdin" : "";
   const cwd = input.cwd?.trim() || "/";
@@ -209,7 +220,7 @@ async function releaseSandbox(config: NovitaDriverConfig, sandboxId: string) {
     });
     return;
   }
-  await sandbox.kill({ requestTimeoutMs: config.requestTimeoutMs });
+  await sandbox.kill({ requestTimeoutMs: config.requestTimeoutMs }).catch(() => undefined);
 }
 
 async function executeInSandbox(
@@ -246,12 +257,13 @@ async function executeInSandbox(
       stdout?: string;
       stderr?: string;
       error?: string;
+      timedOut?: boolean;
     };
-    if (typeof commandError.exitCode === "number") {
+    if (typeof commandError.exitCode === "number" || commandError.timedOut === true) {
       return {
-        exitCode: commandError.exitCode,
+        exitCode: commandError.exitCode ?? 124,
         signal: null,
-        timedOut: false,
+        timedOut: commandError.timedOut === true,
         stdout: commandError.stdout ?? "",
         stderr: commandError.stderr ?? commandError.error ?? "",
         metadata: {
