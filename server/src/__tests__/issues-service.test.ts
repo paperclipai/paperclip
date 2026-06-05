@@ -1553,6 +1553,116 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   });
 });
 
+describeEmbeddedPostgres("issueService assigneeAgentId filters", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-assignee-filter-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("treats assigneeAgentId null as an explicit unassigned filter", async () => {
+    const companyId = randomUUID();
+    const firstAgentId = randomUUID();
+    const secondAgentId = randomUUID();
+    const unassignedIssueId = randomUUID();
+    const firstAssignedIssueId = randomUUID();
+    const secondAssignedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `A${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: firstAgentId,
+        companyId,
+        name: "FirstAgent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: secondAgentId,
+        companyId,
+        name: "SecondAgent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: unassignedIssueId,
+        companyId,
+        title: "Unassigned todo",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: firstAssignedIssueId,
+        companyId,
+        title: "Assigned to first",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: firstAgentId,
+      },
+      {
+        id: secondAssignedIssueId,
+        companyId,
+        title: "Assigned to second",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: secondAgentId,
+      },
+    ]);
+
+    await expect(svc.list(companyId, { status: "todo", assigneeAgentId: null }))
+      .resolves.toEqual([
+        expect.objectContaining({ id: unassignedIssueId, assigneeAgentId: null }),
+      ]);
+    await expect(svc.count(companyId, { status: "todo", assigneeAgentId: null })).resolves.toBe(1);
+    await expect(svc.list(companyId, { status: "todo", assigneeAgentId: firstAgentId }))
+      .resolves.toEqual([
+        expect.objectContaining({ id: firstAssignedIssueId, assigneeAgentId: firstAgentId }),
+      ]);
+  });
+});
+
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;

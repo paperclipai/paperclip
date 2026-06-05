@@ -1391,6 +1391,19 @@ export function issueRoutes(
     return parsed;
   }
 
+  const assigneeAgentIdQuerySchema = z.string().uuid();
+
+  function parseAssigneeAgentIdQuery(value: unknown): string | null | undefined {
+    if (value === undefined) return undefined;
+    if (Array.isArray(value) || typeof value !== "string") {
+      throw unprocessable("assigneeAgentId must be a UUID or 'null'");
+    }
+    const trimmed = value.trim();
+    if (trimmed === "null") return null;
+    if (assigneeAgentIdQuerySchema.safeParse(trimmed).success) return trimmed;
+    throw unprocessable("assigneeAgentId must be a UUID or 'null'");
+  }
+
   async function runSingleFileUpload(req: Request, res: Response, fileSizeLimit: number) {
     const upload = multer({
       storage: multer.memoryStorage(),
@@ -2031,11 +2044,12 @@ export function issueRoutes(
       return;
     }
     const offset = parsedOffset ?? 0;
+    const assigneeAgentId = parseAssigneeAgentIdQuery(req.query.assigneeAgentId);
 
     const result = await svc.list(companyId, {
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
+      assigneeAgentId,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,
       touchedByUserId,
@@ -2102,11 +2116,12 @@ export function issueRoutes(
       res.status(400).json({ error: "issues/count does not accept limit or offset" });
       return;
     }
+    const assigneeAgentId = parseAssigneeAgentIdQuery(req.query.assigneeAgentId);
 
     const count = await svc.count(companyId, {
       attention: "blocked",
       status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
+      assigneeAgentId,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId: req.query.assigneeUserId as string | undefined,
       projectId: req.query.projectId as string | undefined,
