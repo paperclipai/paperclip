@@ -1,8 +1,15 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
+import {
+  documentRevisions,
+  documents,
+  issueDocuments,
+  issues,
+  withSearchIndexFallback,
+} from "@paperclipai/db";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 
 function normalizeDocumentKey(key: string) {
   const normalized = key.trim().toLowerCase();
@@ -215,7 +222,12 @@ export function documentService(db: Db) {
       const maxAttempts = input.lockedDocumentStrategy === "create_new_document" ? 3 : 1;
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         try {
-          return await db.transaction(async (tx) => {
+          // documents.title/latest_body carry trigram GIN indexes maintained inline here;
+          // degrade search rather than 500 the write if pg_trgm is unloadable (TON-2145).
+          return await withSearchIndexFallback(
+            db,
+            () =>
+              db.transaction(async (tx) => {
           const now = new Date();
           const existing = await tx
             .select({
@@ -486,7 +498,9 @@ export function documentService(db: Db) {
               updatedAt: document.updatedAt,
             },
           };
-          });
+              }),
+            { operationName: "document.upsert", logger },
+          );
         } catch (error) {
           if (isUniqueViolation(error)) {
             if (input.lockedDocumentStrategy === "create_new_document" && attempt < maxAttempts - 1) {
@@ -509,7 +523,12 @@ export function documentService(db: Db) {
       createdByUserId?: string | null;
     }) => {
       const key = normalizeDocumentKey(input.key);
-      return db.transaction(async (tx) => {
+      // Restoring a revision rewrites documents.latest_body (trigram-indexed); degrade
+      // search rather than 500 the write if pg_trgm is unloadable (TON-2145).
+      return withSearchIndexFallback(
+        db,
+        () =>
+          db.transaction(async (tx) => {
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)
@@ -599,7 +618,9 @@ export function documentService(db: Db) {
             updatedAt: now,
           },
         };
-      });
+          }),
+        { operationName: "document.restore_revision", logger },
+      );
     },
 
     lockIssueDocument: async (input: {

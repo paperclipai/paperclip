@@ -35,7 +35,7 @@ describe("GET /health", () => {
     expect(res.body).toEqual({ status: "ok", version: serverVersion });
   }, 15_000);
 
-  it("returns 200 when the database probe succeeds", async () => {
+  it("returns 200 when the database probe succeeds and reports healthy search", async () => {
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
     } as unknown as Db;
@@ -44,8 +44,36 @@ describe("GET /health", () => {
     const res = await request(app).get("/health");
 
     expect(res.status).toBe(200);
-    expect(db.execute).toHaveBeenCalledTimes(1);
+    // SELECT 1 liveness probe + pg_trgm catalog + show_trgm runtime probe (TON-2145).
+    expect(db.execute).toHaveBeenCalledTimes(3);
     expect(res.body).toMatchObject({ status: "ok", version: serverVersion });
+    expect(res.body.search).toMatchObject({
+      status: "ok",
+      extensions: [{ extension: "pg_trgm", installedInCatalog: true, loadableAtRuntime: true }],
+    });
+  });
+
+  it("flags degraded search when pg_trgm is installed but not loadable (TON-2145 doctor check)", async () => {
+    // Call order in the route: (1) SELECT 1 liveness, (2) pg_extension catalog lookup,
+    // (3) show_trgm runtime probe — which forces the shared library to load and fails.
+    let call = 0;
+    const execute = vi.fn(async () => {
+      call += 1;
+      if (call === 3) {
+        throw new Error('could not access file "pg_trgm": No such file or directory');
+      }
+      return [{ present: 1 }];
+    });
+    const db = { execute } as unknown as Db;
+    const app = createApp(db);
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.search).toMatchObject({
+      status: "degraded",
+      extensions: [{ extension: "pg_trgm", installedInCatalog: true, loadableAtRuntime: false }],
+    });
   });
 
   it("returns 503 when the database probe fails", async () => {

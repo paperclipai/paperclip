@@ -2,7 +2,13 @@ import { timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
-import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
+import {
+  heartbeatRuns,
+  instanceUserRoles,
+  invites,
+  getSearchHealthReport,
+  type SearchHealthReport,
+} from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
 import { logger } from "../middleware/logger.js";
@@ -165,6 +171,22 @@ export function healthRoutes(
       return;
     }
 
+    // Doctor check (TON-2145): flag when an expected PG extension (pg_trgm) is installed in
+    // the catalog but not loadable at runtime — the TON-2143 failure mode that turned a
+    // search-only dependency into a write outage — and surface any active search degradation.
+    let search: SearchHealthReport | undefined;
+    try {
+      search = await getSearchHealthReport(db);
+      if (search.status === "degraded") {
+        logger.warn(
+          { search },
+          "Health check: trigram search is degraded (pg_trgm unloadable or indexes dropped)",
+        );
+      }
+    } catch (error) {
+      logger.warn({ err: error }, "Health check search probe failed");
+    }
+
     res.json({
       status: "ok",
       version: serverVersion,
@@ -177,6 +199,7 @@ export function healthRoutes(
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
       ...(devServer ? { devServer } : {}),
+      ...(search ? { search } : {}),
     });
   });
 

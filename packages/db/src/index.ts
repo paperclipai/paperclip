@@ -31,6 +31,21 @@ export {
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
 export {
+  PG_TRGM_EXTENSION,
+  TRIGRAM_SEARCH_INDEXES,
+  isTrigramIndexUnavailableError,
+  withSearchIndexFallback,
+  enterDegradedSearchMode,
+  getSearchDegradation,
+  probeTrigramExtension,
+  getSearchHealthReport,
+  __resetSearchDegradationForTests,
+  type SearchIndexLogger,
+  type SearchDegradationState,
+  type ExtensionRuntimeHealth,
+  type SearchHealthReport,
+} from "./search-index-health.js";
+export {
   ensureLinuxSharedLibraryAliases,
   prepareEmbeddedPostgresNativeRuntime,
 } from "./embedded-postgres-native.js";

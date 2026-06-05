@@ -31,6 +31,7 @@ import {
   projectWorkspaces,
   projects,
   workspaceOperations,
+  withSearchIndexFallback,
 } from "@paperclipai/db";
 import type {
   AcceptedPlanDecomposition,
@@ -4699,7 +4700,13 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+      // issues.title/identifier/description carry trigram GIN indexes maintained inline on
+      // this insert; degrade search rather than 500 the create if pg_trgm is unloadable
+      // (TON-2145). The whole transaction is the retry unit so a fresh issue number is taken.
+      return withSearchIndexFallback(
+        db,
+        () =>
+          db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -4901,7 +4908,9 @@ export function issueService(db: Db) {
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
-      });
+          }),
+        { operationName: "issue.create", logger },
+      );
     },
 
     update: async (
@@ -5827,21 +5836,29 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
-      const [comment] = await db
-        .insert(issueComments)
-        .values({
-          companyId: issue.companyId,
-          issueId,
-          authorAgentId: actor.agentId ?? null,
-          authorUserId: actor.userId ?? null,
-          authorType,
-          createdByRunId: actor.runId ?? null,
-          body: redactedBody,
-          presentation,
-          metadata,
-          ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
-        })
-        .returning();
+      // Trigram (pg_trgm) GIN index maintenance on issue_comments.body runs inline on this
+      // insert. If the extension is unloadable, degrade search instead of 500-ing the write
+      // (TON-2145, incident TON-2143). This is the exact failing path from that incident.
+      const [comment] = await withSearchIndexFallback(
+        db,
+        () =>
+          db
+            .insert(issueComments)
+            .values({
+              companyId: issue.companyId,
+              issueId,
+              authorAgentId: actor.agentId ?? null,
+              authorUserId: actor.userId ?? null,
+              authorType,
+              createdByRunId: actor.runId ?? null,
+              body: redactedBody,
+              presentation,
+              metadata,
+              ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
+            })
+            .returning(),
+        { operationName: "issue_comment.insert", logger },
+      );
 
       // Update issue's updatedAt so comment activity is reflected in recency sorting
       await db

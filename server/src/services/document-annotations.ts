@@ -7,7 +7,9 @@ import {
   documents,
   issueComments,
   issueDocuments,
+  withSearchIndexFallback,
 } from "@paperclipai/db";
+import { logger } from "../middleware/logger.js";
 import {
   anchorSnapshotToSelector,
   remapDocumentAnchor,
@@ -209,7 +211,9 @@ export function documentAnnotationService(db: Db) {
       key: string,
       input: CreateDocumentAnnotationThread,
       actor: ActorInput,
-    ) => db.transaction(async (tx) => {
+      // document_annotation_comments.body is trigram-indexed; degrade search rather than
+      // 500 the write if pg_trgm is unloadable (TON-2145).
+    ) => withSearchIndexFallback(db, () => db.transaction(async (tx) => {
       await tx.execute(sql`
         select ${documents.id}
         from ${issueDocuments}
@@ -289,7 +293,7 @@ export function documentAnnotationService(db: Db) {
         .returning(commentSelect);
 
       return { ...thread, comments: [comment] };
-    }),
+    }), { operationName: "document_annotation.create_thread", logger }),
 
     addComment: async (
       issueId: string,
@@ -297,7 +301,9 @@ export function documentAnnotationService(db: Db) {
       threadId: string,
       input: CreateDocumentAnnotationComment,
       actor: ActorInput,
-    ) => db.transaction(async (tx) => {
+      // document_annotation_comments.body is trigram-indexed; degrade search rather than
+      // 500 the write if pg_trgm is unloadable (TON-2145).
+    ) => withSearchIndexFallback(db, () => db.transaction(async (tx) => {
       const thread = await getThreadForIssue(issueId, key, threadId, tx);
       if (!thread) throw notFound("Annotation thread not found");
       const now = new Date();
@@ -324,7 +330,7 @@ export function documentAnnotationService(db: Db) {
         .set({ updatedAt: now })
         .where(eq(documentAnnotationThreads.id, thread.id));
       return comment;
-    }),
+    }), { operationName: "document_annotation.add_comment", logger }),
 
     cleanupForIssueCommentDeletion: async (
       issueId: string,
