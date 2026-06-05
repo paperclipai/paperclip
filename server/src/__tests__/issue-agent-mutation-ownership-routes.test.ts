@@ -495,6 +495,14 @@ describe("agent issue mutation checkout ownership", () => {
     ],
     ["attachment delete", (app: express.Express) => request(app).delete("/api/attachments/attachment-1")],
   ])("rejects peer agent %s on another agent's active checkout", async (_name, sendRequest) => {
+    // Default decide mock allows tasks:assign — explicitly deny here so the bypass
+    // restored for reassign-only PATCH and non-lifecycle comments doesn't apply.
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_missing_grant",
+      explanation: "Missing permission.",
+    }));
     const res = await sendRequest(await createApp(peerActor()));
 
     expect(res.status, JSON.stringify(res.body)).toBe(409);
@@ -712,6 +720,15 @@ describe("agent issue mutation checkout ownership", () => {
     ["blocked", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked update" })],
   ])("rejects peer agent %s issue %s mutations outside active checkout ownership", async (status, _kind, sendRequest) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: status as "todo" | "blocked", assigneeAgentId: ownerAgentId }));
+    // PATCH bodies carry a non-`assigneeAgentId` field (title) and the comment
+    // body is plain text, so neither qualifies for the `tasks:assign` bypass;
+    // explicitly deny the grant to guarantee the assertion isolates the guard.
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_missing_grant",
+      explanation: "Missing permission.",
+    }));
 
     const res = await sendRequest(await createApp(peerActor()));
 
@@ -870,5 +887,101 @@ describe("agent issue mutation checkout ownership", () => {
       }),
     }));
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  describe("tasks:assign per-assignee guard bypass", () => {
+    function grantTasksAssign(allowed: boolean) {
+      mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+        allowed: allowed && input.action === "tasks:assign",
+        action: input.action,
+        reason: allowed && input.action === "tasks:assign" ? "allow_explicit_grant" : "deny_missing_grant",
+        explanation:
+          allowed && input.action === "tasks:assign"
+            ? "Allowed by tasks:assign grant."
+            : "Missing permission.",
+      }));
+    }
+
+    it("allows a peer with tasks:assign to PATCH reassign-only on an in_progress issue assigned to another agent", async () => {
+      grantTasksAssign(true);
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }));
+      mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: makeAgent(peerAgentId) });
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ assigneeAgentId: peerAgentId });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        issueId,
+        expect.objectContaining({ assigneeAgentId: peerAgentId }),
+      );
+    });
+
+    it("rejects a peer with tasks:assign when the PATCH body adds any field beyond assigneeAgentId", async () => {
+      grantTasksAssign(true);
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+      mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: makeAgent(peerAgentId) });
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ assigneeAgentId: peerAgentId, status: "done" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects PATCH reassign-only when the peer lacks tasks:assign (no privilege escalation)", async () => {
+      grantTasksAssign(false);
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+      mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: makeAgent(peerAgentId) });
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ assigneeAgentId: peerAgentId });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("allows a peer with tasks:assign to POST a non-lifecycle comment cross-assignee", async () => {
+      grantTasksAssign(true);
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }));
+
+      const res = await request(await createApp(peerActor()))
+        .post(`/api/issues/${issueId}/comments`)
+        .send({ body: "Ack: received your question, escalating to the board." });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(mockIssueService.addComment).toHaveBeenCalled();
+    });
+
+    it("rejects a peer cross-assignee comment carrying a lifecycle flag even with tasks:assign", async () => {
+      grantTasksAssign(true);
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "done", assigneeAgentId: ownerAgentId }));
+
+      const res = await request(await createApp(peerActor()))
+        .post(`/api/issues/${issueId}/comments`)
+        .send({ body: "Reopening someone else's work", resume: true });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    });
+
+    it("rejects a peer cross-assignee comment without tasks:assign", async () => {
+      grantTasksAssign(false);
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+
+      const res = await request(await createApp(peerActor()))
+        .post(`/api/issues/${issueId}/comments`)
+        .send({ body: "Plain ack" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    });
   });
 });

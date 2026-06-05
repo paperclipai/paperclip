@@ -1493,10 +1493,53 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  // Narrow per-assignee guard bypass for principals that hold the
+  // explicit `tasks:assign` grant. Restores the historical bot bypass
+  // (necessary for the 2-PATCH close pattern used by webhook automations
+  // and for hierarchical comment acks across CEO/CTO/board chains) while
+  // keeping all other cross-assignee mutations (status, title, description,
+  // priority, lifecycle flags) gated by the assignee check.
+  async function hasTasksAssignOverride(actorAgentId: string, companyId: string) {
+    const decision = await access.decide({
+      actor: { type: "agent", agentId: actorAgentId, companyId },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId },
+    });
+    return decision.allowed;
+  }
+
+  type IssueMutationBypassHint =
+    // PATCH /issues/:id payload restricted to a single field: `assigneeAgentId`.
+    | { kind: "reassign_only" }
+    // POST /issues/:id/comments payload without lifecycle flags
+    // (`reopen`/`resume`/`interrupt`).
+    | { kind: "non_lifecycle_comment" };
+
+  function isReassignOnlyPatchBody(body: unknown): boolean {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+    const entries = Object.entries(body as Record<string, unknown>).filter(
+      ([, value]) => value !== undefined,
+    );
+    if (entries.length !== 1) return false;
+    const [key] = entries[0];
+    return key === "assigneeAgentId";
+  }
+
+  function isNonLifecycleCommentBody(body: unknown): boolean {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+    const { reopen, resume, interrupt } = body as {
+      reopen?: unknown;
+      resume?: unknown;
+      interrupt?: unknown;
+    };
+    return reopen !== true && resume !== true && interrupt !== true;
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
     issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    bypass?: IssueMutationBypassHint,
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1509,6 +1552,9 @@ export function issueRoutes(
     }
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
+        return true;
+      }
+      if (bypass && (await hasTasksAssignOverride(actorAgentId, issue.companyId))) {
         return true;
       }
       if (issue.status === "in_progress") {
@@ -4038,7 +4084,10 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const reassignOnlyBypass: IssueMutationBypassHint | undefined = isReassignOnlyPatchBody(req.body)
+      ? { kind: "reassign_only" }
+      : undefined;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, reassignOnlyBypass))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -5747,7 +5796,10 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    const nonLifecycleCommentBypass: IssueMutationBypassHint | undefined = isNonLifecycleCommentBody(req.body)
+      ? { kind: "non_lifecycle_comment" }
+      : undefined;
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue, nonLifecycleCommentBypass))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,

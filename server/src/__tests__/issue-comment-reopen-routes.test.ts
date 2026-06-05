@@ -514,7 +514,7 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
-  it("rejects non-assignee agent POST comments on closed issues", async () => {
+  it("rejects non-assignee agent POST comments on closed issues without tasks:assign", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
@@ -526,6 +526,14 @@ describe.sequential("issue comment reopen routes", () => {
       authorAgentId: "33333333-3333-4333-8333-333333333333",
       authorUserId: null,
     });
+    // Default decide() in this file allows everything except tasks:manage_active_checkouts.
+    // Deny tasks:assign so the non-lifecycle-comment bypass cannot apply.
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_missing_grant",
+      explanation: "Missing permission.",
+    }));
 
     const res = await request(await installActor(createApp(), {
       type: "agent",
