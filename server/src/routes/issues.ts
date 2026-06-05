@@ -1546,7 +1546,11 @@ export function issueRoutes(
     }
     const runId = requireAgentRunId(req, res);
     if (!runId) return false;
-    const ownership = await svc.assertCheckoutOwner(issue.id, actorAgentId, runId);
+    const targetStatus = typeof req.body?.status === "string" ? req.body.status : undefined;
+    const targetIsTerminal = targetStatus === "done" || targetStatus === "cancelled";
+    const ownership = await svc.assertCheckoutOwner(issue.id, actorAgentId, runId, {
+      allowUnownedAdoption: !targetIsTerminal,
+    });
     if (ownership.adoptedFromRunId) {
       const actor = getActorInfo(req);
       await logActivity(db, {
