@@ -117,7 +117,7 @@ describe("PATCH /api/companies/:companyId/awaiting-human-settings", () => {
   it("sends connection-test message to ClickUp channel", async () => {
     mockCompanyService.getById.mockResolvedValueOnce({
       id: "company-1",
-      slug: "CITAAAA",
+      issuePrefix: "CITAAAA",
       name: "Bizbox",
     });
     mockAwaitingHumanSettingsService.resolveClickUpRuntimeConfig.mockRejectedValueOnce(new Error("awaiting-human-bridge-disabled"));

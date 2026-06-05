@@ -109,7 +109,7 @@ export function companyAwaitingHumanSettingsRoutes(db: Db) {
       title: `${company.name} ClickUp bridge connection test`,
       summary: "Bizbox completed a bridge transport test for ClickUp.",
       body: "The configured bridge successfully delivered a test payload to the target ClickUp channel.",
-      link: new URL(`/${company.slug}/company/settings/awaiting-human`, process.env.BIZBOX_API_URL ?? "http://localhost:3100").toString(),
+      link: new URL(`/${company.issuePrefix}/company/settings/awaiting-human`, process.env.BIZBOX_API_URL ?? "http://localhost:3100").toString(),
       cta: "No action is required.",
     }, runtimeOverrides);
     const publicResult = result.status === "sent"
