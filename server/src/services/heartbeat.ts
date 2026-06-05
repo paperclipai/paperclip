@@ -219,16 +219,29 @@ export {
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
 } from "./recovery/service.js";
 export const ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS = 60 * 1000;
+// Bounded retry cap is [2m, 5m, 10m, 15m] so transient blips clear within
+// ~32 min worst case (sum + jitter). When this table is exhausted on the
+// default transient-retry path, scheduleBoundedRetryForRun falls back to a
+// flat sustained-outage interval (BOUNDED_TRANSIENT_HEARTBEAT_SUSTAINED_RETRY_INTERVAL_MS)
+// instead of abandoning, so a sustained upstream outage never strands a
+// customer past the self-healing SLA.
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
   2 * 60 * 1000,
+  5 * 60 * 1000,
   10 * 60 * 1000,
-  30 * 60 * 1000,
-  2 * 60 * 60 * 1000,
+  15 * 60 * 1000,
 ] as const;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+// Sustained-outage fallback. After the bounded retry table is exhausted on
+// the default transient-retry path, scheduleBoundedRetryForRun keeps queuing
+// retries at this flat interval (with ±25% jitter). A circuit-breaker
+// warning is emitted on the first sustained attempt and every Nth attempt
+// thereafter so the outage stays observable without stalling the customer.
+export const BOUNDED_TRANSIENT_HEARTBEAT_SUSTAINED_RETRY_INTERVAL_MS = 15 * 60 * 1000;
+export const BOUNDED_TRANSIENT_HEARTBEAT_SUSTAINED_RETRY_LOG_EVERY = 12;
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -5522,7 +5535,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const maxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
-    const baseSchedule = opts?.delayMs != null
+    let baseSchedule = opts?.delayMs != null
       ? nextAttempt <= maxAttempts
         ? {
             attempt: nextAttempt,
@@ -5544,6 +5557,54 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
+
+    // Sustained-outage fallback. Only applies to the default transient-retry
+    // path (no caller-supplied delayMs / maxAttempts override and the default
+    // retry reason). Callers that pass their own retryReason or delayMs —
+    // e.g. max-turn continuation — still see retry_exhausted at their cap.
+    const isSustainedTransientFallback =
+      !baseSchedule
+      && opts?.delayMs == null
+      && opts?.maxAttempts == null
+      && retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
+    let sustainedFallbackAttempt = 0;
+    if (isSustainedTransientFallback) {
+      sustainedFallbackAttempt = nextAttempt - maxAttempts;
+      const random = opts?.random ?? Math.random;
+      const sample = Math.min(1, Math.max(0, random()));
+      const jitterMultiplier =
+        1 + (((sample * 2) - 1) * BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO);
+      const delayMs = Math.max(
+        1_000,
+        Math.round(BOUNDED_TRANSIENT_HEARTBEAT_SUSTAINED_RETRY_INTERVAL_MS * jitterMultiplier),
+      );
+      baseSchedule = {
+        attempt: nextAttempt,
+        baseDelayMs: BOUNDED_TRANSIENT_HEARTBEAT_SUSTAINED_RETRY_INTERVAL_MS,
+        delayMs,
+        dueAt: new Date(now.getTime() + delayMs),
+        maxAttempts,
+      };
+      if (
+        sustainedFallbackAttempt === 1
+        || sustainedFallbackAttempt % BOUNDED_TRANSIENT_HEARTBEAT_SUSTAINED_RETRY_LOG_EVERY === 0
+      ) {
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: `Sustained transient-upstream outage: ${sustainedFallbackAttempt} retries past bounded max=${maxAttempts}; continuing at flat ${Math.round(BOUNDED_TRANSIENT_HEARTBEAT_SUSTAINED_RETRY_INTERVAL_MS / 60_000)}m interval`,
+          payload: {
+            retryReason,
+            scheduledRetryAttempt: nextAttempt,
+            sustainedFallbackAttempt,
+            maxAttempts,
+            circuitBreakerLogEvery: BOUNDED_TRANSIENT_HEARTBEAT_SUSTAINED_RETRY_LOG_EVERY,
+            sustainedIntervalMs: BOUNDED_TRANSIENT_HEARTBEAT_SUSTAINED_RETRY_INTERVAL_MS,
+          },
+        });
+      }
+    }
 
     if (!baseSchedule) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
