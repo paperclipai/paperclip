@@ -25,6 +25,10 @@ export const databaseBackupConfigSchema = z.object({
   intervalMinutes: z.number().int().min(1).max(7 * 24 * 60).default(60),
   retentionDays: z.number().int().min(1).max(3650).default(7),
   dir: z.string().default("~/.paperclip/instances/default/data/backups"),
+  // Watchdog bound for a single backup run. Generous over a healthy run
+  // (~12s) but well under the default hourly interval so a hung dump is
+  // aborted and the next scheduled tick proceeds within the hour.
+  timeoutMinutes: z.number().int().min(1).max(7 * 24 * 60).default(30),
 });
 
 export const databaseConfigSchema = z.object({
@@ -37,6 +41,7 @@ export const databaseConfigSchema = z.object({
     intervalMinutes: 60,
     retentionDays: 7,
     dir: "~/.paperclip/instances/default/data/backups",
+    timeoutMinutes: 30,
   }),
 });
 
