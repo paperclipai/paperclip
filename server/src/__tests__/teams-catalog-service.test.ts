@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CatalogTeam } from "@paperclipai/teams-catalog";
+import type { CatalogTeam } from "@paperclipai/shared";
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),

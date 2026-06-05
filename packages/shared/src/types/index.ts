@@ -89,6 +89,7 @@ export type {
   CatalogTeamSourceRef,
   CatalogTeamFile,
   CatalogTeam,
+  CatalogManifest,
   CatalogTeamListQuery,
   CatalogTeamFileDetail,
   CatalogTeamSourcePolicy,

@@ -110,6 +110,14 @@ export interface CatalogTeam {
   packageVersion?: string;
 }
 
+export interface CatalogManifest {
+  schemaVersion: 1;
+  packageName: "@paperclipai/teams-catalog";
+  packageVersion: string;
+  generatedAt: string;
+  teams: CatalogTeam[];
+}
+
 export interface CatalogTeamListQuery {
   kind?: CatalogTeamKind;
   category?: string;

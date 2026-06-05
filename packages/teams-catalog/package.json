@@ -45,8 +45,5 @@
     "test": "pnpm -w exec vitest run --root packages/teams-catalog --config vitest.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "validate": "node ../../cli/node_modules/tsx/dist/cli.mjs scripts/validate-catalog.ts"
-  },
-  "dependencies": {
-    "@paperclipai/skills-catalog": "workspace:*"
   }
 }
