@@ -131,13 +131,13 @@ export function AuthAtlas({ showTagline = true }: { showTagline?: boolean } = {}
         if (ts > tourNextAt) {
           tourStep = (tourStep + 1) % TOUR_ORDER.length;
           tourNode = TOUR_ORDER[tourStep];
-          tourNextAt = ts + 3600;
+          tourNextAt = ts + 5200;
           alpha = Math.max(alpha, 0.18); // a little life on each move
         }
         const t = nodes[tourNode], tk = home.k * 1.55;
-        cam.x += (-t.x - cam.x) * 0.045;
-        cam.y += (-t.y - cam.y) * 0.045;
-        cam.k += (tk - cam.k) * 0.045;
+        cam.x += (-t.x - cam.x) * 0.03;
+        cam.y += (-t.y - cam.y) * 0.03;
+        cam.k += (tk - cam.k) * 0.03;
         hover = tourNode; // reveal its label + neighbours
       }
 
