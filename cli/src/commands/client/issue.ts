@@ -950,6 +950,7 @@ export function registerIssueCommands(program: Command): void {
             issueId,
             filePath: opts.file,
             commentId: opts.commentId,
+            runId: ctx.api.runId,
           });
           printOutput(attachment, { json: ctx.json });
         } catch (err) {
@@ -1389,15 +1390,22 @@ function buildApiUrl(apiBase: string, path: string): string {
 async function uploadAttachment(
   apiBase: string,
   apiKey: string | undefined,
-  input: { companyId: string; issueId: string; filePath: string; commentId?: string },
+  input: { companyId: string; issueId: string; filePath: string; commentId?: string; runId?: string },
 ): Promise<unknown> {
   const bytes = await readFile(input.filePath);
   const form = new FormData();
   form.set("file", new Blob([bytes], { type: inferContentTypeFromPath(input.filePath) }), input.filePath.split(/[\\/]/).pop() ?? "attachment");
   if (input.commentId) form.set("issueCommentId", input.commentId);
+  // This multipart upload uses a hand-rolled fetch rather than PaperclipApiClient,
+  // so it must forward the agent run-id header itself — otherwise an
+  // agent-authenticated upload is rejected with "401 Agent run id required"
+  // (the client injects x-paperclip-run-id automatically for JSON requests).
+  const headers: Record<string, string> = {};
+  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+  if (input.runId) headers["x-paperclip-run-id"] = input.runId;
   const response = await fetch(buildApiUrl(apiBase, apiPath`/api/companies/${input.companyId}/issues/${input.issueId}/attachments`), {
     method: "POST",
-    headers: apiKey ? { authorization: `Bearer ${apiKey}` } : undefined,
+    headers,
     body: form,
   });
   return parseFetchResponse(response);

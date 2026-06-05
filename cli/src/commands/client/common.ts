@@ -135,18 +135,32 @@ export function apiPath(strings: TemplateStringsArray, ...values: Array<string |
 export function inferContentTypeFromPath(filePath: string): string | undefined {
   const ext = filePath.split(/[\\/]/).pop()?.split(".").pop()?.toLowerCase();
   if (!ext) return undefined;
+  // These MIME strings are matched against the server's issue-attachment
+  // allowlist (server/src/attachment-types.ts DEFAULT_ALLOWED_TYPES) by EXACT
+  // string, so text types must carry no "; charset=..." parameter or the upload
+  // is rejected with "422 Unsupported attachment content type". Keep this set in
+  // sync with that allowlist (plus svg/avif, accepted by the asset routes).
   return {
     avif: "image/avif",
+    csv: "text/csv",
     gif: "image/gif",
+    htm: "text/html",
+    html: "text/html",
     jpeg: "image/jpeg",
     jpg: "image/jpeg",
     json: "application/json",
-    md: "text/markdown; charset=utf-8",
+    m4v: "video/mp4",
+    md: "text/markdown",
+    mov: "video/quicktime",
+    mp4: "video/mp4",
     pdf: "application/pdf",
     png: "image/png",
+    qt: "video/quicktime",
     svg: "image/svg+xml",
-    txt: "text/plain; charset=utf-8",
+    txt: "text/plain",
+    webm: "video/webm",
     webp: "image/webp",
+    zip: "application/zip",
   }[ext];
 }
 

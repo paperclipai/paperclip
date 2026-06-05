@@ -608,6 +608,27 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
   });
 
+  it("rejects the checked-out owner without a run id on attachment upload (401)", async () => {
+    // Regression: an agent-authenticated client (e.g. the CLI's attachment:upload)
+    // that fails to send X-Paperclip-Run-Id must be rejected — mutating your own
+    // in-progress checkout requires proving run ownership.
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_key",
+      // intentionally no runId
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues/${issueId}/attachments`)
+      .attach("file", Buffer.from("report"), { filename: "report.html", contentType: "text/html" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(401);
+    expect(res.body.error).toBe("Agent run id required");
+    expect(mockStorageService.putFile).not.toHaveBeenCalled();
+  });
+
   it("allows the checked-out owner with the matching run id to patch and update documents", async () => {
     const app = await createApp(ownerActor());
 

@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { writeContext } from "../client/context.js";
 import { setStoredBoardCredential } from "../client/board-auth.js";
-import { resolveApiBase, resolveCommandContext } from "../commands/client/common.js";
+import { inferContentTypeFromPath, resolveApiBase, resolveCommandContext } from "../commands/client/common.js";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -156,5 +156,31 @@ describe("resolveCommandContext", () => {
     const explicitResolved = resolveCommandContext({ context: contextPath, apiKey: "explicit-token" });
     expect(explicitResolved.api.apiKey).toBe("explicit-token");
     expect(explicitResolved.authSource).toBe("explicit");
+  });
+});
+
+describe("inferContentTypeFromPath", () => {
+  it("maps the issue-attachment file types the server allows", () => {
+    // Must match server/src/attachment-types.ts DEFAULT_ALLOWED_TYPES exactly.
+    expect(inferContentTypeFromPath("newsletter.html")).toBe("text/html");
+    expect(inferContentTypeFromPath("page.htm")).toBe("text/html");
+    expect(inferContentTypeFromPath("data.csv")).toBe("text/csv");
+    expect(inferContentTypeFromPath("bundle.zip")).toBe("application/zip");
+    expect(inferContentTypeFromPath("demo.mp4")).toBe("video/mp4");
+    expect(inferContentTypeFromPath("clip.webm")).toBe("video/webm");
+    expect(inferContentTypeFromPath("walkthrough.mov")).toBe("video/quicktime");
+    expect(inferContentTypeFromPath("report.pdf")).toBe("application/pdf");
+    expect(inferContentTypeFromPath("chart.png")).toBe("image/png");
+  });
+
+  it("emits text types with no charset parameter so they match the exact allowlist", () => {
+    expect(inferContentTypeFromPath("notes.md")).toBe("text/markdown");
+    expect(inferContentTypeFromPath("log.txt")).toBe("text/plain");
+  });
+
+  it("is case-insensitive and returns undefined for unknown extensions", () => {
+    expect(inferContentTypeFromPath("/abs/Path/IMAGE.PNG")).toBe("image/png");
+    expect(inferContentTypeFromPath("archive.unknownext")).toBeUndefined();
+    expect(inferContentTypeFromPath("noextension")).toBeUndefined();
   });
 });
