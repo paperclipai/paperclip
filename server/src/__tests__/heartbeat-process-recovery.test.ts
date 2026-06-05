@@ -975,6 +975,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBe(runId);
   });
 
+  it("does NOT reap a run that emitted output recently, even if the recorded pid is dead", async () => {
+    const { runId } = await seedRunFixture({ processPid: 999_999_999, includeIssue: false });
+    // Simulate an actively-producing run: the tracked pid is dead (a detached launcher),
+    // but output was emitted just now — which proves the run is still alive. The reaper must
+    // not false-positive a `process_lost` here.
+    await db
+      .update(heartbeatRuns)
+      .set({ lastOutputAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode ?? null).not.toBe("process_lost");
+  });
+
   it("releases active environment leases when an orphaned run is reaped", async () => {
     const { runId, issueId, companyId } = await seedRunFixture({
       processPid: 999_999_999,

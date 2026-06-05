@@ -6563,6 +6563,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    // A run that emitted output within this window is treated as alive. Recent output is
+    // ground-truth liveness, so the pid check below can't false-positive a `process_lost`
+    // on a long, actively-producing run whose tracked launcher pid has detached (the claude
+    // CLI can exit its tracked pid while the real work continues). A genuinely dead/orphaned
+    // run stops emitting output, so its lastOutputAt goes stale and it is still reaped after
+    // the window passes.
+    const outputLivenessWindowMs = 90_000;
     const now = new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
@@ -6585,6 +6592,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (staleThresholdMs > 0) {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
         if (now.getTime() - refTime < staleThresholdMs) continue;
+      }
+
+      // Recent output proves the run is still alive — don't reap it even if the tracked
+      // pid looks dead (this is what was false-positiving `process_lost` on long runs).
+      if (
+        run.lastOutputAt &&
+        now.getTime() - new Date(run.lastOutputAt).getTime() < outputLivenessWindowMs
+      ) {
+        continue;
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
