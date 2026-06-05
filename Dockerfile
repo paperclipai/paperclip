@@ -79,14 +79,18 @@ ENV NODE_ENV=production \
   VALADRIEN_OS_DEPLOYMENT_MODE=authenticated \
   VALADRIEN_OS_DEPLOYMENT_EXPOSURE=private \
   OPENCODE_ALLOW_ALL_MODELS=true \
-  IS_SANDBOX=1
+  IS_SANDBOX=1 \
+  CLAUDE_CODE_FORCE_SANDBOX=0
 
-# IS_SANDBOX=1: this container IS the isolation boundary, so tell the claude CLI it is
-# already sandboxed and must NOT spawn its own nested Bash sandbox. That nested sandbox
-# runs as a synthetic uid with no /etc/passwd entry, synthesizes a home at
-# /home/sbx_user<uid>, and fails to create it (/home is root:root 755) -> every Bash-using
-# agent run dies with `adapter_failed: ENOENT mkdir /home/sbx_user<uid>` (e.g. Sol's
-# engineering tasks). Coordination-only agents (the CEO) never hit it.
+# CLAUDE_CODE_FORCE_SANDBOX=0 (the operative fix) + IS_SANDBOX=1: this container IS the
+# isolation boundary, so the claude CLI must NOT spawn its own nested Bash sandbox. That
+# sandbox runs shell commands as a synthetic unprivileged uid (e.g. 1051) with no
+# /etc/passwd entry -> it synthesizes a home at /home/sbx_user<uid> and can't create it
+# (/home is root:root 755), AND can't write the node-owned /valadrien-os/.claude/session-env
+# -> every Bash-using agent run dies (`adapter_failed: ENOENT mkdir /home/sbx_user<uid>`).
+# It engages on the OS's --allowedTools execution path. Verified in-container: with
+# CLAUDE_CODE_FORCE_SANDBOX=0, `--allowedTools Bash` runs `whoami` -> `node` and succeeds.
+# Coordination-only agents (the CEO) historically masked it by not running Bash.
 
 # VOLUME removed for Railway: Railway provisions persistent storage via its own
 # Volume system (attached to the service), not the Dockerfile VOLUME instruction,
