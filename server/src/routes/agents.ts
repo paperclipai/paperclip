@@ -73,7 +73,7 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
-import { redactEventPayload } from "../redaction.js";
+import { redactAdapterConfig, redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -527,8 +527,15 @@ export function agentRoutes(
       buildAgentAccessState(agent),
     ]);
 
+    const base = options?.restricted
+      ? redactForRestrictedAgentView(agent)
+      : {
+          ...agent,
+          adapterConfig: redactAdapterConfig(agent.adapterConfig as Record<string, unknown> | null),
+          runtimeConfig: redactAdapterConfig(agent.runtimeConfig as Record<string, unknown> | null),
+        };
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...base,
       chainOfCommand,
       access: accessState,
     };

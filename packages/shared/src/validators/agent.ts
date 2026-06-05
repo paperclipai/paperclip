@@ -6,7 +6,7 @@ import {
   INBOX_MINE_ISSUE_STATUS_FILTER,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
-import { envConfigSchema } from "./secret.js";
+import { strictEnvConfigSchema } from "./secret.js";
 
 export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
@@ -34,13 +34,14 @@ export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructions
 const adapterConfigSchema = z.record(z.string(), z.unknown()).superRefine((value, ctx) => {
   const envValue = value.env;
   if (envValue === undefined) return;
-  const parsed = envConfigSchema.safeParse(envValue);
+  const parsed = strictEnvConfigSchema.safeParse(envValue);
   if (!parsed.success) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "adapterConfig.env must be a map of valid env bindings",
-      path: ["env"],
-    });
+    for (const issue of parsed.error.issues) {
+      ctx.addIssue({
+        ...issue,
+        path: ["env", ...issue.path],
+      });
+    }
   }
 });
 

@@ -27,6 +27,31 @@ export const envBindingSchema = z.union([
 
 export const envConfigSchema = z.record(z.string(), envBindingSchema);
 
+// R5 (ANT-799, F1 ANT-1152): exported for server-side strict checks + tests.
+// Expanded from 6 → 14+ key classes per CSO review 2026-05-31.
+export const SENSITIVE_ENV_KEY_VALIDATOR_RE =
+  /^(GITHUB_TOKEN|N8N_API_TOKEN|.*SUPABASE.*KEY|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|LETTA_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY|LANGFUSE_(PUBLIC|SECRET)_KEY|SENTRY_DSN|EXA_API_KEY|.*BOT_TOKEN|.*HMAC.*SECRET|.*WEBHOOK_SECRET|AWS_SECRET_ACCESS_KEY|GCP_.*_KEY)$/i;
+
+/**
+ * strictEnvConfigSchema: rejects type=plain for keys matching SENSITIVE_ENV_KEY_VALIDATOR_RE.
+ * Active when PAPERCLIP_SECRETS_STRICT_MODE=true (default after Phase 1 migration).
+ */
+export const strictEnvConfigSchema = z.record(
+  z.string(),
+  envBindingSchema,
+).superRefine((env, ctx) => {
+  for (const [key, binding] of Object.entries(env)) {
+    if (!SENSITIVE_ENV_KEY_VALIDATOR_RE.test(key)) continue;
+    const parsed = envBindingPlainSchema.safeParse(binding);
+    if (!parsed.success) continue;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [key],
+      message: `Sensitive key '${key}' must use {type:"secret_ref",...} — plain values rejected in strict mode`,
+    });
+  }
+});
+
 export const createSecretSchema = z.object({
   name: z.string().min(1),
   key: z.string().min(1).regex(/^[a-zA-Z0-9_.-]+$/).optional(),

@@ -7,7 +7,13 @@ import {
   secretProviderConfigDiscoveryPreviewSchema,
   secretProviderConfigPayloadSchema,
   updateSecretProviderConfigSchema,
+  SENSITIVE_ENV_KEY_VALIDATOR_RE,
+  strictEnvConfigSchema,
 } from "./secret.js";
+
+const plain = (value: string) => ({ type: "plain" as const, value });
+const secretRef = (id = "00000000-0000-0000-0000-000000000001") =>
+  ({ type: "secret_ref" as const, secretId: id, version: "latest" as const });
 
 describe("secret validators", () => {
   it("rejects externalRef on managed secrets", () => {
@@ -188,5 +194,98 @@ describe("secret validators", () => {
         secrets: [],
       }),
     ).toThrow();
+  });
+});
+
+// R5 (ANT-799, F1 ANT-1152) — strict env validator tests
+describe("SENSITIVE_ENV_KEY_VALIDATOR_RE — coverage per key class (F1, ANT-1152)", () => {
+  const shouldMatch: string[] = [
+    "GITHUB_TOKEN",
+    "N8N_API_TOKEN",
+    "SUPABASE_SERVICE_KEY",
+    "SUPABASE_ANON_KEY",
+    "MY_SUPABASE_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "LETTA_API_KEY",
+    "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY",
+    "EXA_API_KEY",
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_SECRET_KEY",
+    "SENTRY_DSN",
+    "TELEGRAM_BOT_TOKEN",
+    "BOT_TOKEN",
+    "MY_SERVICE_BOT_TOKEN",
+    "HMAC_SECRET",
+    "HERMES_HMAC_SECRET",
+    "MY_WEBHOOK_SECRET",
+    "STRIPE_WEBHOOK_SECRET",
+    "AWS_SECRET_ACCESS_KEY",
+    "GCP_SERVICE_KEY",
+    "GCP_CREDENTIALS_KEY",
+  ];
+
+  const shouldNotMatch: string[] = [
+    "MY_FEATURE_FLAG",
+    "NODE_ENV",
+    "PORT",
+    "LOG_LEVEL",
+    "PAPERCLIP_AGENT_ID",
+    "SUPABASE_URL",
+    "LANGFUSE_HOST",
+    "BOT_NAME",
+    "WEBHOOK_URL",
+  ];
+
+  it.each(shouldMatch)("matches sensitive key: %s", (key) => {
+    expect(SENSITIVE_ENV_KEY_VALIDATOR_RE.test(key)).toBe(true);
+  });
+
+  it.each(shouldNotMatch)("does NOT match non-sensitive key: %s", (key) => {
+    expect(SENSITIVE_ENV_KEY_VALIDATOR_RE.test(key)).toBe(false);
+  });
+});
+
+describe("strictEnvConfigSchema — plain-value rejection per key class (F1, ANT-1152)", () => {
+  const sensitiveKeys = [
+    "GITHUB_TOKEN",
+    "N8N_API_TOKEN",
+    "SUPABASE_SERVICE_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "LETTA_API_KEY",
+    "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY",
+    "EXA_API_KEY",
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_SECRET_KEY",
+    "SENTRY_DSN",
+    "TELEGRAM_BOT_TOKEN",
+    "BOT_TOKEN",
+    "HMAC_SECRET",
+    "MY_WEBHOOK_SECRET",
+    "AWS_SECRET_ACCESS_KEY",
+    "GCP_SERVICE_KEY",
+  ];
+
+  it.each(sensitiveKeys)("rejects type=plain for %s", (key) => {
+    const result = strictEnvConfigSchema.safeParse({ [key]: plain("ghp_fake_value") });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.some(i => i.message.includes("plain values rejected"))).toBe(true);
+  });
+
+  it.each(sensitiveKeys)("accepts secret_ref for %s", (key) => {
+    const result = strictEnvConfigSchema.safeParse({ [key]: secretRef() });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts plain for non-sensitive keys", () => {
+    const result = strictEnvConfigSchema.safeParse({
+      MY_FEATURE_FLAG: plain("true"),
+      NODE_ENV: plain("production"),
+      PORT: plain("3000"),
+    });
+    expect(result.success).toBe(true);
   });
 });

@@ -132,3 +132,42 @@ export function redactSensitiveText(input: string): string {
     REDACTED_EVENT_VALUE,
   );
 }
+
+// Env keys are arbitrary user-chosen names (GITHUB_TOKEN, MY_SECRET, etc.).
+// Key-name regex is insufficient — redact every binding value unconditionally.
+// R4 (ANT-799): secret_ref bindings also redact the secretId to avoid revealing
+// which vault entry backs which env key (defense in depth).
+function redactEnvNamespace(env: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (isSecretRefBinding(value)) {
+      result[key] = { type: "secret_ref", secretId: "<redacted>" };
+    } else if (isPlainBinding(value)) {
+      result[key] = { type: "plain", value: REDACTED_EVENT_VALUE };
+    } else {
+      result[key] = REDACTED_EVENT_VALUE;
+    }
+  }
+  return result;
+}
+
+function redactEnvNamespacesDeep(obj: unknown): unknown {
+  if (Array.isArray(obj)) return obj.map(redactEnvNamespacesDeep);
+  if (!isPlainObject(obj)) return obj;
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    result[key] =
+      key === "env" && isPlainObject(value)
+        ? redactEnvNamespace(value)
+        : redactEnvNamespacesDeep(value);
+  }
+  return result;
+}
+
+export function redactAdapterConfig(
+  config: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (config == null) return null;
+  if (!isPlainObject(config)) return config;
+  return redactEnvNamespacesDeep(sanitizeRecord(config)) as Record<string, unknown>;
+}

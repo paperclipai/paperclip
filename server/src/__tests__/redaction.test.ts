@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_EVENT_VALUE, redactEventPayload, redactSensitiveText, sanitizeRecord } from "../redaction.js";
+import { REDACTED_EVENT_VALUE, redactAdapterConfig, redactEventPayload, redactSensitiveText, sanitizeRecord } from "../redaction.js";
 
 describe("redaction", () => {
   it("redacts sensitive keys and nested secret values", () => {
@@ -134,5 +134,49 @@ describe("redaction", () => {
 
     expect(result?.args).toEqual(["--api-key", "not-a-command-secret"]);
     expect(result?.argv).toEqual(["--api-key", REDACTED_EVENT_VALUE]);
+  });
+
+  describe("redactAdapterConfig (R4 — defense in depth)", () => {
+    it("redacts secret_ref secretId in env namespace", () => {
+      const config = {
+        model: "claude-opus-4-7",
+        env: {
+          GITHUB_TOKEN: {
+            type: "secret_ref",
+            secretId: "11111111-1111-4111-8111-111111111111",
+            version: "latest",
+          },
+          PAPERCLIP_API_URL: "http://localhost:3100",
+        },
+      };
+
+      const result = redactAdapterConfig(config);
+
+      expect(result?.env).toEqual({
+        GITHUB_TOKEN: { type: "secret_ref", secretId: "<redacted>" },
+        PAPERCLIP_API_URL: REDACTED_EVENT_VALUE,
+      });
+      expect(result?.model).toBe("claude-opus-4-7");
+    });
+
+    it("redacts plain env binding values", () => {
+      const config = {
+        env: {
+          ANTHROPIC_API_KEY: { type: "plain", value: "sk-ant-live-key" },
+          SAFE: "non-secret",
+        },
+      };
+
+      const result = redactAdapterConfig(config);
+
+      expect(result?.env).toEqual({
+        ANTHROPIC_API_KEY: { type: "plain", value: REDACTED_EVENT_VALUE },
+        SAFE: REDACTED_EVENT_VALUE,
+      });
+    });
+
+    it("returns null for null config", () => {
+      expect(redactAdapterConfig(null)).toBeNull();
+    });
   });
 });
