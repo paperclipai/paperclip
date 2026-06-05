@@ -179,7 +179,6 @@ export function AuthAtlas({ showTagline = true }: { showTagline?: boolean } = {}
       // labels: persona lobes are always named; agent/task nodes reveal their
       // names only when their lobe is in focus (hover or auto-tour).
       ctx.textBaseline = "middle";
-      ctx.font = `${(12 / cam.k).toFixed(2)}px "JetBrains Mono", ui-monospace, monospace`;
       for (let i = 0; i < N; i++) {
         const n = nodes[i];
         const focus = hi ? hi.has(i) : false;
@@ -188,6 +187,9 @@ export function AuthAtlas({ showTagline = true }: { showTagline?: boolean } = {}
         if (focus) a = i === hover ? 0.95 : 0.6;
         else a = hi ? 0.2 : 0.4; // persona label, dimmed when another is focused
         if (a <= 0) continue;
+        // personas (lobes) are larger + heavier than agent/task labels
+        const fs = (n.hub ? 16 : 12) / cam.k;
+        ctx.font = `${n.hub ? 500 : 400} ${fs.toFixed(2)}px "JetBrains Mono", ui-monospace, monospace`;
         ctx.fillStyle = n.hub ? `rgba(240,200,150,${a})` : `rgba(232,230,225,${a})`;
         ctx.fillText(n.label, n.x + (n.r + 6) / cam.k, n.y);
       }
