@@ -3584,6 +3584,70 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Math.max(1, Math.floor(asNumber(raw, fallback)));
   }
 
+  async function foldTerminalIssueRunEager(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect;
+  }) {
+    if (!isTerminalIssueStatus(input.sourceIssue.status)) {
+      return { kind: "skipped" as const, reason: "not_terminal" };
+    }
+
+    const runningAgent = await getAgent(input.run.agentId);
+    if (!runningAgent) {
+      return { kind: "skipped" as const, reason: "agent_not_found" };
+    }
+
+    const now = new Date();
+    const terminalEvidence = await latestSameRunSourceTerminalEvidence({
+      run: input.run,
+      sourceIssue: input.sourceIssue,
+      evidenceAfter: null,
+    });
+
+    if (!terminalEvidence) {
+      return { kind: "skipped" as const, reason: "no_evidence" };
+    }
+
+    const existingEvaluation = await findOpenStaleRunEvaluation(input.run.companyId, input.sourceIssue.id);
+    const result = await foldSourceResolvedStaleRun({
+      run: input.run,
+      runningAgent,
+      sourceIssue: input.sourceIssue,
+      evidence: terminalEvidence,
+      existingEvaluation,
+      silenceStartedAt: null,
+      silenceAgeMs: null,
+      now,
+    });
+
+    if (result.kind === "skipped") {
+      return result;
+    }
+
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: input.run.id,
+      action: "heartbeat.folded",
+      entityType: "heartbeat_run",
+      entityId: input.run.id,
+      details: {
+        source: "eager_terminal_fold",
+        sourceIssueId: input.sourceIssue.id,
+        sourceIssueIdentifier: input.sourceIssue.identifier,
+        sourceIssueStatus: input.sourceIssue.status,
+        finalRunStatus: input.sourceIssue.status === "cancelled" ? "cancelled" : "succeeded",
+        sameRunEvidenceKind: terminalEvidence.kind,
+        sameRunEvidenceId: terminalEvidence.id,
+        sameRunEvidenceAt: terminalEvidence.createdAt.toISOString(),
+      },
+    });
+
+    return { kind: "folded" as const, finalRunStatus: input.sourceIssue.status === "cancelled" ? "cancelled" : "succeeded" };
+  }
+
   return {
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
@@ -3594,5 +3658,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileIssueGraphLiveness,
     readRecoveryTimerIntervalMs,
+    foldTerminalIssueRunEager,
   };
 }
