@@ -51,6 +51,10 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
         message: `Claude API returned status ${res.status}`,
       };
     } else {
+      // OPENAI_BASE_URL support for proxies (e.g. OmniRoute, LiteLLM).
+      // Custom base URLs must include the /v1 prefix (e.g. http://127.0.0.1:20128/v1)
+      // so that we can safely append /models and get a working endpoint.
+      // The default hardcodes the full official path for the same reason.
       const baseUrl = process.env.OPENAI_BASE_URL
         ? process.env.OPENAI_BASE_URL.replace(/\/$/, "")
         : "https://api.openai.com/v1";
