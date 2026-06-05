@@ -20,5 +20,10 @@ export default defineConfig({
       hooks: "list",
     },
     setupFiles: ["./src/__tests__/setup-supertest.ts"],
+    // Ensure shadow-mode env is always off in tests; the done-gate test suite
+    // re-enables it explicitly per-test via vi.resetModules() + dynamic import.
+    env: {
+      DONE_GATE_SHADOW_MODE: "false",
+    },
   },
 });

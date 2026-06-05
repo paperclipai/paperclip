@@ -1116,4 +1116,54 @@ describe("claude execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  /**
+   * Regression test for STAA-4174.
+   *
+   * When the Claude CLI exits non-zero but the stream-JSON result event carries
+   * subtype=success, the run completed successfully.  The adapter must NOT
+   * classify it as an error, and must not let the model output bleed into the
+   * transient-upstream classifier (which was the route that produced
+   * "Claude run failed: subtype=success: <actual model output>").
+   */
+  it("treats subtype=success as succeeded even when the process exits non-zero (STAA-4174)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-staa4174-"));
+    const resultEvent = {
+      type: "result",
+      subtype: "success",
+      session_id: "claude-session-1",
+      is_error: false,
+      result: "Both AC3 and AC3-SaveFlow are updated and the rate limit handling is complete.",
+      usage: { input_tokens: 10, cache_read_input_tokens: 2, output_tokens: 5 },
+      total_cost_usd: 0.00042,
+    };
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: (commandPath) => writeFailingClaudeCommand(commandPath, { resultEvent, exitCode: 1 }),
+    });
+
+    try {
+      const result = await execute({
+        runId: "run-staa4174",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorMessage).toBeNull();
+      expect(result.errorCode).toBeNull();
+      expect(result.errorFamily).toBeNull();
+      expect(result.summary).toBe(resultEvent.result);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

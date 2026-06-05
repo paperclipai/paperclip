@@ -879,8 +879,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       } as Record<string, unknown>)
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
-    const parsedIsError = asBoolean(parsed.is_error, false);
-    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
+    // subtype=success is the authoritative success signal from the CLI stream;
+    // a non-zero exit code can occur even on clean runs (e.g. the CLI process
+    // exits 1 after a successful response). Never treat subtype=success as failed.
+    const parsedSubtype = asString(parsed.subtype, "").toLowerCase();
+    const parsedIsSuccess = parsedSubtype === "success";
+    const parsedIsError = !parsedIsSuccess && asBoolean(parsed.is_error, false);
+    const failed = !parsedIsSuccess && ((proc.exitCode ?? 0) !== 0 || parsedIsError);
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
