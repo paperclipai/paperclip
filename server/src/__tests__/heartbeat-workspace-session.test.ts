@@ -15,6 +15,7 @@ import {
   parseSessionCompactionPolicy,
   resolveNextSessionState,
   resolveRuntimeSessionParamsForWorkspace,
+  shouldForceFreshCodexSessionForWake,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -414,6 +415,43 @@ describe("shouldResetTaskSessionForWake", () => {
       shouldResetTaskSessionForWake({
         wakeSource: "on_demand",
         wakeTriggerDetail: "callback",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldForceFreshCodexSessionForWake", () => {
+  it("forces fresh Codex sessions for no-task timer heartbeats", () => {
+    expect(
+      shouldForceFreshCodexSessionForWake("codex_local", {
+        wakeReason: "heartbeat_timer",
+        wakeSource: "timer",
+      }),
+    ).toBe(true);
+  });
+
+  it("forces fresh Codex sessions for no-task retry wakes", () => {
+    expect(
+      shouldForceFreshCodexSessionForWake("codex_local", {
+        wakeReason: "retry_failed_run",
+      }),
+    ).toBe(true);
+  });
+
+  it("preserves Codex task sessions when a retry is tied to an explicit issue", () => {
+    expect(
+      shouldForceFreshCodexSessionForWake("codex_local", {
+        issueId: "issue-1",
+        wakeReason: "retry_failed_run",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not affect non-Codex timer heartbeats", () => {
+    expect(
+      shouldForceFreshCodexSessionForWake("claude_local", {
+        wakeReason: "heartbeat_timer",
+        wakeSource: "timer",
       }),
     ).toBe(false);
   });

@@ -1705,6 +1705,26 @@ export function shouldResetTaskSessionForWake(
   return false;
 }
 
+export function shouldForceFreshCodexSessionForWake(
+  adapterType: string,
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  if (adapterType !== "codex_local") return false;
+  if (deriveTaskKey(contextSnapshot, null)) return false;
+
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
+  const retryReason = readNonEmptyString(contextSnapshot?.retryReason);
+  return (
+    wakeSource === "timer" ||
+    wakeReason === "heartbeat_timer" ||
+    wakeReason === "retry_failed_run" ||
+    wakeReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON ||
+    wakeReason === "bounded_transient_heartbeat_retry" ||
+    retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+  );
+}
+
 function shouldRequireIssueCommentForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -1773,6 +1793,18 @@ function describeSessionResetReason(
   if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
   if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
   if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
+  return null;
+}
+
+function describeCodexFreshSessionReason(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
+  const retryReason = readNonEmptyString(contextSnapshot?.retryReason);
+  if (wakeReason) return `Codex wake reason is ${wakeReason}`;
+  if (retryReason) return `Codex retry reason is ${retryReason}`;
+  if (wakeSource === "timer") return "Codex timer heartbeat has no explicit task";
   return null;
 }
 
@@ -7329,8 +7361,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
-    const resetTaskSession = shouldResetTaskSessionForWake(context);
-    const sessionResetReason = describeSessionResetReason(context);
+    const resetTaskSession =
+      shouldResetTaskSessionForWake(context) ||
+      shouldForceFreshCodexSessionForWake(agent.adapterType, context);
+    const sessionResetReason =
+      describeSessionResetReason(context) ??
+      (shouldForceFreshCodexSessionForWake(agent.adapterType, context)
+        ? describeCodexFreshSessionReason(context)
+        : null);
     const taskSessionForRun = resetTaskSession ? null : taskSession;
     const explicitResumeSessionParams = normalizeResumeParamsForAdapter(
       agent.adapterType,
