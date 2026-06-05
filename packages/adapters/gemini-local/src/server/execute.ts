@@ -690,8 +690,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (transientUnknownApiRetryDelayMs > 0) {
         await sleep(transientUnknownApiRetryDelayMs);
       }
+      // Same-session retry: the transient API error does not invalidate the
+      // runtime session, so keep isRetry=false to preserve the runtime-session
+      // fallback. If the successful retry omits session_id, resolvedSessionId
+      // falls back to the existing runtime session instead of clearing it
+      // (which would drop resume state and cause avoidable context loss).
       const retry = await runAttempt(sessionId);
-      return toResult(retry, false, true);
+      return toResult(retry, false, false);
     }
 
     return toResult(initial);
