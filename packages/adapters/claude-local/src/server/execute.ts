@@ -867,7 +867,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
     const parsedIsError = asBoolean(parsed.is_error, false);
-    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
+    // Windows STATUS_ACCESS_VIOLATION (0xC0000005 = 3221225477) during process teardown:
+    // Claude finished its work and wrote valid non-error output, but native cleanup code
+    // (Node.js addons, MCP server shutdown) crashed on exit. The run outcome should not
+    // be affected — all API calls completed before the process exited.
+    const isTeardownCrash = proc.exitCode === 3221225477 && !parsedIsError;
+    const failed = isTeardownCrash ? false : ((proc.exitCode ?? 0) !== 0 || parsedIsError);
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
@@ -902,10 +907,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
       ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+      ...(isTeardownCrash ? { teardownCrash: { exitCode: proc.exitCode } } : {}),
     };
 
     return {
-      exitCode: proc.exitCode,
+      exitCode: isTeardownCrash ? 0 : proc.exitCode,
       signal: proc.signal,
       timedOut: false,
       errorMessage,
