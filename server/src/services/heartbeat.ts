@@ -8607,7 +8607,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               sessionParamsJson: nextSessionState.params,
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
-              lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
+              lastError: outcome === "succeeded" ? null : (scrubbedRunErrorMessage ?? "run_failed"),
             });
           }
         }
@@ -8700,22 +8700,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
           const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          const scrubbedMessage = activeRunScrubbers.get(run.id)?.scrubText(message) ?? message;
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           await setRunStatus(runId, "failed", {
-            error: message,
+            error: scrubbedMessage,
             errorCode: "adapter_failed",
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
                 errorCode: "adapter_failed",
-                errorMessage: message,
+                errorMessage: scrubbedMessage,
               }),
             } : {}),
           }).catch(() => undefined);
           await setWakeupStatus(run.wakeupRequestId, "failed", {
             finishedAt: new Date(),
-            error: message,
+            error: scrubbedMessage,
           }).catch(() => undefined);
           const failedRun = await getRun(runId).catch(() => null);
           if (failedRun) {
@@ -8725,7 +8726,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eventType: "error",
               stream: "system",
               level: "error",
-              message,
+              message: scrubbedMessage,
             }).catch(() => undefined);
             const livenessRun = await classifyAndPersistRunLiveness(failedRun).catch(() => failedRun);
             const failedAgent = setupFailureAgent ?? await getAgent(run.agentId).catch(() => null);
