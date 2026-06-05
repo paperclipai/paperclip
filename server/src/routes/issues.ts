@@ -124,6 +124,48 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
 
+// Routine-fire sweep (SAM-1531 / policy SAM-758): the daily stale-fire sweep is
+// owned by one agent (currently CTO) but routine fires are assigned to whichever
+// agent owns the routine, so the sweep cannot cancel cross-agent fires through the
+// normal ownership mediation. The "routines:sweep_cancel" grant authorizes a
+// tightly-scoped exception, gated by the predicates below. See SAM-1532.
+const ROUTINE_SWEEP_STALE_AGE_MS = 12 * 60 * 60 * 1000;
+const ROUTINE_SWEEP_CANCELLABLE_STATUSES: ReadonlySet<string> = new Set(["blocked", "todo"]);
+
+// Guardrail 1 (cancel-only) + 6 (traceable note): a sweep-cancel request may ONLY
+// transition status to "cancelled" and MUST carry a non-empty cancel note. Any
+// other mutating field (reassignment, title, reopen/resume/interrupt, …) disqualifies
+// the request and it falls through to normal ownership mediation. Fail-secure.
+function isRoutineSweepCancelRequest(body: Record<string, unknown>): boolean {
+  if (body.status !== "cancelled") return false;
+  if (typeof body.comment !== "string" || body.comment.trim().length === 0) return false;
+  return Object.keys(body).every((key) => key === "status" || key === "comment");
+}
+
+// Guardrail 2 (routine fires only) + 3 (terminal/stale, never a live continuation).
+// Evaluated against the persisted issue row; if any required field is missing the
+// predicate denies (fail-secure).
+function isStaleCancellableRoutineFire(
+  issue: {
+    originKind?: string | null;
+    status?: string | null;
+    checkoutRunId?: string | null;
+    executionRunId?: string | null;
+    updatedAt?: Date | string | null;
+  },
+  now: number = Date.now(),
+): boolean {
+  if (issue.originKind !== "routine_execution") return false;
+  if (!issue.status || !ROUTINE_SWEEP_CANCELLABLE_STATUSES.has(issue.status)) return false;
+  // A live checkout or an active execution run is a live continuation path.
+  if (issue.checkoutRunId) return false;
+  if (issue.executionRunId) return false;
+  if (!issue.updatedAt) return false;
+  const updatedMs = issue.updatedAt instanceof Date ? issue.updatedAt.getTime() : Date.parse(issue.updatedAt);
+  if (!Number.isFinite(updatedMs)) return false;
+  return now - updatedMs >= ROUTINE_SWEEP_STALE_AGE_MS;
+}
+
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
 type IssueRouteSnapshot = typeof issueRows.$inferSelect;
@@ -1496,7 +1538,17 @@ export function issueRoutes(
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId: string | null;
+      originKind?: string | null;
+      checkoutRunId?: string | null;
+      executionRunId?: string | null;
+      updatedAt?: Date | string | null;
+    },
+    options: { sweepCancelIntent?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1510,6 +1562,41 @@ export function issueRoutes(
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
+      }
+      // Scoped routine-fire sweep exception (SAM-1532). Authorizes the sweep owner
+      // to cancel a stale, non-live cross-agent routine fire — and nothing else.
+      // Guardrails: cancel-only intent + non-empty note (caller), stale routine fire
+      // (isStaleCancellableRoutineFire), explicit grant, fail-secure + audit log.
+      if (options.sweepCancelIntent && isStaleCancellableRoutineFire(issue)) {
+        const sweepAllowed = await access.hasPermission(
+          issue.companyId,
+          "agent",
+          actorAgentId,
+          "routines:sweep_cancel",
+        );
+        if (sweepAllowed) {
+          const actor = getActorInfo(req);
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.routine_sweep_cancel_authorized",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              targetAssigneeAgentId: issue.assigneeAgentId,
+              actorAgentId,
+              originKind: issue.originKind ?? null,
+              status: issue.status,
+              reason: "stale_routine_fire_sweep",
+              policy: ["SAM-1531", "SAM-758"],
+              sweepRunId: actor.runId ?? null,
+            },
+          });
+          return true;
+        }
       }
       if (issue.status === "in_progress") {
         res.status(409).json({
@@ -4038,7 +4125,8 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const sweepCancelIntent = isRoutineSweepCancelRequest(req.body as Record<string, unknown>);
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { sweepCancelIntent }))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
