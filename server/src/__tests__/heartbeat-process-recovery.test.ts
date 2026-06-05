@@ -3220,6 +3220,143 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
   });
 
+  it("escalates to blocked after consecutive needs_followup recovery runs with no concrete action", async () => {
+    // Simulate the COO-188 pattern: agent repeatedly posts "no change" comments
+    // while waiting for external review, but the issue stays in_progress.
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+    });
+
+    // Update the fixture's initial run to also have needs_followup liveness
+    const fixtureRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    const fixtureRun = fixtureRuns[0];
+    if (fixtureRun) {
+      await db
+        .update(heartbeatRuns)
+        .set({
+          livenessState: "needs_followup",
+          livenessReason: "Run produced useful output but no concrete action evidence",
+        })
+        .where(eq(heartbeatRuns.id, fixtureRun.id));
+    }
+
+    // Seed 2 more consecutive needs_followup runs (total 3 = the threshold)
+    const now = new Date("2026-03-19T00:10:00.000Z");
+    for (let i = 0; i < 2; i++) {
+      const extraRunId = randomUUID();
+      const extraWakeId = randomUUID();
+      await db.insert(agentWakeupRequests).values({
+        id: extraWakeId,
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_continuation_needed",
+        payload: { issueId },
+        status: "completed",
+        runId: extraRunId,
+        claimedAt: now,
+        finishedAt: new Date(now.getTime() + 30_000),
+      });
+      await db.insert(heartbeatRuns).values({
+        id: extraRunId,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "succeeded",
+        wakeupRequestId: extraWakeId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+        },
+        livenessState: "needs_followup",
+        livenessReason: "Run produced useful output but no concrete action evidence",
+        startedAt: now,
+        finishedAt: new Date(now.getTime() + 30_000),
+        updatedAt: new Date(now.getTime() + 30_000),
+      });
+    }
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Should NOT re-queue — should escalate to blocked instead
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    // The escalation comment should explain why
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("consecutive recovery runs");
+    expect(comments[0]?.body).toContain("needs_followup");
+  });
+
+  it("does not escalate when consecutive needs_followup runs are below the threshold", async () => {
+    // Only 2 consecutive needs_followup runs (below threshold of 3) — should still re-queue
+    const { agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+    });
+
+    // Seed 1 more needs_followup run (total 2, below threshold of 3)
+    const now = new Date("2026-03-19T00:10:00.000Z");
+    const extraRunId = randomUUID();
+    const extraWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: extraWakeId,
+      companyId: (await db.select().from(agents).where(eq(agents.id, agentId)).then(r => r[0]))!.companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId },
+      status: "completed",
+      runId: extraRunId,
+      claimedAt: now,
+      finishedAt: new Date(now.getTime() + 30_000),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: extraRunId,
+      companyId: (await db.select().from(agents).where(eq(agents.id, agentId)).then(r => r[0]))!.companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "succeeded",
+      wakeupRequestId: extraWakeId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+      },
+      livenessState: "needs_followup",
+      livenessReason: "Run produced useful output but no concrete action evidence",
+      startedAt: now,
+      finishedAt: new Date(now.getTime() + 30_000),
+      updatedAt: new Date(now.getTime() + 30_000),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Should still re-queue — below threshold
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+  });
+
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {
     const { issueId, runId } = await seedStrandedIssueFixture({
       status: "todo",

@@ -1015,6 +1015,7 @@ export function boundHeartbeatRunEventPayloadForStorage(payload: Record<string, 
 }
 
 function redactInlineBase64ImageData(chunk: string) {
+  if (!chunk) return '';
   return chunk.replace(INLINE_BASE64_IMAGE_DATA_RE, (_match, prefix: string, data: string, suffix: string) =>
     `${prefix}[omitted base64 image data: ${data.length} chars]${suffix}`,
   );

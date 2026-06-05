@@ -463,6 +463,46 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
   }
 
+  const MAX_CONSECUTIVE_NEEDS_FOLLOWUP = 3;
+
+  async function countConsecutiveNeedsFollowup(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+  ): Promise<number> {
+    const recentRuns = await db
+      .select({
+        status: heartbeatRuns.status,
+        livenessState: heartbeatRuns.livenessState,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(MAX_CONSECUTIVE_NEEDS_FOLLOWUP + 1);
+
+    let consecutive = 0;
+    for (const run of recentRuns) {
+      const wakeReason = parseObject(run.contextSnapshot).wakeReason;
+      if (
+        run.status === "succeeded" &&
+        run.livenessState === "needs_followup" &&
+        wakeReason === "issue_continuation_needed"
+      ) {
+        consecutive++;
+      } else {
+        break;
+      }
+    }
+    return consecutive;
+  }
+
   async function getLatestIssueRun(companyId: string, issueId: string): Promise<LatestIssueRun> {
     return db
       .select({
@@ -2622,6 +2662,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
         if (await isInvocationBudgetBlocked(issue, agentId)) {
           result.skipped += 1;
+          continue;
+        }
+
+        const consecutiveFollowup = await countConsecutiveNeedsFollowup(issue.companyId, issue.id, agentId);
+        if (consecutiveFollowup >= MAX_CONSECUTIVE_NEEDS_FOLLOWUP) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun: successfulRun,
+            comment:
+              `Paperclip detected ${consecutiveFollowup} consecutive recovery runs that produced no concrete action ` +
+              "(agent reports `needs_followup` each time). This usually means the agent is waiting for external " +
+              "input (e.g., code review, user decision) but the issue was not moved to `in_review`. " +
+              "Moving to `blocked` to stop the recovery loop. Move to `in_review` or `todo` when ready.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
           continue;
         }
 
