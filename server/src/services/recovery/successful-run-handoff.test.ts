@@ -52,6 +52,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasExplicitBlockerPath: false,
     hasOpenRecoveryIssue: false,
     hasPauseHold: false,
+    hasActiveRoutineContinuation: false,
     budgetBlocked: false,
     idempotentWakeExists: false,
     ...overrides,
@@ -127,6 +128,29 @@ describe("successful run handoff decision", () => {
     expect(decide({ hasExplicitBlockerPath: true })).toEqual({
       kind: "skip",
       reason: "explicit blocker path owns the next action",
+    });
+  });
+
+  it("does not queue when the issue is the recurring parent of an active routine", () => {
+    expect(decide({ hasActiveRoutineContinuation: true })).toEqual({
+      kind: "skip",
+      reason: "active routine continuation owns the next action",
+    });
+    expect(decide({
+      hasActiveRoutineContinuation: true,
+      detectedProgressSummary: null,
+      livenessState: null,
+    })).toEqual({
+      kind: "skip",
+      reason: "successful run did not produce handoff-relevant progress",
+    });
+    expect(decide({
+      hasActiveRoutineContinuation: true,
+      livenessState: "advanced",
+      detectedProgressSummary: "Run produced concrete action evidence: 1 issue comment(s)",
+    })).toEqual({
+      kind: "skip",
+      reason: "active routine continuation owns the next action",
     });
   });
 

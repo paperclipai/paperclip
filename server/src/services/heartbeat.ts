@@ -4987,6 +4987,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       existingWake,
       budgetBlock,
       pauseHold,
+      activeRoutineContinuation,
     ] = await Promise.all([
       issue
         ? db
@@ -5112,6 +5113,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issue
         ? treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id)
         : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: routines.id })
+          .from(routines)
+          .where(
+            and(
+              eq(routines.companyId, issue.companyId),
+              eq(routines.parentIssueId, issue.id),
+              eq(routines.status, "active"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -5127,6 +5142,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
+      hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });
