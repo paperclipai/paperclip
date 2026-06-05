@@ -4857,7 +4857,6 @@ export function issueRoutes(
       isClosedIssueStatus(existing.status) &&
       issue.status === "todo" &&
       req.body.status !== undefined;
-    const enteredInReview = existing.status !== "in_review" && issue.status === "in_review";
     const previousExecutionState = parseIssueExecutionState(existing.executionState);
     const nextExecutionState = parseIssueExecutionState(issue.executionState);
     const executionStageWakeup = buildExecutionStageWakeup({
@@ -4961,26 +4960,6 @@ export function issueRoutes(
             source: "issue.status_change",
             ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
             ...(interruptedRunId ? { interruptedRunId } : {}),
-          },
-        });
-      }
-
-      if (enteredInReview && issue.reviewerAgentId) {
-        addWakeup(issue.reviewerAgentId, {
-          source: "assignment",
-          triggerDetail: "system",
-          reason: "review_requested",
-          payload: {
-            issueId: issue.id,
-            mutation: "update",
-          },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: issue.id,
-            taskId: issue.id,
-            wakeReason: "review_requested",
-            source: "issue.review_requested",
           },
         });
       }
