@@ -44,6 +44,7 @@ import {
   createEmbeddedPostgresSupervisor,
   type EmbeddedPostgresSupervisor,
 } from "./db/embedded-postgres-supervisor.js";
+import { createEmbeddedPostgresSelfProbe } from "./db/embedded-postgres-self-probe.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -801,12 +802,12 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   if (embeddedPostgresSupervisor) {
-    const probe = setInterval(() => {
-      void embeddedPostgresSupervisor!.recoverIfUnhealthy("probe").catch((err: unknown) => {
-        logger.warn({ err }, "embedded postgres supervisor probe rejected");
-      });
-    }, 30_000);
-    probe.unref();
+    const selfProbe = createEmbeddedPostgresSelfProbe({
+      db,
+      supervisor: embeddedPostgresSupervisor,
+      logger,
+    });
+    selfProbe.start();
   }
 
   if (config.databaseBackupEnabled) {
