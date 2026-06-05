@@ -745,6 +745,111 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(mockAdapterExecute.mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("allows interaction continuation wakes without comment ids while dependencies remain blocked", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Mission 0",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Mission 1",
+        status: "in_review",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    const interactionWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId: blockedIssueId,
+        interactionId: "interaction-1",
+        interactionKind: "ask_user_questions",
+        interactionStatus: "answered",
+        mutation: "interaction",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        interactionId: "interaction-1",
+        interactionKind: "ask_user_questions",
+        interactionStatus: "answered",
+        wakeReason: "issue_commented",
+        source: "issue.interaction.respond",
+      },
+    });
+
+    expect(interactionWake).not.toBeNull();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, interactionWake!.id))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const interactionRun = await db
+      .select({
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, interactionWake!.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(interactionRun?.status).toBe("succeeded");
+    expect(interactionRun?.contextSnapshot).toMatchObject({
+      interactionId: "interaction-1",
+      interactionKind: "ask_user_questions",
+      interactionStatus: "answered",
+      dependencyBlockedInteraction: true,
+      unresolvedBlockerIssueIds: [blockerId],
+    });
+  });
+
   it("suppresses normal wakeups while allowing comment interaction wakes under a pause hold", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -866,6 +971,109 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .where(eq(heartbeatRuns.id, childCommentWake!.id))
       .then((rows) => rows[0] ?? null);
     expect(childRun?.contextSnapshot).toMatchObject({
+      treeHoldInteraction: true,
+      activeTreeHold: {
+        holdId: hold.id,
+        rootIssueId,
+        mode: "pause",
+        interaction: true,
+      },
+    });
+  });
+
+  it("allows structured interaction continuation wakes under a pause hold without comment ids", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const rootIssueId = randomUUID();
+    const childIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "SecurityEngineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: rootIssueId,
+        companyId,
+        title: "Paused root",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: childIssueId,
+        companyId,
+        parentId: rootIssueId,
+        title: "Paused child",
+        status: "in_review",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    const [hold] = await db
+      .insert(issueTreeHolds)
+      .values({
+        companyId,
+        rootIssueId,
+        mode: "pause",
+        status: "active",
+        reason: "security test hold",
+        releasePolicy: { strategy: "manual" },
+      })
+      .returning();
+
+    const interactionWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId: childIssueId,
+        interactionId: "interaction-2",
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        mutation: "interaction",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      contextSnapshot: {
+        issueId: childIssueId,
+        interactionId: "interaction-2",
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        wakeReason: "issue_commented",
+        source: "issue.interaction.accept",
+      },
+    });
+
+    expect(interactionWake).not.toBeNull();
+    const interactionRun = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, interactionWake!.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(interactionRun?.contextSnapshot).toMatchObject({
+      interactionId: "interaction-2",
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
       treeHoldInteraction: true,
       activeTreeHold: {
         holdId: hold.id,

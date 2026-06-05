@@ -813,4 +813,117 @@ describe.sequential("issue thread interaction routes", () => {
       },
     );
   });
+
+  it("allows an owning agent to answer ask_user_questions interactions", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "todo",
+      assigneeAgentId: CREATED_AGENT_ID,
+    }));
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-agent-answer",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
+      .send({
+        answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.answerQuestions).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-2",
+      {
+        answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+      },
+      {
+        agentId: CREATED_AGENT_ID,
+        userId: null,
+      },
+    );
+  });
+
+  it("allows an owning agent to accept request_confirmation interactions", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "todo",
+      assigneeAgentId: CREATED_AGENT_ID,
+    }));
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-3",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-3",
+        payload: {
+          version: 1,
+          prompt: "Apply this plan?",
+        },
+        result: {
+          version: 1,
+          outcome: "accepted",
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      createdIssues: [],
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-agent-accept",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-3/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.acceptInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-3",
+      {},
+      {
+        agentId: CREATED_AGENT_ID,
+        userId: null,
+      },
+    );
+  });
+
+  it("allows an owning agent to cancel ask_user_questions interactions", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "todo",
+      assigneeAgentId: CREATED_AGENT_ID,
+    }));
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-agent-cancel",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.cancelQuestions).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-2",
+      {},
+      {
+        agentId: CREATED_AGENT_ID,
+        userId: null,
+      },
+    );
+  });
 });

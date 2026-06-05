@@ -1689,12 +1689,27 @@ function shouldRequireIssueCommentForWake(
   );
 }
 
-function allowsIssueInteractionWake(
+function deriveInteractionId(
   contextSnapshot: Record<string, unknown> | null | undefined,
+  payload: Record<string, unknown> | null | undefined,
+) {
+  return (
+    readNonEmptyString(contextSnapshot?.interactionId) ??
+    readNonEmptyString(payload?.interactionId) ??
+    null
+  );
+}
+
+export function allowsIssueInteractionWake(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  payload: Record<string, unknown> | null | undefined = null,
 ) {
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (!wakeReason || !ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
-  return Boolean(deriveCommentId(contextSnapshot, null));
+  return Boolean(
+    deriveCommentId(contextSnapshot, payload) ||
+    deriveInteractionId(contextSnapshot, payload),
+  );
 }
 
 async function listUnresolvedBlockerSummaries(

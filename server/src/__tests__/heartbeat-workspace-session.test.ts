@@ -4,6 +4,7 @@ import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-lo
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
+  allowsIssueInteractionWake,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
   deriveTaskKeyWithHeartbeatFallback,
@@ -388,6 +389,45 @@ describe("shouldResetTaskSessionForWake", () => {
       shouldResetTaskSessionForWake({
         wakeSource: "on_demand",
         wakeTriggerDetail: "callback",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("allowsIssueInteractionWake", () => {
+  it("accepts comment-based interaction wakes", () => {
+    expect(
+      allowsIssueInteractionWake({
+        wakeReason: "issue_commented",
+        wakeCommentId: "comment-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("accepts structured interaction continuation wakes without comment ids", () => {
+    expect(
+      allowsIssueInteractionWake({
+        wakeReason: "issue_commented",
+        interactionId: "interaction-1",
+        interactionKind: "ask_user_questions",
+        interactionStatus: "answered",
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects ordinary comment wakes with no comment or interaction evidence", () => {
+    expect(
+      allowsIssueInteractionWake({
+        wakeReason: "issue_commented",
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects non-interaction wake reasons even when interaction ids are present", () => {
+    expect(
+      allowsIssueInteractionWake({
+        wakeReason: "issue_assigned",
+        interactionId: "interaction-1",
       }),
     ).toBe(false);
   });
