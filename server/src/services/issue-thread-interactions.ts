@@ -20,6 +20,10 @@ import type {
   RequestConfirmationTarget,
   RejectIssueThreadInteraction,
   RespondIssueThreadInteraction,
+  SolicitBidInteraction,
+  SolicitBidResolvedBidEntry,
+  SubmitSolicitBid,
+  SubmittedBidInput,
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
 } from "@paperclipai/shared";
@@ -27,11 +31,16 @@ import {
   acceptIssueThreadInteractionSchema,
   askUserQuestionsPayloadSchema,
   askUserQuestionsResultSchema,
+  awardSolicitBid,
   cancelIssueThreadInteractionSchema,
   createIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
+  scoreSubmittedBid,
+  solicitBidPayloadSchema,
+  solicitBidResultSchema,
+  submitSolicitBidSchema,
   suggestTasksPayloadSchema,
   suggestTasksResultSchema,
 } from "@paperclipai/shared";
@@ -128,6 +137,13 @@ function hydrateInteraction(
         payload: requestConfirmationPayloadSchema.parse(row.payload),
         result: row.result ? requestConfirmationResultSchema.parse(row.result) : null,
       } satisfies RequestConfirmationInteraction;
+    case "solicit_bid":
+      return {
+        ...base,
+        kind: "solicit_bid",
+        payload: solicitBidPayloadSchema.parse(row.payload),
+        result: row.result ? solicitBidResultSchema.parse(row.result) : null,
+      } satisfies SolicitBidInteraction;
     default:
       throw unprocessable(`Unknown interaction kind: ${row.kind}`);
   }
@@ -761,6 +777,164 @@ export function issueThreadInteractionService(db: Db) {
 
       await touchIssue(db, issue.id);
       return hydrateInteraction(created);
+    },
+
+    // --- solicit_bid: candidate submits a bid during the open window ---------
+    submitSolicitBid: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      input: SubmitSolicitBid,
+      actor: InteractionActor,
+    ): Promise<SolicitBidInteraction> => {
+      const data = submitSolicitBidSchema.parse(input);
+      const bidderAgentId = actor.agentId ?? null;
+      if (!bidderAgentId) {
+        throw unprocessable("Only an agent can submit a bid for a solicit_bid interaction");
+      }
+      const submittedAt = new Date();
+      return db.transaction(async (tx) => {
+        // Row-lock the interaction so concurrent bidders serialize their
+        // read-modify-write of the accumulating bid set (no lost updates).
+        const current = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, interactionId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!current) throw notFound("Interaction not found");
+        if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
+          throw notFound("Interaction not found");
+        }
+        if (current.kind !== "solicit_bid") {
+          throw unprocessable("Only solicit_bid interactions accept bids");
+        }
+        if (current.status !== "pending") {
+          throw conflict("The bid window for this solicitation has closed");
+        }
+        const interaction = hydrateInteraction(current) as SolicitBidInteraction;
+        const candidate = interaction.payload.candidates.find((c) => c.agentId === bidderAgentId);
+        if (!candidate) {
+          throw unprocessable("This agent is not an eligible candidate for this solicitation");
+        }
+        const maxLoad = Math.max(1, ...interaction.payload.candidates.map((c) => c.load));
+        const scored = scoreSubmittedBid(
+          candidate,
+          { agentId: bidderAgentId, ...data },
+          interaction.payload.priority,
+          maxLoad,
+          interaction.payload.weightsPreset,
+        );
+        const entry: SolicitBidResolvedBidEntry = {
+          ...scored,
+          submittedAt: submittedAt.toISOString(),
+        };
+        const previous = interaction.result?.submittedBids ?? [];
+        // Last write wins for a re-bidding candidate; everyone else is preserved.
+        const submittedBids = [
+          ...previous.filter((b) => b.agentId !== bidderAgentId),
+          entry,
+        ];
+        const nextResult = solicitBidResultSchema.parse({
+          version: 1,
+          outcome: "collecting",
+          submittedBids,
+          winnerAgentId: null,
+          awardRationale: null,
+          closedAt: null,
+        });
+        const [updated] = await tx
+          .update(issueThreadInteractions)
+          .set({ result: nextResult, updatedAt: submittedAt })
+          .where(and(eq(issueThreadInteractions.id, interactionId), eq(issueThreadInteractions.status, "pending")))
+          .returning();
+        if (!updated) {
+          throw conflict("The bid window for this solicitation has closed");
+        }
+        await touchIssue(tx, issue.id);
+        return hydrateInteraction(updated) as SolicitBidInteraction;
+      });
+    },
+
+    // --- solicit_bid: close the window and run the deterministic award -------
+    closeSolicitBid: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      actor: InteractionActor,
+    ): Promise<{ interaction: SolicitBidInteraction; winnerAgentId: string | null }> => {
+      const closedAt = new Date();
+      return db.transaction(async (tx) => {
+        const current = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, interactionId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!current) throw notFound("Interaction not found");
+        if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
+          throw notFound("Interaction not found");
+        }
+        if (current.kind !== "solicit_bid") {
+          throw unprocessable("Only solicit_bid interactions can be closed");
+        }
+        if (current.status !== "pending") {
+          throw conflict("Interaction has already been resolved");
+        }
+        const interaction = hydrateInteraction(current) as SolicitBidInteraction;
+        const submitted: SubmittedBidInput[] = (interaction.result?.submittedBids ?? []).map((b) => ({
+          agentId: b.agentId,
+          confidence: b.confidence,
+          estEffortHours: b.estEffortHours,
+          specialtyFit: b.specialtyFit,
+          rationale: b.rationale,
+        }));
+        const submittedByAgent = new Map(
+          (interaction.result?.submittedBids ?? []).map((b) => [b.agentId, b]),
+        );
+        // Deterministic award over submitted bids, falling back to simulated
+        // bids for non-responders so a quiet fleet never deadlocks.
+        const award = awardSolicitBid({
+          priority: interaction.payload.priority,
+          preset: interaction.payload.weightsPreset,
+          fitGate: interaction.payload.fitGate,
+          candidates: interaction.payload.candidates,
+          submittedBids: submitted,
+        });
+        const bidsForResult: SolicitBidResolvedBidEntry[] = award.bids.map((b) => ({
+          ...b,
+          submittedAt: submittedByAgent.get(b.agentId)?.submittedAt ?? null,
+        }));
+        const hasWinner = award.winnerAgentId !== null;
+        const nextResult = solicitBidResultSchema.parse({
+          version: 1,
+          outcome: hasWinner ? "awarded" : "no_candidate",
+          submittedBids: bidsForResult,
+          winnerAgentId: award.winnerAgentId,
+          awardRationale: award.awardRationale,
+          closedAt: closedAt.toISOString(),
+        });
+        // Award resolves the interaction; promotion of the winner onto the issue
+        // (assignee patch) is the manager's env-gated ① path, kept out of core.
+        const [updated] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: hasWinner ? "accepted" : "expired",
+            result: nextResult,
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: closedAt,
+            updatedAt: closedAt,
+          })
+          .where(and(eq(issueThreadInteractions.id, interactionId), eq(issueThreadInteractions.status, "pending")))
+          .returning();
+        if (!updated) {
+          throw conflict("Interaction has already been resolved");
+        }
+        await touchIssue(tx, issue.id);
+        return {
+          interaction: hydrateInteraction(updated) as SolicitBidInteraction,
+          winnerAgentId: award.winnerAgentId,
+        };
+      });
     },
 
     acceptInteraction: async (

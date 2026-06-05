@@ -15,6 +15,11 @@ export type {
   RequestConfirmationPayload,
   RequestConfirmationResult,
   RequestConfirmationTarget,
+  SolicitBidCandidateEntry,
+  SolicitBidInteraction,
+  SolicitBidPayload,
+  SolicitBidResolvedBidEntry,
+  SolicitBidResult,
   SuggestedTaskDraft,
   SuggestTasksInteraction,
   SuggestTasksPayload,
@@ -49,6 +54,7 @@ export function isIssueThreadInteraction(
       candidate.kind === "suggest_tasks"
       || candidate.kind === "ask_user_questions"
       || candidate.kind === "request_confirmation"
+      || candidate.kind === "solicit_bid"
     );
 }
 
@@ -81,6 +87,18 @@ export function buildIssueThreadInteractionSummary(
       return "Confirmation expired";
     }
     return "Requested confirmation";
+  }
+
+  if (interaction.kind === "solicit_bid") {
+    const candidateCount = interaction.payload.candidates.length;
+    const outcome = interaction.result?.outcome;
+    if (outcome === "awarded") {
+      const bidCount = interaction.result?.submittedBids.length ?? 0;
+      return bidCount === 1 ? "Awarded among 1 bid" : `Awarded among ${bidCount} bids`;
+    }
+    if (outcome === "no_candidate") return "No eligible bidders";
+    if (outcome === "cancelled") return "Bid solicitation cancelled";
+    return candidateCount === 1 ? "Soliciting 1 bid" : `Soliciting ${candidateCount} bids`;
   }
 
   const count = interaction.payload.questions.length;

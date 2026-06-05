@@ -19,7 +19,12 @@ const mockInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(),
   answerQuestions: vi.fn(),
   cancelQuestions: vi.fn(),
+  submitSolicitBid: vi.fn(),
+  closeSolicitBid: vi.fn(),
 }));
+
+const CANDIDATE_AGENT_A = "33333333-3333-4333-8333-333333333333";
+const CANDIDATE_AGENT_B = "44444444-4444-4444-8444-444444444444";
 
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
@@ -811,6 +816,122 @@ describe.sequential("issue thread interaction routes", () => {
         agentId: CREATED_AGENT_ID,
         userId: null,
       },
+    );
+  });
+
+  function solicitBidInteraction(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "interaction-bid",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "solicit_bid",
+      status: "pending",
+      continuationPolicy: "wake_candidates",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: null,
+      payload: {
+        version: 1,
+        priority: "high",
+        bidWindowClosesAt: "2026-04-20T13:00:00.000Z",
+        weightsPreset: "fit_first",
+        fitGate: 0.12,
+        candidates: [
+          { agentId: CANDIDATE_AGENT_A, agentName: "A", role: "engineer", specialtyFit: 0.6, load: 1 },
+          { agentId: CANDIDATE_AGENT_B, agentName: "B", role: "qa", specialtyFit: 0.5, load: 0 },
+        ],
+      },
+      result: null,
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("wakes every candidate when a solicit_bid call-for-proposals is opened", async () => {
+    mockInteractionService.create.mockResolvedValueOnce(solicitBidInteraction());
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "solicit_bid",
+        payload: solicitBidInteraction().payload,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(2);
+    const wokenAgents = mockHeartbeatService.wakeup.mock.calls.map((call) => call[0]);
+    expect(wokenAgents).toEqual([CANDIDATE_AGENT_A, CANDIDATE_AGENT_B]);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      CANDIDATE_AGENT_A,
+      expect.objectContaining({
+        reason: "issue_commented",
+        payload: expect.objectContaining({ mutation: "solicit_bid", interactionId: "interaction-bid" }),
+      }),
+    );
+  });
+
+  it("lets a candidate agent submit a bid", async () => {
+    mockInteractionService.submitSolicitBid.mockResolvedValueOnce(
+      solicitBidInteraction({
+        result: { version: 1, outcome: "collecting", submittedBids: [{ agentId: CANDIDATE_AGENT_A }] },
+      }),
+    );
+    const app = await createApp({
+      type: "agent",
+      agentId: CANDIDATE_AGENT_A,
+      companyId: "company-1",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-bid/bids")
+      .send({ confidence: 0.8, estEffortHours: 4, specialtyFit: 0.6, rationale: "I own this area" });
+
+    expect(res.status).toBe(201);
+    expect(mockInteractionService.submitSolicitBid).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-bid",
+      expect.objectContaining({ confidence: 0.8, specialtyFit: 0.6 }),
+      { agentId: CANDIDATE_AGENT_A, userId: null },
+    );
+  });
+
+  it("rejects board bid submissions — only agents bid", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-bid/bids")
+      .send({ confidence: 0.8, estEffortHours: 4, specialtyFit: 0.6, rationale: "x" });
+    expect(res.status).toBe(403);
+    expect(mockInteractionService.submitSolicitBid).not.toHaveBeenCalled();
+  });
+
+  it("closes the window and returns the award", async () => {
+    mockInteractionService.closeSolicitBid.mockResolvedValueOnce({
+      interaction: solicitBidInteraction({
+        status: "accepted",
+        result: {
+          version: 1,
+          outcome: "awarded",
+          submittedBids: [{ agentId: CANDIDATE_AGENT_A }],
+          winnerAgentId: CANDIDATE_AGENT_A,
+        },
+      }),
+      winnerAgentId: CANDIDATE_AGENT_A,
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-bid/close")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.result.winnerAgentId).toBe(CANDIDATE_AGENT_A);
+    expect(mockInteractionService.closeSolicitBid).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-bid",
+      expect.objectContaining({ userId: "local-board" }),
     );
   });
 });

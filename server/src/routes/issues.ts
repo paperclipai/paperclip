@@ -41,6 +41,7 @@ import {
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
+  submitSolicitBidSchema,
   updateIssueWorkProductSchema,
   updateDocumentAnnotationThreadSchema,
   upsertIssueDocumentSchema,
@@ -5308,8 +5309,134 @@ export function issueRoutes(
       },
     });
 
+    // solicit_bid opens a call-for-proposals: wake every eligible candidate so
+    // they bid within the window rather than being polled.
+    if (interaction.kind === "solicit_bid" && interaction.continuationPolicy === "wake_candidates") {
+      for (const candidate of interaction.payload.candidates) {
+        void heartbeat.wakeup(candidate.agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_commented",
+          payload: {
+            issueId: issue.id,
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            mutation: "solicit_bid",
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            wakeReason: "solicit_bid",
+            source: "issue.interaction.solicit_bid",
+          },
+        }).catch((err) => logger.warn({
+          err,
+          issueId: issue.id,
+          interactionId: interaction.id,
+          agentId: candidate.agentId,
+        }, "failed to wake candidate for solicit_bid"));
+      }
+    }
+
     res.status(201).json(interaction);
   });
+
+  router.post(
+    "/issues/:id/interactions/:interactionId/bids",
+    validate(submitSolicitBidSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      // Only candidate agents bid; the board does not bid on a solicitation.
+      if (req.actor.type !== "agent") {
+        res.status(403).json({ error: "Only agents can submit bids" });
+        return;
+      }
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+
+      const actor = getActorInfo(req);
+      const interaction = await issueThreadInteractionService(db).submitSolicitBid(issue, interactionId, req.body, {
+        agentId: actor.agentId,
+        userId: null,
+      });
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.thread_interaction_bid_submitted",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          bidCount: interaction.result?.submittedBids?.length ?? 0,
+        },
+      });
+
+      res.status(201).json(interaction);
+    },
+  );
+
+  router.post(
+    "/issues/:id/interactions/:interactionId/close",
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      // The manager agent (or the board) closes the window and triggers award.
+      if (req.actor.type === "agent") {
+        if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      } else {
+        assertBoard(req);
+      }
+
+      const actor = getActorInfo(req);
+      const { interaction, winnerAgentId } = await issueThreadInteractionService(db).closeSolicitBid(issue, interactionId, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.thread_interaction_closed",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          winnerAgentId,
+          bidCount: interaction.result?.submittedBids?.length ?? 0,
+        },
+      });
+
+      res.json(interaction);
+    },
+  );
 
   router.post(
     "/issues/:id/interactions/:interactionId/accept",

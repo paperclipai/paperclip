@@ -26,6 +26,7 @@ import {
   ISSUE_THREAD_INTERACTION_STATUSES,
   MODEL_PROFILE_KEYS,
 } from "../constants.js";
+import { SOLICIT_BID_WEIGHTS_PRESETS } from "../solicit-bid-award.js";
 import { multilineTextSchema } from "./text.js";
 
 export const issueBlockedInboxStateSchema = z.enum([
@@ -731,6 +732,76 @@ export const requestConfirmationResultSchema = z.object({
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
 });
 
+// --- solicit_bid (Contract-Net call-for-proposals) — TON-2120 -------------
+
+export const solicitBidCandidateSchema = z.object({
+  agentId: z.string().uuid(),
+  agentName: z.string().trim().min(1).max(160),
+  role: z.string().trim().min(1).max(60),
+  // Manager-computed eligibility inputs; also drive the simulated fallback bid.
+  specialtyFit: z.number().min(0).max(1),
+  load: z.number().int().min(0),
+});
+
+export const solicitBidPayloadSchema = z.object({
+  version: z.literal(1),
+  promptMarkdown: z.string().trim().max(20000).nullable().optional(),
+  priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
+  // ISO 8601 instant at which the bid window closes and the award runs.
+  bidWindowClosesAt: z.string().datetime(),
+  weightsPreset: z.enum(SOLICIT_BID_WEIGHTS_PRESETS).optional().default("fit_first"),
+  fitGate: z.number().min(0).max(1).optional().default(0.12),
+  candidates: z.array(solicitBidCandidateSchema).min(1).max(50),
+}).superRefine((value, ctx) => {
+  const seen = new Set<string>();
+  for (const [index, candidate] of value.candidates.entries()) {
+    if (seen.has(candidate.agentId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "candidate agentId must be unique within one solicitation",
+        path: ["candidates", index, "agentId"],
+      });
+      continue;
+    }
+    seen.add(candidate.agentId);
+  }
+});
+
+// A bid a candidate submits during the window. The candidate controls these
+// four fields; the manager retains authority over load and priority-fit.
+export const submitSolicitBidSchema = z.object({
+  confidence: z.number().min(0).max(1),
+  estEffortHours: z.number().min(0).max(10000),
+  specialtyFit: z.number().min(0).max(1),
+  rationale: z.string().trim().min(1).max(4000),
+});
+export type SubmitSolicitBid = z.infer<typeof submitSolicitBidSchema>;
+
+export const solicitBidResolvedBidSchema = z.object({
+  agentId: z.string().uuid(),
+  agentName: z.string().trim().min(1).max(160),
+  role: z.string().trim().min(1).max(60),
+  specialtyFit: z.number(),
+  load: z.number().int().min(0),
+  confidence: z.number(),
+  estEffortHours: z.number(),
+  priorityFit: z.number(),
+  score: z.number(),
+  rationale: z.string().max(4000),
+  simulated: z.boolean(),
+  submittedAt: z.string().datetime().nullable().optional(),
+});
+
+export const solicitBidResultSchema = z.object({
+  version: z.literal(1),
+  outcome: z.enum(["collecting", "awarded", "no_candidate", "cancelled"]),
+  submittedBids: z.array(solicitBidResolvedBidSchema).max(50).optional().default([]),
+  winnerAgentId: z.string().uuid().nullable().optional(),
+  awardRationale: z.string().trim().max(8000).nullable().optional(),
+  closedAt: z.string().datetime().nullable().optional(),
+  cancellationReason: z.string().trim().max(4000).nullable().optional(),
+});
+
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("suggest_tasks"),
@@ -761,6 +832,16 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     summary: z.string().trim().max(1000).nullable().optional(),
     continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("none"),
     payload: requestConfirmationPayloadSchema,
+  }),
+  z.object({
+    kind: z.literal("solicit_bid"),
+    idempotencyKey: z.string().trim().max(255).nullable().optional(),
+    sourceCommentId: z.string().uuid().nullable().optional(),
+    sourceRunId: z.string().uuid().nullable().optional(),
+    title: z.string().trim().max(240).nullable().optional(),
+    summary: z.string().trim().max(1000).nullable().optional(),
+    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_candidates"),
+    payload: solicitBidPayloadSchema,
   }),
 ]);
 
