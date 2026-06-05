@@ -54,12 +54,11 @@ It looks like a task manager — but under the hood it has org charts, budgets, 
     <td align="center"><img src="doc/assets/logos/cursor.svg" width="32" alt="Cursor" /><br/><sub>Cursor</sub></td>
     <td align="center"><img src="doc/assets/logos/bash.svg" width="32" alt="Bash" /><br/><sub>Bash</sub></td>
     <td align="center"><img src="doc/assets/logos/http.svg" width="32" alt="HTTP" /><br/><sub>HTTP</sub></td>
+    <td align="center"><img src="doc/assets/logos/google-adk.svg" width="32" alt="Google ADK" /><br/><sub>Google ADK</sub></td>
   </tr>
 </table>
 
 <em>If it can receive a heartbeat, it's hired.</em>
-
-<p align="center"><sub>Also works with Google ADK.</sub></p>
 
 </div>
 
