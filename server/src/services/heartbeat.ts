@@ -15945,7 +15945,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ),
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
-              lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
+              lastError: outcome === "succeeded" ? null : (scrubbedRunErrorMessage ?? "run_failed"),
             });
           }
         }
@@ -16108,10 +16108,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           } else {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
-          const message = redactCurrentUserText(
-            outerErr instanceof Error ? outerErr.message : "Unknown setup failure",
-            await getCurrentUserRedactionOptions(),
-          );
+          const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          const scrubbedMessage = activeRunScrubbers.get(run.id)?.scrubText(message) ?? message;
           // A missing secret/env binding is a known pre-dispatch configuration gap,
           // not an opaque setup crash. Surface it with its own errorCode so the
           // recovery path routes it to a human owner instead of looping retries.
@@ -16127,13 +16125,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
-            error: message,
+            error: scrubbedMessage,
             errorCode: setupFailureErrorCode,
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
                 errorCode: setupFailureErrorCode,
-                errorMessage: message,
+                errorMessage: scrubbedMessage,
                 resultJson:
                   workspaceValidationSetupFailure?.resultJson ?? configurationIncompleteSetupFailure?.resultJson ?? null,
               }),
@@ -16151,7 +16149,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           } else {
             await setWakeupStatus(run.wakeupRequestId, "failed", {
               finishedAt: new Date(),
-              error: message,
+              error: scrubbedMessage,
             }).catch(() => undefined);
           }
           const failedRun = await getRun(runId).catch(() => null);
@@ -16162,7 +16160,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eventType: "error",
               stream: "system",
               level: "error",
-              message,
+              message: scrubbedMessage,
             }).catch(() => undefined);
             const livenessRun = await classifyAndPersistRunLiveness(failedRun).catch(() => failedRun);
             const setupFailureIssueId = readNonEmptyString(parseObject(livenessRun.contextSnapshot).issueId);
