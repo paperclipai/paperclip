@@ -71,6 +71,10 @@ export interface RealizedExecutionWorkspace extends ExecutionWorkspaceInput {
 }
 
 const DEFAULT_STALE_BEHIND_THRESHOLD = 10;
+const DEFAULT_MANAGED_CHECKOUT_REMEDIATION_THRESHOLD = 3;
+const DEFAULT_MANAGED_CHECKOUT_FRESHNESS_STATE_PATH = resolveHomeAwarePath(
+  "~/.paperclip/state/managed-checkout-freshness.json",
+);
 
 type RepoCoordinates = {
   host: string;
@@ -564,6 +568,15 @@ function readTrimmedString(value: string | null | undefined) {
   return trimmed ? trimmed : null;
 }
 
+function branchSlug(value: string | null | undefined) {
+  const cleaned = (value ?? "detached").replace(/[^A-Za-z0-9._/-]+/g, "-").replace(/\/+/g, "-");
+  return cleaned.replace(/^-+|-+$/g, "") || "detached";
+}
+
+function isoBranchTimestamp() {
+  return new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
 function normalizeRepoHost(host: string) {
   const normalized = host.trim().toLowerCase();
   if (normalized === "github.com" || normalized.startsWith("github.com-")) {
@@ -618,6 +631,69 @@ async function inspectGitWorkingTreeStatus(cwd: string) {
   return { dirtyEntryCount, untrackedEntryCount };
 }
 
+type ManagedCheckoutFreshnessState = {
+  checkouts?: Record<string, { signature: string; count: number; updatedAt: string }>;
+};
+
+async function loadManagedCheckoutFreshnessState(statePath: string): Promise<ManagedCheckoutFreshnessState> {
+  const raw = await fs.readFile(statePath, "utf8").catch(() => null);
+  if (!raw) return { checkouts: {} };
+  try {
+    const parsed = JSON.parse(raw) as ManagedCheckoutFreshnessState;
+    return { checkouts: parsed.checkouts ?? {} };
+  } catch {
+    return { checkouts: {} };
+  }
+}
+
+async function saveManagedCheckoutFreshnessState(statePath: string, state: ManagedCheckoutFreshnessState) {
+  await fs.mkdir(path.dirname(statePath), { recursive: true });
+  await fs.writeFile(statePath, JSON.stringify({ checkouts: state.checkouts ?? {} }, null, 2), "utf8");
+}
+
+function managedCheckoutFailureSignature(details: ExecutionWorkspaceFreshnessError["details"]) {
+  return JSON.stringify({
+    currentBranchName: details.currentBranchName,
+    expectedBaseRef: details.expectedBaseRef,
+    behindCount: details.behindCount,
+    dirtyEntryCount: details.dirtyEntryCount,
+    untrackedEntryCount: details.untrackedEntryCount,
+    failures: [...details.failures].sort(),
+  });
+}
+
+async function recordManagedCheckoutFreshnessFailure(input: {
+  cwd: string;
+  signature: string;
+  statePath?: string;
+}): Promise<number> {
+  const statePath = input.statePath ?? DEFAULT_MANAGED_CHECKOUT_FRESHNESS_STATE_PATH;
+  const state = await loadManagedCheckoutFreshnessState(statePath);
+  const current = state.checkouts?.[input.cwd];
+  const nextCount = current?.signature === input.signature ? current.count + 1 : 1;
+  state.checkouts = {
+    ...(state.checkouts ?? {}),
+    [input.cwd]: {
+      signature: input.signature,
+      count: nextCount,
+      updatedAt: new Date().toISOString(),
+    },
+  };
+  await saveManagedCheckoutFreshnessState(statePath, state);
+  return nextCount;
+}
+
+async function clearManagedCheckoutFreshnessFailure(input: {
+  cwd: string;
+  statePath?: string;
+}) {
+  const statePath = input.statePath ?? DEFAULT_MANAGED_CHECKOUT_FRESHNESS_STATE_PATH;
+  const state = await loadManagedCheckoutFreshnessState(statePath);
+  if (!state.checkouts?.[input.cwd]) return;
+  delete state.checkouts[input.cwd];
+  await saveManagedCheckoutFreshnessState(statePath, state);
+}
+
 function formatShortSha(value: string | null | undefined) {
   return value ? value.slice(0, 12) : "unknown";
 }
@@ -639,6 +715,14 @@ function parseRemoteTrackingRef(ref: string): { remote: string; branch: string }
   const branch = normalized.slice(slashIndex + 1);
   if (!/^[A-Za-z0-9._-]+$/.test(remote)) return null;
   return { remote, branch };
+}
+
+function localBranchNameFromRef(ref: string | null | undefined): string | null {
+  const trimmed = ref?.trim();
+  if (!trimmed) return null;
+  const remoteTracking = parseRemoteTrackingRef(trimmed);
+  if (remoteTracking) return remoteTracking.branch;
+  return trimmed.replace(/^refs\/heads\//, "") || null;
 }
 
 async function refreshRemoteTrackingBaseRef(repoRoot: string, baseRef: string): Promise<string[]> {
@@ -833,6 +917,200 @@ export async function assertExecutionWorkspaceFreshness(input: {
   throw new ExecutionWorkspaceFreshnessError(
     `Execution workspace freshness check failed: ${details.failures.join(" ")}`,
     details,
+  );
+}
+
+async function tryMergeBaseRefIntoCurrentBranch(input: {
+  cwd: string;
+  expectedBaseRef: string;
+  currentBranchName: string | null;
+}): Promise<string[]> {
+  if (!input.currentBranchName) {
+    throw new Error("checkout is detached; automatic base-ref refresh needs a branch HEAD");
+  }
+  const warnings: string[] = [];
+  try {
+    await runGit(["merge", "--ff-only", input.expectedBaseRef], input.cwd);
+    warnings.push(
+      `Paperclip fast-forwarded "${input.currentBranchName}" to include ${input.expectedBaseRef} before starting the run.`,
+    );
+    return warnings;
+  } catch {
+    // Fall through to a true merge.
+  }
+
+  try {
+    await runGit(["merge", "--no-edit", input.expectedBaseRef], input.cwd);
+    warnings.push(
+      `Paperclip merged ${input.expectedBaseRef} into "${input.currentBranchName}" before starting the run.`,
+    );
+    return warnings;
+  } catch (error) {
+    await runGit(["merge", "--abort"], input.cwd).catch(() => null);
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Automatic refresh of "${input.currentBranchName}" from ${input.expectedBaseRef} failed and may require a manual conflict resolution: ${message}`,
+    );
+  }
+}
+
+async function listBrokenWorktreeBranches(repoRoot: string): Promise<string[]> {
+  const raw = await runGit(["worktree", "list", "--porcelain"], repoRoot).catch(() => null);
+  if (!raw) return [];
+  const broken = new Set<string>();
+  for (const entry of parseGitWorktreeListPorcelain(raw)) {
+    if (!entry.branch?.startsWith("refs/heads/")) continue;
+    const worktreePath = path.resolve(entry.worktree);
+    const exists = await fs.stat(worktreePath).then((stats) => stats.isDirectory()).catch(() => false);
+    if (!exists) {
+      broken.add(entry.branch.slice("refs/heads/".length));
+    }
+  }
+  return [...broken];
+}
+
+async function pushBranchIfNeeded(repoRoot: string, branchName: string): Promise<boolean> {
+  if (!branchName.trim()) return false;
+  const localSha = await runGit(["rev-parse", "--verify", `${branchName}^{commit}`], repoRoot).catch(() => null);
+  if (!localSha) return false;
+  const remoteRef = `refs/remotes/origin/${branchName}`;
+  const remoteSha = await runGit(["rev-parse", "--verify", `${remoteRef}^{commit}`], repoRoot).catch(() => null);
+  if (remoteSha === localSha) return false;
+  await runGit(["push", "--set-upstream", "origin", branchName], repoRoot);
+  return true;
+}
+
+async function preserveManagedCheckoutAndReset(input: {
+  cwd: string;
+  details: ExecutionWorkspaceFreshnessError["details"];
+}): Promise<string[]> {
+  const repoRoot = input.details.repoRoot;
+  if (!repoRoot) {
+    throw new Error("Cannot remediate a non-git execution workspace.");
+  }
+
+  const warnings: string[] = [];
+  const currentBranchName = input.details.currentBranchName;
+  const brokenWorktreeBranches = await listBrokenWorktreeBranches(repoRoot);
+  if (brokenWorktreeBranches.length > 0) {
+    await runGit(["worktree", "repair"], repoRoot).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`git worktree repair failed while preserving the managed checkout: ${message}`);
+    });
+    for (const branchName of brokenWorktreeBranches) {
+      const pushed = await pushBranchIfNeeded(repoRoot, branchName).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to push repaired worktree branch "${branchName}": ${message}`);
+      });
+      if (pushed) {
+        warnings.push(`Pushed preserved branch "${branchName}" while repairing broken linked worktrees.`);
+      }
+    }
+  }
+
+  const expectedBaseRef = input.details.expectedBaseRef ?? await detectDefaultBranch(repoRoot) ?? "origin/main";
+  const localBaseBranch = localBranchNameFromRef(expectedBaseRef) ?? "main";
+  if (currentBranchName && currentBranchName !== localBaseBranch) {
+    const pushedCurrent = await pushBranchIfNeeded(repoRoot, currentBranchName).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to push current branch "${currentBranchName}" before managed-checkout reset: ${message}`);
+    });
+    if (pushedCurrent) {
+      warnings.push(`Pushed current branch "${currentBranchName}" before resetting the shared managed checkout.`);
+    }
+  }
+
+  const rescueBranch = `rescue/${branchSlug(currentBranchName)}-${isoBranchTimestamp()}`;
+  await runGit(["checkout", "-B", rescueBranch], input.cwd);
+  await runGit(["add", "-A"], input.cwd);
+  const stagedChanges = await runGit(["diff", "--cached", "--name-only"], input.cwd).catch(() => "");
+  if (stagedChanges.trim()) {
+    await runGit(
+      ["commit", "-m", `paperclip: preserve managed checkout before freshness reset (${localBaseBranch})`],
+      input.cwd,
+    );
+  }
+  await runGit(["push", "--set-upstream", "origin", rescueBranch], input.cwd);
+  warnings.push(`Preserved the shared managed checkout on "${rescueBranch}" before resetting it to ${expectedBaseRef}.`);
+
+  await runGit(["checkout", "-B", localBaseBranch, expectedBaseRef], input.cwd);
+  await runGit(["reset", "--hard", expectedBaseRef], input.cwd);
+  await runGit(["clean", "-fd"], input.cwd);
+  await runGit(["worktree", "repair"], repoRoot).catch(() => null);
+  return warnings;
+}
+
+export async function ensureManagedCheckoutFreshness(input: {
+  cwd: string;
+  expectedRepoUrl?: string | null;
+  expectedBranchName?: string | null;
+  expectedBaseRef?: string | null;
+  staleBehindThreshold?: number;
+  remediationFailureThreshold?: number;
+  remediationStatePath?: string;
+}) {
+  const remediationFailureThreshold =
+    input.remediationFailureThreshold ?? DEFAULT_MANAGED_CHECKOUT_REMEDIATION_THRESHOLD;
+  let details = await inspectExecutionWorkspaceFreshness(input);
+  const autoWarnings: string[] = [];
+  if (
+    details.expectedBaseRef &&
+    details.currentBranchName &&
+    details.dirtyEntryCount === 0 &&
+    details.untrackedEntryCount === 0 &&
+    typeof details.behindCount === "number" &&
+    details.behindCount > 0
+  ) {
+    autoWarnings.push(...await tryMergeBaseRefIntoCurrentBranch({
+      cwd: input.cwd,
+      expectedBaseRef: details.expectedBaseRef,
+      currentBranchName: details.currentBranchName,
+    }));
+    details = await inspectExecutionWorkspaceFreshness(input);
+    if (details.failures.length === 0) {
+      await clearManagedCheckoutFreshnessFailure({ cwd: input.cwd, statePath: input.remediationStatePath });
+      return {
+        ...details,
+        warnings: [...details.warnings, ...autoWarnings],
+      };
+    }
+  }
+
+  if (details.failures.length === 0) {
+    await clearManagedCheckoutFreshnessFailure({ cwd: input.cwd, statePath: input.remediationStatePath });
+    return {
+      ...details,
+      warnings: [...details.warnings, ...autoWarnings],
+    };
+  }
+
+  const failureCount = await recordManagedCheckoutFreshnessFailure({
+    cwd: input.cwd,
+    signature: managedCheckoutFailureSignature(details),
+    statePath: input.remediationStatePath,
+  });
+  if (failureCount >= remediationFailureThreshold) {
+    autoWarnings.push(...await preserveManagedCheckoutAndReset({ cwd: input.cwd, details }));
+    details = await inspectExecutionWorkspaceFreshness(input);
+    if (details.failures.length === 0) {
+      await clearManagedCheckoutFreshnessFailure({ cwd: input.cwd, statePath: input.remediationStatePath });
+      return {
+        ...details,
+        warnings: [...details.warnings, ...autoWarnings],
+      };
+    }
+  } else {
+    autoWarnings.push(
+      `Paperclip armed managed-checkout auto-remediation after ${failureCount}/${remediationFailureThreshold} consecutive freshness failure${remediationFailureThreshold === 1 ? "" : "s"} for this checkout.`,
+    );
+  }
+
+  throw new ExecutionWorkspaceFreshnessError(
+    `Execution workspace freshness check failed: ${details.failures.join(" ")}`,
+    {
+      ...details,
+      warnings: [...details.warnings, ...autoWarnings],
+    },
   );
 }
 

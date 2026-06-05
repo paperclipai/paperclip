@@ -22,6 +22,7 @@ import {
   assertExecutionWorkspaceFreshness,
   buildWorkspaceRuntimeDesiredStatePatch,
   cleanupExecutionWorkspaceArtifacts,
+  ensureManagedCheckoutFreshness,
   ensurePersistedExecutionWorkspaceAvailable,
   inspectExecutionWorkspaceFreshness,
   ensureServerWorkspaceLinksCurrent,
@@ -534,6 +535,106 @@ describe("realizeExecutionWorkspace", () => {
         ]),
       }),
     });
+  });
+
+  it("auto-merges the base ref for a clean managed checkout branch that is behind", async () => {
+    const repoRoot = await createTempRepo();
+    const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
+    await runGit(remoteRoot, ["init", "--bare"]);
+    await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
+    await runGit(repoRoot, ["push", "-u", "origin", "main"]);
+
+    const staleClone = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-managed-clone-"));
+    await runGit(staleClone, ["clone", remoteRoot, "."]);
+    await runGit(staleClone, ["config", "user.email", "paperclip@example.com"]);
+    await runGit(staleClone, ["config", "user.name", "Paperclip Test"]);
+    await runGit(staleClone, ["checkout", "-b", "feature/managed-checkout"]);
+
+    await fs.writeFile(path.join(repoRoot, "fresh.txt"), "fresh\n", "utf8");
+    await runGit(repoRoot, ["add", "fresh.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Fresh commit"]);
+    await runGit(repoRoot, ["push", "origin", "main"]);
+
+    const statePath = path.join(os.tmpdir(), `paperclip-managed-checkout-state-${randomUUID()}.json`);
+    const details = await ensureManagedCheckoutFreshness({
+      cwd: staleClone,
+      expectedBaseRef: "origin/main",
+      remediationStatePath: statePath,
+    });
+
+    expect(details.failures).toEqual([]);
+    expect(details.behindCount).toBe(0);
+    expect(details.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('fast-forwarded "feature/managed-checkout"'),
+    ]));
+    await expect(fs.readFile(path.join(staleClone, "fresh.txt"), "utf8")).resolves.toBe("fresh\n");
+  });
+
+  it("preserves and resets a repeatedly failing managed checkout after the remediation threshold", async () => {
+    const repoRoot = await createTempRepo();
+    const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
+    await runGit(remoteRoot, ["init", "--bare"]);
+    await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
+    await runGit(repoRoot, ["push", "-u", "origin", "main"]);
+
+    const staleClone = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-managed-clone-"));
+    await runGit(staleClone, ["clone", remoteRoot, "."]);
+    await runGit(staleClone, ["config", "user.email", "paperclip@example.com"]);
+    await runGit(staleClone, ["config", "user.name", "Paperclip Test"]);
+    await runGit(staleClone, ["checkout", "-b", "feature/dirty-managed-checkout"]);
+
+    for (let index = 0; index < 10; index += 1) {
+      await fs.writeFile(path.join(repoRoot, `commit-${index}.txt`), `${index}\n`, "utf8");
+      await runGit(repoRoot, ["add", `commit-${index}.txt`]);
+      await runGit(repoRoot, ["commit", "-m", `Commit ${index}`]);
+    }
+    await runGit(repoRoot, ["push", "origin", "main"]);
+
+    await fs.writeFile(path.join(staleClone, "local-only.txt"), "dirty\n", "utf8");
+    const statePath = path.join(os.tmpdir(), `paperclip-managed-checkout-state-${randomUUID()}.json`);
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(
+        ensureManagedCheckoutFreshness({
+          cwd: staleClone,
+          expectedBaseRef: "origin/main",
+          remediationStatePath: statePath,
+          remediationFailureThreshold: 3,
+        }),
+      ).rejects.toMatchObject({
+        code: "execution_workspace_freshness_failed",
+        details: expect.objectContaining({
+          failures: expect.arrayContaining([
+            expect.stringContaining("untracked file"),
+            expect.stringContaining("behind origin/main by 10 commits"),
+          ]),
+          warnings: expect.arrayContaining([
+            expect.stringContaining("armed managed-checkout auto-remediation after"),
+          ]),
+        }),
+      });
+    }
+
+    const details = await ensureManagedCheckoutFreshness({
+      cwd: staleClone,
+      expectedBaseRef: "origin/main",
+      remediationStatePath: statePath,
+      remediationFailureThreshold: 3,
+    });
+
+    expect(details.failures).toEqual([]);
+    expect(details.currentBranchName).toBe("main");
+    expect(await readGit(staleClone, ["status", "--porcelain"])).toBe("");
+    expect(details.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('Preserved the shared managed checkout on "rescue/feature-dirty-managed-checkout-'),
+    ]));
+
+    const remoteBranches = (await readGit(staleClone, ["branch", "-r"]))
+      .split("\n")
+      .map((line) => line.trim());
+    expect(
+      remoteBranches.some((line) => line.startsWith("origin/rescue/feature-dirty-managed-checkout-")),
+    ).toBe(true);
   });
 
   it("accepts GitHub SSH-alias remotes when verifying expected repo coordinates", async () => {

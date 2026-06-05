@@ -94,6 +94,7 @@ import {
   assertExecutionWorkspaceFreshness,
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
+  ensureManagedCheckoutFreshness,
   ensurePersistedExecutionWorkspaceAvailable,
   ensureRuntimeServicesForRun,
   ExecutionWorkspaceFreshnessError,
@@ -8276,12 +8277,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
     if (executionWorkspace.repoUrl) {
       try {
-        await assertExecutionWorkspaceFreshness({
-          cwd: executionWorkspace.cwd,
-          expectedRepoUrl: executionWorkspace.repoUrl,
-          expectedBranchName: executionWorkspace.branchName,
-          expectedBaseRef: executionWorkspace.repoRef,
-        });
+        if (executionWorkspace.strategy === "project_primary") {
+          await ensureManagedCheckoutFreshness({
+            cwd: executionWorkspace.cwd,
+            expectedRepoUrl: executionWorkspace.repoUrl,
+            expectedBranchName: executionWorkspace.branchName,
+            expectedBaseRef: executionWorkspace.repoRef,
+          });
+        } else {
+          await assertExecutionWorkspaceFreshness({
+            cwd: executionWorkspace.cwd,
+            expectedRepoUrl: executionWorkspace.repoUrl,
+            expectedBranchName: executionWorkspace.branchName,
+            expectedBaseRef: executionWorkspace.repoRef,
+          });
+        }
       } catch (error) {
         if (error instanceof ExecutionWorkspaceFreshnessError && issueId) {
           const detailLines = [
