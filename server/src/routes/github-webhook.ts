@@ -31,6 +31,12 @@ import { type Db, issues } from "@paperclipai/db";
 import { heartbeatService, type HeartbeatServiceOptions } from "../services/heartbeat.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { extractPaperclipIdentifiers } from "../services/paperclip-identifiers.js";
+import {
+  recordMergedPullRequest,
+  enrichAuthoredLocForRow,
+  type RecordMergedPullRequestInput,
+} from "../services/issue-pull-requests.js";
 
 export interface GithubWebhookConfig {
   /**
@@ -57,12 +63,9 @@ export interface GithubWebhookConfig {
   heartbeatOptions?: Pick<HeartbeatServiceOptions, "ccrotateGate" | "skipQueuedRunDispatch">;
 }
 
-// Conservative pattern: 2-10 uppercase letters/digits, dash, 1-6 digits.
-// Anchored against word boundaries so mid-word `xBLO-3182y` doesn't match,
-// but `(BLO-3182)`, `BLO-3182:`, or `feat/BLO-3182-thing` all do.
-// Compact lists such as `BLO-3763/3764` are expanded to both identifiers.
-const PAPERCLIP_IDENTIFIER_PATTERN = /\b([A-Z][A-Z0-9]{1,9}-\d{1,6}(?:\/\d{1,6})*)\b/g;
-const PAPERCLIP_COMPACT_IDENTIFIER_PATTERN = /^([A-Z][A-Z0-9]{1,9})-(\d{1,6})((?:\/\d{1,6})*)$/;
+// Identifier extraction (`extractPaperclipIdentifiers`) lives in
+// ../services/paperclip-identifiers.js so the forward-capture webhook and the
+// PR↔issue linkage/backfill service share one author-agnostic extractor.
 
 // GitHub event names that should drive a wake. Anything not in this
 // set is acked with 200 + "ignored" so retries don't pile up.
@@ -102,31 +105,6 @@ function verifyGithubSignature(
   return timingSafeStringEq(signatureHeader, expected);
 }
 
-function expandPaperclipIdentifierToken(token: string): string[] {
-  const match = token.match(PAPERCLIP_COMPACT_IDENTIFIER_PATTERN);
-  if (!match) return [token];
-  const prefix = match[1]!;
-  const firstNumber = match[2]!;
-  const tailNumbers = (match[3] ?? "").split("/").filter(Boolean);
-  return [firstNumber, ...tailNumbers].map((number) => `${prefix}-${number}`);
-}
-
-function extractPaperclipIdentifiers(...sources: Array<string | null | undefined>): string[] {
-  const found = new Set<string>();
-  for (const source of sources) {
-    if (!source) continue;
-    const matches = source.matchAll(PAPERCLIP_IDENTIFIER_PATTERN);
-    for (const match of matches) {
-      if (match[1]) {
-        for (const identifier of expandPaperclipIdentifierToken(match[1])) {
-          found.add(identifier);
-        }
-      }
-    }
-  }
-  return Array.from(found);
-}
-
 function readStringField(record: Record<string, unknown> | undefined, key: string): string | null {
   const value = record?.[key];
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -160,6 +138,15 @@ interface ResolvedEventContext {
   commentBody?: string | null;
   commentAuthorLogin?: string | null;
   commentUrl?: string | null;
+  // pull_request.closed only — merged-PR forward-capture (BLO-9117). Drives the
+  // issue_pull_requests persist + authored-LOC enrichment. Author is
+  // deliberately NOT captured: the link keys on the BLO- ref, never the author.
+  prMerged?: boolean;
+  prMergedAt?: string | null;
+  prAdditions?: number | null;
+  prDeletions?: number | null;
+  prBranch?: string | null;
+  prBody?: string | null;
 }
 
 // Cap review body in contextSnapshot so the heartbeat-run row stays small.
@@ -381,6 +368,8 @@ function resolveEventContext(
         ready_for_review: "github_pr_ready_for_review",
         closed: "github_pr_closed",
       };
+      const head = pr?.head as Record<string, unknown> | undefined;
+      const merged = pr?.merged === true;
       return {
         identifiers: collected.ids,
         wakeReason: reasonByAction[action] ?? "github_pull_request",
@@ -390,6 +379,15 @@ function resolveEventContext(
         prUrl: collected.url,
         eventUrl: collected.url,
         headSha: collected.headSha,
+        // Merge metadata for forward-capture. additions/deletions are present
+        // on the pull_request payload; per-file authored-LOC needs a follow-up
+        // pulls/{n}/files fetch (enrichment), so it is not read here.
+        prMerged: action === "closed" ? merged : undefined,
+        prMergedAt: readStringField(pr, "merged_at"),
+        prAdditions: typeof pr?.additions === "number" ? (pr.additions as number) : null,
+        prDeletions: typeof pr?.deletions === "number" ? (pr.deletions as number) : null,
+        prBranch: (head?.ref as string | undefined) ?? null,
+        prBody: (pr?.body as string | undefined) ?? null,
       };
     }
     default:
@@ -582,6 +580,48 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
     const matched = matchedIssues.filter(
       (row) => row.identifier && context.identifiers.includes(row.identifier),
     );
+
+    // Merged-PR forward-capture (BLO-9117). When a PR closes as merged, persist
+    // the issue↔PR link for every matched issue (including terminal/unassigned
+    // ones — a `done` issue's merged PR is exactly the merged-output we measure,
+    // so this runs independently of whether a wake fires below). Best-effort:
+    // a persist failure must never break the wake path. Keyed on the BLO- ref,
+    // never on the PR author (the persisted row has no author column at all).
+    if (
+      eventName === "pull_request" &&
+      context.prMerged === true &&
+      context.prNumber !== null &&
+      context.repoFullName
+    ) {
+      try {
+        const recordInput: RecordMergedPullRequestInput = {
+          repoFullName: context.repoFullName,
+          prNumber: context.prNumber,
+          headSha: context.headSha ?? null,
+          mergedAt: context.prMergedAt ? new Date(context.prMergedAt) : null,
+          additions: context.prAdditions ?? null,
+          deletions: context.prDeletions ?? null,
+          branch: context.prBranch ?? null,
+          title: context.prTitle ?? null,
+          body: context.prBody ?? null,
+          matchedIssues: matched.map((m) => ({ id: m.id, companyId: m.companyId, identifier: m.identifier })),
+        };
+        const recorded = await recordMergedPullRequest(db, recordInput);
+        // authored-LOC needs a pulls/{n}/files fetch — fire-and-forget so the
+        // webhook stays inside GitHub's delivery timeout. Lost enrichment is
+        // recovered by the reconciler (rows keep loc_enriched_at = null).
+        for (const row of recorded) {
+          void enrichAuthoredLocForRow(db, row).catch((err) => {
+            logger.warn({ err, prNumber: row.prNumber, repoFullName: row.repoFullName }, "authored-LOC enrichment failed (will reconcile)");
+          });
+        }
+      } catch (err) {
+        logger.error(
+          { err, prNumber: context.prNumber, repoFullName: context.repoFullName },
+          "merged-PR forward-capture persist failed",
+        );
+      }
+    }
 
     if (matched.length === 0) {
       res.status(200).json({

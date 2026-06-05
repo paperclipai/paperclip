@@ -102,6 +102,7 @@ import { executionWorkspaceService as executionWorkspaceServiceDirect } from "..
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
+import { issueEfficiencyService } from "../services/issue-efficiency.js";
 import { environmentService } from "../services/environments.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
@@ -854,6 +855,7 @@ export function issueRoutes(
 ) {
   const router = Router();
   const svc = issueService(db);
+  const efficiencySvc = issueEfficiencyService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
@@ -2330,6 +2332,40 @@ export function issueRoutes(
       active,
       actions: active ? [active] : [],
     });
+  });
+
+  // BLO-9117 — per-issue efficiency: executor adapter(s) + output-token-share,
+  // merged PR list, authored-LOC (generated-excluded) + raw, cost + costSource.
+  router.get("/issues/:id/efficiency", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const efficiency = await efficiencySvc.forIssue(issue.companyId, issue.id);
+    res.json(efficiency);
+  });
+
+  // BLO-9117 — windowed adapter rollup: $/authored-LOC and $/merged-PR per
+  // adapter (multi-adapter issues apportioned by output-token-share, not
+  // double-counted) + an explicit unattributed-merged-PR coverage % whose
+  // denominator counts merged PRs across all GitHub identities (option C).
+  router.get("/companies/:companyId/efficiency/adapter-rollup", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const now = new Date();
+    const defaultFrom = new Date(now.getTime() - 21 * 24 * 60 * 60 * 1000);
+    const parseDate = (value: unknown, fallback: Date): Date => {
+      if (typeof value !== "string" || value.trim().length === 0) return fallback;
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? fallback : parsed;
+    };
+    const from = parseDate(req.query.from, defaultFrom);
+    const to = parseDate(req.query.to, now);
+    const rollup = await efficiencySvc.adapterRollup(companyId, { from, to });
+    res.json(rollup);
   });
 
   router.post("/issues/:id/recovery-actions/resolve", validate(resolveIssueRecoveryActionSchema), async (req, res) => {

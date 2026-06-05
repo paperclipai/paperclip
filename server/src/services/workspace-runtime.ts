@@ -1191,7 +1191,21 @@ export async function realizeExecutionWorkspace(input: {
     projectId: input.base.projectId,
     repoRef: input.base.repoRef,
   });
-  const branchName = sanitizeBranchName(renderedBranch);
+  const baseBranchName = sanitizeBranchName(renderedBranch);
+  // Option (A) (BLO-9117): process-enforce the issue identifier into the branch
+  // name so a merged PR is reliably ref-linked at merge time (the github-webhook
+  // forward-capture keys on the BLO- ref in the branch). The default template
+  // already carries {{issue.identifier}}; this guarantees it even when a custom
+  // branchTemplate omits it. sanitizeBranchName preserves case, so the uppercase
+  // BLO- form the webhook extractor requires survives.
+  const issueIdentifierForBranch = input.issue?.identifier ?? null;
+  const sanitizedIssueIdentifier = issueIdentifierForBranch
+    ? sanitizeBranchName(issueIdentifierForBranch)
+    : null;
+  const branchName =
+    sanitizedIssueIdentifier && !baseBranchName.includes(sanitizedIssueIdentifier)
+      ? sanitizeBranchName(`${sanitizedIssueIdentifier}-${renderedBranch}`)
+      : baseBranchName;
   const configuredParentDir = asString(rawStrategy.worktreeParentDir, "");
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)

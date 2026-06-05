@@ -88,3 +88,5 @@ export { pluginLogs } from "./plugin_logs.js";
 export { pluginEventOutbox } from "./plugin_event_outbox.js";
 export { syntheticSshProbeResults } from "./synthetic_ssh_probe_results.js";
 export { linearIssueLinks } from "./linear_issue_links.js";
+
+export { issuePullRequests } from "./issue_pull_requests.js";
