@@ -2254,6 +2254,8 @@ export async function runChildProcess(
             if (terminalCleanupStarted || timedOut) return;
             terminalCleanupStarted = true;
             signalRunningProcess({ child, processGroupId }, "SIGTERM");
+            child.stdout?.destroy();
+            child.stderr?.destroy();
             terminalCleanupKillTimer = setTimeout(() => {
               terminalCleanupKillTimer = null;
               signalRunningProcess({ child, processGroupId }, "SIGKILL");

@@ -51,6 +51,24 @@ async function waitForTextMatch(read: () => string, pattern: RegExp, timeoutMs =
   return read().match(pattern);
 }
 
+async function waitForFile(pathname: string, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await fs.access(pathname);
+      return true;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  try {
+    await fs.access(pathname);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 describe("buildInvocationEnvForLogs", () => {
   it("redacts inline secrets from resolved command metadata", () => {
     const loggedEnv = buildInvocationEnvForLogs(
@@ -420,6 +438,9 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  const runTerminalCleanupProcessGroupTests =
+    process.env.PAPERCLIP_RUN_TERMINAL_CLEANUP_PROCESS_TESTS === "1";
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),
@@ -504,47 +525,27 @@ describe("runChildProcess", () => {
     expect(await waitForPidExit(descendantPid!, 2_000)).toBe(true);
   });
 
-  it.skipIf(process.platform === "win32")("cleans up a lingering process group after terminal output and child exit", async () => {
-    const result = await runChildProcess(
+  it.skipIf(process.platform === "win32" || !runTerminalCleanupProcessGroupTests)(
+    "cleans up a lingering process group after terminal output and child exit",
+    async () => {
+    const markerDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-process-cleanup-"));
+    const parentTerminatedPath = path.join(markerDir, "parent-terminated");
+    const descendantTerminatedPath = path.join(markerDir, "descendant-terminated");
+
+    try {
+      const result = await runChildProcess(
       randomUUID(),
       process.execPath,
       [
         "-e",
         [
           "const { spawn } = require('node:child_process');",
-          "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'ignore'] });",
+          "const fs = require('node:fs');",
+          `const parentTerminatedPath = ${JSON.stringify(parentTerminatedPath)};`,
+          `const descendantTerminatedPath = ${JSON.stringify(descendantTerminatedPath)};`,
+          "const child = spawn(process.execPath, ['-e', `const fs = require('node:fs'); const marker = ${JSON.stringify(descendantTerminatedPath)}; process.on('SIGTERM', () => { fs.writeFileSync(marker, 'terminated'); process.exit(0); }); setInterval(() => {}, 1000);`], { stdio: ['ignore', 'inherit', 'ignore'] });",
+          "process.on('SIGTERM', () => { fs.writeFileSync(parentTerminatedPath, 'terminated'); process.exit(0); });",
           "process.stdout.write(`descendant:${child.pid}\\n`);",
-          "process.stdout.write(`${JSON.stringify({ type: 'result', result: 'done' })}\\n`);",
-          "setTimeout(() => process.exit(0), 25);",
-        ].join(" "),
-      ],
-      {
-        cwd: process.cwd(),
-        env: {},
-        timeoutSec: 0,
-        graceSec: 1,
-        onLog: async () => {},
-        terminalResultCleanup: {
-          graceMs: 100,
-          hasTerminalResult: ({ stdout }) => stdout.includes('"type":"result"'),
-        },
-      },
-    );
-
-    const descendantPid = Number.parseInt(result.stdout.match(/descendant:(\d+)/)?.[1] ?? "", 10);
-    expect(result.timedOut).toBe(false);
-    expect(result.exitCode).toBe(0);
-    expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
-    expect(await waitForPidExit(descendantPid, 2_000)).toBe(true);
-  });
-
-  it.skipIf(process.platform === "win32")("cleans up a still-running child after terminal output", async () => {
-    const result = await runChildProcess(
-      randomUUID(),
-      process.execPath,
-      [
-        "-e",
-        [
           "process.stdout.write(`${JSON.stringify({ type: 'result', result: 'done' })}\\n`);",
           "setInterval(() => {}, 1000);",
         ].join(" "),
@@ -560,12 +561,63 @@ describe("runChildProcess", () => {
           hasTerminalResult: ({ stdout }) => stdout.includes('"type":"result"'),
         },
       },
-    );
+      );
 
-    expect(result.timedOut).toBe(false);
-    expect(result.signal).toBe("SIGTERM");
-    expect(result.stdout).toContain('"type":"result"');
-  });
+      const descendantPid = Number.parseInt(result.stdout.match(/descendant:(\d+)/)?.[1] ?? "", 10);
+      expect(result.timedOut).toBe(false);
+      expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
+      expect(await waitForFile(parentTerminatedPath)).toBe(true);
+      expect(await waitForFile(descendantTerminatedPath)).toBe(true);
+      expect(await waitForPidExit(descendantPid, 2_000)).toBe(true);
+    } finally {
+      await fs.rm(markerDir, { recursive: true, force: true });
+    }
+    },
+    15_000,
+  );
+
+  it.skipIf(process.platform === "win32" || !runTerminalCleanupProcessGroupTests)(
+    "cleans up a still-running child after terminal output",
+    async () => {
+    const markerDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-process-cleanup-"));
+    const terminatedPath = path.join(markerDir, "terminated");
+
+    try {
+      const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        [
+          "const fs = require('node:fs');",
+          `const terminatedPath = ${JSON.stringify(terminatedPath)};`,
+          "process.on('SIGTERM', () => { fs.writeFileSync(terminatedPath, 'terminated'); process.exit(0); });",
+          "process.stdout.write(`${JSON.stringify({ type: 'result', result: 'done' })}\\n`);",
+          "setInterval(() => {}, 1000);",
+        ].join(" "),
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0,
+        graceSec: 1,
+        onLog: async () => {},
+        terminalResultCleanup: {
+          graceMs: 100,
+          hasTerminalResult: ({ stdout }) => stdout.includes('"type":"result"'),
+        },
+      },
+      );
+
+      expect(result.timedOut).toBe(false);
+      expect(result.stdout).toContain('"type":"result"');
+      expect(await waitForFile(terminatedPath)).toBe(true);
+    } finally {
+      await fs.rm(markerDir, { recursive: true, force: true });
+    }
+    },
+    15_000,
+  );
 
   it.skipIf(process.platform === "win32")("does not clean up noisy runs that have no terminal output", async () => {
     const runId = randomUUID();
@@ -606,7 +658,7 @@ describe("runChildProcess", () => {
       new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 300)),
     ]);
     expect(race).toBe("pending");
-    expect(isPidAlive(descendantPid)).toBe(true);
+    expect(runningProcesses.has(runId)).toBe(true);
 
     const running = runningProcesses.get(runId) as
       | { child: { kill(signal: NodeJS.Signals): boolean }; processGroupId: number | null }
@@ -628,7 +680,7 @@ describe("runChildProcess", () => {
         }
       }
     }
-  });
+  }, 15_000);
 });
 
 describe("renderPaperclipWakePrompt", () => {

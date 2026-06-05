@@ -80,6 +80,7 @@ import {
   previewIssueTreeControlSchema,
   releaseIssueTreeHoldSchema,
   // Issue interactions
+  createScannerFindingIssueSchema,
   createIssueThreadInteractionSchema,
   createChildIssueSchema,
   acceptIssueThreadInteractionSchema,
@@ -2834,6 +2835,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/issues/{id}/scanner-findings",
+  tags: ["issues"],
+  summary: "Create a scanner finding issue",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(createScannerFindingIssueSchema) },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/issues/{id}/admin/force-release",
   tags: ["issues"],
   summary: "Force-release an issue (admin)",
@@ -3930,6 +3940,14 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/health/service-restart/check",
+  tags: ["health"],
+  summary: "Check whether a planned service restart can proceed",
+  responses: { 200: r.ok(), 202: { description: "Restart deferred until active runs finish" }, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/api/bootstrap/claim",
   tags: ["access"],
   summary: "Claim first instance admin from a browser session",
@@ -4088,6 +4106,7 @@ for (const route of [
   ["delete", "/api/secret-provider-configs/{id}", "Delete a secret provider configuration"],
   ["post", "/api/secret-provider-configs/{id}/default", "Set the default secret provider configuration"],
   ["post", "/api/secret-provider-configs/{id}/health", "Check a secret provider configuration"],
+  ["get", "/api/companies/{companyId}/secrets/metadata", "List secret metadata in a company"],
   ["get", "/api/secrets/{id}/usage", "Get secret usage"],
   ["get", "/api/secrets/{id}/access-events", "List secret access events"],
 ] as const) {
