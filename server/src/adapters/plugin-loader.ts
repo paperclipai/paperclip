@@ -215,7 +215,9 @@ export async function reloadExternalAdapter(
   const packageDir = resolvePackageDir(record);
   const entryPoint = resolvePackageEntryPoint(packageDir);
   const modulePath = path.resolve(packageDir, entryPoint);
-  const fileUrl = `file://${modulePath}`;
+  // Use a proper file:// URL (string interpolation breaks on Windows drive paths,
+  // e.g. file://C:\... -> "Received protocol 'c:'"). Matches loadExternalAdapterPackage.
+  const fileUrl = pathToFileURL(modulePath).href;
 
   // Bust ESM module cache so re-import loads fresh code from disk.
   // Query-string trick (?t=...) works in Node; Bun may need the file:// URL
