@@ -43,7 +43,9 @@ export function sanitizeRememberedPathForCompany(params: {
   path: string | null | undefined;
   companyPrefix: string;
 }): string {
-  const relativePath = params.path ? toCompanyRelativePath(params.path) : "/dashboard";
+  const relativePath = params.path
+    ? toCompanyRelativePath(params.path, [params.companyPrefix])
+    : "/dashboard";
   if (!isRememberableCompanyPath(relativePath)) {
     return "/dashboard";
   }

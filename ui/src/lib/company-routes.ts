@@ -77,9 +77,33 @@ export function applyCompanyPrefix(path: string, companyPrefix: string | null | 
   return `/${prefix}${pathname}${search}${hash}`;
 }
 
-export function toCompanyRelativePath(path: string): string {
+export function toCompanyRelativePath(
+  path: string,
+  knownCompanyPrefixes?: readonly string[],
+): string {
   const { pathname, search, hash } = splitPath(path);
   const segments = pathname.split("/").filter(Boolean);
+
+  // When the caller can supply the known company prefixes, strip ALL leading
+  // company prefixes. The legacy heuristic below only recognises built-in
+  // board roots as "the segment after a prefix", so plugin-contributed pages
+  // (e.g. /ACME/my-plugin) were stored prefix-and-all and accumulated another
+  // prefix on every company switch (/BETA/ACME/my-plugin → … → 404).
+  // Stripping in a loop also self-heals paths already corrupted in
+  // localStorage. Only known prefixes are stripped, so a plugin route that
+  // happens to share a prefix-like shape is never eaten.
+  if (knownCompanyPrefixes && knownCompanyPrefixes.length > 0) {
+    const known = new Set(knownCompanyPrefixes.map((prefix) => normalizeCompanyPrefix(prefix)));
+    let stripped = false;
+    while (segments.length >= 2 && known.has(normalizeCompanyPrefix(segments[0]!))) {
+      segments.shift();
+      stripped = true;
+    }
+    if (stripped) {
+      return `/${segments.join("/")}${search}${hash}`;
+    }
+    return `${pathname}${search}${hash}`;
+  }
 
   if (segments.length >= 2) {
     const second = segments[1]!.toLowerCase();
