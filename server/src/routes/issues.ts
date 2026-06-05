@@ -1308,6 +1308,48 @@ export function issueRoutes(
     );
   }
 
+  async function resolveAgentRunIssueCreationContext(input: {
+    companyId: string;
+    actor: ReturnType<typeof getActorInfo>;
+    body: Record<string, unknown>;
+  }) {
+    if (input.actor.actorType !== "agent" || !input.actor.runId) return null;
+    if (
+      input.body.parentId !== undefined ||
+      input.body.projectId !== undefined ||
+      input.body.projectWorkspaceId !== undefined ||
+      input.body.inheritExecutionWorkspaceFromIssueId !== undefined ||
+      input.body.executionWorkspaceId !== undefined
+    ) {
+      return null;
+    }
+
+    const run = await db
+      .select({
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, input.actor.runId))
+      .then((rows) => rows[0] ?? null);
+    if (!run || run.companyId !== input.companyId || run.agentId !== input.actor.agentId) return null;
+
+    const snapshot = run.contextSnapshot && typeof run.contextSnapshot === "object"
+      ? run.contextSnapshot as Record<string, unknown>
+      : null;
+    const sourceIssueId =
+      readNonEmptyString(snapshot?.issueId) ??
+      readNonEmptyString(snapshot?.taskId) ??
+      readNonEmptyString(snapshot?.taskKey);
+    if (!sourceIssueId) return null;
+
+    const sourceIssue = await svc.getById(sourceIssueId);
+    if (!sourceIssue || sourceIssue.companyId !== input.companyId) return null;
+    if (!sourceIssue.projectId && !sourceIssue.projectWorkspaceId && !sourceIssue.executionWorkspaceId) return null;
+    return sourceIssue;
+  }
+
   async function assertAgentInReviewReviewPath(input: {
     existing: {
       id: string;
@@ -3672,13 +3714,26 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
+    const inheritedIssueContext = await resolveAgentRunIssueCreationContext({
+      companyId,
+      actor,
+      body: req.body,
+    });
+    const issueCreateInput = inheritedIssueContext
+      ? {
+          ...req.body,
+          projectId: inheritedIssueContext.projectId ?? undefined,
+          projectWorkspaceId: inheritedIssueContext.projectWorkspaceId ?? undefined,
+          inheritExecutionWorkspaceFromIssueId: inheritedIssueContext.id,
+        }
+      : req.body;
     const executionPolicy = applyActorMonitorScheduledBy(
-      normalizeIssueExecutionPolicy(req.body.executionPolicy),
+      normalizeIssueExecutionPolicy(issueCreateInput.executionPolicy),
       actor.actorType,
     );
-    assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+    assertCanManageIssueMonitor(req, issueCreateInput.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
     const issue = await svc.create(companyId, {
-      ...req.body,
+      ...issueCreateInput,
       executionPolicy,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
