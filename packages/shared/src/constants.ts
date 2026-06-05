@@ -672,6 +672,7 @@ export const PERMISSION_KEYS = [
   "environments:manage",
   "users:invite",
   "users:manage_permissions",
+  "issues:write",
   "tasks:assign",
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",

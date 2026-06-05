@@ -1,6 +1,7 @@
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   agents,
   companyMemberships,
   instanceUserRoles,
@@ -9,6 +10,7 @@ import {
 } from "@paperclipai/db";
 import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
+import { logActivity } from "./activity-log.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
 import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";
 
@@ -587,6 +589,19 @@ export function accessService(db: Db) {
     grants: GrantInput[],
     grantedByUserId: string | null,
   ) {
+    const existingRows = await db
+      .select({ permissionKey: principalPermissionGrants.permissionKey, scope: principalPermissionGrants.scope })
+      .from(principalPermissionGrants)
+      .where(
+        and(
+          eq(principalPermissionGrants.companyId, companyId),
+          eq(principalPermissionGrants.principalType, principalType),
+          eq(principalPermissionGrants.principalId, principalId),
+        ),
+      );
+    const existingSet = new Map(existingRows.map((r) => [`${r.permissionKey}::${JSON.stringify(r.scope)}`, r]));
+    const newSet = new Map(grants.map((g) => [`${g.permissionKey}::${JSON.stringify(g.scope ?? null)}`, g]));
+
     await db.transaction(async (tx) => {
       await tx
         .delete(principalPermissionGrants)
@@ -611,6 +626,37 @@ export function accessService(db: Db) {
         })),
       );
     });
+
+    if (principalType === "agent") {
+      for (const [key, grant] of newSet) {
+        if (!existingSet.has(key)) {
+          await logActivity(db, {
+            companyId,
+            actorType: "user",
+            actorId: grantedByUserId ?? "board",
+            agentId: principalId,
+            action: "agent.issues_write_grant_added",
+            entityType: "agent",
+            entityId: principalId,
+            details: { permissionKey: grant.permissionKey, scope: grant.scope },
+          });
+        }
+      }
+      for (const [key, existing] of existingSet) {
+        if (!newSet.has(key)) {
+          await logActivity(db, {
+            companyId,
+            actorType: "user",
+            actorId: grantedByUserId ?? "board",
+            agentId: principalId,
+            action: "agent.issues_write_grant_revoked",
+            entityType: "agent",
+            entityId: principalId,
+            details: { permissionKey: existing.permissionKey, scope: existing.scope },
+          });
+        }
+      }
+    }
   }
 
   async function copyActiveUserMemberships(sourceCompanyId: string, targetCompanyId: string) {

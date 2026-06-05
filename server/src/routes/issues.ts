@@ -1500,6 +1500,11 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  function stripDestructiveIssueFieldsForNonOwner(body: Record<string, unknown>): Record<string, unknown> {
+  const allowed = new Set(["status", "comment", "presentation", "metadata"]);
+  return Object.fromEntries(Object.entries(body).filter(([k]) => allowed.has(k)));
+}
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -1518,6 +1523,12 @@ export function issueRoutes(
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
       }
+      const grantDecision = await access.decide({
+        actor: { type: "agent", agentId: actorAgentId, companyId: issue.companyId },
+        action: "issue:mutate",
+        resource: { type: "issue", companyId: issue.companyId, issueId: issue.id, assigneeAgentId: issue.assigneeAgentId },
+      });
+      if (grantDecision.allowed) return true;
       if (issue.status === "in_progress") {
         res.status(409).json({
           error: "Issue is checked out by another agent",
@@ -4061,6 +4072,17 @@ export function issueRoutes(
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
+    const isOwnIssue = existing.assigneeAgentId === req.actor.agentId;
+    if (!isOwnIssue && req.actor.type === "agent" && req.actor.agentId) {
+      const grantDecision = await access.decide({
+        actor: { type: "agent", agentId: req.actor.agentId, companyId: existing.companyId },
+        action: "issue:mutate",
+        resource: { type: "issue", companyId: existing.companyId, issueId: existing.id, assigneeAgentId: existing.assigneeAgentId },
+      });
+      if (grantDecision.allowed) {
+        updateFields = stripDestructiveIssueFieldsForNonOwner(updateFields);
+      }
+    }
     const isClosed = isClosedIssueStatus(existing.status);
     const isBlocked = existing.status === "blocked";
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
