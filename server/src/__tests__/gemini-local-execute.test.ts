@@ -68,6 +68,95 @@ process.exit(${exit});
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeTransientThenSuccessfulGeminiCommand(commandPath: string, statePath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+const statePath = ${JSON.stringify(statePath)};
+let count = 0;
+try {
+  count = Number(fs.readFileSync(statePath, "utf8")) || 0;
+} catch {
+  count = 0;
+}
+count += 1;
+fs.writeFileSync(statePath, String(count), "utf8");
+if (count === 1) {
+  console.error("[API Error: An unknown error occurred.]");
+  process.exit(1);
+}
+console.log(JSON.stringify({
+  type: "system",
+  subtype: "init",
+  session_id: "gemini-session-after-retry",
+}));
+console.log(JSON.stringify({
+  type: "assistant",
+  message: { content: [{ type: "output_text", text: "recovered" }] },
+}));
+console.log(JSON.stringify({
+  type: "result",
+  subtype: "success",
+  session_id: "gemini-session-after-retry",
+  result: "ok",
+}));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+async function writeTransientThenSuccessfulNoSessionIdGeminiCommand(
+  commandPath: string,
+  statePath: string,
+): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+const statePath = ${JSON.stringify(statePath)};
+let count = 0;
+try {
+  count = Number(fs.readFileSync(statePath, "utf8")) || 0;
+} catch {
+  count = 0;
+}
+count += 1;
+fs.writeFileSync(statePath, String(count), "utf8");
+if (count === 1) {
+  console.error("[API Error: An unknown error occurred.]");
+  process.exit(1);
+}
+// Successful retry that omits session_id entirely (the regression case).
+console.log(JSON.stringify({
+  type: "assistant",
+  message: { content: [{ type: "output_text", text: "recovered" }] },
+}));
+console.log(JSON.stringify({
+  type: "result",
+  subtype: "success",
+  result: "ok",
+}));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+async function writeAlwaysTransientGeminiCommand(commandPath: string, statePath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+const statePath = ${JSON.stringify(statePath)};
+let count = 0;
+try {
+  count = Number(fs.readFileSync(statePath, "utf8")) || 0;
+} catch {
+  count = 0;
+}
+count += 1;
+fs.writeFileSync(statePath, String(count), "utf8");
+console.error("[API Error: An unknown error occurred.]");
+process.exit(1);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 type CapturePayload = {
   argv: string[];
   paperclipEnvKeys: string[];
@@ -236,6 +325,147 @@ describe("gemini execute", () => {
       expect(result.errorCode).toBe("max_turns_exhausted");
       expect(result.resultJson).toMatchObject({ stopReason: "max_turns_exhausted" });
       expect(result.clearSession).toBe(true);
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retries once after Gemini's transient unknown API error", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-unknown-api-retry-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    const statePath = path.join(root, "attempts.txt");
+    const logs: string[] = [];
+    await fs.mkdir(workspace, { recursive: true });
+    await writeTransientThenSuccessfulGeminiCommand(commandPath, statePath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-unknown-api-retry",
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          transientUnknownApiRetryDelayMs: 0,
+        },
+        context: {},
+        authToken: "t",
+        onLog: async (_stream, chunk) => {
+          logs.push(chunk);
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.summary).toBe("recovered");
+      expect(result.sessionId).toBe("gemini-session-after-retry");
+      expect(await fs.readFile(statePath, "utf8")).toBe("2");
+      expect(logs.join("")).toContain("transient unknown API error");
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves the runtime session when the transient retry succeeds without a session_id", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-retry-no-session-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    const statePath = path.join(root, "attempts.txt");
+    const logs: string[] = [];
+    await fs.mkdir(workspace, { recursive: true });
+    await writeTransientThenSuccessfulNoSessionIdGeminiCommand(commandPath, statePath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-retry-no-session",
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
+        runtime: {
+          sessionId: "runtime-session-1",
+          sessionParams: { sessionId: "runtime-session-1", cwd: workspace },
+          sessionDisplayId: "runtime-session-1",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          transientUnknownApiRetryDelayMs: 0,
+        },
+        context: {},
+        authToken: "t",
+        onLog: async (_stream, chunk) => {
+          logs.push(chunk);
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.summary).toBe("recovered");
+      // The session was not stale (transient API error), so the retry must fall
+      // back to the runtime session rather than clearing it.
+      expect(result.sessionId).toBe("runtime-session-1");
+      expect(result.clearSession).toBeFalsy();
+      expect(await fs.readFile(statePath, "utf8")).toBe("2");
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stops after exactly one transient retry when the outage persists", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-retry-persistent-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    const statePath = path.join(root, "attempts.txt");
+    const logs: string[] = [];
+    await fs.mkdir(workspace, { recursive: true });
+    await writeAlwaysTransientGeminiCommand(commandPath, statePath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-retry-persistent",
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          transientUnknownApiRetryDelayMs: 0,
+        },
+        context: {},
+        authToken: "t",
+        onLog: async (_stream, chunk) => {
+          logs.push(chunk);
+        },
+      });
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.errorMessage).toBeTruthy();
+      // Exactly two attempts: the initial call plus a single retry.
+      expect(await fs.readFile(statePath, "utf8")).toBe("2");
+      expect(logs.join("")).toContain("transient unknown API error");
     } finally {
       if (previousHome === undefined) {
         delete process.env.HOME;

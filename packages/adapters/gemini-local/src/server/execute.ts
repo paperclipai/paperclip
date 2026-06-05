@@ -53,6 +53,7 @@ import {
   detectGeminiAuthRequired,
   isGeminiTurnLimitResult,
   isGeminiUnknownSessionError,
+  isGeminiTransientUnknownApiError,
   parseGeminiJsonl,
 } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
@@ -96,6 +97,10 @@ function renderApiAccessNote(env: Record<string, string>): string {
     "",
     "",
   ].join("\n");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function geminiSkillsHome(): string {
@@ -284,6 +289,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     asNumber(config.timeoutSec, 0),
   );
   const graceSec = asNumber(config.graceSec, 20);
+  const transientUnknownApiRetryDelayMs = Math.max(
+    0,
+    asNumber(config.transientUnknownApiRetryDelayMs, 1500),
+  );
   await ensureAdapterExecutionTargetRuntimeCommandInstalled({
     runId,
     target: executionTarget,
@@ -663,6 +672,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
       const retry = await runAttempt(null);
       return toResult(retry, true, true);
+    }
+    if (
+      !initial.proc.timedOut &&
+      (initial.proc.exitCode ?? 0) !== 0 &&
+      isGeminiTransientUnknownApiError({
+        parsed: initial.parsed.resultEvent,
+        stdout: initial.proc.stdout,
+        stderr: initial.proc.stderr,
+        errorMessage: initial.parsed.errorMessage,
+      })
+    ) {
+      await onLog(
+        "stdout",
+        `[paperclip] Gemini returned a transient unknown API error; retrying once after ${transientUnknownApiRetryDelayMs}ms.\n`,
+      );
+      if (transientUnknownApiRetryDelayMs > 0) {
+        await sleep(transientUnknownApiRetryDelayMs);
+      }
+      // Same-session retry: the transient API error does not invalidate the
+      // runtime session, so keep isRetry=false to preserve the runtime-session
+      // fallback. If the successful retry omits session_id, resolvedSessionId
+      // falls back to the existing runtime session instead of clearing it
+      // (which would drop resume state and cause avoidable context loss).
+      const retry = await runAttempt(sessionId);
+      return toResult(retry, false, false);
     }
 
     return toResult(initial);

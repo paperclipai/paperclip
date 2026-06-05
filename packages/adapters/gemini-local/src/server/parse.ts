@@ -287,6 +287,29 @@ export function detectGeminiQuotaExhausted(input: {
   return { exhausted };
 }
 
+const GEMINI_UNKNOWN_API_ERROR_RE = /\[?api error:?\s+an unknown error occurred\.?\]?/i;
+
+export function isGeminiTransientUnknownApiError(input: {
+  parsed: Record<string, unknown> | null;
+  stdout: string;
+  stderr: string;
+  errorMessage?: string | null;
+}): boolean {
+  const errors = extractGeminiErrorMessages(input.parsed ?? {});
+  const messages = [
+    ...errors,
+    input.errorMessage ?? "",
+    input.stdout,
+    input.stderr,
+  ]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return messages.some((line) => GEMINI_UNKNOWN_API_ERROR_RE.test(line));
+}
+
 export function isGeminiTurnLimitResult(
   parsed: Record<string, unknown> | null | undefined,
   exitCode?: number | null,

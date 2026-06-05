@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { parseGeminiJsonl } from "./parse.js";
+import {
+  isGeminiTransientUnknownApiError,
+  parseGeminiJsonl,
+} from "./parse.js";
 
 describe("parseGeminiJsonl", () => {
   it("collects assistant text from message events with string content", () => {
@@ -129,5 +132,27 @@ describe("parseGeminiJsonl", () => {
 
     const result = parseGeminiJsonl(stdout);
     expect(result.errorMessage).toBe("boom");
+  });
+});
+
+describe("isGeminiTransientUnknownApiError", () => {
+  it("detects Gemini's opaque transient API failure", () => {
+    expect(
+      isGeminiTransientUnknownApiError({
+        parsed: null,
+        stdout: "",
+        stderr: "[API Error: An unknown error occurred.]",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not classify unrelated failures as transient unknown API failures", () => {
+    expect(
+      isGeminiTransientUnknownApiError({
+        parsed: { error: "API key missing" },
+        stdout: "",
+        stderr: "",
+      }),
+    ).toBe(false);
   });
 });
