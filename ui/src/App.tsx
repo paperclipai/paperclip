@@ -101,6 +101,7 @@ import { PressReleases } from "./pages/PressReleases";
 import { AgnbHealth } from "./pages/AgnbHealth";
 import { Producers } from "./pages/Producers";
 import { Jobs } from "./pages/Jobs";
+import { Northstar } from "./pages/Northstar";
 import { AgnbSync } from "./pages/AgnbSync";
 import { AgnbEvents } from "./pages/AgnbEvents";
 import { WebhooksCatalog } from "./pages/WebhooksCatalog";
@@ -211,6 +212,7 @@ function boardRoutes() {
       <Route path="agnb-health" element={<AgnbHealth />} />
       <Route path="producers" element={<Producers />} />
       <Route path="jobs" element={<Jobs />} />
+      <Route path="north-star" element={<Northstar />} />
       <Route path="agnb-sync" element={<AgnbSync />} />
       <Route path="events" element={<AgnbEvents />} />
       <Route path="webhooks-catalog" element={<WebhooksCatalog />} />

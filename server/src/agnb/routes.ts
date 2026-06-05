@@ -16,6 +16,7 @@ import { registerRevenue } from "./groups/revenue.js";
 import { registerResearch } from "./groups/research.js";
 import { registerOps } from "./groups/ops.js";
 import { registerMisc } from "./groups/misc.js";
+import { registerNorthstar } from "./groups/northstar.js";
 import { registerJobs } from "./groups/jobs.js";
 
 /**
@@ -44,6 +45,7 @@ export function agnbRoutes(db: Db) {
   registerResearch(router, db);
   registerOps(router, db);
   registerMisc(router, db);
+  registerNorthstar(router, db);
   registerJobs(router, db);
   return router;
 }

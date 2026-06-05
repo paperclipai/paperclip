@@ -60,6 +60,7 @@ export const AGNB_SUBNAV = {
     { to: "/press-releases", label: "Press releases" },
   ],
   ops: [
+    { to: "/north-star", label: "North star" },
     { to: "/agnb-health", label: "Health" },
     { to: "/producers", label: "Producers" },
     { to: "/jobs", label: "Jobs" },

@@ -22,6 +22,15 @@ export interface JobStatus {
   missingEnv: string[];
 }
 
+export interface NorthStar {
+  pipeline: { open_deals: number; open_value_usd: number };
+  sov: { mention_rate: number | null; runs: number };
+  reviews: { avg_rating: number | null; total_reviews: number; platforms: number };
+  mentions: { total_30d: number; positive: number; negative: number };
+  backlinks: { earned: number; prospects: number };
+  content: { open_gaps: number; idea_inbox: number };
+}
+
 export const opsApi = {
   // Ported to All Gas No Brakes server (group: ops) — same-origin /api/agnb/health.
   health: () => ported<{ ok: boolean; error?: string; checks: HealthCheck[] }>("/health").then((r) => unwrap(r).checks),
@@ -31,6 +40,8 @@ export const opsApi = {
       const u = unwrap(r);
       return { enabled: u.enabled, jobs: u.jobs };
     }),
+  // Exec north-star KPIs.
+  northStar: () => ported<{ ok: boolean; error?: string } & NorthStar>("/north-star").then((r) => unwrap(r)),
   // Ported to All Gas No Brakes server (group: ops) — same-origin /api/agnb/sync.
   syncStatus: () => ported<{ ok: boolean; error?: string } & SyncStatus>("/sync").then((r) => { const u = unwrap(r); return { counts: u.counts, worker: u.worker } as SyncStatus; }),
   // Ported to All Gas No Brakes server (Phase 4 group: ops) — same-origin /api/agnb/*.
