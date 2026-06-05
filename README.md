@@ -26,7 +26,7 @@
 
 **If OpenClaw is an _employee_, Bizbox is the _company_**
 
-Bizbox is an open-source, self-hosted Node.js server and React UI that orchestrates a team of AI agents to run a business — built with enterprise teams in mind. Bring your own agents, assign goals, and track your agents' work and costs from one secure, auditable dashboard.
+Bizbox is an open-source, self-hosted Node.js server and React UI that orchestrates a team of AI agents to run a business — built with enterprise teams in mind. Bring your own agents, assign goals, run company-scoped workflows, and track your agents' work and costs from one secure, auditable dashboard.
 
 It looks like a task manager — but under the hood it has org charts, budgets, governance, goal alignment, agent coordination, and the audit trails enterprises need.
 
@@ -54,6 +54,7 @@ It looks like a task manager — but under the hood it has org charts, budgets, 
     <td align="center"><img src="doc/assets/logos/cursor.svg" width="32" alt="Cursor" /><br/><sub>Cursor</sub></td>
     <td align="center"><img src="doc/assets/logos/bash.svg" width="32" alt="Bash" /><br/><sub>Bash</sub></td>
     <td align="center"><img src="doc/assets/logos/http.svg" width="32" alt="HTTP" /><br/><sub>HTTP</sub></td>
+    <td align="center"><sub>Google<br/>ADK</sub></td>
   </tr>
 </table>
 

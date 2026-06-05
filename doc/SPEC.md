@@ -6,7 +6,7 @@ Target specification for the Bizbox control plane. Living document — updated i
 
 ## 1. Company Model [DRAFT]
 
-A Company is a first-order object. One Bizbox instance runs multiple Companies. A Company does not have a standalone "goal" field — its direction is defined by its set of Initiatives (see Task Hierarchy Mapping).
+A Company is a first-order object. One Bizbox instance runs multiple Companies. A Company does not have a standalone "goal" field — its direction is defined by its set of Initiatives (see Task Hierarchy Mapping). A Company also owns company-scoped Workflows for multi-step agent runs and deliverables.
 
 ### Fields (Draft)
 
@@ -199,6 +199,7 @@ Agent configuration includes an **adapter** that defines how Bizbox invokes the 
 | `cursor` | Cursor API/CLI bridge | Cursor-integrated heartbeat worker |
 | `openclaw_gateway` | OpenClaw gateway API | Managed OpenClaw agent via gateway |
 | `hermes_local` | Local Hermes process | Hermes agent heartbeat worker |
+| `google_adk` | Google ADK pipeline run | Google ADK heartbeat worker |
 
 The `process` and `http` adapters ship as generic defaults. Additional built-in adapters cover common local coding runtimes (see list above), and new adapter types can be registered via the plugin system (see Plugin / Extension Architecture).
 
