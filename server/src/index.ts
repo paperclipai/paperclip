@@ -32,6 +32,7 @@ import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   feedbackService,
   backfillPrincipalAccessCompatibility,
+  bootstrapExecutionPolicyFromEnv,
   heartbeatService,
   instanceSettingsService,
   reconcileCloudUpstreamRunsOnStartup,
@@ -716,6 +717,27 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
     });
   
+  // Force the instance onto the Kubernetes sandbox provider when configured via
+  // env (PAPERCLIP_EXECUTION_MODE=kubernetes). Runs BEFORE the heartbeat resumes
+  // queued runs so the policy + managed k8s environments are in place. A bad
+  // PAPERCLIP_EXECUTION_MODE / PAPERCLIP_K8S_* value throws and fails startup
+  // (fail-loud) rather than silently allowing local execution.
+  try {
+    const policyResult = await bootstrapExecutionPolicyFromEnv(db as any);
+    if (policyResult) {
+      logger.warn(
+        {
+          executionMode: policyResult.executionMode,
+          companiesConfigured: policyResult.companiesConfigured,
+        },
+        "forced execution policy applied at startup",
+      );
+    }
+  } catch (err) {
+    logger.error({ err }, "failed to apply forced execution policy from environment");
+    throw err;
+  }
+
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });

@@ -27,6 +27,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
+      // Absent => unrestricted; only carry through an explicit policy.
+      ...(parsed.data.executionMode ? { executionMode: parsed.data.executionMode } : {}),
     };
   }
   return {
