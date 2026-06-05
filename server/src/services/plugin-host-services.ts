@@ -90,6 +90,9 @@ const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 
+/** Shared empty allowlist — the secure default (no private hosts exempted). */
+const EMPTY_ALLOWED_HOSTS: ReadonlySet<string> = new Set();
+
 /**
  * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
  * link-local, etc.) that plugins should never be able to reach.
@@ -148,7 +151,11 @@ interface ValidatedFetchTarget {
   useTls: boolean;
 }
 
-async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedFetchTarget> {
+// Exported for unit testing of the SSRF guard + allowlist behavior.
+export async function validateAndResolveFetchUrl(
+  urlString: string,
+  allowedPrivateHosts: ReadonlySet<string> = EMPTY_ALLOWED_HOSTS,
+): Promise<ValidatedFetchTarget> {
   let parsed: URL;
   try {
     parsed = new URL(urlString);
@@ -168,6 +175,14 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
   const originalHostname = parsed.hostname.replace(/^\[|\]$/g, ""); // strip IPv6 brackets
   const hostHeader = parsed.host; // includes port if non-default
 
+  // Operator opt-in: when the requested host:port is explicitly allowlisted via
+  // `pluginHttpAllowedPrivateHosts`, exempt it from the private-IP rejection
+  // below. We still resolve + pin the IP (no DNS rebinding window). Match is
+  // exact on host:port as requested (lowercased), so a generic private address
+  // is never silently trusted — only the exact target the operator declared.
+  const isAllowlistedPrivateHost =
+    allowedPrivateHosts.size > 0 && allowedPrivateHosts.has(hostHeader.toLowerCase());
+
   // Race the DNS lookup against a timeout to prevent indefinite hangs
   // when DNS is misconfigured or unresponsive.
   const dnsPromise = dnsLookup(originalHostname, { all: true });
@@ -186,15 +201,16 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
 
     // Filter to only non-private IPs instead of rejecting the entire request
     // when some IPs are private. This handles multi-homed hosts that resolve
-    // to both private and public addresses.
+    // to both private and public addresses. When the host:port is allowlisted,
+    // private IPs are acceptable too — fall back to the first resolved address.
     const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
-    if (safeResults.length === 0) {
+    if (safeResults.length === 0 && !isAllowlistedPrivateHost) {
       throw new Error(
         `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
       );
     }
 
-    const resolved = safeResults[0]!;
+    const resolved = (safeResults.length > 0 ? safeResults[0] : results[0])!;
     return {
       parsedUrl: parsed,
       resolvedAddress: resolved.address,
@@ -484,8 +500,24 @@ export function buildHostServices(
   pluginKey: string,
   eventBus: PluginEventBus,
   notifyWorker?: (method: string, params: unknown) => void,
-  options: { pluginWorkerManager?: PluginWorkerManager; manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1 } = {},
+  options: { pluginWorkerManager?: PluginWorkerManager; manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1; allowedPrivateFetchHosts?: string[] } = {},
 ): HostServices & { dispose(): void } {
+  // SSRF-guard exemptions: exact host:port values (lowercased) that this
+  // plugin's outbound fetch may reach even when they resolve to a private /
+  // loopback address. Empty unless the operator opted in via config; see
+  // `pluginHttpAllowedPrivateHosts`. DANGER documented at the config schema.
+  const allowedPrivateFetchHosts = new Set(
+    (options.allowedPrivateFetchHosts ?? [])
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  if (allowedPrivateFetchHosts.size > 0) {
+    console.warn(
+      `[plugin-host] SSRF guard relaxed for plugin "${pluginKey}": ` +
+        `private/loopback fetch allowed to ${Array.from(allowedPrivateFetchHosts).join(", ")}. ` +
+        `Enabled via pluginHttpAllowedPrivateHosts — self-hosted trusted use only.`,
+    );
+  }
   const registry = pluginRegistryService(db);
   const stateStore = pluginStateStore(db);
   const pluginDb = pluginDatabaseService(db);
@@ -1214,7 +1246,9 @@ export function buildHostServices(
       async fetch(params) {
         // SSRF protection: validate protocol whitelist + block private IPs.
         // Resolve once, then connect directly to that IP to prevent DNS rebinding.
-        const target = await validateAndResolveFetchUrl(params.url);
+        // Operator-allowlisted host:port targets are exempt from the private-IP
+        // block (off by default; see pluginHttpAllowedPrivateHosts).
+        const target = await validateAndResolveFetchUrl(params.url, allowedPrivateFetchHosts);
 
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), PLUGIN_FETCH_TIMEOUT_MS);

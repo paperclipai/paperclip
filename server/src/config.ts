@@ -57,6 +57,7 @@ export interface Config {
   host: string;
   port: number;
   allowedHostnames: string[];
+  pluginHttpAllowedPrivateHosts: string[];
   authBaseUrlMode: AuthBaseUrlMode;
   authPublicBaseUrl: string | undefined;
   authDisableSignUp: boolean;
@@ -239,6 +240,32 @@ export function loadConfig(): Config {
         .filter(Boolean),
     ),
   );
+
+  // SSRF-guard exemptions for plugin outbound fetch. DANGER: disabled (empty)
+  // by default. Each entry is an exact host:port (lowercased) that plugins are
+  // permitted to reach even when it resolves to a loopback/private address.
+  // Env (comma-separated) overrides the config file when set.
+  const pluginHttpAllowedPrivateHostsFromEnvRaw =
+    process.env.PAPERCLIP_PLUGIN_HTTP_ALLOWED_PRIVATE_HOSTS;
+  const pluginHttpAllowedPrivateHostsFromEnv =
+    pluginHttpAllowedPrivateHostsFromEnvRaw !== undefined
+      ? pluginHttpAllowedPrivateHostsFromEnvRaw
+        .split(",")
+        .map((value) => value.trim().toLowerCase())
+        .filter((value) => value.length > 0)
+      : null;
+  const pluginHttpAllowedPrivateHosts = Array.from(
+    new Set(
+      (
+        pluginHttpAllowedPrivateHostsFromEnv ??
+        fileConfig?.server.pluginHttpAllowedPrivateHosts ??
+        []
+      )
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  );
+
   const companyDeletionEnvRaw = process.env.PAPERCLIP_ENABLE_COMPANY_DELETION;
   const companyDeletionEnabled =
     companyDeletionEnvRaw !== undefined
@@ -293,6 +320,7 @@ export function loadConfig(): Config {
     host: resolvedBind.host,
     port: Number(process.env.PORT) || fileConfig?.server.port || 3100,
     allowedHostnames,
+    pluginHttpAllowedPrivateHosts,
     authBaseUrlMode,
     authPublicBaseUrl,
     authDisableSignUp,
