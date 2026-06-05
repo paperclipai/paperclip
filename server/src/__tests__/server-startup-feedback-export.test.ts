@@ -376,3 +376,53 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("https://paperclip.example");
   });
 });
+
+describe("startServer local_trusted guard validation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    loadConfigMock.mockReturnValue(buildTestConfig());
+    process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_PAPERCLIP_API_URL === undefined) delete process.env.PAPERCLIP_API_URL;
+    else process.env.PAPERCLIP_API_URL = ORIGINAL_PAPERCLIP_API_URL;
+
+    if (ORIGINAL_PAPERCLIP_RUNTIME_API_URL === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+    else process.env.PAPERCLIP_RUNTIME_API_URL = ORIGINAL_PAPERCLIP_RUNTIME_API_URL;
+
+    if (ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON === undefined) {
+      delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    } else {
+      process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    }
+
+    if (ORIGINAL_PAPERCLIP_LISTEN_HOST === undefined) delete process.env.PAPERCLIP_LISTEN_HOST;
+    else process.env.PAPERCLIP_LISTEN_HOST = ORIGINAL_PAPERCLIP_LISTEN_HOST;
+
+    if (ORIGINAL_PAPERCLIP_LISTEN_PORT === undefined) delete process.env.PAPERCLIP_LISTEN_PORT;
+    else process.env.PAPERCLIP_LISTEN_PORT = ORIGINAL_PAPERCLIP_LISTEN_PORT;
+  });
+
+  it("rejects local_trusted mode when host is not a loopback address", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      deploymentMode: "local_trusted",
+      host: "my-host.ts.net",
+    }));
+
+    await expect(startServer()).rejects.toThrow(
+      "local_trusted mode requires loopback host binding (received: my-host.ts.net). Use authenticated mode for non-loopback deployments.",
+    );
+  });
+
+  it("rejects local_trusted mode when deploymentExposure is not private", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      deploymentMode: "local_trusted",
+      deploymentExposure: "public",
+    }));
+
+    await expect(startServer()).rejects.toThrow(
+      "local_trusted mode only supports private exposure",
+    );
+  });
+});
