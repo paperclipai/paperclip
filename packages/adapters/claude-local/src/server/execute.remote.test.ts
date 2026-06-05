@@ -328,4 +328,107 @@ describe("claude remote execution", () => {
     expect(call?.[2]).toContain("session-123");
   });
 
+  it("retries with a fresh session when the Claude CLI returns 'No conversation found with session id'", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-stale-session-explicit-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: JSON.stringify({
+        type: "result",
+        is_error: true,
+        result: "No conversation found with session id stale-session-id",
+        errors: [{ message: "No conversation found with session id stale-session-id" }],
+      }),
+      stderr: "",
+      pid: 124,
+      startedAt: new Date().toISOString(),
+    });
+
+    const logs: string[] = [];
+    await execute({
+      runId: "run-stale-explicit",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "stale-session-id",
+        sessionParams: { sessionId: "stale-session-id" },
+        sessionDisplayId: "stale-session-id",
+        taskKey: null,
+      },
+      config: { command: "claude" },
+      context: {
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+      executionTransport: {},
+      onLog: async (_stream, line) => { logs.push(line); },
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(2);
+    const firstCall = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    const secondCall = runChildProcess.mock.calls[1] as unknown as [string, string, string[]] | undefined;
+    expect(firstCall?.[2]).toContain("--resume");
+    expect(firstCall?.[2]).toContain("stale-session-id");
+    expect(secondCall?.[2]).not.toContain("--resume");
+    expect(logs.some((l) => l.includes("stale-session-id") && l.includes("retrying with a fresh session"))).toBe(true);
+  });
+
+  it("retries with a fresh session when the Claude CLI crashes with no output (STATUS_ACCESS_VIOLATION / exit 3221225477)", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-stale-session-crash-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 3221225477,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: 125,
+      startedAt: new Date().toISOString(),
+    });
+
+    const logs: string[] = [];
+    await execute({
+      runId: "run-stale-crash",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "stale-session-id",
+        sessionParams: { sessionId: "stale-session-id" },
+        sessionDisplayId: "stale-session-id",
+        taskKey: null,
+      },
+      config: { command: "claude" },
+      context: {
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+      executionTransport: {},
+      onLog: async (_stream, line) => { logs.push(line); },
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(2);
+    const firstCall = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    const secondCall = runChildProcess.mock.calls[1] as unknown as [string, string, string[]] | undefined;
+    expect(firstCall?.[2]).toContain("--resume");
+    expect(firstCall?.[2]).toContain("stale-session-id");
+    expect(secondCall?.[2]).not.toContain("--resume");
+    expect(logs.some((l) => l.includes("retrying with a fresh session"))).toBe(true);
+  });
+
 });

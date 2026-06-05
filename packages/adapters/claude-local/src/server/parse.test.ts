@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
+  isClaudeUnknownSessionError,
 } from "./parse.js";
 
 describe("isClaudeTransientUpstreamError", () => {
@@ -93,6 +94,46 @@ describe("isClaudeTransientUpstreamError", () => {
         errorMessage: "Invalid request_error: Unknown parameter 'foo'.",
       }),
     ).toBe(false);
+  });
+});
+
+describe("isClaudeUnknownSessionError", () => {
+  it("detects the 'No conversation found with session id' message in result", () => {
+    expect(
+      isClaudeUnknownSessionError({
+        result: "No conversation found with session id stale-session-id",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects the error in the errors array", () => {
+    expect(
+      isClaudeUnknownSessionError({
+        result: "",
+        errors: [{ message: "No conversation found with session id abc-123" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    expect(
+      isClaudeUnknownSessionError({
+        result: "no conversation found with session id XYZ",
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for unrelated errors", () => {
+    expect(
+      isClaudeUnknownSessionError({
+        result: "Maximum turns reached.",
+        errors: [],
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for empty parsed output", () => {
+    expect(isClaudeUnknownSessionError({ result: "", errors: [] })).toBe(false);
   });
 });
 
