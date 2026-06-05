@@ -178,25 +178,41 @@ export const queryKeys = {
   inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>
-    ["costs", companyId, from, to] as const,
+    from !== undefined && to !== undefined
+      ? (["costs", companyId, from, to] as const)
+      : (["costs", companyId] as const),
   usageByProvider: (companyId: string, from?: string, to?: string) =>
-    ["usage-by-provider", companyId, from, to] as const,
+    from !== undefined && to !== undefined
+      ? (["usage-by-provider", companyId, from, to] as const)
+      : (["usage-by-provider", companyId] as const),
   usageByBiller: (companyId: string, from?: string, to?: string) =>
-    ["usage-by-biller", companyId, from, to] as const,
+    from !== undefined && to !== undefined
+      ? (["usage-by-biller", companyId, from, to] as const)
+      : (["usage-by-biller", companyId] as const),
   financeSummary: (companyId: string, from?: string, to?: string) =>
-    ["finance-summary", companyId, from, to] as const,
+    from !== undefined && to !== undefined
+      ? (["finance-summary", companyId, from, to] as const)
+      : (["finance-summary", companyId] as const),
   financeByBiller: (companyId: string, from?: string, to?: string) =>
-    ["finance-by-biller", companyId, from, to] as const,
+    from !== undefined && to !== undefined
+      ? (["finance-by-biller", companyId, from, to] as const)
+      : (["finance-by-biller", companyId] as const),
   financeByKind: (companyId: string, from?: string, to?: string) =>
-    ["finance-by-kind", companyId, from, to] as const,
+    from !== undefined && to !== undefined
+      ? (["finance-by-kind", companyId, from, to] as const)
+      : (["finance-by-kind", companyId] as const),
   financeEvents: (companyId: string, from?: string, to?: string, limit: number = 100) =>
-    ["finance-events", companyId, from, to, limit] as const,
+    from !== undefined && to !== undefined
+      ? (["finance-events", companyId, from, to, limit] as const)
+      : (["finance-events", companyId, limit] as const),
   usageWindowSpend: (companyId: string) =>
     ["usage-window-spend", companyId] as const,
   usageQuotaWindows: (companyId: string) =>
     ["usage-quota-windows", companyId] as const,
   heartbeats: (companyId: string, agentId?: string) =>
-    ["heartbeats", companyId, agentId] as const,
+    agentId !== undefined
+      ? (["heartbeats", companyId, agentId] as const)
+      : (["heartbeats", companyId] as const),
   runDetail: (runId: string) => ["heartbeat-run", runId] as const,
   runWorkspaceOperations: (runId: string) => ["heartbeat-run", runId, "workspace-operations"] as const,
   liveRuns: (companyId: string) => ["live-runs", companyId] as const,

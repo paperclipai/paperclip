@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
@@ -18,7 +18,7 @@ import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
+import { Bot, Plus, List, GitBranch, SlidersHorizontal, RotateCcw } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 import {
   resourceMembershipState,
@@ -69,6 +69,8 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean
 export function Agents() {
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialogActions();
+  const queryClient = useQueryClient();
+  const [refreshing, setRefreshing] = useState(false);
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const location = useLocation();
@@ -207,6 +209,21 @@ export function Agents() {
               </button>
             </div>
           )}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={refreshing}
+            onClick={async () => {
+              setRefreshing(true);
+              await Promise.all([
+                queryClient.refetchQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) }),
+                queryClient.refetchQueries({ queryKey: queryKeys.heartbeats(selectedCompanyId!) }),
+              ]);
+              setRefreshing(false);
+            }}
+          >
+            <RotateCcw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
+          </Button>
           <Button size="sm" variant="outline" onClick={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
             New Agent

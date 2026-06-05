@@ -3191,9 +3191,31 @@ function RunsTab({
   adapterConfig: Record<string, unknown>;
 }) {
   const { isMobile } = useSidebar();
+  const queryClient = useQueryClient();
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await queryClient.refetchQueries({ queryKey: queryKeys.heartbeats(companyId, agentId) });
+    setRefreshing(false);
+  };
 
   if (runs.length === 0) {
-    return <p className="text-sm text-muted-foreground">No runs yet.</p>;
+    return (
+      <div className="space-y-2">
+        <div className="flex justify-end">
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="flex items-center gap-1 px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+          >
+            <RotateCcw className={cn("h-3 w-3", refreshing && "animate-spin")} />
+            Refresh
+          </button>
+        </div>
+        <p className="text-sm text-muted-foreground">No runs yet.</p>
+      </div>
+    );
   }
 
   // Sort by created descending
@@ -3222,10 +3244,22 @@ function RunsTab({
       );
     }
     return (
-      <div className="border border-border rounded-lg overflow-x-hidden">
-        {sorted.map((run) => (
-          <RunListItem key={run.id} run={run} isSelected={false} agentId={agentRouteId} />
-        ))}
+      <div className="space-y-2">
+        <div className="flex justify-end">
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="flex items-center gap-1 px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+          >
+            <RotateCcw className={cn("h-3 w-3", refreshing && "animate-spin")} />
+            Refresh
+          </button>
+        </div>
+        <div className="border border-border rounded-lg overflow-x-hidden">
+          {sorted.map((run) => (
+            <RunListItem key={run.id} run={run} isSelected={false} agentId={agentRouteId} />
+          ))}
+        </div>
       </div>
     );
   }
@@ -3239,6 +3273,16 @@ function RunsTab({
         selectedRun ? "w-72" : "w-full",
       )}>
         <div className="sticky top-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 2rem)" }}>
+        <div className="flex justify-end border-b border-border px-2 py-1">
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+          >
+            <RotateCcw className={cn("h-3 w-3", refreshing && "animate-spin")} />
+            Refresh
+          </button>
+        </div>
         {sorted.map((run) => (
           <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
         ))}
