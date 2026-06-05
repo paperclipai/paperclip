@@ -73,6 +73,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   resetRuntimeSession: vi.fn(),
   getRun: vi.fn(),
   cancelRun: vi.fn(),
+  wakeup: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -316,6 +317,7 @@ describe.sequential("agent permission routes", () => {
     mockHeartbeatService.resetRuntimeSession.mockReset();
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
+    mockHeartbeatService.wakeup.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
@@ -369,6 +371,7 @@ describe.sequential("agent permission routes", () => {
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(async (_companyId, requested) => requested);
     mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
+    mockHeartbeatService.wakeup.mockResolvedValue({ id: "run-1" });
     mockAgentInstructionsService.materializeManagedBundle.mockImplementation(
       async (agent: Record<string, unknown>, files: Record<string, string>) => ({
         bundle: null,
@@ -487,6 +490,43 @@ describe.sequential("agent permission routes", () => {
       .send({}));
 
     expect(res.status).toBe(403);
+  });
+
+  it("allows agent-authenticated delegated wakeups with tasks:assign permission", async () => {
+    const targetAgentId = "33333333-3333-4333-8333-333333333333";
+    mockAgentService.getById.mockImplementation(async (id: string) => ({
+      ...baseAgent,
+      id,
+      companyId,
+    }));
+    mockAccessService.hasPermission.mockImplementation(async (
+      _companyId: string,
+      principalType: string,
+      principalId: string,
+      permissionKey: string,
+    ) => (
+      principalType === "agent" &&
+      principalId === agentId &&
+      permissionKey === "tasks:assign"
+    ));
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${targetAgentId}/wakeup`)
+      .send({ source: "on_demand" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(targetAgentId, expect.objectContaining({
+      requestedByActorType: "agent",
+      requestedByActorId: agentId,
+    }));
   });
 
   it("blocks agent-authenticated self-updates that set host-executed workspace commands", async () => {
