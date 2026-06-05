@@ -8589,9 +8589,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       if (finalizedRun) {
-        await updateRuntimeState(agent, finalizedRun, adapterResult, {
-          legacySessionId: nextSessionState.legacySessionId,
-        }, normalizedUsage);
+        await updateRuntimeState(
+          agent,
+          finalizedRun,
+          {
+            ...adapterResult,
+            errorMessage: adapterResult.errorMessage
+              ? secretScrubber.scrubText(adapterResult.errorMessage)
+              : adapterResult.errorMessage,
+          },
+          {
+            legacySessionId: nextSessionState.legacySessionId,
+          },
+          normalizedUsage,
+        );
         if (taskKey) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
