@@ -435,6 +435,120 @@ describe.sequential("agent permission routes", () => {
     ]);
   });
 
+  it("redacts other-agent adapterConfig in list response for CEO agent JWT with canCreateAgents", async () => {
+    const otherAgentId = "33333333-3333-4333-8333-333333333333";
+    const ceoAgent = {
+      ...baseAgent,
+      permissions: { canCreateAgents: true },
+      adapterConfig: { env: { CEO_SECRET: "ceo-value" } },
+      runtimeConfig: { mode: "ceo" },
+    };
+    const otherAgent = {
+      ...baseAgent,
+      id: otherAgentId,
+      name: "Scout",
+      urlKey: "scout",
+      permissions: { canCreateAgents: false },
+      adapterConfig: { env: { DRANAKCORP_SMTP_APP_PASSWORD: "do-not-leak" } },
+      runtimeConfig: { mode: "scout" },
+    };
+    mockAgentService.getById.mockImplementation(async (id: string) =>
+      id === agentId ? ceoAgent : id === otherAgentId ? otherAgent : null,
+    );
+    mockAgentService.list.mockResolvedValue([ceoAgent, otherAgent]);
+    mockAccessService.hasPermission.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${companyId}/agents`));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(2);
+    const selfRow = res.body.find((row: { id: string }) => row.id === agentId);
+    const otherRow = res.body.find((row: { id: string }) => row.id === otherAgentId);
+    expect(selfRow).toMatchObject({
+      adapterConfig: { env: { CEO_SECRET: "ceo-value" } },
+      runtimeConfig: { mode: "ceo" },
+    });
+    expect(otherRow).toMatchObject({
+      adapterConfig: {},
+      runtimeConfig: {},
+    });
+    expect(JSON.stringify(res.body)).not.toContain("DRANAKCORP_SMTP_APP_PASSWORD");
+    expect(JSON.stringify(res.body)).not.toContain("do-not-leak");
+  });
+
+  it("redacts other-agent adapterConfig in list response for agent JWT with agents:create grant", async () => {
+    const otherAgentId = "44444444-4444-4444-8444-444444444444";
+    const callerAgent = {
+      ...baseAgent,
+      permissions: { canCreateAgents: false },
+      adapterConfig: { env: { CALLER_SECRET: "caller-value" } },
+    };
+    const otherAgent = {
+      ...baseAgent,
+      id: otherAgentId,
+      name: "Other",
+      urlKey: "other",
+      adapterConfig: { env: { CREDENTIALS_SERVICE_TOKEN: "leaky-token" } },
+    };
+    mockAgentService.getById.mockImplementation(async (id: string) =>
+      id === agentId ? callerAgent : id === otherAgentId ? otherAgent : null,
+    );
+    mockAgentService.list.mockResolvedValue([callerAgent, otherAgent]);
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${companyId}/agents`));
+
+    expect(res.status).toBe(200);
+    const otherRow = res.body.find((row: { id: string }) => row.id === otherAgentId);
+    expect(otherRow.adapterConfig).toEqual({});
+    expect(JSON.stringify(res.body)).not.toContain("CREDENTIALS_SERVICE_TOKEN");
+    expect(JSON.stringify(res.body)).not.toContain("leaky-token");
+  });
+
+  it("returns full adapterConfig in list response for board actor with agents:create permission", async () => {
+    const otherAgentId = "55555555-5555-4555-8555-555555555555";
+    const otherAgent = {
+      ...baseAgent,
+      id: otherAgentId,
+      name: "Other",
+      urlKey: "other",
+      adapterConfig: { env: { OTHER_AGENT_TOKEN: "visible-to-board" } },
+    };
+    mockAgentService.list.mockResolvedValue([baseAgent, otherAgent]);
+    mockAccessService.canUser.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "board",
+      userId: "agent-admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${companyId}/agents`));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(2);
+    const otherRow = res.body.find((row: { id: string }) => row.id === otherAgentId);
+    expect(otherRow.adapterConfig).toEqual({ env: { OTHER_AGENT_TOKEN: "visible-to-board" } });
+  });
+
   it("blocks agent updates for authenticated company members without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
 

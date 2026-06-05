@@ -1607,12 +1607,25 @@ export function agentRoutes(
       return;
     }
     const result = await svc.list(companyId);
-    const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    if (canReadConfigs) {
+    // Only board actors with config-read permission see all rows unredacted.
+    // Agent JWTs (including CEO roles with canCreateAgents) only see their own
+    // row unredacted; every other row has adapterConfig/runtimeConfig stripped.
+    // Mirrors the singular GET /agents/:id behaviour (DRA-1433).
+    const isBoardWithConfigRead =
+      req.actor.type === "board" &&
+      (await actorCanReadConfigurationsForCompany(req, companyId));
+    if (isBoardWithConfigRead) {
       res.json(result);
       return;
     }
-    res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+    const callerAgentId = req.actor.type === "agent" ? req.actor.agentId : null;
+    res.json(
+      result.map((agent) =>
+        callerAgentId && agent.id === callerAgentId
+          ? agent
+          : redactForRestrictedAgentView(agent),
+      ),
+    );
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
