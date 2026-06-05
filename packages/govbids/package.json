@@ -1,0 +1,40 @@
+{
+  "name": "@paperclipai/govbids",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "bin": {
+    "govbids": "./src/cli/index.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "govbids": "tsx src/cli/index.ts",
+    "govbids:fetch": "tsx src/cli/index.ts fetch",
+    "govbids:score": "tsx src/cli/index.ts score",
+    "govbids:push": "tsx src/cli/index.ts push",
+    "govbids:run": "tsx src/cli/index.ts run",
+    "govbids:daily": "tsx src/cli/index.ts daily"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "commander": "^13.1.0",
+    "exceljs": "^4.4.0",
+    "jszip": "^3.10.1",
+    "picocolors": "^1.1.1",
+    "unpdf": "^1.6.2",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

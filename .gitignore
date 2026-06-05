@@ -5,6 +5,7 @@ node_modules/
 dist/
 ui/storybook-static/
 .env
+.bidprime-session
 *.tsbuildinfo
 drizzle/meta/
 .vite/
