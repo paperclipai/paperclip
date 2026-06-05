@@ -17,6 +17,31 @@ describe("runtime API discovery", () => {
     ).toBe("https://paperclip.example.com");
   });
 
+  it("pins the primary runtime URL to the loopback bind even when an allowed hostname exists (PRO-33)", () => {
+    // Regression: a local_trusted server binds 127.0.0.1 only; the tailnet name is
+    // merely a Host-header allowlist entry and is unreachable, so it must not become
+    // the primary PAPERCLIP_API_URL (which previously caused connection-refused loops).
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["wwwsolowaytechcom.tail9c73fe.ts.net"],
+        bindHost: "127.0.0.1",
+        port: 3100,
+      }),
+    ).toBe("http://127.0.0.1:3100");
+  });
+
+  it("still prefers an allowed hostname when bound to a non-loopback interface", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["runtime-host.example.test"],
+        bindHost: "100.65.116.95",
+        port: 3100,
+      }),
+    ).toBe("http://runtime-host.example.test:3100");
+  });
+
   it("builds ordered callback candidates from explicit, allowed, bind, and interface hosts", () => {
     expect(
       buildRuntimeApiCandidateUrls({

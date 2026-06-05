@@ -61,6 +61,20 @@ export function choosePrimaryRuntimeApiUrl(input: {
     }
   }
 
+  const bindHost = normalizeHost(input.bindHost);
+
+  // A loopback-bound server is only reachable on loopback. `allowedHostnames` is a
+  // Host-header allowlist for inbound (possibly proxied) requests — it does NOT
+  // guarantee the hostname resolves to a locally bound interface. Preferring it
+  // here yields an unreachable primary PAPERCLIP_API_URL (connection refused) when
+  // the server binds 127.0.0.1 only. Pin the primary URL to the loopback bind so
+  // co-located agents get a working address; remote reachability is a deliberate
+  // deployment choice (authenticated + tailnet/lan bind, or an explicit
+  // authPublicBaseUrl handled above), not an artifact of the Host allowlist.
+  if (bindHost && isLoopbackHost(bindHost)) {
+    return formatOrigin("http:", bindHost, input.port);
+  }
+
   const allowedHostname = input.allowedHostnames
     .map((value) => value.trim())
     .find(Boolean);
@@ -68,7 +82,6 @@ export function choosePrimaryRuntimeApiUrl(input: {
     return formatOrigin("http:", allowedHostname, input.port);
   }
 
-  const bindHost = normalizeHost(input.bindHost);
   if (bindHost && !isWildcardHost(bindHost)) {
     return formatOrigin("http:", bindHost, input.port);
   }
