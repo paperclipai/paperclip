@@ -616,6 +616,8 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.log",
   "agent.status",
   "activity.logged",
+  "bridge.session_state",
+  "bridge.deny_flash",
   "plugin.ui.updated",
   "plugin.worker.crashed",
   "plugin.worker.restarted",

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import type { Agent, Issue, IssueComment, LiveEvent } from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
@@ -31,6 +31,9 @@ type LiveUpdatesSocketLike = {
   onclose: ((this: WebSocket, ev: CloseEvent) => unknown) | null;
   close: (code?: number, reason?: string) => void;
 };
+
+type LiveEventListener = (event: LiveEvent) => void;
+const LiveEventSubscriptionContext= createContext<((listener: LiveEventListener) => () => void) | null>(null);
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
@@ -928,6 +931,17 @@ export const __liveUpdatesTestUtils = {
   shouldSuppressAgentStatusToastForVisibleIssue,
 };
 
+export function useLiveEventSubscription() {
+  const context = useContext(LiveEventSubscriptionContext);
+  return useCallback(
+    (listener: LiveEventListener) => {
+      if (!context) return () => undefined;
+      return context(listener);
+    },
+    [context],
+  );
+}
+
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -948,6 +962,18 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     userId: currentUserId,
     agentId: null,
   });
+  const listenersRef = useRef(new Set<LiveEventListener>());
+
+  const subscribe = useCallback((listener: LiveEventListener) => {
+    listenersRef.current.add(listener);
+    return () => {
+      listenersRef.current.delete(listener);
+    };
+  }, []);
+
+  const emitLiveEvent = useCallback((event: LiveEvent) => {
+    listenersRef.current.forEach((listener) => listener(event));
+  }, []);
 
   useEffect(() => {
     pathnameRef.current = location.pathname;
@@ -1010,6 +1036,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
         try {
           const parsed = JSON.parse(raw) as LiveEvent;
+          if (parsed.companyId === liveCompanyId) {
+            emitLiveEvent(parsed);
+          }
           handleLiveEvent(queryClient, liveCompanyId, pathnameRef.current, parsed, pushToast, gateRef.current, {
             userId: currentActorRef.current.userId,
             agentId: currentActorRef.current.agentId,
@@ -1045,7 +1074,13 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       socket = null;
       closeSocketQuietly(activeSocket, "provider_unmount");
     };
-  }, [queryClient, liveCompanyId, pushToast, canConnectSocket, socketAuthKey]);
+  }, [queryClient, liveCompanyId, pushToast, canConnectSocket, socketAuthKey, emitLiveEvent]);
 
-  return <>{children}</>;
+  const subscriptionValue = useMemo(() => subscribe, [subscribe]);
+
+  return (
+    <LiveEventSubscriptionContext.Provider value={subscriptionValue}>
+      {children}
+    </LiveEventSubscriptionContext.Provider>
+  );
 }
