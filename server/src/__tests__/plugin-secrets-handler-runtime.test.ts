@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  getConfig: vi.fn(),
+  getConfigExactScope: vi.fn(),
   resolveSecretValue: vi.fn(),
 }));
 
 vi.mock("../services/plugin-registry.js", () => ({
   pluginRegistryService: () => ({
-    getConfig: mocks.getConfig,
+    getConfigExactScope: mocks.getConfigExactScope,
   }),
 }));
 
@@ -40,7 +40,7 @@ const manifest = {
 
 describe("createPluginSecretsHandler runtime company scoping", () => {
   beforeEach(() => {
-    mocks.getConfig.mockReset();
+    mocks.getConfigExactScope.mockReset();
     mocks.resolveSecretValue.mockReset();
   });
 
@@ -54,12 +54,12 @@ describe("createPluginSecretsHandler runtime company scoping", () => {
     await expect(handler.resolve({ secretRef })).rejects.toThrow(
       PLUGIN_SECRET_REFS_REQUIRE_COMPANY_MESSAGE,
     );
-    expect(mocks.getConfig).not.toHaveBeenCalled();
+    expect(mocks.getConfigExactScope).not.toHaveBeenCalled();
     expect(mocks.resolveSecretValue).not.toHaveBeenCalled();
   });
 
   it("rejects a secret ref that is not referenced by that company's plugin config", async () => {
-    mocks.getConfig.mockResolvedValue({
+    mocks.getConfigExactScope.mockResolvedValue({
       configJson: {
         apiKeyRef: "88888888-8888-4888-8888-888888888888",
       },
@@ -74,12 +74,12 @@ describe("createPluginSecretsHandler runtime company scoping", () => {
     await expect(handler.resolve({ secretRef, companyId })).rejects.toThrow(
       /not referenced by this company's plugin config/i,
     );
-    expect(mocks.getConfig).toHaveBeenCalledWith(pluginId, companyId);
+    expect(mocks.getConfigExactScope).toHaveBeenCalledWith(pluginId, companyId);
     expect(mocks.resolveSecretValue).not.toHaveBeenCalled();
   });
 
   it("resolves only through the company plugin binding context from saved config", async () => {
-    mocks.getConfig.mockResolvedValue({
+    mocks.getConfigExactScope.mockResolvedValue({
       configJson: {
         apiKeyRef: secretRef,
       },
@@ -101,5 +101,21 @@ describe("createPluginSecretsHandler runtime company scoping", () => {
       actorId: pluginId,
       pluginId,
     });
+  });
+
+  it("does not authorize a company-scoped secret resolution from legacy global config fallback", async () => {
+    mocks.getConfigExactScope.mockResolvedValue(null);
+
+    const handler = createPluginSecretsHandler({
+      db: {} as never,
+      pluginId,
+      manifest: manifest as never,
+    });
+
+    await expect(handler.resolve({ secretRef, companyId })).rejects.toThrow(
+      /not referenced by this company's plugin config/i,
+    );
+    expect(mocks.getConfigExactScope).toHaveBeenCalledWith(pluginId, companyId);
+    expect(mocks.resolveSecretValue).not.toHaveBeenCalled();
   });
 });

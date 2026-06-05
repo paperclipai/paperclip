@@ -242,7 +242,10 @@ export function createPluginSecretsHandler(
         throw new Error(PLUGIN_SECRET_REFS_REQUIRE_COMPANY_MESSAGE);
       }
 
-      const configRow = await registry.getConfig(pluginId, companyId);
+      // Authorize secret refs only from the exact company-scoped config row.
+      // Falling back to legacy/global config would let a live worker keep using
+      // stale global refs after a company-scoped invocation takes over.
+      const configRow = await registry.getConfigExactScope(pluginId, companyId);
       const refsBySecret = extractSecretRefPathsFromConfig(
         configRow?.configJson ?? {},
         manifest?.instanceConfigSchema,

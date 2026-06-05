@@ -287,6 +287,14 @@ export function pluginRegistryService(db: Db) {
 
     // ----- Config ---------------------------------------------------------
 
+    /** Retrieve a plugin's config at the exact requested scope. */
+    getConfigExactScope: (pluginId: string, companyId?: string | null) =>
+      db
+        .select()
+        .from(pluginConfig)
+        .where(pluginConfigExactScopeCondition(pluginId, companyId))
+        .then((rows) => rows[0] ?? null),
+
     /** Retrieve a plugin's company-scoped config, or the legacy global fallback. */
     getConfig: async (pluginId: string, companyId?: string | null) => {
       if (companyId) {
