@@ -5,6 +5,7 @@ export const agentSkillStateSchema = z.enum([
   "configured",
   "installed",
   "missing",
+  "shared_unlinked",
   "stale",
   "external",
 ]);
