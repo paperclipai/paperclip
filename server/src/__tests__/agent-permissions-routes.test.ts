@@ -870,6 +870,106 @@ describe.sequential("agent permission routes", () => {
     );
   }, 15_000);
 
+  it("supports status query parameter on the agent list route", async () => {
+    mockAgentService.list.mockResolvedValue([
+      baseAgent,
+      {
+        ...baseAgent,
+        id: "33333333-3333-4333-8333-333333333333",
+        name: "Busy",
+        status: "running",
+      },
+      {
+        ...baseAgent,
+        id: "44444444-4444-4444-8444-444444444444",
+        name: "Retired",
+        status: "terminated",
+      },
+    ]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/agents`)
+      .query({ status: "idle,running" });
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.list).toHaveBeenCalledWith(companyId, { includeTerminated: false });
+    expect(res.body).toHaveLength(2);
+    expect(res.body.map((agent: { status: string }) => agent.status).sort()).toEqual(["idle", "running"]);
+  });
+
+  it("includes terminated rows when status filter requests terminated", async () => {
+    mockAgentService.list.mockResolvedValue([
+      { ...baseAgent, status: "idle" },
+      {
+        ...baseAgent,
+        id: "44444444-4444-4444-8444-444444444444",
+        name: "Retired",
+        status: "terminated",
+      },
+    ]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/agents`)
+      .query({ status: "terminated" });
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.list).toHaveBeenCalledWith(companyId, { includeTerminated: true });
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].status).toBe("terminated");
+  });
+
+  it("rejects invalid status values on the agent list route", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/agents`)
+      .query({ status: "idle,banana" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("banana");
+    expect(mockAgentService.list).not.toHaveBeenCalled();
+  });
+
+  it("rejects empty status filter values on the agent list route", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/agents`)
+      .query({ status: "" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("comma-separated statuses");
+    expect(mockAgentService.list).not.toHaveBeenCalled();
+  });
+
   it("rejects unsupported query parameters on the agent list route", async () => {
     const app = await createApp({
       type: "board",

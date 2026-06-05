@@ -5,6 +5,7 @@ import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
+  AGENT_STATUSES,
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -17,6 +18,7 @@ import {
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
   type AgentSkillSnapshot,
+  type AgentStatus,
   type InstanceSchedulerHeartbeatAgent,
   upsertAgentInstructionsFileSchema,
   updateAgentInstructionsBundleSchema,
@@ -1599,20 +1601,61 @@ export function agentRoutes(
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const unsupportedQueryParams = Object.keys(req.query).sort();
+
+    const supportedQueryParams = new Set(["status"]);
+    const unsupportedQueryParams = Object.keys(req.query)
+      .filter((key) => !supportedQueryParams.has(key))
+      .sort();
     if (unsupportedQueryParams.length > 0) {
       res.status(400).json({
         error: `Unsupported query parameter${unsupportedQueryParams.length === 1 ? "" : "s"}: ${unsupportedQueryParams.join(", ")}`,
       });
       return;
     }
-    const result = await svc.list(companyId);
-    const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    if (canReadConfigs) {
-      res.json(result);
+
+    const requestedStatuses: AgentStatus[] = [];
+    const rawStatusQuery = req.query.status;
+    const statusQueryProvided = rawStatusQuery !== undefined;
+    const statusEntries = Array.isArray(rawStatusQuery) ? rawStatusQuery : rawStatusQuery ? [rawStatusQuery] : [];
+    for (const entry of statusEntries) {
+      if (typeof entry !== "string") continue;
+      for (const value of entry.split(",")) {
+        const trimmed = value.trim();
+        if (trimmed.length > 0) {
+          requestedStatuses.push(trimmed as AgentStatus);
+        }
+      }
+    }
+
+    if (statusQueryProvided && requestedStatuses.length === 0) {
+      res.status(400).json({
+        error: "Invalid status query parameter value: expected one or more comma-separated statuses",
+      });
       return;
     }
-    res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+
+    const invalidStatuses = requestedStatuses.filter((status) => !AGENT_STATUSES.includes(status));
+    if (invalidStatuses.length > 0) {
+      res.status(400).json({
+        error: `Invalid status query parameter value${invalidStatuses.length === 1 ? "" : "s"}: ${invalidStatuses.join(", ")}. Allowed: ${AGENT_STATUSES.join(", ")}`,
+      });
+      return;
+    }
+
+    const statusFilter = new Set(requestedStatuses);
+    const includeTerminated = statusFilter.has("terminated");
+    const result = await svc.list(companyId, { includeTerminated });
+    const filtered =
+      statusFilter.size > 0
+        ? result.filter((agent) => statusFilter.has(agent.status as AgentStatus))
+        : result;
+
+    const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
+    if (canReadConfigs) {
+      res.json(filtered);
+      return;
+    }
+    res.json(filtered.map((agent) => redactForRestrictedAgentView(agent)));
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
