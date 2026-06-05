@@ -1493,10 +1493,50 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  function asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  }
+
+  function readContextIssueId(context: Record<string, unknown>) {
+    const paperclipWake = asRecord(context.paperclipWake);
+    const wakeIssue = asRecord(paperclipWake.issue);
+    const wakeIssueId = typeof wakeIssue.id === "string" && wakeIssue.id.trim() ? wakeIssue.id.trim() : null;
+    const contextIssueId = typeof context.issueId === "string" && context.issueId.trim() ? context.issueId.trim() : null;
+    const contextTaskId = typeof context.taskId === "string" && context.taskId.trim() ? context.taskId.trim() : null;
+    return wakeIssueId ?? contextIssueId ?? contextTaskId;
+  }
+
+  function readExecutionStageFromRunContext(contextSnapshot: unknown) {
+    const context = asRecord(contextSnapshot);
+    const paperclipWake = asRecord(context.paperclipWake);
+    const stage = asRecord(paperclipWake.executionStage);
+    if (Object.keys(stage).length > 0) return stage;
+    return asRecord(context.executionStage);
+  }
+
+  async function isActiveExecutionStageParticipantRun(req: Request, issue: { id: string; companyId: string }) {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId) return false;
+
+    const run = await heartbeat.getRun(req.actor.runId);
+    if (!run || run.companyId !== issue.companyId || run.agentId !== req.actor.agentId) return false;
+    if (!["queued", "running", "scheduled_retry"].includes(run.status)) return false;
+
+    const context = asRecord(run.contextSnapshot);
+    if (readContextIssueId(context) !== issue.id) return false;
+
+    const stage = readExecutionStageFromRunContext(context);
+    const wakeRole = typeof stage.wakeRole === "string" ? stage.wakeRole : null;
+    if (wakeRole !== "reviewer" && wakeRole !== "approver") return false;
+
+    const participant = asRecord(stage.currentParticipant);
+    return participant.type === "agent" && participant.agentId === req.actor.agentId;
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
     issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    options: { allowExecutionStageParticipant?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1509,6 +1549,13 @@ export function issueRoutes(
     }
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
+        return true;
+      }
+      if (
+        options.allowExecutionStageParticipant &&
+        issue.status === "in_progress" &&
+        await isActiveExecutionStageParticipantRun(req, issue)
+      ) {
         return true;
       }
       if (issue.status === "in_progress") {
@@ -4038,7 +4085,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { allowExecutionStageParticipant: true }))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -4245,6 +4292,16 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+    if (
+      transition.workflowControlledAssignment &&
+      transition.decision?.outcome === "changes_requested" &&
+      updateFields.status === "in_progress"
+    ) {
+      updateFields.checkoutRunId = null;
+      updateFields.executionRunId = null;
+      updateFields.executionAgentNameKey = null;
+      updateFields.executionLockedAt = null;
+    }
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
@@ -5747,7 +5804,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue, { allowExecutionStageParticipant: true }))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,

@@ -9,6 +9,7 @@ const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
+const reviewStageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -196,7 +197,10 @@ function makeAgent(id: string, overrides: Record<string, unknown> = {}) {
 
 function createRunContextDb(contextSnapshot: Record<string, unknown> = {}) {
   return {
-    transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
+    transaction: async (callback: (tx: Record<string, unknown>) => Promise<unknown>) =>
+      callback({
+        insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+      }),
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
@@ -704,6 +708,138 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("allows the active execution-policy reviewer run to patch a checked-out issue", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "66666666-6666-4666-8666-666666666666",
+      companyId,
+      agentId: peerAgentId,
+      status: "running",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        source: "issue.execution_stage",
+        executionStage: {
+          wakeRole: "reviewer",
+          currentParticipant: { type: "agent", agentId: peerAgentId, userId: null },
+        },
+      },
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment: "Approved after review." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "done" }),
+    );
+  });
+
+  it("clears stale execution locks when a reviewer requests changes back to the existing executor", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+      checkoutRunId: null,
+      executionRunId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      executionAgentNameKey: "srfrontend",
+      executionLockedAt: new Date("2026-05-25T07:22:06.189Z"),
+      executionPolicy: {
+        mode: "normal",
+        stages: [
+          {
+            id: reviewStageId,
+            type: "review",
+            approvalsNeeded: 1,
+            participants: [{ type: "agent", agentId: peerAgentId }],
+          },
+        ],
+        commentRequired: true,
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: peerAgentId, userId: null },
+        returnAssignee: { type: "agent", agentId: ownerAgentId, userId: null },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }));
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "66666666-6666-4666-8666-666666666666",
+      companyId,
+      agentId: peerAgentId,
+      status: "running",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        source: "issue.execution_stage",
+        executionStage: {
+          wakeRole: "reviewer",
+          currentParticipant: { type: "agent", agentId: peerAgentId, userId: null },
+        },
+      },
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_progress", comment: "Changes requested after review." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "in_progress",
+        assigneeAgentId: ownerAgentId,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        executionState: expect.objectContaining({
+          status: "changes_requested",
+          lastDecisionOutcome: "changes_requested",
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("allows the active execution-policy reviewer run to comment on a checked-out issue", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "66666666-6666-4666-8666-666666666666",
+      companyId,
+      agentId: peerAgentId,
+      status: "running",
+      contextSnapshot: {
+        paperclipWake: {
+          issue: { id: issueId },
+          executionStage: {
+            wakeRole: "reviewer",
+            currentParticipant: { type: "agent", agentId: peerAgentId, userId: null },
+          },
+        },
+      },
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Changes requested after review." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Changes requested after review.",
+      expect.objectContaining({ agentId: peerAgentId }),
+      expect.any(Object),
+    );
   });
 
   it.each([
