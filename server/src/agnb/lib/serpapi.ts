@@ -32,13 +32,11 @@ async function googleSearch(q: string): Promise<Record<string, unknown>> {
 }
 
 /**
- * Best-effort aggregate rating for `brand` on a review platform. Checks the
+ * Pure: extract an aggregate rating from a SerpAPI Google response. Checks the
  * knowledge graph first, then organic rich snippets whose link is on the
- * platform domain, then any organic rich snippet.
+ * platform domain, then any organic rich snippet. Exported for testing.
  */
-export async function platformRating(brand: string, platform: string, domain: string): Promise<SerpRating> {
-  const data = await googleSearch(`${brand} ${platform} reviews`);
-
+export function parseRating(data: Record<string, unknown>, domain: string): SerpRating {
   const kg = data.knowledge_graph as Record<string, unknown> | undefined;
   if (kg && kg.rating != null) {
     return { rating: num(kg.rating), reviews: num(kg.reviews ?? kg.review_count ?? kg.user_ratings) };
@@ -65,4 +63,13 @@ export async function platformRating(brand: string, platform: string, domain: st
     if (r?.rating != null) return r;
   }
   return { rating: null, reviews: null };
+}
+
+/**
+ * Best-effort aggregate rating for `brand` on a review platform (queries Google
+ * via SerpAPI, then parses the response).
+ */
+export async function platformRating(brand: string, platform: string, domain: string): Promise<SerpRating> {
+  const data = await googleSearch(`${brand} ${platform} reviews`);
+  return parseRating(data, domain);
 }
