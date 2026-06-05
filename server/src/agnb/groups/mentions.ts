@@ -378,4 +378,59 @@ export function registerMentions(router: Router, db: Db) {
     }
     res.json({ ok: true, inserted });
   });
+
+  /**
+   * PATCH /api/agnb/backlinks — Backlink Scout corrects an existing row.
+   * Body: { id, source_url?, target_url?, anchor_text?, status?, source_da? }.
+   * Only provided fields are updated (COALESCE). Recomputes source_domain when
+   * source_url changes.
+   */
+  router.patch("/agnb/backlinks", async (req, res) => {
+    assertAgnbAccess(req);
+    const body = (req.body ?? {}) as {
+      id?: string;
+      source_url?: string;
+      target_url?: string;
+      anchor_text?: string;
+      status?: string;
+      source_da?: number;
+    };
+    const id = typeof body.id === "string" ? body.id.trim() : "";
+    if (!id) {
+      res.status(400).json({ ok: false, error: "id required" });
+      return;
+    }
+    const sourceUrl = typeof body.source_url === "string" ? body.source_url.trim() : null;
+    const sourceDomain = sourceUrl
+      ? sourceUrl.toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "")
+      : null;
+    const targetUrl = typeof body.target_url === "string" ? body.target_url.trim() : null;
+    const anchorText = typeof body.anchor_text === "string" ? body.anchor_text : null;
+    const status = typeof body.status === "string" ? body.status.trim() : null;
+    const sourceDa = typeof body.source_da === "number" ? body.source_da : null;
+    const result = await db.execute(sql`
+      UPDATE agnb.backlinks
+      SET source_url = COALESCE(${sourceUrl}, source_url),
+          source_domain = COALESCE(${sourceDomain}, source_domain),
+          target_url = COALESCE(${targetUrl}, target_url),
+          anchor_text = COALESCE(${anchorText}, anchor_text),
+          status = COALESCE(${status}, status),
+          source_da = COALESCE(${sourceDa}, source_da)
+      WHERE id = ${id}
+      RETURNING id
+    `);
+    res.json({ ok: true, updated: rows(result).length });
+  });
+
+  /** DELETE /api/agnb/backlinks?id= — remove a backlink row. */
+  router.delete("/agnb/backlinks", async (req, res) => {
+    assertAgnbAccess(req);
+    const id = typeof req.query.id === "string" ? req.query.id : null;
+    if (!id) {
+      res.status(400).json({ ok: false, error: "id required" });
+      return;
+    }
+    await db.execute(sql`DELETE FROM agnb.backlinks WHERE id = ${id}`);
+    res.json({ ok: true });
+  });
 }
