@@ -419,6 +419,63 @@ export async function attachmentLinkURL(
   };
 }
 
+/**
+ * Mark `dupeLinearId` as a native Linear "duplicate" of `keeperLinearId`
+ * (issueRelationCreate type: duplicate). Idempotent: pre-checks the dupe
+ * issue's relations and no-ops if the duplicate→keeper relation already
+ * exists, mirroring the duplicate-URL handling in attachmentLinkURL. Both
+ * args are Linear internal issue IDs (resolve identifiers via
+ * getIssueByIdentifier first).
+ */
+export async function markDuplicate(
+  fetch: LinearFetch,
+  token: string,
+  dupeLinearId: string,
+  keeperLinearId: string,
+): Promise<{ success: boolean; issueRelationId: string | null; alreadyRelated: boolean }> {
+  const existing = await gql<{
+    issue: {
+      relations: { nodes: Array<{ id: string; type: string; relatedIssue: { id: string } | null }> };
+    } | null;
+  }>(fetch, token, `
+    query IssueRelations($id: ID!) {
+      issue(id: $id) {
+        relations(first: 50) { nodes { id type relatedIssue { id } } }
+      }
+    }
+  `, { id: dupeLinearId });
+
+  const already = existing.issue?.relations.nodes.find(
+    (r) => r.type === "duplicate" && r.relatedIssue?.id === keeperLinearId,
+  );
+  if (already) {
+    return { success: true, issueRelationId: already.id, alreadyRelated: true };
+  }
+
+  try {
+    const data = await gql<{
+      issueRelationCreate: { success: boolean; issueRelation: { id: string } | null };
+    }>(fetch, token, `
+      mutation IssueRelationCreate($input: IssueRelationCreateInput!) {
+        issueRelationCreate(input: $input) {
+          success
+          issueRelation { id }
+        }
+      }
+    `, { input: { issueId: dupeLinearId, relatedIssueId: keeperLinearId, type: "duplicate" } });
+    return {
+      success: data.issueRelationCreate.success,
+      issueRelationId: data.issueRelationCreate.issueRelation?.id ?? null,
+      alreadyRelated: false,
+    };
+  } catch (err) {
+    if (/already|duplicate/i.test(String(err))) {
+      return { success: true, issueRelationId: null, alreadyRelated: true };
+    }
+    throw err;
+  }
+}
+
 export async function updateIssue(
   fetch: LinearFetch,
   token: string,

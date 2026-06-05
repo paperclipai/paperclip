@@ -22,6 +22,7 @@ export const TOOL_NAMES = {
   link: "link-linear-issue",
   unlink: "unlink-linear-issue",
   create: "create-linear-issue",
+  markDuplicate: "mark-duplicate",
 } as const;
 
 export const WEBHOOK_KEYS = {
@@ -56,6 +57,7 @@ export const ACTION_KEYS = {
   linkIssue: "link-issue",
   unlinkIssue: "unlink-issue",
   importIssue: "import-issue",
+  backfillBackLinks: "backfill-backlinks",
 } as const;
 
 export const DATA_KEYS = {

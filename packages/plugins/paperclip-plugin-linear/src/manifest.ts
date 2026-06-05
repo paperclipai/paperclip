@@ -223,6 +223,20 @@ const manifest: PaperclipPluginManifestV1 = {
         properties: {},
       },
     },
+    {
+      name: TOOL_NAMES.markDuplicate,
+      displayName: "Mark Linear Duplicate",
+      description:
+        "Mark one Linear issue as a native duplicate of another (issueRelation type: duplicate).",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          dupeRef: { type: "string", description: "Linear identifier or URL of the DUPLICATE (e.g. canceled twin), e.g. BLO-1184" },
+          keeperRef: { type: "string", description: "Linear identifier or URL of the KEEPER issue, e.g. BLO-2167" },
+        },
+        required: ["dupeRef", "keeperRef"],
+      },
+    },
   ],
   ui: {
     slots: [

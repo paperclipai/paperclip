@@ -78,6 +78,7 @@ vi.mock("../src/linear.js", () => ({
   updateIssue: vi.fn().mockResolvedValue({}),
   updateProject: vi.fn().mockResolvedValue({}),
   getWorkflowStates: vi.fn().mockResolvedValue([]),
+  markDuplicate: vi.fn().mockResolvedValue({ success: true, issueRelationId: null, alreadyRelated: false }),
 }));
 
 const syncModule = vi.hoisted(() => ({
@@ -1740,6 +1741,163 @@ describe("paperclip-plugin-linear", () => {
   });
 
   // -----------------------------------------------------------------------
+  // backfill-backlinks action
+  // -----------------------------------------------------------------------
+
+  describe("backfill-backlinks action", () => {
+    it("pages mirrors and writes one back-link per linked issue, then completes", async () => {
+      harness = createTestHarness({
+        manifest,
+        config: {
+          linearClientId: "client-id-123",
+          linearClientSecret: "client-secret-456",
+          teamId: "team-1",
+          syncComments: true,
+          syncDirection: "bidirectional",
+          paperclipBaseUrl: "https://paperclip.test",
+          linearBacklinkBestEffort: true,
+        },
+      });
+      await plugin.definition.setup(harness.ctx);
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+
+      // Two mirrored issues on first page, empty array on second (sweep done).
+      vi.spyOn(harness.ctx.issues, "list")
+        .mockResolvedValueOnce([
+          { id: "pcp-1", identifier: "BLO-1", title: "Issue one" },
+          { id: "pcp-2", identifier: "BLO-2", title: "Issue two" },
+        ] as never)
+        .mockResolvedValueOnce([] as never);
+
+      // Both issues have links in sync state.
+      syncModule.getLink
+        .mockResolvedValueOnce({
+          paperclipIssueId: "pcp-1",
+          paperclipCompanyId: "comp-1",
+          linearIssueId: "lin-1",
+          linearIdentifier: "LIN-1",
+          linearUrl: "https://linear.app/t/LIN-1",
+          syncDirection: "bidirectional",
+          lastSyncAt: new Date().toISOString(),
+          lastLinearStateType: "started",
+          lastCommentSyncAt: null,
+        })
+        .mockResolvedValueOnce({
+          paperclipIssueId: "pcp-2",
+          paperclipCompanyId: "comp-1",
+          linearIssueId: "lin-2",
+          linearIdentifier: "LIN-2",
+          linearUrl: "https://linear.app/t/LIN-2",
+          syncDirection: "bidirectional",
+          lastSyncAt: new Date().toISOString(),
+          lastLinearStateType: "started",
+          lastCommentSyncAt: null,
+        });
+
+      const { attachmentLinkURL } = await import("../src/linear.js");
+      (attachmentLinkURL as ReturnType<typeof vi.fn>).mockClear();
+
+      const result = await harness.performAction<{ backfilled: number; done: boolean }>(
+        ACTION_KEYS.backfillBackLinks,
+        { companyId: "comp-1" },
+      );
+
+      expect(result.backfilled).toBe(2);
+      expect(attachmentLinkURL).toHaveBeenCalledTimes(2);
+
+      const calls = (attachmentLinkURL as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls[0]![2]).toMatchObject({ url: "https://paperclip.test/issues/BLO-1" });
+      expect(calls[1]![2]).toMatchObject({ url: "https://paperclip.test/issues/BLO-2" });
+    });
+
+    it("bounded + resumable: respects maxPerRun=1 and advances the offset cursor", async () => {
+      harness = createTestHarness({
+        manifest,
+        config: {
+          linearClientId: "client-id-123",
+          linearClientSecret: "client-secret-456",
+          teamId: "team-1",
+          syncComments: true,
+          syncDirection: "bidirectional",
+          paperclipBaseUrl: "https://paperclip.test",
+          linearBacklinkBestEffort: true,
+        },
+      });
+      await plugin.definition.setup(harness.ctx);
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+
+      // Seed a non-zero starting offset to confirm resumability.
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: "backfill-backlink-offset" },
+        5,
+      );
+
+      // Return one issue; the loop should stop after writing its back-link.
+      vi.spyOn(harness.ctx.issues, "list").mockResolvedValueOnce([
+        { id: "pcp-3", identifier: "BLO-3", title: "Issue three" },
+      ] as never);
+
+      syncModule.getLink.mockResolvedValueOnce({
+        paperclipIssueId: "pcp-3",
+        paperclipCompanyId: "comp-1",
+        linearIssueId: "lin-3",
+        linearIdentifier: "LIN-3",
+        linearUrl: "https://linear.app/t/LIN-3",
+        syncDirection: "bidirectional",
+        lastSyncAt: new Date().toISOString(),
+        lastLinearStateType: "started",
+        lastCommentSyncAt: null,
+      });
+
+      const { attachmentLinkURL } = await import("../src/linear.js");
+      (attachmentLinkURL as ReturnType<typeof vi.fn>).mockClear();
+
+      const result = await harness.performAction<{ backfilled: number; offset: number }>(
+        ACTION_KEYS.backfillBackLinks,
+        { companyId: "comp-1", maxPerRun: 1 },
+      );
+
+      // Exactly one back-link written.
+      expect(result.backfilled).toBe(1);
+      expect(attachmentLinkURL).toHaveBeenCalledTimes(1);
+
+      // Offset advanced from 5 to 6 (started at 5, scanned 1 issue).
+      expect(result.offset).toBe(6);
+      // Persisted cursor matches returned offset.
+      expect(
+        harness.getState({ scopeKind: "instance", stateKey: "backfill-backlink-offset" }),
+      ).toBe(6);
+    });
+
+    it("returns immediately with done=true when paperclipBaseUrl is not configured", async () => {
+      // Default harness (outer beforeEach) has no paperclipBaseUrl.
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+
+      const { attachmentLinkURL } = await import("../src/linear.js");
+      (attachmentLinkURL as ReturnType<typeof vi.fn>).mockClear();
+
+      const result = await harness.performAction<{ backfilled: number; done: boolean; note: string }>(
+        ACTION_KEYS.backfillBackLinks,
+        { companyId: "comp-1" },
+      );
+
+      expect(result.backfilled).toBe(0);
+      expect(result.done).toBe(true);
+      expect(result.note).toContain("paperclipBaseUrl not set");
+      expect(attachmentLinkURL).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // BLO-2350: webhook-imported Linear issues must inherit projectId
   // -----------------------------------------------------------------------
 
@@ -1873,6 +2031,159 @@ describe("paperclip-plugin-linear", () => {
           (l) => l.level === "warn" && l.message.includes("no projectId resolved"),
         ),
       ).toBe(true);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Tool: mark-duplicate
+  // -----------------------------------------------------------------------
+
+  describe("tool: mark-duplicate", () => {
+    it("happy path: marks dupe as duplicate of keeper", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+
+      const { getIssueByIdentifier, markDuplicate, parseLinearIssueRef } = await import("../src/linear.js");
+
+      (parseLinearIssueRef as ReturnType<typeof vi.fn>).mockImplementation((ref: string) => {
+        if (ref === "BLO-1184") return { identifier: "BLO-1184" };
+        if (ref === "BLO-2167") return { identifier: "BLO-2167" };
+        return null;
+      });
+
+      (getIssueByIdentifier as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ id: "lin-dupe", identifier: "BLO-1184", title: "Dupe", state: { type: "cancelled" }, url: "https://linear.app/t/BLO-1184" })
+        .mockResolvedValueOnce({ id: "lin-keep", identifier: "BLO-2167", title: "Keeper", state: { type: "started" }, url: "https://linear.app/t/BLO-2167" });
+
+      (markDuplicate as ReturnType<typeof vi.fn>).mockResolvedValue({
+        success: true,
+        issueRelationId: "rel-1",
+        alreadyRelated: false,
+      });
+
+      const result = await harness.executeTool(TOOL_NAMES.markDuplicate, {
+        dupeRef: "BLO-1184",
+        keeperRef: "BLO-2167",
+      });
+
+      expect(markDuplicate).toHaveBeenCalledWith(
+        expect.any(Function),
+        "lin_token_123",
+        "lin-dupe",
+        "lin-keep",
+      );
+      expect(result.content).toContain("Marked BLO-1184 as duplicate of BLO-2167");
+      expect((result.data as any).success).toBe(true);
+      expect((result.data as any).dupe).toBe("BLO-1184");
+      expect((result.data as any).keeper).toBe("BLO-2167");
+    });
+
+    it("unresolved ref: returns error and does not call markDuplicate when dupe not found", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+
+      const { getIssueByIdentifier, markDuplicate, parseLinearIssueRef } = await import("../src/linear.js");
+
+      (parseLinearIssueRef as ReturnType<typeof vi.fn>).mockImplementation((ref: string) => {
+        if (ref === "BLO-9999") return { identifier: "BLO-9999" };
+        if (ref === "BLO-2167") return { identifier: "BLO-2167" };
+        return null;
+      });
+
+      // dupe lookup returns null (not found)
+      (getIssueByIdentifier as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
+
+      (markDuplicate as ReturnType<typeof vi.fn>).mockClear();
+
+      const result = await harness.executeTool(TOOL_NAMES.markDuplicate, {
+        dupeRef: "BLO-9999",
+        keeperRef: "BLO-2167",
+      });
+
+      expect((result.data as any).error).toBeTruthy();
+      expect(markDuplicate).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // webhook Issue.update: Paperclip back-link
+  // -----------------------------------------------------------------------
+
+  describe("webhook Issue.update: Paperclip back-link", () => {
+    it("fires attachmentLinkURL on update when paperclipBaseUrl is set and the issue is linked", async () => {
+      // Build a fresh harness with paperclipBaseUrl so the back-link path triggers.
+      harness = createTestHarness({
+        manifest,
+        config: {
+          linearClientId: "client-id-123",
+          linearClientSecret: "client-secret-456",
+          teamId: "team-1",
+          syncComments: true,
+          syncDirection: "bidirectional",
+          paperclipBaseUrl: "https://paperclip.test",
+          linearBacklinkBestEffort: true,
+        },
+      });
+      await plugin.definition.setup(harness.ctx);
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+
+      // Seed an existing link so getLinkByLinear resolves for this update event.
+      syncModule.getLinkByLinear.mockResolvedValueOnce({
+        paperclipIssueId: "pcp-iss-1",
+        paperclipCompanyId: "comp-1",
+        linearIssueId: "lin-update-bl-1",
+        linearIdentifier: "LUC-200",
+        linearUrl: "https://linear.app/lucitra/issue/LUC-200",
+        syncDirection: "bidirectional",
+        lastLinearStateType: "started",
+      });
+
+      // Mock ctx.issues.get to return the Paperclip mirror's identifier + title.
+      vi.spyOn(harness.ctx.issues, "get").mockResolvedValue({
+        id: "pcp-iss-1",
+        identifier: "LUC-1001",
+        title: "Test issue",
+      } as never);
+
+      // Stub update so the extra-fields patch branch doesn't throw.
+      vi.spyOn(harness.ctx.issues, "update").mockResolvedValue(undefined as never);
+
+      // syncFromLinear is already a no-op mock; nothing extra needed.
+
+      const { attachmentLinkURL } = await import("../src/linear.js");
+      (attachmentLinkURL as ReturnType<typeof vi.fn>).mockClear();
+
+      await plugin.definition.onWebhook!({
+        endpointKey: "linear-events",
+        parsedBody: {
+          type: "Issue",
+          action: "update",
+          data: {
+            id: "lin-update-bl-1",
+            identifier: "LUC-200",
+            title: "Updated title",
+            state: { type: "started", name: "In Progress" },
+          },
+        },
+        headers: {},
+        rawBody: "",
+        requestId: "test-webhook-update-backlink",
+      });
+
+      expect(attachmentLinkURL).toHaveBeenCalledOnce();
+      const callArg = (attachmentLinkURL as ReturnType<typeof vi.fn>).mock.calls[0]![2];
+      expect(callArg.url).toBe("https://paperclip.test/issues/LUC-1001");
     });
   });
 });

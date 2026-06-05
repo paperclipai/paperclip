@@ -616,6 +616,53 @@ const plugin = definePlugin({
       return await runFullSync(ctx);
     });
 
+    // One-time bounded backfill: write the Paperclip back-link attachment for
+    // already-mirrored issues that predate paperclipBaseUrl. Idempotent (Linear
+    // dedupes the attachment by URL), bounded per run, and resumable via an
+    // offset cursor in instance state.
+    ctx.actions.register(ACTION_KEYS.backfillBackLinks, async (params: any) => {
+      const { companyId } = params as { companyId: string };
+
+      const config = await ctx.config.get();
+      if (!(config.paperclipBaseUrl as string | undefined)?.trim()) {
+        return { backfilled: 0, done: true, note: "paperclipBaseUrl not set; nothing to do" };
+      }
+      const token = await resolveToken(ctx);
+      const maxPerRun = Math.max(1, Number((params as { maxPerRun?: number })?.maxPerRun ?? 100));
+      const pageSize = Math.min(25, maxPerRun);
+
+      const cursorKey = { scopeKind: "instance" as const, stateKey: "backfill-backlink-offset" };
+      let offset = Number((await ctx.state.get(cursorKey)) ?? 0) || 0;
+
+      let backfilled = 0;
+      let done = false;
+      while (backfilled < maxPerRun) {
+        const page = await ctx.issues.list({
+          companyId,
+          originKindPrefix: ORIGIN_KIND_SELF,
+          limit: Math.min(pageSize, maxPerRun - backfilled),
+          offset,
+        });
+        if (page.length === 0) { offset = 0; done = true; break; } // swept clean -> reset cursor
+
+        for (const issue of page) {
+          offset++; // advance over every scanned issue, linked or not
+          const link = await sync.getLink(ctx, issue.id);
+          if (!link) continue;
+          await writePaperclipBackLink(
+            ctx, token, link.linearIssueId, link.linearIdentifier,
+            issue.identifier ?? null, issue.id, issue.title ?? null,
+          );
+          backfilled++;
+          if (backfilled >= maxPerRun) break;
+        }
+        await ctx.state.set(cursorKey, offset);
+        await new Promise((r) => setTimeout(r, 250)); // backoff between pages (Linear rate limits)
+      }
+      await ctx.state.set(cursorKey, offset);
+      return { backfilled, offset, done };
+    });
+
     /** Link a Paperclip issue to a Linear issue (UI counterpart of the link tool). */
     ctx.actions.register(ACTION_KEYS.linkIssue, async (params: any) => {
       const { paperclipIssueId, linearRef, replaceExisting } = params as {
@@ -916,6 +963,46 @@ const plugin = definePlugin({
         const { paperclipIssueId } = params as { paperclipIssueId: string };
         const removed = await sync.removeLink(ctx, paperclipIssueId);
         return { content: removed ? "Unlinked" : "No link found", data: { unlinked: removed } };
+      },
+    );
+
+    ctx.tools.register(
+      TOOL_NAMES.markDuplicate,
+      { displayName: "Mark Linear Duplicate", description: "Mark one Linear issue as a native duplicate of another", parametersSchema: { type: "object", properties: { dupeRef: { type: "string", description: "Linear identifier/URL of the duplicate issue" }, keeperRef: { type: "string", description: "Linear identifier/URL of the keeper issue" } }, required: ["dupeRef", "keeperRef"] } },
+      async (params) => {
+        const { dupeRef, keeperRef } = params as { dupeRef: string; keeperRef: string };
+        const dupe = linear.parseLinearIssueRef(dupeRef);
+        const keeper = linear.parseLinearIssueRef(keeperRef);
+        if (!dupe || !keeper) {
+          return { content: "Error: invalid ref", data: { error: "Could not parse dupe/keeper Linear reference" } };
+        }
+        const token = await resolveToken(ctx);
+        const fetch = ctx.http.fetch.bind(ctx.http);
+        const dupeIssue = await linear.getIssueByIdentifier(fetch, token, dupe.identifier);
+        const keeperIssue = await linear.getIssueByIdentifier(fetch, token, keeper.identifier);
+        if (!dupeIssue) return { content: "Error: dupe not found", data: { error: `${dupe.identifier} not found` } };
+        if (!keeperIssue) return { content: "Error: keeper not found", data: { error: `${keeper.identifier} not found` } };
+
+        const config = await ctx.config.get();
+        const bestEffort = config.linearBacklinkBestEffort === true;
+        try {
+          const res = await linear.markDuplicate(fetch, token, dupeIssue.id, keeperIssue.id);
+          const content = res.alreadyRelated
+            ? `${dupe.identifier} already a duplicate of ${keeper.identifier}`
+            : res.success
+              ? `Marked ${dupe.identifier} as duplicate of ${keeper.identifier}`
+              : `Warning: Linear reported the duplicate relation was not created (success=false) for ${dupe.identifier} → ${keeper.identifier}`;
+          return {
+            content,
+            data: { ...res, dupe: dupe.identifier, keeper: keeper.identifier },
+          };
+        } catch (err) {
+          if (bestEffort) {
+            ctx.logger.warn("markDuplicate failed (best-effort)", { dupe: dupe.identifier, keeper: keeper.identifier, error: String(err) });
+            return { content: "Warning: mark duplicate failed (best-effort)", data: { error: String(err), dupe: dupe.identifier, keeper: keeper.identifier } };
+          }
+          throw err;
+        }
       },
     );
 
@@ -1367,6 +1454,27 @@ async function handleWebhookEvent(
       }
 
       ctx.logger.info(`Webhook synced issue update: ${link.linearIdentifier}`);
+
+      // Backfill the Paperclip back-link on the update path too: idempotent
+      // (Linear dedupes the attachment by URL) and best-effort by config. Covers
+      // mirrors that predate paperclipBaseUrl or were only ever updated. Wrapped
+      // in try/catch like the create path so a strict-mode back-link failure
+      // doesn't make Linear retry the whole webhook (the sync already committed).
+      try {
+        const pcIssue = await ctx.issues.get(link.paperclipIssueId, link.paperclipCompanyId);
+        const linearToken = await resolveToken(ctx);
+        await writePaperclipBackLink(
+          ctx,
+          linearToken,
+          linearIssueId,
+          link.linearIdentifier,
+          pcIssue?.identifier ?? null,
+          link.paperclipIssueId,
+          pcIssue?.title ?? null,
+        );
+      } catch (err) {
+        ctx.logger.warn(`Webhook update back-link write failed for ${link.linearIdentifier}: ${err}`);
+      }
 
     } else if (action === "create") {
       const config = await ctx.config.get();
