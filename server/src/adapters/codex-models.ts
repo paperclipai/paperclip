@@ -2,6 +2,10 @@ import type { AdapterModel } from "./types.js";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { readConfigFile } from "../config-file.js";
 
+// OPENAI_BASE_URL support for proxies (e.g. OmniRoute, LiteLLM).
+// Custom base URLs must include the /v1 prefix (e.g. http://127.0.0.1:20128/v1)
+// so that we can safely append /models and get a working endpoint.
+// The default hardcodes the full official path for the same reason.
 const OPENAI_MODELS_ENDPOINT = process.env.OPENAI_BASE_URL
   ? `${process.env.OPENAI_BASE_URL.replace(/\/$/, "")}/models`
   : "https://api.openai.com/v1/models";
