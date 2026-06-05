@@ -46,7 +46,9 @@ export type MigrationState =
     };
 
 export function createDb(url: string) {
-  const sql = postgres(url);
+  // Cap at 5 per instance — Cloud SQL db-f1-micro has max_connections=25; two revisions
+  // alive during rolling deploy would exhaust the limit without this cap.
+  const sql = postgres(url, { max: 5 });
   return drizzlePg(sql, { schema });
 }
 

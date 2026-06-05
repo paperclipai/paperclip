@@ -2,6 +2,7 @@ import {
   createHash,
   generateKeyPairSync,
   randomBytes,
+  scrypt,
   timingSafeEqual
 } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
@@ -19,6 +20,7 @@ import type { Db } from "@paperclipai/db";
 import {
   assets,
   agentApiKeys,
+  authAccounts,
   authUsers,
   companies,
   companyLogos,
@@ -4501,6 +4503,74 @@ export function accessRoutes(
       res.json(await loadUserCompanyAccessResponse(db, access, userId));
     }
   );
+
+  // ── Admin: central user provisioning ──────────────────────────────────────
+  // POST /api/admin/provision-users
+  // Instance-admin only. Creates or resets password credentials for a list of
+  // emails using the same scrypt hash that better-auth uses for emailAndPassword.
+  // Allows central provisioning of a shared initial password for invited team
+  // members (bypasses the invite-landing self-signup flow).
+  //
+  // Body: { emails: string[], password: string }
+  // Returns: { provisioned: string[], skipped: string[], errors: string[] }
+  router.post("/admin/provision-users", async (req, res) => {
+    await assertInstanceAdmin(req);
+    const { emails, password } = (req.body ?? {}) as { emails?: string[]; password?: string };
+    if (!Array.isArray(emails) || emails.length === 0) {
+      return res.status(400).json({ ok: false, error: "emails[] required" });
+    }
+    if (typeof password !== "string" || password.length < 8) {
+      return res.status(400).json({ ok: false, error: "password must be ≥8 chars" });
+    }
+
+    // Hash using the same algorithm better-auth emailAndPassword uses:
+    // scrypt (N=16384,r=16,p=1,dkLen=64), format: "<salt_hex>:<key_hex>"
+    // Using Node crypto.scrypt (built-in) to match @noble/hashes/scrypt output.
+    const salt = randomBytes(16).toString("hex");
+    const passwordNorm = password.normalize("NFKC");
+    const key = await new Promise<Buffer>((resolve, reject) => {
+      // N=16384, r=16, p=1, dkLen=64 — matches better-auth's @noble/hashes/scrypt config
+      scrypt(passwordNorm, salt, 64, { N: 16384, r: 16, p: 1, maxmem: 128 * 16384 * 16 * 2 },
+        (err, derivedKey) => err ? reject(err) : resolve(derivedKey));
+    });
+    const passwordHash = `${salt}:${key.toString("hex")}`;
+
+    const provisioned: string[] = [];
+    const skipped: string[] = [];
+    const errors: string[] = [];
+
+    for (const rawEmail of emails) {
+      const email = rawEmail.trim().toLowerCase();
+      if (!email) continue;
+      try {
+        // Look up auth user
+        const userRows = await db.select({ id: authUsers.id }).from(authUsers)
+          .where(eq(authUsers.email, email));
+        if (userRows.length === 0) {
+          skipped.push(`${email} (no auth user found)`);
+          continue;
+        }
+        const userId = userRows[0]!.id;
+        // Upsert credential account (providerId='credential', accountId=userId)
+        // Delete ALL existing credential accounts for this user, then insert fresh.
+        // If the user already signed up via the invite flow, they have an existing
+        // credential account with a different id — we can't ON CONFLICT upsert it.
+        // Deleting first ensures exactly one credential account exists with our hash.
+        await db.execute(sql`
+          DELETE FROM "account" WHERE user_id = ${userId} AND provider_id = 'credential'
+        `);
+        await db.execute(sql`
+          INSERT INTO "account" (id, account_id, provider_id, user_id, password, created_at, updated_at)
+          VALUES (${`provision-${userId}`}, ${userId}, 'credential', ${userId}, ${passwordHash}, NOW(), NOW())
+        `);
+        provisioned.push(email);
+      } catch (err) {
+        errors.push(`${email}: ${String(err)}`);
+      }
+    }
+
+    res.json({ ok: true, provisioned, skipped, errors });
+  });
 
   return router;
 }
