@@ -621,6 +621,7 @@ export const askUserQuestionsQuestionOptionSchema = z.object({
   id: z.string().trim().min(1).max(120),
   label: z.string().trim().min(1).max(120),
   description: z.string().trim().max(500).nullable().optional(),
+  allowFreeText: z.boolean().optional(),
 });
 
 export const askUserQuestionsQuestionSchema = z.object({
@@ -666,6 +667,7 @@ export const askUserQuestionsPayloadSchema = z.object({
 export const askUserQuestionsAnswerSchema = z.object({
   questionId: z.string().trim().min(1).max(120),
   optionIds: z.array(z.string().trim().min(1).max(120)).max(20),
+  freeText: z.string().max(4000).nullable().optional(),
 });
 
 export const askUserQuestionsResultSchema = z.object({

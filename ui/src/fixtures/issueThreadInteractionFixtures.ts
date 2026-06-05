@@ -310,6 +310,66 @@ export const answeredAskUserQuestionsInteraction = createAskUserQuestionsInterac
   },
 });
 
+export const pendingAskUserQuestionsWithFreeTextInteraction = createAskUserQuestionsInteraction({
+  payload: {
+    version: 1,
+    title: "Before I wire the persistence layer, which preview behavior do you want?",
+    submitLabel: "Send answers",
+    questions: [
+      {
+        id: "collapse-depth",
+        prompt: "How aggressive should the suggested-task preview collapse descendant work?",
+        helpText:
+          "We need enough context to review the tree without making the feed feel like a project plan.",
+        selectionMode: "single",
+        required: true,
+        options: [
+          {
+            id: "visible-root",
+            label: "Only collapse hidden descendants",
+            description: "Keep top-level and visible child tasks expanded.",
+          },
+          {
+            id: "collapse-all",
+            label: "Collapse all descendants by default",
+            description: "Show only root tasks until the operator expands the tree.",
+          },
+          {
+            id: "other-mode",
+            label: "Other approach",
+            description: "Describe an alternative in free text.",
+            allowFreeText: true,
+          },
+        ],
+      },
+      {
+        id: "post-submit-summary",
+        prompt: "What should the answered-state card emphasize after submission?",
+        helpText: "Pick every summary treatment that would help future reviewers.",
+        selectionMode: "multi",
+        required: true,
+        options: [
+          {
+            id: "answers-inline",
+            label: "Inline answer pills",
+            description: "Keep the exact operator choices visible under each question.",
+          },
+          {
+            id: "summary-note",
+            label: "Short markdown summary",
+            description: "Add a compact narrative summary at the bottom of the card.",
+          },
+          {
+            id: "resolver-meta",
+            label: "Resolver metadata",
+            description: "Show who answered and when without opening the raw thread.",
+          },
+        ],
+      },
+    ],
+  },
+});
+
 export const pendingRequestConfirmationInteraction = createRequestConfirmationInteraction({});
 
 export const genericPendingRequestConfirmationInteraction = createRequestConfirmationInteraction({

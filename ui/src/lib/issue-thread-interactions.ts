@@ -132,12 +132,20 @@ export function getQuestionAnswerLabels(args: {
   answers: readonly AskUserQuestionsAnswer[];
 }) {
   const { question, answers } = args;
-  const selectedIds =
-    answers.find((answer) => answer.questionId === question.id)?.optionIds ?? [];
+  const questionAnswer = answers.find((answer) => answer.questionId === question.id);
+  const selectedIds = questionAnswer?.optionIds ?? [];
   const optionLabelById = new Map(
     question.options.map((option) => [option.id, option.label] as const),
   );
-  return selectedIds
+  const labels = selectedIds
     .map((optionId) => optionLabelById.get(optionId))
     .filter((label): label is string => typeof label === "string");
+  const freeText = questionAnswer?.freeText?.trim() ?? "";
+  if (freeText.length > 0) {
+    const freeTextOptionLabel = question.options.find(
+      (option) => selectedIds.includes(option.id) && option.allowFreeText === true,
+    )?.label;
+    labels.push(`${freeTextOptionLabel ?? "Free response"}: ${freeText}`);
+  }
+  return labels;
 }

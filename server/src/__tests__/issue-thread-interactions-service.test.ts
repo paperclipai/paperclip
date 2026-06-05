@@ -430,7 +430,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
             required: true,
             options: [
               { id: "phase-1", label: "Phase 1" },
-              { id: "phase-2", label: "Phase 2" },
+              { id: "phase-2", label: "Phase 2", allowFreeText: true },
             ],
           },
           {
@@ -448,12 +448,23 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       userId: "local-board",
     });
 
+    await expect(interactionsSvc.answerQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      answers: [
+        { questionId: "scope", optionIds: ["phase-1"], freeText: "Texto inválido para opção sem flag" },
+      ],
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("does not allow free text");
+
     const answered = await interactionsSvc.answerQuestions({
       id: issueId,
       companyId,
     }, created.id, {
       answers: [
-        { questionId: "scope", optionIds: ["phase-1"] },
+        { questionId: "scope", optionIds: ["phase-2"], freeText: "  Via rollout controlado  " },
         { questionId: "extras", optionIds: ["docs", "tests", "docs"] },
       ],
       summaryMarkdown: "Ship Phase 1 with tests and docs.",
@@ -465,7 +476,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(answered.result).toEqual({
       version: 1,
       answers: [
-        { questionId: "scope", optionIds: ["phase-1"] },
+        { questionId: "scope", optionIds: ["phase-2"], freeText: "Via rollout controlado" },
         { questionId: "extras", optionIds: ["docs", "tests"] },
       ],
       summaryMarkdown: "Ship Phase 1 with tests and docs.",

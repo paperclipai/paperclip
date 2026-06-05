@@ -9,6 +9,7 @@ import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
 import {
   pendingAskUserQuestionsInteraction,
+  pendingAskUserQuestionsWithFreeTextInteraction,
   commentExpiredRequestConfirmationInteraction,
   disabledDeclineReasonRequestConfirmationInteraction,
   failedRequestConfirmationInteraction,
@@ -108,6 +109,59 @@ describe("IssueThreadInteractionCard", () => {
       onSubmitInteractionAnswers: vi.fn(),
     });
     expect(withHandler.textContent).toContain("Cancel question");
+  });
+
+  it("shows free-text textarea for selected options that allow it and submits the value", async () => {
+    const onSubmitInteractionAnswers = vi.fn(async () => undefined);
+    const host = renderCard({
+      interaction: pendingAskUserQuestionsWithFreeTextInteraction,
+      onSubmitInteractionAnswers,
+    });
+
+    const radios = [...host.querySelectorAll('[role="radio"]')];
+    expect(radios).toHaveLength(3);
+
+    await act(async () => {
+      (radios[2] as HTMLButtonElement).click();
+    });
+
+    const textarea = host.querySelector(
+      "#interaction-questions-default-collapse-depth-free-text",
+    ) as HTMLTextAreaElement | null;
+    expect(textarea).toBeTruthy();
+
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(textarea, "Detalhar regra operacional");
+      textarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const checkboxes = [...host.querySelectorAll('[role="checkbox"]')];
+    await act(async () => {
+      (checkboxes[0] as HTMLButtonElement).click();
+    });
+
+    const submitButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Send answers"),
+    );
+    expect(submitButton).toBeTruthy();
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSubmitInteractionAnswers).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "ask_user_questions" }),
+      expect.arrayContaining([
+        expect.objectContaining({
+          questionId: "collapse-depth",
+          optionIds: ["other-mode"],
+          freeText: "Detalhar regra operacional",
+        }),
+      ]),
+    );
   });
 
   it("makes child tasks explicit in suggested task trees", () => {

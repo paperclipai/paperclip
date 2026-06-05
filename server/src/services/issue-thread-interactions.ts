@@ -272,9 +272,24 @@ function normalizeQuestionAnswers(args: {
       throw unprocessable(`Question ${answer.questionId} only allows one answer`);
     }
 
+    const trimmedFreeText = answer.freeText?.trim() ?? "";
+    const hasFreeText = trimmedFreeText.length > 0;
+    if (hasFreeText) {
+      const selectedOptionSet = new Set(uniqueOptionIds);
+      const freeTextAllowed = question.options.some(
+        (option) => selectedOptionSet.has(option.id) && option.allowFreeText === true,
+      );
+      if (!freeTextAllowed) {
+        throw unprocessable(
+          `Question ${answer.questionId} does not allow free text for selected options`,
+        );
+      }
+    }
+
     answerByQuestionId.set(answer.questionId, {
       questionId: answer.questionId,
       optionIds: uniqueOptionIds,
+      ...(hasFreeText ? { freeText: trimmedFreeText } : {}),
     });
   }
 
