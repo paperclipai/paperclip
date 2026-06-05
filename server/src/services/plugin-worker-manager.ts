@@ -559,9 +559,15 @@ export function createPluginWorkerHandle(
       (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
     );
     if (!invocationId) {
-      const hasActiveInvocation = activeInvocations.size > 0 ||
-        Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
-      return hasActiveInvocation ? { invalidInvocationScope: true } : {};
+      const safeBackgroundMethods = ["http.fetch", "companies.list", "log"];
+      const isSafeBackgroundMethod = typeof message.method === "string" && safeBackgroundMethods.includes(message.method);
+
+      if (!isSafeBackgroundMethod) {
+        const hasActiveInvocation = activeInvocations.size > 0 ||
+          Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
+        return hasActiveInvocation ? { invalidInvocationScope: true } : {};
+      }
+      return {};
     }
     const entry = activeInvocations.get(invocationId);
     if (!entry) return { invalidInvocationScope: true };
