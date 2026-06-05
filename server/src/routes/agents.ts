@@ -8,6 +8,7 @@ import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  HEARTBEAT_RUN_STATUSES,
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
@@ -102,6 +103,8 @@ import { recoveryService } from "../services/recovery/service.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+const HEARTBEAT_RUN_LIST_SORT_FIELDS = ["createdAt", "startedAt", "finishedAt", "updatedAt"] as const;
+const HEARTBEAT_RUN_LIST_STATUSES = new Set<string>(HEARTBEAT_RUN_STATUSES);
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -114,6 +117,55 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   if (!Number.isFinite(parsed)) return fallback;
   if (parsed <= 0) return fallback;
   return Math.min(max, Math.trunc(parsed));
+}
+
+function readOptionalStringQuery(value: unknown): string | undefined {
+  if (Array.isArray(value)) return readOptionalStringQuery(value[0]);
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readHeartbeatRunsDateQuery(value: unknown, name: string) {
+  const raw = readOptionalStringQuery(value);
+  if (!raw) return undefined;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) throw unprocessable(`${name} must be a valid ISO timestamp`);
+  return parsed;
+}
+
+function readHeartbeatRunsIntQuery(value: unknown, name: string, min: number, max: number, fallback?: number) {
+  const raw = readOptionalStringQuery(value);
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < min) {
+    throw unprocessable(`${name} must be an integer greater than or equal to ${min}`);
+  }
+  return Math.min(parsed, max);
+}
+
+function readHeartbeatRunStatusesQuery(value: unknown) {
+  const values = (Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [])
+    .map((item) => String(item).trim())
+    .filter(Boolean);
+  for (const status of values) {
+    if (!HEARTBEAT_RUN_LIST_STATUSES.has(status)) throw unprocessable(`Unknown heartbeat run status: ${status}`);
+  }
+  return values.length > 0 ? values : undefined;
+}
+
+function readHeartbeatRunsSortByQuery(value: unknown) {
+  const raw = readOptionalStringQuery(value);
+  if (!raw) return "createdAt" as const;
+  if (!HEARTBEAT_RUN_LIST_SORT_FIELDS.includes(raw as (typeof HEARTBEAT_RUN_LIST_SORT_FIELDS)[number])) {
+    throw unprocessable(`sortBy must be one of: ${HEARTBEAT_RUN_LIST_SORT_FIELDS.join(", ")}`);
+  }
+  return raw as (typeof HEARTBEAT_RUN_LIST_SORT_FIELDS)[number];
+}
+
+function readHeartbeatRunsSortOrderQuery(value: unknown) {
+  const raw = readOptionalStringQuery(value);
+  if (!raw) return "desc" as const;
+  if (raw !== "asc" && raw !== "desc") throw unprocessable("sortOrder must be asc or desc");
+  return raw;
 }
 
 export function agentRoutes(
@@ -3090,10 +3142,19 @@ export function agentRoutes(
   router.get("/companies/:companyId/heartbeat-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const agentId = req.query.agentId as string | undefined;
-    const limitParam = req.query.limit as string | undefined;
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
-    const runs = await heartbeat.list(companyId, agentId, limit);
+    const limit = readHeartbeatRunsIntQuery(req.query.limit, "limit", 1, 1000);
+    const offset = readHeartbeatRunsIntQuery(req.query.offset, "offset", 0, 100_000, 0);
+    const runs = await heartbeat.list(companyId, {
+      agentId: readOptionalStringQuery(req.query.agentId),
+      issueId: readOptionalStringQuery(req.query.issueId),
+      limit,
+      offset,
+      statuses: readHeartbeatRunStatusesQuery(req.query.status),
+      createdAfter: readHeartbeatRunsDateQuery(req.query.createdAfter ?? req.query.since, "createdAfter"),
+      finishedAfter: readHeartbeatRunsDateQuery(req.query.finishedAfter, "finishedAfter"),
+      sortBy: readHeartbeatRunsSortByQuery(req.query.sortBy),
+      sortOrder: readHeartbeatRunsSortOrderQuery(req.query.sortOrder),
+    });
     res.json(runs);
   });
 
