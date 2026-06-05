@@ -112,6 +112,64 @@ function isEquivalentCreateRequest(
   );
 }
 
+function normalizeRequestConfirmationResult(
+  row: IssueThreadInteractionRow,
+): RequestConfirmationInteraction["result"] {
+  if (!row.result) return null;
+
+  const parsed = requestConfirmationResultSchema.safeParse(row.result);
+  if (parsed.success) return parsed.data;
+
+  const result: unknown = row.result;
+  if (typeof result === "object" && result !== null && "outcome" in result) {
+    const legacyResult = result as Record<string, unknown>;
+    const outcome = legacyResult.outcome;
+    const resultReason = typeof legacyResult.reason === "string" ? legacyResult.reason : "";
+    const legacyReason =
+      resultReason || "Legacy request confirmation result normalized for compatibility.";
+    const withVersion = requestConfirmationResultSchema.safeParse({
+      ...legacyResult,
+      version: 1,
+    });
+    if (withVersion.success) return withVersion.data;
+
+    if (row.status !== "expired") {
+      return requestConfirmationResultSchema.parse(row.result);
+    }
+
+    const looksSuperseded =
+      outcome === "superseded_by_comment"
+      || typeof legacyResult.commentId === "string"
+      || /superseded/i.test(resultReason);
+
+    if (looksSuperseded) {
+      const superseded = requestConfirmationResultSchema.safeParse({
+        version: 1,
+        outcome: "superseded_by_comment",
+        ...(typeof legacyResult.commentId === "string" ? { commentId: legacyResult.commentId } : {}),
+        reason: legacyReason,
+      });
+      if (superseded.success) return superseded.data;
+    }
+
+    const stale = requestConfirmationResultSchema.safeParse({
+      version: 1,
+      outcome: "stale_target",
+      staleTarget: legacyResult.staleTarget,
+      reason: legacyReason,
+    });
+    if (stale.success) return stale.data;
+
+    return {
+      version: 1,
+      outcome: "stale_target",
+      reason: legacyReason,
+    };
+  }
+
+  return requestConfirmationResultSchema.parse(row.result);
+}
+
 function hydrateInteraction(
   row: IssueThreadInteractionRow,
 ): IssueThreadInteraction {
@@ -142,7 +200,7 @@ function hydrateInteraction(
         ...base,
         kind: "request_confirmation",
         payload: requestConfirmationPayloadSchema.parse(row.payload),
-        result: row.result ? requestConfirmationResultSchema.parse(row.result) : null,
+        result: normalizeRequestConfirmationResult(row),
       } satisfies RequestConfirmationInteraction;
     case "request_checkbox_confirmation":
       return {
