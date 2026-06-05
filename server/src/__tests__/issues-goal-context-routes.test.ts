@@ -34,6 +34,7 @@ const mockDocumentsService = vi.hoisted(() => ({
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -204,6 +205,7 @@ describe.sequential("issue goal context routes", () => {
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    mockExecutionWorkspaceService.list.mockResolvedValue([]);
     mockDb.select.mockReturnValue({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
@@ -377,6 +379,68 @@ describe.sequential("issue goal context routes", () => {
         expect.objectContaining({
           serviceName: "web",
           url: "http://127.0.0.1:5173",
+        }),
+      ],
+    }));
+  });
+
+  it("falls back to a blocker workspace when issue workspace link is null", async () => {
+    const blockerIssueId = "55555555-5555-4555-8555-555555555555";
+    const blockerWorkspace = {
+      id: "66666666-6666-4666-8666-666666666666",
+      name: "PAP-580 runtime workspace",
+      mode: "shared_workspace",
+      status: "active",
+      cwd: "/tmp/pap-580",
+      runtimeServices: [
+        {
+          id: "service-2",
+          serviceName: "web",
+          status: "running",
+          url: "http://127.0.0.1:34961",
+          healthStatus: "healthy",
+        },
+      ],
+    };
+
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      executionWorkspaceId: null,
+    });
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [
+        {
+          id: blockerIssueId,
+          identifier: "PAP-580",
+          title: "Provision runtime workspace",
+          status: "blocked",
+          priority: "high",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+      ],
+      blocks: [],
+    });
+    mockExecutionWorkspaceService.list.mockImplementation(async (_companyId: string, filters: { issueId?: string }) => {
+      if (filters.issueId === blockerIssueId) return [blockerWorkspace];
+      return [];
+    });
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockExecutionWorkspaceService.list).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ issueId: blockerIssueId }),
+    );
+    expect(res.body.currentExecutionWorkspace).toEqual(expect.objectContaining({
+      id: blockerWorkspace.id,
+      runtimeServices: [
+        expect.objectContaining({
+          url: "http://127.0.0.1:34961",
+          healthStatus: "healthy",
         }),
       ],
     }));

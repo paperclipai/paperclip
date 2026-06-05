@@ -1919,6 +1919,48 @@ export function issueRoutes(
     return { project, goal: null };
   }
 
+  async function resolveCurrentExecutionWorkspaceForIssueContext(input: {
+    issue: {
+      id: string;
+      companyId: string;
+      executionWorkspaceId?: string | null;
+    };
+    blockedByIssueIds?: string[];
+  }) {
+    if (input.issue.executionWorkspaceId) {
+      const linkedWorkspace = await executionWorkspacesSvc.getById(input.issue.executionWorkspaceId);
+      if (linkedWorkspace) return linkedWorkspace;
+    }
+
+    const issueIdsToInspect = [
+      input.issue.id,
+      ...(input.blockedByIssueIds ?? []),
+    ].filter((value, index, arr) => value.length > 0 && arr.indexOf(value) === index);
+
+    let fallbackWorkspace: ExecutionWorkspace | null = null;
+    for (const sourceIssueId of issueIdsToInspect) {
+      const candidates = await executionWorkspacesSvc.list(input.issue.companyId, {
+        issueId: sourceIssueId,
+        status: "active,in_review,idle",
+      });
+      if (candidates.length === 0) continue;
+
+      const healthyRuntimeWorkspace = candidates.find((candidate) =>
+        candidate.runtimeServices?.some((service) =>
+          service.status === "running"
+          && service.healthStatus === "healthy"
+          && typeof service.url === "string"
+          && service.url.length > 0
+        )
+      );
+
+      if (healthyRuntimeWorkspace) return healthyRuntimeWorkspace;
+      fallbackWorkspace ??= candidates[0] ?? null;
+    }
+
+    return fallbackWorkspace;
+  }
+
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
   router.param("id", async (req, res, next, rawId) => {
     try {
@@ -2218,9 +2260,6 @@ export function issueRoutes(
         ? req.query.wakeCommentId.trim()
         : null;
 
-    const currentExecutionWorkspacePromise = issue.executionWorkspaceId
-      ? executionWorkspacesSvc.getById(issue.executionWorkspaceId)
-      : Promise.resolve(null);
     const [
       { project, goal },
       ancestors,
@@ -2232,7 +2271,6 @@ export function issueRoutes(
       scheduledRetry,
       attachments,
       continuationSummary,
-      currentExecutionWorkspace,
       activeRecoveryAction,
     ] =
       await Promise.all([
@@ -2246,7 +2284,6 @@ export function issueRoutes(
         svc.getCurrentScheduledRetry(issue.id),
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
-        currentExecutionWorkspacePromise,
         recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
       ]);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
@@ -2263,6 +2300,10 @@ export function issueRoutes(
       trigger: "read_projection",
       actor: getActorInfo(req),
       activeRecoveryAction,
+    });
+    const currentExecutionWorkspace = await resolveCurrentExecutionWorkspaceForIssueContext({
+      issue,
+      blockedByIssueIds: relationsWithRecoveryActions.blockedBy.map((relation) => relation.id),
     });
 
     res.json({
@@ -2391,9 +2432,10 @@ export function issueRoutes(
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
       : [];
-    const currentExecutionWorkspace = issue.executionWorkspaceId
-      ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
-      : null;
+    const currentExecutionWorkspace = await resolveCurrentExecutionWorkspaceForIssueContext({
+      issue,
+      blockedByIssueIds: relationsWithRecoveryActions.blockedBy.map((relation) => relation.id),
+    });
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json({
       ...issue,
