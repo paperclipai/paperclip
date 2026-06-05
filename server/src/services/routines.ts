@@ -62,6 +62,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
+const LIVE_ROUTINE_RUN_STATUSES = ["issue_created"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const MAX_ROUTINE_REVISIONS = 100;
@@ -833,6 +834,44 @@ export function routineService(
       }
     }
 
+    const stillMissingRoutineIds = routineIds.filter((routineId) => !rowsByOriginId.has(routineId));
+    if (stillMissingRoutineIds.length > 0) {
+      const issueCreatedRows = await db
+        .selectDistinctOn([issues.originId], {
+          originId: issues.originId,
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          updatedAt: issues.updatedAt,
+        })
+        .from(issues)
+        .innerJoin(
+          routineRuns,
+          and(
+            sql`${routineRuns.id}::text = ${issues.originRunId}`,
+            inArray(routineRuns.status, LIVE_ROUTINE_RUN_STATUSES),
+            isNull(routineRuns.completedAt),
+          ),
+        )
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "routine_execution"),
+            inArray(issues.originId, stillMissingRoutineIds),
+            inArray(issues.status, OPEN_ISSUE_STATUSES),
+            isNull(issues.hiddenAt),
+          ),
+        )
+        .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
+
+      for (const row of issueCreatedRows) {
+        if (!row.originId) continue;
+        rowsByOriginId.set(row.originId, row);
+      }
+    }
+
     const map = new Map<string, RoutineListItem["activeIssue"]>();
     for (const row of rowsByOriginId.values()) {
       if (!row.originId) continue;
@@ -982,7 +1021,7 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
     if (executionBoundIssue) return executionBoundIssue;
 
-    return executor
+    const legacyExecutionIssue = await executor
       .select()
       .from(issues)
       .innerJoin(
@@ -991,6 +1030,32 @@ export function routineService(
           eq(heartbeatRuns.companyId, issues.companyId),
           inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = cast(${issues.id} as text)`,
+        ),
+      )
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, originKind),
+          eq(issues.originId, originId),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0]?.issues ?? null);
+    if (legacyExecutionIssue) return legacyExecutionIssue;
+
+    return executor
+      .select()
+      .from(issues)
+      .innerJoin(
+        routineRuns,
+        and(
+          sql`${routineRuns.id}::text = ${issues.originRunId}`,
+          inArray(routineRuns.status, LIVE_ROUTINE_RUN_STATUSES),
+          isNull(routineRuns.completedAt),
         ),
       )
       .where(
@@ -1361,7 +1426,9 @@ export function routineService(
           return updated ?? createdRun;
         }
 
-        // Keep the dispatch lock until the issue is linked to a queued heartbeat run.
+        // The execution issue is the durable dispatch artifact. A wakeup failure
+        // should not roll it back; open issue_created runs are treated as live
+        // until the issue reaches a terminal outcome.
         await queueIssueAssignmentWakeup({
           heartbeat,
           issue: createdIssue,
@@ -1369,7 +1436,7 @@ export function routineService(
           mutation: "create",
           contextSource: "routine.dispatch",
           requestedByActorType: input.source === "schedule" ? "system" : undefined,
-          rethrowOnError: true,
+          rethrowOnError: false,
         });
         const updated = await finalizeRun(createdRun.id, {
           status: "issue_created",

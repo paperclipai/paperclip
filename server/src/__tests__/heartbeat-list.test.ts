@@ -101,6 +101,103 @@ describeEmbeddedPostgres("heartbeat list", () => {
     }
   });
 
+  it("filters and pages company heartbeat runs for cost aggregation windows", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const issueId = randomUUID();
+    const matchingRunId = randomUUID();
+    const olderRunId = randomUUID();
+    const otherAgentRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: agentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "running",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Reviewer",
+        role: "reviewer",
+        status: "running",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: olderRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        createdAt: new Date("2026-05-25T23:59:00Z"),
+        finishedAt: new Date("2026-05-26T00:03:00Z"),
+        contextSnapshot: { issueId },
+        usageJson: { inputTokens: 10, outputTokens: 20 },
+      },
+      {
+        id: matchingRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        createdAt: new Date("2026-05-26T12:00:00Z"),
+        finishedAt: new Date("2026-05-26T12:05:00Z"),
+        contextSnapshot: { issueId },
+        usageJson: { inputTokens: 100, outputTokens: 50, cachedInputTokens: 25 },
+      },
+      {
+        id: otherAgentRunId,
+        companyId,
+        agentId: otherAgentId,
+        invocationSource: "assignment",
+        status: "failed",
+        createdAt: new Date("2026-05-26T13:00:00Z"),
+        finishedAt: new Date("2026-05-26T13:05:00Z"),
+        contextSnapshot: { issueId: randomUUID() },
+        usageJson: { inputTokens: 999 },
+      },
+    ]);
+
+    const runs = await heartbeatService(db).list(companyId, {
+      agentId,
+      issueId,
+      statuses: ["succeeded"],
+      createdAfter: new Date("2026-05-26T00:00:00Z"),
+      sortBy: "createdAt",
+      sortOrder: "desc",
+      limit: 10,
+      offset: 0,
+    });
+
+    expect(runs.map((run) => run.id)).toEqual([matchingRunId]);
+    expect(runs[0]?.contextSnapshot).toEqual({ issueId });
+    expect(runs[0]?.usageJson).toEqual({
+      inputTokens: 100,
+      outputTokens: 50,
+      cachedInputTokens: 25,
+    });
+  });
+
   it("returns small result json payloads unchanged from getRun", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

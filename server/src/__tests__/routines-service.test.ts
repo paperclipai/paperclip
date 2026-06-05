@@ -270,6 +270,40 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
   });
 
+  it("keeps a created execution issue live when assignment wakeup fails", async () => {
+    const { routine, svc } = await seedFixture({
+      wakeup: async () => {
+        throw new Error("Agent is not invokable in its current state");
+      },
+    });
+
+    const first = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(first.status).toBe("issue_created");
+    expect(first.linkedIssueId).toBeTruthy();
+
+    const [createdIssue] = await db
+      .select({
+        id: issues.id,
+        executionRunId: issues.executionRunId,
+        originRunId: issues.originRunId,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(eq(issues.id, first.linkedIssueId ?? ""));
+
+    expect(createdIssue).toMatchObject({
+      id: first.linkedIssueId,
+      executionRunId: null,
+      originRunId: first.id,
+      status: "todo",
+    });
+
+    const second = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(second.status).toBe("coalesced");
+    expect(second.linkedIssueId).toBe(first.linkedIssueId);
+    expect(second.coalescedIntoRunId).toBe(first.id);
+  });
+
   it("creates draft routines without a project or default assignee", async () => {
     const { companyId, svc } = await seedFixture();
 
@@ -1315,7 +1349,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues).toHaveLength(1);
   });
 
-  it("fails the run and cleans up the execution issue when wakeup queueing fails", async () => {
+  it("keeps the execution issue when wakeup queueing fails", async () => {
     const { routine, svc } = await seedFixture({
       wakeup: async () => {
         throw new Error("queue unavailable");
@@ -1324,16 +1358,21 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     const run = await svc.runRoutine(routine.id, { source: "manual" });
 
-    expect(run.status).toBe("failed");
-    expect(run.failureReason).toContain("queue unavailable");
-    expect(run.linkedIssueId).toBeNull();
+    expect(run.status).toBe("issue_created");
+    expect(run.failureReason).toBeNull();
+    expect(run.linkedIssueId).toBeTruthy();
 
     const routineIssues = await db
-      .select({ id: issues.id })
+      .select({ id: issues.id, executionRunId: issues.executionRunId })
       .from(issues)
       .where(eq(issues.originId, routine.id));
 
-    expect(routineIssues).toHaveLength(0);
+    expect(routineIssues).toEqual([
+      {
+        id: run.linkedIssueId,
+        executionRunId: null,
+      },
+    ]);
   });
 
   it("accepts standard second-precision webhook timestamps for HMAC triggers", async () => {

@@ -843,6 +843,18 @@ const heartbeatRunListResultColumns = {
   resultCostUsdCamel: sql<string | null>`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
 } as const;
 
+export type HeartbeatRunListOptions = {
+  agentId?: string;
+  limit?: number;
+  offset?: number;
+  statuses?: string[];
+  createdAfter?: Date;
+  finishedAfter?: Date;
+  issueId?: string;
+  sortBy?: "createdAt" | "startedAt" | "finishedAt" | "updatedAt";
+  sortOrder?: "asc" | "desc";
+};
+
 const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
   case
     when ${heartbeatRuns.resultJson} is null then null
@@ -9957,7 +9969,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   return {
-    list: async (companyId: string, agentId?: string, limit?: number) => {
+    list: async (
+      companyId: string,
+      agentIdOrOptions?: string | HeartbeatRunListOptions,
+      legacyLimit?: number,
+    ) => {
+      const options: HeartbeatRunListOptions =
+        typeof agentIdOrOptions === "string"
+          ? { agentId: agentIdOrOptions, limit: legacyLimit }
+          : (agentIdOrOptions ?? {});
+      const sortColumn = (() => {
+        switch (options.sortBy) {
+          case "startedAt":
+            return heartbeatRuns.startedAt;
+          case "finishedAt":
+            return heartbeatRuns.finishedAt;
+          case "updatedAt":
+            return heartbeatRuns.updatedAt;
+          case "createdAt":
+          default:
+            return heartbeatRuns.createdAt;
+        }
+      })();
+      const filters = [
+        eq(heartbeatRuns.companyId, companyId),
+        options.agentId ? eq(heartbeatRuns.agentId, options.agentId) : undefined,
+        options.statuses && options.statuses.length > 0
+          ? inArray(heartbeatRuns.status, options.statuses)
+          : undefined,
+        options.createdAfter ? gt(heartbeatRuns.createdAt, options.createdAfter) : undefined,
+        options.finishedAfter ? gt(heartbeatRuns.finishedAt, options.finishedAfter) : undefined,
+        options.issueId ? sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${options.issueId}` : undefined,
+      ].filter((filter): filter is NonNullable<typeof filter> => filter !== undefined);
+
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const query = db
         .select(
@@ -9974,14 +10018,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
         )
         .from(heartbeatRuns)
-        .where(
-          agentId
-            ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
-            : eq(heartbeatRuns.companyId, companyId),
-        )
-        .orderBy(desc(heartbeatRuns.createdAt));
+        .where(and(...filters))
+        .orderBy(options.sortOrder === "asc" ? asc(sortColumn) : desc(sortColumn));
 
-      const rows = limit ? await query.limit(limit) : await query;
+      const limitedQuery = options.limit !== undefined ? query.limit(options.limit) : query;
+      const rows = options.offset && options.offset > 0
+        ? await limitedQuery.offset(options.offset)
+        : await limitedQuery;
       return rows.map((row) => {
         const {
           contextIssueId,
