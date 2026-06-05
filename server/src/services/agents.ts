@@ -735,9 +735,18 @@ export function agentService(db: Db) {
       }
 
       const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
-      const matches = rows
-        .map(normalizeAgentRow)
-        .filter((agent) => agent.urlKey === urlKey && agent.status !== "terminated");
+      const activeAgents = rows.map(normalizeAgentRow).filter((a) => a.status !== "terminated");
+
+      let matches = activeAgents.filter((agent) => agent.urlKey === urlKey);
+
+      if (matches.length === 0) {
+        const fuzzyRaw = raw.toLowerCase().replace(/[^a-z0-9]/g, "");
+        matches = activeAgents.filter((agent) => {
+          const fuzzyKey = agent.urlKey.toLowerCase().replace(/[^a-z0-9]/g, "");
+          return fuzzyKey === fuzzyRaw;
+        });
+      }
+
       if (matches.length === 1) {
         return { agent: matches[0] ?? null, ambiguous: false } as const;
       }
