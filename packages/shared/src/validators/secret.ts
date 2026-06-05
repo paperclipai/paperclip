@@ -27,6 +27,33 @@ export const envBindingSchema = z.union([
 
 export const envConfigSchema = z.record(z.string(), envBindingSchema);
 
+/**
+ * Keys that must never be stored as `type=plain` — they must use `secret_ref`.
+ * Covers the ANT-799 vault migration scope.
+ */
+export const SENSITIVE_ENV_KEY_RE =
+  /^(GITHUB_TOKEN|N8N_API_TOKEN|.*SUPABASE.*KEY|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|LETTA_API_KEY)$/;
+
+/**
+ * Like envConfigSchema but rejects plain-type bindings for sensitive key names.
+ * Use this schema when validating agent create/update payloads.
+ */
+export const strictEnvConfigSchema = envConfigSchema.superRefine((env, ctx) => {
+  for (const [key, binding] of Object.entries(env)) {
+    if (!SENSITIVE_ENV_KEY_RE.test(key)) continue;
+    const isPlain =
+      typeof binding === "string" ||
+      (typeof binding === "object" && binding !== null && (binding as { type?: string }).type === "plain");
+    if (isPlain) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message: `Sensitive key "${key}" must use secret_ref, not plain`,
+      });
+    }
+  }
+});
+
 export const createSecretSchema = z.object({
   name: z.string().min(1),
   key: z.string().min(1).regex(/^[a-zA-Z0-9_.-]+$/).optional(),

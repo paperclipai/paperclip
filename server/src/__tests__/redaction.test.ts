@@ -136,3 +136,48 @@ describe("redaction", () => {
     expect(result?.argv).toEqual(["--api-key", REDACTED_EVENT_VALUE]);
   });
 });
+
+describe("R4 — SENSITIVE_ENV_KEY_RE redaction in sanitizeRecord", () => {
+  it("redacts plain binding value for SUPABASE_SERVICE_ROLE_KEY (not matched by SECRET_PAYLOAD_KEY_RE)", () => {
+    const result = sanitizeRecord({ SUPABASE_SERVICE_ROLE_KEY: { type: "plain", value: "eyJ.supabase.secret" } });
+    expect(result.SUPABASE_SERVICE_ROLE_KEY).toEqual({ type: "plain", value: REDACTED_EVENT_VALUE });
+  });
+
+  it("redacts bare string for SUPABASE_ANON_KEY", () => {
+    const result = sanitizeRecord({ SUPABASE_ANON_KEY: "eyJ.anon.key" });
+    expect(result.SUPABASE_ANON_KEY).toBe(REDACTED_EVENT_VALUE);
+  });
+
+  it("passes secret_ref through unchanged for SUPABASE_SERVICE_ROLE_KEY", () => {
+    const secretRef = { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" };
+    const result = sanitizeRecord({ SUPABASE_SERVICE_ROLE_KEY: secretRef });
+    expect(result.SUPABASE_SERVICE_ROLE_KEY).toEqual(secretRef);
+  });
+
+  it("redacts plain binding for GITHUB_TOKEN", () => {
+    const result = sanitizeRecord({ GITHUB_TOKEN: { type: "plain", value: "ghp_secret_value" } });
+    expect(result.GITHUB_TOKEN).toEqual({ type: "plain", value: REDACTED_EVENT_VALUE });
+  });
+
+  it("redacts plain binding for ANTHROPIC_API_KEY", () => {
+    const result = sanitizeRecord({ ANTHROPIC_API_KEY: { type: "plain", value: "sk-ant-api03-secret" } });
+    expect(result.ANTHROPIC_API_KEY).toEqual({ type: "plain", value: REDACTED_EVENT_VALUE });
+  });
+
+  it("does not redact non-sensitive plain env bindings", () => {
+    const result = sanitizeRecord({ PAPERCLIP_LISTEN_PORT: { type: "plain", value: "3000" } });
+    expect(result.PAPERCLIP_LISTEN_PORT).toEqual({ type: "plain", value: "3000" });
+  });
+
+  it("redacts sensitive keys nested under adapterConfig.env shape", () => {
+    const result = sanitizeRecord({
+      env: {
+        SUPABASE_SERVICE_ROLE_KEY: { type: "plain", value: "eyJ.secret" },
+        LOG_LEVEL: { type: "plain", value: "info" },
+      },
+    });
+    const env = result.env as Record<string, unknown>;
+    expect(env.SUPABASE_SERVICE_ROLE_KEY).toEqual({ type: "plain", value: REDACTED_EVENT_VALUE });
+    expect(env.LOG_LEVEL).toEqual({ type: "plain", value: "info" });
+  });
+});

@@ -1,4 +1,5 @@
 import { redactCommandText } from "@paperclipai/adapter-utils";
+import { SENSITIVE_ENV_KEY_RE } from "@paperclipai/shared";
 
 const SECRET_FIELD_NAME_PATTERN =
   String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*`;
@@ -96,7 +97,7 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
       redacted[key] = redactSensitiveText(value);
       continue;
     }
-    if (SECRET_PAYLOAD_KEY_RE.test(key)) {
+    if (SECRET_PAYLOAD_KEY_RE.test(key) || SENSITIVE_ENV_KEY_RE.test(key)) {
       if (isSecretRefBinding(value)) {
         redacted[key] = sanitizeValue(value);
         continue;

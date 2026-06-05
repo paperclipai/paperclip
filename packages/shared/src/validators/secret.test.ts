@@ -6,6 +6,7 @@ import {
   remoteSecretImportSchema,
   secretProviderConfigDiscoveryPreviewSchema,
   secretProviderConfigPayloadSchema,
+  strictEnvConfigSchema,
   updateSecretProviderConfigSchema,
 } from "./secret.js";
 
@@ -188,5 +189,57 @@ describe("secret validators", () => {
         secrets: [],
       }),
     ).toThrow();
+  });
+});
+
+describe("strictEnvConfigSchema (R5 — sensitive key validator)", () => {
+  const SENSITIVE_KEYS = [
+    "GITHUB_TOKEN",
+    "N8N_API_TOKEN",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "SUPABASE_ANON_KEY",
+    "MY_SUPABASE_SECRET_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "LETTA_API_KEY",
+  ];
+
+  it("rejects plain object binding for sensitive keys", () => {
+    for (const key of SENSITIVE_KEYS) {
+      const result = strictEnvConfigSchema.safeParse({ [key]: { type: "plain", value: "raw-secret-value" } });
+      expect(result.success, `Expected ${key} plain object to be rejected`).toBe(false);
+    }
+  });
+
+  it("rejects bare string binding for sensitive keys", () => {
+    for (const key of SENSITIVE_KEYS) {
+      const result = strictEnvConfigSchema.safeParse({ [key]: "raw-secret-value" });
+      expect(result.success, `Expected ${key} bare string to be rejected`).toBe(false);
+    }
+  });
+
+  it("accepts secret_ref binding for sensitive keys", () => {
+    for (const key of SENSITIVE_KEYS) {
+      const result = strictEnvConfigSchema.safeParse({
+        [key]: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" },
+      });
+      expect(result.success, `Expected ${key} secret_ref to be accepted`).toBe(true);
+    }
+  });
+
+  it("accepts plain binding for non-sensitive keys", () => {
+    const result = strictEnvConfigSchema.safeParse({
+      PAPERCLIP_LISTEN_PORT: { type: "plain", value: "3000" },
+      LOG_LEVEL: "info",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts mixed env with sensitive secret_ref and non-sensitive plain", () => {
+    const result = strictEnvConfigSchema.safeParse({
+      GITHUB_TOKEN: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" },
+      LOG_LEVEL: { type: "plain", value: "debug" },
+    });
+    expect(result.success).toBe(true);
   });
 });
