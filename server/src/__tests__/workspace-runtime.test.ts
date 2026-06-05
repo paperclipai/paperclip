@@ -23,6 +23,7 @@ import {
   buildWorkspaceRuntimeDesiredStatePatch,
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
+  inspectExecutionWorkspaceFreshness,
   ensureServerWorkspaceLinksCurrent,
   ensureRuntimeServicesForRun,
   listConfiguredRuntimeServiceEntries,
@@ -533,6 +534,20 @@ describe("realizeExecutionWorkspace", () => {
         ]),
       }),
     });
+  });
+
+  it("accepts GitHub SSH-alias remotes when verifying expected repo coordinates", async () => {
+    const repoRoot = await createTempRepo();
+    await runGit(repoRoot, ["remote", "add", "origin", "git@github.com-paperclip:paperclipai/paperclip.git"]);
+
+    const details = await inspectExecutionWorkspaceFreshness({
+      cwd: repoRoot,
+      expectedRepoUrl: "https://github.com/paperclipai/paperclip.git",
+      expectedBranchName: "main",
+    });
+
+    expect(details.failures).toEqual([]);
+    expect(details.originUrl).toBe("git@github.com-paperclip:paperclipai/paperclip.git");
   });
 
   it("rejects reusing an empty directory that only looks like a worktree because it sits inside the repo", async () => {

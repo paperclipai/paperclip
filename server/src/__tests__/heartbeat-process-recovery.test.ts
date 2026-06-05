@@ -298,16 +298,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   }, 20_000);
 
   afterEach(async () => {
-    vi.clearAllMocks();
-    mockAdapterExecute.mockImplementation(async () => ({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      errorMessage: null,
-      summary: "Recovered stranded heartbeat work.",
-      provider: "test",
-      model: "test-model",
-    }));
     runningProcesses.clear();
     for (const child of childProcesses) {
       child.kill("SIGKILL");
@@ -322,6 +312,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     cleanupPids.clear();
     await cancelActiveRunsForCleanup(db, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+    vi.clearAllMocks();
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Recovered stranded heartbeat work.",
+      provider: "test",
+      model: "test-model",
+    }));
     let idlePolls = 0;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const runs = await db

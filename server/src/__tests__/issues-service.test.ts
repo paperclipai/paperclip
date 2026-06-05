@@ -4725,6 +4725,55 @@ describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
     expect(updated?.status).toBe("done");
   });
 
+  it("accepts GitHub SSH-alias repo bindings when verifying a merged PR", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const issueId = randomUUID();
+
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: true }),
+    } as Response)));
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Server",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "primary",
+      sourceType: "git_repo",
+      repoUrl: "git@github.com-paperclip:paperclipai/paperclip.git",
+      repoRef: "origin/main",
+      defaultRef: "origin/main",
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      title: "Close with merged PR on aliased host",
+      description: "Reference: https://github.com/paperclipai/paperclip/pull/3303",
+      status: "todo",
+      priority: "high",
+      identifier: "PAP-9002A",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
   it("allows human-authored terminal transitions without repo-backed PR verification", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

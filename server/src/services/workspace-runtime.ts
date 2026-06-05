@@ -564,6 +564,14 @@ function readTrimmedString(value: string | null | undefined) {
   return trimmed ? trimmed : null;
 }
 
+function normalizeRepoHost(host: string) {
+  const normalized = host.trim().toLowerCase();
+  if (normalized === "github.com" || normalized.startsWith("github.com-")) {
+    return "github.com";
+  }
+  return normalized;
+}
+
 function parseRepoCoordinates(rawUrl: string | null | undefined): RepoCoordinates | null {
   const value = readTrimmedString(rawUrl);
   if (!value) return null;
@@ -571,7 +579,7 @@ function parseRepoCoordinates(rawUrl: string | null | undefined): RepoCoordinate
     const sshMatch = value.match(/^git@([^:]+):([^/]+)\/(.+?)(?:\.git)?$/i);
     if (sshMatch) {
       return {
-        host: sshMatch[1]!.toLowerCase(),
+        host: normalizeRepoHost(sshMatch[1]!),
         owner: sshMatch[2]!,
         repo: sshMatch[3]!.replace(/\.git$/i, ""),
       };
@@ -581,7 +589,7 @@ function parseRepoCoordinates(rawUrl: string | null | undefined): RepoCoordinate
     const parts = parsed.pathname.replace(/\/+$/, "").split("/").filter(Boolean);
     if (parts.length < 2) return null;
     return {
-      host: parsed.hostname.toLowerCase(),
+      host: normalizeRepoHost(parsed.hostname),
       owner: parts[0]!,
       repo: parts[1]!.replace(/\.git$/i, ""),
     };
