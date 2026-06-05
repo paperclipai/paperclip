@@ -242,6 +242,15 @@ curl -sf http://127.0.0.1:<port>/api/health && echo "Server is up"
 lsof -nP -iTCP:<port> -sTCP:LISTEN
 ```
 
+### Bind Modes: `loopback` vs. `tailnet`
+
+The `bind` config key controls which network interface the dev server listens on.
+
+- **`bind: loopback`** (default) — server binds `127.0.0.1`; reachable only from the same machine.
+- **`bind: tailnet`** — server binds the Tailscale interface IP; off-box clients (other machines on the tailnet) can reach it directly, no proxy required.
+
+**Common pitfall:** setting a tailnet FQDN (e.g. `my-host.ts.net`) in `allowedHostnames` while keeping `bind: loopback` does **not** make the server reachable off-box. The hostname is used for request validation only — the process still only listens on `127.0.0.1`. That combination works only when a proxy (e.g. Tailscale-serve) forwards external traffic to the loopback port, which is how the live `:3100` production setup works. If you want a dev server that is directly reachable off-box without a proxy, set `bind: tailnet`.
+
 ### Key rules
 
 1. **Always use `tmux` (or equivalent)** when a dev server needs to stay running after the heartbeat ends. A server started directly from the agent shell will die when the heartbeat exits, even if it appeared healthy moments before.
