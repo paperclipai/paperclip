@@ -149,7 +149,7 @@ async function resolveHandoffFromBridge(
   bridge: typeof workflowHandoffBridges.$inferSelect,
   resolution: "responded" | "approved" | "rejected",
   responseMarkdown: string | null,
-) {
+): Promise<boolean> {
   const now = new Date();
 
   const [handoff] = await db
@@ -161,7 +161,7 @@ async function resolveHandoffFromBridge(
     ))
     .limit(1);
 
-  if (!handoff) return;
+  if (!handoff) return false;
 
   let resolved = false;
   await db.transaction(async (tx) => {
@@ -204,7 +204,7 @@ async function resolveHandoffFromBridge(
     resolved = true;
   });
 
-  if (!resolved) return;
+  if (!resolved) return false;
 
   await logActivity(db, {
     companyId: bridge.companyId,
@@ -221,6 +221,7 @@ async function resolveHandoffFromBridge(
       externalMessageId: bridge.externalMessageId ?? null,
     },
   });
+  return true;
 }
 
 export function workflowHandoffBridgeService(db: Db) {
@@ -342,7 +343,7 @@ export function workflowHandoffBridgeService(db: Db) {
       )
       .limit(50);
 
-    const summary = { checked: 0, resolved: 0, noSignal: 0, failed: 0 };
+    const summary = { checked: 0, resolved: 0, noSignal: 0, failed: 0, terminalClosed: 0 };
 
     for (const bridge of bridges) {
       summary.checked += 1;
@@ -454,7 +455,7 @@ export function workflowHandoffBridgeService(db: Db) {
             closeOutcome,
           },
         });
-        summary.failed += 1;
+        summary.terminalClosed += 1;
         continue;
       }
 
@@ -511,7 +512,7 @@ export function workflowHandoffBridgeService(db: Db) {
         continue;
       }
 
-      // Process first meaningful event -- acknowledge all reply messages
+      // Process first meaningful event -- acknowledge reply messages only after the workflow accepts them.
       const replyMessageIds = new Set<string>();
       for (const event of detected.events) {
         const replyId = typeof event.metadata?.clickupReplyId === "string" && event.metadata.clickupReplyId.trim().length > 0
@@ -519,19 +520,6 @@ export function workflowHandoffBridgeService(db: Db) {
           : null;
         if (replyId) replyMessageIds.add(replyId);
       }
-      for (const replyId of replyMessageIds) {
-        await applyReaction({
-          db,
-          bridgeId: bridge.id,
-          companyId: bridge.companyId,
-          workflowHandoffId: bridge.workflowHandoffId,
-          messageId: replyId,
-          reaction: "white_check_mark",
-          target: "reply",
-          overrides,
-        });
-      }
-
       // Resolve using the first event
       const event = detected.events[0]!;
       let resolution: "responded" | "approved" | "rejected";
@@ -550,7 +538,73 @@ export function workflowHandoffBridgeService(db: Db) {
       }
 
       try {
-        await resolveHandoffFromBridge(db, bridge, resolution, responseMarkdown);
+        const applied = await resolveHandoffFromBridge(db, bridge, resolution, responseMarkdown);
+        if (!applied) {
+          for (const replyId of replyMessageIds) {
+            await applyReaction({
+              db,
+              bridgeId: bridge.id,
+              companyId: bridge.companyId,
+              workflowHandoffId: bridge.workflowHandoffId,
+              messageId: replyId,
+              reaction: "x",
+              target: "reply",
+              overrides,
+            });
+          }
+          const [staleRun] = await db
+            .select({ status: workflowRuns.status, error: workflowRuns.error })
+            .from(workflowRuns)
+            .where(eq(workflowRuns.id, bridge.workflowRunId))
+            .limit(1);
+          await db.update(workflowHandoffs).set({
+            status: "cancelled",
+            responseMarkdown: null,
+            decidedByUserId: "workflow_handoff_bridge",
+            decidedAt: now,
+            updatedAt: now,
+          }).where(and(
+            eq(workflowHandoffs.id, bridge.workflowHandoffId),
+            eq(workflowHandoffs.status, "pending"),
+          ));
+          const closeOutcome = staleRun?.status === "failed" && staleRun.error?.startsWith("Timed out after ")
+            ? "expired"
+            : staleRun?.status === "failed"
+              ? "failed"
+              : "cancelled";
+          await closeBridgeRow(db, bridge, closeOutcome, overrides);
+          await logActivity(db, {
+            companyId: bridge.companyId,
+            actorType: "system",
+            actorId: "workflow_handoff_bridge",
+            action: "workflow.handoff.bridge_closed_terminal",
+            entityType: "workflow_run",
+            entityId: bridge.workflowRunId,
+            details: {
+              bridgeId: bridge.id,
+              workflowHandoffId: bridge.workflowHandoffId,
+              provider: bridge.provider,
+              externalMessageId: bridge.externalMessageId ?? null,
+              runStatus: staleRun?.status ?? null,
+              runError: staleRun?.error ?? null,
+              closeOutcome,
+            },
+          });
+          summary.terminalClosed += 1;
+          continue;
+        }
+        for (const replyId of replyMessageIds) {
+          await applyReaction({
+            db,
+            bridgeId: bridge.id,
+            companyId: bridge.companyId,
+            workflowHandoffId: bridge.workflowHandoffId,
+            messageId: replyId,
+            reaction: "white_check_mark",
+            target: "reply",
+            overrides,
+          });
+        }
         await closeBridgeRow(db, bridge, resolution, overrides);
         summary.resolved += 1;
       } catch (error) {

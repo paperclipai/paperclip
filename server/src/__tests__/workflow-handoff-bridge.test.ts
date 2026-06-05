@@ -179,6 +179,8 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
     const result = await workflowHandoffBridgeService(db).pollActiveBridges();
 
     expect(result.checked).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(result.terminalClosed).toBe(1);
     expect(mocks.addClickUpChatMessageReaction).toHaveBeenCalledWith(
       "reply-1",
       "x",
@@ -226,6 +228,8 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
     const result = await workflowHandoffBridgeService(db).pollActiveBridges();
 
     expect(result.checked).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(result.terminalClosed).toBe(1);
     expect(mocks.deleteClickUpChatMessageReaction).toHaveBeenCalledWith(
       "message-1",
       "brain_is_thinking",
@@ -240,6 +244,64 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
     const [bridge] = await db.select().from(workflowHandoffBridges).where(eq(workflowHandoffBridges.id, bridgeId));
     expect(bridge?.status).toBe("closed");
     expect(bridge?.closeOutcome).toBe("expired");
+    expect(bridge?.nextPollAt).toBeNull();
+  });
+
+  it("rejects replies if the workflow becomes terminal after polling", async () => {
+    const { runId, handoffId, bridgeId } = await insertWaitingWorkflowBridge(db, {
+      runStatus: "awaiting_human",
+      runError: null,
+    });
+
+    mocks.detectClickUpAwaitingHumanBridgeEvents.mockImplementationOnce(async () => {
+      await db.update(workflowRuns).set({
+        status: "failed",
+        error: "Tool failed",
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(eq(workflowRuns.id, runId));
+      return {
+        status: "sent",
+        detail: "ok",
+        events: [{
+          kind: "reply",
+          externalEventId: "reply-1",
+          externalMessageId: "message-1",
+          body: "yes",
+          metadata: { clickupReplyId: "reply-1" },
+        }],
+      };
+    });
+
+    const result = await workflowHandoffBridgeService(db).pollActiveBridges();
+
+    expect(result.checked).toBe(1);
+    expect(result.resolved).toBe(0);
+    expect(result.failed).toBe(0);
+    expect(result.terminalClosed).toBe(1);
+    expect(mocks.addClickUpChatMessageReaction).toHaveBeenCalledWith(
+      "reply-1",
+      "x",
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+    expect(mocks.addClickUpChatMessageReaction).toHaveBeenCalledWith(
+      "message-1",
+      "x",
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+    expect(mocks.addClickUpChatMessageReaction).not.toHaveBeenCalledWith(
+      expect.any(String),
+      "white_check_mark",
+      expect.anything(),
+    );
+
+    const [handoff] = await db.select().from(workflowHandoffs).where(eq(workflowHandoffs.id, handoffId));
+    expect(handoff?.status).toBe("cancelled");
+    expect(handoff?.responseMarkdown).toBeNull();
+
+    const [bridge] = await db.select().from(workflowHandoffBridges).where(eq(workflowHandoffBridges.id, bridgeId));
+    expect(bridge?.status).toBe("closed");
+    expect(bridge?.closeOutcome).toBe("failed");
     expect(bridge?.nextPollAt).toBeNull();
   });
 });

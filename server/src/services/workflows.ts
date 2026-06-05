@@ -535,13 +535,23 @@ export function workflowService(db: Db) {
   return {
     failInterruptedActiveRuns: async () => {
       const now = new Date();
+      const candidates = await db
+        .select({ id: workflowRuns.id })
+        .from(workflowRuns)
+        .innerJoin(workflows, eq(workflowRuns.workflowId, workflows.id))
+        .where(and(
+          eq(workflows.runnerType, "google_adk"),
+          inArray(workflowRuns.status, ["queued", "running", "awaiting_human"]),
+        ));
+      const runIds = candidates.map((row) => row.id);
+      if (runIds.length === 0) return { failed: 0, runIds };
+
       const rows = await db.update(workflowRuns).set({
         status: "failed",
         error: WORKFLOW_INTERRUPTED_ERROR,
         finishedAt: now,
         updatedAt: now,
-      }).where(inArray(workflowRuns.status, ["queued", "running", "awaiting_human"])).returning({ id: workflowRuns.id });
-      const runIds = rows.map((row) => row.id);
+      }).where(inArray(workflowRuns.id, runIds)).returning({ id: workflowRuns.id });
       if (runIds.length > 0) {
         await db.update(workflowRunPhases).set({
           status: "failed",

@@ -201,7 +201,9 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
   it("marks active workflow runs interrupted on startup recovery", async () => {
     const companyId = randomUUID();
     const workflowId = randomUUID();
+    const durableWorkflowId = randomUUID();
     const activeRunId = randomUUID();
+    const durableRunId = randomUUID();
     const doneRunId = randomUUID();
 
     await db.insert(companies).values({
@@ -220,6 +222,16 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
       pipelineDefinition: { entrypoint: "agent.py", generatedAt: new Date(0).toISOString(), phases: [] },
       pipelineSourceHash: null,
     });
+    await db.insert(workflows).values({
+      id: durableWorkflowId,
+      companyId,
+      title: "Durable workflow",
+      status: "active",
+      runnerType: "durable_queue",
+      runnerConfig: {},
+      pipelineDefinition: { entrypoint: "queue", generatedAt: new Date(0).toISOString(), phases: [] },
+      pipelineSourceHash: null,
+    });
     await db.insert(workflowRuns).values([
       {
         id: activeRunId,
@@ -227,6 +239,13 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
         workflowId,
         status: "awaiting_human",
         inputMarkdown: "generate",
+      },
+      {
+        id: durableRunId,
+        companyId,
+        workflowId: durableWorkflowId,
+        status: "awaiting_human",
+        inputMarkdown: "durable",
       },
       {
         id: doneRunId,
@@ -240,6 +259,15 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
       {
         companyId,
         workflowRunId: activeRunId,
+        phaseKey: "phase-1",
+        label: "Phase 1",
+        kind: "phase",
+        ordinal: 0,
+        status: "awaiting_human",
+      },
+      {
+        companyId,
+        workflowRunId: durableRunId,
         phaseKey: "phase-1",
         label: "Phase 1",
         kind: "phase",
@@ -265,6 +293,12 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
     expect(activeRun?.error).toBe("Workflow process was interrupted before completion.");
     const [activePhase] = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, activeRunId));
     expect(activePhase?.status).toBe("failed");
+
+    const [durableRun] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, durableRunId));
+    expect(durableRun?.status).toBe("awaiting_human");
+    expect(durableRun?.error).toBeNull();
+    const [durablePhase] = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, durableRunId));
+    expect(durablePhase?.status).toBe("awaiting_human");
 
     const [doneRun] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, doneRunId));
     expect(doneRun?.status).toBe("succeeded");
