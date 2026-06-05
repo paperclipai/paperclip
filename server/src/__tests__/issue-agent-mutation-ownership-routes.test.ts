@@ -706,6 +706,39 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 
+  it("rejects active-checkout manager reassignment attempts until the owning run is interrupted", async () => {
+    mockAccessService.hasPermission.mockImplementation(async (
+      _companyId: string,
+      _principalType: string,
+      principalId: string,
+      permissionKey: string,
+    ) => principalId === peerAgentId && permissionKey === "tasks:manage_active_checkouts");
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      checkoutRunId: ownerRunId,
+      executionRunId: ownerRunId,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        assigneeAgentId: peerAgentId,
+        status: "todo",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Active checkout must be interrupted before reassignment or status handoff");
+    expect(res.body.details).toMatchObject({
+      issueId,
+      assigneeAgentId: ownerAgentId,
+      actorAgentId: peerAgentId,
+      checkoutRunId: ownerRunId,
+      executionRunId: ownerRunId,
+      requestedAssigneeAgentId: peerAgentId,
+      requestedStatus: "todo",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
     ["todo", "comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Todo noise" })],

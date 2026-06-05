@@ -1649,6 +1649,42 @@ export function issueRoutes(
     return false;
   }
 
+  async function isManagedActiveCheckoutDisruptiveMutation(
+    req: Request,
+    issue: {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId: string | null;
+      checkoutRunId?: string | null;
+      executionRunId?: string | null;
+    },
+  ) {
+    if (req.actor.type !== "agent") return null;
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) return null;
+    if (issue.status !== "in_progress") return null;
+    if (!issue.assigneeAgentId || issue.assigneeAgentId === actorAgentId) return null;
+    const hasOverride = await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId);
+    if (!hasOverride) return null;
+
+    const requestedAssigneeAgentId = req.body.assigneeAgentId;
+    const requestedAssigneeUserId = req.body.assigneeUserId;
+    const requestedStatus = typeof req.body.status === "string" ? req.body.status : null;
+    const reassignRequested = requestedAssigneeAgentId !== undefined || requestedAssigneeUserId !== undefined;
+    const leaveInProgressRequested = requestedStatus !== null && requestedStatus !== "in_progress";
+    if (!reassignRequested && !leaveInProgressRequested) return null;
+
+    return {
+      actorAgentId,
+      requestedAssigneeAgentId: requestedAssigneeAgentId === undefined ? "__omitted__" : requestedAssigneeAgentId,
+      requestedAssigneeUserId: requestedAssigneeUserId === undefined ? "__omitted__" : requestedAssigneeUserId,
+      requestedStatus,
+      checkoutRunId: issue.checkoutRunId ?? null,
+      executionRunId: issue.executionRunId ?? null,
+    };
+  }
+
   function assertStructuredCommentFieldsAllowed(
     req: Request,
     res: Response,
@@ -4059,6 +4095,23 @@ export function issueRoutes(
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
+    const disruptiveManagedMutation = await isManagedActiveCheckoutDisruptiveMutation(req, existing);
+    if (disruptiveManagedMutation) {
+      res.status(409).json({
+        error: "Active checkout must be interrupted before reassignment or status handoff",
+        details: {
+          issueId: existing.id,
+          assigneeAgentId: existing.assigneeAgentId,
+          actorAgentId: disruptiveManagedMutation.actorAgentId,
+          checkoutRunId: disruptiveManagedMutation.checkoutRunId,
+          executionRunId: disruptiveManagedMutation.executionRunId,
+          requestedAssigneeAgentId: disruptiveManagedMutation.requestedAssigneeAgentId,
+          requestedAssigneeUserId: disruptiveManagedMutation.requestedAssigneeUserId,
+          requestedStatus: disruptiveManagedMutation.requestedStatus,
+        },
+      });
+      return;
+    }
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
