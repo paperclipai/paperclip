@@ -791,6 +791,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `project.workspaces.read`
 - `issues.read`
 - `issue.comments.read`
+- `issue.interactions.read`
 - `issue.documents.read`
 - `issue.relations.read`
 - `issue.subtree.read`
@@ -807,6 +808,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `issues.update`
 - `issue.comments.create`
 - `issue.interactions.create`
+- `issue.interactions.resolve`
 - `issue.documents.write`
 - `issue.relations.write`
 - `issues.checkout`

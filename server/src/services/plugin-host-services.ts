@@ -26,7 +26,7 @@ import type {
   PluginIssueOrchestrationSummary,
   PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
-import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
+import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, IssueThreadInteraction, PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
@@ -37,6 +37,7 @@ import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { goalService } from "./goals.js";
 import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
+import { queueIssueAssignmentWakeup, queueResolvedInteractionContinuationWakeup } from "./issue-assignment-wakeup.js";
 import { budgetService } from "./budgets.js";
 import { issueApprovalService } from "./issue-approvals.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
@@ -701,6 +702,29 @@ export function buildHostServices(
       entityId: input.entityId,
       details: pluginActivityDetails(input.details, input.actor),
     });
+  };
+
+  /**
+   * Normalize the optional actor a plugin supplies when resolving an interaction
+   * into the `{ agentId, userId }` shape the interaction service records and the
+   * `{ actorType, actorId }` shape the continuation wakeup attributes. Returns
+   * `null` when no actor was supplied; the continuation wakeup still fires (with
+   * system attribution) so the assignee resumes regardless.
+   */
+  const resolveInteractionActor = (params: {
+    actorAgentId?: string | null;
+    actorUserId?: string | null;
+  }): { agentId: string | null; userId: string | null; wakeActor?: { actorType: "user" | "agent"; actorId: string } } | null => {
+    const agentId = params.actorAgentId ?? null;
+    const userId = params.actorUserId ?? null;
+    if (!agentId && !userId) return null;
+    return {
+      agentId,
+      userId,
+      wakeActor: agentId
+        ? { actorType: "agent", actorId: agentId }
+        : { actorType: "user", actorId: userId! },
+    };
   };
 
   const collectIssueSubtreeIds = async (companyId: string, rootIssueId: string) => {
@@ -1994,6 +2018,14 @@ export function buildHostServices(
         if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
         return (await issues.listComments(params.issueId)) as IssueComment[];
       },
+      async listInteractions(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
+        const all = await issueThreadInteractionService(db).listForIssue(params.issueId);
+        const filtered = params.status ? all.filter((interaction) => interaction.status === params.status) : all;
+        return filtered as IssueThreadInteraction[];
+      },
       async createComment(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
@@ -2037,6 +2069,124 @@ export function buildHostServices(
             interactionStatus: interaction.status,
             continuationPolicy: interaction.continuationPolicy,
           },
+        });
+        return interaction as any;
+      },
+      async acceptInteraction(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const actor = resolveInteractionActor(params);
+        const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(
+          issue,
+          params.interactionId,
+          { selectedClientKeys: params.selectedClientKeys },
+          { agentId: actor?.agentId ?? null, userId: actor?.userId ?? null },
+        );
+        await logPluginActivity({
+          companyId,
+          action: interaction.status === "expired"
+            ? "issue.thread_interaction_expired"
+            : "issue.thread_interaction_accepted",
+          entityType: "issue",
+          entityId: issue.id,
+          actor: { actorAgentId: actor?.agentId ?? null, actorUserId: actor?.userId ?? null },
+          details: {
+            identifier: issue.identifier,
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            createdTaskCount: interaction.kind === "suggest_tasks"
+              ? (interaction.result?.createdTasks?.length ?? 0)
+              : 0,
+          },
+        });
+        for (const createdIssue of createdIssues) {
+          void queueIssueAssignmentWakeup({
+            heartbeat,
+            issue: createdIssue,
+            reason: "issue_assigned",
+            mutation: "interaction_accept",
+            contextSource: "plugin.issue.interaction.accept",
+          });
+        }
+        void queueResolvedInteractionContinuationWakeup({
+          heartbeat,
+          issue: continuationIssue ?? issue,
+          interaction,
+          actor: actor?.wakeActor,
+          source: "plugin.issue.interaction.accept",
+        });
+        return interaction as any;
+      },
+      async rejectInteraction(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const actor = resolveInteractionActor(params);
+        const interaction = await issueThreadInteractionService(db).rejectInteraction(
+          issue,
+          params.interactionId,
+          { reason: params.reason },
+          { agentId: actor?.agentId ?? null, userId: actor?.userId ?? null },
+        );
+        await logPluginActivity({
+          companyId,
+          action: interaction.status === "expired"
+            ? "issue.thread_interaction_expired"
+            : "issue.thread_interaction_rejected",
+          entityType: "issue",
+          entityId: issue.id,
+          actor: { actorAgentId: actor?.agentId ?? null, actorUserId: actor?.userId ?? null },
+          details: {
+            identifier: issue.identifier,
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+          },
+        });
+        void queueResolvedInteractionContinuationWakeup({
+          heartbeat,
+          issue,
+          interaction,
+          actor: actor?.wakeActor,
+          source: "plugin.issue.interaction.reject",
+        });
+        return interaction as any;
+      },
+      async respondInteraction(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const actor = resolveInteractionActor(params);
+        const interaction = await issueThreadInteractionService(db).answerQuestions(
+          issue,
+          params.interactionId,
+          { answers: params.answers, summaryMarkdown: params.summaryMarkdown ?? null },
+          { agentId: actor?.agentId ?? null, userId: actor?.userId ?? null },
+        );
+        await logPluginActivity({
+          companyId,
+          action: "issue.thread_interaction_answered",
+          entityType: "issue",
+          entityId: issue.id,
+          actor: { actorAgentId: actor?.agentId ?? null, actorUserId: actor?.userId ?? null },
+          details: {
+            identifier: issue.identifier,
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            answeredQuestionCount: interaction.kind === "ask_user_questions"
+              ? (interaction.result?.answers?.length ?? 0)
+              : 0,
+          },
+        });
+        void queueResolvedInteractionContinuationWakeup({
+          heartbeat,
+          issue,
+          interaction,
+          actor: actor?.wakeActor,
+          source: "plugin.issue.interaction.respond",
         });
         return interaction as any;
       },

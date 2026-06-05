@@ -615,6 +615,33 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     return { blockedBy, blocks };
   }
 
+  function resolveTestInteraction(input: {
+    issueId: string;
+    interactionId: string;
+    companyId: string;
+    status: IssueThreadInteraction["status"];
+    actorAgentId: string | null;
+    actorUserId: string | null;
+    result?: IssueThreadInteraction["result"];
+  }): IssueThreadInteraction {
+    requireCapability(manifest, capabilitySet, "issue.interactions.resolve");
+    const parentIssue = issues.get(input.issueId);
+    if (!isInCompany(parentIssue, input.companyId)) {
+      throw new Error(`Issue not found: ${input.issueId}`);
+    }
+    const current = issueInteractions.get(input.issueId) ?? [];
+    const interaction = current.find((entry) => entry.id === input.interactionId);
+    if (!interaction) throw new Error(`Interaction not found: ${input.interactionId}`);
+    if (interaction.status !== "pending") throw new Error("Interaction has already been resolved");
+    interaction.status = input.status;
+    interaction.resolvedByAgentId = input.actorAgentId;
+    interaction.resolvedByUserId = input.actorUserId;
+    interaction.resolvedAt = new Date();
+    interaction.updatedAt = new Date();
+    if (input.result !== undefined) interaction.result = input.result;
+    return interaction;
+  }
+
   const defaultPluginOriginKind: PluginIssueOriginKind = `plugin:${manifest.id}`;
 
   function managedAgentDeclaration(agentKey: string) {
@@ -1611,6 +1638,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           comment.deletedAt ? { ...comment, body: "", presentation: null, metadata: null } : comment
         );
       },
+      async listInteractions(issueId, companyId, options) {
+        requireCapability(manifest, capabilitySet, "issue.interactions.read");
+        if (!isInCompany(issues.get(issueId), companyId)) return [];
+        const all = issueInteractions.get(issueId) ?? [];
+        return options?.status ? all.filter((interaction) => interaction.status === options.status) : all;
+      },
       async createComment(issueId, body, companyId, options) {
         requireCapability(manifest, capabilitySet, "issue.comments.create");
         const parentIssue = issues.get(issueId);
@@ -1679,6 +1712,38 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async requestConfirmation(issueId, interaction, companyId, options) {
         return this.createInteraction(issueId, { ...interaction, kind: "request_confirmation" }, companyId, options) as Promise<any>;
+      },
+      async acceptInteraction(issueId, interactionId, companyId, options) {
+        return resolveTestInteraction({
+          issueId,
+          interactionId,
+          companyId,
+          status: "accepted",
+          actorAgentId: options?.actorAgentId ?? null,
+          actorUserId: options?.actorUserId ?? null,
+        });
+      },
+      async rejectInteraction(issueId, interactionId, companyId, options) {
+        return resolveTestInteraction({
+          issueId,
+          interactionId,
+          companyId,
+          status: "rejected",
+          actorAgentId: options?.actorAgentId ?? null,
+          actorUserId: options?.actorUserId ?? null,
+          result: { version: 1, rejectionReason: options?.reason?.trim() || null },
+        });
+      },
+      async respondInteraction(issueId, interactionId, companyId, response) {
+        return resolveTestInteraction({
+          issueId,
+          interactionId,
+          companyId,
+          status: "answered",
+          actorAgentId: response?.actorAgentId ?? null,
+          actorUserId: response?.actorUserId ?? null,
+          result: { version: 1, answers: response.answers, summaryMarkdown: response.summaryMarkdown ?? null },
+        });
       },
       documents: {
         async list(issueId, companyId) {

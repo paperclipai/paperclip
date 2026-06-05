@@ -151,6 +151,134 @@ describe("createHostClientHandlers invocation company scope", () => {
     },
   );
 
+  it("delegates issues.listInteractions to the host service when the capability is present", async () => {
+    const listInteractions = vi.fn(async () => [
+      { id: "int-1", kind: "request_confirmation", status: "pending" },
+    ]);
+    const services = {
+      issues: { listInteractions },
+    } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["issue.interactions.read"],
+      services,
+    });
+
+    await expect(
+      handlers["issues.listInteractions"](
+        { issueId: "issue-a", companyId: "company-a", status: "pending" },
+        { invocationScope: { companyId: "company-a" } },
+      ),
+    ).resolves.toEqual([{ id: "int-1", kind: "request_confirmation", status: "pending" }]);
+    expect(listInteractions).toHaveBeenCalledWith({
+      issueId: "issue-a",
+      companyId: "company-a",
+      status: "pending",
+    });
+  });
+
+  it("rejects issues.listInteractions when the plugin lacks issue.interactions.read", async () => {
+    const listInteractions = vi.fn(async () => []);
+    const services = {
+      issues: { listInteractions },
+    } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: [],
+      services,
+    });
+
+    await expect(
+      handlers["issues.listInteractions"]({ issueId: "issue-a", companyId: "company-a" }),
+    ).rejects.toMatchObject({
+      name: "CapabilityDeniedError",
+      message: expect.stringContaining("issue.interactions.read"),
+    });
+    expect(listInteractions).not.toHaveBeenCalled();
+  });
+
+  it("delegates issues.acceptInteraction to the host service when the capability is present", async () => {
+    const acceptInteraction = vi.fn(async () => ({ id: "int-1", kind: "request_confirmation", status: "accepted" }));
+    const services = {
+      issues: { acceptInteraction },
+    } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["issue.interactions.resolve"],
+      services,
+    });
+
+    await expect(
+      handlers["issues.acceptInteraction"](
+        { issueId: "issue-a", companyId: "company-a", interactionId: "int-1" },
+        { invocationScope: { companyId: "company-a" } },
+      ),
+    ).resolves.toEqual({ id: "int-1", kind: "request_confirmation", status: "accepted" });
+    expect(acceptInteraction).toHaveBeenCalledWith({
+      issueId: "issue-a",
+      companyId: "company-a",
+      interactionId: "int-1",
+    });
+  });
+
+  it("delegates issues.rejectInteraction and issues.respondInteraction when the capability is present", async () => {
+    const rejectInteraction = vi.fn(async () => ({ id: "int-1", status: "rejected" }));
+    const respondInteraction = vi.fn(async () => ({ id: "int-2", status: "answered" }));
+    const services = {
+      issues: { rejectInteraction, respondInteraction },
+    } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["issue.interactions.resolve"],
+      services,
+    });
+
+    await expect(
+      handlers["issues.rejectInteraction"](
+        { issueId: "issue-a", companyId: "company-a", interactionId: "int-1", reason: "nope" },
+        { invocationScope: { companyId: "company-a" } },
+      ),
+    ).resolves.toEqual({ id: "int-1", status: "rejected" });
+    await expect(
+      handlers["issues.respondInteraction"](
+        { issueId: "issue-a", companyId: "company-a", interactionId: "int-2", answers: [] },
+        { invocationScope: { companyId: "company-a" } },
+      ),
+    ).resolves.toEqual({ id: "int-2", status: "answered" });
+    expect(rejectInteraction).toHaveBeenCalledWith({
+      issueId: "issue-a",
+      companyId: "company-a",
+      interactionId: "int-1",
+      reason: "nope",
+    });
+    expect(respondInteraction).toHaveBeenCalledWith({
+      issueId: "issue-a",
+      companyId: "company-a",
+      interactionId: "int-2",
+      answers: [],
+    });
+  });
+
+  it("rejects issues.acceptInteraction when the plugin lacks issue.interactions.resolve", async () => {
+    const acceptInteraction = vi.fn(async () => ({}));
+    const services = {
+      issues: { acceptInteraction },
+    } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: [],
+      services,
+    });
+
+    await expect(
+      handlers["issues.acceptInteraction"]({ issueId: "issue-a", companyId: "company-a", interactionId: "int-1" }),
+    ).rejects.toMatchObject({
+      name: "CapabilityDeniedError",
+      message: expect.stringContaining("issue.interactions.resolve"),
+    });
+    expect(acceptInteraction).not.toHaveBeenCalled();
+  });
+
   it("checks invocation company scope before exposing authorization data", async () => {
     const searchAudit = vi.fn(async () => []);
     const services = {

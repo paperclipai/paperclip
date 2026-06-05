@@ -311,6 +311,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `project.workspaces.read` |
 | | `issues.read` |
 | | `issue.comments.read` |
+| | `issue.interactions.read` |
 | | `issue.documents.read` |
 | | `issue.relations.read` |
 | | `issue.subtree.read` |
@@ -332,6 +333,8 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `issues.checkout` |
 | | `issues.wakeup` |
 | | `issue.comments.create` |
+| | `issue.interactions.create` |
+| | `issue.interactions.resolve` |
 | | `issue.documents.write` |
 | | `issue.relations.write` |
 | | `activity.log.write` |

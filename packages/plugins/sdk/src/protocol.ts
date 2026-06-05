@@ -29,6 +29,7 @@ import type {
   IssueDocumentSummary,
   IssueAssigneeAdapterOverrides,
   IssueThreadInteraction,
+  AskUserQuestionsAnswer,
   CreateIssueThreadInteraction,
   PluginManagedAgentResolution,
   PluginManagedProjectResolution,
@@ -1101,6 +1102,10 @@ export interface WorkerToHostMethods {
     params: { issueId: string; companyId: string },
     result: IssueComment[],
   ];
+  "issues.listInteractions": [
+    params: { issueId: string; companyId: string; status?: IssueThreadInteraction["status"] },
+    result: IssueThreadInteraction[],
+  ];
   "issues.createComment": [
     params: { issueId: string; body: string; companyId: string; authorAgentId?: string },
     result: IssueComment,
@@ -1111,6 +1116,40 @@ export interface WorkerToHostMethods {
       companyId: string;
       interaction: CreateIssueThreadInteraction;
       authorAgentId?: string | null;
+    },
+    result: IssueThreadInteraction,
+  ];
+  "issues.acceptInteraction": [
+    params: {
+      issueId: string;
+      companyId: string;
+      interactionId: string;
+      selectedClientKeys?: string[];
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+    },
+    result: IssueThreadInteraction,
+  ];
+  "issues.rejectInteraction": [
+    params: {
+      issueId: string;
+      companyId: string;
+      interactionId: string;
+      reason?: string;
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+    },
+    result: IssueThreadInteraction,
+  ];
+  "issues.respondInteraction": [
+    params: {
+      issueId: string;
+      companyId: string;
+      interactionId: string;
+      answers: AskUserQuestionsAnswer[];
+      summaryMarkdown?: string | null;
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
     },
     result: IssueThreadInteraction,
   ];

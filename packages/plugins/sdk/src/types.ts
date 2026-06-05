@@ -26,6 +26,7 @@ import type {
   IssueThreadInteraction,
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
+  AskUserQuestionsAnswer,
   RequestConfirmationInteraction,
   CreateIssueThreadInteraction,
   PluginIssueOriginKind,
@@ -121,6 +122,7 @@ export type {
   IssueThreadInteraction,
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
+  AskUserQuestionsAnswer,
   RequestConfirmationInteraction,
   CreateIssueThreadInteraction,
   PluginIssueOriginKind,
@@ -1321,7 +1323,9 @@ export interface PluginIssueSummariesClient {
  * - `issues.orchestration.read` for orchestration summaries
  * - `issue.comments.read` for `listComments`
  * - `issue.comments.create` for `createComment`
+ * - `issue.interactions.read` for `listInteractions`
  * - `issue.interactions.create` for `createInteraction`, `suggestTasks`, `askUserQuestions`, and `requestConfirmation`
+ * - `issue.interactions.resolve` for `acceptInteraction`, `rejectInteraction`, and `respondInteraction`
  * - `issue.documents.read` for `documents.list` and `documents.get`
  * - `issue.documents.write` for `documents.upsert` and `documents.delete`
  */
@@ -1430,6 +1434,17 @@ export interface PluginIssuesClient {
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<IssueComment>;
+  /**
+   * List the issue-thread interactions (`suggest_tasks`, `ask_user_questions`,
+   * `request_confirmation`) attached to an issue, oldest first. Optionally
+   * filter by interaction `status` (e.g. `"pending"`). Returns `[]` when the
+   * issue does not belong to `companyId`. Requires `issue.interactions.read`.
+   */
+  listInteractions(
+    issueId: string,
+    companyId: string,
+    options?: { status?: IssueThreadInteraction["status"] },
+  ): Promise<IssueThreadInteraction[]>;
   createInteraction(
     issueId: string,
     interaction: CreateIssueThreadInteraction,
@@ -1454,6 +1469,47 @@ export interface PluginIssuesClient {
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<RequestConfirmationInteraction>;
+  /**
+   * Accept a pending issue-thread interaction. For `suggest_tasks` this creates
+   * the selected follow-up issues (defaulting to all when `selectedClientKeys`
+   * is omitted); for `request_confirmation` it confirms the request and resumes
+   * the issue's assignee per the interaction's continuation policy. The optional
+   * `actorAgentId` / `actorUserId` record who resolved the interaction.
+   * Requires `issue.interactions.resolve`.
+   */
+  acceptInteraction(
+    issueId: string,
+    interactionId: string,
+    companyId: string,
+    options?: { selectedClientKeys?: string[]; actorAgentId?: string; actorUserId?: string },
+  ): Promise<IssueThreadInteraction>;
+  /**
+   * Reject a pending `suggest_tasks` or `request_confirmation` interaction with
+   * an optional `reason`. Resumes the issue's assignee per the interaction's
+   * continuation policy. Requires `issue.interactions.resolve`.
+   */
+  rejectInteraction(
+    issueId: string,
+    interactionId: string,
+    companyId: string,
+    options?: { reason?: string; actorAgentId?: string; actorUserId?: string },
+  ): Promise<IssueThreadInteraction>;
+  /**
+   * Respond to a pending `ask_user_questions` interaction by supplying the
+   * selected option ids per question. Resumes the issue's assignee per the
+   * interaction's continuation policy. Requires `issue.interactions.resolve`.
+   */
+  respondInteraction(
+    issueId: string,
+    interactionId: string,
+    companyId: string,
+    response: {
+      answers: AskUserQuestionsAnswer[];
+      summaryMarkdown?: string | null;
+      actorAgentId?: string;
+      actorUserId?: string;
+    },
+  ): Promise<IssueThreadInteraction>;
   /** Read and write issue documents. Requires `issue.documents.read` / `issue.documents.write`. */
   documents: PluginIssueDocumentsClient;
   /** Read and write blocker relationships. */
