@@ -70,6 +70,12 @@ import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
+import {
+  PORTABLE_CATALOG_PROVENANCE_STRING_KEYS,
+  readCatalogStringList,
+  readPortableCatalogProvenance,
+} from "./catalog-provenance.js";
+import { normalizePortablePath } from "./portable-path.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -226,6 +232,28 @@ function normalizeExportPathSegment(value: string | null | undefined, preserveCa
 function readSkillSourceKind(skill: CompanySkill) {
   const metadata = isPlainRecord(skill.metadata) ? skill.metadata : null;
   return asString(metadata?.sourceKind);
+}
+
+function buildPortableCatalogProvenance(skill: CompanySkill) {
+  if (skill.sourceType !== "catalog") return null;
+  const metadata = isPlainRecord(skill.metadata) ? skill.metadata : null;
+  const provenance: Record<string, unknown> = {
+    skillKey: skill.key,
+  };
+
+  const sourceRef = asString(skill.sourceRef) ?? asString(metadata?.originHash);
+  if (sourceRef) provenance.sourceRef = sourceRef;
+
+  for (const key of PORTABLE_CATALOG_PROVENANCE_STRING_KEYS) {
+    if (key === "sourceRef") continue;
+    const value = asString(metadata?.[key]);
+    if (value) provenance[key] = value;
+  }
+
+  const auditCodes = readCatalogStringList(metadata?.auditCodes);
+  if (auditCodes) provenance.auditCodes = auditCodes;
+
+  return Object.keys(provenance).length > 1 ? provenance : null;
 }
 
 function deriveLocalExportNamespace(skill: CompanySkill, slug: string) {
@@ -1415,20 +1443,6 @@ function normalizeInclude(input?: Partial<CompanyPortabilityInclude>): CompanyPo
   };
 }
 
-function normalizePortablePath(input: string) {
-  const normalized = input.replace(/\\/g, "/").replace(/^\.\/+/, "");
-  const parts: string[] = [];
-  for (const segment of normalized.split("/")) {
-    if (!segment || segment === ".") continue;
-    if (segment === "..") {
-      if (parts.length > 0) parts.pop();
-      continue;
-    }
-    parts.push(segment);
-  }
-  return parts.join("/");
-}
-
 function resolvePortablePath(fromPath: string, targetPath: string) {
   const baseDir = path.posix.dirname(fromPath.replace(/\\/g, "/"));
   return normalizePortablePath(path.posix.join(baseDir, targetPath.replace(/\\/g, "/")));
@@ -2126,12 +2140,14 @@ async function withSkillSourceMetadata(skill: CompanySkill, markdown: string) {
   if (sourceEntry) {
     metadata.sources = [...existingSources, sourceEntry];
   }
+  const catalogProvenance = buildPortableCatalogProvenance(skill);
   metadata.skillKey = skill.key;
   metadata.paperclipSkillKey = skill.key;
   metadata.paperclip = {
     ...(isPlainRecord(metadata.paperclip) ? metadata.paperclip : {}),
     skillKey: skill.key,
     slug: skill.slug,
+    ...(catalogProvenance ? { catalog: catalogProvenance } : {}),
   };
   const frontmatter = {
     ...parsed.frontmatter,
@@ -2668,10 +2684,17 @@ function buildManifestFromPackageFiles(
       normalizedMetadata = {
         sourceKind: "url",
       };
-    } else if (metadata) {
-      normalizedMetadata = {
-        sourceKind: "catalog",
-      };
+    } else {
+      const catalogProvenance = readPortableCatalogProvenance(metadata);
+      if (catalogProvenance) {
+        sourceType = "catalog";
+        sourceRef = catalogProvenance.sourceRef;
+        normalizedMetadata = catalogProvenance.metadata;
+      } else if (metadata) {
+        normalizedMetadata = {
+          sourceKind: "catalog",
+        };
+      }
     }
     const key = deriveManifestSkillKey(frontmatter, slug, normalizedMetadata, sourceType, sourceLocator);
 

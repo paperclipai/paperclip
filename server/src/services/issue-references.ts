@@ -1,6 +1,13 @@
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { documents, issueComments, issueDocuments, issueReferenceMentions, issues } from "@paperclipai/db";
+import {
+  documentAnnotationComments,
+  documents,
+  issueComments,
+  issueDocuments,
+  issueReferenceMentions,
+  issues,
+} from "@paperclipai/db";
 import type {
   IssueReferenceSource,
   IssueReferenceSourceKind,
@@ -230,6 +237,29 @@ export function issueReferenceService(db: Db) {
     }, dbOrTx);
   }
 
+  async function syncAnnotationComment(commentId: string, dbOrTx: any = db) {
+    const comment = await dbOrTx
+      .select({
+        id: documentAnnotationComments.id,
+        companyId: documentAnnotationComments.companyId,
+        issueId: documentAnnotationComments.issueId,
+        body: documentAnnotationComments.body,
+      })
+      .from(documentAnnotationComments)
+      .where(eq(documentAnnotationComments.id, commentId))
+      .then((rows: Array<{ id: string; companyId: string; issueId: string; body: string }>) => rows[0] ?? null);
+    if (!comment) throw notFound("Document annotation comment not found");
+
+    await replaceSourceMentions({
+      companyId: comment.companyId,
+      sourceIssueId: comment.issueId,
+      sourceKind: "comment",
+      sourceRecordId: comment.id,
+      documentKey: null,
+      text: comment.body,
+    }, dbOrTx);
+  }
+
   async function syncDocument(documentId: string, dbOrTx: any = db) {
     const document = await dbOrTx
       .select({
@@ -396,6 +426,7 @@ export function issueReferenceService(db: Db) {
   return {
     syncIssue,
     syncComment,
+    syncAnnotationComment,
     syncDocument,
     deleteDocumentSource,
     syncAllForIssue,

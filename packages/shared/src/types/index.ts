@@ -51,6 +51,13 @@ export type {
   CompanySkillUsageAgent,
   CompanySkillDetail,
   CompanySkillUpdateStatus,
+  CompanySkillAuditSeverity,
+  CompanySkillAuditVerdict,
+  CompanySkillUpdateHoldReason,
+  CompanySkillAuditFinding,
+  CompanySkillAuditResult,
+  CompanySkillInstallUpdateRequest,
+  CompanySkillResetRequest,
   CompanySkillImportRequest,
   CompanySkillImportResult,
   CompanySkillProjectScanRequest,
@@ -60,6 +67,16 @@ export type {
   CompanySkillCreateRequest,
   CompanySkillFileDetail,
   CompanySkillFileUpdateRequest,
+  CatalogSkillKind,
+  CatalogSkillFileKind,
+  CatalogSkillFile,
+  CatalogSkillGitHubSource,
+  CatalogSkillSource,
+  CatalogSkill,
+  CatalogSkillListQuery,
+  CatalogSkillFileDetail,
+  CompanySkillInstallCatalogRequest,
+  CompanySkillInstallCatalogResult,
 } from "./company-skill.js";
 export type {
   AgentSkillSyncMode,
@@ -89,6 +106,22 @@ export type {
   AdapterEnvironmentTestResult,
 } from "./agent.js";
 export type { AssetImage } from "./asset.js";
+export type {
+  CreateDocumentAnnotationCommentRequest,
+  CreateDocumentAnnotationThreadRequest,
+  DocumentAnnotationAnchorRemapSnapshot,
+  DocumentAnnotationAnchorSelector,
+  DocumentAnnotationAnchorSnapshot,
+  DocumentAnnotationComment,
+  DocumentAnnotationTextPositionSelector,
+  DocumentAnnotationTextQuoteSelector,
+  DocumentAnnotationThread,
+  DocumentAnnotationThreadWithComments,
+  DocumentTextPosition,
+  DocumentTextProjection,
+  DocumentTextRange,
+  UpdateDocumentAnnotationThreadRequest,
+} from "./document-annotation.js";
 export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
 export type {
   CompanySearchHighlight,
@@ -141,6 +174,7 @@ export type {
   IssueWorkProductProvider,
   IssueWorkProductStatus,
   IssueWorkProductReviewState,
+  AttachmentArtifactWorkProductMetadata,
 } from "./work-product.js";
 export type {
   Issue,
@@ -207,6 +241,12 @@ export type {
   RequestConfirmationTarget,
   RequestConfirmationPayload,
   RequestConfirmationResult,
+  AcceptedPlanDecompositionStatus,
+  AcceptedPlanDecompositionChild,
+  AcceptedPlanDecomposition,
+  AcceptedPlanDecompositionResult,
+  AcceptedPlanDecompositionChildIssue,
+  AcceptedPlanDecompositionSummary,
   IssueThreadInteractionBase,
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,

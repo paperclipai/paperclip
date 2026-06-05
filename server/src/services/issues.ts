@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -9,6 +10,7 @@ import {
   assets,
   companies,
   companyMemberships,
+  documentRevisions,
   documents,
   goals,
   heartbeatRuns,
@@ -17,6 +19,7 @@ import {
   issueAttachments,
   issueInboxArchives,
   issueLabels,
+  issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
   issueComments,
@@ -27,8 +30,10 @@ import {
   labels,
   projectWorkspaces,
   projects,
+  workspaceOperations,
 } from "@paperclipai/db";
 import type {
+  AcceptedPlanDecomposition,
   IssueCommentAuthorType,
   IssueCommentMetadata,
   IssueCommentPresentation,
@@ -245,6 +250,7 @@ export interface IssueFilters {
 
 type IssueRow = typeof issues.$inferSelect;
 type IssueLabelRow = typeof labels.$inferSelect;
+type IssuePlanDecompositionRow = typeof issuePlanDecompositions.$inferSelect;
 type IssueActiveRunRow = {
   id: string;
   status: string;
@@ -284,6 +290,30 @@ type IssueLastActivityStat = {
   latestCommentAt: Date | null;
   latestLogAt: Date | null;
 };
+
+function serializeAcceptedPlanDecomposition(
+  decomposition: IssuePlanDecompositionRow,
+): AcceptedPlanDecomposition {
+  return {
+    id: decomposition.id,
+    companyId: decomposition.companyId,
+    sourceIssueId: decomposition.sourceIssueId,
+    acceptedPlanRevisionId: decomposition.acceptedPlanRevisionId,
+    acceptedInteractionId: decomposition.acceptedInteractionId,
+    status: decomposition.status as AcceptedPlanDecomposition["status"],
+    requestFingerprint: decomposition.requestFingerprint,
+    // Intentionally omit requestedChildren here; the API only needs stable counts
+    // and child ids, while the durable table keeps the full child draft payload.
+    requestedChildCount: decomposition.requestedChildCount,
+    childIssueIds: normalizeIssuePlanDecompositionChildIds(decomposition.childIssueIds),
+    ownerAgentId: decomposition.ownerAgentId,
+    ownerUserId: decomposition.ownerUserId,
+    ownerRunId: decomposition.ownerRunId,
+    completedAt: decomposition.completedAt,
+    createdAt: decomposition.createdAt,
+    updatedAt: decomposition.updatedAt,
+  };
+}
 type IssueUserContextInput = {
   createdByUserId: string | null;
   assigneeUserId: string | null;
@@ -303,6 +333,16 @@ type IssueChildCreateInput = IssueCreateInput & {
   actorAgentId?: string | null;
   actorUserId?: string | null;
 };
+type AcceptedPlanDecompositionInput = {
+  acceptedPlanRevisionId: string;
+  children: IssueChildCreateInput[];
+  actorAgentId?: string | null;
+  actorUserId?: string | null;
+  actorRunId?: string | null;
+};
+type AcceptedPlanDocumentInteraction = {
+  id: string;
+};
 type IssueRelationSummaryMap = {
   blockedBy: IssueRelationIssueSummary[];
   blocks: IssueRelationIssueSummary[];
@@ -312,6 +352,8 @@ export type IssueDependencyReadiness = {
   blockerIssueIds: string[];
   unresolvedBlockerIssueIds: string[];
   unresolvedBlockerCount: number;
+  /** Blockers whose status is `done` but whose execution workspace has not yet finalized. */
+  pendingFinalizeBlockerIssueIds: string[];
   allBlockersDone: boolean;
   isDependencyReady: boolean;
 };
@@ -376,15 +418,235 @@ function appendAcceptanceCriteriaToDescription(description: string | null | unde
   return base ? `${base}\n\n${criteriaMarkdown}` : criteriaMarkdown;
 }
 
+function normalizeAcceptedPlanDecompositionFingerprintValue(value: unknown): unknown {
+  if (value === undefined) return null;
+  if (
+    value == null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeAcceptedPlanDecompositionFingerprintValue(item));
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(record)
+        .sort()
+        .map((key) => [key, normalizeAcceptedPlanDecompositionFingerprintValue(record[key])]),
+    );
+  }
+  return String(value);
+}
+
+const ACCEPTED_PLAN_DECOMPOSITION_FINGERPRINT_CHILD_METADATA_KEYS = new Set([
+  "id",
+  "companyId",
+  "parentId",
+  "identifier",
+  "checkoutRunId",
+  "executionRunId",
+  "executionLockedAt",
+  "startedAt",
+  "completedAt",
+  "cancelledAt",
+  "hiddenAt",
+  "createdAt",
+  "updatedAt",
+  "createdByAgentId",
+  "createdByUserId",
+  "updatedByAgentId",
+  "updatedByUserId",
+  "actorAgentId",
+  "actorUserId",
+]);
+
+function normalizeAcceptedPlanDecompositionFingerprintChild(child: IssueChildCreateInput) {
+  return Object.fromEntries(
+    Object.entries(child).filter(([key]) => !ACCEPTED_PLAN_DECOMPOSITION_FINGERPRINT_CHILD_METADATA_KEYS.has(key)),
+  );
+}
+
+function createAcceptedPlanDecompositionRequestFingerprint(input: {
+  acceptedPlanRevisionId: string;
+  children: IssueChildCreateInput[];
+}) {
+  const canonical = JSON.stringify(normalizeAcceptedPlanDecompositionFingerprintValue({
+    acceptedPlanRevisionId: input.acceptedPlanRevisionId,
+    children: input.children.map(normalizeAcceptedPlanDecompositionFingerprintChild),
+  }));
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
+function normalizeIssuePlanDecompositionChildIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+}
+
+export function readAcceptedPlanConfirmationTarget(payload: unknown): {
+  revisionId: string;
+  key: string;
+  issueId: string;
+} | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const target = (payload as Record<string, unknown>).target;
+  if (!target || typeof target !== "object" || Array.isArray(target)) return null;
+  const record = target as Record<string, unknown>;
+  if (record.type !== "issue_document") return null;
+  const revisionId = readStringFromRecord(record, "revisionId");
+  const key = readStringFromRecord(record, "key");
+  const issueId = readStringFromRecord(record, "issueId");
+  if (!revisionId || !key || !issueId) return null;
+  return { revisionId, key, issueId };
+}
+
+async function resolveAcceptedPlanClaimOwner(input: {
+  dbOrTx: Pick<Db, "select">;
+  claim: Pick<typeof issuePlanDecompositions.$inferSelect, "ownerAgentId" | "ownerUserId" | "ownerRunId">;
+  actorAgentId?: string | null;
+  actorUserId?: string | null;
+  actorRunId?: string | null;
+}) {
+  const nextOwner = {
+    ownerAgentId: input.actorAgentId ?? null,
+    ownerUserId: input.actorUserId ?? null,
+    ownerRunId: input.actorRunId ?? null,
+  };
+  if (
+    input.claim.ownerAgentId === nextOwner.ownerAgentId
+    && input.claim.ownerUserId === nextOwner.ownerUserId
+    && input.claim.ownerRunId === nextOwner.ownerRunId
+  ) {
+    return nextOwner;
+  }
+
+  if (!input.claim.ownerRunId) {
+    return nextOwner;
+  }
+
+  const existingOwnerRun = await input.dbOrTx
+    .select({ status: heartbeatRuns.status })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, input.claim.ownerRunId))
+    .then((rows) => rows[0] ?? null);
+  if (existingOwnerRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingOwnerRun.status)) {
+    return {
+      ownerAgentId: input.claim.ownerAgentId,
+      ownerUserId: input.claim.ownerUserId,
+      ownerRunId: input.claim.ownerRunId,
+    };
+  }
+
+  return nextOwner;
+}
+
+async function findAcceptedPlanDocumentInteraction(
+  dbOrTx: Pick<Db, "select">,
+  input: {
+    companyId: string;
+    sourceIssueId: string;
+    acceptedPlanRevisionId: string;
+  },
+): Promise<AcceptedPlanDocumentInteraction | null> {
+  const rows = await dbOrTx
+    .select({
+      id: issueThreadInteractions.id,
+      payload: issueThreadInteractions.payload,
+    })
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.companyId, input.companyId),
+      eq(issueThreadInteractions.issueId, input.sourceIssueId),
+      eq(issueThreadInteractions.kind, "request_confirmation"),
+      eq(issueThreadInteractions.status, "accepted"),
+    ))
+    .orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.createdAt));
+
+  for (const row of rows) {
+    const target = readAcceptedPlanConfirmationTarget(row.payload);
+    if (
+      target?.issueId === input.sourceIssueId &&
+      target.key === "plan" &&
+      target.revisionId === input.acceptedPlanRevisionId
+    ) {
+      return { id: row.id };
+    }
+  }
+  return null;
+}
+
 function createIssueDependencyReadiness(issueId: string): IssueDependencyReadiness {
   return {
     issueId,
     blockerIssueIds: [],
     unresolvedBlockerIssueIds: [],
     unresolvedBlockerCount: 0,
+    pendingFinalizeBlockerIssueIds: [],
     allBlockersDone: true,
     isDependencyReady: true,
   };
+}
+
+/**
+ * Returns the set of execution-workspace ids whose most recent workspace operation
+ * is NOT a successful `workspace_finalize`. These workspaces have either an in-flight
+ * run, a failed finalize, or never reached the finalize barrier — dependents that
+ * read this workspace must wait until finalize succeeds.
+ *
+ * Workspaces with no recorded operations are considered finalized (nothing has
+ * touched them since they were realized).
+ */
+export async function listUnfinalizedExecutionWorkspaceIds(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  executionWorkspaceIds: string[],
+): Promise<Set<string>> {
+  const unfinalized = new Set<string>();
+  if (executionWorkspaceIds.length === 0) return unfinalized;
+
+  // Pull every workspace op for the candidate workspaces and pick the latest per
+  // workspace in memory. Per-workspace LATERAL queries would be tighter, but the
+  // candidate set is tiny in practice (one workspace per blocker per readiness call).
+  const rows = await dbOrTx
+    .select({
+      executionWorkspaceId: workspaceOperations.executionWorkspaceId,
+      phase: workspaceOperations.phase,
+      status: workspaceOperations.status,
+      startedAt: workspaceOperations.startedAt,
+    })
+    .from(workspaceOperations)
+    .where(
+      and(
+        eq(workspaceOperations.companyId, companyId),
+        inArray(workspaceOperations.executionWorkspaceId, executionWorkspaceIds),
+      ),
+    );
+
+  const latestByWorkspace = new Map<string, { phase: string; status: string; startedAt: Date }>();
+  for (const row of rows) {
+    if (!row.executionWorkspaceId) continue;
+    const current = latestByWorkspace.get(row.executionWorkspaceId);
+    if (!current || row.startedAt > current.startedAt) {
+      latestByWorkspace.set(row.executionWorkspaceId, {
+        phase: row.phase,
+        status: row.status,
+        startedAt: row.startedAt,
+      });
+    }
+  }
+
+  for (const workspaceId of executionWorkspaceIds) {
+    const latest = latestByWorkspace.get(workspaceId);
+    if (!latest) continue; // no ops recorded → treat as finalized
+    if (latest.phase === "workspace_finalize" && latest.status === "succeeded") continue;
+    unfinalized.add(workspaceId);
+  }
+
+  return unfinalized;
 }
 
 async function listIssueDependencyReadinessMap(
@@ -404,6 +666,7 @@ async function listIssueDependencyReadinessMap(
       issueId: issueRelations.relatedIssueId,
       blockerIssueId: issueRelations.issueId,
       blockerStatus: issues.status,
+      blockerExecutionWorkspaceId: issues.executionWorkspaceId,
     })
     .from(issueRelations)
     .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -415,6 +678,21 @@ async function listIssueDependencyReadinessMap(
       ),
     );
 
+  // Collect executionWorkspaceIds of "done" blockers — these are the only ones
+  // subject to the workspace-finalize barrier. Blockers that aren't done already
+  // mark the dependent as not-ready and don't need a finalize check.
+  const doneBlockerWorkspaceIds = new Set<string>();
+  for (const row of blockerRows) {
+    if (row.blockerStatus === "done" && row.blockerExecutionWorkspaceId) {
+      doneBlockerWorkspaceIds.add(row.blockerExecutionWorkspaceId);
+    }
+  }
+  const unfinalizedWorkspaceIds = await listUnfinalizedExecutionWorkspaceIds(
+    dbOrTx,
+    companyId,
+    [...doneBlockerWorkspaceIds],
+  );
+
   for (const row of blockerRows) {
     const current = readinessMap.get(row.issueId) ?? createIssueDependencyReadiness(row.issueId);
     current.blockerIssueIds.push(row.blockerIssueId);
@@ -423,6 +701,21 @@ async function listIssueDependencyReadinessMap(
     if (row.blockerStatus !== "done") {
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
       current.unresolvedBlockerCount += 1;
+      current.allBlockersDone = false;
+      current.isDependencyReady = false;
+    } else if (
+      row.blockerExecutionWorkspaceId &&
+      unfinalizedWorkspaceIds.has(row.blockerExecutionWorkspaceId)
+    ) {
+      // Workspace-finalize barrier: the blocker's most recent run on its
+      // execution workspace hasn't recorded a successful workspace_finalize.
+      // Treat the dependent as not-ready until sync-back lands (or the run
+      // finalizes); a subsequent finalize wake will re-evaluate readiness.
+      // `allBlockersDone` is cleared too so that callers using it as a
+      // proxy for "this dependent can proceed" still see the gate.
+      current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
+      current.unresolvedBlockerCount += 1;
+      current.pendingFinalizeBlockerIssueIds.push(row.blockerIssueId);
       current.allBlockersDone = false;
       current.isDependencyReady = false;
     }
@@ -3891,45 +4184,33 @@ export function issueService(db: Db) {
         );
       if (candidates.length === 0) return [];
 
-      const candidateIds = candidates.map((candidate) => candidate.id);
-      const blockerRows = await db
-        .select({
-          issueId: issueRelations.relatedIssueId,
-          blockerIssueId: issueRelations.issueId,
-          blockerStatus: issues.status,
-        })
-        .from(issueRelations)
-        .innerJoin(issues, eq(issueRelations.issueId, issues.id))
-        .where(
-          and(
-            eq(issueRelations.companyId, blockerIssue.companyId),
-            eq(issueRelations.type, "blocks"),
-            inArray(issueRelations.relatedIssueId, candidateIds),
-          ),
-        );
+      const wakeableCandidates = candidates.filter(
+        (candidate) =>
+          candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status),
+      );
+      if (wakeableCandidates.length === 0) return [];
 
-      const blockersByIssueId = new Map<string, Array<{ blockerIssueId: string; blockerStatus: string }>>();
-      for (const row of blockerRows) {
-        const list = blockersByIssueId.get(row.issueId) ?? [];
-        list.push({ blockerIssueId: row.blockerIssueId, blockerStatus: row.blockerStatus });
-        blockersByIssueId.set(row.issueId, list);
-      }
+      // Defer to the unified readiness check so that a dependent only fires when
+      // (a) every blocker is done AND (b) every done blocker's workspace has
+      // recorded a successful workspace_finalize. The finalize hook also calls
+      // this function on completion, so a wake initially gated by an in-flight
+      // sync-back will re-fire once the restore lands locally.
+      const readinessMap = await listIssueDependencyReadinessMap(
+        db,
+        blockerIssue.companyId,
+        wakeableCandidates.map((candidate) => candidate.id),
+      );
 
-      return candidates
-        .filter((candidate) => candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status))
+      return wakeableCandidates
         .map((candidate) => {
-          const blockers = blockersByIssueId.get(candidate.id) ?? [];
-          return {
-            ...candidate,
-            blockerIssueIds: blockers.map((blocker) => blocker.blockerIssueId),
-            allBlockersDone: blockers.length > 0 && blockers.every((blocker) => blocker.blockerStatus === "done"),
-          };
+          const readiness = readinessMap.get(candidate.id) ?? createIssueDependencyReadiness(candidate.id);
+          return { candidate, readiness };
         })
-        .filter((candidate) => candidate.allBlockersDone)
-        .map((candidate) => ({
+        .filter(({ readiness }) => readiness.isDependencyReady && readiness.blockerIssueIds.length > 0)
+        .map(({ candidate, readiness }) => ({
           id: candidate.id,
           assigneeAgentId: candidate.assigneeAgentId!,
-          blockerIssueIds: candidate.blockerIssueIds,
+          blockerIssueIds: readiness.blockerIssueIds,
         }));
     },
 
@@ -4056,6 +4337,278 @@ export function issueService(db: Db) {
         issue: child,
         parentBlockerAdded: Boolean(blockParentUntilDone),
       };
+    },
+
+    decomposeAcceptedPlan: async (
+      sourceIssueId: string,
+      data: AcceptedPlanDecompositionInput,
+    ) => {
+      const sourceIssue = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          projectId: issues.projectId,
+          goalId: issues.goalId,
+        })
+        .from(issues)
+        .where(eq(issues.id, sourceIssueId))
+        .then((rows) => rows[0] ?? null);
+      if (!sourceIssue) throw notFound("Source issue not found");
+
+      const requestFingerprint = createAcceptedPlanDecompositionRequestFingerprint({
+        acceptedPlanRevisionId: data.acceptedPlanRevisionId,
+        children: data.children,
+      });
+
+      const initialClaim = await db.transaction(async (tx) => {
+        await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${sourceIssue.id} for update`);
+
+        const belongsToPlanDocument = await tx
+          .select({ revisionId: documentRevisions.id })
+          .from(issueDocuments)
+          .innerJoin(documentRevisions, eq(issueDocuments.documentId, documentRevisions.documentId))
+          .where(and(
+            eq(issueDocuments.companyId, sourceIssue.companyId),
+            eq(issueDocuments.issueId, sourceIssue.id),
+            eq(issueDocuments.key, "plan"),
+            eq(documentRevisions.id, data.acceptedPlanRevisionId),
+          ))
+          .then((rows) => rows[0] ?? null);
+        if (!belongsToPlanDocument) {
+          throw unprocessable("acceptedPlanRevisionId must belong to the source issue's plan document");
+        }
+
+        const acceptedInteraction = await findAcceptedPlanDocumentInteraction(tx, {
+          companyId: sourceIssue.companyId,
+          sourceIssueId: sourceIssue.id,
+          acceptedPlanRevisionId: data.acceptedPlanRevisionId,
+        });
+        if (!acceptedInteraction) {
+          throw unprocessable("acceptedPlanRevisionId must have an accepted plan confirmation");
+        }
+
+        const existing = await tx
+          .select()
+          .from(issuePlanDecompositions)
+          .where(and(
+            eq(issuePlanDecompositions.companyId, sourceIssue.companyId),
+            eq(issuePlanDecompositions.sourceIssueId, sourceIssue.id),
+            eq(issuePlanDecompositions.acceptedPlanRevisionId, data.acceptedPlanRevisionId),
+          ))
+          .then((rows) => rows[0] ?? null);
+
+        const now = new Date();
+        if (!existing) {
+          const [created] = await tx
+            .insert(issuePlanDecompositions)
+            .values({
+              companyId: sourceIssue.companyId,
+              sourceIssueId: sourceIssue.id,
+              acceptedPlanRevisionId: data.acceptedPlanRevisionId,
+              acceptedInteractionId: acceptedInteraction.id,
+              status: "in_flight",
+              requestFingerprint,
+              requestedChildCount: data.children.length,
+              requestedChildren: data.children as unknown as Record<string, unknown>[],
+              childIssueIds: [],
+              ownerAgentId: data.actorAgentId ?? null,
+              ownerUserId: data.actorUserId ?? null,
+              ownerRunId: data.actorRunId ?? null,
+              updatedAt: now,
+            })
+            .returning();
+          if (!created) throw new Error("Failed to create accepted-plan decomposition claim");
+          return created;
+        }
+
+        if (existing.requestFingerprint !== requestFingerprint) {
+          throw conflict("Accepted-plan decomposition already exists for this revision with a different child set");
+        }
+
+        return existing;
+      });
+
+      let currentClaim = initialClaim;
+      const newlyCreatedIssues: Array<typeof issues.$inferSelect> = [];
+
+      while (true) {
+        const step = await db.transaction(async (tx) => {
+          await tx.execute(
+            sql`select ${issuePlanDecompositions.id}
+                from ${issuePlanDecompositions}
+                where ${issuePlanDecompositions.id} = ${currentClaim.id}
+                for update`,
+          );
+
+          const claim = await tx
+            .select()
+            .from(issuePlanDecompositions)
+            .where(eq(issuePlanDecompositions.id, currentClaim.id))
+            .then((rows) => rows[0] ?? null);
+          if (!claim) throw notFound("Accepted-plan decomposition claim not found");
+          if (claim.requestFingerprint !== requestFingerprint) {
+            throw conflict("Accepted-plan decomposition already exists for this revision with a different child set");
+          }
+
+          const existingChildIssueIds = normalizeIssuePlanDecompositionChildIds(claim.childIssueIds);
+          if (claim.status === "completed" || existingChildIssueIds.length >= data.children.length) {
+            const nextIds = existingChildIssueIds.slice(0, data.children.length);
+            if (claim.status === "completed" && nextIds.length === data.children.length) {
+              return {
+                claim,
+                createdIssue: null,
+              };
+            }
+
+            const completedAt = claim.completedAt ?? new Date();
+            const ownerPatch = await resolveAcceptedPlanClaimOwner({
+              dbOrTx: tx,
+              claim,
+              actorAgentId: data.actorAgentId,
+              actorUserId: data.actorUserId,
+              actorRunId: data.actorRunId,
+            });
+            const [completed] = await tx
+              .update(issuePlanDecompositions)
+              .set({
+                status: "completed",
+                childIssueIds: nextIds,
+                completedAt,
+                ...ownerPatch,
+                updatedAt: completedAt,
+              })
+              .where(eq(issuePlanDecompositions.id, claim.id))
+              .returning();
+            if (!completed) throw new Error("Failed to complete accepted-plan decomposition claim");
+            return {
+              claim: completed,
+              createdIssue: null,
+            };
+          }
+
+          const nextChildInput = data.children[existingChildIssueIds.length];
+          if (!nextChildInput) {
+            throw new Error("Accepted-plan decomposition child cursor moved past the requested children");
+          }
+
+          const createdChild = await issueService(tx as unknown as Db).createChild(sourceIssue.id, nextChildInput);
+          const nextIds = [...existingChildIssueIds, createdChild.issue.id];
+          const now = new Date();
+          const nextStatus = nextIds.length === data.children.length ? "completed" : "in_flight";
+          const ownerPatch = await resolveAcceptedPlanClaimOwner({
+            dbOrTx: tx,
+            claim,
+            actorAgentId: data.actorAgentId,
+            actorUserId: data.actorUserId,
+            actorRunId: data.actorRunId,
+          });
+          const [updatedClaim] = await tx
+            .update(issuePlanDecompositions)
+            .set({
+              status: nextStatus,
+              childIssueIds: nextIds,
+              completedAt: nextStatus === "completed" ? now : null,
+              ...ownerPatch,
+              updatedAt: now,
+            })
+            .where(eq(issuePlanDecompositions.id, claim.id))
+            .returning();
+          if (!updatedClaim) throw new Error("Failed to persist accepted-plan decomposition progress");
+          return {
+            claim: updatedClaim,
+            createdIssue: createdChild.issue,
+          };
+        });
+
+        currentClaim = step.claim;
+        if (step.createdIssue) {
+          newlyCreatedIssues.push(step.createdIssue);
+        }
+        if (step.claim.status === "completed") break;
+      }
+
+      const childIssueIds = normalizeIssuePlanDecompositionChildIds(currentClaim.childIssueIds);
+      const childIssueRows = childIssueIds.length > 0
+        ? await db
+            .select()
+            .from(issues)
+            .where(and(eq(issues.companyId, sourceIssue.companyId), inArray(issues.id, childIssueIds)))
+        : [];
+      const childIssueMap = new Map(childIssueRows.map((row) => [row.id, row]));
+      const orderedChildIssues = childIssueIds
+        .map((childIssueId) => childIssueMap.get(childIssueId))
+        .filter((row): row is typeof issues.$inferSelect => Boolean(row));
+
+      const decomposition = serializeAcceptedPlanDecomposition(currentClaim);
+
+      return {
+        decomposition,
+        childIssueIds: decomposition.childIssueIds,
+        childIssues: orderedChildIssues,
+        newlyCreatedIssues,
+      };
+    },
+
+    listAcceptedPlanDecompositions: async (sourceIssueId: string) => {
+      const sourceIssue = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, sourceIssueId))
+        .then((rows) => rows[0] ?? null);
+      if (!sourceIssue) return [];
+
+      const rows = await db
+        .select({
+          decomposition: issuePlanDecompositions,
+          revisionNumber: documentRevisions.revisionNumber,
+        })
+        .from(issuePlanDecompositions)
+        .leftJoin(
+          documentRevisions,
+          eq(documentRevisions.id, issuePlanDecompositions.acceptedPlanRevisionId),
+        )
+        .where(and(
+          eq(issuePlanDecompositions.companyId, sourceIssue.companyId),
+          eq(issuePlanDecompositions.sourceIssueId, sourceIssue.id),
+        ))
+        .orderBy(desc(issuePlanDecompositions.createdAt));
+
+      if (rows.length === 0) return [];
+
+      const allChildIds = new Set<string>();
+      for (const row of rows) {
+        for (const childId of normalizeIssuePlanDecompositionChildIds(row.decomposition.childIssueIds)) {
+          allChildIds.add(childId);
+        }
+      }
+
+      const childIssueRows = allChildIds.size > 0
+        ? await db
+            .select({
+              id: issues.id,
+              identifier: issues.identifier,
+              title: issues.title,
+              status: issues.status,
+              priority: issues.priority,
+              assigneeAgentId: issues.assigneeAgentId,
+              assigneeUserId: issues.assigneeUserId,
+            })
+            .from(issues)
+            .where(and(eq(issues.companyId, sourceIssue.companyId), inArray(issues.id, Array.from(allChildIds))))
+        : [];
+      const childIssueMap = new Map(childIssueRows.map((row) => [row.id, row]));
+
+      return rows.map((row) => {
+        const decomposition = serializeAcceptedPlanDecomposition(row.decomposition);
+        const childIds = decomposition.childIssueIds;
+        return {
+          ...decomposition,
+          acceptedPlanRevisionNumber: row.revisionNumber ?? null,
+          childIssues: childIds
+            .map((childId) => childIssueMap.get(childId) ?? null)
+            .filter((entry): entry is NonNullable<typeof entry> => entry !== null),
+        };
+      });
     },
 
     create: async (
@@ -5036,15 +5589,25 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!anchor) return [];
+        const anchorCreatedAt =
+          anchor.createdAt instanceof Date
+            ? anchor.createdAt
+            : new Date(String(anchor.createdAt));
         conditions.push(
           order === "asc"
             ? or(
-                gt(issueComments.createdAt, anchor.createdAt),
-                and(eq(issueComments.createdAt, anchor.createdAt), gt(issueComments.id, anchor.id)),
+                gt(issueComments.createdAt, anchorCreatedAt),
+                and(
+                  eq(issueComments.createdAt, anchorCreatedAt),
+                  gt(issueComments.id, anchor.id),
+                ),
               )!
             : or(
-                lt(issueComments.createdAt, anchor.createdAt),
-                and(eq(issueComments.createdAt, anchor.createdAt), lt(issueComments.id, anchor.id)),
+                lt(issueComments.createdAt, anchorCreatedAt),
+                and(
+                  eq(issueComments.createdAt, anchorCreatedAt),
+                  lt(issueComments.id, anchor.id),
+                ),
               )!,
         );
       }
