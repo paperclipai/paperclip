@@ -13,6 +13,7 @@ export interface BaseClientOptions {
   profile?: string;
   apiBase?: string;
   apiKey?: string;
+  runId?: string;
   companyId?: string;
   json?: boolean;
 }
@@ -34,6 +35,7 @@ export function addCommonClientOptions(command: Command, opts?: { includeCompany
     .option("--profile <name>", "CLI context profile name")
     .option("--api-base <url>", "Base URL for the Paperclip API")
     .option("--api-key <token>", "Bearer token for agent-authenticated calls")
+    .option("--run-id <id>", "Heartbeat run id for agent-authenticated mutations (checkout/release/interactions/in-progress update); falls back to $PAPERCLIP_RUN_ID")
     .option("--json", "Output raw JSON");
 
   if (opts?.includeCompany) {
@@ -68,9 +70,16 @@ export function resolveCommandContext(
     );
   }
 
+  // Agent-authenticated mutations (checkout, release, interactions, PATCH of an
+  // in-progress issue) require the X-Paperclip-Run-Id header (the server returns
+  // "401 Agent run id required" without it). Source it from --run-id, else the
+  // PAPERCLIP_RUN_ID env the adapter/embodiment context already exports.
+  const runId = options.runId?.trim() || process.env.PAPERCLIP_RUN_ID?.trim() || undefined;
+
   const api = new PaperclipApiClient({
     apiBase,
     apiKey,
+    runId,
     recoverAuth: explicitApiKey || !canAttemptInteractiveBoardAuth()
       ? undefined
       : async ({ error }) => {
