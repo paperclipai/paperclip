@@ -1,10 +1,39 @@
 import { useEffect, useRef, useState } from "react";
 import type { CompanySecret, EnvBinding, SecretVersionSelector } from "@paperclipai/shared";
-import { AlertCircle, X } from "lucide-react";
+import { AlertCircle, Upload, X } from "lucide-react";
 import { cn } from "../lib/utils";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
+
+function parseDotEnv(content: string): Array<{ key: string; value: string }> {
+  const result: Array<{ key: string; value: string }> = [];
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eqIdx = line.indexOf("=");
+    if (eqIdx === -1) continue;
+    const key = line.slice(0, eqIdx).trim();
+    if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    let val = line.slice(eqIdx + 1);
+    // strip inline comments (only after unquoted values)
+    const dq = val.match(/^"((?:[^"\\]|\\.)*)"/)
+    const sq = val.match(/^'([^']*)'/)
+    if (dq) {
+      val = dq[1].replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\(.)/g, "$1");
+    } else if (sq) {
+      val = sq[1];
+    } else {
+      val = val.replace(/#.*$/, "").trim();
+    }
+    result.push({ key, value: val });
+  }
+  return result;
+}
+
+function looksLikeSensitive(key: string): boolean {
+  return /SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE|API_?KEY|ACCESS_?KEY|AUTH_?KEY|CREDENTIAL/i.test(key);
+}
 
 type Row = {
   key: string;
@@ -77,6 +106,9 @@ export function EnvVarEditor({
 }) {
   const [rows, setRows] = useState<Row[]>(() => toRows(value));
   const [sealError, setSealError] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [isSealing, setIsSealing] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const valueRef = useRef(value);
   const emittingRef = useRef(false);
 
@@ -169,8 +201,97 @@ export function EnvVarEditor({
     }
   }
 
+  async function handleDotEnvFile(file: File) {
+    setImportError(null);
+    const text = await file.text();
+    const parsed = parseDotEnv(text);
+    if (parsed.length === 0) {
+      setImportError("No valid KEY=VALUE pairs found in the file.");
+      return;
+    }
+
+    const existingKeys = new Set(rows.map((r) => r.key.trim()).filter(Boolean));
+    const dupes = parsed.filter((p) => existingKeys.has(p.key));
+
+    let overwrite = true;
+    if (dupes.length > 0) {
+      const choice = window.confirm(
+        `${dupes.length} key${dupes.length === 1 ? "" : "s"} already exist (${dupes.map((d) => d.key).slice(0, 5).join(", ")}${dupes.length > 5 ? "…" : ""}). Click OK to overwrite existing keys, or Cancel to skip them.`
+      );
+      overwrite = choice;
+    }
+
+    const toImport = overwrite ? parsed : parsed.filter((p) => !existingKeys.has(p.key));
+    if (toImport.length === 0) return;
+
+    const sensitive = toImport.filter((p) => looksLikeSensitive(p.key));
+    const plain = toImport.filter((p) => !looksLikeSensitive(p.key));
+
+    // build next rows: remove overwritten keys, then append new ones
+    let base = overwrite
+      ? rows.filter((r) => !r.key.trim() || !toImport.some((p) => p.key === r.key.trim()))
+      : [...rows];
+    // strip trailing empty row before appending
+    if (base.length > 0 && !base[base.length - 1].key && !base[base.length - 1].plainValue && !base[base.length - 1].secretId) {
+      base = base.slice(0, -1);
+    }
+
+    const plainRows: Row[] = plain.map((p) => ({
+      key: p.key,
+      source: "plain",
+      plainValue: p.value,
+      secretId: "",
+      version: "latest",
+    }));
+
+    // For sensitive keys: auto-create secrets
+    const sensitiveRows: Row[] = [];
+    if (sensitive.length > 0) {
+      setIsSealing(true);
+      for (const p of sensitive) {
+        try {
+          const secretName = defaultSecretName(p.key) || "secret";
+          const created = await onCreateSecret(secretName, p.value);
+          sensitiveRows.push({ key: p.key, source: "secret", plainValue: "", secretId: created.id, version: "latest" });
+        } catch {
+          sensitiveRows.push({ key: p.key, source: "plain", plainValue: p.value, secretId: "", version: "latest" });
+        }
+      }
+      setIsSealing(false);
+    }
+
+    const nextRows = [...base, ...plainRows, ...sensitiveRows, emptyRow()];
+    setRows(nextRows);
+    emit(nextRows);
+
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
   return (
     <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".env,text/plain"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) handleDotEnvFile(file);
+          }}
+        />
+        <button
+          type="button"
+          disabled={isSealing}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:bg-accent/50 transition-colors disabled:opacity-50"
+          onClick={() => fileInputRef.current?.click()}
+          title="Parse a .env file and add all KEY=VALUE pairs"
+        >
+          <Upload className="h-3 w-3" />
+          {isSealing ? "Sealing secrets…" : "Upload .env file"}
+        </button>
+      </div>
+      {importError && <p className="text-[11px] text-destructive">{importError}</p>}
       {rows.map((row, index) => {
         const isTrailing =
           index === rows.length - 1 &&

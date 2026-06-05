@@ -319,7 +319,7 @@ function mergeAdapterRecoveryMetadata(input: {
       : {}),
   };
 }
-const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set(["approval_approved"]);
+const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set(["approval_approved", "approval_comment_response"]);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -10287,6 +10287,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         sessionParamsJson: null,
         clearedTaskSessions,
       };
+    },
+
+    resetAllAgentSessions: async (companyId: string) => {
+      const clearedTaskSessions = await db
+        .delete(agentTaskSessions)
+        .where(eq(agentTaskSessions.companyId, companyId))
+        .returning()
+        .then((rows) => rows.length);
+
+      const updatedAgents = await db
+        .update(agentRuntimeState)
+        .set({ sessionId: null, lastError: null, updatedAt: new Date() })
+        .where(eq(agentRuntimeState.companyId, companyId))
+        .returning()
+        .then((rows) => rows.length);
+
+      return { clearedTaskSessions, updatedAgents };
     },
 
     listEvents: (runId: string, afterSeq = 0, limit = 200) =>
