@@ -118,6 +118,7 @@ import {
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { isActiveCoordinationIssueStatus, isScrumCoordinatorAgent } from "./scrum-coordination.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -133,6 +134,7 @@ type RecoveryRevalidationTrigger =
   | "document"
   | "work_product"
   | "read_projection";
+type AgentIssueMutationKind = "issue_update" | "comment" | "deliverable";
 type CompanySearchService = {
   search(companyId: string, query: CompanySearchQuery): Promise<CompanySearchResponse>;
 };
@@ -612,6 +614,25 @@ function assertCanManageIssueMonitor(req: Request, assigneeAgentId: string | nul
   if (req.actor.type === "board") return;
   if (req.actor.type === "agent" && req.actor.agentId && req.actor.agentId === assigneeAgentId) return;
   throw forbidden("Only the assignee agent or a board user can manage issue monitors");
+}
+
+const SCRUM_COORDINATION_COMMENT_RE =
+  /\b(?:routing|reassign(?:ment)?|assignee|blocker|waiting path|recovery|handoff|review path)\b/i;
+const SCRUM_COORDINATION_PATCH_KEYS = new Set(["status", "assigneeAgentId", "comment"]);
+const SCRUM_COORDINATION_STATUSES = new Set(["blocked", "in_review", "todo", "in_progress"]);
+
+function isScrumCoordinationComment(body: unknown) {
+  return typeof body === "string" && SCRUM_COORDINATION_COMMENT_RE.test(body);
+}
+
+function isScrumCoordinationIssueUpdate(body: Record<string, unknown>, issue: { assigneeAgentId: string | null }) {
+  const changedKeys = Object.keys(body).filter((key) => body[key] !== undefined);
+  if (changedKeys.length === 0) return false;
+  if (changedKeys.some((key) => !SCRUM_COORDINATION_PATCH_KEYS.has(key))) return false;
+  if (body.status !== undefined && !SCRUM_COORDINATION_STATUSES.has(String(body.status))) return false;
+  if (body.comment !== undefined && !isScrumCoordinationComment(body.comment)) return false;
+  if (body.assigneeAgentId !== undefined && body.assigneeAgentId !== issue.assigneeAgentId) return false;
+  return body.status !== undefined || body.assigneeAgentId !== undefined;
 }
 
 function summarizeIssueMonitor(
@@ -1504,6 +1525,7 @@ export function issueRoutes(
     req: Request,
     res: Response,
     issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    options: { kind?: AgentIssueMutationKind; body?: Record<string, unknown> } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1515,6 +1537,17 @@ export function issueRoutes(
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
+      const actorAgent = await agentsSvc.getById(actorAgentId);
+      const scrumCoordinationAllowed =
+        isScrumCoordinatorAgent(actorAgent) &&
+        isActiveCoordinationIssueStatus(issue.status) &&
+        (
+          (options.kind === "comment" && isScrumCoordinationComment(options.body?.body)) ||
+          (options.kind === "issue_update" && options.body && isScrumCoordinationIssueUpdate(options.body, issue))
+        );
+      if (scrumCoordinationAllowed) {
+        return true;
+      }
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
       }
@@ -4057,7 +4090,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { kind: "issue_update", body: req.body }))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -5840,7 +5873,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue, { kind: "comment", body: req.body }))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,

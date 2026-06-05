@@ -28,6 +28,16 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 
 const routeAgentId = "11111111-1111-4111-8111-111111111111";
+const managerAgentId = "22222222-2222-4222-8222-222222222222";
+const scrumAgentId = "33333333-3333-4333-8333-333333333333";
+
+const defaultBoardActor = {
+  type: "board",
+  userId: "local-board",
+  companyIds: ["company-1"],
+  source: "local_implicit",
+  isInstanceAdmin: false,
+};
 
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
@@ -82,7 +92,10 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(db: Record<string, unknown> = {}) {
+async function createApp(
+  db: Record<string, unknown> = {},
+  actor: Record<string, unknown> = defaultBoardActor,
+) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -90,18 +103,16 @@ async function createApp(db: Record<string, unknown> = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", agentRoutes(db as any));
   app.use(errorHandler);
   return app;
+}
+
+async function createAgentApp(actor: Record<string, unknown>, db: Record<string, unknown> = {}) {
+  return createApp(db, actor);
 }
 
 function createLiveRunsDbStub(rows: Array<Record<string, unknown>>) {
@@ -173,12 +184,63 @@ describe("agent live run routes", () => {
       assigneeAgentId: "agent-1",
       status: "in_progress",
     });
-    mockIssueService.getById.mockResolvedValue(null);
-    mockAgentService.getById.mockResolvedValue({
-      id: "agent-1",
-      companyId: "company-1",
-      name: "Builder",
-      adapterType: "codex_local",
+    mockIssueService.getById.mockImplementation(async (id: string) => {
+      if (id === "issue-1") {
+        return {
+          id: "issue-1",
+          companyId: "company-1",
+          assigneeAgentId: routeAgentId,
+          status: "in_progress",
+        };
+      }
+      return null;
+    });
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === "agent-1") {
+        return {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Builder",
+          urlKey: "builder",
+          role: "engineer",
+          reportsTo: managerAgentId,
+          adapterType: "codex_local",
+        };
+      }
+      if (id === routeAgentId) {
+        return {
+          id: routeAgentId,
+          companyId: "company-1",
+          name: "Builder",
+          urlKey: "builder",
+          role: "engineer",
+          reportsTo: managerAgentId,
+          adapterType: "codex_local",
+        };
+      }
+      if (id === managerAgentId) {
+        return {
+          id: managerAgentId,
+          companyId: "company-1",
+          name: "Manager",
+          urlKey: "manager",
+          role: "cto",
+          reportsTo: null,
+          adapterType: "codex_local",
+        };
+      }
+      if (id === scrumAgentId) {
+        return {
+          id: scrumAgentId,
+          companyId: "company-1",
+          name: "Scrum",
+          urlKey: "scrum",
+          role: "pm",
+          reportsTo: managerAgentId,
+          adapterType: "codex_local",
+        };
+      }
+      return null;
     });
     mockInstanceSettingsService.get.mockResolvedValue({
       id: "instance-settings-1",
@@ -584,6 +646,151 @@ describe("agent live run routes", () => {
         forceFreshSession: true,
       },
     });
+  });
+
+  it("allows Scrum to wake an issue assignee when payload is tied to that issue", async () => {
+    const res = await requestApp(
+      await createAgentApp({
+        type: "agent",
+        agentId: scrumAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "scrum-run-1",
+      }),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup?companyId=company-1`)
+        .send({
+          reason: "scrum_coordination",
+          payload: { issueId: "issue-1" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
+      reason: "scrum_coordination",
+      payload: { issueId: "issue-1" },
+      requestedByActorType: "agent",
+      requestedByActorId: scrumAgentId,
+    }));
+  });
+
+  it("allows Scrum to wake an issue assignee manager when payload is tied to that issue", async () => {
+    const res = await requestApp(
+      await createAgentApp({
+        type: "agent",
+        agentId: scrumAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "scrum-run-1",
+      }),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${managerAgentId}/wakeup?companyId=company-1`)
+        .send({
+          reason: "scrum_coordination",
+          payload: { issueId: "issue-1" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(managerAgentId, expect.objectContaining({
+      reason: "scrum_coordination",
+      payload: { issueId: "issue-1" },
+      requestedByActorType: "agent",
+      requestedByActorId: scrumAgentId,
+    }));
+  });
+
+  it("rejects Scrum wakeups for closed issues", async () => {
+    mockIssueService.getById.mockImplementation(async (id: string) => {
+      if (id === "issue-1") {
+        return {
+          id: "issue-1",
+          companyId: "company-1",
+          assigneeAgentId: routeAgentId,
+          status: "done",
+        };
+      }
+      return null;
+    });
+
+    const denied = await requestApp(
+      await createAgentApp({
+        type: "agent",
+        agentId: scrumAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "scrum-run-1",
+      }),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup?companyId=company-1`)
+        .send({
+          reason: "scrum_coordination",
+          payload: { issueId: "issue-1" },
+        }),
+    );
+
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+    expect(denied.body.error).toBe("Agent can only invoke itself");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects Scrum wakeups without an issue-scoped assignee or manager target", async () => {
+    const unrelatedTarget = "44444444-4444-4444-8444-444444444444";
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === unrelatedTarget) {
+        return {
+          id: unrelatedTarget,
+          companyId: "company-1",
+          name: "Other",
+          urlKey: "other",
+          role: "engineer",
+          reportsTo: null,
+          adapterType: "codex_local",
+        };
+      }
+      if (id === scrumAgentId) {
+        return {
+          id: scrumAgentId,
+          companyId: "company-1",
+          name: "Scrum",
+          urlKey: "scrum",
+          role: "pm",
+          reportsTo: managerAgentId,
+          adapterType: "codex_local",
+        };
+      }
+      if (id === routeAgentId) {
+        return {
+          id: routeAgentId,
+          companyId: "company-1",
+          name: "Builder",
+          urlKey: "builder",
+          role: "engineer",
+          reportsTo: managerAgentId,
+          adapterType: "codex_local",
+        };
+      }
+      return null;
+    });
+
+    const denied = await requestApp(
+      await createAgentApp({
+        type: "agent",
+        agentId: scrumAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "scrum-run-1",
+      }),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${unrelatedTarget}/wakeup?companyId=company-1`)
+        .send({
+          reason: "scrum_coordination",
+          payload: { issueId: "issue-1" },
+        }),
+    );
+
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+    expect(denied.body.error).toBe("Agent can only invoke itself");
   });
 
   it("calls heartbeat.wakeup with the legacy minimal shape when the body is empty", async () => {

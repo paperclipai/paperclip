@@ -7,6 +7,7 @@ const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
 const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
+const scrumAgentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
 
@@ -187,6 +188,8 @@ function makeAgent(id: string, overrides: Record<string, unknown> = {}) {
   return {
     id,
     companyId,
+    name: id === scrumAgentId ? "Scrum" : "Agent",
+    urlKey: id === scrumAgentId ? "scrum" : "agent",
     role: "engineer",
     reportsTo: null,
     permissions: { canCreateAgents: false },
@@ -360,11 +363,13 @@ describe("agent issue mutation checkout ownership", () => {
     mockAgentService.getById.mockImplementation(async (id: string) => {
       if (id === ownerAgentId) return makeAgent(ownerAgentId);
       if (id === peerAgentId) return makeAgent(peerAgentId);
+      if (id === scrumAgentId) return makeAgent(scrumAgentId, { role: "pm" });
       return null;
     });
     mockAgentService.list.mockResolvedValue([
       makeAgent(ownerAgentId),
       makeAgent(peerAgentId),
+      makeAgent(scrumAgentId, { role: "pm" }),
     ]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: null });
     mockCompanyService.getById.mockResolvedValue({ id: companyId, issuePrefix: "PAP" });
@@ -506,6 +511,84 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockWorkProductService.update).not.toHaveBeenCalled();
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
     expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
+  });
+
+  it("allows Scrum to add coordination comments on another agent's active issue", async () => {
+    const res = await request(await createApp(peerActor({ agentId: scrumAgentId })))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Routing recovery: blocked waiting path restored to the assignee." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Routing recovery: blocked waiting path restored to the assignee.",
+      expect.objectContaining({
+        agentId: scrumAgentId,
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("allows Scrum to set coordination status on another agent's active issue", async () => {
+    const res = await request(await createApp(peerActor({ agentId: scrumAgentId })))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "blocked",
+        comment: "Routing handoff: blocker path restored for the assignee.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "blocked",
+      }),
+    );
+  });
+
+  it("rejects Scrum arbitrary assignee changes on another agent's active issue", async () => {
+    const res = await request(await createApp(peerActor({ agentId: scrumAgentId })))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        assigneeAgentId: peerAgentId,
+        comment: "Routing handoff: restore the assignee waiting path.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue is checked out by another agent");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects Scrum arbitrary issue edits on another agent's active issue", async () => {
+    const res = await request(await createApp(peerActor({ agentId: scrumAgentId })))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Scrum should not rewrite deliverables" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue is checked out by another agent");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects Scrum comments that are not tied to coordination", async () => {
+    const res = await request(await createApp(peerActor({ agentId: scrumAgentId })))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Nice progress." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue is checked out by another agent");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects broad Scrum comments that mention blocked work without coordination intent", async () => {
+    const res = await request(await createApp(peerActor({ agentId: scrumAgentId })))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "The issue is blocked by an external API, so I will resume later." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue is checked out by another agent");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("allows the checked-out owner with the matching run id to patch and update documents", async () => {

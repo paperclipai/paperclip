@@ -342,10 +342,13 @@ async function main() {
 
   if (allFlags.length > 0) {
     console.error(`[security] ${allFlags.length} flag(s) detected — creating draft advisory and pending check run`);
-    await Promise.all([
+    const [advisoryResult] = await Promise.allSettled([
       syncDraftAdvisory(ghFetch, GH_TOKEN, GH_REPO, prNumber, pr.title, allFlags),
       postSecurityCheckRun(ghFetch, GH_TOKEN, GH_REPO, pr.head.sha, true),
     ]);
+    if (advisoryResult.status === 'rejected') {
+      console.error(`[security] failed to sync draft advisory: ${advisoryResult.reason?.message ?? advisoryResult.reason}`);
+    }
   } else {
     console.log('[security] all clear');
     await postSecurityCheckRun(ghFetch, GH_TOKEN, GH_REPO, pr.head.sha, false);
