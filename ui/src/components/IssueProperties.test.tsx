@@ -343,17 +343,25 @@ function createExecutionState(overrides: Partial<IssueExecutionState> = {}): Iss
   };
 }
 
-function renderProperties(container: HTMLDivElement, props: ComponentProps<typeof IssueProperties>) {
+function renderProperties(
+  container: HTMLDivElement,
+  props: Omit<ComponentProps<typeof IssueProperties>, "onSubmitExecutionDecision"> &
+    Partial<Pick<ComponentProps<typeof IssueProperties>, "onSubmitExecutionDecision">>,
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
     },
   });
+  const resolvedProps: ComponentProps<typeof IssueProperties> = {
+    onSubmitExecutionDecision: async () => {},
+    ...props,
+  };
   const root = createRoot(container);
   act(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <IssueProperties {...props} />
+        <IssueProperties {...resolvedProps} />
       </QueryClientProvider>,
     );
   });

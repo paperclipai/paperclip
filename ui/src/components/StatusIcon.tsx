@@ -17,6 +17,14 @@ interface StatusIconProps {
   onChange?: (status: string) => void;
   className?: string;
   showLabel?: boolean;
+  /**
+   * Status entries listed here are visually disabled and ignore clicks. Used
+   * by IssueDetail to defer "done" / "in_progress" transitions to the
+   * ExecutionPolicyGate when an executionPolicy stage is awaiting the viewer.
+   */
+  disabledStatuses?: readonly string[];
+  /** Tooltip shown on disabled entries (e.g. "Use the approval form above"). */
+  disabledStatusReason?: string;
 }
 
 function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | undefined) {
@@ -61,7 +69,15 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
   return "Blocked";
 }
 
-export function StatusIcon({ status, blockerAttention, onChange, className, showLabel }: StatusIconProps) {
+export function StatusIcon({
+  status,
+  blockerAttention,
+  onChange,
+  className,
+  showLabel,
+  disabledStatuses,
+  disabledStatusReason,
+}: StatusIconProps) {
   const [open, setOpen] = useState(false);
   const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
   const isStalledBlocked = status === "blocked" && blockerAttention?.state === "stalled";
@@ -122,21 +138,32 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent className="w-40 p-1" align="start">
-        {allStatuses.map((s) => (
-          <Button
-            key={s}
-            variant="ghost"
-            size="sm"
-            className={cn("w-full justify-start gap-2 text-xs", s === status && "bg-accent")}
-            onClick={() => {
-              onChange(s);
-              setOpen(false);
-            }}
-          >
-            <StatusIcon status={s} />
-            {statusLabel(s)}
-          </Button>
-        ))}
+        {allStatuses.map((s) => {
+          const isBlocked = disabledStatuses?.includes(s) ?? false;
+          return (
+            <Button
+              key={s}
+              variant="ghost"
+              size="sm"
+              disabled={isBlocked}
+              aria-disabled={isBlocked || undefined}
+              title={isBlocked ? disabledStatusReason : undefined}
+              className={cn(
+                "w-full justify-start gap-2 text-xs",
+                s === status && "bg-accent",
+                isBlocked && "opacity-60 cursor-not-allowed",
+              )}
+              onClick={() => {
+                if (isBlocked) return;
+                onChange(s);
+                setOpen(false);
+              }}
+            >
+              <StatusIcon status={s} />
+              {statusLabel(s)}
+            </Button>
+          );
+        })}
       </PopoverContent>
     </Popover>
   );
