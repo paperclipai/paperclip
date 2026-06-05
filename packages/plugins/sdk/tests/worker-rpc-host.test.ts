@@ -514,4 +514,95 @@ describe("startWorkerRpcHost runtime company context", () => {
       stdout.destroy();
     }
   });
+
+  it("passes runJob company context into config host calls", async () => {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const nextMessage = collectJsonLines(stdout);
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.jobs.register("check-job-context", async () => {
+          const config = await ctx.config.get();
+          await ctx.state.set(
+            {
+              scopeKind: "instance",
+              namespace: "job-context",
+              stateKey: "mode",
+            },
+            config.mode,
+          );
+        });
+      },
+    });
+
+    const host = startWorkerRpcHost({ plugin, stdin, stdout });
+
+    try {
+      writeMessage(stdin, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          manifest: { id: "test-plugin", name: "test-plugin", version: "1.0.0" },
+          config: {},
+          instanceInfo: { instanceId: "inst-1", hostVersion: "0.0.0-test" },
+          apiVersion: 1,
+        },
+      });
+      await expect(nextMessage()).resolves.toMatchObject({ id: 1, result: { ok: true } });
+
+      writeMessage(stdin, {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "runJob",
+        params: {
+          job: {
+            id: "job-1",
+            jobKey: "check-job-context",
+            companyId: "company-1",
+            payload: {},
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      });
+
+      const configRequest = await nextMessage();
+      expect(configRequest).toMatchObject({
+        method: "config.get",
+        params: { companyId: "company-1" },
+      });
+      writeMessage(stdin, {
+        jsonrpc: "2.0",
+        id: configRequest.id,
+        result: { mode: "company-config" },
+      });
+
+      const stateRequest = await nextMessage();
+      expect(stateRequest).toMatchObject({
+        method: "state.set",
+        params: {
+          scopeKind: "instance",
+          namespace: "job-context",
+          stateKey: "mode",
+          value: "company-config",
+        },
+      });
+      writeMessage(stdin, {
+        jsonrpc: "2.0",
+        id: stateRequest.id,
+        result: null,
+      });
+
+      await expect(nextMessage()).resolves.toMatchObject({
+        id: 2,
+        result: null,
+      });
+    } finally {
+      host.stop();
+      stdin.destroy();
+      stdout.destroy();
+    }
+  });
 });
