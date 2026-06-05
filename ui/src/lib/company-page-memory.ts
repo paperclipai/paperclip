@@ -42,9 +42,17 @@ export function getRememberedPathOwnerCompanyId<T extends { id: string; issuePre
 export function sanitizeRememberedPathForCompany(params: {
   path: string | null | undefined;
   companyPrefix: string;
+  /** All companies' prefixes — lets restore fully self-heal paths corrupted
+   *  with a mix of different companies' prefixes in a single pass. Falls
+   *  back to the target prefix alone when not provided. */
+  knownCompanyPrefixes?: readonly string[];
 }): string {
+  const prefixes =
+    params.knownCompanyPrefixes && params.knownCompanyPrefixes.length > 0
+      ? params.knownCompanyPrefixes
+      : [params.companyPrefix];
   const relativePath = params.path
-    ? toCompanyRelativePath(params.path, [params.companyPrefix])
+    ? toCompanyRelativePath(params.path, prefixes)
     : "/dashboard";
   if (!isRememberableCompanyPath(relativePath)) {
     return "/dashboard";

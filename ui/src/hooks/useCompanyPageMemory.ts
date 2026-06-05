@@ -77,10 +77,11 @@ export function useCompanyPageMemory() {
         const targetPath = sanitizeRememberedPathForCompany({
           path: paths[selectedCompanyId],
           companyPrefix: selectedCompany.issuePrefix,
+          knownCompanyPrefixes: knownPrefixes,
         });
         navigate(`/${selectedCompany.issuePrefix}${targetPath}`, { replace: true });
       }
     }
     prevCompanyId.current = selectedCompanyId;
-  }, [selectedCompany, selectedCompanyId, selectionSource, navigate]);
+  }, [selectedCompany, selectedCompanyId, selectionSource, navigate, knownPrefixes]);
 }
