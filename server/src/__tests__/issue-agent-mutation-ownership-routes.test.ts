@@ -77,6 +77,15 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
 }));
+const mockTxInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
+const mockTx = vi.hoisted(() => ({
+  insert: vi.fn(() => ({
+    values: mockTxInsertValues,
+  })),
+}));
+const mockDb = vi.hoisted(() => ({
+  transaction: vi.fn(async (callback: (tx: typeof mockTx) => unknown) => callback(mockTx)),
+}));
 
 function registerRouteMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -183,6 +192,34 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function makeExecutionReviewIssue(overrides: Record<string, unknown> = {}) {
+  return makeIssue({
+    status: "in_review",
+    assigneeAgentId: ownerAgentId,
+    executionPolicy: {
+      stages: [
+        {
+          id: "88888888-8888-4888-8888-888888888888",
+          type: "review",
+          participants: [{ type: "agent", agentId: peerAgentId }],
+        },
+      ],
+    },
+    executionState: {
+      status: "pending",
+      currentStageId: "88888888-8888-4888-8888-888888888888",
+      currentStageIndex: 0,
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: peerAgentId },
+      returnAssignee: { type: "agent", agentId: ownerAgentId },
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+    },
+    ...overrides,
+  });
+}
+
 function makeAgent(id: string, overrides: Record<string, unknown> = {}) {
   return {
     id,
@@ -196,7 +233,7 @@ function makeAgent(id: string, overrides: Record<string, unknown> = {}) {
 
 function createRunContextDb(contextSnapshot: Record<string, unknown> = {}) {
   return {
-    transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
+    transaction: async (callback: (tx: typeof mockTx) => Promise<unknown>) => callback(mockTx),
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
@@ -342,6 +379,9 @@ describe("agent issue mutation checkout ownership", () => {
     mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
     mockHeartbeatService.cancelRun.mockReset();
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
+    mockDb.transaction.mockClear();
+    mockTx.insert.mockClear();
+    mockTxInsertValues.mockClear();
     mockIssueService.remove.mockReset();
     mockIssueService.removeAttachment.mockReset();
     mockIssueService.update.mockReset();
@@ -720,6 +760,90 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("allows the active execution reviewer to add a handoff comment on a stale-assigned in-review issue", async () => {
+    mockIssueService.getById.mockResolvedValue(makeExecutionReviewIssue());
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Approved: source handoff recorded from the linked QA review." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Approved: source handoff recorded from the linked QA review.",
+      expect.objectContaining({
+        agentId: peerAgentId,
+        runId: "66666666-6666-4666-8666-666666666666",
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("allows the active execution reviewer to complete the review decision on a stale-assigned issue", async () => {
+    mockIssueService.getById.mockResolvedValue(makeExecutionReviewIssue());
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeExecutionReviewIssue(),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment: "Approved: source handoff complete." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "done",
+        actorAgentId: peerAgentId,
+      }),
+      mockTx,
+    );
+  });
+
+  it("rejects active execution reviewer handoff without an agent run id", async () => {
+    mockIssueService.getById.mockResolvedValue(makeExecutionReviewIssue());
+
+    const res = await request(await createApp(peerActor({ runId: "" })))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment: "Approved, but missing run id." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(401);
+    expect(res.body.error).toBe("Agent run id required");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "delete issue",
+      (app: express.Express) => request(app).delete(`/api/issues/${issueId}`),
+      () => expect(mockIssueService.remove).not.toHaveBeenCalled(),
+    ],
+    [
+      "document upsert",
+      (app: express.Express) =>
+        request(app).put(`/api/issues/${issueId}/documents/plan`).send({ format: "markdown", body: "# unrelated" }),
+      () => expect(mockDocumentService.upsertIssueDocument).not.toHaveBeenCalled(),
+    ],
+    [
+      "title patch",
+      (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Unrelated reviewer edit" }),
+      () => expect(mockIssueService.update).not.toHaveBeenCalled(),
+    ],
+  ])("rejects active execution reviewer unrelated %s mutation on a stale-assigned issue", async (_name, sendRequest, assertNotMutated) => {
+    mockIssueService.getById.mockResolvedValue(makeExecutionReviewIssue());
+
+    const res = await sendRequest(await createApp(peerActor()));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    assertNotMutated();
   });
 
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {
