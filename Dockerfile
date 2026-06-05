@@ -78,7 +78,15 @@ ENV NODE_ENV=production \
   VALADRIEN_OS_CONFIG=/valadrien-os/instances/default/config.json \
   VALADRIEN_OS_DEPLOYMENT_MODE=authenticated \
   VALADRIEN_OS_DEPLOYMENT_EXPOSURE=private \
-  OPENCODE_ALLOW_ALL_MODELS=true
+  OPENCODE_ALLOW_ALL_MODELS=true \
+  IS_SANDBOX=1
+
+# IS_SANDBOX=1: this container IS the isolation boundary, so tell the claude CLI it is
+# already sandboxed and must NOT spawn its own nested Bash sandbox. That nested sandbox
+# runs as a synthetic uid with no /etc/passwd entry, synthesizes a home at
+# /home/sbx_user<uid>, and fails to create it (/home is root:root 755) -> every Bash-using
+# agent run dies with `adapter_failed: ENOENT mkdir /home/sbx_user<uid>` (e.g. Sol's
+# engineering tasks). Coordination-only agents (the CEO) never hit it.
 
 # VOLUME removed for Railway: Railway provisions persistent storage via its own
 # Volume system (attached to the service), not the Dockerfile VOLUME instruction,
