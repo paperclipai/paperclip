@@ -20,7 +20,9 @@
     "govbids:score": "tsx src/cli/index.ts score",
     "govbids:push": "tsx src/cli/index.ts push",
     "govbids:run": "tsx src/cli/index.ts run",
-    "govbids:daily": "tsx src/cli/index.ts daily"
+    "govbids:daily": "tsx src/cli/index.ts daily",
+    "govbids:discovery": "tsx scripts/discovery-run.ts",
+    "govbids:discovery-summary": "tsx scripts/discovery-run.ts --weekly-summary"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
