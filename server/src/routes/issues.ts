@@ -118,6 +118,7 @@ import {
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { validateDoneGate } from "../services/done-gate.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -4300,6 +4301,28 @@ export function issueRoutes(
           assigneeAgentId: nextAssigneeAgentId,
           assigneeUserId: nextAssigneeUserId,
         });
+      }
+    }
+
+    // Write-time done gate (STAA-4122). Agent-only — board/user closes are not
+    // subject to close-block doctrine. Also skipped for execution-policy decisions
+    // (approval/review stage outcomes are already governance-gated).
+    if (
+      updateFields.status === "done" &&
+      existing.status !== "done" &&
+      actor.actorType === "agent" &&
+      !transition.decision
+    ) {
+      const gateRejection = await validateDoneGate({
+        commentBody,
+        issueId: existing.id,
+        projectId: existing.projectId ?? null,
+        companyId: existing.companyId,
+        db,
+      });
+      if (gateRejection) {
+        res.status(422).json(gateRejection);
+        return;
       }
     }
 
