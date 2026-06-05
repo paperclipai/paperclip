@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
@@ -130,6 +131,17 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       isInstanceAdmin: false,
       source: "session",
     };
+  }
+
+  // Spawn a trivial child, let it exit, and return its (now reaped) PID. That PID
+  // is guaranteed not to belong to a live process, simulating a run whose host
+  // process died (crash / SIGKILL) without a terminal status transition.
+  async function allocateDeadPid(): Promise<number> {
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
+    const pid = child.pid;
+    if (typeof pid !== "number") throw new Error("failed to spawn helper process for dead PID");
+    await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    return pid;
   }
 
   it("allows an assigned agent PATCH to recover a terminal stale executionRunId", async () => {
@@ -282,5 +294,148 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
         clearAssignee: true,
       },
     });
+  });
+
+  // Regression: AGEA-45. A run that dies while still marked `running` (crash /
+  // SIGKILL / host reboot, no terminal transition) used to hold its lock forever
+  // because the reaper only recognized terminal/missing runs. A fresh checkout
+  // from the same assignee must now reap a `running` lock whose local PID is dead.
+  it("reaps a wedged `running` lock whose local child process is dead on checkout", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const deadPid = await allocateDeadPid();
+    const wedgedRunId = randomUUID();
+    // Wedged run: still `running` in heartbeat_runs, but its process is gone.
+    // processStartedAt is well past the reap grace window.
+    await db.insert(heartbeatRuns).values({
+      id: wedgedRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(Date.now() - 10 * 60_000),
+      processPid: deadPid,
+      processStartedAt: new Date(Date.now() - 10 * 60_000),
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Wedged running lock",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: wedgedRunId,
+      executionRunId: wedgedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(Date.now() - 10 * 60_000),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["in_progress"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+  });
+
+  // Negative case: a `running` run whose process is still alive is a genuine
+  // live lock and must NOT be reaped. A fresh checkout attempt must 409.
+  it("does not reap a `running` lock whose local process is still alive", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const liveRunId = randomUUID();
+    // Use this test process's own PID as a guaranteed-live local process.
+    await db.insert(heartbeatRuns).values({
+      id: liveRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(Date.now() - 10 * 60_000),
+      processPid: process.pid,
+      processStartedAt: new Date(Date.now() - 10 * 60_000),
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Live running lock",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: liveRunId,
+      executionRunId: liveRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(Date.now() - 10 * 60_000),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["in_progress"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+
+    const row = await db
+      .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    // Lock must remain with the live run.
+    expect(row).toEqual({ checkoutRunId: liveRunId, executionRunId: liveRunId });
+  });
+
+  // Guard: a recently-started `running` run with a dead PID is still inside the
+  // grace window and must NOT be reaped (avoids racing a just-spawned child).
+  it("does not reap a freshly-started `running` lock even if its PID is already dead", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const deadPid = await allocateDeadPid();
+    const freshRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: freshRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+      processPid: deadPid,
+      processStartedAt: new Date(), // within grace window
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Fresh running lock",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: freshRunId,
+      executionRunId: freshRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["in_progress"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
   });
 });

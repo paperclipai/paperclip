@@ -73,6 +73,7 @@ import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import { isPidAlive, isProcessGroupAlive } from "./local-service-supervisor.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
@@ -375,6 +376,27 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+
+// Local adapters whose runs execute as a child process on the same host as the
+// API server. For these, persisted process metadata (PID / process group) is a
+// reliable cross-process liveness signal, so a run wedged at a non-terminal
+// status with a dead process can be safely treated as stale. Mirrors the set in
+// recovery/service.ts and heartbeat.ts (kept inline to avoid a heavyweight
+// import into this DB-layer service).
+const SESSIONED_LOCAL_ADAPTERS = new Set([
+  "claude_local",
+  "codex_local",
+  "cursor",
+  "gemini_local",
+  "hermes_local",
+  "opencode_local",
+  "pi_local",
+]);
+
+// Grace window before a non-terminal run's dead process is trusted as stale.
+// Guards against a race where the run row is inserted (status `running`) before
+// the child process has spawned and recorded its PID.
+const DEAD_RUNNING_RUN_REAP_GRACE_MS = 60_000;
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
@@ -3602,14 +3624,72 @@ export function issueService(db: Db) {
     );
   }
 
-  async function isTerminalOrMissingHeartbeatRun(runId: string) {
+  // A holding run-lock is "stale" — and therefore safe for a fresh run to
+  // reap — when the owning run can no longer be making progress. That is true
+  // when the run is:
+  //   1. missing from heartbeat_runs (deleted), or
+  //   2. in a terminal status (succeeded/failed/cancelled/timed_out), or
+  //   3. non-terminal (e.g. wedged at `running`) but its local child process is
+  //      provably dead — crash / SIGKILL / host reboot with no terminal
+  //      transition. Without (3), such a lock is never reaped and freezes the
+  //      issue for every future heartbeat (see AGEA-45 / AGEA-34).
+  //
+  // The dead-process heuristic is restricted to sessioned local adapters, whose
+  // child process runs on the same host as the API server, so persisted
+  // `process_pid` / `process_group_id` are meaningful here. Runs without process
+  // metadata, runs younger than a short grace window, and runs on remote/cloud
+  // adapters are treated as live and are NOT reaped on this path.
+  async function isStaleHeartbeatRun(runId: string, now: Date = new Date()) {
     const run = await db
-      .select({ status: heartbeatRuns.status })
+      .select({
+        status: heartbeatRuns.status,
+        adapterType: agents.adapterType,
+        processPid: heartbeatRuns.processPid,
+        processGroupId: heartbeatRuns.processGroupId,
+        processStartedAt: heartbeatRuns.processStartedAt,
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
+      })
       .from(heartbeatRuns)
+      .leftJoin(agents, eq(agents.id, heartbeatRuns.agentId))
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     if (!run) return true;
-    return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+    if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+
+    return isDeadLocalRun(run, now);
+  }
+
+  function isDeadLocalRun(
+    run: {
+      adapterType: string | null;
+      processPid: number | null;
+      processGroupId: number | null;
+      processStartedAt: Date | null;
+      startedAt: Date | null;
+      createdAt: Date | null;
+    },
+    now: Date,
+  ): boolean {
+    // Only same-host local adapters have a meaningful local PID to probe.
+    if (!run.adapterType || !SESSIONED_LOCAL_ADAPTERS.has(run.adapterType)) return false;
+
+    // Need at least one piece of process metadata to make a liveness call.
+    const hasPid = typeof run.processPid === "number" && Number.isInteger(run.processPid) && run.processPid > 0;
+    const hasPgid =
+      typeof run.processGroupId === "number" && Number.isInteger(run.processGroupId) && run.processGroupId > 0;
+    if (!hasPid && !hasPgid) return false;
+
+    // Grace window: avoid reaping a run whose child has only just been spawned.
+    const referenceAt = run.processStartedAt ?? run.startedAt ?? run.createdAt ?? null;
+    if (referenceAt && now.getTime() - referenceAt.getTime() < DEAD_RUNNING_RUN_REAP_GRACE_MS) {
+      return false;
+    }
+
+    const alive =
+      (hasPid && isPidAlive(run.processPid as number)) ||
+      (hasPgid && isProcessGroupAlive(run.processGroupId));
+    return !alive;
   }
 
   async function adoptStaleCheckoutRun(input: {
@@ -3618,10 +3698,10 @@ export function issueService(db: Db) {
     actorRunId: string;
     expectedCheckoutRunId: string;
   }) {
-    const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
+    const now = new Date();
+    const stale = await isStaleHeartbeatRun(input.expectedCheckoutRunId, now);
     if (!stale) return null;
 
-    const now = new Date();
     const adopted = await db
       .update(issues)
       .set({
@@ -3701,11 +3781,25 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
       );
       const run = await tx
-        .select({ status: heartbeatRuns.status })
+        .select({
+          status: heartbeatRuns.status,
+          adapterType: agents.adapterType,
+          processPid: heartbeatRuns.processPid,
+          processGroupId: heartbeatRuns.processGroupId,
+          processStartedAt: heartbeatRuns.processStartedAt,
+          startedAt: heartbeatRuns.startedAt,
+          createdAt: heartbeatRuns.createdAt,
+        })
         .from(heartbeatRuns)
+        .leftJoin(agents, eq(agents.id, heartbeatRuns.agentId))
         .where(eq(heartbeatRuns.id, issue.executionRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      // Keep the lock only when the run is alive: non-terminal AND not a dead
+      // local child process. A run wedged at `running` whose PID is gone is
+      // reaped here too, matching the checkout-path heuristic (AGEA-45).
+      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status) && !isDeadLocalRun(run, new Date())) {
+        return false;
+      }
 
       const updated = await tx
         .update(issues)
@@ -5458,7 +5552,7 @@ export function issueService(db: Db) {
         existing.checkoutRunId &&
         !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
       ) {
-        const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId);
+        const stale = await isStaleHeartbeatRun(existing.checkoutRunId);
         if (!stale) {
           throw conflict("Only checkout run can release issue", {
             issueId: existing.id,
