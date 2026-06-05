@@ -173,6 +173,8 @@ import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { evaluateFailoverOnRunFailed } from "./preset-failover.js";
+import * as claudeHealth from "@paperclipai/adapter-claude-local/server";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -8401,6 +8403,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      // claude_local run 실패 시 자동 페일오버 평가
+      if (outcome === "failed" && agent.adapterType?.startsWith("claude")) {
+        try {
+          claudeHealth.recordFailure({
+            runId: run.id,
+            errorCode: adapterResult.errorCode,
+            errorMessage: adapterResult.errorMessage ?? "",
+            retryNotBefore: adapterResult.retryNotBefore ?? null,
+          });
+          const health = claudeHealth.getHealthSnapshot();
+          await evaluateFailoverOnRunFailed(db, {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+            errorCode: adapterResult.errorCode,
+            errorMessage: adapterResult.errorMessage ?? "",
+            adapterType: agent.adapterType,
+            claudeHealth: { usable: health.usable, lastFailureKind: health.lastFailureKind },
+          });
+        } catch (failoverErr) {
+          logger.warn({ err: failoverErr, runId: run.id }, "preset-failover: 평가 중 오류 (무시)");
+        }
+      }
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",

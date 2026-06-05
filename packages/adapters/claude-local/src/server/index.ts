@@ -1,4 +1,12 @@
 export { claudeSessionCwdMatchesExecutionTarget, execute, runClaudeLogin } from "./execute.js";
+export {
+  recordFailure,
+  recordSuccess,
+  isClaudeUsable,
+  getHealthSnapshot,
+  _resetHealthStateForTests,
+  type ClaudeFailureKind,
+} from "./health.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { listClaudeModels, refreshClaudeModels, resetClaudeModelsCacheForTests } from "./models.js";
 export { testEnvironment } from "./test.js";
