@@ -247,6 +247,35 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
     expect(bridge?.nextPollAt).toBeNull();
   });
 
+  it("continues polling terminal bridges when terminal cleanup logging fails", async () => {
+    const first = await insertWaitingWorkflowBridge(db, {
+      runStatus: "failed",
+      runError: "Tool failed",
+    });
+    const second = await insertWaitingWorkflowBridge(db, {
+      runStatus: "failed",
+      runError: "Tool failed",
+    });
+
+    mocks.detectClickUpAwaitingHumanBridgeEvents.mockResolvedValue({
+      status: "sent",
+      detail: "ok",
+      events: [],
+    });
+    mocks.logActivity.mockRejectedValueOnce(new Error("activity log unavailable"));
+
+    const result = await workflowHandoffBridgeService(db).pollActiveBridges();
+
+    expect(result.checked).toBe(2);
+    expect(result.failed).toBe(0);
+    expect(result.terminalClosed).toBe(2);
+
+    const [firstBridge] = await db.select().from(workflowHandoffBridges).where(eq(workflowHandoffBridges.id, first.bridgeId));
+    const [secondBridge] = await db.select().from(workflowHandoffBridges).where(eq(workflowHandoffBridges.id, second.bridgeId));
+    expect(firstBridge?.status).toBe("closed");
+    expect(secondBridge?.status).toBe("closed");
+  });
+
   it("rejects replies if the workflow becomes terminal after polling", async () => {
     const { runId, handoffId, bridgeId } = await insertWaitingWorkflowBridge(db, {
       runStatus: "awaiting_human",

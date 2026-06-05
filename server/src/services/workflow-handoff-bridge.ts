@@ -144,6 +144,38 @@ async function closeBridgeRow(
   }
 }
 
+async function recordBridgePollFailure(
+  db: Db,
+  bridge: typeof workflowHandoffBridges.$inferSelect,
+  now: Date,
+  detail: string,
+) {
+  await db.update(workflowHandoffBridges).set({
+    lastError: detail,
+    lastPolledAt: now,
+    nextPollAt: new Date(now.getTime() + POLL_FAILURE_BACKOFF_MS),
+    updatedAt: now,
+  }).where(eq(workflowHandoffBridges.id, bridge.id));
+}
+
+async function tryRecordBridgePollFailure(
+  db: Db,
+  bridge: typeof workflowHandoffBridges.$inferSelect,
+  now: Date,
+  detail: string,
+) {
+  try {
+    await recordBridgePollFailure(db, bridge, now, detail);
+  } catch (error) {
+    logger.error({
+      err: error,
+      bridgeId: bridge.id,
+      companyId: bridge.companyId,
+      workflowHandoffId: bridge.workflowHandoffId,
+    }, "workflow handoff bridge: failed to record poll failure");
+  }
+}
+
 async function resolveHandoffFromBridge(
   db: Db,
   bridge: typeof workflowHandoffBridges.$inferSelect,
@@ -385,10 +417,11 @@ export function workflowHandoffBridgeService(db: Db) {
         .where(eq(workflowRuns.id, bridge.workflowRunId))
         .limit(1);
       if (!run || TERMINAL_WORKFLOW_RUN_STATUSES.includes(run.status)) {
-        let detectedTerminal: Awaited<ReturnType<typeof detectClickUpAwaitingHumanBridgeEvents>> | null = null;
+        let detectedTerminal: Awaited<ReturnType<typeof detectClickUpAwaitingHumanBridgeEvents>>;
         try {
           detectedTerminal = await detectClickUpAwaitingHumanBridgeEvents(messageId, overrides);
         } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
           logger.warn({
             err: error,
             bridgeId: bridge.id,
@@ -398,9 +431,18 @@ export function workflowHandoffBridgeService(db: Db) {
             runStatus: run?.status ?? null,
             runError: run?.error ?? null,
           }, "workflow handoff bridge: terminal run reply poll failed while closing bridge");
+          await tryRecordBridgePollFailure(db, bridge, now, detail);
+          summary.failed += 1;
+          continue;
         }
 
-        if (detectedTerminal?.status === "sent") {
+        if (detectedTerminal.status === "failed") {
+          await tryRecordBridgePollFailure(db, bridge, now, detectedTerminal.detail);
+          summary.failed += 1;
+          continue;
+        }
+
+        try {
           const replyMessageIds = new Set<string>();
           for (const event of detectedTerminal.events) {
             const replyId = typeof event.metadata?.clickupReplyId === "string" && event.metadata.clickupReplyId.trim().length > 0
@@ -420,42 +462,82 @@ export function workflowHandoffBridgeService(db: Db) {
               overrides,
             });
           }
-        }
 
-        await db.update(workflowHandoffs).set({
-          status: "cancelled",
-          responseMarkdown: null,
-          decidedByUserId: "workflow_handoff_bridge",
-          decidedAt: now,
-          updatedAt: now,
-        }).where(and(
-          eq(workflowHandoffs.id, bridge.workflowHandoffId),
-          eq(workflowHandoffs.status, "pending"),
-        ));
-        const closeOutcome = run?.status === "failed" && run.error?.startsWith("Timed out after ")
-          ? "expired"
-          : run?.status === "failed"
-            ? "failed"
-            : "cancelled";
-        await closeBridgeRow(db, bridge, closeOutcome, overrides);
-        await logActivity(db, {
-          companyId: bridge.companyId,
-          actorType: "system",
-          actorId: "workflow_handoff_bridge",
-          action: "workflow.handoff.bridge_closed_terminal",
-          entityType: "workflow_run",
-          entityId: bridge.workflowRunId,
-          details: {
+          await db.update(workflowHandoffs).set({
+            status: "cancelled",
+            responseMarkdown: null,
+            decidedByUserId: "workflow_handoff_bridge",
+            decidedAt: now,
+            updatedAt: now,
+          }).where(and(
+            eq(workflowHandoffs.id, bridge.workflowHandoffId),
+            eq(workflowHandoffs.status, "pending"),
+          ));
+          const closeOutcome = run?.status === "failed" && run.error?.startsWith("Timed out after ")
+            ? "expired"
+            : run?.status === "failed"
+              ? "failed"
+              : "cancelled";
+          await closeBridgeRow(db, bridge, closeOutcome, overrides);
+          try {
+            await logActivity(db, {
+              companyId: bridge.companyId,
+              actorType: "system",
+              actorId: "workflow_handoff_bridge",
+              action: "workflow.handoff.bridge_closed_terminal",
+              entityType: "workflow_run",
+              entityId: bridge.workflowRunId,
+              details: {
+                bridgeId: bridge.id,
+                workflowHandoffId: bridge.workflowHandoffId,
+                provider: bridge.provider,
+                externalMessageId: bridge.externalMessageId ?? null,
+                runStatus: run?.status ?? null,
+                runError: run?.error ?? null,
+                closeOutcome,
+              },
+            });
+          } catch (error) {
+            logger.warn({
+              err: error,
+              bridgeId: bridge.id,
+              companyId: bridge.companyId,
+              workflowHandoffId: bridge.workflowHandoffId,
+            }, "workflow handoff bridge: failed to log terminal bridge closure");
+          }
+          summary.terminalClosed += 1;
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          logger.error({
+            err: error,
             bridgeId: bridge.id,
+            companyId: bridge.companyId,
             workflowHandoffId: bridge.workflowHandoffId,
-            provider: bridge.provider,
-            externalMessageId: bridge.externalMessageId ?? null,
+            messageId,
             runStatus: run?.status ?? null,
             runError: run?.error ?? null,
-            closeOutcome,
-          },
-        });
-        summary.terminalClosed += 1;
+          }, "workflow handoff bridge: failed to close terminal bridge");
+          await tryRecordBridgePollFailure(db, bridge, now, detail);
+          try {
+            await logActivity(db, {
+              companyId: bridge.companyId,
+              actorType: "system",
+              actorId: "workflow_handoff_bridge",
+              action: "workflow.handoff.bridge_poll_failed",
+              entityType: "workflow_run",
+              entityId: bridge.workflowRunId,
+              details: { bridgeId: bridge.id, workflowHandoffId: bridge.workflowHandoffId, detail },
+            });
+          } catch (activityError) {
+            logger.warn({
+              err: activityError,
+              bridgeId: bridge.id,
+              companyId: bridge.companyId,
+              workflowHandoffId: bridge.workflowHandoffId,
+            }, "workflow handoff bridge: failed to log terminal bridge close failure");
+          }
+          summary.failed += 1;
+        }
         continue;
       }
 

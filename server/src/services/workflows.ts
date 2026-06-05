@@ -552,17 +552,16 @@ export function workflowService(db: Db) {
         finishedAt: now,
         updatedAt: now,
       }).where(inArray(workflowRuns.id, runIds)).returning({ id: workflowRuns.id });
-      if (runIds.length > 0) {
-        await db.update(workflowRunPhases).set({
-          status: "failed",
-          finishedAt: now,
-          updatedAt: now,
-        }).where(and(
-          inArray(workflowRunPhases.workflowRunId, runIds),
-          notInArray(workflowRunPhases.status, ["succeeded", "failed", "cancelled"]),
-        ));
-      }
-      return { failed: rows.length, runIds };
+      const failedRunIds = rows.map((row) => row.id);
+      await db.update(workflowRunPhases).set({
+        status: "failed",
+        finishedAt: now,
+        updatedAt: now,
+      }).where(and(
+        inArray(workflowRunPhases.workflowRunId, failedRunIds),
+        notInArray(workflowRunPhases.status, ["succeeded", "failed", "cancelled"]),
+      ));
+      return { failed: rows.length, runIds: failedRunIds };
     },
 
     list: async (companyId: string): Promise<WorkflowListItem[]> => {
