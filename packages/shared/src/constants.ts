@@ -76,6 +76,67 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
+/**
+ * Deterministic run-rate / no-progress caps (WEI-209/WEI-210).
+ *
+ * A hard guard against money/idle loops that triggers INDEPENDENTLY of the
+ * heuristic loop watchdog. Enforced as a pre-run gate in the run lifecycle
+ * (server/src/services/heartbeat.ts `claimQueuedRun`), not as an agent
+ * heartbeat, so the guard itself can never create a new loop.
+ *
+ * Calibration (peak observed normal traffic): CTO 76 runs/24h, CEO 56,
+ * FoundingEngineer 55. The WEI-57 runaway burned ~175 runs in ~2h (~87/h),
+ * so perHour=40 catches it while perDay=250 stays well above normal traffic.
+ */
+export interface AgentRunCaps {
+  /** Max heartbeat runs allowed per rolling 1h window before auto-pause. */
+  perHour: number;
+  /** Max heartbeat runs allowed per rolling 24h window before auto-pause. */
+  perDay: number;
+  /**
+   * Max consecutive runs on the SAME issue with no progress
+   * (no advancement of `last_useful_action_at`, i.e. no status change and no
+   * useful action) before auto-pause. This is the WEI-65 runaway pattern.
+   */
+  maxConsecutiveRuns: number;
+}
+
+/** Generous defaults for standard agents — real builds keep running. */
+export const AGENT_DEFAULT_RUN_CAPS: AgentRunCaps = {
+  perHour: 40,
+  perDay: 250,
+  maxConsecutiveRuns: 8,
+};
+
+/** Higher run-rate caps for code-writing agents (longer build loops). */
+export const CODER_AGENT_RUN_CAPS: AgentRunCaps = {
+  perHour: 60,
+  perDay: 400,
+  maxConsecutiveRuns: 8,
+};
+
+/** Roles that get the more generous coder run-rate caps. Board-overridable per agent. */
+export const CODER_AGENT_ROLES: readonly AgentRole[] = ["engineer", "cto", "devops"];
+
+/**
+ * Run-caps enforcement mode. Defaults to log-only so the gate measures and
+ * logs without pausing until enforcement is switched on after CTO review.
+ * Read at gate time from env so rollback never needs a redeploy.
+ *   off     — gate does not run.
+ *   log     — gate evaluates and logs would-pause decisions, never pauses.
+ *   enforce — gate pauses the agent + notifies the board.
+ */
+export const RUN_CAPS_MODES = ["off", "log", "enforce"] as const;
+export type RunCapsMode = (typeof RUN_CAPS_MODES)[number];
+export const DEFAULT_RUN_CAPS_MODE: RunCapsMode = "log";
+
+/**
+ * Documented hire defaults for `maxTurnsPerRun` so new agents never start with
+ * NULL/unbounded turns again (WEI-209 point 3 / WEI-210 hire-default).
+ */
+export const AGENT_DEFAULT_MAX_TURNS_PER_RUN = 300;
+export const CODER_AGENT_MAX_TURNS_PER_RUN = 500;
+
 export const MODEL_PROFILE_KEYS = ["cheap"] as const;
 export type ModelProfileKey = (typeof MODEL_PROFILE_KEYS)[number];
 

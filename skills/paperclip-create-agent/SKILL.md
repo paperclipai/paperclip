@@ -80,6 +80,7 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 - `desiredSkills` from the company skill library when this role needs installed skills on day one
 - if any `desiredSkills` or adapter settings expand browser access, external-system reach, filesystem scope, or secret-handling capability, justify each one in the hire comment
 - adapter and runtime config aligned to this environment
+- **bound `adapterConfig.maxTurnsPerRun`** so the agent never starts NULL/unbounded (WEI-209/WEI-210). Default **300** for standard roles, **500** for code-writing roles (engineer/CTO/devops). The server now applies a 300 floor for local coding adapters if unset, but set it explicitly to make the intent visible. Optionally set `adapterConfig.runCaps = { perHour, perDay, maxConsecutiveRuns }` to override the deterministic run-rate / no-progress caps for this agent (defaults: 40/250/8 standard, 60/400/8 coder).
 - leave timer heartbeats off by default; only set `runtimeConfig.heartbeat.enabled=true` with an `intervalSec` when the role genuinely needs scheduled recurring work or the user explicitly asked for it
 - if the role may handle private advisories or sensitive disclosures, confirm a confidential workflow exists first (dedicated skill or documented manual process)
 - capabilities

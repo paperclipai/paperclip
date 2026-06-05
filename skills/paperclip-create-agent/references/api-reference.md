@@ -42,7 +42,8 @@ Request body matches agent create shape:
   "adapterType": "claude_local",
   "adapterConfig": {
     "cwd": "/absolute/path",
-    "model": "claude-sonnet-4-5-20250929"
+    "model": "claude-sonnet-4-5-20250929",
+    "maxTurnsPerRun": 300
   },
   "instructionsBundle": {
     "entryFile": "AGENTS.md",

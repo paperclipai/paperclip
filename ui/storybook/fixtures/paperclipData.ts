@@ -1296,6 +1296,32 @@ export const storybookDashboardSummary: DashboardSummary = {
     { date: "2026-04-19", succeeded: 5, failed: 0, other: 1, total: 6 },
     { date: "2026-04-20", succeeded: 4, failed: 0, other: 2, total: 6 },
   ],
+  agentRunCaps: [
+    {
+      agentId: "agent-storybook-1",
+      name: "CTO",
+      role: "cto",
+      status: "idle",
+      runsLastHour: 12,
+      runsLastDay: 58,
+      caps: { perHour: 60, perDay: 400, maxConsecutiveRuns: 8 },
+      pauseReason: null,
+      pausedAt: null,
+      autoPaused: false,
+    },
+    {
+      agentId: "agent-storybook-2",
+      name: "Researcher",
+      role: "researcher",
+      status: "paused",
+      runsLastHour: 41,
+      runsLastDay: 120,
+      caps: { perHour: 40, perDay: 250, maxConsecutiveRuns: 8 },
+      pauseReason: "auto:run_rate_hour (41)",
+      pausedAt: "2026-04-20T12:00:00.000Z",
+      autoPaused: true,
+    },
+  ],
 };
 
 export const storybookLiveRuns: LiveRunForIssue[] = [

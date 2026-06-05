@@ -7,9 +7,12 @@ import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notI
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  DEFAULT_RUN_CAPS_MODE,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
+  RUN_CAPS_MODES,
   isEnvironmentDriverSupportedForAdapter,
+  type RunCapsMode,
   type BillingType,
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
@@ -51,6 +54,7 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
+import { evaluateRunCaps, resolveRunCaps, type RunCapRunRecord } from "./run-caps.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
@@ -6169,6 +6173,196 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  function readRunCapsMode(): RunCapsMode {
+    const raw = (process.env.PAPERCLIP_RUN_CAPS_MODE ?? "").trim().toLowerCase();
+    return (RUN_CAPS_MODES as readonly string[]).includes(raw)
+      ? (raw as RunCapsMode)
+      : DEFAULT_RUN_CAPS_MODE;
+  }
+
+  /**
+   * Pre-run gate for the deterministic run-rate / no-progress cap (WEI-209/WEI-210).
+   * Returns true when the run was gated (agent paused + run cancelled) and the
+   * caller must abort the claim. Idempotent and side-effect-free in `off`/`log`
+   * modes. NEVER spawns a heartbeat — the guard itself cannot create a loop.
+   */
+  async function enforceRunCapsBeforeClaim(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    context: Record<string, unknown>,
+  ): Promise<boolean> {
+    const mode = readRunCapsMode();
+    if (mode === "off") return false;
+
+    const caps = resolveRunCaps(agent.role, agent.adapterConfig);
+    const now = new Date();
+    const hourCutoff = new Date(now.getTime() - 60 * 60 * 1000);
+    const dayCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    const countRuns = async (cutoff: Date) =>
+      db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.agentId, run.agentId), gt(heartbeatRuns.createdAt, cutoff)))
+        .then((rows) => Number(rows[0]?.c ?? 0));
+
+    const [runsLastHour, runsLastDay] = await Promise.all([countRuns(hourCutoff), countRuns(dayCutoff)]);
+    const currentIssueId = readNonEmptyString(context.issueId) ?? null;
+
+    const recentRows = await db
+      .select({
+        issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+        lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, run.agentId),
+          notInArray(heartbeatRuns.status, ["queued", "running"]),
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(caps.maxConsecutiveRuns);
+    const recentRuns: RunCapRunRecord[] = recentRows.map((row) => ({
+      issueId: row.issueId ?? null,
+      lastUsefulActionAt: row.lastUsefulActionAt ? new Date(row.lastUsefulActionAt) : null,
+    }));
+
+    const decision = evaluateRunCaps({ caps, currentIssueId, runsLastHour, runsLastDay, recentRuns });
+    if (!decision.shouldPause) return false;
+
+    const logBase = {
+      runId: run.id,
+      agentId: run.agentId,
+      companyId: run.companyId,
+      issueId: currentIssueId,
+      kind: decision.kind,
+      reason: decision.reason,
+      runsLastHour,
+      runsLastDay,
+      caps,
+      mode,
+    };
+
+    if (mode === "log") {
+      logger.warn(logBase, "run-caps: would auto-pause agent (log-only mode)");
+      return false;
+    }
+
+    // enforce: idempotent running/idle -> paused (only when currently invokable).
+    const paused = await db
+      .update(agents)
+      .set({ status: "paused", pauseReason: decision.reason, pausedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(agents.id, run.agentId),
+          inArray(agents.status, ["idle", "running", "active", "error"]),
+        ),
+      )
+      .returning({ id: agents.id });
+    logger.warn(logBase, "run-caps: auto-paused agent");
+
+    await cancelRunInternal(run.id, `Cancelled by run-cap auto-pause (${decision.reason})`);
+
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: run.agentId,
+      runId: run.id,
+      action: "agent.auto_paused",
+      entityType: "agent",
+      entityId: run.agentId,
+      details: {
+        source: "heartbeat.run_caps_gate",
+        kind: decision.kind,
+        reason: decision.reason,
+        runsLastHour,
+        runsLastDay,
+        caps,
+        issueId: currentIssueId,
+      },
+    });
+
+    if (paused.length > 0) {
+      await notifyBoardOfRunCapPause(run, agent, currentIssueId, decision.reason ?? "auto", {
+        runsLastHour,
+        runsLastDay,
+        caps,
+      });
+    }
+
+    return true;
+  }
+
+  /** Board guarantee channel for an auto-pause: comment on the looping issue + @mention/wake CEO. */
+  async function notifyBoardOfRunCapPause(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    issueId: string | null,
+    reason: string,
+    metrics: { runsLastHour: number; runsLastDay: number; caps: { perHour: number; perDay: number; maxConsecutiveRuns: number } },
+  ): Promise<void> {
+    try {
+      const ceo = await db
+        .select({ id: agents.id, name: agents.name })
+        .from(agents)
+        .where(and(eq(agents.companyId, run.companyId), eq(agents.role, "ceo")))
+        .orderBy(asc(agents.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const mention = ceo ? `[@${ceo.name}](agent://${ceo.id})` : "@Board";
+      const body = [
+        "## ⚠️ Auto-Pause: Run-Cap ausgelöst",
+        "",
+        `${mention} — Agent **${agent.name}** wurde automatisch pausiert (deterministischer Run-Rate-/No-Progress-Cap, WEI-209).`,
+        "",
+        `- Grund: \`${reason}\``,
+        `- Runs letzte Stunde: ${metrics.runsLastHour} (Cap ${metrics.caps.perHour})`,
+        `- Runs letzte 24h: ${metrics.runsLastDay} (Cap ${metrics.caps.perDay})`,
+        `- No-Progress-Cap: ${metrics.caps.maxConsecutiveRuns} aufeinanderfolgende Runs am selben Issue`,
+        "",
+        `Der Agent ist **resumebar** durch CEO/Board (\`POST /api/agents/${run.agentId}/resume\`). Bitte prüfen, ob der Agent in einer Schleife feststeckt, bevor er fortgesetzt wird.`,
+      ].join("\n");
+
+      const idempotencyKey = `run-caps-auto-pause:${run.id}`;
+      if (issueId) {
+        const comment = await issuesSvc.addComment(issueId, body, { runId: run.id });
+        if (ceo) {
+          await enqueueWakeup(ceo.id, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "agent_auto_paused",
+            contextSnapshot: {
+              issueId,
+              wakeReason: "issue_comment_mentioned",
+              wakeCommentId: comment.id,
+              source: "run_caps.auto_pause",
+            },
+            requestedByActorType: "system",
+            requestedByActorId: "system",
+            idempotencyKey,
+          });
+        }
+      } else if (ceo) {
+        await enqueueWakeup(ceo.id, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "agent_auto_paused",
+          contextSnapshot: { source: "run_caps.auto_pause", pausedAgentId: run.agentId },
+          requestedByActorType: "system",
+          requestedByActorId: "system",
+          idempotencyKey,
+        });
+      }
+    } catch (err) {
+      logger.error(
+        { err, runId: run.id, agentId: run.agentId },
+        "run-caps: failed to notify board of auto-pause",
+      );
+    }
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -6182,6 +6376,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const context = parseObject(run.contextSnapshot);
+
+    // Deterministic run-rate / no-progress cap (WEI-209/WEI-210). Independent of
+    // the heuristic loop watchdog: a hard pre-run gate. If it trips in enforce
+    // mode the agent is paused, the run cancelled, and the board notified.
+    const runCapGated = await enforceRunCapsBeforeClaim(run, agent, context);
+    if (runCapGated) return null;
+
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId: readNonEmptyString(context.issueId),
       projectId: readNonEmptyString(context.projectId),

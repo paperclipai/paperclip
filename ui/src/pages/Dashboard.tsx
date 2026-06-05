@@ -306,6 +306,60 @@ export function Dashboard() {
             </ChartCard>
           </div>
 
+          {data.agentRunCaps && data.agentRunCaps.length > 0 && (
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+                Run-Rate &amp; Auto-Pause
+              </h3>
+              <div className="border border-border overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-muted-foreground uppercase tracking-wide border-b border-border">
+                      <th className="px-3 py-2 font-medium">Agent</th>
+                      <th className="px-3 py-2 font-medium text-right">1h</th>
+                      <th className="px-3 py-2 font-medium text-right">24h</th>
+                      <th className="px-3 py-2 font-medium text-right">Caps (h / d / streak)</th>
+                      <th className="px-3 py-2 font-medium">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {[...data.agentRunCaps]
+                      .sort((a, b) => b.runsLastHour - a.runsLastHour)
+                      .map((row) => {
+                        const overHour = row.runsLastHour > row.caps.perHour;
+                        const overDay = row.runsLastDay > row.caps.perDay;
+                        return (
+                          <tr key={row.agentId}>
+                            <td className="px-3 py-2 truncate">{row.name}</td>
+                            <td className={`px-3 py-2 text-right tabular-nums ${overHour ? "text-red-600 font-semibold" : ""}`}>
+                              {row.runsLastHour}
+                            </td>
+                            <td className={`px-3 py-2 text-right tabular-nums ${overDay ? "text-red-600 font-semibold" : ""}`}>
+                              {row.runsLastDay}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                              {row.caps.perHour} / {row.caps.perDay} / {row.caps.maxConsecutiveRuns}
+                            </td>
+                            <td className="px-3 py-2">
+                              {row.autoPaused ? (
+                                <span className="text-red-600 font-medium" title={row.pausedAt ?? undefined}>
+                                  ⚠️ Auto-Pause{row.pauseReason ? ` — ${row.pauseReason}` : ""}
+                                </span>
+                              ) : row.status === "paused" ? (
+                                <span className="text-amber-600">Pausiert{row.pauseReason ? ` — ${row.pauseReason}` : ""}</span>
+                              ) : (
+                                <span className="text-muted-foreground">{row.status}</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           <PluginSlotOutlet
             slotTypes={["dashboardWidget"]}
             context={{ companyId: selectedCompanyId }}
