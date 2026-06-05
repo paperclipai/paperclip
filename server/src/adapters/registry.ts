@@ -1,4 +1,11 @@
+import { execFile } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { promisify } from "node:util";
 import type {
+  AdapterEnvironmentCheck,
+  AdapterEnvironmentTestContext,
+  AdapterEnvironmentTestResult,
   AdapterModel,
   AdapterModelProfileDefinition,
   AdapterRuntimeCommandSpec,
@@ -142,6 +149,362 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+
+const execFileAsync = promisify(execFile);
+
+function quoteForCmd(arg: string) {
+  if (!arg.length) return "\"\"";
+  const escaped = arg.replace(/"/g, "\"\"");
+  return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
+}
+
+function getConfigObject(ctx: { config?: unknown }) {
+  return ctx.config && typeof ctx.config === "object" ? (ctx.config as Record<string, unknown>) : {};
+}
+
+function asConfigString(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function asRecord(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function asConfigStringArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+}
+
+function buildHermesPaperclipTaskConfig(config: unknown, context: unknown) {
+  const configRecord = asRecord(config);
+  const contextRecord = asRecord(context);
+  const issueRecord = asRecord(contextRecord.paperclipIssue);
+
+  const taskId =
+    asConfigString(configRecord.taskId) ??
+    asConfigString(issueRecord.identifier) ??
+    asConfigString(issueRecord.id) ??
+    asConfigString(contextRecord.taskId) ??
+    asConfigString(contextRecord.issueId);
+  const taskTitle =
+    asConfigString(configRecord.taskTitle) ??
+    asConfigString(issueRecord.title);
+  const taskBody =
+    asConfigString(configRecord.taskBody) ??
+    asConfigString(contextRecord.paperclipTaskMarkdown) ??
+    asConfigString(issueRecord.description);
+
+  return Object.fromEntries(
+    Object.entries({
+      taskId,
+      taskTitle,
+      taskBody,
+    }).filter(([, value]) => typeof value === "string" && value.length > 0),
+  );
+}
+
+function getHermesDesiredSkillKeys(config: Record<string, unknown>, runtimeSkills: Array<Record<string, unknown>>) {
+  const rawSync = config.paperclipSkillSync;
+  const syncConfig =
+    rawSync && typeof rawSync === "object" && !Array.isArray(rawSync)
+      ? (rawSync as Record<string, unknown>)
+      : {};
+  const explicitDesired = Object.prototype.hasOwnProperty.call(syncConfig, "desiredSkills");
+  const required = runtimeSkills
+    .filter((entry) => entry.required === true)
+    .map((entry) => asConfigString(entry.key))
+    .filter((key): key is string => Boolean(key));
+  if (!explicitDesired) return Array.from(new Set(required));
+
+  const desired = asConfigStringArray(syncConfig.desiredSkills)
+    .map((key) => key.trim())
+    .filter(Boolean);
+  return Array.from(new Set([...required, ...desired]));
+}
+
+export function buildHermesRuntimeSkillPrompt(
+  config: Record<string, unknown>,
+  options: { includeSkillInstructions?: boolean } = {},
+) {
+  const runtimeSkills = Array.isArray(config.paperclipRuntimeSkills)
+    ? config.paperclipRuntimeSkills.filter(
+        (entry): entry is Record<string, unknown> =>
+          entry !== null && typeof entry === "object" && !Array.isArray(entry),
+      )
+    : [];
+  if (runtimeSkills.length === 0) return "";
+
+  const desiredKeys = new Set(getHermesDesiredSkillKeys(config, runtimeSkills));
+  if (desiredKeys.size === 0) return "";
+
+  const selected = runtimeSkills.filter((entry) => {
+    const key = asConfigString(entry.key);
+    const runtimeName = asConfigString(entry.runtimeName);
+    return Boolean((key && desiredKeys.has(key)) || (runtimeName && desiredKeys.has(runtimeName)));
+  });
+  if (selected.length === 0) return "";
+
+  const selectedKeys = selected
+    .map((entry) => asConfigString(entry.key) ?? "unknown-skill")
+    .filter(Boolean);
+
+  const sections: string[] = [
+    "## Paperclip Runtime Capability Keys",
+    "",
+    "The following are Paperclip-injected runtime capability keys for this Hermes run. They are not Hermes internal skills, Hermes tools, or generic tool names. Use the matching capability instructions when the assigned issue matches their purpose.",
+    "",
+    "If, and only if, the assigned issue explicitly asks for a runtime capability-key proof, include a short `Paperclip runtime capability keys` section in the final issue comment. Copy the exact keys from the bullets below or from the PAPERCLIP_RUNTIME_CAPABILITY_KEYS line at the end of this block. Mark each key as `used` or `visible but not used`. For ordinary task work, do not let this visibility note replace the requested deliverable.",
+    "",
+    options.includeSkillInstructions
+      ? "This run is a runtime capability proof or skill-focused task, so detailed skill instructions are included below."
+      : "For ordinary task work, treat these keys as available background capabilities only. Do not follow the detailed SKILL.md workflow unless the assigned issue explicitly asks for that skill.",
+  ];
+
+  for (const entry of selected) {
+    const key = asConfigString(entry.key) ?? "unknown-skill";
+    const runtimeName = asConfigString(entry.runtimeName) ?? key;
+    const source = asConfigString(entry.source);
+    let body = "";
+    if (source) {
+      const skillPath = path.join(source, "SKILL.md");
+      try {
+        body = fs.readFileSync(skillPath, "utf8").trim();
+      } catch {
+        body = "";
+      }
+    }
+
+    sections.push("", `### ${runtimeName}`, `- key: ${key}`);
+    if (body && options.includeSkillInstructions) {
+      sections.push("", body.length > 4000 ? `${body.slice(0, 4000)}\n\n[truncated]` : body);
+    } else if (body) {
+      sections.push("", "Detailed skill instructions are hidden for this ordinary task so the assigned issue remains primary.");
+    } else {
+      sections.push("", "Skill instructions could not be read from disk; use the skill name and assigned issue context conservatively.");
+    }
+  }
+
+  sections.push(
+    "",
+    "## Runtime Capability Key Reference",
+    "",
+    `PAPERCLIP_RUNTIME_CAPABILITY_KEYS: ${selectedKeys.join(", ")}`,
+    "",
+    "If the assigned issue explicitly asks for a runtime capability-key proof, use this exact key list in the final issue comment:",
+    "",
+    "Paperclip runtime capability keys",
+    "",
+    ...selectedKeys.map((key) => `- ${key}: used OR visible but not used`),
+  );
+
+  return sections.join("\n").trim();
+}
+
+function extractHermesRuntimeSkillKeys(prompt: string) {
+  return Array.from(prompt.matchAll(/^- key:\s*(.+)$/gm), (match) => match[1]?.trim())
+    .filter((key): key is string => Boolean(key));
+}
+
+function shouldRequireHermesRuntimeCapabilityProof(taskBody: string) {
+  return /PAPERCLIP_RUNTIME_CAPABILITY_KEYS|Paperclip runtime capability keys|runtime capability keys|runtime skill keys|exact runtime skill keys|exact keys proof|capability-key proof/i.test(taskBody);
+}
+
+function buildHermesPaperclipPromptTemplate(runtimeSkillKeys: string[], requireRuntimeCapabilityProof: boolean) {
+  const finalContract = runtimeSkillKeys.length > 0 && requireRuntimeCapabilityProof
+    ? [
+        "## Final Required Output Contract",
+        "",
+        "This final section overrides any generic workflow summary style. Your final issue comment must include exactly this heading and one bullet for every key:",
+        "",
+        "Paperclip runtime capability keys",
+        "",
+        ...runtimeSkillKeys.map((key) => `- ${key}: used OR visible but not used`),
+        "",
+        "Do not replace these keys with Hermes internal skills or generic tool names.",
+      ].join("\n")
+    : "";
+
+  return [
+    'You are "{{agentName}}", an AI agent employee in a Paperclip-managed company.',
+    "",
+    "Focus on the assigned issue. If the issue asks for a plan, design, analysis, or recommendation, answer directly with that deliverable.",
+    "",
+    "Do not use terminal or Paperclip API calls unless the assigned issue explicitly requires system changes or API operations. Paperclip will post your final response back to the issue automatically.",
+    "",
+    "Your Paperclip identity:",
+    "  Agent ID: {{agentId}}",
+    "  Company ID: {{companyId}}",
+    "  API Base: {{paperclipApiUrl}}",
+    "",
+    "{{#taskId}}",
+    "## Assigned Task",
+    "",
+    "Issue ID: {{taskId}}",
+    "Title: {{taskTitle}}",
+    "",
+    "{{taskBody}}",
+    "",
+    "## Response Workflow",
+    "",
+    "1. Produce the requested deliverable from the issue text.",
+    "2. Keep the final answer self-contained and reviewable.",
+    "3. Do not include shell commands, curl examples, or instructions to mark the issue done unless the issue explicitly asks for operational steps.",
+    "{{/taskId}}",
+    "",
+    "{{#commentId}}",
+    "## Comment on This Issue",
+    "",
+    "Someone commented. Read it, reply if needed, then continue working.",
+    "{{/commentId}}",
+    "",
+    "{{#noTask}}",
+    "## Heartbeat Wake Check for Work",
+    "",
+    "Check for open assigned work and report briefly if nothing is available.",
+    "{{/noTask}}",
+    "",
+    finalContract,
+  ].filter((section) => section.trim().length > 0).join("\n");
+}
+
+function resolveWindowsBatchCommand(command: string) {
+  if (path.isAbsolute(command)) return command;
+
+  const candidates = [
+    path.resolve(process.cwd(), command),
+    path.resolve(process.cwd(), "..", command),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0];
+}
+
+async function execWindowsBatchCommand(command: string, args: string[], timeout = 10_000) {
+  const resolvedCommand = resolveWindowsBatchCommand(command);
+  const commandLine = [quoteForCmd(resolvedCommand), ...args.map(quoteForCmd)].join(" ");
+  return execFileAsync("cmd.exe", ["/d", "/s", "/c", commandLine], { timeout });
+}
+
+async function testHermesWindowsBridge(
+  ctx: AdapterEnvironmentTestContext,
+  command: string,
+): Promise<AdapterEnvironmentTestResult> {
+  const checks: AdapterEnvironmentCheck[] = [];
+  try {
+    const { stdout } = await execWindowsBatchCommand(command, ["--version"]);
+    const version = stdout.trim();
+    checks.push({
+      level: "info",
+      message: version ? `Hermes Agent version: ${version.split(/\r?\n/)[0]}` : "Hermes bridge responded to --version",
+      code: "hermes_version",
+    });
+    checks.push({
+      level: "info",
+      message: `Windows bridge: ${command}`,
+      detail: "Calls Hermes inside WSL2 Ubuntu from the Windows Paperclip server.",
+      code: "hermes_windows_wsl_bridge",
+    });
+  } catch (err) {
+    return {
+      adapterType: ctx.adapterType,
+      status: "fail",
+      checks: [
+        {
+          level: "error",
+          message: `Hermes bridge "${command}" failed`,
+          detail: err instanceof Error ? err.message : String(err),
+          hint: "Confirm scripts/hermes-wsl.cmd works from PowerShell before using Hermes in Paperclip.",
+          code: "hermes_windows_bridge_failed",
+        },
+      ],
+      testedAt: new Date().toISOString(),
+    };
+  }
+
+  try {
+    const { stdout } = await execWindowsBatchCommand(command, ["status"], 20_000);
+    const usesCustomEndpoint = /Provider:\s+Custom endpoint/i.test(stdout);
+    if (/Model:\s+\(not set\)/i.test(stdout)) {
+      checks.push({
+        level: "warn",
+        message: "Hermes model is not set",
+        hint: "Run `hermes model` inside WSL2 before the first sandbox wake-up.",
+        code: "hermes_model_missing",
+      });
+    }
+    if (/\.env file:\s+✗/i.test(stdout)) {
+      checks.push({
+        level: "warn",
+        message: "Hermes .env file is not configured",
+        hint: "Configure one provider/API key inside WSL2; do not store API keys in Paperclip docs or issues.",
+        code: "hermes_env_missing",
+      });
+    }
+    if (usesCustomEndpoint) {
+      let bridgeReady = false;
+      const bridgeStatusPaths: string[] = [];
+      let candidateDir = process.cwd();
+      for (let depth = 0; depth < 6; depth += 1) {
+        bridgeStatusPaths.push(path.resolve(candidateDir, ".hermes-ollama-bridge-status.json"));
+        const parent = path.dirname(candidateDir);
+        if (parent === candidateDir) break;
+        candidateDir = parent;
+      }
+      for (const bridgeStatusPath of bridgeStatusPaths) {
+        try {
+          const bridgeStatus = JSON.parse(fs.readFileSync(bridgeStatusPath, "utf8").replace(/^\uFEFF/, "")) as {
+            ok?: unknown;
+            openAiCompatibleBaseUrl?: unknown;
+          };
+          bridgeReady = bridgeStatus.ok === true && typeof bridgeStatus.openAiCompatibleBaseUrl === "string";
+          if (bridgeReady) break;
+        } catch {
+          // Try the next likely repo location.
+        }
+      }
+
+      checks.push({
+        level: bridgeReady ? "info" : "warn",
+        message: bridgeReady
+          ? "Hermes is configured for the local Ollama bridge"
+          : "Hermes uses a custom endpoint, but the local Ollama bridge status was not confirmed",
+        hint: bridgeReady
+          ? "This local-model route does not require cloud API keys for the first sandbox wake-up."
+          : "Run `pnpm run hermes:ollama-bridge:restart`, then return to Office and press `重新檢查`.",
+        code: bridgeReady ? "hermes_local_ollama_ready" : "hermes_local_ollama_bridge_missing",
+      });
+    } else if (/API Keys[\s\S]*OpenRouter\s+✗/i.test(stdout) && /OpenAI\s+✗/i.test(stdout)) {
+      checks.push({
+        level: "warn",
+        message: "No obvious Hermes API key is configured",
+        hint: "Use `hermes model` or `hermes config set` inside WSL2, then return to Office and press `重新檢查`.",
+        code: "hermes_api_key_missing",
+      });
+    }
+  } catch (err) {
+    checks.push({
+      level: "warn",
+      message: "Could not read Hermes status through the Windows bridge",
+      detail: err instanceof Error ? err.message : String(err),
+      hint: "The CLI bridge works, but model/API key readiness could not be confirmed.",
+      code: "hermes_status_unavailable",
+    });
+  }
+
+  const status = checks.some((check) => check.level === "error")
+    ? "fail"
+    : checks.some((check) => check.level === "warn")
+      ? "warn"
+      : "pass";
+
+  return {
+    adapterType: ctx.adapterType,
+    status,
+    checks,
+    testedAt: new Date().toISOString(),
+  };
+}
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -441,7 +804,6 @@ const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
   execute: async (ctx) => {
     const normalizedCtx = normalizeHermesConfig(ctx);
-    if (!normalizedCtx.authToken) return executeHermesLocal(normalizedCtx);
 
     const existingConfig = (normalizedCtx.agent.adapterConfig ?? {}) as Record<string, unknown>;
     const existingEnv =
@@ -465,29 +827,103 @@ const hermesLocalAdapter: ServerAdapterModule = {
       ...existingConfig,
       env: {
         ...existingEnv,
-        ...(!explicitApiKey ? { PAPERCLIP_API_KEY: normalizedCtx.authToken } : {}),
+        ...(!explicitApiKey && normalizedCtx.authToken ? { PAPERCLIP_API_KEY: normalizedCtx.authToken } : {}),
         PAPERCLIP_RUN_ID: normalizedCtx.runId,
       },
     };
 
-    // Only inject the auth guard into promptTemplate when a custom template already exists.
+    // Move agent-specific instructions into taskBody so Paperclip can own the
+    // final prompt ordering for runtime capability-key checks.
     // When no custom template is set, Hermes uses its built-in default heartbeat/task prompt —
     // overwriting it with only the auth guard text would strip the assigned issue/workflow instructions.
     if (promptTemplate) {
-      patchedConfig.promptTemplate = `${authGuardPrompt}\n\n${promptTemplate}`;
+      delete patchedConfig.promptTemplate;
+    }
+
+    const paperclipTaskConfig = buildHermesPaperclipTaskConfig(normalizedCtx.config, normalizedCtx.context);
+    const existingTaskBody =
+      typeof paperclipTaskConfig.taskBody === "string" && paperclipTaskConfig.taskBody.trim().length > 0
+        ? paperclipTaskConfig.taskBody
+        : "";
+    const promptTemplateTaskBody =
+      promptTemplate.length > 0
+        ? [
+            "## Hermes Agent Instructions",
+            "",
+            "The following agent-specific instructions were moved into the task body so Hermes keeps its built-in Paperclip task context.",
+            "",
+            promptTemplate,
+          ].join("\n")
+        : "";
+    const requireRuntimeCapabilityProof = shouldRequireHermesRuntimeCapabilityProof(
+      [existingTaskBody, promptTemplateTaskBody].filter((section) => section.trim().length > 0).join("\n\n"),
+    );
+    const runtimeSkillPrompt = buildHermesRuntimeSkillPrompt(
+      {
+        ...existingConfig,
+        ...(normalizedCtx.config ?? {}),
+      },
+      { includeSkillInstructions: requireRuntimeCapabilityProof },
+    );
+    const taskBodySections = [
+      existingTaskBody,
+      normalizedCtx.authToken || explicitApiKey ? authGuardPrompt : "",
+      promptTemplateTaskBody,
+      runtimeSkillPrompt,
+    ].filter((section) => section.trim().length > 0);
+    const patchedRuntimeConfig =
+      taskBodySections.length > 0
+        ? {
+            ...normalizedCtx.config,
+            ...paperclipTaskConfig,
+            taskBody: taskBodySections.join("\n\n"),
+          }
+        : {
+            ...normalizedCtx.config,
+            ...paperclipTaskConfig,
+          };
+
+    const patchedTaskBody =
+      typeof (patchedRuntimeConfig as Record<string, unknown>).taskBody === "string"
+        ? ((patchedRuntimeConfig as Record<string, unknown>).taskBody as string)
+        : "";
+    const agentInstructionsIndex = patchedTaskBody.indexOf("## Hermes Agent Instructions");
+    const runtimeSkillsIndex = patchedTaskBody.indexOf("## Paperclip Runtime Capability Keys");
+    const runtimeSkillsAfterAgentInstructions =
+      runtimeSkillsIndex >= 0 && (agentInstructionsIndex < 0 || runtimeSkillsIndex > agentInstructionsIndex);
+    const runtimeSkillKeys = extractHermesRuntimeSkillKeys(runtimeSkillPrompt);
+    if (runtimeSkillKeys.length > 0) {
+      patchedConfig.promptTemplate = buildHermesPaperclipPromptTemplate(
+        runtimeSkillKeys,
+        requireRuntimeCapabilityProof,
+      );
     }
 
     const patchedCtx = {
       ...normalizedCtx,
+      config: patchedRuntimeConfig,
       agent: {
         ...normalizedCtx.agent,
         adapterConfig: patchedConfig,
       },
     };
 
+    await normalizedCtx.onLog?.(
+      "stdout",
+      `[paperclip] Hermes prompt routing: taskId=${Boolean((patchedRuntimeConfig as Record<string, unknown>).taskId)} taskBody=${Boolean((patchedRuntimeConfig as Record<string, unknown>).taskBody)} taskBodyChars=${patchedTaskBody.length} runtimeSkills=${Boolean(runtimeSkillPrompt)} runtimeSkillsAfterAgentInstructions=${runtimeSkillsAfterAgentInstructions} runtimeSkillKeys=${runtimeSkillKeys.join(",")} runtimeCapabilityProofRequired=${requireRuntimeCapabilityProof} movedPromptTemplate=${Boolean(promptTemplate)} authToken=${Boolean(normalizedCtx.authToken)} explicitApiKey=${explicitApiKey}\n`,
+    );
+
     return executeHermesLocal(patchedCtx);
   },
-  testEnvironment: (ctx) => hermesTestEnvironment(normalizeHermesConfig(ctx) as never),
+  testEnvironment: (ctx) => {
+    const normalizedCtx = normalizeHermesConfig(ctx);
+    const config = getConfigObject(normalizedCtx);
+    const command = asConfigString(config.hermesCommand) ?? asConfigString(config.command);
+    if (process.platform === "win32" && command && /\.(cmd|bat)$/i.test(command)) {
+      return testHermesWindowsBridge(normalizedCtx as AdapterEnvironmentTestContext, command);
+    }
+    return hermesTestEnvironment(normalizedCtx as never);
+  },
   sessionCodec: hermesSessionCodec,
   listSkills: hermesListSkills,
   syncSkills: hermesSyncSkills,

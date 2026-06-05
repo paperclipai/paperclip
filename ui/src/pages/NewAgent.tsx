@@ -62,6 +62,22 @@ export function NewAgent() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const presetAdapterType = searchParams.get("adapterType");
+  const presetName = searchParams.get("name");
+  const presetTitle = searchParams.get("title");
+  const presetRole = searchParams.get("role");
+  const presetPromptTemplate = searchParams.get("promptTemplate");
+  const presetCommand = searchParams.get("command");
+  const presetModel = searchParams.get("model");
+  const presetSource = searchParams.get("source");
+  const presetTemplate = searchParams.get("template");
+  const presetStarterSkills = searchParams
+    .get("starterSkills")
+    ?.split(",")
+    .map((skill) => skill.trim())
+    .filter(Boolean) ?? [];
+  const isVirtualOfficeDraft = presetSource === "virtual-office-role";
+  const isHermesVirtualOfficeDraft =
+    isVirtualOfficeDraft && (presetAdapterType === "hermes_local" || /hermes/i.test(presetTemplate ?? ""));
 
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
@@ -119,6 +135,25 @@ export function NewAgent() {
       return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
     });
   }, [presetAdapterType]);
+
+  useEffect(() => {
+    if (presetName && !name) setName(presetName);
+    if (presetTitle && !title) setTitle(presetTitle);
+    if (presetRole && AGENT_ROLES.includes(presetRole as (typeof AGENT_ROLES)[number])) {
+      setRole(presetRole);
+    }
+    if (presetPromptTemplate) {
+      setConfigValues((prev) =>
+        prev.promptTemplate ? prev : { ...prev, promptTemplate: presetPromptTemplate },
+      );
+    }
+    if (presetCommand) {
+      setConfigValues((prev) => (prev.command ? prev : { ...prev, command: presetCommand }));
+    }
+    if (presetModel) {
+      setConfigValues((prev) => (prev.model ? prev : { ...prev, model: presetModel }));
+    }
+  }, [presetCommand, presetModel, presetName, presetPromptTemplate, presetRole, presetTitle]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const createAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
@@ -196,6 +231,35 @@ export function NewAgent() {
       </div>
 
       <div className="border border-border">
+        {isVirtualOfficeDraft && (
+          <div className="border-b border-border bg-primary/10 px-4 py-3 text-sm">
+            <div className="font-medium">Virtual Office 角色草稿</div>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              來自 {presetTemplate ?? "角色模板"}。這裡只預填表單，確認無誤後才按 Create agent。
+            </p>
+            {presetStarterSkills.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {presetStarterSkills.map((skill) => (
+                  <span key={skill} className="rounded-full border border-border bg-background px-2 py-0.5 text-xs">
+                    建議 skill：{skill}
+                  </span>
+                ))}
+              </div>
+            )}
+            {isHermesVirtualOfficeDraft && (
+              <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs leading-5">
+                <div className="font-medium text-amber-700">Hermes Sandbox 建立前確認</div>
+                <ul className="mt-2 space-y-1 text-muted-foreground">
+                  <li>Command 應為 <code>{presetCommand ?? "scripts/hermes-wsl.cmd"}</code>，讓 Windows 後端透過 WSL2 bridge 呼叫 Hermes。</li>
+                  <li>建立前先回 Office 按 `重新檢查`，確認 Hermes model、.env 與 API key 都已設定。</li>
+                  <li>名稱保留 Sandbox/Test 字樣，第一次只接 Sandbox issue，不設為正式專案主管。</li>
+                  <li>API key、token、密碼不要寫進 prompt、skills、issue 或公開文件。</li>
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Name */}
         <div className="px-4 pt-4 pb-2">
           <input

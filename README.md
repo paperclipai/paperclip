@@ -309,6 +309,42 @@ This starts the API server at `http://localhost:3100`. An embedded PostgreSQL da
 
 <br/>
 
+## Virtual Office
+
+Virtual Office is a beginner-friendly 2.5D workbench for Paperclip. It helps new users see agents as employees, assign skills, plan projects, review workflows, and keep meeting or decision records without starting from the raw data model.
+
+Current status: the UI, docs, preview recovery flow, open-source feedback paths, Chinese beginner-reader evidence, Hermes Sandbox/Test runtime capability-key proof (`AI-98530`), one ordinary Sandbox/Test Hermes plan task (`AI-98533`), render smoke, 60-minute stability run, and 3/3 reboot validation are ready for review. Remaining gates are English documentation reader evidence and any production Hermes/local-model wake-up, which still requires explicit authorization.
+
+Start here:
+
+- [Traditional Chinese getting started](docs/virtual-office-getting-started.zh-TW.md)
+- [English getting started](docs/virtual-office-getting-started.en.md)
+- [Traditional Chinese quick start](docs/virtual-office-quick-start.zh-TW.md)
+- [English quick start](docs/virtual-office-quick-start.en.md)
+- [Traditional Chinese open-source overview](docs/virtual-office-open-source-readme.zh-TW.md)
+- [English open-source overview](docs/virtual-office-open-source-readme.en.md)
+- [Public progress status](docs/virtual-office-public-status.zh-TW.md)
+- [Acceptance checklist](docs/virtual-office-acceptance-checklist.zh-TW.md)
+- [Public commit scope](docs/virtual-office-public-commit-scope.en.md)
+- [PR submission plan](docs/virtual-office-pr-submission-plan.en.md)
+- [PR screenshot evidence](docs/virtual-office-pr-screenshot-evidence.en.md)
+- [PR final review](docs/virtual-office-pr-final-review.en.md)
+- [English startup and preview recovery SOP](docs/virtual-office-startup-sop.en.md)
+- [Open-source release checklist](docs/virtual-office-release-checklist.en.md)
+- [Open-source trial release Go / Pause SOP](docs/virtual-office-release-decision.en.md)
+- [Open-source release notes draft](docs/virtual-office-release-notes-draft.en.md)
+- [Open-source feedback triage SOP](docs/virtual-office-feedback-triage.en.md)
+- [Maintainer daily SOP](docs/virtual-office-maintainer-daily.en.md)
+- [Feedback-to-work-items SOP](docs/virtual-office-feedback-to-work-items.en.md)
+- [First contribution SOP](docs/virtual-office-first-contribution.en.md)
+- [PR review SOP](docs/virtual-office-pr-review.en.md)
+
+For local preview checks, run `pnpm run office:verify`. For feedback, use the Virtual Office issue form at [`.github/ISSUE_TEMPLATE/virtual-office.yml`](.github/ISSUE_TEMPLATE/virtual-office.yml). Do not paste API keys, tokens, passwords, a full `.env`, full logs, private paths, or production data into public issues.
+
+Virtual Office does not treat a bug report, PR, or documentation check as authorization to install Hermes, press Run now, enable schedule triggers, or wake a local model.
+
+<br/>
+
 ## FAQ
 
 **What does a typical setup look like?**

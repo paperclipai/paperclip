@@ -80,6 +80,7 @@ type EmbeddedPostgresCtor = new (opts: {
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
 
+const sleep = (ms: number): Promise<void> => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 
 export interface StartedServer {
   server: ReturnType<typeof createServer>;
@@ -355,6 +356,26 @@ export async function startServer(): Promise<StartedServer> {
         );
       }
     };
+    const ensureEmbeddedPostgresDatabase = async (
+      url: string,
+      databaseName: string,
+    ): Promise<"created" | "exists"> => {
+      const deadline = Date.now() + 30_000;
+      let lastError: unknown;
+      while (Date.now() <= deadline) {
+        try {
+          return await ensurePostgresDatabase(url, databaseName);
+        } catch (err) {
+          lastError = err;
+          const message = err instanceof Error ? err.message : String(err ?? "");
+          if (!message.includes("not yet accepting connections") && !message.includes("ECONNREFUSED")) {
+            throw err;
+          }
+          await sleep(1_000);
+        }
+      }
+      throw lastError;
+    };
   
     if (config.databaseMode === "postgres") {
       logger.warn("Database mode is postgres but no connection string was set; falling back to embedded PostgreSQL");
@@ -398,7 +419,7 @@ export async function startServer(): Promise<StartedServer> {
         ) {
           throw new Error("reachable postgres does not use the expected embedded data directory");
         }
-        await ensurePostgresDatabase(configuredAdminConnectionString, "paperclip");
+        await ensureEmbeddedPostgresDatabase(configuredAdminConnectionString, "paperclip");
         logger.warn(
           `Embedded PostgreSQL appears to already be reachable without a pid file; reusing existing server on configured port ${configuredPort}`,
         );
@@ -452,7 +473,7 @@ export async function startServer(): Promise<StartedServer> {
     }
   
     const embeddedAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-    const dbStatus = await ensurePostgresDatabase(embeddedAdminConnectionString, "paperclip");
+    const dbStatus = await ensureEmbeddedPostgresDatabase(embeddedAdminConnectionString, "paperclip");
     if (dbStatus === "created") {
       logger.info("Created embedded PostgreSQL database: paperclip");
     }

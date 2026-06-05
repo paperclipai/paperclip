@@ -843,7 +843,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
-  async function seedQueuedIssueRunFixture() {
+  async function seedQueuedIssueRunFixture(input?: {
+    contextSnapshot?: Record<string, unknown>;
+  }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
@@ -902,6 +904,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         issueId,
         taskId: issueId,
         wakeReason: "issue_assigned",
+        ...(input?.contextSnapshot ?? {}),
       },
       updatedAt: now,
       createdAt: now,
@@ -1306,6 +1309,65 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(0);
+  });
+
+  it("does not schedule retry or recovery issue for one-time authorized transient upstream failures", async () => {
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "claude_transient_upstream",
+      errorFamily: "transient_upstream",
+      errorMessage: "API Error: 529 Overloaded.",
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      resultJson: {
+        errorFamily: "transient_upstream",
+      },
+    });
+
+    const { agentId, runId, issueId, companyId } = await seedQueuedIssueRunFixture({
+      contextSnapshot: {
+        oneTimeAuthorization: true,
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+    expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.errorCode).toBe("claude_transient_upstream");
+
+    const issue = await waitForValue(async () => {
+      const row = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      return row?.executionRunId == null ? row : null;
+    });
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.executionRunId).toBeNull();
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(0);
+
+    const events = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    expect(events.some((event) => event.message?.includes("Skipped automatic retry"))).toBe(true);
+    expect(events.some((event) => event.message?.includes("Skipped automatic issue-comment follow-up"))).toBe(true);
   });
 
   it("queues one finish-handoff wake when a successful run leaves in-progress work without a next action", async () => {

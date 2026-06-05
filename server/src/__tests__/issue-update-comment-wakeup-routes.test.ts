@@ -201,6 +201,7 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
     createdByUserId: "local-board",
     identifier: "PAP-999",
     title: "Wake test",
+    description: null,
     executionPolicy: null,
     executionState: null,
     hiddenAt: null,
@@ -267,6 +268,56 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
+  });
+
+  it("preserves UTF-8 descriptions and does not wake on backlog sandbox reassignment", async () => {
+    const existing = makeIssue({
+      status: "backlog",
+      title: "方案設計: 我的第一個 AI 專案",
+      description: "舊描述",
+    });
+    const description = [
+      "提出「晨間財經新聞 AI 團隊」的可執行方案設計。",
+      "",
+      "限制：",
+      "- 不啟用 Run now",
+      "- 不啟用 schedule trigger",
+      "- 不喚醒下游任務",
+    ].join("\n");
+    const updated = makeIssue({
+      ...existing,
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      description,
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const payload = JSON.stringify({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      description,
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .set("Content-Type", "application/json; charset=utf-8")
+      .send(payload);
+
+    expect(res.status).toBe(200);
+    expect(res.body.description).toBe(description);
+    expect(res.body.description).toContain("晨間財經新聞 AI 團隊");
+    expect(res.body.description).not.toContain("????");
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      existing.id,
+      expect.objectContaining({
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        assigneeUserId: null,
+        description,
+      }),
+    );
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("wakes the assignee on comment-only issue updates", async () => {

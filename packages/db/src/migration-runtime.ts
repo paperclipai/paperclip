@@ -23,6 +23,8 @@ type EmbeddedPostgresCtor = new (opts: {
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
 
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 export type MigrationConnection = {
   connectionString: string;
   source: string;
@@ -77,6 +79,27 @@ async function findAvailablePort(startPort: number): Promise<number> {
   );
 }
 
+async function ensurePostgresDatabaseReady(
+  url: string,
+  databaseName: string,
+): Promise<"created" | "exists"> {
+  const deadline = Date.now() + 30_000;
+  let lastError: unknown;
+  while (Date.now() <= deadline) {
+    try {
+      return await ensurePostgresDatabase(url, databaseName);
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error ?? "");
+      if (!message.includes("not yet accepting connections") && !message.includes("ECONNREFUSED")) {
+        throw error;
+      }
+      await sleep(1_000);
+    }
+  }
+  throw lastError;
+}
+
 async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
   try {
     const mod = await import("embedded-postgres");
@@ -111,7 +134,7 @@ async function ensureEmbeddedPostgresConnection(
       if (!matchesDataDir) {
         throw new Error("reachable postgres does not use the expected embedded data directory");
       }
-      await ensurePostgresDatabase(preferredAdminConnectionString, "paperclip");
+      await ensurePostgresDatabaseReady(preferredAdminConnectionString, "paperclip");
       process.emitWarning(
         `Adopting an existing PostgreSQL instance on port ${preferredPort} for embedded data dir ${dataDir} because postmaster.pid is missing.`,
       );
@@ -128,7 +151,7 @@ async function ensureEmbeddedPostgresConnection(
   if (runningPid) {
     const port = runningPort ?? preferredPort;
     const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-    await ensurePostgresDatabase(adminConnectionString, "paperclip");
+    await ensurePostgresDatabaseReady(adminConnectionString, "paperclip");
     return {
       connectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
       source: `embedded-postgres@${port}`,
@@ -171,7 +194,12 @@ async function ensureEmbeddedPostgresConnection(
   }
 
   const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${selectedPort}/postgres`;
-  await ensurePostgresDatabase(adminConnectionString, "paperclip");
+  try {
+    await ensurePostgresDatabaseReady(adminConnectionString, "paperclip");
+  } catch (error) {
+    await instance.stop().catch(() => {});
+    throw error;
+  }
 
   return {
     connectionString: `postgres://paperclip:paperclip@127.0.0.1:${selectedPort}/paperclip`,

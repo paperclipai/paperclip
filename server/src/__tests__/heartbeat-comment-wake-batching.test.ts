@@ -1617,6 +1617,8 @@ describe("heartbeat comment wake batching", () => {
       const sourceRun = runs.find((run) => run.id === firstRun?.id);
       expect(sourceRun?.issueCommentStatus).toBe("satisfied");
       expect(sourceRun?.issueCommentSatisfiedByCommentId).not.toBeNull();
+      expect(sourceRun?.livenessState).toBe("advanced");
+      expect(sourceRun?.livenessReason).toContain("issue comment");
 
       await waitFor(async () => {
         const comments = await db

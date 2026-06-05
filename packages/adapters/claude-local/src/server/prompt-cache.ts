@@ -131,6 +131,34 @@ async function ensureReadableFile(targetPath: string, contents: string): Promise
   }
 }
 
+function isPermissionLikeError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as NodeJS.ErrnoException).code;
+  return code === "EPERM" || code === "EACCES" || code === "ENOTSUP";
+}
+
+async function copySkillFallback(source: string, target: string): Promise<void> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (existing) return;
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.cp(source, target, {
+    dereference: false,
+    errorOnExist: false,
+    force: false,
+    recursive: true,
+  });
+}
+
+async function ensureClaudeSkillMaterialized(source: string, target: string): Promise<"created" | "copied" | "repaired" | "skipped"> {
+  try {
+    return await ensurePaperclipSkillSymlink(source, target);
+  } catch (err) {
+    if (!isPermissionLikeError(err)) throw err;
+    await copySkillFallback(source, target);
+    return "copied";
+  }
+}
+
 export async function prepareClaudePromptBundle(input: {
   companyId: string;
   skills: SkillEntry[];
@@ -149,7 +177,13 @@ export async function prepareClaudePromptBundle(input: {
   for (const entry of skills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
-      await ensurePaperclipSkillSymlink(entry.source, target);
+      const result = await ensureClaudeSkillMaterialized(entry.source, target);
+      if (result === "copied") {
+        await onLog(
+          "stderr",
+          `[paperclip] Claude skill "${entry.key}" was copied into ${skillsHome} because symlinks are not permitted in this Windows environment.\n`,
+        );
+      }
     } catch (err) {
       await onLog(
         "stderr",

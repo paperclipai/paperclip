@@ -29,6 +29,19 @@
 
 -
 
+### Virtual Office verification, if applicable
+
+<!--
+  For Virtual Office UI, docs, preview helper, Hermes readiness, Routine
+  safety, or open-source onboarding changes, include these checks when relevant.
+-->
+
+- [ ] I ran `pnpm run office:verify`
+- [ ] I checked the Office page or relevant docs manually
+- [ ] I updated the Virtual Office acceptance checklist / docs when behavior changed
+- [ ] I did not install Hermes, press Run now, enable schedule triggers, wake a local model, or include secrets in issues/docs/logs
+- [ ] I reviewed `docs/virtual-office-pr-review.en.md` if this PR changes Virtual Office release, onboarding, checklist, or safety flow
+
 ## Risks
 
 <!--

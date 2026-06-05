@@ -588,6 +588,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     source: string;
     retryOfRunId?: string | null;
   }) {
+    const sourceIssue = await db
+      .select({ originKind: issues.originKind })
+      .from(issues)
+      .where(eq(issues.id, input.issueId))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (sourceIssue?.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND) {
+      return null;
+    }
+
     const queued = await deps.enqueueWakeup(input.agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -3354,6 +3364,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(eq(issues.id, input.finding.issueId))
       .then((rows) => rows[0] ?? null);
     if (!issue || issue.companyId !== input.finding.companyId) return { kind: "skipped" as const };
+    if (issue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND) {
+      return { kind: "skipped" as const };
+    }
     if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
       return { kind: "skipped" as const };
     }
@@ -3364,6 +3377,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(and(eq(issues.id, input.finding.recoveryIssueId), eq(issues.companyId, issue.companyId)))
       .then((rows) => rows[0] ?? null);
     if (!recoveryIssue) return { kind: "skipped" as const };
+    if (recoveryIssue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND) {
+      return { kind: "skipped" as const };
+    }
 
     const existing =
       await findOpenLivenessEscalation(issue.companyId, input.finding.incidentKey) ??

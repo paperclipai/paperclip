@@ -52,6 +52,7 @@ import { ScheduleEditor, describeSchedule } from "../components/ScheduleEditor";
 import { RunButton } from "../components/AgentActionButtons";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
+import { isVirtualOfficeRoutineLike } from "../lib/virtual-office-routine";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
@@ -66,6 +67,7 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import type {
   EnvBinding,
   RoutineDetail as RoutineDetailType,
@@ -306,6 +308,7 @@ export function RoutineDetail() {
     signingMode: "bearer",
     replayWindowSec: "300",
   });
+  const [virtualOfficeTriggerSafetyConfirmed, setVirtualOfficeTriggerSafetyConfirmed] = useState(false);
   const [editDraft, setEditDraft] = useState<{
     title: string;
     description: string;
@@ -459,6 +462,10 @@ export function RoutineDetail() {
   useEffect(() => {
     autoResizeTextarea(titleInputRef.current);
   }, [editDraft.title, routine?.id]);
+
+  useEffect(() => {
+    setVirtualOfficeTriggerSafetyConfirmed(false);
+  }, [newTrigger.kind, routine?.id]);
 
   const copySecretValue = async (label: string, value: string) => {
     try {
@@ -773,6 +780,10 @@ export function RoutineDetail() {
     : automationEnabled
       ? "text-emerald-400"
       : "text-muted-foreground";
+  const isVirtualOfficeRoutine = isVirtualOfficeRoutineLike(routine);
+  const addTriggerDisabled =
+    createTrigger.isPending ||
+    (isVirtualOfficeRoutine && !virtualOfficeTriggerSafetyConfirmed);
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -914,6 +925,15 @@ export function RoutineDetail() {
       {!routine.assigneeAgentId ? (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-900 dark:text-amber-200">
           Default agent required. This routine can stay as a draft and still run manually, but automation stays paused until you assign a default agent.
+        </div>
+      ) : null}
+
+      {isVirtualOfficeRoutine ? (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-900 dark:text-amber-200" data-testid="routine-virtual-office-safety">
+          <p className="font-medium">Virtual Office routine 安全門</p>
+          <p className="mt-1 text-xs leading-5">
+            這個 routine 來自 Virtual Office 草稿。新增 trigger 或啟用 automation 前，先確認它只掛 Sandbox/Test 專案與測試員工，不指派 Hermes，也不會修改正式資料。
+          </p>
         </div>
       ) : null}
 
@@ -1178,8 +1198,20 @@ export function RoutineDetail() {
                 </>
               )}
             </div>
+            {isVirtualOfficeRoutine ? (
+              <label className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-5 text-amber-900 dark:text-amber-200">
+                <Checkbox
+                  checked={virtualOfficeTriggerSafetyConfirmed}
+                  onCheckedChange={(checked) => setVirtualOfficeTriggerSafetyConfirmed(checked === true)}
+                  className="mt-0.5"
+                />
+                <span>
+                  我已確認這個 trigger 只用於 Sandbox/Test，不指派 Hermes 或正式專案；若要正式啟用，會先完成覆盤與使用者確認。
+                </span>
+              </label>
+            ) : null}
             <div className="flex items-center justify-end">
-              <Button size="sm" onClick={() => createTrigger.mutate()} disabled={createTrigger.isPending}>
+              <Button size="sm" onClick={() => createTrigger.mutate()} disabled={addTriggerDisabled}>
                 {createTrigger.isPending ? "Adding..." : "Add trigger"}
               </Button>
             </div>
@@ -1351,6 +1383,11 @@ export function RoutineDetail() {
         defaultAssigneeAgentId={routine.assigneeAgentId}
         variables={routine.variables ?? []}
         isPending={runRoutine.isPending}
+        safetyConfirmation={isVirtualOfficeRoutine ? {
+          title: "Virtual Office routine 手動執行確認",
+          body: "Run routine 會立刻建立一次 routine execution。請先確認這次只用 Sandbox/Test 專案與測試員工，不指派 Hermes 或正式資料。",
+          label: "我確認這次手動執行只用於 Sandbox/Test，且不會喚醒 Hermes 或修改正式資料。",
+        } : null}
         onSubmit={(data) => runRoutine.mutate(data)}
       />
     </div>

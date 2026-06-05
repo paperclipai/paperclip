@@ -1,4 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
@@ -57,18 +60,33 @@ const externalAdapter: ServerAdapterModule = {
 };
 
 describe("server adapter registry", () => {
+  const cleanupDirs = new Set<string>();
+
   beforeEach(() => {
     unregisterServerAdapter("external_test");
     unregisterServerAdapter("claude_local");
     setOverridePaused("claude_local", false);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     unregisterServerAdapter("external_test");
     unregisterServerAdapter("claude_local");
     setOverridePaused("claude_local", false);
     hermesExecuteMock.mockClear();
+    for (const dir of cleanupDirs) {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+    cleanupDirs.clear();
   });
+
+  async function createRuntimeSkill(key: string, body: string) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-skill-"));
+    cleanupDirs.add(root);
+    const skillDir = path.join(root, key);
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), body, "utf8");
+    return skillDir;
+  }
 
   it("registers external adapters and exposes them through lookup helpers", async () => {
     expect(findServerAdapter("external_test")).toBeNull();
@@ -343,13 +361,14 @@ describe("server adapter registry", () => {
         PAPERCLIP_RUN_ID: "run-123",
       },
     });
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
+    expect(patchedCtx.config.taskBody).toContain(
       "Authorization: Bearer $PAPERCLIP_API_KEY",
     );
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
+    expect(patchedCtx.config.taskBody).toContain(
       "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID",
     );
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("Existing prompt");
+    expect(patchedCtx.config.taskBody).toContain("Existing prompt");
   });
 
   it("preserves Hermes command normalization while injecting auth", async () => {
@@ -385,7 +404,7 @@ describe("server adapter registry", () => {
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
   });
 
-  it("passes the original Hermes context through when authToken is absent", async () => {
+  it("still applies Hermes task-body guidance when authToken is absent but an explicit API key exists", async () => {
     const adapter = requireServerAdapter("hermes_local");
     const ctx = {
       runId: "run-123",
@@ -413,7 +432,12 @@ describe("server adapter registry", () => {
     await adapter.execute(ctx);
 
     expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
-    expect(hermesExecuteMock).toHaveBeenCalledWith(ctx);
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("server-level-key");
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_RUN_ID).toBe("run-123");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
+    expect(patchedCtx.config.taskBody).toContain("Authorization: Bearer $PAPERCLIP_API_KEY");
+    expect(patchedCtx.config.taskBody).toContain("Existing prompt");
   });
 
   it("preserves an explicit Hermes Paperclip API key and does not set promptTemplate when none was configured", async () => {
@@ -479,6 +503,190 @@ describe("server adapter registry", () => {
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
     // Auth token is still injected.
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+  });
+
+  it("appends desired Paperclip runtime skills and makes the final key table contract last for proof tasks", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+    const skillDir = await createRuntimeSkill(
+      "requirements-analysis",
+      "# Requirements Analysis\n\nAlways summarize requirements, blockers, and next safe step.",
+    );
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          paperclipSkillSync: {
+            desiredSkills: ["requirements-analysis"],
+          },
+        },
+      },
+      runtime: {},
+      config: {
+        taskBody: "Original Sandbox/Test issue body. Please include Paperclip runtime capability keys.",
+        paperclipRuntimeSkills: [
+          {
+            key: "requirements-analysis",
+            runtimeName: "requirements-analysis",
+            source: skillDir,
+          },
+        ],
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("## Final Required Output Contract");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
+      "- requirements-analysis: used OR visible but not used",
+    );
+    expect(patchedCtx.config.taskBody).toContain("Original Sandbox/Test issue body.");
+    expect(patchedCtx.config.taskBody).toContain("## Paperclip Runtime Capability Keys");
+    expect(patchedCtx.config.taskBody).toContain("If, and only if, the assigned issue explicitly asks");
+    expect(patchedCtx.config.taskBody).toContain("PAPERCLIP_RUNTIME_CAPABILITY_KEYS");
+    expect(patchedCtx.config.taskBody).toContain("requirements-analysis");
+    expect(patchedCtx.config.taskBody).toContain("Always summarize requirements");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate.indexOf("## Response Workflow")).toBeLessThan(
+      patchedCtx.agent.adapterConfig.promptTemplate.indexOf("## Final Required Output Contract"),
+    );
+  });
+
+  it("copies Paperclip issue context into Hermes task config when heartbeat only provides context", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+    const onLog = vi.fn(async () => {});
+    const skillDir = await createRuntimeSkill(
+      "requirements-analysis",
+      "# Requirements Analysis\n\nAlways summarize requirements, blockers, and next safe step.",
+    );
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          paperclipSkillSync: {
+            desiredSkills: ["requirements-analysis"],
+          },
+        },
+      },
+      runtime: {},
+      config: {
+        paperclipRuntimeSkills: [
+          {
+            key: "requirements-analysis",
+            runtimeName: "requirements-analysis",
+            source: skillDir,
+          },
+        ],
+      },
+      context: {
+        paperclipIssue: {
+          id: "issue-uuid",
+          identifier: "AI-98231",
+          title: "Hermes taskBody runtime skill prompt proof",
+          description: "Fallback issue description.",
+        },
+        paperclipTaskMarkdown: "## Paperclip Issue\n\nAI-98231 runtime proof body. Include Paperclip runtime capability keys.",
+      },
+      onLog,
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.config.taskId).toBe("AI-98231");
+    expect(patchedCtx.config.taskTitle).toBe("Hermes taskBody runtime skill prompt proof");
+    expect(patchedCtx.config.taskBody).toContain("AI-98231 runtime proof body.");
+    expect(patchedCtx.config.taskBody).toContain("## Paperclip Runtime Capability Keys");
+    expect(patchedCtx.config.taskBody).toContain("requirements-analysis");
+    expect(patchedCtx.config.taskBody).toContain("Always summarize requirements");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("## Final Required Output Contract");
+    const routingLog = onLog.mock.calls.find(([stream]) => stream === "stdout")?.[1] as string | undefined;
+    expect(routingLog).toContain("[paperclip] Hermes prompt routing:");
+    expect(routingLog).toContain("taskId=true");
+    expect(routingLog).toContain("taskBody=true");
+    expect(routingLog).toContain("runtimeSkills=true");
+  });
+
+  it("moves custom Hermes prompt templates into the task body with Paperclip runtime skills without overriding ordinary deliverables", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+    const onLog = vi.fn(async () => {});
+    const skillDir = await createRuntimeSkill(
+      "quality-check",
+      "# Quality Check\n\nAlways list tested behavior and remaining risk.",
+    );
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          promptTemplate: "Existing prompt",
+          paperclipSkillSync: {
+            desiredSkills: ["quality-check"],
+          },
+        },
+      },
+      runtime: {},
+      config: {
+        paperclipRuntimeSkills: [
+          {
+            key: "quality-check",
+            runtimeName: "quality-check",
+            source: skillDir,
+          },
+        ],
+      },
+      context: {},
+      onLog,
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).not.toContain("## Final Required Output Contract");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("## Response Workflow");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("Paperclip will post your final response back to the issue automatically");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).not.toContain("curl -s -X POST");
+    expect(patchedCtx.config.taskBody).toContain(
+      "Authorization: Bearer $PAPERCLIP_API_KEY",
+    );
+    expect(patchedCtx.config.taskBody).toContain("## Paperclip Runtime Capability Keys");
+    expect(patchedCtx.config.taskBody).toContain("If, and only if, the assigned issue explicitly asks");
+    expect(patchedCtx.config.taskBody).toContain("PAPERCLIP_RUNTIME_CAPABILITY_KEYS");
+    expect(patchedCtx.config.taskBody).toContain("quality-check");
+    expect(patchedCtx.config.taskBody).not.toContain("Always list tested behavior");
+    expect(patchedCtx.config.taskBody).toContain("Detailed skill instructions are hidden for this ordinary task");
+    expect(patchedCtx.config.taskBody).toContain("## Hermes Agent Instructions");
+    expect(patchedCtx.config.taskBody).toContain("Existing prompt");
+    expect(patchedCtx.config.taskBody.indexOf("## Hermes Agent Instructions")).toBeLessThan(
+      patchedCtx.config.taskBody.indexOf("## Paperclip Runtime Capability Keys"),
+    );
+    expect(onLog).toHaveBeenCalledWith(
+      "stdout",
+      expect.stringContaining(
+        "runtimeSkillsAfterAgentInstructions=true runtimeSkillKeys=quality-check runtimeCapabilityProofRequired=false",
+      ),
+    );
   });
 });
 

@@ -544,6 +544,55 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  it("does not reopen or wake from one-time authorized run comments sent with a Paperclip run header", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "77777777-7777-4777-8777-777777777777",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      contextSnapshot: {
+        oneTimeAuthorization: true,
+        issueId: "11111111-1111-4111-8111-111111111111",
+      },
+    });
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "one-time verification complete",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: "22222222-2222-4222-8222-222222222222",
+      authorUserId: null,
+    });
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .set("X-Paperclip-Run-Id", "77777777-7777-4777-8777-777777777777")
+      .send({ body: "one-time verification complete" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
+    );
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "one-time verification complete",
+      expect.objectContaining({
+        agentId: "22222222-2222-4222-8222-222222222222",
+        runId: "77777777-7777-4777-8777-777777777777",
+        userId: undefined,
+      }),
+      {
+        authorType: "user",
+        presentation: null,
+        metadata: null,
+      },
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("moves assigned blocked issues back to todo via POST comments", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
+import { PROJECT_COLORS, isUuidLike, type Agent, type BudgetPolicySummary, type Issue } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -27,6 +27,14 @@ import { MembershipAction } from "../components/MembershipAction";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { projectRouteRef } from "../lib/utils";
+import { workflowSort } from "../lib/workflow-sort";
+import {
+  OTHER_WORKFLOW_PHASE,
+  WORKFLOW_PHASES,
+  isSystemRecoveryIssue,
+  isUnresolvedIssue,
+  workflowPhaseForIssue,
+} from "../lib/project-workflow-map";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
@@ -160,6 +168,146 @@ function ColorPicker({
   );
 }
 
+function ProjectWorkflowMap({
+  issues,
+  agents,
+}: {
+  issues: Issue[];
+  agents?: Agent[];
+}) {
+  const agentsById = useMemo(() => new Map((agents ?? []).map((agent) => [agent.id, agent])), [agents]);
+  const visibleIssues = useMemo(
+    () => workflowSort(issues.filter((issue) => !isSystemRecoveryIssue(issue))),
+    [issues],
+  );
+  const hiddenRecoveryIssueCount = issues.length - visibleIssues.length;
+  const issuesById = useMemo(() => new Map(visibleIssues.map((issue) => [issue.id, issue])), [visibleIssues]);
+  const phases = useMemo(() => {
+    const grouped = new Map<string, Issue[]>();
+    for (const phase of [...WORKFLOW_PHASES, OTHER_WORKFLOW_PHASE]) grouped.set(phase.id, []);
+    for (const issue of visibleIssues) grouped.get(workflowPhaseForIssue(issue).id)?.push(issue);
+    return [...WORKFLOW_PHASES, OTHER_WORKFLOW_PHASE].filter((phase) => phase.id !== "other" || (grouped.get(phase.id)?.length ?? 0) > 0)
+      .map((phase) => ({ phase, issues: grouped.get(phase.id) ?? [] }));
+  }, [visibleIssues]);
+  const doneCount = visibleIssues.filter((issue) => issue.status === "done").length;
+  const blockedCount = visibleIssues.filter((issue) =>
+    (issue.blockedBy ?? []).filter((blocker) => !isSystemRecoveryIssue(blocker)).some((blocker) => {
+      const localBlocker = issuesById.get(blocker.id);
+      return localBlocker ? isUnresolvedIssue(localBlocker) : isUnresolvedIssue(blocker);
+    }),
+  ).length;
+  const parallelPhaseCount = phases.filter((entry) => entry.issues.length > 1).length;
+
+  if (visibleIssues.length === 0) {
+    return (
+      <section className="rounded-md border border-dashed border-border bg-background p-4">
+        <h3 className="text-sm font-semibold">2.5D 工作流地圖</h3>
+        <p className="mt-1 text-sm text-muted-foreground">這個專案還沒有任務。建立工作流後，需求、設計、實作、測試與覆盤會在這裡排成可視化流程。</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded-md border border-border bg-background p-4">
+      <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h3 className="text-sm font-semibold">2.5D 工作流地圖</h3>
+          <p className="mt-1 text-xs text-muted-foreground">先看上下游和卡點，再往下看完整任務列表。</p>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+          <span className="rounded-full border border-border px-2 py-1">{doneCount} / {visibleIssues.length} 完成</span>
+          <span className="rounded-full border border-border px-2 py-1">{blockedCount} 個等待上游</span>
+          <span className="rounded-full border border-border px-2 py-1">{parallelPhaseCount} 個平行區</span>
+        </div>
+      </div>
+      <div className="mb-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+        <span className="rounded-md border border-border/70 bg-card px-2 py-1">流程方向：左到右</span>
+        <span className="rounded-md border border-border/70 bg-card px-2 py-1">同一欄多張卡：可平行處理</span>
+        <span className="rounded-md border border-border/70 bg-card px-2 py-1">上游未完成：需要等待</span>
+      </div>
+      {hiddenRecoveryIssueCount > 0 && (
+        <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800">
+          已隱藏 {hiddenRecoveryIssueCount} 個系統復原任務，工作流地圖只顯示使用者建立的任務。
+        </div>
+      )}
+
+      <div className="overflow-x-auto pb-1">
+        <div
+          className="grid min-w-[980px] gap-3"
+          style={{ gridTemplateColumns: `repeat(${phases.length}, minmax(180px, 1fr))` }}
+        >
+          {phases.map(({ phase, issues: phaseIssues }, phaseIndex) => (
+            <div key={phase.id} className="relative min-h-44 rounded-md border border-border/70 bg-card/60 p-3">
+              {phaseIndex > 0 && (
+                <div className="absolute -left-3 top-8 flex h-5 w-3 items-center justify-center text-[11px] text-muted-foreground">
+                  →
+                </div>
+              )}
+              <div className="mb-3 flex items-start justify-between gap-2">
+                <div>
+                  <div className="text-sm font-medium">{phase.label}</div>
+                  <div className="text-[11px] text-muted-foreground">{phase.hint}</div>
+                </div>
+                <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{phaseIssues.length}</span>
+              </div>
+              <div className="space-y-2">
+                {phaseIssues.length > 0 ? (
+                  phaseIssues.map((issue) => {
+                    const assignee = issue.assigneeAgentId ? agentsById.get(issue.assigneeAgentId) : null;
+                    const upstreamIssues = (issue.blockedBy ?? [])
+                      .filter((blocker) => !isSystemRecoveryIssue(blocker))
+                      .map((blocker) => issuesById.get(blocker.id) ?? blocker);
+                    const hiddenRecoveryBlockerCount = (issue.blockedBy ?? []).filter(isSystemRecoveryIssue).length;
+                    const unresolvedBlockers = upstreamIssues.filter(isUnresolvedIssue);
+                    const upstreamLabels = upstreamIssues
+                      .slice(0, 2)
+                      .map((blocker) => blocker.identifier ?? blocker.title)
+                      .join("、");
+                    return (
+                      <Link
+                        key={issue.id}
+                        to={`/issues/${issue.id}`}
+                        className="block rounded-md border border-border bg-background p-3 text-sm transition hover:border-primary/50 hover:bg-accent"
+                      >
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <span className="text-[11px] text-muted-foreground">{issue.identifier ?? "No ID"}</span>
+                          <StatusBadge status={issue.status} />
+                        </div>
+                        <div className="line-clamp-2 font-medium">{issue.title}</div>
+                        {upstreamIssues.length > 0 && (
+                          <div className="mt-2 rounded-md bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground">
+                            上游：{upstreamLabels}
+                            {upstreamIssues.length > 2 ? ` +${upstreamIssues.length - 2}` : ""}
+                          </div>
+                        )}
+                        {hiddenRecoveryBlockerCount > 0 && (
+                          <div className="mt-2 rounded-md bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700">
+                            已隱藏 {hiddenRecoveryBlockerCount} 個系統復原上游
+                          </div>
+                        )}
+                        <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                          <span className="truncate">{assignee?.name ?? "未指派"}</span>
+                          <span className={unresolvedBlockers.length > 0 ? "text-amber-500" : "text-emerald-500"}>
+                            {unresolvedBlockers.length > 0 ? `等待 ${unresolvedBlockers.length}` : "可推進"}
+                          </span>
+                        </div>
+                      </Link>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-md border border-dashed border-border/70 p-3 text-xs text-muted-foreground">
+                    這個階段暫時沒有任務。
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 /* ── List (issues) tab content ── */
 
 function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
@@ -187,7 +335,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
 
   const { data: issues, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.listByProject(companyId, projectId),
-    queryFn: () => issuesApi.list(companyId, { projectId }),
+    queryFn: () => issuesApi.list(companyId, { projectId, includeBlockedBy: true }),
     enabled: !!companyId,
   });
 
@@ -201,17 +349,20 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   });
 
   return (
-    <IssuesList
-      issues={issues ?? []}
-      isLoading={isLoading}
-      error={error as Error | null}
-      agents={agents}
-      projects={projects}
-      liveIssueIds={liveIssueIds}
-      projectId={projectId}
-      viewStateKey="paperclip:project-issues-view"
-      onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-    />
+    <div className="space-y-4">
+      {!isLoading && !error && <ProjectWorkflowMap issues={issues ?? []} agents={agents} />}
+      <IssuesList
+        issues={issues ?? []}
+        isLoading={isLoading}
+        error={error as Error | null}
+        agents={agents}
+        projects={projects}
+        liveIssueIds={liveIssueIds}
+        projectId={projectId}
+        viewStateKey="paperclip:project-issues-view"
+        onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+      />
+    </div>
   );
 }
 

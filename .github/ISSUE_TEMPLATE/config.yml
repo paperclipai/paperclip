@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Virtual Office getting started
+    url: https://github.com/paperclipai/paperclip/blob/master/docs/virtual-office-getting-started.en.md
+    about: Start here if you are new to Virtual Office or local Paperclip preview.
+  - name: Virtual Office release checklist
+    url: https://github.com/paperclipai/paperclip/blob/master/docs/virtual-office-release-checklist.en.md
+    about: Check public docs, issue forms, PR safety, local files, and Hermes stop lines before sharing.
+  - name: Contributing guide
+    url: https://github.com/paperclipai/paperclip/blob/master/CONTRIBUTING.md
+    about: Read this before opening a pull request or larger feature proposal.
+  - name: Private security report
+    url: https://github.com/paperclipai/paperclip/security/advisories/new
+    about: Use this for vulnerabilities or reports that may include sensitive information. Do not open a public issue.

@@ -1,0 +1,128 @@
+name: Virtual Office feedback
+description: Report a Virtual Office startup, UI, docs, Hermes readiness, or safety issue.
+title: "[Virtual Office]: "
+labels:
+  - virtual-office
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying Virtual Office. Please share only short summaries.
+
+        Do not paste API keys, tokens, passwords, a full `.env`, full logs, private paths, private repository URLs, intranet URLs, or production customer/company/personal data.
+
+        This issue is not authorization to install Hermes, press Run now, enable schedule triggers, or wake a local model.
+  - type: dropdown
+    id: report_type
+    attributes:
+      label: Report type
+      description: Pick the closest category.
+      options:
+        - Preview startup is blocked
+        - Office UI or button text is unclear
+        - Documentation needs clearer wording
+        - Hermes / local model readiness is unclear
+        - Routine / Run now / schedule trigger safety concern
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: operating_system
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: first_time
+    attributes:
+      label: Is this your first time using Paperclip, agents, or local models?
+      options:
+        - Yes
+        - No
+        - Not sure
+  - type: dropdown
+    id: office_page
+    attributes:
+      label: Can you open the Office page?
+      options:
+        - Yes
+        - No
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: preview_status
+    attributes:
+      label: Preview status
+      description: Use the helper output if you have it.
+      options:
+        - Backend OK / Frontend OK
+        - Backend blocked
+        - Frontend blocked
+        - Both blocked
+        - Not sure
+    validations:
+      required: true
+  - type: checkboxes
+    id: docs_read
+    attributes:
+      label: Documents or UI help you checked
+      options:
+        - label: Getting started guide
+        - label: Open-source README
+        - label: Startup SOP
+        - label: Hermes SOP
+        - label: Office checklist
+  - type: textarea
+    id: steps
+    attributes:
+      label: What did you try?
+      description: Mention buttons or docs you used, but do not paste secrets or full logs.
+      placeholder: "Example: I opened Office, copied the startup safety bundle, then ran the preview helper."
+    validations:
+      required: true
+  - type: textarea
+    id: stuck_step
+    attributes:
+      label: Where did you get stuck?
+      placeholder: "Example: Backend health stayed blocked after restart."
+    validations:
+      required: true
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: Expected vs actual
+      placeholder: |
+        Expected:
+        Actual:
+    validations:
+      required: true
+  - type: textarea
+    id: short_error_summary
+    attributes:
+      label: Short error summary
+      description: Paste only 3 to 5 short lines. Do not paste full logs, private paths, URLs with tokens, or `.env` contents.
+      render: text
+  - type: checkboxes
+    id: safety_confirmation
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I did not paste API keys, tokens, passwords, or a full `.env`.
+          required: true
+        - label: I did not paste full logs, account paths, private repository URLs, or intranet URLs.
+          required: true
+        - label: I did not paste production customer, company, personal, or task data.
+          required: true
+        - label: This issue is not Hermes install, Run now, schedule trigger, or local model wake-up authorization.
+          required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: What would make this easier?
+      placeholder: "A clearer sentence, screenshot, example, safer button label, or simpler startup step."

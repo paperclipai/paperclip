@@ -125,6 +125,16 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
 });
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
+
+function isOneTimeAuthorizationRunContext(contextSnapshot: unknown) {
+  if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return false;
+  return (contextSnapshot as Record<string, unknown>).oneTimeAuthorization === true;
+}
+
+function getPaperclipRunIdHeader(req: Request) {
+  const value = req.header("X-Paperclip-Run-Id");
+  return value?.trim() || null;
+}
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
 type IssueRouteSnapshot = typeof issueRows.$inferSelect;
 type RecoveryRevalidationTrigger =
@@ -5759,6 +5769,13 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const paperclipRunIdHeader = getPaperclipRunIdHeader(req);
+    const paperclipRunFromHeader = paperclipRunIdHeader ? await heartbeat.getRun(paperclipRunIdHeader) : null;
+    const oneTimeRunComment =
+      Boolean(paperclipRunFromHeader) &&
+      paperclipRunFromHeader?.companyId === issue.companyId &&
+      paperclipRunFromHeader?.agentId === issue.assigneeAgentId &&
+      isOneTimeAuthorizationRunContext(paperclipRunFromHeader?.contextSnapshot);
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
@@ -5782,14 +5799,15 @@ export function issueRoutes(
       !!scheduledRetryForHumanComment &&
       scheduledRetryForHumanComment.agentId === issue.assigneeAgentId;
     const effectiveMoveToTodoRequested =
-      explicitMoveToTodoRequested ||
-      shouldImplicitlyMoveCommentedIssueToTodo({
-        issueStatus: issue.status,
-        assigneeAgentId: issue.assigneeAgentId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-      }) ||
-      shouldResumeInProgressScheduledRetry;
+      !oneTimeRunComment &&
+      (explicitMoveToTodoRequested ||
+        shouldImplicitlyMoveCommentedIssueToTodo({
+          issueStatus: issue.status,
+          assigneeAgentId: issue.assigneeAgentId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+        }) ||
+        shouldResumeInProgressScheduledRetry);
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
         ? (await svc.getDependencyReadiness(issue.id)).unresolvedBlockerCount > 0
@@ -5880,9 +5898,9 @@ export function issueRoutes(
     }
 
     const comment = await svc.addComment(id, req.body.body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
-      runId: actor.runId,
+      agentId: actor.agentId ?? (oneTimeRunComment ? paperclipRunFromHeader?.agentId : undefined),
+      userId: oneTimeRunComment ? undefined : actor.actorType === "user" ? actor.actorId : undefined,
+      runId: actor.runId ?? (oneTimeRunComment ? paperclipRunFromHeader?.id : null),
     }, {
       authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
       presentation: req.body.presentation ?? null,
@@ -5961,9 +5979,10 @@ export function issueRoutes(
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
       const assigneeId = currentIssue.assigneeAgentId;
-      const actorIsAgent = actor.actorType === "agent";
-      const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
+      const actorAgentId = actor.actorType === "agent" ? actor.actorId : oneTimeRunComment ? paperclipRunFromHeader?.agentId : null;
+      const actorIsAgent = actor.actorType === "agent" || oneTimeRunComment;
+      const selfComment = actorIsAgent && actorAgentId === assigneeId;
+      const skipWake = selfComment || isClosed || oneTimeRunComment;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {

@@ -66,6 +66,31 @@ If you want to contribute a feature:
 
 Bugs, docs improvements, and small targeted improvements are still the easiest path to getting merged, and we really do appreciate them.
 
+## Virtual Office Feedback
+
+Virtual Office is a beginner-friendly Paperclip workbench that may be tested by people who are new to agents, local models, or developer tooling.
+
+If you are reporting Virtual Office feedback, use the GitHub issue form at [`.github/ISSUE_TEMPLATE/virtual-office.yml`](.github/ISSUE_TEMPLATE/virtual-office.yml), or copy the `Copy issue report` (`複製 issue 回報`) template from the Virtual Office checklist.
+
+Good Virtual Office reports include:
+
+- Your operating system.
+- Whether the Office page opens.
+- Backend / Frontend status, if you have it.
+- The step where you got stuck.
+- A short 3 to 5 line error summary.
+- Which document or button was unclear.
+
+Do not paste API keys, tokens, passwords, a full `.env`, full logs, private paths, private repository URLs, intranet URLs, or production customer/company/personal data.
+
+Opening a Virtual Office issue is not authorization to install Hermes, press Run now, enable schedule triggers, or wake a local model. If you believe the report includes a security vulnerability, do not open a public issue; follow [SECURITY.md](SECURITY.md) instead.
+
+If you open a Virtual Office pull request, use the Virtual Office verification block in [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). In most cases, include `pnpm run office:verify`, a manual Office page or docs check, acceptance checklist updates, and a note that the PR did not install Hermes, press Run now, enable schedule triggers, wake a local model, or include secrets.
+
+For a first small Virtual Office contribution, follow [the First Contribution SOP](docs/virtual-office-first-contribution.en.md). It keeps beginner-friendly docs, UI copy, checklist, and onboarding fixes scoped while preserving the Hermes, Run now, schedule, and production-data stop lines.
+
+Maintainers reviewing Virtual Office PRs should use [the PR Review SOP](docs/virtual-office-pr-review.en.md) before merging. It checks scope, `pnpm run office:verify`, docs/UI/checklist sync, and the Hermes / Run now / schedule / secrets stop lines.
+
 ## General Rules (both paths)
 
 - Write clear commit messages

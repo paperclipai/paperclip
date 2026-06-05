@@ -45,6 +45,17 @@ diagnostics/
 .vscode/
 .claude/settings.local.json
 .paperclip-local/
+.virtual-office-preview-status.json
+.virtual-office-stability-report.json
+.virtual-office-local-ai-status.json
+VIRTUAL_OFFICE_PROGRESS.md
+docs/virtual-office-current-handoff.zh-TW.md
+.hermes-ollama-bridge-status.json
+.hermes-ollama-bridge*.log
+scripts/hermes-wsl.exe
+.paperclip-dev-config.json
+.paperclip-dev*.log
+paperclip-dev*.log
 /.idea/
 /.agents/
 

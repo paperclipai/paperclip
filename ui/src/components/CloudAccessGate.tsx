@@ -4,6 +4,7 @@ import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
+import { AppHealthErrorPage } from "@/components/AppHealthErrorPage";
 import { queryKeys } from "@/lib/queryKeys";
 import { BootstrapPendingPage } from "@/components/BootstrapPendingPage";
 
@@ -77,14 +78,22 @@ export function CloudAccessGate() {
   }
 
   if (healthQuery.error || boardAccessQuery.error) {
+    const errorMessage =
+      healthQuery.error instanceof Error
+        ? healthQuery.error.message
+        : boardAccessQuery.error instanceof Error
+          ? boardAccessQuery.error.message
+          : "Failed to load app state";
+
     return (
-      <div className="mx-auto max-w-xl py-10 text-sm text-destructive">
-        {healthQuery.error instanceof Error
-          ? healthQuery.error.message
-          : boardAccessQuery.error instanceof Error
-            ? boardAccessQuery.error.message
-            : "Failed to load app state"}
-      </div>
+      <AppHealthErrorPage
+        errorMessage={errorMessage}
+        isRetrying={healthQuery.isFetching}
+        isVirtualOfficeRoute={location.pathname.endsWith("/office") || location.pathname === "/office"}
+        onRetry={() => {
+          void healthQuery.refetch();
+        }}
+      />
     );
   }
 
