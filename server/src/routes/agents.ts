@@ -32,6 +32,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
+import { logger } from "../middleware/logger.js";
 import {
   agentService,
   agentInstructionsService,
@@ -62,6 +63,7 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  AdapterRuntimeIdentityResult,
 } from "@paperclipai/adapter-utils";
 import { secretService } from "../services/secrets.js";
 import {
@@ -1231,6 +1233,97 @@ export function agentRoutes(
     };
   }
 
+  async function ensureAdapterRuntimeIdentityForAgent<T extends {
+    id: string;
+    companyId: string;
+    name: string;
+    adapterType: string;
+    adapterConfig: unknown;
+    metadata?: unknown;
+  }>(
+    agent: T,
+    source: string,
+    actor?: {
+      createdByAgentId: string | null;
+      createdByUserId: string | null;
+    },
+  ): Promise<T> {
+    const adapter = findActiveServerAdapter(agent.adapterType);
+    if (!adapter?.ensureRuntimeIdentity) return agent;
+
+    const company = await db
+      .select()
+      .from(companies)
+      .where(eq(companies.id, agent.companyId))
+      .then((rows) => rows[0] ?? null);
+    if (!company) {
+      logger.warn(
+        { agentId: agent.id, companyId: agent.companyId, adapterType: agent.adapterType },
+        "skipping adapter runtime identity because agent company was not found",
+      );
+      return agent;
+    }
+
+    let result: AdapterRuntimeIdentityResult;
+    try {
+      result = await adapter.ensureRuntimeIdentity({
+        companyId: agent.companyId,
+        companyName: company.name,
+        agentId: agent.id,
+        agentName: agent.name,
+        adapterType: agent.adapterType,
+        adapterConfig: asRecord(agent.adapterConfig) ?? {},
+        metadata: asRecord(agent.metadata),
+      });
+    } catch (err) {
+      logger.warn(
+        { err, agentId: agent.id, companyId: agent.companyId, adapterType: agent.adapterType },
+        "adapter runtime identity hook failed; continuing without runtime identity",
+      );
+      return agent;
+    }
+    if (result.warnings?.length) {
+      logger.warn(
+        {
+          agentId: agent.id,
+          companyId: agent.companyId,
+          adapterType: agent.adapterType,
+          warnings: result.warnings,
+        },
+        "adapter runtime identity hook completed with warnings",
+      );
+    }
+
+    const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
+      companyId: agent.companyId,
+      adapterType: agent.adapterType,
+      adapterConfig: result.adapterConfig,
+    });
+
+    const patch: {
+      adapterConfig: Record<string, unknown>;
+      metadata?: Record<string, unknown> | null;
+    } = {
+      adapterConfig: normalizedAdapterConfig,
+    };
+    if (result.metadata !== null) {
+      patch.metadata = result.metadata;
+    }
+
+    const updated = await svc.update(
+      agent.id,
+      patch,
+      {
+        recordRevision: {
+          createdByAgentId: actor?.createdByAgentId ?? null,
+          createdByUserId: actor?.createdByUserId ?? null,
+          source,
+        },
+      },
+    );
+    return (updated as T | null) ?? agent;
+  }
+
   async function resolveDesiredSkillAssignment(
     companyId: string,
     adapterType: string,
@@ -2005,16 +2098,26 @@ export function agentRoutes(
 
     const requiresApproval = company.requireBoardApprovalForNewAgents;
     const status = requiresApproval ? "pending_approval" : "idle";
+    const actor = getActorInfo(req);
     const createdAgent = await svc.create(companyId, {
       ...normalizedHireInput,
       status,
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
+    const bundledAgent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
+    // Pending hires keep runtime identity state so approval activation starts with
+    // the same adapter config; rejected hires are terminated without deleting it.
+    const agent = await ensureAdapterRuntimeIdentityForAgent(
+      bundledAgent,
+      "adapter_runtime_identity_hire",
+      {
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      },
+    );
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
-    const actor = getActorInfo(req);
 
     if (requiresApproval) {
       const requestedAdapterType = normalizedHireInput.adapterType ?? agent.adapterType;
@@ -2179,6 +2282,7 @@ export function agentRoutes(
       allowedSandboxProviders: allowedSandboxProvidersForAgent(createInput.adapterType),
     });
 
+    const actor = getActorInfo(req);
     const createdAgent = await svc.create(companyId, {
       ...createInput,
       adapterConfig: normalizedAdapterConfig,
@@ -2187,7 +2291,15 @@ export function agentRoutes(
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
+    const bundledAgent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
+    const agent = await ensureAdapterRuntimeIdentityForAgent(
+      bundledAgent,
+      "adapter_runtime_identity_create",
+      {
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      },
+    );
     const agentEnv = asRecord(agent.adapterConfig)?.env;
     if (agentEnv) {
       await secretsSvc.syncEnvBindingsForTarget?.(
@@ -2197,7 +2309,6 @@ export function agentRoutes(
       );
     }
 
-    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
@@ -2661,7 +2772,7 @@ export function agentRoutes(
     }
 
     const actor = getActorInfo(req);
-    const agent = await svc.update(id, patchData, {
+    let agent = await svc.update(id, patchData, {
       recordRevision: {
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -2673,6 +2784,14 @@ export function agentRoutes(
       return;
     }
     if (touchesAdapterConfiguration) {
+      agent = await ensureAdapterRuntimeIdentityForAgent(
+        agent,
+        "adapter_runtime_identity_update",
+        {
+          createdByAgentId: actor.agentId,
+          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
       const agentEnv = asRecord(agent.adapterConfig)?.env;
       await secretsSvc.syncEnvBindingsForTarget?.(
         agent.companyId,
