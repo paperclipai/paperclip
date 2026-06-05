@@ -41,6 +41,7 @@ import {
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
+  withdrawIssueThreadInteractionSchema,
   updateIssueWorkProductSchema,
   updateDocumentAnnotationThreadSchema,
   upsertIssueDocumentSchema,
@@ -5518,6 +5519,62 @@ export function issueRoutes(
         interaction,
         actor,
         source: "issue.interaction.respond",
+      });
+
+      res.json(interaction);
+    },
+  );
+
+  router.post(
+    "/issues/:id/interactions/:interactionId/withdraw",
+    validate(withdrawIssueThreadInteractionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (req.actor.type !== "agent") {
+        res.status(403).json({ error: "Only agents may withdraw their own pending interactions" });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const interaction = await issueThreadInteractionService(db).withdrawInteraction(
+        issue,
+        interactionId,
+        req.body,
+        {
+          agentId: actor.agentId,
+          userId: null,
+        },
+      );
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.thread_interaction_withdrawn",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          withdrawnReason:
+            interaction.kind === "request_confirmation"
+              ? (interaction.result?.reason ?? null)
+              : interaction.kind === "ask_user_questions"
+                ? (interaction.result?.withdrawnReason ?? null)
+                : interaction.kind === "suggest_tasks"
+                  ? (interaction.result?.withdrawnReason ?? null)
+                  : null,
+        },
       });
 
       res.json(interaction);

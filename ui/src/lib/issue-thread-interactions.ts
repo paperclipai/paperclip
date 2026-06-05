@@ -68,12 +68,16 @@ export function buildIssueThreadInteractionSummary(
     if (interaction.status === "rejected") {
       return count === 1 ? "Rejected 1 task" : `Rejected ${count} tasks`;
     }
+    if (interaction.status === "withdrawn") {
+      return count === 1 ? "Withdrew 1 suggested task" : `Withdrew ${count} suggested tasks`;
+    }
     return count === 1 ? "Suggested 1 task" : `Suggested ${count} tasks`;
   }
 
   if (interaction.kind === "request_confirmation") {
     if (interaction.status === "accepted") return "Confirmed request";
     if (interaction.status === "rejected") return "Declined request";
+    if (interaction.status === "withdrawn") return "Withdrew confirmation request";
     if (interaction.status === "expired") {
       const outcome = interaction.result?.outcome;
       if (outcome === "superseded_by_comment") return "Confirmation expired after comment";
@@ -89,6 +93,9 @@ export function buildIssueThreadInteractionSummary(
   }
   if (interaction.status === "cancelled") {
     return count === 1 ? "Cancelled 1 question" : `Cancelled ${count} questions`;
+  }
+  if (interaction.status === "withdrawn") {
+    return count === 1 ? "Withdrew 1 question" : `Withdrew ${count} questions`;
   }
   return count === 1 ? "Asked 1 question" : `Asked ${count} questions`;
 }

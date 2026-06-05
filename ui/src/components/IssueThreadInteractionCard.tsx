@@ -77,6 +77,8 @@ function statusLabel(status: IssueThreadInteraction["status"]) {
       return "Answered";
     case "cancelled":
       return "Cancelled";
+    case "withdrawn":
+      return "Withdrawn";
     case "expired":
       return "Expired";
     case "failed":
@@ -106,6 +108,7 @@ function statusIcon(status: IssueThreadInteraction["status"]) {
       return CheckCircle2;
     case "rejected":
     case "cancelled":
+    case "withdrawn":
     case "failed":
       return XCircle;
     case "expired":
@@ -125,6 +128,7 @@ function statusClasses(status: IssueThreadInteraction["status"]) {
       };
     case "rejected":
     case "cancelled":
+    case "withdrawn":
       return {
         shell: "border-rose-400/70 bg-transparent",
         badge: "border-rose-500/60 bg-rose-500/10 text-rose-900 dark:bg-rose-500/15 dark:text-rose-100",

@@ -19,6 +19,7 @@ const mockInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(),
   answerQuestions: vi.fn(),
   cancelQuestions: vi.fn(),
+  withdrawInteraction: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -293,6 +294,29 @@ describe.sequential("issue thread interaction routes", () => {
       createdAt: "2026-04-20T12:00:00.000Z",
       updatedAt: "2026-04-20T12:05:00.000Z",
       resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+    mockInteractionService.withdrawInteraction.mockResolvedValue({
+      id: "interaction-6",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "withdrawn",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: "run-6",
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+      },
+      result: {
+        version: 1,
+        outcome: "withdrawn",
+        reason: "Context changed; superseded by parent issue update",
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:08:00.000Z",
+      resolvedAt: "2026-04-20T12:08:00.000Z",
     });
   });
 
@@ -778,6 +802,52 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("allows the creator agent to withdraw its own pending interaction", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-6",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-6/withdraw")
+      .send({ reason: "Context changed; superseded by parent issue update" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("withdrawn");
+    expect(mockInteractionService.withdrawInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-6",
+      { reason: "Context changed; superseded by parent issue update" },
+      expect.objectContaining({ agentId: CREATED_AGENT_ID, userId: null }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_withdrawn",
+        details: expect.objectContaining({
+          interactionId: "interaction-6",
+          interactionKind: "request_confirmation",
+          interactionStatus: "withdrawn",
+          withdrawnReason: "Context changed; superseded by parent issue update",
+        }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects board users attempting to withdraw an interaction", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-6/withdraw")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(mockInteractionService.withdrawInteraction).not.toHaveBeenCalled();
   });
 
   it("allows agent-authored interaction creation and stamps the active run id", async () => {

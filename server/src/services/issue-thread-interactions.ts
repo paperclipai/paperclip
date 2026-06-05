@@ -22,6 +22,7 @@ import type {
   RespondIssueThreadInteraction,
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
+  WithdrawIssueThreadInteraction,
 } from "@paperclipai/shared";
 import {
   acceptIssueThreadInteractionSchema,
@@ -34,6 +35,7 @@ import {
   requestConfirmationResultSchema,
   suggestTasksPayloadSchema,
   suggestTasksResultSchema,
+  withdrawIssueThreadInteractionSchema,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { issueService, listUnfinalizedExecutionWorkspaceIds } from "./issues.js";
@@ -1341,5 +1343,77 @@ export function issueThreadInteractionService(db: Db) {
       await touchIssue(db, issue.id);
       return hydrateInteraction(updated);
     },
+
+    withdrawInteraction: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      input: WithdrawIssueThreadInteraction,
+      actor: InteractionActor,
+    ) => {
+      const data = withdrawIssueThreadInteractionSchema.parse(input);
+      const current = await getPendingInteractionForResolution({ issue, interactionId });
+
+      if (!actor.agentId) {
+        throw unprocessable("Only the creator agent may withdraw an interaction");
+      }
+      if (current.createdByAgentId !== actor.agentId) {
+        throw unprocessable("Only the creator agent may withdraw an interaction");
+      }
+
+      const reason = data.reason?.trim() || null;
+      const result = buildWithdrawnResult(current, reason);
+
+      const now = new Date();
+      const [updated] = await db
+        .update(issueThreadInteractions)
+        .set({
+          status: "withdrawn",
+          result,
+          resolvedByAgentId: actor.agentId ?? null,
+          resolvedByUserId: actor.userId ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
+
+      if (!updated) {
+        throw conflict("Interaction has already been resolved");
+      }
+
+      await touchIssue(db, issue.id);
+      return hydrateInteraction(updated);
+    },
   };
+}
+
+function buildWithdrawnResult(
+  row: IssueThreadInteractionRow,
+  reason: string | null,
+): IssueThreadInteractionRow["result"] {
+  switch (row.kind) {
+    case "suggest_tasks":
+      return {
+        version: 1,
+        withdrawnReason: reason,
+      };
+    case "ask_user_questions":
+      return {
+        version: 1,
+        answers: [],
+        withdrawnReason: reason,
+        summaryMarkdown: null,
+      };
+    case "request_confirmation":
+      return {
+        version: 1,
+        outcome: "withdrawn",
+        reason,
+      };
+    default:
+      throw unprocessable(`Interactions of kind ${row.kind} cannot be withdrawn`);
+  }
 }

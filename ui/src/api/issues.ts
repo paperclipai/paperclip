@@ -216,6 +216,8 @@ export const issuesApi = {
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/reject`, reason ? { reason } : {}),
   cancelInteraction: (id: string, interactionId: string, reason?: string) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/cancel`, reason ? { reason } : {}),
+  withdrawInteraction: (id: string, interactionId: string, reason?: string) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/withdraw`, reason ? { reason } : {}),
   respondToInteraction: (
     id: string,
     interactionId: string,

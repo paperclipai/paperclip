@@ -562,6 +562,121 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
   });
 
+  it("lets the creator agent withdraw a pending request_confirmation", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const creatorAgentId = randomUUID();
+    const intruderAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Withdraw interactions",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: intruderAgentId,
+        companyId,
+        name: "Intruder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Withdraw parent",
+      status: "in_review",
+      priority: "medium",
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+      },
+    }, {
+      agentId: creatorAgentId,
+    });
+
+    expect(created.status).toBe("pending");
+
+    await expect(interactionsSvc.withdrawInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      reason: "Premature; superseded by parent issue update",
+    }, {
+      agentId: intruderAgentId,
+    })).rejects.toThrow("Only the creator agent may withdraw an interaction");
+
+    await expect(interactionsSvc.withdrawInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      reason: "Board can clear it",
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("Only the creator agent may withdraw an interaction");
+
+    const withdrawn = await interactionsSvc.withdrawInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      reason: "Premature; superseded by parent issue update",
+    }, {
+      agentId: creatorAgentId,
+    });
+
+    expect(withdrawn.status).toBe("withdrawn");
+    expect(withdrawn.kind).toBe("request_confirmation");
+    expect(withdrawn.result).toEqual({
+      version: 1,
+      outcome: "withdrawn",
+      reason: "Premature; superseded by parent issue update",
+    });
+
+    await expect(interactionsSvc.withdrawInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      reason: "Try again",
+    }, {
+      agentId: creatorAgentId,
+    })).rejects.toThrow("Interaction has already been resolved");
+  });
+
   it("reuses the existing interaction when the same idempotency key is submitted twice", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
