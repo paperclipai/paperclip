@@ -96,7 +96,7 @@ describe("cursor local skill sync", () => {
     const before = await listCursorSkills(ctx);
     expect(before.warnings).toEqual([]);
     expect(before.desiredSkills).toEqual(["paperclip", "ascii-heart"]);
-    expect(before.entries.find((entry) => entry.key === "ascii-heart")?.state).toBe("missing");
+    expect(before.entries.find((entry) => entry.key === "ascii-heart")?.state).toBe("shared_unlinked");
 
     const after = await syncCursorSkills(ctx, ["ascii-heart"]);
     expect(after.warnings).toEqual([]);

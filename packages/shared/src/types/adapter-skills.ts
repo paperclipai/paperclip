@@ -5,6 +5,7 @@ export type AgentSkillState =
   | "configured"
   | "installed"
   | "missing"
+  | "shared_unlinked"
   | "stale"
   | "external";
 

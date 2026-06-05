@@ -1588,7 +1588,10 @@ export function buildPersistentSkillSnapshot(
       state = "external";
       detail = desired ? externalConflictDetail : externalDetail;
     } else if (desired) {
-      state = "missing";
+      // Company-managed skills with a resolvable source are merely unlinked from the
+      // shared home (another agent's sync cleared it). Use shared_unlinked so fleet
+      // sweeps can distinguish them from true orphans (required skills with no source).
+      state = !available.required ? "shared_unlinked" : "missing";
       detail = missingDetail;
     }
 
