@@ -35,6 +35,8 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { pickNextSeat, resetSeatRotation } from "./seat-rotation.js";
+import { executeClaudeLocalWithFailover, type Tier0RawOutcome } from "./failover.js";
+import { runTier1 } from "./tier1.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -664,6 +666,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   // ── $0 Max-seat rotation on auth_required (ROCAA-325 Tier 0a) ────────────
+  let lastRaw: Tier0RawOutcome = initial;
   let candidate = toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   while (candidate.errorCode === "claude_auth_required") {
     const { profileDir, allExhausted } = pickNextSeat();
@@ -682,10 +685,47 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       HOME: profileDir,
       CLAUDE_CONFIG_DIR: profileDir,
     });
+    lastRaw = seatAttempt;
     candidate = toAdapterResult(seatAttempt, { fallbackSessionId: null });
   }
 
-  if (!candidate.errorCode) resetSeatRotation();
-  await emitUsage(candidate);
-  return candidate;
+  // ── Short-circuit on Tier 0 success ──────────────────────────────────────
+  if ((candidate.exitCode ?? 0) === 0 && !candidate.errorCode) {
+    resetSeatRotation();
+    await emitUsage(candidate);
+    return candidate;
+  }
+
+  // ── Tier 0 failed — route through the failover orchestrator ──────────────
+  // executeClaudeLocalWithFailover classifies the raw attempt via isRecoverable().
+  // Recoverable failures (rate-limit, network, CLI panic, etc.) transition to
+  // Tier 1 (Anthropic SDK, billed to ANTHROPIC_API_KEY_BLUEPRINT_WORKER).
+  // Non-recoverable failures surface the already-built Tier 0 result unchanged.
+  // Tier 1 runs at most once per execute() call — loop prevention is enforced
+  // by construction inside executeClaudeLocalWithFailover.
+  const capturedLastRaw = lastRaw;
+  const capturedCandidate = candidate;
+  const failoverResult = await executeClaudeLocalWithFailover({
+    tier0: {
+      // The raw attempt has already been made; hand it to the orchestrator so
+      // the classifier runs without spawning a second process.
+      async runTier0(): Promise<Tier0RawOutcome> {
+        return capturedLastRaw;
+      },
+    },
+    tier1: { runTier1: (args) => runTier1(args) },
+    prompt,
+    model,
+    onLog,
+    onMeta: onMeta ?? undefined,
+    resumeSessionId: sessionId ?? null,
+    // Preserve the production toAdapterResult builder so the Tier 0 happy path
+    // is byte-identical to before this wiring was added.
+    buildTier0Result: () => capturedCandidate,
+    issueId: (ctx.context.issueId ?? ctx.context.taskId ?? null) as string | null,
+  });
+
+  if (!failoverResult.errorCode) resetSeatRotation();
+  await emitUsage(failoverResult);
+  return failoverResult;
 }
