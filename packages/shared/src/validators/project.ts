@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { PROJECT_STATUSES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
+import { trustAuthorizationPolicySchema } from "./trust-policy.js";
 
 const executionWorkspaceStrategySchema = z
   .object({
@@ -26,6 +27,7 @@ export const projectExecutionWorkspacePolicySchema = z
     pullRequestPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
     runtimePolicy: z.record(z.string(), z.unknown()).optional().nullable(),
     cleanupPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
+    authorizationPolicy: trustAuthorizationPolicySchema.optional().nullable(),
   })
   .strict();
 

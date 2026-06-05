@@ -119,6 +119,7 @@ import {
 import type {
   IssueCommentMetadata,
   IssueCommentPresentation,
+  SourceTrustMetadata,
 } from "@paperclipai/shared";
 import {
   describeToolInput,
@@ -137,6 +138,7 @@ import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Co
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
+import { SourceTrustBadge } from "./SourceTrustBadge";
 
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
@@ -1283,6 +1285,7 @@ function IssueChatUserMessage({
   const authorName = typeof custom.authorName === "string" ? custom.authorName : null;
   const authorUserId = typeof custom.authorUserId === "string" ? custom.authorUserId : null;
   const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
+  const sourceTrust = isSourceTrustMetadata(custom.sourceTrust) ? custom.sourceTrust : null;
   const followUpRequested = custom.followUpRequested === true;
   const queueReason = typeof custom.queueReason === "string" ? custom.queueReason : null;
   const queueBadgeLabel = queueReason === "hold" ? "\u23f8 Deferred wake" : "Queued";
@@ -1321,6 +1324,7 @@ function IssueChatUserMessage({
     <div className={cn("flex min-w-0 max-w-[85%] flex-col", isCurrentUser && "items-end")}>
       <div className={cn("mb-1 flex items-center gap-2 px-1", isCurrentUser ? "justify-end" : "justify-start")}>
         <span className="text-sm font-medium text-foreground">{resolvedAuthorName}</span>
+        <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
         {followUpRequested ? (
           <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
             Follow-up
@@ -1509,6 +1513,7 @@ function IssueChatAssistantMessage({
   const agentId = authorAgentId ?? runAgentId;
   const agentIcon = agentId ? agentMap?.get(agentId)?.icon : undefined;
   const commentId = typeof custom.commentId === "string" ? custom.commentId : null;
+  const sourceTrust = isSourceTrustMetadata(custom.sourceTrust) ? custom.sourceTrust : null;
   const notices = Array.isArray(custom.notices)
     ? custom.notices.filter((notice): notice is string => typeof notice === "string" && notice.length > 0)
     : [];
@@ -1571,6 +1576,7 @@ function IssueChatAssistantMessage({
               onClick={() => setFolded((v) => !v)}
             >
               <span className="text-sm font-medium text-foreground">{authorName}</span>
+              <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
               <span className="text-xs text-muted-foreground/60">{chainOfThoughtLabel?.toLowerCase()}</span>
               <span className="ml-auto flex items-center gap-1.5">
                 {message.createdAt ? (
@@ -1584,6 +1590,7 @@ function IssueChatAssistantMessage({
           ) : (
             <div className="mb-1.5 flex items-center gap-2">
               <span className="text-sm font-medium text-foreground">{authorName}</span>
+              <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
               {followUpRequested ? (
                 <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
                   Follow-up
@@ -2060,6 +2067,15 @@ function isIssueCommentMetadata(value: unknown): value is IssueCommentMetadata {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   return v.version === 1 && Array.isArray(v.sections);
+}
+
+function isSourceTrustMetadata(value: unknown): value is SourceTrustMetadata {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return v.preset === "low_trust_review" && (
+    v.disposition === "quarantined" ||
+    v.disposition === "promoted"
+  );
 }
 
 function issueStatusIsTerminalDisposition(issueStatus: string | undefined) {

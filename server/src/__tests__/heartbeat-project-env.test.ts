@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildSkillMentionHref } from "@paperclipai/shared";
 import {
+  LOW_TRUST_REVIEW_PRESET,
   applyRunScopedMentionedSkillKeys,
   extractMentionedSkillIdsFromSources,
   resolveExecutionRunAdapterConfig,
@@ -188,6 +189,87 @@ describe("resolveExecutionRunAdapterConfig", () => {
     expect(result.resolvedConfig.env).toEqual({ AGENT_ONLY: "agent-only" });
     expect(result.secretManifest).toEqual([]);
     expect(resolveEnvBindings).not.toHaveBeenCalled();
+  });
+
+  it("passes low-trust allowed secret binding ids into all runtime secret contexts", async () => {
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: { env: {} },
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+    const resolveEnvBindings = vi.fn().mockResolvedValue({
+      env: {},
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+
+    await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      projectId: "project-1",
+      routineId: "routine-1",
+      executionRunConfig: { env: {} },
+      projectEnv: { PROJECT_FLAG: "plain" },
+      routineEnv: { ROUTINE_FLAG: "plain" },
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: LOW_TRUST_REVIEW_PRESET,
+        boundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+          allowedSecretBindingIds: ["binding-1"],
+        },
+        sourcePresets: {},
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime,
+        resolveEnvBindings,
+      } as any,
+    });
+
+    expect(resolveAdapterConfigForRuntime.mock.calls[0]?.[2]).toMatchObject({
+      allowedBindingIds: ["binding-1"],
+    });
+    expect(resolveEnvBindings.mock.calls[0]?.[2]).toMatchObject({
+      allowedBindingIds: ["binding-1"],
+    });
+    expect(resolveEnvBindings.mock.calls[1]?.[2]).toMatchObject({
+      allowedBindingIds: ["binding-1"],
+    });
+  });
+
+  it("rejects inline sensitive env values for low-trust runs", async () => {
+    await expect(resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      executionRunConfig: {
+        env: {
+          OPENAI_API_KEY: "inline-secret",
+        },
+      },
+      projectEnv: null,
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: LOW_TRUST_REVIEW_PRESET,
+        boundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+        },
+        sourcePresets: {},
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn(),
+        resolveEnvBindings: vi.fn(),
+      } as any,
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "low_trust_inline_sensitive_env_denied" },
+    });
   });
 });
 

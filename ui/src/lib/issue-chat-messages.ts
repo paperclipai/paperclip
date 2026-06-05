@@ -413,6 +413,7 @@ function createCommentMessage(args: {
     deletedByAgentId: comment.deletedByAgentId ?? null,
     deletedByUserId: comment.deletedByUserId ?? null,
     deletedByRunId: comment.deletedByRunId ?? null,
+    sourceTrust: comment.sourceTrust ?? null,
   };
   const contentText = comment.deletedAt ? "" : comment.body;
 

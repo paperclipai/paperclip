@@ -6,9 +6,11 @@ import {
   companyMemberships,
   createDb,
   instanceUserRoles,
+  issues,
   principalPermissionGrants,
   projects,
 } from "@paperclipai/db";
+import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -61,6 +63,33 @@ async function createProject(db: ReturnType<typeof createDb>, companyId: string,
     .then((rows) => rows[0]!);
 }
 
+async function createIssue(
+  db: ReturnType<typeof createDb>,
+  companyId: string,
+  input: {
+    id?: string;
+    title?: string;
+    projectId?: string | null;
+    parentId?: string | null;
+    assigneeAgentId?: string | null;
+  } = {},
+) {
+  return db
+    .insert(issues)
+    .values({
+      id: input.id ?? randomUUID(),
+      companyId,
+      title: input.title ?? `Issue ${randomUUID()}`,
+      status: "todo",
+      priority: "medium",
+      projectId: input.projectId ?? null,
+      parentId: input.parentId ?? null,
+      assigneeAgentId: input.assigneeAgentId ?? null,
+    })
+    .returning()
+    .then((rows) => rows[0]!);
+}
+
 async function grantAgentPermission(
   db: ReturnType<typeof createDb>,
   companyId: string,
@@ -98,6 +127,7 @@ describeEmbeddedPostgres("authorization service", () => {
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(instanceUserRoles);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(projects);
     await db.delete(companies);
@@ -216,6 +246,141 @@ describeEmbeddedPostgres("authorization service", () => {
       reason: "allow_simple_company_member",
     });
     expect(decision.explanation).toContain("simple mode");
+  });
+
+  it("limits low-trust issue reads to the configured project and root issue boundary", async () => {
+    const company = await createCompany(db, "LowTrustIssueReads");
+    const project = await createProject(db, company.id, "Allowed");
+    const otherProject = await createProject(db, company.id, "Denied");
+    const rootIssueId = randomUUID();
+    const actorAgent = await createAgent(db, company.id, {
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            projectIds: [project.id],
+            rootIssueId,
+          },
+        },
+      },
+    });
+    const rootIssue = await createIssue(db, company.id, {
+      id: rootIssueId,
+      projectId: project.id,
+      assigneeAgentId: actorAgent.id,
+    });
+    const childIssue = await createIssue(db, company.id, {
+      projectId: project.id,
+      parentId: rootIssue.id,
+    });
+    const unrelatedIssue = await createIssue(db, company.id, {
+      projectId: otherProject.id,
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "agent" as const, agentId: actorAgent.id, companyId: company.id, source: "agent_key" as const };
+    const rootDecision = await authorization.decide({
+      actor,
+      action: "issue:read",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: rootIssue.id,
+        projectId: rootIssue.projectId,
+        parentIssueId: rootIssue.parentId,
+        assigneeAgentId: rootIssue.assigneeAgentId,
+        status: rootIssue.status,
+      },
+    });
+    const childDecision = await authorization.decide({
+      actor,
+      action: "issue:read",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: childIssue.id,
+        projectId: childIssue.projectId,
+        parentIssueId: childIssue.parentId,
+        status: childIssue.status,
+      },
+    });
+    const unrelatedDecision = await authorization.decide({
+      actor,
+      action: "issue:read",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: unrelatedIssue.id,
+        projectId: unrelatedIssue.projectId,
+        parentIssueId: unrelatedIssue.parentId,
+        status: unrelatedIssue.status,
+      },
+    });
+
+    expect(rootDecision).toMatchObject({ allowed: true, reason: "allow_low_trust_boundary" });
+    expect(childDecision).toMatchObject({ allowed: true, reason: "allow_low_trust_boundary" });
+    expect(unrelatedDecision).toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+  });
+
+  it("blocks low-trust project, agent, company-wide, and outside-boundary assignment access", async () => {
+    const company = await createCompany(db, "LowTrustOtherResources");
+    const project = await createProject(db, company.id, "Allowed");
+    const otherProject = await createProject(db, company.id, "Denied");
+    const collaborator = await createAgent(db, company.id);
+    const higherTrustAgent = await createAgent(db, company.id, { role: "cto" });
+    const actorAgent = await createAgent(db, company.id, {
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            projectIds: [project.id],
+            allowedAgentIds: [collaborator.id],
+          },
+        },
+      },
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "agent" as const, agentId: actorAgent.id, companyId: company.id, source: "agent_key" as const };
+
+    await expect(authorization.decide({
+      actor,
+      action: "project:read",
+      resource: { type: "project", companyId: company.id, projectId: project.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_low_trust_boundary" });
+    await expect(authorization.decide({
+      actor,
+      action: "project:read",
+      resource: { type: "project", companyId: company.id, projectId: otherProject.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+    await expect(authorization.decide({
+      actor,
+      action: "agent:read",
+      resource: { type: "agent", companyId: company.id, agentId: collaborator.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_low_trust_boundary" });
+    await expect(authorization.decide({
+      actor,
+      action: "agent:read",
+      resource: { type: "agent", companyId: company.id, agentId: higherTrustAgent.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+    await expect(authorization.decide({
+      actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+    await expect(authorization.decide({
+      actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        projectId: project.id,
+        assigneeAgentId: higherTrustAgent.id,
+      },
+      scope: { projectId: project.id, assigneeAgentId: higherTrustAgent.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
 
   it("denies simple-mode assignment when the target agent requires protected-assignment approval", async () => {

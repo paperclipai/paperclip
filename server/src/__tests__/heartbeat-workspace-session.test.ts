@@ -11,14 +11,18 @@ import {
   formatRuntimeWorkspaceWarningLog,
   mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
+  preflightLowTrustWorkspaceIsolation,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveNextSessionState,
+  resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
+  stripHostWorkspaceProvisionForLowTrustSandbox,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
+import type { TrustPresetResolution } from "../services/trust-preset-resolver.ts";
 
 function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}): ResolvedWorkspaceForRun {
   return {
@@ -84,6 +88,214 @@ const truncatingHermesSessionCodec = {
     return sessionId ? sessionId.slice(0, 16) : null;
   },
 };
+
+function lowTrustResolution(): TrustPresetResolution {
+  return {
+    kind: "low_trust_review",
+    preset: "low_trust_review",
+    boundary: {
+      mode: "low_trust_review",
+      companyId: "company-1",
+      rootIssueId: "issue-1",
+    },
+    sourcePresets: { agent: "low_trust_review" },
+  };
+}
+
+function standardTrustResolution(): TrustPresetResolution {
+  return {
+    kind: "standard",
+    preset: "standard",
+    boundary: null,
+    sourcePresets: {},
+  };
+}
+
+function buildIssueAncestryDb(rows: Array<{ id: string; companyId: string; parentId: string | null }>) {
+  const queue = [...rows];
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => {
+          const row = queue.shift();
+          return Promise.resolve(row ? [row] : []);
+        },
+      }),
+    }),
+  };
+}
+
+describe("stripHostWorkspaceProvisionForLowTrustSandbox", () => {
+  it("removes only the host-side provision command for sandbox-backed low-trust runs", () => {
+    const config = {
+      workspaceStrategy: {
+        type: "git_worktree",
+        branchTemplate: "{{issue.identifier}}-{{slug}}",
+        provisionCommand: "bash ./scripts/provision-worktree.sh",
+        teardownCommand: "bash ./scripts/teardown-worktree.sh",
+      },
+      workspaceRuntime: {
+        services: [{ name: "web" }],
+      },
+    };
+
+    const result = stripHostWorkspaceProvisionForLowTrustSandbox({
+      config,
+      trustPreset: lowTrustResolution(),
+      selectedEnvironmentDriver: "sandbox",
+    });
+
+    expect(result).not.toBe(config);
+    expect(result.workspaceStrategy).toEqual({
+      type: "git_worktree",
+      branchTemplate: "{{issue.identifier}}-{{slug}}",
+      teardownCommand: "bash ./scripts/teardown-worktree.sh",
+    });
+    expect(result.workspaceRuntime).toBe(config.workspaceRuntime);
+    expect(config.workspaceStrategy.provisionCommand).toBe("bash ./scripts/provision-worktree.sh");
+  });
+
+  it("preserves provision commands for standard-trust runs", () => {
+    const config = {
+      workspaceStrategy: {
+        type: "git_worktree",
+        provisionCommand: "bash ./scripts/provision-worktree.sh",
+      },
+    };
+
+    expect(stripHostWorkspaceProvisionForLowTrustSandbox({
+      config,
+      trustPreset: standardTrustResolution(),
+      selectedEnvironmentDriver: "sandbox",
+    })).toBe(config);
+  });
+
+  it("preserves provision commands when a low-trust run is not sandbox-backed", () => {
+    const config = {
+      workspaceStrategy: {
+        type: "git_worktree",
+        provisionCommand: "bash ./scripts/provision-worktree.sh",
+      },
+    };
+
+    expect(stripHostWorkspaceProvisionForLowTrustSandbox({
+      config,
+      trustPreset: lowTrustResolution(),
+      selectedEnvironmentDriver: "local",
+    })).toBe(config);
+  });
+});
+
+describe("preflightLowTrustWorkspaceIsolation", () => {
+  it("fails non-sandbox low-trust runs before the caller reaches host workspace side effects", async () => {
+    let hostWorkspaceSideEffectReached = false;
+
+    await expect((async () => {
+      await preflightLowTrustWorkspaceIsolation({
+        trustPreset: lowTrustResolution(),
+        isolatedWorkspacesEnabled: true,
+        effectiveExecutionWorkspaceMode: "isolated_workspace",
+        issue: {
+          companyId: "company-1",
+          id: "issue-1",
+          projectId: "project-1",
+        },
+        resolveSelectedEnvironmentDriver: async () => "local",
+      });
+      hostWorkspaceSideEffectReached = true;
+    })()).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "low_trust_requires_sandbox_environment",
+      }),
+    });
+
+    expect(hostWorkspaceSideEffectReached).toBe(false);
+  });
+
+  it("returns the sandbox driver for sandbox-backed low-trust runs", async () => {
+    await expect(preflightLowTrustWorkspaceIsolation({
+      trustPreset: lowTrustResolution(),
+      isolatedWorkspacesEnabled: true,
+      effectiveExecutionWorkspaceMode: "isolated_workspace",
+      issue: {
+        companyId: "company-1",
+        id: "issue-1",
+        projectId: "project-1",
+      },
+      resolveSelectedEnvironmentDriver: async () => "sandbox",
+    })).resolves.toBe("sandbox");
+  });
+
+  it("allows child issues inside a rootIssueId low-trust boundary during workspace preflight", async () => {
+    await expect(preflightLowTrustWorkspaceIsolation({
+      db: buildIssueAncestryDb([
+        { id: "issue-child", companyId: "company-1", parentId: "issue-1" },
+        { id: "issue-1", companyId: "company-1", parentId: null },
+      ]) as any,
+      trustPreset: lowTrustResolution(),
+      isolatedWorkspacesEnabled: true,
+      effectiveExecutionWorkspaceMode: "isolated_workspace",
+      issue: {
+        companyId: "company-1",
+        id: "issue-child",
+        projectId: null,
+      },
+      resolveSelectedEnvironmentDriver: async () => "sandbox",
+    })).resolves.toBe("sandbox");
+  });
+});
+
+describe("resolveWorkspaceAfterLowTrustPreflight", () => {
+  it("fails non-sandbox low-trust runs before resolving workspaces", async () => {
+    let workspaceResolverReached = false;
+
+    await expect(resolveWorkspaceAfterLowTrustPreflight({
+      trustPreset: lowTrustResolution(),
+      isolatedWorkspacesEnabled: true,
+      effectiveExecutionWorkspaceMode: "isolated_workspace",
+      issue: {
+        companyId: "company-1",
+        id: "issue-1",
+        projectId: "project-1",
+      },
+      resolveSelectedEnvironmentDriver: async () => "local",
+      resolveWorkspace: async () => {
+        workspaceResolverReached = true;
+        return buildResolvedWorkspace();
+      },
+    })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "low_trust_requires_sandbox_environment",
+      }),
+    });
+
+    expect(workspaceResolverReached).toBe(false);
+  });
+
+  it("preserves standard-trust workspace resolution", async () => {
+    const workspace = buildResolvedWorkspace({ cwd: "/tmp/standard-workspace" });
+
+    await expect(resolveWorkspaceAfterLowTrustPreflight({
+      trustPreset: standardTrustResolution(),
+      isolatedWorkspacesEnabled: false,
+      effectiveExecutionWorkspaceMode: "shared_workspace",
+      issue: {
+        companyId: "company-1",
+        id: "issue-1",
+        projectId: "project-1",
+      },
+      resolveSelectedEnvironmentDriver: async () => {
+        throw new Error("standard trust should not inspect the environment driver");
+      },
+      resolveWorkspace: async () => workspace,
+    })).resolves.toEqual({
+      selectedEnvironmentDriver: null,
+      workspace,
+    });
+  });
+});
 
 describe("resolveRuntimeSessionParamsForWorkspace", () => {
   it("migrates fallback workspace sessions to project workspace when project cwd becomes available", () => {
