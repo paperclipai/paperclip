@@ -174,7 +174,7 @@ describe("issue operational completion guard routes", () => {
 
     expect(res.status).toBe(422);
     expect(res.body.error).toBe(
-      "Operational/manual-run issue still has missing runtime evidence; merge-only PR evidence cannot mark it done.",
+      "Operational/manual-run issue requires explicit runtime completion evidence; merge-only PR evidence cannot mark it done.",
     );
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });

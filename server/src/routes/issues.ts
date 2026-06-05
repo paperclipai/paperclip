@@ -4287,10 +4287,7 @@ export function issueRoutes(
     });
 
     if (updateFields.status === "done" && existing.status !== "done") {
-      const recentComments =
-        typeof svc.listComments === "function"
-          ? await svc.listComments(existing.id, { order: "desc", limit: 12 })
-          : [];
+      const recentComments = await svc.listComments(existing.id, { order: "desc", limit: 12 });
       const completionEvidenceGate = assessOperationalCompletionEvidenceGate({
         issue: existing,
         recentComments,

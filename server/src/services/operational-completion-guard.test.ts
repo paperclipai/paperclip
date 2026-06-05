@@ -31,7 +31,28 @@ describe("assessOperationalCompletionEvidenceGate", () => {
     expect(assessment).toEqual({
       allowed: false,
       reason:
-        "Operational/manual-run issue still has missing runtime evidence; merge-only PR evidence cannot mark it done.",
+        "Operational/manual-run issue requires explicit runtime completion evidence; merge-only PR evidence cannot mark it done.",
+    });
+  });
+
+  it("rejects bare done transitions even when stale historical comments contain runtime evidence", () => {
+    const assessment = assessOperationalCompletionEvidenceGate({
+      issue: {
+        title: "Pentest Swarm operational run",
+        description: "Operational execution issue. Requires runtime report/SARIF evidence before done.",
+      },
+      recentComments: [
+        {
+          body: "Earlier Phase-3 dry-run completed successfully. Green report and SARIF artifact attached.",
+        },
+      ],
+      completionCommentBody: null,
+    });
+
+    expect(assessment).toEqual({
+      allowed: false,
+      reason:
+        "Operational/manual-run issue requires explicit runtime completion evidence; merge-only PR evidence cannot mark it done.",
     });
   });
 
