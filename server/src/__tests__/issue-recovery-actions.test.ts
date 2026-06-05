@@ -25,6 +25,10 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
+import {
+  FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+  SUCCESSFUL_RUN_MISSING_STATE_REASON,
+} from "../services/recovery/successful-run-handoff.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -263,6 +267,230 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(second.evidence).toMatchObject({ latestRunId: "run-2" });
     expect(await svc.getActiveForIssue(companyId, sourceIssueId)).toMatchObject({ id: first.id });
     expect(await svc.getActiveForIssue(randomUUID(), sourceIssueId)).toBeNull();
+  });
+
+  it("keeps child-covered program hubs on the hub owner instead of escalating to CEO", async () => {
+    const companyId = randomUUID();
+    const ceoId = randomUUID();
+    const ctoId = randomUUID();
+    const hubIssueId = randomUUID();
+    const childIssueId = randomUUID();
+    const prefix = `RH${companyId.replaceAll("-", "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Hub Recovery Co",
+      issuePrefix: prefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: ceoId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: ctoId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        status: "idle",
+        reportsTo: ceoId,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: hubIssueId,
+        companyId,
+        title: "Program hub epic",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: ctoId,
+        createdByAgentId: ctoId,
+        issueNumber: 1,
+        identifier: `${prefix}-1`,
+      },
+      {
+        id: childIssueId,
+        companyId,
+        title: "Active child slice",
+        status: "in_progress",
+        priority: "medium",
+        parentId: hubIssueId,
+        assigneeAgentId: ctoId,
+        issueNumber: 2,
+        identifier: `${prefix}-2`,
+      },
+    ]);
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const [hubIssue] = await db.select().from(issues).where(eq(issues.id, hubIssueId));
+    const latestRun = {
+      id: randomUUID(),
+      agentId: ctoId,
+      status: "succeeded",
+      error: null,
+      errorCode: null,
+      contextSnapshot: { retryReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON },
+      livenessState: "needs_followup",
+    } as const;
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: hubIssue!,
+      previousStatus: "in_progress",
+      latestRun,
+      recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      successfulRunHandoffEvidence: {
+        sourceRunId: latestRun.id,
+        correctiveRunId: latestRun.id,
+        missingDisposition: "clear_next_step",
+        handoffAttempt: 3,
+        maxHandoffAttempts: 3,
+        exhausted: true,
+      },
+    });
+
+    const [updatedHub] = await db.select().from(issues).where(eq(issues.id, hubIssueId));
+    expect(updatedHub).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: ctoId,
+    });
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, hubIssueId));
+    expect(action).toMatchObject({
+      ownerAgentId: ctoId,
+      previousOwnerAgentId: ctoId,
+      returnOwnerAgentId: ctoId,
+      kind: "missing_disposition",
+    });
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueWakeup.mock.calls[0]?.[0]).toBe(ctoId);
+  });
+
+  it("restores CTO hub monitor owner when a child-covered hub was misrouted to CEO", async () => {
+    const companyId = randomUUID();
+    const ceoId = randomUUID();
+    const ctoId = randomUUID();
+    const hubIssueId = randomUUID();
+    const childIssueId = randomUUID();
+    const prefix = `RH${companyId.replaceAll("-", "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Misrouted Hub Recovery Co",
+      issuePrefix: prefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: ceoId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: ctoId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        status: "idle",
+        reportsTo: ceoId,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: hubIssueId,
+        companyId,
+        title: "Misrouted program hub epic",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: ceoId,
+        createdByAgentId: ctoId,
+        issueNumber: 1,
+        identifier: `${prefix}-1`,
+      },
+      {
+        id: childIssueId,
+        companyId,
+        title: "Active child slice",
+        status: "in_progress",
+        priority: "medium",
+        parentId: hubIssueId,
+        assigneeAgentId: ctoId,
+        issueNumber: 2,
+        identifier: `${prefix}-2`,
+      },
+    ]);
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const [hubIssue] = await db.select().from(issues).where(eq(issues.id, hubIssueId));
+    const latestRun = {
+      id: randomUUID(),
+      agentId: ceoId,
+      status: "succeeded",
+      error: null,
+      errorCode: null,
+      contextSnapshot: { retryReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON },
+      livenessState: "needs_followup",
+    } as const;
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: hubIssue!,
+      previousStatus: "blocked",
+      latestRun,
+      recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      successfulRunHandoffEvidence: {
+        sourceRunId: latestRun.id,
+        correctiveRunId: latestRun.id,
+        missingDisposition: "clear_next_step",
+        handoffAttempt: 3,
+        maxHandoffAttempts: 3,
+        exhausted: true,
+      },
+    });
+
+    const [updatedHub] = await db.select().from(issues).where(eq(issues.id, hubIssueId));
+    expect(updatedHub).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: ctoId,
+    });
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, hubIssueId));
+    expect(action).toMatchObject({
+      ownerAgentId: ctoId,
+      previousOwnerAgentId: ceoId,
+      returnOwnerAgentId: ctoId,
+      kind: "missing_disposition",
+    });
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueWakeup.mock.calls[0]?.[0]).toBe(ctoId);
   });
 
   it("escalates stranded assigned work into a source action instead of a recovery issue", async () => {

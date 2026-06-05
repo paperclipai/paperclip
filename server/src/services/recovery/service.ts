@@ -103,6 +103,12 @@ type LatestIssueRun = Pick<
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
 type StrandedRecoveryCause = "stranded_assigned_issue" | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
+export type StrandedAssignedPreviousStatus = "todo" | "in_progress" | "blocked";
+
+export function asStrandedAssignedPreviousStatus(status: string): StrandedAssignedPreviousStatus {
+  if (status === "todo" || status === "in_progress" || status === "blocked") return status;
+  return "in_progress";
+}
 
 type SuccessfulRunHandoffRecoveryEvidence = {
   sourceRunId: string | null;
@@ -1839,7 +1845,70 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ].join("\n");
   }
 
-  async function resolveStrandedIssueRecoveryOwnerAgentId(issue: typeof issues.$inferSelect) {
+  const CHILD_COVERED_HUB_CHILD_STATUSES = ["todo", "in_progress", "in_review", "blocked", "backlog"] as const;
+
+  async function isChildCoveredProgramHub(issue: typeof issues.$inferSelect) {
+    const [childRow] = await db
+      .select({ childCount: sql<number>`count(*)::int` })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, issue.companyId),
+          eq(issues.parentId, issue.id),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, [...CHILD_COVERED_HUB_CHILD_STATUSES]),
+        ),
+      );
+    if ((childRow?.childCount ?? 0) === 0) return false;
+
+    const unresolvedBlockerCount = await db
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .innerJoin(issues, and(eq(issues.companyId, issueRelations.companyId), eq(issues.id, issueRelations.issueId)))
+      .where(
+        and(
+          eq(issueRelations.companyId, issue.companyId),
+          eq(issueRelations.relatedIssueId, issue.id),
+          eq(issueRelations.type, "blocks"),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .then((rows) => rows.length);
+
+    return unresolvedBlockerCount === 0;
+  }
+
+  async function resolveChildCoveredHubMonitorOwnerAgentId(issue: typeof issues.$inferSelect) {
+    if (!issue.assigneeAgentId) return null;
+    const assignee = await getAgent(issue.assigneeAgentId);
+    if (!assignee || assignee.companyId !== issue.companyId) return null;
+    if (assignee.role !== "ceo") return assignee.id;
+
+    if (issue.createdByAgentId) {
+      const creator = await getAgent(issue.createdByAgentId);
+      if (creator && creator.companyId === issue.companyId && creator.role !== "ceo") {
+        return creator.id;
+      }
+    }
+
+    const [cto] = await db
+      .select()
+      .from(agents)
+      .where(and(eq(agents.companyId, issue.companyId), eq(agents.role, "cto")))
+      .orderBy(asc(agents.createdAt))
+      .limit(1);
+    return cto?.id ?? null;
+  }
+
+  async function resolveStrandedIssueRecoveryOwnerAgentId(
+    issue: typeof issues.$inferSelect,
+    childCoveredHub?: boolean,
+  ) {
+    const isChildCovered = childCoveredHub ?? await isChildCoveredProgramHub(issue);
+    if (isChildCovered) {
+      return resolveChildCoveredHubMonitorOwnerAgentId(issue);
+    }
+
     const candidateIds: string[] = [];
     if (issue.assigneeAgentId) {
       const assignee = await getAgent(issue.assigneeAgentId);
@@ -2054,7 +2123,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   function buildStrandedRecoveryActionEvidence(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
-    previousStatus: "todo" | "in_progress";
+    previousStatus: StrandedAssignedPreviousStatus;
     recoveryCause: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
@@ -2080,12 +2149,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function ensureSourceScopedStrandedRecoveryAction(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
-    previousStatus: "todo" | "in_progress";
+    previousStatus: StrandedAssignedPreviousStatus;
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    childCoveredHub?: boolean;
   }) {
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
-    const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
+    const childCoveredHub = input.childCoveredHub ?? await isChildCoveredProgramHub(input.issue);
+    const hubMonitorOwnerAgentId = childCoveredHub
+      ? await resolveChildCoveredHubMonitorOwnerAgentId(input.issue)
+      : null;
+    const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue, childCoveredHub);
     const now = new Date();
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
@@ -2094,7 +2168,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       ownerType: ownerAgentId ? "agent" : "board",
       ownerAgentId,
       previousOwnerAgentId: input.issue.assigneeAgentId,
-      returnOwnerAgentId: input.issue.assigneeAgentId,
+      returnOwnerAgentId: hubMonitorOwnerAgentId ?? input.issue.assigneeAgentId,
       cause: recoveryCause,
       fingerprint: strandedRecoveryActionFingerprint({
         issue: input.issue,
@@ -2165,7 +2239,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   function buildRecoveryIssueInPlaceEscalationComment(input: {
     issue: typeof issues.$inferSelect;
-    previousStatus: "todo" | "in_progress";
+    previousStatus: StrandedAssignedPreviousStatus;
     latestRun: LatestIssueRun;
     prefix: string;
   }) {
@@ -2192,7 +2266,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function escalateStrandedRecoveryIssueInPlace(input: {
     issue: typeof issues.$inferSelect;
-    previousStatus: "todo" | "in_progress";
+    previousStatus: StrandedAssignedPreviousStatus;
     latestRun: LatestIssueRun;
   }) {
     const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
@@ -2273,7 +2347,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
-    previousStatus: "todo" | "in_progress";
+    previousStatus: StrandedAssignedPreviousStatus;
     latestRun: LatestIssueRun;
     comment?: string;
     recoveryCause?: StrandedRecoveryCause;
@@ -2288,18 +2362,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
+    const childCoveredHub = await isChildCoveredProgramHub(input.issue);
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
       previousStatus: input.previousStatus,
       latestRun: input.latestRun,
       recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      childCoveredHub,
     });
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const preserveHubMonitorDisposition = childCoveredHub && blockerIds.length === 0;
+    const hubOwnerAgentId =
+      (childCoveredHub ? await resolveChildCoveredHubMonitorOwnerAgentId(input.issue) : null) ??
+      input.issue.assigneeAgentId ??
+      recoveryAction.returnOwnerAgentId ??
+      recoveryAction.ownerAgentId;
     const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
+      status: preserveHubMonitorDisposition ? "in_progress" : "blocked",
       blockedByIssueIds: blockerIds,
-      assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
+      assigneeAgentId: preserveHubMonitorDisposition
+        ? hubOwnerAgentId
+        : recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
     });
     if (!updated) return null;
 
@@ -2384,12 +2468,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       entityId: input.issue.id,
       details: {
         identifier: input.issue.identifier,
-        status: "blocked",
+        status: preserveHubMonitorDisposition ? "in_progress" : "blocked",
         previousStatus: input.previousStatus,
         source: input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
           ? "recovery.reconcile_successful_run_handoff_missing_state"
           : "recovery.reconcile_stranded_assigned_issue",
         recoveryCause: input.recoveryCause ?? "stranded_assigned_issue",
+        childCoveredHub: preserveHubMonitorDisposition,
         latestRunId: input.latestRun?.id ?? null,
         latestRunStatus: input.latestRun?.status ?? null,
         latestRunErrorCode: input.latestRun?.errorCode ?? null,
@@ -2408,7 +2493,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryCause,
     });
 
-    if (recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
+    if (
+      !preserveHubMonitorDisposition &&
+      recoveryAction.ownerAgentId &&
+      recoveryAction.ownerAgentId === input.issue.assigneeAgentId
+    ) {
       const [currentIssue] = await db
         .select({
           status: issues.status,
