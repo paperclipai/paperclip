@@ -5145,7 +5145,7 @@ export function issueRoutes(
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
     const actor = getActorInfo(req);
-    let updated: ReturnType<typeof svc.checkout>;
+    let updated: Awaited<ReturnType<typeof svc.checkout>>;
     try {
       updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     } catch (error) {
