@@ -4232,7 +4232,15 @@ export function issueRoutes(
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
     const monitorChanged = monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) === false;
-    assertCanManageIssueMonitor(req, existing.assigneeAgentId, req.body.executionPolicy !== undefined && monitorChanged);
+    // Use the effective post-patch assignee for the monitor authz check. If the
+    // actor is already the assignee their rights are preserved even when they
+    // clear the assignment in the same request; if they are self-assigning in
+    // this PATCH they get monitor rights as the incoming assignee.
+    const monitorCheckAssigneeAgentId =
+      req.actor.type === "agent" && req.actor.agentId === existing.assigneeAgentId
+        ? existing.assigneeAgentId
+        : requestedAssigneeAgentId;
+    assertCanManageIssueMonitor(req, monitorCheckAssigneeAgentId, req.body.executionPolicy !== undefined && monitorChanged);
 
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
