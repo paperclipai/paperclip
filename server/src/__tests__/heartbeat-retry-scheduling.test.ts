@@ -11,8 +11,11 @@ import {
   environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
+  issueLabels,
   issueRelations,
   issues,
+  labels,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -49,6 +52,12 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
+    // KSI-687: codex_local transient retries now create issueComments and
+    // attach the codex-limit label, so we must clear the label/comment
+    // dependencies before issues/agents/companies.
+    await db.delete(issueLabels);
+    await db.delete(issueComments);
+    await db.delete(labels);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -674,6 +683,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
     await db.delete(budgetPolicies);
     await db.delete(issueRelations);
+    await db.delete(issueLabels);
+    await db.delete(issueComments);
+    await db.delete(labels);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -1227,6 +1239,10 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       await db.delete(heartbeatRunEvents);
       await db.delete(heartbeatRuns);
       await db.delete(agentWakeupRequests);
+      // KSI-687: defensive cleanup in case the wiring inserted any
+      // codex-limit labels for this iteration's company.
+      await db.delete(issueLabels);
+      await db.delete(labels);
       await db.delete(agents);
       await db.delete(companies);
     }

@@ -24,6 +24,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueLabels,
   issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
@@ -32,6 +33,7 @@ import {
   issueTreeHolds,
   issueWorkProducts,
   issues,
+  labels,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -82,6 +84,7 @@ import {
   heartbeatService,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
+import { CODEX_LIMIT_LABEL_NAME } from "../services/issues.js";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
@@ -1253,7 +1256,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(0);
   });
 
-  it("schedules a bounded retry for codex transient upstream failures instead of blocking the issue immediately", async () => {
+  it("transitions issue to blocked while a bounded retry is scheduled for codex transient upstream failures (KSI-687)", async () => {
     mockAdapterExecute.mockResolvedValueOnce({
       exitCode: 1,
       signal: null,
@@ -1296,16 +1299,41 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
 
-    const issue = await db
-      .select()
-      .from(issues)
-      .where(eq(issues.id, issueId))
+    // KSI-687 Mudança 1: codex_local transient-upstream retries move the issue to
+    // `blocked` while the scheduled retry is pending, attach the operational
+    // `codex-limit` label, and post an automatic owner=system comment.
+    const issue = await waitForValue(async () => {
+      const row = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      return row?.status === "blocked" ? row : null;
+    });
+    expect(issue?.status).toBe("blocked");
+    // KSI-687: when transitioning to `blocked`, issuesSvc.update clears the
+    // execution lock fields. The scheduled retry is recorded on the run itself.
+    expect(issue?.executionRunId).toBeNull();
+
+    const companyId = issue?.companyId;
+    expect(companyId).toBeTruthy();
+    const codexLimitLabel = await db
+      .select({ id: labels.id })
+      .from(labels)
+      .where(and(eq(labels.companyId, companyId!), eq(labels.name, CODEX_LIMIT_LABEL_NAME)))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("in_progress");
-    expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
+    expect(codexLimitLabel).not.toBeNull();
+    const labelApplied = await db
+      .select({ issueId: issueLabels.issueId })
+      .from(issueLabels)
+      .where(and(eq(issueLabels.issueId, issueId), eq(issueLabels.labelId, codexLimitLabel!.id)))
+      .then((rows) => rows[0] ?? null);
+    expect(labelApplied).not.toBeNull();
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments).toHaveLength(0);
+    expect(comments.length).toBeGreaterThan(0);
+    expect(comments[0]!.body).toContain("Aguardando retorno do Codex usage-limit");
+    expect(comments[0]!.body).toContain("Owner: sistema (auto-resume)");
   });
 
   it("queues one finish-handoff wake when a successful run leaves in-progress work without a next action", async () => {

@@ -5478,6 +5478,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
     if (!promoted) return { outcome: "not_promoted", run: null };
 
+    // KSI-687: when a codex usage-limit scheduled retry becomes due, transition
+    // the issue back to in_progress and remove the codex-limit label.
+    const promotedIssueId = readNonEmptyString(parseObject(promoted.contextSnapshot).issueId);
+    if (promotedIssueId) {
+      try {
+        const promotedIssue = await issuesSvc.getById(promotedIssueId);
+        if (promotedIssue?.status === "blocked") {
+          await issuesSvc.update(promotedIssueId, { status: "in_progress" });
+        }
+        await issuesSvc.clearCodexLimitLabelIfApplicable(promotedIssueId, promoted.companyId);
+      } catch (_err) {
+        // Non-fatal: promotion still succeeds even if the issue update fails.
+      }
+    }
+
     await appendRunEvent(promoted, await nextRunEventSeq(promoted.id), {
       eventType: "lifecycle",
       stream: "system",
@@ -5904,6 +5919,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
 
+    // KSI-687: for codex_local transient-upstream retries, move the issue to
+    // `blocked` so the board can see the pause, and attach the operational
+    // `codex-limit` label. This runs after the transaction commits.
+    if (
+      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON &&
+      agent.adapterType === "codex_local" &&
+      issueId
+    ) {
+      await applyCodexLimitBlockedState(issueId, run.companyId, run.agentId, run.id, {
+        outcome: "scheduled",
+        run: retryRun,
+        dueAt,
+        attempt: schedule.attempt,
+        maxAttempts: schedule.maxAttempts,
+      });
+    }
+
     return {
       outcome: "scheduled" as const,
       run: retryRun,
@@ -5911,6 +5943,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       attempt: schedule.attempt,
       maxAttempts: schedule.maxAttempts,
     };
+  }
+
+  /**
+   * KSI-687: after a codex_local run hits a usage-limit and a scheduled_retry
+   * is successfully queued, move the issue to `blocked` and attach the
+   * `codex-limit` operational label so the board can see the pause.
+   *
+   * Extracted as a standalone helper so it can be called from both the
+   * post-run failure path (scheduleBoundedRetryForRun) and, in future, from
+   * any other place that schedules a codex usage-limit retry.
+   */
+  async function applyCodexLimitBlockedState(
+    issueId: string,
+    companyId: string,
+    agentId: string,
+    runId: string,
+    retryResult: { outcome: string; run?: { scheduledRetryAt?: Date | string | null }; dueAt?: Date; attempt?: number; maxAttempts?: number },
+  ): Promise<void> {
+    try {
+      const dueAtIso = retryResult.dueAt instanceof Date
+        ? retryResult.dueAt.toISOString()
+        : retryResult.run?.scheduledRetryAt
+          ? new Date(retryResult.run.scheduledRetryAt).toISOString()
+          : null;
+      const attempt = retryResult.attempt ?? null;
+      const maxAttempts = retryResult.maxAttempts ?? null;
+      await issuesSvc.update(issueId, { status: "blocked" });
+      await issuesSvc.addCodexLimitLabelToIssue(issueId, companyId);
+      const commentBody = [
+        "Aguardando retorno do Codex usage-limit.",
+        dueAtIso ? `Retry agendado para \`${dueAtIso}\`.` : null,
+        attempt != null && maxAttempts != null ? `Tentativa ${attempt}/${maxAttempts}.` : null,
+        "Owner: sistema (auto-resume). Escalação humana aos 84h se persistir.",
+      ].filter(Boolean).join(" ");
+      await issuesSvc.addComment(issueId, commentBody, { agentId, runId });
+    } catch (_err) {
+      // Non-fatal: the scheduled_retry was already recorded; the issue state
+      // update is a best-effort UX improvement.
+    }
   }
 
   async function promoteDueScheduledRetries(now = new Date()) {

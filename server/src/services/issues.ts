@@ -86,6 +86,17 @@ import {
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+
+/**
+ * Operational label applied automatically when a `codex_local` agent hits the
+ * Codex usage limit and the issue is moved to `blocked` while waiting for the
+ * scheduled retry to fire. Removed automatically when the retry is promoted
+ * back to `pending` or the issue is reassigned to a different agent.
+ *
+ * Source of truth: KSI-687 (parent KSI-586). See plan document on KSI-586.
+ */
+export const CODEX_LIMIT_LABEL_NAME = "codex-limit";
+export const CODEX_LIMIT_LABEL_COLOR = "#06b6d4";
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -3477,6 +3488,92 @@ export function issueService(db: Db) {
     );
   }
 
+  /**
+   * Returns the labelId for the `codex-limit` operational label in a company,
+   * creating it idempotently on first use. Safe to call inside or outside a
+   * transaction.
+   *
+   * Source of truth: KSI-687 (parent KSI-586).
+   */
+  async function ensureCodexLimitLabel(companyId: string, dbOrTx: any = db): Promise<string> {
+    const existing = await dbOrTx
+      .select({ id: labels.id })
+      .from(labels)
+      .where(and(eq(labels.companyId, companyId), eq(labels.name, CODEX_LIMIT_LABEL_NAME)))
+      .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+    if (existing) return existing.id;
+    const created = await dbOrTx
+      .insert(labels)
+      .values({
+        companyId,
+        name: CODEX_LIMIT_LABEL_NAME,
+        color: CODEX_LIMIT_LABEL_COLOR,
+      })
+      .returning({ id: labels.id })
+      .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+    if (created) return created.id;
+    // Race-condition fallback: someone else inserted between our select and insert.
+    const retry = await dbOrTx
+      .select({ id: labels.id })
+      .from(labels)
+      .where(and(eq(labels.companyId, companyId), eq(labels.name, CODEX_LIMIT_LABEL_NAME)))
+      .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+    if (!retry) {
+      throw new Error("Failed to ensure codex-limit label after race retry");
+    }
+    return retry.id;
+  }
+
+  /**
+   * Returns the labelId for the `codex-limit` label if it already exists in
+   * the company, or `null` otherwise. Does not create. Safe inside/outside tx.
+   */
+  async function getCodexLimitLabelId(companyId: string, dbOrTx: any = db): Promise<string | null> {
+    const row = await dbOrTx
+      .select({ id: labels.id })
+      .from(labels)
+      .where(and(eq(labels.companyId, companyId), eq(labels.name, CODEX_LIMIT_LABEL_NAME)))
+      .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+    return row?.id ?? null;
+  }
+
+  /**
+   * Adds the `codex-limit` label to an issue idempotently. Creates the label
+   * if it doesn't exist yet in the company. No-op if the label is already on
+   * the issue.
+   */
+  async function addCodexLimitLabelToIssue(
+    issueId: string,
+    companyId: string,
+    dbOrTx: any = db,
+  ): Promise<void> {
+    const labelId = await ensureCodexLimitLabel(companyId, dbOrTx);
+    await dbOrTx
+      .insert(issueLabels)
+      .values({ issueId, labelId, companyId })
+      .onConflictDoNothing();
+  }
+
+  /**
+   * Removes the `codex-limit` label from an issue if currently applied. No-op
+   * if the label doesn't exist in the company yet (so safe to call from
+   * symmetric callers like reassignment without checking first).
+   */
+  async function clearCodexLimitLabelIfApplicable(
+    issueId: string,
+    companyId: string,
+    dbOrTx: any = db,
+  ): Promise<boolean> {
+    const labelId = await getCodexLimitLabelId(companyId, dbOrTx);
+    if (!labelId) return false;
+    const removed = await dbOrTx
+      .delete(issueLabels)
+      .where(and(eq(issueLabels.issueId, issueId), eq(issueLabels.labelId, labelId)))
+      .returning({ issueId: issueLabels.issueId })
+      .then((rows: Array<{ issueId: string }>) => rows.length > 0);
+    return removed;
+  }
+
   async function getIssueRelationSummaryMap(
     companyId: string,
     issueIds: string[],
@@ -5136,6 +5233,19 @@ export function issueService(db: Db) {
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
         }
+        // KSI-687/O5: When the issue is reassigned to a different agent (or to
+        // a user) while carrying the `codex-limit` operational label, the
+        // label is no longer truthful — the new assignee is not waiting on a
+        // Codex usage-limit retry tied to the previous agent. Clear it
+        // symmetrically with the addCodexLimitLabelToIssue path. Skip when
+        // the caller is explicitly managing labels via labelIds (they own
+        // the label state in that call).
+        const assigneeChangedToDifferentTarget =
+          (issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== existing.assigneeAgentId) ||
+          (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId);
+        if (nextLabelIds === undefined && assigneeChangedToDifferentTarget) {
+          await clearCodexLimitLabelIfApplicable(updated.id, existing.companyId, tx);
+        }
         if (blockedByIssueIds !== undefined) {
           await syncBlockedByIssueIds(
             updated.id,
@@ -5621,6 +5731,18 @@ export function issueService(db: Db) {
         .where(eq(labels.id, id))
         .returning()
         .then((rows) => rows[0] ?? null),
+
+    /**
+     * Operational label helpers for KSI-687 (parent KSI-586). Used by the
+     * heartbeat scheduled-retry path and productivity-review suppression.
+     * Exposed on the service surface so callers in heartbeat.ts and
+     * productivity-review.ts can keep state coherent without re-implementing
+     * label CRUD or duplicating the constant.
+     */
+    ensureCodexLimitLabel,
+    getCodexLimitLabelId,
+    addCodexLimitLabelToIssue,
+    clearCodexLimitLabelIfApplicable,
 
     listComments: async (
       issueId: string,
