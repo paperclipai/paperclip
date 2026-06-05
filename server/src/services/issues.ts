@@ -4346,57 +4346,60 @@ export function issueService(db: Db) {
       parentIssueId: string,
       data: IssueChildCreateInput,
     ) => {
-      const parent = await db
-        .select()
-        .from(issues)
-        .where(eq(issues.id, parentIssueId))
-        .then((rows) => rows[0] ?? null);
-      if (!parent) throw notFound("Parent issue not found");
+      return db.transaction(async (tx) => {
+        const parent = await tx
+          .select()
+          .from(issues)
+          .where(eq(issues.id, parentIssueId))
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+        if (!parent) throw notFound("Parent issue not found");
 
-      const [{ childCount }] = await db
-        .select({ childCount: sql<number>`count(*)::int` })
-        .from(issues)
-        .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parent.id)));
-      if (childCount >= MAX_CHILD_ISSUES_CREATED_BY_HELPER) {
-        throw unprocessable(`Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} child issues for this helper`);
-      }
+        const [{ childCount }] = await tx
+          .select({ childCount: sql<number>`count(*)::int` })
+          .from(issues)
+          .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parent.id)));
+        if (childCount >= MAX_CHILD_ISSUES_CREATED_BY_HELPER) {
+          throw unprocessable(`Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} child issues for this helper`);
+        }
 
-      const {
-        acceptanceCriteria,
-        blockParentUntilDone,
-        actorAgentId,
-        actorUserId,
-        ...issueData
-      } = data;
-      const child = await issueService(db).create(parent.companyId, {
-        ...issueData,
-        parentId: parent.id,
-        projectId: issueData.projectId ?? parent.projectId,
-        goalId: issueData.goalId ?? parent.goalId,
-        requestDepth: clampIssueRequestDepth(
-          Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
-        ),
-        description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
-        inheritExecutionWorkspaceFromIssueId: parent.id,
+        const {
+          acceptanceCriteria,
+          blockParentUntilDone,
+          actorAgentId,
+          actorUserId,
+          ...issueData
+        } = data;
+        const child = await issueService(tx as unknown as Db).create(parent.companyId, {
+          ...issueData,
+          parentId: parent.id,
+          projectId: issueData.projectId ?? parent.projectId,
+          goalId: issueData.goalId ?? parent.goalId,
+          requestDepth: clampIssueRequestDepth(
+            Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
+          ),
+          description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
+          inheritExecutionWorkspaceFromIssueId: parent.id,
+        });
+
+        if (blockParentUntilDone) {
+          const existingBlockers = await tx
+            .select({ blockerIssueId: issueRelations.issueId })
+            .from(issueRelations)
+            .where(and(eq(issueRelations.companyId, parent.companyId), eq(issueRelations.relatedIssueId, parent.id), eq(issueRelations.type, "blocks")));
+          await syncBlockedByIssueIds(
+            parent.id,
+            parent.companyId,
+            [...new Set([...existingBlockers.map((row: { blockerIssueId: string }) => row.blockerIssueId), child.id])],
+            { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+            tx,
+          );
+        }
+
+        return {
+          issue: child,
+          parentBlockerAdded: Boolean(blockParentUntilDone),
+        };
       });
-
-      if (blockParentUntilDone) {
-        const existingBlockers = await db
-          .select({ blockerIssueId: issueRelations.issueId })
-          .from(issueRelations)
-          .where(and(eq(issueRelations.companyId, parent.companyId), eq(issueRelations.relatedIssueId, parent.id), eq(issueRelations.type, "blocks")));
-        await syncBlockedByIssueIds(
-          parent.id,
-          parent.companyId,
-          [...new Set([...existingBlockers.map((row) => row.blockerIssueId), child.id])],
-          { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
-        );
-      }
-
-      return {
-        issue: child,
-        parentBlockerAdded: Boolean(blockParentUntilDone),
-      };
     },
 
     decomposeAcceptedPlan: async (

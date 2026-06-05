@@ -118,6 +118,7 @@ import {
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { extractRequiredBlockerIssueIdentifiers } from "../services/issue-closeout-blockers.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -163,6 +164,67 @@ type SuccessfulRunHandoffActivityRow = {
   details: Record<string, unknown> | null;
   createdAt: Date;
 };
+type RequiredBlockerEdgeValidationIssue = {
+  id: string;
+  companyId: string;
+  identifier: string | null;
+  title: string;
+};
+
+async function validateRequiredBlockerReferencesHaveEdges(input: {
+  svc: ReturnType<typeof issueService>;
+  companyId: string;
+  text: string | null | undefined;
+  nextStatus: unknown;
+  currentBlockedByIssueIds?: string[] | null;
+  requestedBlockedByIssueIds?: unknown;
+  res: Response;
+}) {
+  if (input.nextStatus !== "blocked" && input.nextStatus !== "done") return true;
+
+  const requiredIdentifiers = extractRequiredBlockerIssueIdentifiers(input.text);
+  if (requiredIdentifiers.length === 0) return true;
+
+  const linkedIssueIds = new Set(
+    Array.isArray(input.requestedBlockedByIssueIds)
+      ? input.requestedBlockedByIssueIds.filter((value): value is string => typeof value === "string")
+      : input.currentBlockedByIssueIds ?? [],
+  );
+
+  const missing: RequiredBlockerEdgeValidationIssue[] = [];
+  const unknownIdentifiers: string[] = [];
+  for (const identifier of requiredIdentifiers) {
+    const issue = await input.svc.getByIdentifier(identifier);
+    if (!issue || issue.companyId !== input.companyId) {
+      unknownIdentifiers.push(identifier);
+      continue;
+    }
+    if (!linkedIssueIds.has(issue.id)) {
+      missing.push({
+        id: issue.id,
+        companyId: issue.companyId,
+        identifier: issue.identifier,
+        title: issue.title,
+      });
+    }
+  }
+
+  if (missing.length === 0 && unknownIdentifiers.length === 0) return true;
+
+  input.res.status(422).json({
+    error: "Issue text names required blocker issues without first-class blocker edges",
+    message:
+      "Add the referenced issues to blockedByIssueIds, or use the child issue helper with blockParentUntilDone so the blocker edge is created atomically.",
+    requiredBlockerIssueIdentifiers: requiredIdentifiers,
+    missingBlockedByIssues: missing.map((issue) => ({
+      id: issue.id,
+      identifier: issue.identifier,
+      title: issue.title,
+    })),
+    unknownBlockerIssueIdentifiers: unknownIdentifiers,
+  });
+  return false;
+}
 
 function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => void) {
   if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
@@ -3677,6 +3739,14 @@ export function issueRoutes(
       actor.actorType,
     );
     assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+    if (!(await validateRequiredBlockerReferencesHaveEdges({
+      svc,
+      companyId,
+      text: req.body.description,
+      nextStatus: req.body.status,
+      requestedBlockedByIssueIds: req.body.blockedByIssueIds,
+      res,
+    }))) return;
     const issue = await svc.create(companyId, {
       ...req.body,
       executionPolicy,
@@ -3778,6 +3848,14 @@ export function issueRoutes(
       actor.actorType,
     );
     assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+    if (!(await validateRequiredBlockerReferencesHaveEdges({
+      svc,
+      companyId: parent.companyId,
+      text: req.body.description,
+      nextStatus: req.body.status,
+      requestedBlockedByIssueIds: req.body.blockedByIssueIds,
+      res,
+    }))) return;
     const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
       ...req.body,
       executionPolicy,
@@ -4284,6 +4362,27 @@ export function issueRoutes(
       updateFields,
       actorType: req.actor.type,
     });
+
+    const closeoutNextStatus = typeof updateFields.status === "string" ? updateFields.status : existing.status;
+    let currentBlockedByIssueIds: string[] | null = null;
+    if (
+      commentBody &&
+      (closeoutNextStatus === "blocked" || closeoutNextStatus === "done") &&
+      !Array.isArray(req.body.blockedByIssueIds) &&
+      extractRequiredBlockerIssueIdentifiers(commentBody).length > 0
+    ) {
+      const relations = existingRelations ?? await svc.getRelationSummaries(existing.id);
+      currentBlockedByIssueIds = relations.blockedBy.map((relation) => relation.id);
+    }
+    if (!(await validateRequiredBlockerReferencesHaveEdges({
+      svc,
+      companyId: existing.companyId,
+      text: commentBody,
+      nextStatus: closeoutNextStatus,
+      currentBlockedByIssueIds,
+      requestedBlockedByIssueIds: req.body.blockedByIssueIds,
+      res,
+    }))) return;
 
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);

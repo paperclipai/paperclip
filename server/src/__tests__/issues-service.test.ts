@@ -2345,6 +2345,47 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     ]);
   });
 
+  it("rolls back helper-created child when parent blocker attachment fails", async () => {
+    const companyId = randomUUID();
+    const parentIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    await expect(
+      svc.createChild(parentIssueId, {
+        title: "Cycle child",
+        status: "todo",
+        blockedByIssueIds: [parentIssueId],
+        blockParentUntilDone: true,
+      }),
+    ).rejects.toMatchObject({ status: 422 });
+
+    const children = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.parentId, parentIssueId));
+    const relations = await db
+      .select({ id: issueRelations.id })
+      .from(issueRelations)
+      .where(eq(issueRelations.companyId, companyId));
+
+    expect(children).toEqual([]);
+    expect(relations).toEqual([]);
+  });
+
   it("clamps helper-created child requestDepth to the safe maximum", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
