@@ -2869,6 +2869,36 @@ export function issueRoutes(
         });
     }
 
+    // A fresh PATCH to in_progress signals that an agent has picked up the issue
+    // and is actively working — reset the disposition timer so the recovery system
+    // does not re-trigger on an issue that already has a live execution path.
+    if (issue.status === "in_progress") {
+      await listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id])
+        .then(async (handoffStates) => {
+          const handoff = handoffStates.get(issue.id);
+          if (!handoff || handoff.state !== "required") return;
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.successful_run_handoff_resolved",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              identifier: issue.identifier,
+              sourceRunId: handoff.sourceRunId,
+              correctiveRunId: handoff.correctiveRunId,
+              resolvedByStatus: issue.status,
+            },
+          });
+        })
+        .catch((err) => {
+          logger.warn({ err, issueId: issue.id }, "failed to log successful run handoff resolution on in_progress patch");
+        });
+    }
+
     if (Array.isArray(req.body.blockedByIssueIds)) {
       const previousBlockedByIds = new Set((existingRelations?.blockedBy ?? []).map((relation) => relation.id));
       const nextBlockedByIds = new Set(req.body.blockedByIssueIds as string[]);
