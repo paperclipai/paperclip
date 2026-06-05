@@ -556,6 +556,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/secrets/{id}/usage",
   "GET /api/secrets/{id}/access-events",
   "POST /api/health/dev-server/restart",
+  "POST /api/health/supervisor/reset",
   "POST /api/issues/{id}/interactions/{interactionId}/accept",
   "POST /api/issues/{id}/interactions/{interactionId}/reject",
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
@@ -615,6 +616,7 @@ const CREATED_OPERATIONS = new Set([
 const ACCEPTED_OPERATIONS = new Set([
   "POST /api/companies/import",
   "POST /api/health/dev-server/restart",
+  "POST /api/health/supervisor/reset",
   "POST /api/invites/{token}/accept",
 ]);
 
@@ -3926,6 +3928,14 @@ registerCurrentRoute({
   tags: ["health"],
   summary: "Request a managed dev-server restart",
   responses: { 202: r.ok(), 403: r.forbidden, 404: r.notFound, 409: { description: "Restart is not required" } },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/health/supervisor/reset",
+  tags: ["health"],
+  summary: "Reset the embedded postgres supervisor's gave_up state",
+  responses: { 202: r.ok(), 403: r.forbidden, 404: r.notFound },
 });
 
 registerCurrentRoute({
