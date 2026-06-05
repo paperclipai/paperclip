@@ -1257,6 +1257,8 @@ export const storybookSidebarBadges: SidebarBadges = {
 
 export const storybookDashboardSummary: DashboardSummary = {
   companyId: "company-storybook",
+  companyStatus: "active",
+  companyPauseReason: null,
   agents: {
     active: 3,
     running: 1,
