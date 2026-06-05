@@ -10379,6 +10379,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               biller: resolveLedgerBiller(adapterResult),
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
+              // BLO-9102: provenance of costUsd (metered vs list-price estimate)
+              // so windowed cost rollups can distinguish them. Absent when the
+              // adapter does not report it (consumers treat absent as unknown).
+              ...(adapterResult.costSource != null ? { costSource: adapterResult.costSource } : {}),
               billingType: normalizeLedgerBillingType(adapterResult.billingType),
             } as Record<string, unknown>)
           : null;

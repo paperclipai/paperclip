@@ -45,7 +45,7 @@ import {
   resolvePaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
-import { computeOpenAICompatibleCost } from "./pricing.js";
+import { classifyCostSource, computeOpenAICompatibleCost } from "./pricing.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   parseOpenCodeModelsOutput,
@@ -647,6 +647,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         attempt.parsed.costUsd === 0
           ? computeOpenAICompatibleCost(modelId, attempt.parsed.usage)
           : null;
+      // BLO-9102: flag whether costUsd is a true meter or a list-price estimate
+      // so cost rollups don't compare apples (metered) to oranges (estimate).
+      const costSource = classifyCostSource(attempt.parsed.costUsd, fallbackCost);
       return {
         exitCode: synthesizedExitCode,
         signal: attempt.proc.signal,
@@ -665,6 +668,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         model: modelId,
         billingType: fallbackCost !== null ? "metered_api" : "unknown",
         costUsd: fallbackCost !== null ? fallbackCost : attempt.parsed.costUsd,
+        costSource,
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,

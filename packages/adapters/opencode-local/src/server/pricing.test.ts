@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { computeOpenAICompatibleCost, OPENAI_PRICING_USD_PER_MTOK } from "./pricing.js";
+import { classifyCostSource, computeOpenAICompatibleCost, OPENAI_PRICING_USD_PER_MTOK } from "./pricing.js";
+import { models as openCodeModels, modelProfiles as openCodeModelProfiles } from "../index.js";
 
 describe("computeOpenAICompatibleCost", () => {
   it("returns positive cost for a known model with non-zero usage", () => {
@@ -67,5 +68,47 @@ describe("computeOpenAICompatibleCost", () => {
       expect(rate.output, `${model} output`).toBeGreaterThan(0);
       expect(rate.output, `${model} output >= input (typical for chat)`).toBeGreaterThanOrEqual(rate.input);
     }
+  });
+
+  it("prices gpt-5.3-codex (BLO-9102: the observed $0 hole) with non-zero usage", () => {
+    // Regression: gpt-5.3-codex reported costUsd=0 across the whole window
+    // because it was absent from the table. Must now estimate a positive cost.
+    const cost = computeOpenAICompatibleCost("openai/gpt-5.3-codex", {
+      inputTokens: 100_000,
+      cachedInputTokens: 0,
+      outputTokens: 50_000,
+    });
+    expect(cost).not.toBeNull();
+    expect(cost!).toBeGreaterThan(0);
+  });
+
+  it("BLO-9102 coverage invariant: every advertised opencode model is priced (no silent $0)", () => {
+    // Acceptance #3: a model an opencode agent can be configured with must
+    // appear in the pricing table, or computeOpenAICompatibleCost returns null
+    // and the run silently reports $0. This guards against adding a model to
+    // the index.ts allowlist / modelProfiles without a matching price.
+    const advertised = new Set<string>();
+    for (const m of openCodeModels) advertised.add(m.id);
+    for (const profile of openCodeModelProfiles) {
+      const model = profile.adapterConfig.model;
+      if (typeof model === "string" && model) advertised.add(model);
+    }
+    const unpriced = [...advertised].filter((m) => !OPENAI_PRICING_USD_PER_MTOK[m]);
+    expect(unpriced, `advertised opencode models missing from pricing table: ${unpriced.join(", ")}`).toEqual([]);
+  });
+});
+
+describe("classifyCostSource", () => {
+  it("returns 'list_estimate' when the list-price fallback produced a figure", () => {
+    expect(classifyCostSource(0, 0.42)).toBe("list_estimate");
+  });
+
+  it("returns 'metered' when opencode reported a real positive cost", () => {
+    expect(classifyCostSource(1.23, null)).toBe("metered");
+  });
+
+  it("returns 'unknown' when there is neither a meter nor a priced estimate", () => {
+    // Zero-usage run, or an unpriced model — the $0 hole the coverage test guards.
+    expect(classifyCostSource(0, null)).toBe("unknown");
   });
 });

@@ -43,6 +43,23 @@ export type AdapterBillingType =
   | "fixed"
   | "unknown";
 
+/**
+ * Provenance of `costUsd` — distinct from `billingType` (which describes the
+ * billing relationship, e.g. api vs subscription). `costSource` answers "where
+ * did this dollar figure come from?" so cost rollups never compare a true
+ * metered figure against a list-price estimate as if they were equivalent
+ * (BLO-9102).
+ *   - "metered":       provider/CLI reported the actual cost (e.g. opencode
+ *                      `part.cost`, Claude `total_cost_usd`).
+ *   - "list_estimate": cost was computed from a static local pricing table
+ *                      (token count × list price) because no metered figure
+ *                      was available. Treat as an estimate, not ground truth.
+ *   - "unknown":       neither a meter nor a priced estimate was available
+ *                      (zero-usage run, or a model missing from the pricing
+ *                      table — the latter is the `$0` hole BLO-9102 closes).
+ */
+export type AdapterCostSource = "metered" | "list_estimate" | "unknown";
+
 export interface AdapterRuntimeServiceReport {
   id?: string | null;
   projectId?: string | null;
@@ -87,6 +104,9 @@ export interface AdapterExecutionResult {
   model?: string | null;
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
+  /** Provenance of `costUsd`; see {@link AdapterCostSource}. Optional so adapters
+   * that have not been updated simply omit it (consumers treat absent as unknown). */
+  costSource?: AdapterCostSource | null;
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
