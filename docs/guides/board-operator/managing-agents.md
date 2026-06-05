@@ -44,7 +44,7 @@ Agents can request to hire subordinates. When this happens, you'll see a `hire_a
 Edit an agent's configuration from the agent detail page:
 
 - **Adapter config** — change model, prompt template, working directory, environment variables
-- **Heartbeat settings** — interval, cooldown, max concurrent runs, wake triggers
+- **Heartbeat settings** — interval, cooldown (minimum seconds between automatic assignment/automation wakeups; critical issues bypass; manual Run Heartbeat and timer bypass), max concurrent runs, wake triggers
 - **Budget** — monthly spend limit
 
 Use the "Test Environment" button to validate that the agent's adapter config is correct before running.

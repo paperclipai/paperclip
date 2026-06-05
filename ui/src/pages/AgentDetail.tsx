@@ -31,6 +31,7 @@ import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapt
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
 import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
+import { AgentCooldownBadge } from "../components/AgentCooldownBadge";
 import { StatusBadge } from "../components/StatusBadge";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { MarkdownBody } from "../components/MarkdownBody";
@@ -1103,7 +1104,10 @@ export function AgentDetail() {
             onResume={() => agentAction.mutate("resume")}
             disabled={agentAction.isPending || isPendingApproval}
           />
-          <span className="hidden sm:inline"><StatusBadge status={agent.status} /></span>
+          <span className="hidden sm:inline-flex items-center gap-2">
+            <StatusBadge status={agent.status} />
+            <AgentCooldownBadge throttle={agent.runtimeThrottle} />
+          </span>
           {mobileLiveRun && (
             <Link
               to={`/agents/${canonicalAgentRef}/runs/${mobileLiveRun.id}`}

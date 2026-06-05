@@ -65,7 +65,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Task lifecycle with parent/child hierarchy and comments
 - Atomic task checkout and explicit task status transitions
 - Board approvals for hires and CEO strategy proposal
-- Heartbeat invocation, status tracking, and cancellation
+- Heartbeat invocation, status tracking, cancellation, and optional cooldown deferral of automatic wakeups
 - Cost event ingestion and rollups (agent/task/project/company)
 - Budget settings and hard-stop enforcement
 - Board web UI for dashboard, org chart, tasks, agents, approvals, costs
@@ -104,7 +104,8 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 
 A lightweight scheduler/worker in the server process handles:
 
-- heartbeat trigger checks
+- heartbeat timer ticks and wakeup enqueue
+- promotion of due `agent_wakeup_requests` (`deferred_issue_execution`, `deferred_cooldown`, scheduled retries)
 - stuck run detection
 - budget threshold checks
 
@@ -166,7 +167,17 @@ Invariants:
 - no cycles in reporting tree
 - `terminated` agents cannot be resumed
 
-## 7.3 `agent_api_keys`
+### 7.2.1 Heartbeat cooldown (`runtime_config.heartbeat.cooldownSec`)
+
+The server enforces optional pacing of **automatic** agent wakeups (see `doc/spec/agent-runs.md` §8.4.1).
+
+- **Config:** `agents.runtime_config.heartbeat.cooldownSec` (integer seconds; `0` = off). Default for newly created agents is `0`.
+- **Behavior:** assignment/automation `enqueueWakeup` calls defer until cooldown elapses after the agent's last finished assignment/automation run; wakeups coalesce into one `deferred_cooldown` request per agent.
+- **Bypass:** critical-priority issue, timer heartbeat, manual board invoke (`on_demand` + user actor).
+- **API/UI:** `GET` agent list/detail includes `runtimeThrottle`; board config field **Cooldown (sec)**; activity `agent.heartbeat_cooldown_deferred`.
+- **Complements budgets:** hard-stop still blocks invocation when spend limits are exceeded.
+
+### 7.3 `agent_api_keys`
 
 - `id` uuid pk
 - `agent_id` uuid fk `agents.id` not null
@@ -984,6 +995,7 @@ Current implementation note: the milestones below describe the original V1 seque
 - ship `process` adapter with cancel semantics
 - ship `http` adapter with timeout/error handling
 - persist heartbeat runs and statuses
+- enforce `heartbeat.cooldownSec` on assignment/automation wakeups (`deferred_cooldown` + scheduler promotion)
 
 ## Milestone 4: Cost and Budget Controls
 

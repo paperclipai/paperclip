@@ -1238,7 +1238,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   value={eff(
                     "heartbeat",
                     "cooldownSec",
-                    Number(heartbeat.cooldownSec ?? 10),
+                    Number(heartbeat.cooldownSec ?? 0),
                   )}
                   onCommit={(v) => mark("heartbeat", "cooldownSec", v)}
                   immediate

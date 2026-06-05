@@ -32,6 +32,7 @@ import {
   writeAgentSortMode,
 } from "../lib/agent-order";
 import { AgentIcon } from "./AgentIconPicker";
+import { AgentCooldownBadge } from "./AgentCooldownBadge";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
 import { SidebarSection, type SidebarSectionRadioChoice } from "./SidebarSection";
 import { Button } from "@/components/ui/button";
@@ -133,8 +134,11 @@ function SidebarAgentItem({
       >
         <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
         <span className="flex-1 truncate">{agent.name}</span>
-        {(agent.pauseReason === "budget" || runCount > 0) && (
+        {(agent.pauseReason === "budget" || agent.runtimeThrottle?.active || runCount > 0) && (
           <span className="ml-auto flex items-center gap-1.5 shrink-0">
+            {agent.runtimeThrottle?.active ? (
+              <AgentCooldownBadge throttle={agent.runtimeThrottle} />
+            ) : null}
             {agent.pauseReason === "budget" ? (
               <BudgetSidebarMarker title="Agent paused by budget" />
             ) : null}

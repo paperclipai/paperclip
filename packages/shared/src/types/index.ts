@@ -94,6 +94,7 @@ export type {
   AgentModelProfileConfig,
   AgentPermissions,
   AgentRuntimeConfig,
+  AgentRuntimeThrottle,
   AgentInstructionsBundleMode,
   AgentInstructionsFileSummary,
   AgentInstructionsFileDetail,

@@ -33,6 +33,10 @@ import {
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import {
+  computeAgentRuntimeThrottle,
+  computeAgentRuntimeThrottlesForAgents,
+} from "../services/heartbeat-cooldown.js";
+import {
   agentService,
   agentInstructionsService,
   accessService,
@@ -522,15 +526,17 @@ export function agentRoutes(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
     options?: { restricted?: boolean },
   ) {
-    const [chainOfCommand, accessState] = await Promise.all([
+    const [chainOfCommand, accessState, runtimeThrottle] = await Promise.all([
       svc.getChainOfCommand(agent.id),
       buildAgentAccessState(agent),
+      computeAgentRuntimeThrottle(db, agent),
     ]);
 
     return {
       ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
       chainOfCommand,
       access: accessState,
+      runtimeThrottle,
     };
   }
 
@@ -1607,12 +1613,21 @@ export function agentRoutes(
       return;
     }
     const result = await svc.list(companyId);
+    const runtimeThrottleByAgentId = await computeAgentRuntimeThrottlesForAgents(db, result);
+    const withRuntimeThrottle = result.map((agent) => ({
+      ...agent,
+      runtimeThrottle: runtimeThrottleByAgentId.get(agent.id) ?? {
+        active: false,
+        eligibleAt: null,
+        cooldownSec: 0,
+      },
+    }));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(withRuntimeThrottle);
       return;
     }
-    res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+    res.json(withRuntimeThrottle.map((agent) => redactForRestrictedAgentView(agent)));
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {

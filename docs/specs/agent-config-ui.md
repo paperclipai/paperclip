@@ -133,7 +133,7 @@ Editable form with the same sections as the creation dialog (Adapter, Runtime, H
 Sections:
 - **Identity**: name, title, role, reports to, capabilities
 - **Adapter Config**: all adapter-specific fields for the current adapter type
-- **Heartbeat Policy**: enable/disable, interval, wake-on triggers, cooldown
+- **Heartbeat Policy**: enable/disable, interval, wake-on triggers, cooldown (sec between automatic wakeups; 0 = off; manual/timer/critical bypass)
 - **Runtime**: context mode, budget, timeout, grace, env vars, extra args
 
 Each section is a collapsible card. Save happens per-field (PATCH on blur/enter), not a single form submit. Validation errors show inline.

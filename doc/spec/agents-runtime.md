@@ -50,6 +50,7 @@ In agent runtime settings, configure heartbeat policy:
 - `wakeOnAssignment`: wake when assigned work
 - `wakeOnOnDemand`: allow ping-style on-demand wakeups
 - `wakeOnAutomation`: allow system automation wakeups
+- `cooldownSec`: minimum seconds between automatic assignment/automation wakeups (`0` = disabled). Manual Run Heartbeat, timer heartbeats, and critical issues bypass. See `doc/spec/agent-runs.md` §8.4.1.
 
 ## 3.3 Working directory and execution limits
 

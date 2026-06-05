@@ -33,6 +33,7 @@ const PRODUCTIVE_SUCCESS_LIVENESS_STATES = new Set<RunLivenessState>([
 const IDEMPOTENT_HANDOFF_WAKE_STATUSES = [
   "queued",
   "deferred_issue_execution",
+  "deferred_cooldown",
   "claimed",
   "completed",
 ];
