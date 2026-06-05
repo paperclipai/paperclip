@@ -4,6 +4,7 @@
 
 ### Patch Changes
 
+- Eager fold path for terminal heartbeat runs: when an agent updates an issue to `done` or `cancelled`, the recovery service now immediately finalizes the active run instead of waiting up to 1h for the watchdog scan. Adds `foldTerminalIssueRunEager` method with same-run terminal evidence checks, `heartbeat.folded` activity log entries with `source: "eager_terminal_fold"`, and regression tests. Fixes orphaned runs where agents appeared stuck in `running` state with no open assignments.
 - Stable release preparation for 0.3.1
 - Updated dependencies
   - @paperclipai/adapter-utils@0.3.1

@@ -1084,6 +1084,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     silenceStartedAt: Date | null;
     silenceAgeMs: number | null;
     now: Date;
+    source: string;
   }) {
     if (!input.evidence) return { kind: "skipped" as const };
     const cleanup = await cleanupSourceResolvedRunProcess({ run: input.run, runningAgent: input.runningAgent });
@@ -1202,7 +1203,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       entityType: "heartbeat_run",
       entityId: input.run.id,
       details: {
-        source: "recovery.scan_silent_active_runs",
+        source: input.source,
         sourceIssueId: input.sourceIssue.id,
         sourceIssueIdentifier: input.sourceIssue.identifier,
         sourceIssueStatus: input.sourceIssue.status,
@@ -1488,6 +1489,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           silenceStartedAt,
           silenceAgeMs: silenceAgeMsForRun(input.run, input.now),
           now: input.now,
+          source: "recovery.scan_silent_active_runs",
         });
       }
     }
@@ -3618,6 +3620,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       silenceStartedAt: null,
       silenceAgeMs: null,
       now,
+      source: "eager_terminal_fold",
     });
 
     if (result.kind === "skipped") {
