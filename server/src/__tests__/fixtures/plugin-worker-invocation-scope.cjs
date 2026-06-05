@@ -15,7 +15,7 @@ function sendNestedHostRequest(originalRequest, invocationId) {
   const nestedRequest = {
     jsonrpc: "2.0",
     id: nestedId,
-    method: "companies.get",
+    method: mode === "http.fetch" ? "http.fetch" : "companies.get",
     params: {
       companyId: requestedCompanyId,
     },
@@ -25,6 +25,8 @@ function sendNestedHostRequest(originalRequest, invocationId) {
     nestedRequest.paperclipInvocationId = invocationId;
   } else if (mode === "unknown") {
     nestedRequest.paperclipInvocationId = "unknown-invocation";
+  } else if (mode === "http.fetch") {
+    // Explicitly omit paperclipInvocationId
   }
 
   pendingNested.set(nestedId, originalRequest.id);

@@ -559,8 +559,11 @@ export function createPluginWorkerHandle(
       (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
     );
     if (!invocationId) {
-      const safeBackgroundMethods = ["http.fetch", "companies.list", "log"];
-      const isSafeBackgroundMethod = typeof message.method === "string" && safeBackgroundMethods.includes(message.method);
+      // These methods are globally whitelisted for background execution without an
+      // invocation ID. This allows plugins (like the Telegram adapter's polling loop)
+      // to fetch data and update state even when another company's invocation is active.
+      const safeBackgroundMethods: WorkerToHostMethodName[] = ["http.fetch", "companies.list", "log"];
+      const isSafeBackgroundMethod = typeof message.method === "string" && safeBackgroundMethods.includes(message.method as WorkerToHostMethodName);
 
       if (!isSafeBackgroundMethod) {
         const hasActiveInvocation = activeInvocations.size > 0 ||
