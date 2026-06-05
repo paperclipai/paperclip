@@ -252,6 +252,7 @@ export async function createApp(
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
     bindHost: string;
+    authPublicBaseUrl?: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
     instanceId?: string;
@@ -525,6 +526,7 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       bindHost: opts.bindHost,
       allowedHostnames: opts.allowedHostnames,
+      authPublicBaseUrl: opts.authPublicBaseUrl,
     }),
   );
   app.use("/api", api);
