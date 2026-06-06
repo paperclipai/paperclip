@@ -20,6 +20,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getRelationSummaries: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  list: vi.fn(),
   listAttachments: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   remove: vi.fn(),
@@ -299,6 +300,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getById.mockReset();
     mockIssueService.getRelationSummaries.mockReset();
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
+    mockIssueService.list.mockReset();
     mockIssueService.listAttachments.mockReset();
     mockIssueService.listWakeableBlockedDependents.mockReset();
     mockIssueRecoveryActionService.getActiveForIssue.mockReset();
@@ -396,6 +398,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.list.mockResolvedValue([]);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue(),
@@ -454,6 +457,7 @@ describe("agent issue mutation checkout ownership", () => {
       companyId,
       type: "artifact",
       title: "Updated",
+      metadata: null,
     });
     mockWorkProductService.remove.mockResolvedValue({
       id: "product-1",
@@ -675,6 +679,159 @@ describe("agent issue mutation checkout ownership", () => {
     );
     expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalled();
     expect(mockWorkProductService.update).toHaveBeenCalledWith("product-1", { title: "Updated product" });
+  });
+
+  it("auto-creates one blocking review child for a pull request work product and stores linkage metadata", async () => {
+    mockWorkProductService.createForIssue.mockResolvedValueOnce({
+      id: "product-pr-1",
+      issueId,
+      companyId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR #42",
+      url: "https://github.com/paperclipai/paperclip/pull/42",
+      status: "ready_for_review",
+      metadata: null,
+    });
+    mockWorkProductService.update.mockResolvedValueOnce({
+      id: "product-pr-1",
+      issueId,
+      companyId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR #42",
+      url: "https://github.com/paperclipai/paperclip/pull/42",
+      status: "ready_for_review",
+      metadata: { paperclipPullRequestReviewChildIssueId: "99999999-9999-4999-8999-999999999999" },
+    });
+
+    const app = await createApp(ownerActor());
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/work-products`)
+      .send({
+        type: "pull_request",
+        provider: "github",
+        title: "PR #42",
+        url: "https://github.com/paperclipai/paperclip/pull/42",
+        status: "ready_for_review",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.createChild).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.createChild).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        title: "Review PR: PR #42",
+        blockParentUntilDone: true,
+      }),
+    );
+    expect(mockWorkProductService.update).toHaveBeenCalledWith(
+      "product-pr-1",
+      expect.objectContaining({
+        metadata: { paperclipPullRequestReviewChildIssueId: "99999999-9999-4999-8999-999999999999" },
+      }),
+    );
+  });
+
+  it("keeps pull request review child creation idempotent via linked metadata on update", async () => {
+    mockWorkProductService.getById.mockResolvedValueOnce({
+      id: "product-pr-2",
+      issueId,
+      companyId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR #99",
+      url: "https://github.com/paperclipai/paperclip/pull/99",
+      status: "ready_for_review",
+      metadata: { paperclipPullRequestReviewChildIssueId: "review-child-1" },
+    });
+    mockWorkProductService.update.mockResolvedValueOnce({
+      id: "product-pr-2",
+      issueId,
+      companyId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR #99 updated",
+      url: "https://github.com/paperclipai/paperclip/pull/99",
+      status: "ready_for_review",
+      metadata: { paperclipPullRequestReviewChildIssueId: "review-child-1" },
+    });
+    mockIssueService.getById
+      .mockResolvedValueOnce(makeIssue())
+      .mockResolvedValueOnce({
+        ...makeIssue({
+          id: "review-child-1",
+          parentId: issueId,
+          status: "todo",
+          assigneeAgentId: null,
+        }),
+      });
+
+    const app = await createApp(ownerActor());
+    const res = await request(app)
+      .patch("/api/work-products/product-pr-2")
+      .send({ title: "PR #99 updated" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.createChild).not.toHaveBeenCalled();
+    expect(mockWorkProductService.update).toHaveBeenCalledTimes(1);
+    expect(mockWorkProductService.update).toHaveBeenCalledWith("product-pr-2", { title: "PR #99 updated" });
+  });
+
+  it("auto-closes an existing pull request review child when PR work product reaches merged", async () => {
+    mockWorkProductService.getById.mockResolvedValueOnce({
+      id: "product-pr-3",
+      issueId,
+      companyId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR #123",
+      url: "https://github.com/paperclipai/paperclip/pull/123",
+      status: "ready_for_review",
+      metadata: { paperclipPullRequestReviewChildIssueId: "review-child-2" },
+    });
+    mockWorkProductService.update.mockResolvedValueOnce({
+      id: "product-pr-3",
+      issueId,
+      companyId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR #123",
+      url: "https://github.com/paperclipai/paperclip/pull/123",
+      status: "merged",
+      metadata: { paperclipPullRequestReviewChildIssueId: "review-child-2" },
+    });
+    mockIssueService.getById
+      .mockResolvedValueOnce(makeIssue())
+      .mockResolvedValueOnce({
+        ...makeIssue({
+          id: "review-child-2",
+          parentId: issueId,
+          status: "todo",
+          assigneeAgentId: null,
+        }),
+      });
+
+    const app = await createApp(ownerActor());
+    const res = await request(app)
+      .patch("/api/work-products/product-pr-3")
+      .send({ status: "merged" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "review-child-2",
+      expect.objectContaining({
+        status: "done",
+        actorAgentId: ownerAgentId,
+        actorUserId: null,
+      }),
+    );
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "review-child-2",
+      expect.stringContaining("Pull request work product `PR #123` reached `merged`."),
+      expect.objectContaining({ runId: ownerRunId }),
+    );
+    expect(mockIssueService.createChild).not.toHaveBeenCalled();
   });
 
   it("preserves board mutations on active checkouts", async () => {

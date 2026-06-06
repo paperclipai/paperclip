@@ -199,6 +199,63 @@ function inferVideoContentTypeFromFilename(filename: string | null | undefined):
   return null;
 }
 
+const PULL_REQUEST_REVIEW_MARKER_PREFIX = "<!-- paperclip:pull-request-review:";
+const PULL_REQUEST_REVIEW_TERMINAL_STATUSES = new Set(["merged", "closed", "failed", "archived"]);
+const PULL_REQUEST_REVIEW_CHILD_ISSUE_ID_META_KEY = "paperclipPullRequestReviewChildIssueId";
+
+function buildPullRequestReviewMarker(workProductId: string) {
+  return `${PULL_REQUEST_REVIEW_MARKER_PREFIX}${workProductId} -->`;
+}
+
+function pullRequestReviewChildTitle(productTitle: string) {
+  return `Review PR: ${productTitle}`;
+}
+
+function pullRequestReviewChildDescription(input: {
+  workProductId: string;
+  title: string;
+  url: string | null;
+  status: string;
+}) {
+  const pullRequestUrl = input.url ? `- Pull request: ${input.url}` : "- Pull request: URL not recorded";
+  return [
+    buildPullRequestReviewMarker(input.workProductId),
+    "",
+    "This review task was auto-created from a pull request work product.",
+    "",
+    `- Pull request title: ${input.title}`,
+    pullRequestUrl,
+    `- Current PR status: \`${input.status}\``,
+    "",
+    "Close this task only after review is complete and the branch is merged back into the base branch.",
+  ].join("\n");
+}
+
+function shouldCreatePullRequestReviewTask(product: {
+  type: string;
+  status: string;
+}) {
+  return product.type === "pull_request" && !PULL_REQUEST_REVIEW_TERMINAL_STATUSES.has(product.status);
+}
+
+function getPullRequestReviewChildIssueIdFromMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+) {
+  if (!metadata || typeof metadata !== "object") return null;
+  const childIssueId = metadata[PULL_REQUEST_REVIEW_CHILD_ISSUE_ID_META_KEY];
+  return typeof childIssueId === "string" && childIssueId.length > 0 ? childIssueId : null;
+}
+
+function buildPullRequestReviewMetadataPatch(
+  metadata: Record<string, unknown> | null | undefined,
+  reviewChildIssueId: string,
+) {
+  return {
+    ...(metadata ?? {}),
+    [PULL_REQUEST_REVIEW_CHILD_ISSUE_ID_META_KEY]: reviewChildIssueId,
+  };
+}
+
 function resolveAttachmentResponseContentType(input: {
   storedContentType: string | null | undefined;
   objectContentType?: string | null;
@@ -937,6 +994,151 @@ export function issueRoutes(
   };
   const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
+
+  async function findExistingPullRequestReviewChild(issue: {
+    id: string;
+    companyId: string;
+  }, product: {
+    id: string;
+    metadata?: Record<string, unknown> | null;
+  }) {
+    const linkedChildIssueId = getPullRequestReviewChildIssueIdFromMetadata(product.metadata);
+    if (linkedChildIssueId) {
+      const child = await svc.getById(linkedChildIssueId);
+      if (child && child.companyId === issue.companyId && child.parentId === issue.id) {
+        return child;
+      }
+    }
+
+    const workProductId = product.id;
+    const marker = buildPullRequestReviewMarker(workProductId);
+    const children = await svc.list(issue.companyId, { parentId: issue.id });
+    return children.find((child) => typeof child.description === "string" && child.description.includes(marker)) ?? null;
+  }
+
+  async function resolveDefaultPullRequestReviewerAgentId(companyId: string) {
+    const agents = await agentsSvc.list(companyId);
+    return agents.find((agent) => agent.role === "qa" && agent.status !== "terminated")?.id ?? null;
+  }
+
+  async function persistPullRequestReviewLinkage(product: {
+    id: string;
+    metadata?: Record<string, unknown> | null;
+  }, reviewChildIssueId: string) {
+    const updated = await workProductsSvc.update(product.id, {
+      metadata: buildPullRequestReviewMetadataPatch(product.metadata, reviewChildIssueId),
+    });
+    if (!updated) {
+      throw notFound("Work product not found");
+    }
+    return updated;
+  }
+
+  async function ensurePullRequestReviewTask(input: {
+    issue: typeof issueRows.$inferSelect;
+    product: {
+      id: string;
+      type: string;
+      title: string;
+      url: string | null;
+      status: string;
+      metadata?: Record<string, unknown> | null;
+    };
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    if (input.product.type !== "pull_request") return;
+
+    const existing = await findExistingPullRequestReviewChild(input.issue, input.product);
+    if (!shouldCreatePullRequestReviewTask(input.product)) {
+      if (input.product.status === "merged" && existing && existing.status !== "done") {
+        await svc.update(existing.id, {
+          status: "done",
+          actorAgentId: input.actor.agentId,
+          actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+        });
+        await svc.addComment(existing.id, [
+          `Pull request work product \`${input.product.title}\` reached \`merged\`.`,
+          "",
+          "Paperclip closed this review task automatically because the PR is now merged.",
+        ].join("\n"), { runId: input.actor.runId ?? null });
+      }
+      return;
+    }
+
+    if (existing) {
+      const linkedChildIssueId = getPullRequestReviewChildIssueIdFromMetadata(input.product.metadata);
+      if (linkedChildIssueId !== existing.id) {
+        await persistPullRequestReviewLinkage(input.product, existing.id);
+      }
+      return;
+    }
+
+    const reviewerAgentId = await resolveDefaultPullRequestReviewerAgentId(input.issue.companyId);
+    const { issue: reviewIssue, parentBlockerAdded } = await svc.createChild(input.issue.id, {
+      title: pullRequestReviewChildTitle(input.product.title),
+      description: pullRequestReviewChildDescription({
+        workProductId: input.product.id,
+        title: input.product.title,
+        url: input.product.url,
+        status: input.product.status,
+      }),
+      status: "todo",
+      workMode: "standard",
+      priority: "high",
+      assigneeAgentId: reviewerAgentId ?? undefined,
+      acceptanceCriteria: [
+        "Review the pull request and record approval or requested changes in this task.",
+        "Merge the branch back into the base branch only after the review path is closed.",
+      ],
+      blockParentUntilDone: true,
+      createdByAgentId: input.actor.agentId,
+      createdByUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+      actorAgentId: input.actor.agentId,
+      actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+    });
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action: "issue.child_created",
+      entityType: "issue",
+      entityId: reviewIssue.id,
+      details: {
+        parentId: input.issue.id,
+        identifier: reviewIssue.identifier,
+        title: reviewIssue.title,
+        inheritedExecutionWorkspaceFromIssueId: input.issue.id,
+        parentBlockerAdded,
+        sourceWorkProductId: input.product.id,
+        sourceWorkProductType: input.product.type,
+      },
+    });
+
+    if (reviewerAgentId) {
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue: reviewIssue,
+        reason: "issue_assigned",
+        mutation: "create",
+        contextSource: "issue.pull_request_review_child_create",
+        requestedByActorType: input.actor.actorType,
+        requestedByActorId: input.actor.actorId,
+      });
+    }
+
+    await persistPullRequestReviewLinkage(input.product, reviewIssue.id);
+
+    await svc.addComment(input.issue.id, [
+      `Auto-created review child ${reviewIssue.identifier ?? reviewIssue.id} for pull request \`${input.product.title}\`.`,
+      "",
+      reviewerAgentId
+        ? "The review task is assigned to QA and blocks this issue until review closure."
+        : "The review task blocks this issue until review closure.",
+    ].join("\n"), { runId: input.actor.runId ?? null });
+  }
 
   async function cancelScheduledRetrySupersededByComment(input: {
     scheduledRetryRunId: string | null | undefined;
@@ -3327,6 +3529,11 @@ export function issueRoutes(
       entityId: issue.id,
       details: { workProductId: product.id, type: product.type, provider: product.provider },
     });
+    await ensurePullRequestReviewTask({
+      issue,
+      product,
+      actor,
+    });
     await revalidateActiveSourceRecoveryAfterCommittedWrite({
       issue,
       trigger: "work_product",
@@ -3379,6 +3586,11 @@ export function issueRoutes(
       entityType: "issue",
       entityId: existing.issueId,
       details: { workProductId: product.id, changedKeys: Object.keys(req.body).sort() },
+    });
+    await ensurePullRequestReviewTask({
+      issue,
+      product,
+      actor,
     });
     await revalidateActiveSourceRecoveryAfterCommittedWrite({
       issue,
