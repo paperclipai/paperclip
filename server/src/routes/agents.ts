@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { z } from "zod";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
@@ -14,6 +15,7 @@ import {
   deriveAgentUrlKey,
   isUuidLike,
   normalizeIssueIdentifier,
+  PERMISSION_KEYS,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
   type AgentSkillSnapshot,
@@ -2423,6 +2425,54 @@ export function agentRoutes(
     });
 
     res.json(await buildAgentDetail(agent));
+  });
+
+  const upsertAgentGrantSchema = z.object({
+    permissionKey: z.enum(PERMISSION_KEYS),
+    scope: z.record(z.string(), z.unknown()).optional().nullable(),
+    enabled: z.boolean().default(true),
+  });
+
+  router.post("/agents/:id/grants", validate(upsertAgentGrantSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    await assertBoardCanManageAgentsForCompany(req, existing.companyId);
+
+    const { permissionKey, scope, enabled } = req.body as z.infer<typeof upsertAgentGrantSchema>;
+    await access.setPrincipalPermission(
+      existing.companyId,
+      "agent",
+      existing.id,
+      permissionKey,
+      enabled !== false,
+      req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+      scope ?? null,
+    );
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.grant_updated",
+      entityType: "agent",
+      entityId: existing.id,
+      details: {
+        permissionKey,
+        enabled: enabled !== false,
+        scope: scope ?? null,
+      },
+    });
+
+    const grants = await access.listPrincipalGrants(existing.companyId, "agent", existing.id);
+    res.json({ grants });
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
