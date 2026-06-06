@@ -1125,7 +1125,42 @@ export async function startServer(): Promise<StartedServer> {
       });
     }, backupIntervalMs);
   }
-  
+
+  // Merged-PR reconciler (BLO-9150). Worker-tier singleton (API tier skips it):
+  // enumerates each discovered repo's merged PRs over a trailing window and
+  // stores the no-ref tail, which is what flips the efficiency coverage % from a
+  // vacuous forward-only 100% to a measured number. Kicks off once on startup
+  // (so coverage is honest without waiting a full interval) then runs on interval.
+  if (config.prReconcilerEnabled && config.paperclipNodeRole !== "api") {
+    const reconcilerToken = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? null;
+    if (!reconcilerToken) {
+      logger.warn(
+        "Merged-PR reconciler enabled but no GITHUB_TOKEN/GH_TOKEN set; private repos would 404. Skipping reconciler.",
+      );
+    } else {
+      const reconcilerIntervalMs = config.prReconcilerIntervalMinutes * 60 * 1000;
+      logger.info(
+        {
+          intervalMinutes: config.prReconcilerIntervalMinutes,
+          windowDays: config.prReconcilerWindowDays,
+          enrichLoc: config.prReconcilerEnrichLoc,
+        },
+        "Merged-PR reconciler enabled",
+      );
+      const { reconcilerSweepTick } = await import("./services/pr-reconciler-sweep.js");
+      const runReconcilerSweepTick = () =>
+        void reconcilerSweepTick(db, {
+          windowDays: config.prReconcilerWindowDays,
+          token: reconcilerToken,
+          enrichLoc: config.prReconcilerEnrichLoc,
+        }).catch((err) => {
+          logger.error({ err }, "Merged-PR reconciler sweep failed");
+        });
+      runReconcilerSweepTick();
+      setInterval(runReconcilerSweepTick, reconcilerIntervalMs);
+    }
+  }
+
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.

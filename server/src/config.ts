@@ -90,6 +90,13 @@ export interface Config {
   databaseBackupIntervalMinutes: number;
   databaseBackupRetentionDays: number;
   databaseBackupDir: string;
+  // Merged-PR reconciler (BLO-9150): a scheduled sweep that backfills the no-ref
+  // tail so the efficiency coverage % is measured, not a vacuous forward-only 100%.
+  // Worker-tier only (gated on paperclipNodeRole !== "api" in index.ts).
+  prReconcilerEnabled: boolean;
+  prReconcilerIntervalMinutes: number;
+  prReconcilerWindowDays: number;
+  prReconcilerEnrichLoc: boolean;
   serveUi: boolean;
   uiDevMiddleware: boolean;
   secretsProvider: SecretProvider;
@@ -328,6 +335,26 @@ export function loadConfig(): Config {
       fileDatabaseBackup?.dir ??
       resolveDefaultBackupDir(),
   );
+  // Merged-PR reconciler (BLO-9150). Enabled by default: the efficiency metric is
+  // only honest once the no-ref tail is enumerated. Window defaults to 21d to
+  // match the BLO-9103 cost-analysis window; interval defaults to 6h (merged PRs
+  // are slow-moving, re-enumerating a 21d window every 6h is ample).
+  const prReconcilerEnabled =
+    process.env.PAPERCLIP_PR_RECONCILER_ENABLED !== undefined
+      ? process.env.PAPERCLIP_PR_RECONCILER_ENABLED === "true"
+      : true;
+  const prReconcilerIntervalMinutes = Math.max(
+    1,
+    Number(process.env.PAPERCLIP_PR_RECONCILER_INTERVAL_MINUTES) || 360,
+  );
+  const prReconcilerWindowDays = Math.max(
+    1,
+    Number(process.env.PAPERCLIP_PR_RECONCILER_WINDOW_DAYS) || 21,
+  );
+  const prReconcilerEnrichLoc =
+    process.env.PAPERCLIP_PR_RECONCILER_ENRICH_LOC !== undefined
+      ? process.env.PAPERCLIP_PR_RECONCILER_ENRICH_LOC === "true"
+      : true;
   const bindValidationErrors = validateConfiguredBindMode({
     deploymentMode,
     deploymentExposure,
@@ -368,6 +395,10 @@ export function loadConfig(): Config {
     embeddedPostgresPort: fileConfig?.database.embeddedPostgresPort ?? 54329,
     databaseBackupEnabled,
     databaseBackupIntervalMinutes,
+    prReconcilerEnabled,
+    prReconcilerIntervalMinutes,
+    prReconcilerWindowDays,
+    prReconcilerEnrichLoc,
     databaseBackupRetentionDays,
     databaseBackupDir,
     serveUi:
