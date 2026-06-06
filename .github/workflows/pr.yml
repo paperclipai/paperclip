@@ -319,8 +319,10 @@ jobs:
           git checkout -B master HEAD
           if [ "$USED_ARTIFACT_LOCKFILE" = "1" ]; then
             git add pnpm-lock.yaml
-            git -c user.email=ci@paperclip.local -c user.name=CI \
-              commit --no-verify -m "ci(canary): stage regenerated lockfile"
+            if ! git diff --cached --quiet -- pnpm-lock.yaml; then
+              git -c user.email=ci@paperclip.local -c user.name=CI \
+                commit --no-verify -m "ci(canary): stage regenerated lockfile"
+            fi
           else
             git checkout -- pnpm-lock.yaml
           fi
