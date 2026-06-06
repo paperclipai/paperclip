@@ -2444,6 +2444,10 @@ export function accessRoutes(
 
     if (claimed.status === "invalid")
       throw notFound("Board claim challenge not found");
+    if (claimed.status === "forbidden")
+      throw forbidden(
+        "This account is not the designated instance owner. Board ownership is restricted to the configured owner email.",
+      );
     if (claimed.status === "expired")
       throw conflict(
         "Board claim challenge expired. Restart server to generate a new one."

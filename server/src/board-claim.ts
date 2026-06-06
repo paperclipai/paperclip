@@ -1,14 +1,26 @@
 import { randomBytes } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@valadrien-os/db";
-import { companies, companyMemberships, instanceUserRoles } from "@valadrien-os/db";
+import { authUsers, companies, companyMemberships, instanceUserRoles } from "@valadrien-os/db";
 import type { DeploymentMode } from "@valadrien-os/shared";
 import { ensureHumanRoleDefaultGrants } from "./services/principal-access-compatibility.js";
 
 const LOCAL_BOARD_USER_ID = "local-board";
 const CLAIM_TTL_MS = 1000 * 60 * 60 * 24;
 
-type ChallengeStatus = "available" | "claimed" | "expired" | "invalid";
+// HARD RULE: the ValAdrien OS instance owner is cofounder@valadrien.dev — the
+// valadrien.dev domain IS the OS itself. fva@mydola.io is a MyDola TENANT account,
+// never the instance owner. Only the designated owner email may claim board
+// ownership (= become instance_admin). Other deployments override via
+// VALADRIEN_OS_INSTANCE_OWNER_EMAIL.
+const DEFAULT_INSTANCE_OWNER_EMAIL = "cofounder@valadrien.dev";
+function instanceOwnerEmail(): string {
+  return (
+    process.env.VALADRIEN_OS_INSTANCE_OWNER_EMAIL?.trim() || DEFAULT_INSTANCE_OWNER_EMAIL
+  ).toLowerCase();
+}
+
+type ChallengeStatus = "available" | "claimed" | "expired" | "invalid" | "forbidden";
 
 type ClaimChallenge = {
   token: string;
@@ -89,6 +101,18 @@ export async function claimBoardOwnership(
 ): Promise<{ status: ChallengeStatus; claimedByUserId?: string }> {
   const status = getChallengeStatus(opts.token, opts.code);
   if (status !== "available") return { status };
+
+  // Enforce the instance-owner rule: only the designated owner email may claim
+  // ownership, so a tenant account (e.g. a MyDola login) can never become the OS
+  // instance_admin even with a valid challenge token+code.
+  const claimant = await db
+    .select({ email: authUsers.email })
+    .from(authUsers)
+    .where(eq(authUsers.id, opts.userId))
+    .then((rows) => rows[0] ?? null);
+  if (!claimant || claimant.email.trim().toLowerCase() !== instanceOwnerEmail()) {
+    return { status: "forbidden" };
+  }
 
   const claimedCompanyIds: string[] = [];
   await db.transaction(async (tx) => {
