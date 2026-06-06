@@ -32,6 +32,15 @@ describe("decodeMultipartFilename", () => {
     expect(decodeMultipartFilename("提案書.pdf")).toBe("提案書.pdf");
   });
 
+  it("leaves Latin-1 accented filenames untouched", () => {
+    // A lone high byte (é=0xE9, ï=0xEF, ñ=0xF1, ü=0xFC) is not a valid UTF-8
+    // start byte for the following ASCII, so the latin1->utf8 reinterpretation
+    // yields a replacement char and the round-trip guard returns the input as-is.
+    for (const name of ["résumé.pdf", "naïve Bericht.docx", "mañana.txt", "Müller.csv"]) {
+      expect(decodeMultipartFilename(name)).toBe(name);
+    }
+  });
+
   it("is idempotent (double application is a no-op)", () => {
     const once = decodeMultipartFilename(asMulterOriginalname("계획안.docx"));
     expect(once).toBe("계획안.docx");
