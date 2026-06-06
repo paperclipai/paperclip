@@ -331,7 +331,19 @@ export async function startServer(): Promise<StartedServer> {
   
     db = createDb(config.databaseUrl);
     pluginMigrationDb = config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
-    logger.info("Using external PostgreSQL via DATABASE_URL/config");
+    // Log the resolved DB endpoint (host:port only — never credentials) so we can
+    // confirm which Supabase pooler the serverless control plane actually connects to
+    // (:6543 transaction pooler for serverless vs :5432 session pooler).
+    let dbEndpoint = "unknown";
+    try {
+      const u = new URL(config.databaseUrl);
+      dbEndpoint = `${u.hostname}:${u.port || "(default)"}`;
+    } catch {
+      const at = config.databaseUrl.lastIndexOf("@");
+      dbEndpoint = at >= 0 ? config.databaseUrl.slice(at + 1).split(/[/?]/)[0] : "unparseable";
+    }
+    logger.info({ dbEndpoint }, "Using external PostgreSQL via DATABASE_URL/config");
+    console.log(`boot-db: connecting to ${dbEndpoint}`);
     activeDatabaseConnectionString = config.databaseUrl;
     startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
     bootMark("db+migrations");
