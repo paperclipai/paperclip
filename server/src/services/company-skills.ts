@@ -138,6 +138,36 @@ type ParsedSkillImportSource = {
   warnings: string[];
 };
 
+const EXTERNAL_SKILL_SOURCE_TYPES = new Set<CompanySkillSourceType>(["github", "skills_sh", "url"]);
+
+function isPinnedCommitRef(value: string | null | undefined) {
+  return Boolean(value && /^[0-9a-f]{40}$/i.test(value.trim()));
+}
+
+function assertImportedSkillSourceAllowed(skill: ImportedSkill) {
+  if (!EXTERNAL_SKILL_SOURCE_TYPES.has(skill.sourceType)) return;
+  if (skill.trustLevel === "scripts_executables") {
+    throw unprocessable(
+      `External skill source "${skill.slug}" contains executable scripts and cannot be imported.`,
+      {
+        sourceType: skill.sourceType,
+        trustLevel: skill.trustLevel,
+        reason: "scripts_executables_blocked",
+      },
+    );
+  }
+  if ((skill.sourceType === "github" || skill.sourceType === "skills_sh") && !isPinnedCommitRef(skill.sourceRef)) {
+    throw unprocessable(
+      `External skill source "${skill.slug}" must resolve to a pinned Git commit before import.`,
+      {
+        sourceType: skill.sourceType,
+        trustLevel: skill.trustLevel,
+        reason: "unpinned_external_source",
+      },
+    );
+  }
+}
+
 type SkillSourceMeta = {
   skillKey?: string;
   sourceKind?: string;
@@ -3332,6 +3362,7 @@ export function companySkillService(db: Db) {
   async function upsertImportedSkills(companyId: string, imported: ImportedSkill[]): Promise<CompanySkill[]> {
     const out: CompanySkill[] = [];
     for (const skill of imported) {
+      assertImportedSkillSourceAllowed(skill);
       const existing = await getByKey(companyId, skill.key);
       const existingMeta = existing ? getSkillMeta(existing) : {};
       const incomingMeta = skill.metadata && isPlainRecord(skill.metadata) ? skill.metadata : {};

@@ -14,6 +14,8 @@ Before you start work, **search GitHub** for existing PRs and issues that touch 
 
 Duplicate PRs create extra work for reviewers and make merging harder. A 60-second search saves hours later.
 
+Affirm that you did this search by checking the dedup-search box in the PR template (`I have searched GitHub for duplicate or related PRs and linked them above`). Commitperclip checks for this checkbox on non-trivial PRs.
+
 ## Two Paths to Get Your Pull Request Accepted
 
 ### Path 1: Small, Focused Changes (Fastest way to get merged)

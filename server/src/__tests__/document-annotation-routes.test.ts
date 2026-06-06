@@ -108,7 +108,16 @@ const annotationComment = {
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
-    accessService: () => ({ canUser: vi.fn(), hasPermission: vi.fn(async () => false) }),
+    accessService: () => ({
+      canUser: vi.fn(),
+      decide: vi.fn(async (input: { action?: string }) => ({
+        allowed: true,
+        action: input.action,
+        reason: "allow_test",
+        explanation: "Allowed by test mock.",
+      })),
+      hasPermission: vi.fn(async () => false),
+    }),
     agentService: () => ({ getById: vi.fn(), list: vi.fn(async () => []) }),
     companyService: () => ({ getById: vi.fn(async () => ({ id: companyId, attachmentMaxBytes: 10_000_000 })) }),
     documentAnnotationService: () => mockAnnotationService,

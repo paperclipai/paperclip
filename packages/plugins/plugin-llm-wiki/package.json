@@ -47,7 +47,7 @@
     "rollup": "^4.61.1",
     "tslib": "^2.8.1",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.5"
+    "vitest": "^4.1.8"
   },
   "peerDependencies": {
     "react": ">=18"

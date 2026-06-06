@@ -126,6 +126,25 @@ import { Identity } from "@/components/Identity";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { MembershipAction } from "@/components/MembershipAction";
 import { IssueOutputSection } from "@/components/issue-output/IssueOutputSection";
+import {
+  EnvInputsList,
+  ExternalSourcesList,
+  RequiredSkillsList,
+  StepSkillPlan,
+  StepSourcePolicy,
+  TeamCard,
+  TeamHierarchyPreview,
+  TeamRow,
+} from "@/pages/TeamCatalog";
+import {
+  currentInstalledState,
+  onboardingTeams,
+  optionalTeam,
+  outOfDateInstalledState,
+  sampleSkillPreparations,
+  sampleTeam,
+  warnTeam,
+} from "@/pages/TeamCatalog.fixtures";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 
 /* ------------------------------------------------------------------ */
@@ -221,6 +240,24 @@ function SubSection({ title, children }: { title: string; children: React.ReactN
   );
 }
 
+// Onboarding seam (design §6 + §12.5): the TeamCard tile in its "Pick a starter
+// team" 3-col grid, with the first defaultInstall tile selected.
+function TeamCardShowcase() {
+  const [selectedId, setSelectedId] = useState(onboardingTeams[0]?.id ?? null);
+  return (
+    <div className="grid max-w-2xl gap-4 md:grid-cols-2 lg:grid-cols-3">
+      {onboardingTeams.map((team) => (
+        <TeamCard
+          key={team.id}
+          team={team}
+          selected={team.id === selectedId}
+          onSelect={() => setSelectedId(team.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Color swatch                                                       */
 /* ------------------------------------------------------------------ */
@@ -259,6 +296,9 @@ export function DesignGuide() {
     { key: "status", label: "Status", value: "Active" },
     { key: "priority", label: "Priority", value: "High" },
   ]);
+  const [allowExternal, setAllowExternal] = useState(false);
+  const [allowUnpinned, setAllowUnpinned] = useState(false);
+  const [allowLocalPath, setAllowLocalPath] = useState(false);
 
   return (
     <div className="space-y-10 max-w-4xl">
@@ -1417,6 +1457,94 @@ export function DesignGuide() {
 
       {/* ============================================================ */}
       {/*  ICON REFERENCE                                               */}
+      {/* ============================================================ */}
+      {/*  TEAM CATALOG                                                 */}
+      {/* ============================================================ */}
+      <Section title="Team Catalog">
+        <p className="text-sm text-muted-foreground">
+          Components from the Team Catalog browse/install surface (<code className="font-mono text-xs">/teams-catalog</code>).
+          Fixtures are shared with the Storybook stories.
+        </p>
+
+        <SubSection title="TeamRow (browse list)">
+          <div className="w-[28rem] rounded-md border border-border">
+            <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Bundled · 1
+            </div>
+            <TeamRow team={sampleTeam} selected onSelect={() => {}} />
+            <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Optional · 2
+            </div>
+            <TeamRow team={optionalTeam} selected={false} onSelect={() => {}} />
+            <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Installed · 2
+            </div>
+            <TeamRow team={sampleTeam} selected={false} onSelect={() => {}} installed={outOfDateInstalledState} />
+            <TeamRow team={warnTeam} selected={false} onSelect={() => {}} installed={currentInstalledState} />
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Installed teams collapse under <code className="font-mono">INSTALLED · N</code>; an out-of-date
+            install (server <code className="font-mono">originHash</code> ≠ catalog <code className="font-mono">contentHash</code>)
+            shows the amber <code className="font-mono">↑</code> badge (PAP-10256).
+          </p>
+        </SubSection>
+
+        <SubSection title="TeamCard (onboarding grid)">
+          <p className="text-xs text-muted-foreground">
+            Square tile for the onboarding &ldquo;Pick a starter team&rdquo; grid. Selected tile gets{" "}
+            <code className="font-mono">ring-2 ring-ring</code>. Drives the{" "}
+            <code className="font-mono">useInstallTeamCatalogEntry</code> simplified flow.
+          </p>
+          <TeamCardShowcase />
+        </SubSection>
+
+        <SubSection title="TeamHierarchyPreview">
+          <div className="max-w-md">
+            <TeamHierarchyPreview team={sampleTeam} />
+          </div>
+        </SubSection>
+
+        <SubSection title="RequiredSkillsList">
+          <div className="max-w-xl">
+            <RequiredSkillsList skills={sampleTeam.requiredSkills} />
+          </div>
+        </SubSection>
+
+        <SubSection title="EnvInputsList">
+          <div className="max-w-xl">
+            <EnvInputsList inputs={sampleTeam.envInputs} />
+          </div>
+        </SubSection>
+
+        <SubSection title="ExternalSourcesList">
+          <div className="max-w-xl">
+            <ExternalSourcesList sources={sampleTeam.sourceRefs} />
+          </div>
+        </SubSection>
+
+        <SubSection title="Source policy step (StepSourcePolicy)">
+          <div className="max-w-xl rounded-md border border-border p-4">
+            <StepSourcePolicy
+              team={warnTeam}
+              allowExternalSources={allowExternal}
+              allowUnpinnedOptionalSources={allowUnpinned}
+              allowLocalPathSources={allowLocalPath}
+              onChange={(key, value) => {
+                if (key === "external") setAllowExternal(value);
+                if (key === "unpinned") setAllowUnpinned(value);
+                if (key === "localPath") setAllowLocalPath(value);
+              }}
+            />
+          </div>
+        </SubSection>
+
+        <SubSection title="Skill plan step (StepSkillPlan)">
+          <div className="max-w-xl rounded-md border border-border p-4">
+            <StepSkillPlan team={sampleTeam} preparations={sampleSkillPreparations} />
+          </div>
+        </SubSection>
+      </Section>
+
       {/* ============================================================ */}
       <Section title="Common Icons (Lucide)">
         <div className="grid grid-cols-4 md:grid-cols-6 gap-4">
