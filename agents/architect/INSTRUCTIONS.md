@@ -101,10 +101,21 @@ These are hard rules. Past Architect runs have wasted 60+ minutes wrestling with
 2. **Run via `run_in_background: true` + Monitor — never manual `&` or `nohup`.** Monitor waits with no time cap. Bash's foreground 10-minute hard cap will kill cold builds mid-compile.
 3. **Use the canonical command verbatim — do not invent variants.** Copy these lines, substituting `{task-id}`. Prefix every cargo command with `CARGO_INCREMENTAL=0` so the shared sccache cache (configured in `~/.cargo/config.toml`) actually gets hits — sccache cannot cache incremental builds, and a clean verify gains nothing from incremental anyway:
    ```sh
-   CARGO_INCREMENTAL=0 cargo check  2>&1 | tee /tmp/cargo-check-{task-id}.txt
-   CARGO_INCREMENTAL=0 cargo clippy 2>&1 | tee /tmp/cargo-clippy-{task-id}.txt
-   CARGO_INCREMENTAL=0 cargo test   2>&1 | tee /tmp/cargo-test-{task-id}.txt
+   CARGO_INCREMENTAL=0 cargo check    2>&1 | tee /tmp/cargo-check-{task-id}.txt
+   CARGO_INCREMENTAL=0 cargo clippy   2>&1 | tee /tmp/cargo-clippy-{task-id}.txt
+   CARGO_INCREMENTAL=0 cargo test --lib 2>&1 | tee /tmp/cargo-test-{task-id}.txt
    ```
+   **The test gate is `cargo test --lib`, NOT full `cargo test`.** The
+   integration-test crates under `tests/` are separately maintained and
+   have historically been broken on `main` for reasons unrelated to any
+   single task (stale signatures, renamed crate, `cfg(test)`-only loaders).
+   Running full `cargo test` made the gate fail for *every* needs-build
+   task regardless of its own correctness — the Architect would bail
+   before the PR step and the task would masquerade as done with no PR.
+   The `--lib` gate runs the library unit tests (the ones a task actually
+   adds/changes); integration-crate health is tracked as its own task.
+   If your changed files include anything under `tests/`, additionally run
+   `cargo test --test <name>` for just those targets.
    **`cargo check` is a staged gate, not just the first of three.** Run `check` alone first. If it surfaces errors in your changed files, fix + re-`check` until clean (do NOT run clippy/test against a tree that fails `check` — clippy recompiles and `test` builds the full test binaries, the most expensive step, so running them on a broken base burns minutes for nothing). Only once `check` is clean do you run `clippy`, then `test`.
    - `2>&1` redirects stderr to stdout. `|` pipes stdout to tee. `tee` writes to file *and* to stdout. You get full output in the file AND streamed back to Monitor.
    - **Wrong**: `cargo clippy 2>&1 > /tmp/file` — that redirects stderr to the terminal's stdout, then sends only stdout to the file. Most clippy output is on stderr; you get an empty file.
