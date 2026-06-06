@@ -578,8 +578,12 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     await db.insert(agents).values({
       id: managerId,
       companyId,
-      name: "Root Operator",
-      role: "operator",
+      name: "Company CTO",
+      // Recovery fallback rungs require executive role (cto/ceo). Without this,
+      // resolveEscalationOwnerAgentId finds no candidate and the escalation is
+      // not created. Mirrors the production fleet precondition: every company
+      // must have at least one cto/ceo agent.
+      role: "cto",
       status: "idle",
       adapterType: "codex_local",
       adapterConfig: {},
