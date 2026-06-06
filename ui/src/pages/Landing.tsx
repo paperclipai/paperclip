@@ -908,6 +908,39 @@ export function LandingPage() {
         </p>
       </Section>
 
+      {/* ── Bring your own agent ── */}
+      <Section className="py-16">
+        <div className="rounded-3xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-neutral-900 p-8 sm:p-12">
+          <div className="flex flex-col items-center text-center">
+            <Eyebrow>Bring your own agent</Eyebrow>
+            <h2 className="max-w-2xl text-[clamp(24px,3vw,38px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
+              Runs on the models you already trust.
+            </h2>
+            <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-gray-500 dark:text-neutral-400">
+              Point each agent at Claude, Gemini, OpenAI, or a local runtime. Swap
+              providers per-agent — no lock-in, no rewrites.
+            </p>
+            <div className="mt-9 flex flex-wrap items-center justify-center gap-x-12 gap-y-8 sm:gap-x-16">
+              {/* Claude (text mark — primary) */}
+              <span className="font-serif text-[22px] font-semibold tracking-tight text-gray-800 dark:text-neutral-200" style={{ fontFamily: "Georgia, serif" }}>
+                Claude
+              </span>
+              {/* Gemini (multicolor, theme-agnostic) */}
+              <img src="/providers/google-gemini.svg" alt="Google Gemini" className="h-7 w-auto" />
+              {/* OpenAI — theme-swapped */}
+              <img src="/providers/OpenAI-black-monoblossom.svg" alt="OpenAI" className="h-8 w-auto dark:hidden" />
+              <img src="/providers/OpenAI-white-monoblossom.svg" alt="OpenAI" className="hidden h-8 w-auto dark:block" />
+              {/* opencode — theme-swapped */}
+              <img src="/providers/opencode-logo-light.svg" alt="opencode" className="h-8 w-auto dark:hidden" />
+              <img src="/providers/opencode-logo-dark.svg" alt="opencode" className="hidden h-8 w-auto dark:block" />
+            </div>
+            <p className="mt-7 font-mono text-[11px] uppercase tracking-[0.16em] text-gray-400 dark:text-neutral-500">
+              + Cursor · Codex · Grok · local adapters
+            </p>
+          </div>
+        </div>
+      </Section>
+
       {/* ── Manifesto ── */}
       <Section className="py-16">
         <div className="grid grid-cols-1 gap-8 md:grid-cols-[auto_1fr] md:items-center">
