@@ -565,6 +565,49 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Boolean(run || deferredWake);
   }
 
+  // Agents declare disposition intent in their final comment per the
+  // disposition state-machine playbook (DONE / BLOCKED / FOR REVIEW / CANCELLED
+  // / DELEGATED / PARTIAL ... Continuation needed:). When the agent has
+  // declared an intent in their latest comment, the stranded-issue reconciler
+  // should NOT flip the issue to `blocked`. That would undo the agent's
+  // explicit decision (especially for DELEGATED and CONTINUATION, where the
+  // agent intentionally leaves the issue in_progress).
+  async function latestAgentDeclaredDispositionIntent(
+    companyId: string,
+    issueId: string,
+  ): Promise<
+    | "done"
+    | "blocked"
+    | "in_review"
+    | "cancelled"
+    | "delegated"
+    | "continuation"
+    | null
+  > {
+    const [row] = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.issueId, issueId),
+          eq(issueComments.authorType, "agent"),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt))
+      .limit(1);
+    const body = row?.body;
+    if (!body) return null;
+    if (/\bcontinuation needed\s*:?\s*$/i.test(body)) return "continuation";
+    if (/^\s*PARTIAL\s*:/i.test(body)) return "continuation";
+    if (/^\s*DELEGATED\b/i.test(body)) return "delegated";
+    if (/^\s*DONE\s*:/i.test(body)) return "done";
+    if (/^\s*BLOCKED\s*:/i.test(body)) return "blocked";
+    if (/^\s*FOR\s+REVIEW\s*:/i.test(body)) return "in_review";
+    if (/^\s*CANCELLED\s*:/i.test(body)) return "cancelled";
+    return null;
+  }
+
   async function hasQueuedIssueWake(companyId: string, issueId: string) {
     return db
       .select({ id: agentWakeupRequests.id })
@@ -2483,6 +2526,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+
+      // Honor agent-declared disposition intent: if the most recent agent
+      // comment on this issue carries an explicit disposition marker
+      // (DELEGATED, CONTINUATION/PARTIAL, DONE, BLOCKED, IN_REVIEW, CANCELLED),
+      // the reconciler should not subsequently flip the issue to `blocked`
+      // against the agent's stated intent. This is most important for
+      // DELEGATED (assignee changed; new owner has not yet acted) and
+      // CONTINUATION (agent intentionally left issue in_progress, awaiting
+      // the next wake or operator follow-up).
+      if (await latestAgentDeclaredDispositionIntent(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
           issue,

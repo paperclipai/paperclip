@@ -9001,6 +9001,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(eq(issues.id, issue.id));
       }
 
+      // If the issue reached a terminal state during the run, skip deferred
+      // wakeups that would re-fire the SAME agent against itself — the
+      // wake-loop bug. We only kill wakes where (a) the wake targets this
+      // same agent and (b) this same agent requested the wake (e.g. via
+      // its own end-of-run "DONE" comment). User- or system-triggered
+      // wakes, AND wakes targeting a different agent (e.g. @-mention
+      // routing comment-mention wakes to a peer agent), must still promote
+      // so:
+      //   - an operator can re-open a done issue by commenting on it
+      //   - a peer agent can pick up a mention even after the source
+      //     agent's run terminated the issue
+      if (issue.status === "done" || issue.status === "cancelled") {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "skipped",
+            finishedAt: new Date(),
+            error: "Issue already in terminal state; agent-self deferred promotion skipped",
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+              eq(agentWakeupRequests.agentId, run.agentId),
+              eq(agentWakeupRequests.requestedByActorType, "agent"),
+              eq(agentWakeupRequests.requestedByActorId, run.agentId),
+            ),
+          );
+      }
+
       while (true) {
         const deferred = await tx
           .select()

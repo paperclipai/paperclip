@@ -382,6 +382,20 @@ export function decideSuccessfulRunHandoff(input: {
   if (input.idempotentWakeExists) {
     return { kind: "skip", reason: "corrective handoff wake already exists for this source run" };
   }
+  // Successful runs that produced visible progress (comments / work products
+  // captured as detectedProgressSummary) leave evidence the board operator can
+  // act on directly. Surfacing a `MISSING DISPOSITION` recovery card on top of
+  // that evidence creates a second-tier escalation that the operator must
+  // manually dismiss. Skip only AFTER existing owners (queued wake, pending
+  // interaction, blocker path, etc.) have had a chance to claim the next
+  // action — their reasons are higher-priority and the original tests expect
+  // them to surface unchanged.
+  if (input.detectedProgressSummary && input.detectedProgressSummary.trim().length > 0) {
+    return {
+      kind: "skip",
+      reason: "successful run produced visible progress; awaiting operator disposition without auto-escalation",
+    };
+  }
 
   const instruction = buildSuccessfulRunHandoffInstruction({
     issueIdentifier: issue.identifier,
