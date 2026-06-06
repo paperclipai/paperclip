@@ -7,31 +7,36 @@ Guidance for human and AI contributors working in this repository.
 Paperclip is a control plane for AI-agent companies.
 The current implementation target is V1 and is defined in `doc/SPEC-implementation.md`.
 
-## 2. Read This First
+## 2. Read First
 
-Before making changes, read in this order:
+Read these before changing behavior:
 
 1. `doc/GOAL.md`
 2. `doc/PRODUCT.md`
 3. `doc/SPEC-implementation.md`
 4. `doc/DEVELOPING.md`
 5. `doc/DATABASE.md`
+6. `CONTRIBUTING.md`
 
-`doc/SPEC.md` is long-horizon product context.
-`doc/SPEC-implementation.md` is the concrete V1 build contract.
+`doc/SPEC.md` is long-horizon context. `doc/SPEC-implementation.md` is the current build contract.
 
 ## 3. Repo Map
 
-- `server/`: Express REST API and orchestration services
-- `ui/`: React + Vite board UI
-- `packages/db/`: Drizzle schema, migrations, DB clients
-- `packages/shared/`: shared types, constants, validators, API path constants
-- `packages/adapters/`: agent adapter implementations (Claude, Codex, Cursor, etc.)
-- `packages/adapter-utils/`: shared adapter utilities
-- `packages/plugins/`: plugin system packages
-- `doc/`: operational and product docs
+- `server/`: REST API, orchestration, issue/task logic, auth, runtime behavior
+- `ui/`: board UI, routes, components, client behavior
+- `cli/`: CLI commands and operator workflows
+- `packages/db/`: schema, migrations, DB clients
+- `packages/shared/`: shared types, constants, validators, API paths
+- `packages/adapters/`: adapter implementations
+- `packages/adapter-utils/`: shared adapter/runtime utilities
+- `packages/plugins/`: plugin runtime and bundled plugins
+- `packages/skills-catalog/`: bundled skill packaging
+- `tests/e2e/`, `tests/release-smoke/`: browser coverage
+- `doc/`: product, release, and operator docs
 
-## 4. Dev Setup (Auto DB)
+When behavior crosses layers, update every affected contract in the same change.
+
+## 4. Dev Setup
 
 Use embedded PGlite in dev by leaving `DATABASE_URL` unset.
 
@@ -39,11 +44,6 @@ Use embedded PGlite in dev by leaving `DATABASE_URL` unset.
 pnpm install
 pnpm dev
 ```
-
-This starts:
-
-- API: `http://localhost:3100`
-- UI: `http://localhost:3100` (served by API server in dev middleware mode)
 
 Quick checks:
 
@@ -59,40 +59,83 @@ rm -rf data/pglite
 pnpm dev
 ```
 
-## 5. Core Engineering Rules
+## 5. Core Rules
 
 1. Keep changes company-scoped.
-Every domain entity should be scoped to a company and company boundaries must be enforced in routes/services.
+Every domain entity must respect company boundaries.
 
 2. Keep contracts synchronized.
-If you change schema/API behavior, update all impacted layers:
-- `packages/db` schema and exports
-- `packages/shared` types/constants/validators
-- `server` routes/services
-- `ui` API clients and pages
+If schema or API behavior changes, update the impacted `packages/db`, `packages/shared`, `server`, and `ui` layers together.
 
 3. Preserve control-plane invariants.
-- Single-assignee task model
-- Atomic issue checkout semantics
-- Approval gates for governed actions
-- Budget hard-stop auto-pause behavior
-- Activity logging for mutating actions
+- single-assignee task model
+- atomic issue checkout semantics
+- approval gates for governed actions
+- budget hard-stop auto-pause behavior
+- activity logging for mutating actions
 
-4. Do not replace strategic docs wholesale unless asked.
-Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` aligned.
+4. Prefer additive docs changes unless asked otherwise.
+Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` aligned.
 
-5. Keep repo plan docs dated and centralized.
-When you are creating a plan file in the repository itself, new plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames. This does not replace Paperclip issue planning: if a Paperclip issue asks for a plan, update the issue `plan` document per the `paperclip` skill instead of creating a repo markdown file.
+5. Keep repo plans in `doc/plans/` with `YYYY-MM-DD-slug.md` filenames.
+If a Paperclip issue asks for a plan, update the issue `plan` document instead of adding a repo markdown file.
 
-6. Attach inspectable generated artifacts.
-When your task produces a user-inspectable file, follow the Paperclip skill's "Generated Artifacts and Work Products" workflow before final disposition. In this repo, prefer the self-contained skill helper at `skills/paperclip/scripts/paperclip-upload-artifact.sh` so the file is available through the Paperclip API, create/update an artifact work product when the file is the deliverable, link the uploaded artifact in the final issue comment, and then set status. Do not rely on local filesystem paths as the only access path. See `doc/AGENT-ARTIFACTS.md` for `.mp4` and `.webm` examples.
+6. Upload inspectable artifacts before final disposition.
+In this repo prefer `skills/paperclip/scripts/paperclip-upload-artifact.sh`, create/update the artifact work product when the file is the deliverable, and link the uploaded artifact in the final issue comment. See `doc/AGENT-ARTIFACTS.md` for examples.
 
-## 6. Database Change Workflow
+## 6. Verification
 
-When changing data model:
+Start with the smallest command that proves the changed surface:
+
+- Docs or instruction-only change: verify links, commands, and references manually.
+- Single Vitest-covered change: run the narrowest relevant test file.
+- Server-only TypeScript change: `pnpm --filter @paperclipai/server typecheck`
+- UI-only TypeScript change: `pnpm --filter @paperclipai/ui typecheck`
+- Single package change: package typecheck plus the narrowest related test
+- Cross-package contract change: `pnpm typecheck` plus targeted Vitest coverage
+
+Broader checks when warranted:
+
+```sh
+pnpm test
+pnpm typecheck
+pnpm build
+```
+
+Repo specifics:
+
+- `pnpm test` is the cheap default and runs Vitest via `scripts/run-vitest-stable.mjs`.
+- Browser suites are opt-in: `pnpm test:e2e`, `pnpm test:release-smoke`.
+- If workspace wiring changes, let the normal commands run `preflight:workspace-links`.
+- For PR-ready handoff or broad refactors, run `pnpm typecheck`, `pnpm test:run`, and `pnpm build`.
+
+If you skip a relevant check, say exactly what was not run and why.
+
+## 7. Git Workflow
+
+- Keep each branch or issue checkout focused on one logical change.
+- Prefer a non-main branch and an isolated workspace or worktree.
+- Push the branch before claiming task completion so reviewers can inspect durable remote state.
+- When implementation is ready, create or update a `pull_request` work product on the issue and move review/merge onto an explicit review path.
+- Repo task work is not done until the PR path is closed and the branch is merged back to base.
+- Prefer linked worktrees or Paperclip-managed execution workspaces for parallel work.
+- Do not commit `pnpm-lock.yaml` in pull requests. GitHub Actions owns lockfile regeneration here.
+- If you touch release, CI, or package publishing, read the matching docs first.
+- Before opening a PR, use [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) exactly as written.
+
+## 8. Ownership Lenses
+
+- API/orchestration: `server/`, issue lifecycle, approvals, auth, workspace/runtime logic
+- UI: `ui/`, user flows, components, visual regressions
+- CLI/operator workflow: `cli/`, plus `doc/CLI.md` and `doc/DEVELOPING.md`
+- Data contracts: `packages/shared/` and `packages/db/`, with follow-through into `server/` and `ui/`
+- Plugin/adapter: `packages/adapters/`, `packages/adapter-utils/`, `packages/plugins/`
+- Docs/process: root docs, repo instructions, release/process docs
+
+## 9. Database Changes
 
 1. Edit `packages/db/src/schema/*.ts`
-2. Ensure new tables are exported from `packages/db/src/schema/index.ts`
+2. Ensure exports from `packages/db/src/schema/index.ts`
 3. Generate migration:
 
 ```sh
@@ -106,29 +149,28 @@ pnpm -r typecheck
 ```
 
 Notes:
+
 - `packages/db/drizzle.config.ts` reads compiled schema from `dist/schema/*.js`
 - `pnpm db:generate` compiles `packages/db` first
 
-## 7. Verification Before Hand-off
+## 10. Hand-off Checks
 
-Default local/agent test path:
+Cheap default:
 
 ```sh
 pnpm test
 ```
 
-This is the cheap default and only runs the Vitest suite. Browser suites stay opt-in:
+Browser suites stay opt-in:
 
 ```sh
 pnpm test:e2e
 pnpm test:release-smoke
 ```
 
-Run the browser suites only when your change touches them or when you are explicitly verifying CI/release flows.
+Run the browser suites only when the change touches them or when explicitly verifying CI/release flows.
 
-For normal issue work, run the smallest relevant verification first. Do not default to repo-wide typecheck/build/test on every heartbeat when a narrower check is enough to prove the change.
-
-Run this full check before claiming repo work done in a PR-ready hand-off, or when the change scope is broad enough that targeted checks are not sufficient:
+Full check before PR-ready handoff or broad changes:
 
 ```sh
 pnpm -r typecheck
@@ -136,86 +178,42 @@ pnpm test:run
 pnpm build
 ```
 
-If anything cannot be run, explicitly report what was not run and why.
+## 11. API and UI Expectations
 
-## 8. API and Auth Expectations
+- Base path is `/api`.
+- Board access is full-control operator context.
+- Agent access uses bearer API keys (`agent_api_keys`), hashed at rest.
+- Agent keys must not access other companies.
+- New endpoints must enforce company access, actor permissions, mutation logging, and consistent HTTP errors.
+- Keep routes and nav aligned with available API surface.
+- Use company selection context on company-scoped pages.
+- Surface failures clearly; do not silently ignore API errors.
 
-- Base path: `/api`
-- Board access is treated as full-control operator context
-- Agent access uses bearer API keys (`agent_api_keys`), hashed at rest
-- Agent keys must not access other companies
+## 12. Pull Request Requirements
 
-When adding endpoints:
+Every PR must follow [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) exactly, including:
 
-- apply company access checks
-- enforce actor permissions (board vs agent)
-- write activity log entries for mutations
-- return consistent HTTP errors (`400/401/403/404/409/422/500`)
+- `Thinking Path`
+- `What Changed`
+- `Verification`
+- `Risks`
+- `Model Used`
+- `Checklist`
 
-## 9. UI Expectations
+## 13. Definition of Done
 
-- Keep routes and nav aligned with available API surface
-- Use company selection context for company-scoped pages
-- Surface failures clearly; do not silently ignore API errors
+Done means all are true:
 
-## 10. Pull Request Requirements
+1. Behavior matches `doc/SPEC-implementation.md`.
+2. Typecheck, tests, and build pass at the right scope.
+3. Contracts are synced across db/shared/server/ui when relevant.
+4. Docs are updated when behavior or commands change.
+5. The PR description follows the required template.
 
-When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
+## 14. Fork-Specific: HenkDz/paperclip
 
-- **Thinking Path** — trace reasoning from project context to this change (see `CONTRIBUTING.md` for examples)
-- **What Changed** — bullet list of concrete changes
-- **Verification** — how a reviewer can confirm it works
-- **Risks** — what could go wrong
-- **Model Used** — the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None — human-authored" if no AI was used.
-- **Checklist** — all items checked
+This fork externalizes the Hermes adapter on branch `feat/externalize-hermes-adapter`.
 
-## 11. Definition of Done
-
-A change is done when all are true:
-
-1. Behavior matches `doc/SPEC-implementation.md`
-2. Typecheck, tests, and build pass
-3. Contracts are synced across db/shared/server/ui
-4. Docs updated when behavior or commands change
-5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
-
-## 11. Fork-Specific: HenkDz/paperclip
-
-This is a fork of `paperclipai/paperclip` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/paperclip/tree/feat/externalize-hermes-adapter)).
-
-### Branch Strategy
-
-- `feat/externalize-hermes-adapter` → core has **no** `hermes-paperclip-adapter` dependency and **no** built-in `hermes_local` registration. Install Hermes via the Adapter Plugin manager (`@henkey/hermes-paperclip-adapter` or a `file:` path).
-- Older fork branches may still document built-in Hermes; treat this file as authoritative for the externalize branch.
-
-### Hermes (plugin only)
-
-- Register through **Board → Adapter manager** (same as Droid). Type remains `hermes_local` once the package is loaded.
-- UI uses generic **config-schema** + **ui-parser.js** from the package — no Hermes imports in `server/` or `ui/` source.
-- Optional: `file:` entry in `~/.paperclip/adapter-plugins.json` for local dev of the adapter repo.
-
-### Local Dev
-
-- Fork runs on port 3101+ (auto-detects if 3100 is taken by upstream instance)
-- `npx vite build` hangs on NTFS — use `node node_modules/vite/bin/vite.js build` instead
-- Server startup from NTFS takes 30-60s — don't assume failure immediately
-- Kill ALL paperclip processes before starting: `pkill -f "paperclip"; pkill -f "tsx.*index.ts"`
-- Vite cache survives `rm -rf dist` — delete both: `rm -rf ui/dist ui/node_modules/.vite`
-
-### Fork QoL Patches (not in upstream)
-
-These are local modifications in the fork's UI. If re-copying source, these must be re-applied:
-
-1. **stderr_group** — amber accordion for MCP init noise in `RunTranscriptView.tsx`
-2. **tool_group** — accordion for consecutive non-terminal tools (write, read, search, browser)
-3. **Dashboard excerpt** — `LatestRunCard` strips markdown, shows first 3 lines/280 chars
-
-### Plugin System
-
-PR #2218 (`feat/external-adapter-phase1`) adds external adapter support. See root `AGENTS.md` for full details.
-
-- Adapters can be loaded as external plugins via `~/.paperclip/adapter-plugins.json`
-- The plugin-loader should have ZERO hardcoded adapter imports — pure dynamic loading
-- `createServerAdapter()` must include ALL optional fields (especially `detectModel`)
-- Built-in UI adapters can shadow external plugin parsers — remove built-in when fully externalizing
-- Reference external adapters: Hermes (`@henkey/hermes-paperclip-adapter` or `file:`) and Droid (npm)
+- Core should not depend on `hermes-paperclip-adapter`.
+- Register Hermes through the Adapter Plugin manager.
+- UI should use the package's config-schema and `ui-parser.js`, not source imports from `server/` or `ui/`.

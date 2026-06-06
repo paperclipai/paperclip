@@ -639,10 +639,52 @@ describe("renderPaperclipWakePrompt", () => {
 
     expect(prompt).toContain("## Paperclip Wake Payload");
     expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
-    expect(prompt).toContain("clear final disposition");
-    expect(prompt).toContain("evidence, not valid liveness paths by themselves");
-    expect(prompt).toContain("Use child issues for long or parallel delegated work instead of polling");
-    expect(prompt).toContain("named unblock owner/action");
+    expect(prompt).toContain("finish in `done`, `in_review`, or `blocked`");
+    expect(prompt).toContain("keep `in_progress` only with a real continuation path");
+    expect(prompt).toContain("evidence, not liveness");
+    expect(prompt).toContain("Use child issues instead of polling");
+  });
+
+  it("only requires comment acknowledgement when wake comments are bundled", () => {
+    const assignmentPrompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1580",
+        title: "Update prompts",
+        status: "in_progress",
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(assignmentPrompt).not.toContain("acknowledge the latest comment");
+
+    const commentPrompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1580",
+        title: "Update prompts",
+        status: "in_progress",
+      },
+      commentIds: ["comment-1"],
+      latestCommentId: "comment-1",
+      commentWindow: {
+        requestedCount: 1,
+        includedCount: 1,
+        missingCount: 0,
+      },
+      comments: [{ id: "comment-1", body: "Please revise the prompt." }],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(commentPrompt).toContain("acknowledge the latest comment");
   });
 
   it("preserves Chinese, Japanese, and Hindi issue and comment text in scoped wake prompts", () => {
@@ -724,6 +766,30 @@ describe("renderPaperclipWakePrompt", () => {
     });
 
     expect(commentPrompt).toContain("Update the plan only. Do not write code or perform implementation work.");
+  });
+
+  it("renders the proactive execution standard for assignment and resumed wakes", () => {
+    const payload = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1221",
+        title: "Clarify ambiguous bug",
+        status: "in_progress",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const assignmentPrompt = renderPaperclipWakePrompt(payload);
+    expect(assignmentPrompt).toContain("Proactive execution standard:");
+    expect(assignmentPrompt).toContain("record the missing assumption or success condition in your first issue comment");
+    expect(assignmentPrompt).toContain("create the child issue or issue-thread interaction before you exit");
+
+    const resumedPrompt = renderPaperclipWakePrompt(payload, { resumedSession: true });
+    expect(resumedPrompt).toContain("## Paperclip Resume Delta");
+    expect(resumedPrompt).toContain("Proactive execution standard:");
   });
 
   it("does not render stale accepted-plan continuation guidance for later planning comment wakes", () => {
