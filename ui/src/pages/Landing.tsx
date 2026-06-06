@@ -360,6 +360,160 @@ function LiveConsole() {
   );
 }
 
+// ─── Diagrams (custom, AGNB data) ─────────────────────────────────────────────
+
+const cardCls = "rounded-2xl border border-black/[0.07] bg-white p-6 shadow-sm dark:border-white/[0.08] dark:bg-neutral-900";
+
+function OrgChart() {
+  const node = (role: string, agent: string, accent = false) => (
+    <div className={cn(
+      "rounded-xl border px-3.5 py-2.5 text-center",
+      accent ? "border-[#f97316]/30 bg-[#f97316]/[0.06]" : "border-black/[0.08] bg-[#FAF8F4] dark:border-white/10 dark:bg-neutral-800/50",
+    )}>
+      <div className="text-[12.5px] font-semibold text-gray-900 dark:text-neutral-100">{role}</div>
+      <div className="font-mono text-[10.5px] text-gray-400 dark:text-neutral-500">{agent}</div>
+    </div>
+  );
+  const line = "h-5 w-px bg-black/10 dark:bg-white/15";
+  return (
+    <div className={cardCls}>
+      <p className="mb-1 font-mono text-[10.5px] uppercase tracking-[0.16em] text-[#f97316]">Mission</p>
+      <p className="mb-5 text-[13px] font-medium text-gray-700 dark:text-neutral-300">
+        Grow pipeline, content, and revenue — autonomously.
+      </p>
+      <div className="flex flex-col items-center">
+        {node("CEO", "claude", true)}
+        <div className={line} />
+        <div className="flex w-full items-start justify-center gap-8">
+          <div className="flex flex-col items-center">
+            {node("CMO", "claude")}
+            <div className={line} />
+            <div className="flex gap-2">
+              {node("Blog Writer", "claude")}
+              {node("SEO Analyst", "gemini")}
+            </div>
+          </div>
+          <div className="flex flex-col items-center">
+            {node("CFO", "claude")}
+            <div className={line} />
+            <div className="flex gap-2">
+              {node("Sales-Ops", "claude")}
+              {node("Reviews", "serpapi")}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const HEARTBEAT = [
+  { job: "inbox-sync", every: "30m", n: 48 },
+  { job: "negative-signal-watch", every: "1h", n: 24 },
+  { job: "backlink-health", every: "6h", n: 4 },
+  { job: "reviews-sync", every: "1d", n: 1 },
+  { job: "daily-brief", every: "1d", n: 1 },
+];
+
+function Heartbeat() {
+  return (
+    <div className={cardCls}>
+      <div className="mb-4 flex items-center justify-between">
+        <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-[#f97316]">Heartbeat · 24h</p>
+        <span className="font-mono text-[10.5px] text-gray-400 dark:text-neutral-500">scheduler on · 35 jobs</span>
+      </div>
+      <div className="space-y-3.5">
+        {HEARTBEAT.map((h) => (
+          <div key={h.job} className="flex items-center gap-3">
+            <div className="w-40 shrink-0">
+              <div className="font-mono text-[11px] text-gray-700 dark:text-neutral-300">{h.job}</div>
+              <div className="font-mono text-[9.5px] text-gray-400 dark:text-neutral-500">every {h.every}</div>
+            </div>
+            <div className="relative h-5 flex-1 rounded-md bg-[#FAF8F4] dark:bg-neutral-800/60">
+              {Array.from({ length: Math.min(h.n, 48) }).map((_, i) => (
+                <span
+                  key={i}
+                  className="absolute top-1/2 size-1.5 -translate-y-1/2 rounded-full bg-[#f97316]"
+                  style={{ left: `${(i / Math.max(Math.min(h.n, 48) - 1, 1)) * 96 + 2}%`, opacity: h.n > 24 ? 0.55 : 1 }}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex justify-between font-mono text-[9.5px] text-gray-400 dark:text-neutral-500">
+        <span>0h</span><span>6h</span><span>12h</span><span>18h</span><span>24h</span>
+      </div>
+    </div>
+  );
+}
+
+const BUDGET = [
+  { agent: "CEO", budget: 50 },
+  { agent: "CMO", budget: 40 },
+  { agent: "CFO", budget: 40 },
+  { agent: "Blog Writer", budget: 30 },
+  { agent: "Sales-Ops Analyst", budget: 30 },
+  { agent: "SEO Analyst", budget: 30 },
+];
+
+function BudgetTable() {
+  const total = BUDGET.reduce((a, b) => a + b.budget, 0);
+  return (
+    <div className={cardCls}>
+      <p className="mb-4 font-mono text-[10.5px] uppercase tracking-[0.16em] text-[#f97316]">Cost control · CFO</p>
+      <table className="w-full text-[12.5px]">
+        <thead>
+          <tr className="text-left font-mono text-[10px] uppercase tracking-wider text-gray-400 dark:text-neutral-500">
+            <th className="pb-2 font-medium">Agent</th>
+            <th className="pb-2 text-right font-medium">Budget</th>
+            <th className="pb-2 text-right font-medium">Used</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-black/[0.06] dark:divide-white/[0.06]">
+          {BUDGET.map((b) => (
+            <tr key={b.agent}>
+              <td className="py-2 text-gray-800 dark:text-neutral-200">{b.agent}</td>
+              <td className="py-2 text-right font-mono text-gray-500 dark:text-neutral-400">${b.budget}</td>
+              <td className="py-2 text-right font-mono text-[#22c55e]">$0.00</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr className="border-t border-black/10 dark:border-white/15">
+            <td className="pt-2.5 font-semibold text-gray-900 dark:text-neutral-100">Total</td>
+            <td className="pt-2.5 text-right font-mono font-semibold text-gray-900 dark:text-neutral-100">${total}/mo</td>
+            <td className="pt-2.5 text-right font-mono font-semibold text-[#22c55e]">$0.00</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
+function GoalTrace() {
+  const rows: { sym: string; label: string; text: string; indent: number }[] = [
+    { sym: "◎", label: "Mission", text: "Own the AI-voice category", indent: 0 },
+    { sym: "◉", label: "Project", text: "Rank #1 for “AI call center”", indent: 1 },
+    { sym: "○", label: "Agent", text: "SEO Analyst", indent: 2 },
+    { sym: "•", label: "Task", text: "Draft BoFu page — IVR replacement", indent: 3 },
+  ];
+  return (
+    <div className={cardCls}>
+      <p className="mb-4 font-mono text-[10.5px] uppercase tracking-[0.16em] text-[#f97316]">Goal alignment · every task traces up</p>
+      <div className="space-y-2.5">
+        {rows.map((r) => (
+          <div key={r.label} className="flex items-center gap-2.5" style={{ paddingLeft: `${r.indent * 22}px` }}>
+            <span className="font-mono text-[13px] text-[#f97316]">{r.sym}</span>
+            <span className="w-14 shrink-0 font-mono text-[10px] uppercase tracking-wider text-gray-400 dark:text-neutral-500">{r.label}</span>
+            <span className="text-[12.5px] text-gray-800 dark:text-neutral-200">{r.text}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Data ─────────────────────────────────────────────────────────────────────
 
 const STATS = [
@@ -1128,6 +1282,28 @@ export function LandingPage() {
             </div>
           </div>
           <LiveConsole />
+        </div>
+      </Section>
+
+      {/* ── Inside the agent company (diagrams) ── */}
+      <Section className="py-16">
+        <div className="mb-10 text-center">
+          <Eyebrow>
+            <span className="mx-auto">Inside the agent company</span>
+          </Eyebrow>
+          <h2 className="text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
+            A real company. Just staffed by agents.
+          </h2>
+          <p className="mx-auto mt-3 max-w-xl text-[15px] leading-relaxed text-gray-500 dark:text-neutral-400">
+            An org chart, a heartbeat, a budget, and goals that trace top to bottom —
+            the same scaffolding you'd give a human team.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+          <OrgChart />
+          <Heartbeat />
+          <BudgetTable />
+          <GoalTrace />
         </div>
       </Section>
 
