@@ -19,6 +19,7 @@ function createSelectChain(rows: SelectRow[]) {
             then(callback: (rows: SelectRow[]) => unknown) {
               return Promise.resolve(callback(rows));
             },
+            orderBy: async () => rows,
           };
         },
       };
@@ -77,6 +78,35 @@ describe("issueThreadInteractionService", () => {
     vi.resetModules();
     vi.clearAllMocks();
   });
+
+  function legacyRequestConfirmationRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "interaction-legacy-expired",
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation",
+      status: "expired",
+      continuationPolicy: "wake_assignee_on_accept",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: "Confirm plan",
+      summary: null,
+      createdByAgentId: "agent-1",
+      createdByUserId: null,
+      resolvedByAgentId: null,
+      resolvedByUserId: "local-board",
+      payload: {
+        version: 1,
+        prompt: "Proceed?",
+      },
+      result: null,
+      resolvedAt: new Date("2026-06-05T18:00:00.000Z"),
+      createdAt: new Date("2026-06-05T17:00:00.000Z"),
+      updatedAt: new Date("2026-06-05T18:00:00.000Z"),
+      ...overrides,
+    };
+  }
 
   it("create reuses an existing interaction for the same idempotency key", async () => {
     const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
@@ -211,5 +241,65 @@ describe("issueThreadInteractionService", () => {
     });
     expect(state.interactionUpdates).toHaveLength(1);
     expect(state.issueTouches).toHaveLength(1);
+  });
+
+  it("listForIssue normalizes legacy stale request confirmation target results", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const legacyExpiredRow = legacyRequestConfirmationRow({
+      result: {
+        version: 1,
+        outcome: "stale_target",
+        staleTarget: {
+          pr: 911,
+          staleHead: "4a6e4b51a198519ee1358c922c92f8868ba58400",
+          currentHead: "9b310c1952f6c2013dac0e8f5d77f75debaa687c",
+        },
+      },
+    });
+    const db: any = {
+      select: vi.fn(() => createSelectChain([legacyExpiredRow])),
+      update: vi.fn(),
+    };
+    const svc = issueThreadInteractionService(db as never);
+
+    const result = await svc.listForIssue("11111111-1111-4111-8111-111111111111");
+
+    expect(result[0]?.status).toBe("expired");
+    expect(result[0]?.result).toEqual({
+      version: 1,
+      outcome: "stale_target",
+      reason: "Legacy request confirmation stale target normalized for compatibility.",
+    });
+  });
+
+  it("listForIssue normalizes legacy superseded request confirmation results", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const legacyExpiredRow = legacyRequestConfirmationRow({
+      result: {
+        outcome: "accepted",
+        commentId: "22222222-2222-4222-8222-222222222222",
+        reason: "Superseded by a later comment.",
+        staleTarget: {
+          pr: 911,
+        },
+      },
+    });
+    const db: any = {
+      select: vi.fn(() => createSelectChain([legacyExpiredRow])),
+      update: vi.fn(),
+    };
+    const svc = issueThreadInteractionService(db as never);
+
+    const result = await svc.listForIssue("11111111-1111-4111-8111-111111111111");
+
+    expect(result[0]?.status).toBe("expired");
+    expect(result[0]?.result).toEqual({
+      version: 1,
+      outcome: "superseded_by_comment",
+      commentId: "22222222-2222-4222-8222-222222222222",
+      reason: "Superseded by a later comment.",
+    });
   });
 });
