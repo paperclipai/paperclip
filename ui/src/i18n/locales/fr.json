@@ -1,9 +1,61 @@
-{
-  "app": {
-    "noCompanies": {
-      "title": "Créez votre première entreprise",
-      "description": "Commencez par créer une entreprise.",
-      "newCompany": "Nouvelle entreprise"
-    }
-  }
+﻿{
+    "app":  {
+                "noCompanies":  {
+                                    "title":  "Créez votre première entreprise",
+                                    "description":  "Commencez par créer une entreprise.",
+                                    "newCompany":  "Nouvelle entreprise"
+                                }
+            },
+    "costs":  {
+                  "pageTitle":  "Costs",
+                  "noCompanySelected":  "Select a company to view costs.",
+                  "selectDateRange":  "Select a start and end date to load data.",
+                  "tabs":  {
+                               "overview":  "Overview",
+                               "budgets":  "Budgets",
+                               "providers":  "Providers",
+                               "billers":  "Billers",
+                               "finance":  "Finance"
+                           },
+                  "overview":  {
+                                   "inferenceSpend":  "Inference spend",
+                                   "budget":  "Budget",
+                                   "financeNet":  "Finance net",
+                                   "financeEvents":  "Finance events",
+                                   "noCostEvents":  "No cost events yet.",
+                                   "byAgent":  "By agent",
+                                   "byAgentDescription":  "What each agent consumed in the selected period.",
+                                   "byProject":  "By project",
+                                   "byProjectDescription":  "Run costs attributed through project-linked issues.",
+                                   "noProjectCosts":  "No project-attributed run costs yet.",
+                                   "inferenceLedger":  "Inference ledger",
+                                   "unlimitedBudget":  "Unlimited budget",
+                                   "allProviders":  "All providers",
+                                   "allBillers":  "All billers"
+                               },
+                  "budgets":  {
+                                  "controlPlane":  "Budget control plane",
+                                  "activeIncidents":  "Active incidents",
+                                  "openIncidentsDesc":  "Open soft or hard threshold crossings",
+                                  "pendingApprovals":  "Pending approvals",
+                                  "pendingApprovalsDesc":  "Budget override approvals awaiting board action",
+                                  "pausedAgents":  "Paused agents",
+                                  "pausedAgentsDesc":  "Agent heartbeats blocked by budget",
+                                  "pausedProjects":  "Paused projects",
+                                  "pausedProjectsDesc":  "Project execution blocked by budget"
+                              },
+                  "finance":  {
+                                  "ledger":  "Finance ledger",
+                                  "debits":  "Debits",
+                                  "credits":  "Credits",
+                                  "net":  "Net",
+                                  "estimated":  "Estimated",
+                                  "creditsDesc":  "Refunds, offsets, and credit returns",
+                                  "netDesc":  "Debit minus credit for the selected period",
+                                  "estimatedDesc":  "Estimated debits that are not yet invoice-authoritative",
+                                  "noEvents":  "No finance events yet. Add account-level charges once biller invoices or credits land.",
+                                  "noBillableEvents":  "No billable events in this period.",
+                                  "noCostPeriod":  "No cost events in this period."
+                              }
+              }
 }

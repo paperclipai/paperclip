@@ -5,5 +5,57 @@
       "description": "Bir şirket oluşturarak başlayın.",
       "newCompany": "Yeni Şirket"
     }
+  },
+  "costs": {
+    "pageTitle": "Maliyetler",
+    "noCompanySelected": "Maliyetleri görüntülemek için bir şirket seçin.",
+    "selectDateRange": "Veri yüklemek için başlangıç ve bitiş tarihi seçin.",
+    "tabs": {
+      "overview": "Genel Bakış",
+      "budgets": "Bütçeler",
+      "providers": "Sağlayıcılar",
+      "billers": "Faturalandırma",
+      "finance": "Finans"
+    },
+    "overview": {
+      "inferenceSpend": "Çıkarım Harcaması",
+      "budget": "Bütçe",
+      "financeNet": "Finans Neti",
+      "financeEvents": "Finans Olayları",
+      "noCostEvents": "Henüz maliyet olayı yok.",
+      "byAgent": "Ajana Göre",
+      "byAgentDescription": "Her ajanın seçili dönemde tükettiği.",
+      "byProject": "Projeye Göre",
+      "byProjectDescription": "Proje bağlantılı görevlerle ilişkilendirilen çalışma maliyetleri.",
+      "noProjectCosts": "Henüz proje bazlı çalışma maliyeti yok.",
+      "inferenceLedger": "Çıkarım Defteri",
+      "unlimitedBudget": "Sınırsız Bütçe",
+      "allProviders": "Tüm Sağlayıcılar",
+      "allBillers": "Tüm Faturalandırıcılar"
+    },
+    "budgets": {
+      "controlPlane": "Bütçe Kontrol Paneli",
+      "activeIncidents": "Aktif Olaylar",
+      "openIncidentsDesc": "Açık yumuşak veya sert eşik aşımları",
+      "pendingApprovals": "Bekleyen Onaylar",
+      "pendingApprovalsDesc": "Onay bekleyen bütçe aşımı talepleri",
+      "pausedAgents": "Duraklatılan Ajanlar",
+      "pausedAgentsDesc": "Bütçe tarafından engellenen ajan kalp atışları",
+      "pausedProjects": "Duraklatılan Projeler",
+      "pausedProjectsDesc": "Bütçe tarafından engellenen proje yürütmesi"
+    },
+    "finance": {
+      "ledger": "Finans Defteri",
+      "debits": "Borçlar",
+      "credits": "Alacaklar",
+      "net": "Net",
+      "estimated": "Tahmini",
+      "creditsDesc": "İadeler, mahsuplar ve kredi iadeleri",
+      "netDesc": "Seçili dönem için borç eksi alacak",
+      "estimatedDesc": "Henüz fatura-yetkili olmayan tahmini borçlar",
+      "noEvents": "Henüz finans olayı yok. Fatura veya krediler ulaştığında hesap düzeyinde giderler ekleyin.",
+      "noBillableEvents": "Bu dönemde faturalandırılabilir olay yok.",
+      "noCostPeriod": "Bu dönemde maliyet olayı yok."
+    }
   }
 }
