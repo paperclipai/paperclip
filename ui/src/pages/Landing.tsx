@@ -226,11 +226,13 @@ function Shot({
   alt,
   url = "app.allgasnobrakes.online",
   className = "",
+  eager = false,
 }: {
   src: string;
   alt: string;
   url?: string;
   className?: string;
+  eager?: boolean;
 }) {
   return (
     <div className={cn("overflow-hidden rounded-xl border border-black/[0.1] bg-[#0d0d10] shadow-[0_30px_80px_-24px_rgba(0,0,0,0.5)] dark:border-white/10", className)}>
@@ -244,7 +246,14 @@ function Shot({
           </div>
         </div>
       </div>
-      <img src={src} alt={alt} className="block w-full" loading="lazy" />
+      <img
+        src={src}
+        alt={alt}
+        className="block w-full"
+        loading={eager ? "eager" : "lazy"}
+        // @ts-expect-error fetchpriority is valid HTML, not yet in React types
+        fetchpriority={eager ? "high" : undefined}
+      />
     </div>
   );
 }
@@ -613,13 +622,6 @@ const MODULES = [
     d: "Issues, routines, goals, approvals — humans and agents in one orchestration layer.",
     span: "lg:col-span-1",
   },
-];
-
-const SURFACES = [
-  "Campaigns", "Inbox", "Pipeline", "Mentions", "Blog", "LinkedIn", "YouTube",
-  "Experiments", "Buckets", "Attribution", "Forecast", "Renewals", "Win/Loss",
-  "Personas", "ICPs", "Agents", "Issues", "Routines", "Goals", "Approvals",
-  "Activity", "Costs", "Human Team", "Adapters", "Secrets", "Search",
 ];
 
 const TESTIMONIALS = [
@@ -1206,7 +1208,7 @@ export function LandingPage() {
             className="pointer-events-none absolute -inset-x-10 -top-10 bottom-0 -z-10"
             style={{ background: "radial-gradient(50% 45% at 50% 20%, rgba(249,115,22,0.18) 0%, transparent 70%)" }}
           />
-          <Shot src="/shots/dashboard.png" alt="All Gas No Brakes dashboard" />
+          <Shot src="/shots/dashboard.png" alt="All Gas No Brakes dashboard" eager />
         </div>
       </Section>
 
@@ -1218,20 +1220,6 @@ export function LandingPage() {
         <div className="flex flex-wrap items-center justify-center gap-x-12 gap-y-7 opacity-60 grayscale transition hover:opacity-100 hover:grayscale-0 sm:gap-x-16">
           {TRUSTED_LOGOS.map((l) => (
             <img key={l.name} src={l.file} alt={l.name} className={cn(l.h, "w-auto object-contain")} />
-          ))}
-        </div>
-      </Section>
-
-      {/* ── Stats ── */}
-      <Section className="border-y border-black/[0.06] dark:border-white/[0.06] py-14">
-        <div className="grid grid-cols-2 gap-8 sm:grid-cols-4">
-          {STATS.map((s) => (
-            <div key={s.l} className="text-center">
-              <div className="text-[clamp(36px,4.4vw,56px)] font-extrabold tracking-tight text-[#f97316]">
-                <CountUp to={s.to} suffix={s.suffix} />
-              </div>
-              <div className="mt-1 text-[13px] leading-snug text-gray-500 dark:text-neutral-400">{s.l}</div>
-            </div>
           ))}
         </div>
       </Section>
@@ -1249,6 +1237,48 @@ export function LandingPage() {
         </p>
       </Section>
 
+      {/* ── Before / After (visual) ── */}
+      <Section className="py-16">
+        <div className="mb-10 text-center">
+          <Eyebrow><span className="mx-auto">Twelve dashboards become one</span></Eyebrow>
+          <h2 className="text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
+            From tab chaos to one orbit.
+          </h2>
+        </div>
+        <div className="grid grid-cols-1 items-stretch gap-5 md:grid-cols-2">
+          {/* Before — messy */}
+          <div className="relative overflow-hidden rounded-2xl border border-black/[0.07] bg-white p-8 dark:border-white/[0.08] dark:bg-neutral-900">
+            <p className="mb-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-neutral-500">Before</p>
+            <p className="mb-2 text-[15px] font-semibold text-gray-700 dark:text-neutral-300">12 tabs. Zero momentum.</p>
+            <div className="relative h-[300px]">
+              {MESSY_TOOLS.map((t, i) => {
+                const seed = (i * 977) % 100;
+                const top = 8 + ((i * 53) % 78);
+                const left = 4 + ((i * 71) % 80);
+                const rot = (seed % 40) - 20;
+                return (
+                  <span
+                    key={t}
+                    className="absolute rounded-lg border border-black/[0.08] bg-[#FAF8F4] px-2.5 py-1.5 font-mono text-[11px] text-gray-400 grayscale dark:border-white/10 dark:bg-neutral-800/70 dark:text-neutral-500"
+                    style={{ top: `${top}%`, left: `${left}%`, transform: `rotate(${rot}deg)`, opacity: 0.55 + (seed % 30) / 100 }}
+                  >
+                    {t}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+          {/* After — orbit */}
+          <div className="relative overflow-hidden rounded-2xl border border-[#f97316]/20 bg-[#f97316]/[0.04] p-8">
+            <p className="mb-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-[#f97316]">After</p>
+            <p className="mb-2 text-[15px] font-semibold text-gray-800 dark:text-neutral-200">One cockpit. Every channel.</p>
+            <div className="flex h-[300px] items-center justify-center">
+              <Orbit />
+            </div>
+          </div>
+        </div>
+      </Section>
+
       {/* ── Stat callout ── */}
       <Section className="py-8">
         <StatCallout
@@ -1256,30 +1286,6 @@ export function LandingPage() {
           stat="24/7"
           body="Your growth engine never clocks out — 35 jobs fire around the clock, draining queues, syncing CRMs, drafting content, and ranking campaigns while you sleep."
         />
-      </Section>
-
-      {/* ── Testimonials ── */}
-      <Section className="py-12">
-        <Eyebrow>From the crew</Eyebrow>
-        <h2 className="mb-10 text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
-          Real teams. Real momentum.
-        </h2>
-        <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
-          {TESTIMONIALS.map((t) => (
-            <div key={t.name} className="flex flex-col justify-between rounded-2xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-neutral-900 p-6 shadow-sm">
-              <p className="text-[15px] leading-relaxed text-gray-700 dark:text-neutral-300">&ldquo;{t.quote}&rdquo;</p>
-              <div className="mt-6 flex items-center justify-between">
-                <div>
-                  <p className="text-[13px] font-semibold text-gray-900 dark:text-neutral-100">{t.name}</p>
-                  <p className="text-[12px] text-gray-500 dark:text-neutral-400">{t.role}</p>
-                </div>
-                <span className="rounded-full border border-[#f97316]/25 bg-[#f97316]/10 px-3 py-1 font-mono text-[11px] font-medium text-[#f97316]">
-                  {t.metric}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
       </Section>
 
       {/* ── Modules ── */}
@@ -1347,6 +1353,52 @@ export function LandingPage() {
         />
       </Section>
 
+      {/* ── Inside the agent company (diagrams) ── */}
+      <Section className="py-16">
+        <div className="mb-10 text-center">
+          <Eyebrow>
+            <span className="mx-auto">Inside the agent company</span>
+          </Eyebrow>
+          <h2 className="text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
+            A real company. Just staffed by agents.
+          </h2>
+          <p className="mx-auto mt-3 max-w-xl text-[15px] leading-relaxed text-gray-500 dark:text-neutral-400">
+            An org chart, a heartbeat, a budget, and goals that trace top to bottom —
+            the same scaffolding you'd give a human team.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+          <OrgChart />
+          <Heartbeat />
+          <BudgetTable />
+          <GoalTrace />
+        </div>
+      </Section>
+
+      {/* ── Testimonials ── */}
+      <Section className="py-12">
+        <Eyebrow>From the crew</Eyebrow>
+        <h2 className="mb-10 text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
+          Real teams. Real momentum.
+        </h2>
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+          {TESTIMONIALS.map((t) => (
+            <div key={t.name} className="flex flex-col justify-between rounded-2xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-neutral-900 p-6 shadow-sm">
+              <p className="text-[15px] leading-relaxed text-gray-700 dark:text-neutral-300">&ldquo;{t.quote}&rdquo;</p>
+              <div className="mt-6 flex items-center justify-between">
+                <div>
+                  <p className="text-[13px] font-semibold text-gray-900 dark:text-neutral-100">{t.name}</p>
+                  <p className="text-[12px] text-gray-500 dark:text-neutral-400">{t.role}</p>
+                </div>
+                <span className="rounded-full border border-[#f97316]/25 bg-[#f97316]/10 px-3 py-1 font-mono text-[11px] font-medium text-[#f97316]">
+                  {t.metric}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Section>
+
       {/* ── How it runs ── */}
       <Section className="scroll-mt-20 py-20" id="how">
         <div className="grid grid-cols-1 items-center gap-12 lg:grid-cols-2">
@@ -1380,91 +1432,6 @@ export function LandingPage() {
             </div>
           </div>
           <LiveConsole />
-        </div>
-      </Section>
-
-      {/* ── Inside the agent company (diagrams) ── */}
-      <Section className="py-16">
-        <div className="mb-10 text-center">
-          <Eyebrow>
-            <span className="mx-auto">Inside the agent company</span>
-          </Eyebrow>
-          <h2 className="text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
-            A real company. Just staffed by agents.
-          </h2>
-          <p className="mx-auto mt-3 max-w-xl text-[15px] leading-relaxed text-gray-500 dark:text-neutral-400">
-            An org chart, a heartbeat, a budget, and goals that trace top to bottom —
-            the same scaffolding you'd give a human team.
-          </p>
-        </div>
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-          <OrgChart />
-          <Heartbeat />
-          <BudgetTable />
-          <GoalTrace />
-        </div>
-      </Section>
-
-      {/* ── Surfaces ── */}
-      <Section className="py-12">
-        <Eyebrow>Everything in the cockpit</Eyebrow>
-        <h2 className="mb-8 max-w-2xl text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
-          One login. Every surface. <span className="text-gray-400 dark:text-neutral-500">Zero tab-hopping.</span>
-        </h2>
-        <div className="flex flex-wrap gap-2.5">
-          {SURFACES.map((s) => (
-            <span
-              key={s}
-              className="rounded-lg border border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-neutral-900 px-3 py-1.5 font-mono text-[12px] text-gray-600 dark:text-neutral-400 transition hover:border-[#f97316]/40 hover:text-gray-900 dark:hover:text-neutral-100"
-            >
-              {s}
-            </span>
-          ))}
-          <span className="rounded-lg border border-[#f97316]/30 bg-[#f97316]/5 px-3 py-1.5 font-mono text-[12px] text-[#f97316]">
-            + more
-          </span>
-        </div>
-      </Section>
-
-      {/* ── Before / After (visual) ── */}
-      <Section className="py-16">
-        <div className="mb-10 text-center">
-          <Eyebrow><span className="mx-auto">Twelve dashboards become one</span></Eyebrow>
-          <h2 className="text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
-            From tab chaos to one orbit.
-          </h2>
-        </div>
-        <div className="grid grid-cols-1 items-stretch gap-5 md:grid-cols-2">
-          {/* Before — messy */}
-          <div className="relative overflow-hidden rounded-2xl border border-black/[0.07] bg-white p-8 dark:border-white/[0.08] dark:bg-neutral-900">
-            <p className="mb-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-neutral-500">Before</p>
-            <p className="mb-2 text-[15px] font-semibold text-gray-700 dark:text-neutral-300">12 tabs. Zero momentum.</p>
-            <div className="relative h-[300px]">
-              {MESSY_TOOLS.map((t, i) => {
-                const seed = (i * 977) % 100;
-                const top = 8 + ((i * 53) % 78);
-                const left = 4 + ((i * 71) % 80);
-                const rot = (seed % 40) - 20;
-                return (
-                  <span
-                    key={t}
-                    className="absolute rounded-lg border border-black/[0.08] bg-[#FAF8F4] px-2.5 py-1.5 font-mono text-[11px] text-gray-400 grayscale dark:border-white/10 dark:bg-neutral-800/70 dark:text-neutral-500"
-                    style={{ top: `${top}%`, left: `${left}%`, transform: `rotate(${rot}deg)`, opacity: 0.55 + (seed % 30) / 100 }}
-                  >
-                    {t}
-                  </span>
-                );
-              })}
-            </div>
-          </div>
-          {/* After — orbit */}
-          <div className="relative overflow-hidden rounded-2xl border border-[#f97316]/20 bg-[#f97316]/[0.04] p-8">
-            <p className="mb-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-[#f97316]">After</p>
-            <p className="mb-2 text-[15px] font-semibold text-gray-800 dark:text-neutral-200">One cockpit. Every channel.</p>
-            <div className="flex h-[300px] items-center justify-center">
-              <Orbit />
-            </div>
-          </div>
         </div>
       </Section>
 
