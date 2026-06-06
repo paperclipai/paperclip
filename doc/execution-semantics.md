@@ -121,6 +121,37 @@ These are related but not identical:
 
 Paperclip already clears stale execution locks and can adopt some stale checkout locks when the original run is gone.
 
+### Invariant: `executionRunId` must never outlive its run
+
+`executionRunId` is always one of:
+
+- `null`, or
+- the id of an actively-checked-out heartbeat run that is still live
+
+Any transition out of `in_progress` (including the `blocked → in_progress` auto-PATCH driven by `issue_blockers_resolved`) clears `executionRunId` on the way through. Re-entering `in_progress` from any non-`in_progress` state also clears it, so a prior dead run cannot persist across the transition.
+
+If you ever observe an issue with `status != in_progress` and a non-null `executionRunId`, treat that as a platform bug, not an expected state.
+
+### Self-service escape hatch: `POST /issues/:id/abort-execution`
+
+When the run-ownership guard rejects an assignee with `Issue run ownership conflict`, the current assignee can self-reset run state without admin intervention:
+
+```
+POST /api/issues/:issueId/abort-execution
+Headers: Authorization, X-Paperclip-Run-Id
+Body: { "agentId": "<assignee-id>" }
+```
+
+Effects:
+
+- caller must be the current `assigneeAgentId` (non-assignees get 403; non-assignee recovery is `POST /admin/force-release` and requires board access)
+- `checkoutRunId` and `executionRunId` are set to `null`
+- the previously-held `checkoutRunId` / `executionRunId` heartbeat runs are marked terminal (`status = "cancelled"`, `errorCode = "agent_self_abort"`) if they are not already terminal — except the caller's own active run, which is intentionally never aborted
+- `status` and `assigneeAgentId` are untouched, so the next `POST /checkout` by the same assignee succeeds normally
+- emits an `issue.execution_aborted` activity-log entry recording `prevCheckoutRunId`, `prevExecutionRunId`, `abortedRunIds`, and the actor's run id
+
+The non-assignee path (`POST /admin/force-release`) remains available for board users when the assignee itself cannot run.
+
 ## 6. Parent/Sub-Issue vs Blockers
 
 Paperclip uses two different relationships for different jobs.

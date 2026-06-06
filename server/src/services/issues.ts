@@ -5060,6 +5060,21 @@ export function issueService(db: Db) {
         patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
       }
+      // Re-entering in_progress from any non-in_progress state (most importantly
+      // the issue_blockers_resolved auto-PATCH `blocked` → `in_progress`) must
+      // not preserve a stale executionRunId. The prior run cannot still legitimately
+      // own the lock because the issue was not in_progress; without this clear, a
+      // wedged executionRunId persists and every subsequent checkout/comment hits
+      // the run-ownership guard. See BENA-66.
+      if (
+        issueData.status === "in_progress" &&
+        existing.status !== "in_progress"
+      ) {
+        patch.checkoutRunId = null;
+        patch.executionRunId = null;
+        patch.executionAgentNameKey = null;
+        patch.executionLockedAt = null;
+      }
       if (
         (issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== existing.assigneeAgentId) ||
         (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId)
@@ -5642,6 +5657,99 @@ export function issueService(db: Db) {
             checkoutRunId: existing.checkoutRunId,
             executionRunId: existing.executionRunId,
           },
+        };
+      }),
+
+    abortExecution: async (
+      id: string,
+      actorAgentId: string,
+      actorRunId: string | null,
+    ) =>
+      db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
+        );
+        const existing = await tx
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+        if (existing.assigneeAgentId !== actorAgentId) {
+          // The guard at assertCheckoutOwner already throws "Issue run ownership conflict";
+          // this is the deliberate self-service escape hatch, so only the current
+          // assignee can use it. Non-assignees use POST /admin/force-release.
+          throw conflict("Only assignee can abort issue execution", {
+            issueId: existing.id,
+            status: existing.status,
+            assigneeAgentId: existing.assigneeAgentId,
+            actorAgentId,
+          });
+        }
+
+        const candidateRunIds = new Set<string>();
+        if (existing.checkoutRunId) candidateRunIds.add(existing.checkoutRunId);
+        if (existing.executionRunId) candidateRunIds.add(existing.executionRunId);
+        // Never abort the caller's own active heartbeat run — that would terminate the
+        // very run trying to recover. The caller's run will simply own a fresh checkout
+        // after this returns.
+        if (actorRunId) candidateRunIds.delete(actorRunId);
+
+        const abortedRunIds: string[] = [];
+        const now = new Date();
+        for (const runId of candidateRunIds) {
+          await tx.execute(
+            sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${runId} for update`,
+          );
+          const run = await tx
+            .select({ status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, runId))
+            .then((rows) => rows[0] ?? null);
+          if (!run) continue;
+          if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) continue;
+          await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              errorCode: "agent_self_abort",
+              error: "Aborted by issue assignee via /abort-execution",
+              finishedAt: now,
+              updatedAt: now,
+            })
+            .where(eq(heartbeatRuns.id, runId));
+          abortedRunIds.push(runId);
+        }
+
+        const updated = await tx
+          .update(issues)
+          .set({
+            checkoutRunId: null,
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: now,
+          })
+          .where(eq(issues.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+
+        const [enriched] = await withIssueLabels(tx, [updated]);
+        return {
+          issue: enriched,
+          previous: {
+            checkoutRunId: existing.checkoutRunId,
+            executionRunId: existing.executionRunId,
+          },
+          abortedRunIds,
         };
       }),
 

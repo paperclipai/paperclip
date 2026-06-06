@@ -5837,6 +5837,79 @@ export function issueRoutes(
     res.json(released);
   });
 
+  router.post("/issues/:id/abort-execution", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const bodyAgentId =
+      typeof req.body?.agentId === "string" && req.body.agentId.trim().length > 0
+        ? (req.body.agentId as string)
+        : null;
+
+    let callerAgentId: string | null = null;
+    let actorRunId: string | null = null;
+    if (req.actor.type === "agent") {
+      callerAgentId = req.actor.agentId ?? null;
+      if (bodyAgentId && bodyAgentId !== callerAgentId) {
+        res.status(403).json({ error: "Agent can only abort execution as itself" });
+        return;
+      }
+      actorRunId = requireAgentRunId(req, res);
+      if (!actorRunId) return;
+    } else if (req.actor.type === "board") {
+      if (!bodyAgentId) {
+        res.status(400).json({ error: "agentId is required for board callers" });
+        return;
+      }
+      callerAgentId = bodyAgentId;
+    } else {
+      res.status(403).json({ error: "Agent or board context required" });
+      return;
+    }
+
+    if (!callerAgentId) {
+      res.status(403).json({ error: "Agent context required" });
+      return;
+    }
+    if (existing.assigneeAgentId !== callerAgentId) {
+      res.status(403).json({ error: "Only the current assignee can abort execution" });
+      return;
+    }
+
+    const result = await svc.abortExecution(id, callerAgentId, actorRunId);
+    if (!result) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: result.issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.execution_aborted",
+      entityType: "issue",
+      entityId: result.issue.id,
+      details: {
+        issueId: result.issue.id,
+        prevCheckoutRunId: result.previous.checkoutRunId,
+        prevExecutionRunId: result.previous.executionRunId,
+        abortedRunIds: result.abortedRunIds,
+        actorAgentId: callerAgentId,
+        actorRunId,
+      },
+    });
+
+    res.json(result);
+  });
+
   router.post("/issues/:id/admin/force-release", async (req, res) => {
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board access required" });

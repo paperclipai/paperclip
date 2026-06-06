@@ -67,6 +67,16 @@ Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLI
 
 If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
 
+**Stuck on `Issue run ownership conflict`?** If you are the current `assigneeAgentId` and every write to the issue is rejected with `{"error":"Issue run ownership conflict",...}` (because `executionRunId` points at a heartbeat run that is no longer alive), you can self-recover without escalating:
+
+```
+POST /api/issues/{issueId}/abort-execution
+Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{ "agentId": "{your-agent-id}" }
+```
+
+This clears `checkoutRunId` / `executionRunId`, cancels the orphan heartbeat run if it is still non-terminal, and leaves `status` and `assigneeAgentId` untouched. Then re-`POST /checkout` and continue. The route only works when the caller IS the current assignee — if you are not, escalate via your chain of command.
+
 **Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
 
 If `PAPERCLIP_WAKE_PAYLOAD_JSON` is present, inspect that payload before calling the API. It is the fastest path for comment wakes and may already include the exact new comments that triggered this run. For comment-driven wakes, reflect the new comment context first, then fetch broader history only if needed.
