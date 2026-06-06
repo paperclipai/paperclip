@@ -62,6 +62,7 @@ import {
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
+import { decodeMultipartFilename } from "../lib/multipart-filename.js";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
@@ -6939,7 +6940,7 @@ export function issueRoutes(
     const stored = await storage.putFile({
       companyId,
       namespace: `issues/${issueId}`,
-      originalFilename: file.originalname || null,
+      originalFilename: decodeMultipartFilename(file.originalname) || null,
       contentType,
       body: file.buffer,
     });

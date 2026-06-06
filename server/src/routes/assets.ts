@@ -5,6 +5,7 @@ import { JSDOM } from "jsdom";
 import type { Db } from "@paperclipai/db";
 import { createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
+import { decodeMultipartFilename } from "../lib/multipart-filename.js";
 import { assetService, logActivity } from "../services/index.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -161,7 +162,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const stored = await storage.putFile({
       companyId,
       namespace: `assets/${namespaceSuffix}`,
-      originalFilename: file.originalname || null,
+      originalFilename: decodeMultipartFilename(file.originalname) || null,
       contentType,
       body: fileBody,
     });
@@ -259,7 +260,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const stored = await storage.putFile({
       companyId,
       namespace: "assets/companies",
-      originalFilename: file.originalname || null,
+      originalFilename: decodeMultipartFilename(file.originalname) || null,
       contentType,
       body: fileBody,
     });
