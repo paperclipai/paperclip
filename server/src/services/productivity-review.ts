@@ -25,11 +25,25 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS = 6;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_HOURLY = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_SIX_HOURS = 30;
+// BUM-91: Liveness states that represent real progress and must NOT count toward the
+// high-churn window. A deliberate N=5 measurement burst produces many `advanced` runs;
+// counting them made the churn detector fire on intentional work (BUM-88 -> BUM-89). Only
+// non-advancing runs (plan_only / empty_response / needs_followup / failed / still-active)
+// are churn signal.
+export const CHURN_ADVANCING_LIVENESS_STATES = ["advanced"] as const;
 export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 6 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 3;
+
+// BUM-91: SQL predicate matching runs that did NOT advance (liveness is null or not one
+// of CHURN_ADVANCING_LIVENESS_STATES). These are the only runs that count toward the
+// high-churn window, so a deliberate measurement burst of advancing runs cannot trip it.
+const nonAdvancingChurnLivenessSql = sql`(${heartbeatRuns.livenessState} is null or ${heartbeatRuns.livenessState} not in (${sql.join(
+  CHURN_ADVANCING_LIVENESS_STATES.map((state) => sql`${state}`),
+  sql`, `,
+)}))`;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -361,6 +375,47 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .then((rows) => rows[0]?.count ?? 0);
   }
 
+  // BUM-91: like countIssueRunsSince but excludes runs whose liveness is `advanced`
+  // (real progress). Used for the high-churn signal so deliberate measurement bursts of
+  // advancing runs do not trip the detector, while stuck loops still do.
+  async function countNonAdvancingIssueRunsSince(companyId: string, agentId: string, issueId: string, since: Date) {
+    return db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          issueRunScopeSql(issueId),
+          sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${since.toISOString()}::timestamptz`,
+          nonAdvancingChurnLivenessSql,
+        ),
+      )
+      .then((rows) => rows[0]?.count ?? 0);
+  }
+
+  // BUM-91: comment-window churn arm, counting only comments authored by non-advancing
+  // runs (a comment from an `advanced` run is progress, not churn).
+  async function countNonAdvancingIssueCommentsSince(companyId: string, issueId: string, agentId: string, since: Date) {
+    return db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(issueComments)
+      .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, issueComments.createdByRunId))
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.issueId, issueId),
+          eq(issueComments.authorAgentId, agentId),
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          issueRunScopeSql(issueId),
+          nonAdvancingChurnLivenessSql,
+          sql`${issueComments.createdAt} >= ${since.toISOString()}::timestamptz`,
+        ),
+      )
+      .then((rows) => rows[0]?.count ?? 0);
+  }
+
   async function countIssueCommentsSince(companyId: string, issueId: string, agentId: string, since?: Date) {
     return db
       .select({ count: sql<number>`count(*)::int` })
@@ -435,6 +490,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       assigneeRunCommentCount,
       assigneeRunCommentCountLastHour,
       assigneeRunCommentCountLastSixHours,
+      churnRunCountLastHour,
+      churnRunCountLastSixHours,
+      churnCommentCountLastHour,
+      churnCommentCountLastSixHours,
       latestComments,
       costRow,
     ] = await Promise.all([
@@ -443,6 +502,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       countIssueCommentsSince(sourceIssue.companyId, sourceIssue.id, sourceAgent.id),
       countIssueCommentsSince(sourceIssue.companyId, sourceIssue.id, sourceAgent.id, oneHourAgo),
       countIssueCommentsSince(sourceIssue.companyId, sourceIssue.id, sourceAgent.id, sixHoursAgo),
+      // BUM-91: liveness-weighted churn arms — only non-advancing runs/comments count.
+      countNonAdvancingIssueRunsSince(sourceIssue.companyId, sourceAgent.id, sourceIssue.id, oneHourAgo),
+      countNonAdvancingIssueRunsSince(sourceIssue.companyId, sourceAgent.id, sourceIssue.id, sixHoursAgo),
+      countNonAdvancingIssueCommentsSince(sourceIssue.companyId, sourceIssue.id, sourceAgent.id, oneHourAgo),
+      countNonAdvancingIssueCommentsSince(sourceIssue.companyId, sourceIssue.id, sourceAgent.id, sixHoursAgo),
       db
         .select({ comment: issueComments })
         .from(issueComments)
@@ -477,11 +541,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
 
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
     const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    // BUM-91: churn is measured on NON-ADVANCING runs/comments only, so an intentional
+    // measurement burst (all `advanced`) does not trip the detector while a stuck loop
+    // (plan_only / empty_response / needs_followup / failed) still does. Display totals
+    // (runCountLastHour, assigneeRunCommentCount*) are preserved unchanged.
     const highChurn =
-      runCountLastHour >= thresholds.highChurnHourly ||
-      assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
-      runCountLastSixHours >= thresholds.highChurnSixHours ||
-      assigneeRunCommentCountLastSixHours >= thresholds.highChurnSixHours;
+      churnRunCountLastHour >= thresholds.highChurnHourly ||
+      churnCommentCountLastHour >= thresholds.highChurnHourly ||
+      churnRunCountLastSixHours >= thresholds.highChurnSixHours ||
+      churnCommentCountLastSixHours >= thresholds.highChurnSixHours;
     const trigger = choosePrimaryTrigger({ noComment, longActive, highChurn });
     if (!trigger) return null;
 
@@ -490,7 +558,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     if (longActive) triggerReasons.push(`current active episode has lasted ${msToHuman(elapsedMs)}`);
     if (highChurn) {
       triggerReasons.push(
-        `${runCountLastHour} runs/${assigneeRunCommentCountLastHour} assignee-run comments in 1h; ${runCountLastSixHours} runs/${assigneeRunCommentCountLastSixHours} assignee-run comments in 6h`,
+        `${churnRunCountLastHour} non-advancing of ${runCountLastHour} runs / ${churnCommentCountLastHour} non-advancing of ${assigneeRunCommentCountLastHour} assignee-run comments in 1h; ${churnRunCountLastSixHours} non-advancing of ${runCountLastSixHours} runs / ${churnCommentCountLastSixHours} non-advancing of ${assigneeRunCommentCountLastSixHours} assignee-run comments in 6h`,
       );
     }
 

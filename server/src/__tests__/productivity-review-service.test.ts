@@ -120,6 +120,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     count: number;
     now: Date;
     withRunComments?: boolean;
+    livenessState?: string;
   }) {
     const runs: Array<typeof heartbeatRuns.$inferInsert> = [];
     for (let index = 0; index < input.count; index += 1) {
@@ -135,7 +136,7 @@ describeEmbeddedPostgres("productivity review service", () => {
         startedAt: createdAt,
         finishedAt: new Date(createdAt.getTime() + 30_000),
         contextSnapshot: { issueId: input.issueId, taskId: input.issueId },
-        livenessState: "advanced",
+        livenessState: input.livenessState ?? "advanced",
         nextAction: "Continue processing the next batch.",
         createdAt,
         updatedAt: createdAt,
@@ -360,7 +361,9 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(hold.held).toBe(false);
   });
 
-  it("creates a high-churn review even when every sampled run has a progress comment", async () => {
+  // BUM-91 AC2: a stuck agent (non-advancing runs) STILL triggers a high-churn review,
+  // even when every run leaves a progress comment — comment presence does not suppress churn.
+  it("creates a high-churn review for non-advancing runs even when every sampled run has a progress comment", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
     await insertRuns({
@@ -370,6 +373,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       count: 10,
       now,
       withRunComments: true,
+      livenessState: "plan_only",
     });
 
     const result = await productivityReviewService(db).reconcileProductivityReviews({
@@ -381,6 +385,31 @@ describeEmbeddedPostgres("productivity review service", () => {
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.description).toContain("Primary trigger: `high_churn`");
     expect(review?.description).toContain("Runs in rolling windows: 10/1h");
+    expect(review?.description).toContain("10 non-advancing of 10 runs");
+  });
+
+  // BUM-91 AC1: an intentional N=5 measurement burst (many advancing runs in 1h) must NOT
+  // trigger a high-churn review. Runs carry progress comments so the no-comment-streak arm
+  // stays silent, isolating the churn arm; all runs are `advanced`, so churn count is 0.
+  it("does not create a high-churn review for an advancing measurement burst", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 15,
+      now,
+      withRunComments: true,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
   });
 
   it("ignores non-assignee comments when evaluating high-churn productivity reviews", async () => {
