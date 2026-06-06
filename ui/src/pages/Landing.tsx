@@ -19,10 +19,18 @@ import {
   Network,
   PenTool,
   Plus,
-  Sparkles,
   Terminal,
   Zap,
 } from "lucide-react";
+
+// ─── Palette (warm light, AGNB orange) ───────────────────────────────────────
+// page  #F6F3EC · alt #FAF8F4 · card #FFFFFF · heading gray-900 · muted #737373
+// accent #f97316 · accent-hover #ea6a0c · borders black/[0.08]
+
+const SERIF: React.CSSProperties = {
+  fontFamily: "Georgia, 'Times New Roman', serif",
+  fontStyle: "italic",
+};
 
 // ─── Auth mode ───────────────────────────────────────────────────────────────
 
@@ -69,23 +77,23 @@ function LoginCard({ nextPath }: { nextPath: string }) {
   };
 
   const inputClass =
-    "rounded-md border border-border bg-background px-4 py-3 text-base text-foreground placeholder:text-muted-foreground focus:border-[#f97316] focus:outline-none";
+    "rounded-lg border border-black/[0.1] bg-[#FAF8F4] px-4 py-3 text-[15px] text-gray-900 placeholder:text-gray-400 focus:border-[#f97316] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#f97316]/15 transition";
 
   return (
     <div
       id="signin"
-      className="w-full max-w-md rounded-xl border border-border bg-card/70 p-6 shadow-sm backdrop-blur sm:p-8"
+      className="w-full max-w-md rounded-2xl border border-black/[0.08] bg-white p-7 shadow-[0_8px_40px_rgba(0,0,0,0.06)] sm:p-8"
     >
       <div className="mb-5 flex items-center justify-between">
         <div>
-          <p className="font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-[#f97316]">
+          <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.16em] text-[#f97316]">
             {mode === "sign_in" ? "Sign in" : "Create account"}
           </p>
-          <h2 className="mt-1 text-lg font-semibold text-foreground">
-            {mode === "sign_in" ? "Instance access" : "Join the crew"}
+          <h2 className="mt-1 text-xl font-bold tracking-tight text-gray-900">
+            {mode === "sign_in" ? "Get in the cockpit" : "Join the crew"}
           </h2>
         </div>
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-[#f97316]/30 px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider text-[#f97316]">
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-[#f97316]/25 bg-[#f97316]/5 px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider text-[#f97316]">
           <span className="size-1.5 animate-pulse rounded-full bg-[#f97316]" /> live
         </span>
       </div>
@@ -124,11 +132,11 @@ function LoginCard({ nextPath }: { nextPath: string }) {
           autoComplete={mode === "sign_in" ? "current-password" : "new-password"}
           className={inputClass}
         />
-        {error && <p className="text-[13px] text-destructive">{error}</p>}
+        {error && <p className="text-[13px] text-red-600">{error}</p>}
         <button
           type="submit"
           disabled={mutation.isPending || !canSubmit}
-          className="group inline-flex items-center justify-center gap-2 rounded-md bg-[#f97316] px-6 py-3 text-sm font-semibold text-[#0A0A0A] transition hover:bg-[#fb923c] disabled:opacity-50"
+          className="group mt-1 inline-flex items-center justify-center gap-2 rounded-lg bg-[#f97316] px-6 py-3 text-sm font-semibold text-white transition hover:bg-[#ea6a0c] disabled:opacity-50"
         >
           {mutation.isPending
             ? "Flooring it…"
@@ -147,7 +155,7 @@ function LoginCard({ nextPath }: { nextPath: string }) {
           setError(null);
           setMode(mode === "sign_in" ? "sign_up" : "sign_in");
         }}
-        className="mt-3 block w-full text-center text-[13px] text-muted-foreground transition hover:text-foreground"
+        className="mt-4 block w-full text-center text-[13px] text-gray-500 transition hover:text-gray-900"
       >
         {mode === "sign_in"
           ? "No account yet? Create one →"
@@ -208,7 +216,7 @@ function CountUp({
   );
 }
 
-// ─── Live console ─────────────────────────────────────────────────────────────
+// ─── Live console (stays dark — the product shot) ─────────────────────────────
 
 const JOB_FEED = [
   "outbound-sync ✓ — 26 campaigns ranked by reply rate",
@@ -234,39 +242,39 @@ function LiveConsole() {
       setLines((prev) => {
         const next = [...prev, JOB_FEED[i % JOB_FEED.length]];
         i++;
-        return next.slice(-7);
+        return next.slice(-8);
       });
     }, 1100);
     return () => clearInterval(id);
   }, []);
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-background font-mono text-[12.5px] shadow-sm">
-      <div className="flex items-center gap-2 border-b border-border bg-card px-4 py-2.5">
-        <span className="size-2.5 rounded-full bg-red-500/70" />
-        <span className="size-2.5 rounded-full bg-yellow-500/70" />
-        <span className="size-2.5 rounded-full bg-[#f97316]/80" />
-        <span className="ml-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+    <div className="overflow-hidden rounded-2xl border border-black/10 bg-[#0d0d10] font-mono text-[12.5px] shadow-[0_24px_70px_-20px_rgba(0,0,0,0.45)]">
+      <div className="flex items-center gap-2 border-b border-white/10 bg-[#16161b] px-4 py-3">
+        <span className="size-3 rounded-full bg-red-500/70" />
+        <span className="size-3 rounded-full bg-yellow-500/70" />
+        <span className="size-3 rounded-full bg-[#f97316]/80" />
+        <span className="ml-2 flex items-center gap-1.5 text-[11px] text-neutral-400">
           <Terminal className="size-3" /> agnb-worker · live
         </span>
         <span className="ml-auto flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-[#f97316]">
           <span className="size-1.5 animate-pulse rounded-full bg-[#f97316]" /> running
         </span>
       </div>
-      <div className="h-[200px] space-y-1.5 p-4">
+      <div className="h-[240px] space-y-1.5 p-5">
         {lines.length === 0 && (
-          <div className="text-muted-foreground">booting worker…</div>
+          <div className="text-neutral-500">booting worker…</div>
         )}
         {lines.map((l, idx) => (
           <div
             key={idx}
             className="flex gap-2"
             style={{
-              opacity: 0.5 + (idx / Math.max(lines.length - 1, 1)) * 0.5,
+              opacity: 0.4 + (idx / Math.max(lines.length - 1, 1)) * 0.6,
             }}
           >
-            <span className="text-muted-foreground">›</span>
-            <span className="text-foreground/80">{l}</span>
+            <span className="text-[#f97316]/70">›</span>
+            <span className="text-neutral-200">{l}</span>
           </div>
         ))}
       </div>
@@ -275,26 +283,6 @@ function LiveConsole() {
 }
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
-
-const TICKER = [
-  "Outbound",
-  "Inbound",
-  "Content Studio",
-  "Revenue",
-  "Experiments",
-  "Autonomous Agents",
-  "Pipeline",
-  "Mentions",
-  "Blog",
-  "LinkedIn",
-  "YouTube",
-  "Attribution",
-  "Tasks",
-  "Routines",
-  "Goals",
-  "Approvals",
-  "Human Team",
-];
 
 const STATS = [
   { to: 60, suffix: "s", l: "queue drain interval" },
@@ -337,32 +325,10 @@ const MODULES = [
 ];
 
 const SURFACES = [
-  "Campaigns",
-  "Inbox",
-  "Pipeline",
-  "Mentions",
-  "Blog",
-  "LinkedIn",
-  "YouTube",
-  "Experiments",
-  "Buckets",
-  "Attribution",
-  "Forecast",
-  "Renewals",
-  "Win/Loss",
-  "Personas",
-  "ICPs",
-  "Agents",
-  "Issues",
-  "Routines",
-  "Goals",
-  "Approvals",
-  "Activity",
-  "Costs",
-  "Human Team",
-  "Adapters",
-  "Secrets",
-  "Search",
+  "Campaigns", "Inbox", "Pipeline", "Mentions", "Blog", "LinkedIn", "YouTube",
+  "Experiments", "Buckets", "Attribution", "Forecast", "Renewals", "Win/Loss",
+  "Personas", "ICPs", "Agents", "Issues", "Routines", "Goals", "Approvals",
+  "Activity", "Costs", "Human Team", "Adapters", "Secrets", "Search",
 ];
 
 const TESTIMONIALS = [
@@ -370,21 +336,18 @@ const TESTIMONIALS = [
     quote: "Finally — one place where campaigns, pipeline, and agents all talk to each other. We cut 4 tools in the first week.",
     name: "Yuvraj S.",
     role: "Co-founder",
-    handle: "@yuvraj",
     metric: "4 tools cut",
   },
   {
     quote: "The outbound loop runs while I sleep. By morning I have ranked campaigns, drafted replies, and synced deals — without touching anything.",
     name: "Diggi H.",
     role: "Founder",
-    handle: "@diggi",
     metric: "Mornings reclaimed",
   },
   {
     quote: "Content gap → blog idea → LinkedIn hook → YouTube title. One research run, three channels. The repurpose job is witchcraft.",
     name: "Aditya K.",
     role: "Head of Growth",
-    handle: "@aditya",
     metric: "3× content output",
   },
 ];
@@ -453,7 +416,7 @@ function Section({
 
 function Eyebrow({ children }: { children: React.ReactNode }) {
   return (
-    <p className="mb-3 flex items-center gap-2 font-mono text-[12px] uppercase tracking-[0.18em] text-[#f97316]">
+    <p className="mb-3 flex items-center gap-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[#f97316]">
       <span className="h-px w-6 bg-[#f97316]/50" />
       {children}
     </p>
@@ -469,12 +432,7 @@ const NAV_LINKS = [
 ];
 
 const ENGINES = [
-  { k: "Autonomous Agents", href: "#cockpit" },
-  { k: "Outbound", href: "#cockpit" },
-  { k: "Inbound", href: "#cockpit" },
-  { k: "Content Studio", href: "#cockpit" },
-  { k: "Revenue", href: "#cockpit" },
-  { k: "Work OS", href: "#cockpit" },
+  "Autonomous Agents", "Outbound", "Inbound", "Content Studio", "Revenue", "Work OS",
 ];
 
 function LandingNav() {
@@ -483,8 +441,8 @@ function LandingNav() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   useEffect(() => {
-    const el = document.querySelector(".overflow-y-auto");
-    const onScroll = () => setScrolled((el?.scrollTop ?? window.scrollY) > 20);
+    const el = document.querySelector(".agnb-scroll");
+    const onScroll = () => setScrolled((el?.scrollTop ?? window.scrollY) > 16);
     el?.addEventListener("scroll", onScroll);
     window.addEventListener("scroll", onScroll);
     return () => {
@@ -493,41 +451,42 @@ function LandingNav() {
     };
   }, []);
 
+  const linkCls = "rounded-md px-3 py-2 text-[13.5px] font-medium text-gray-500 transition hover:text-gray-900";
+
   return (
     <header
       className={cn(
         "sticky top-0 z-50 w-full backdrop-blur-xl transition-all",
-        scrolled ? "border-b border-border/60 bg-background/70" : "border-b border-transparent bg-transparent",
+        scrolled ? "border-b border-black/[0.06] bg-[#F6F3EC]/80" : "border-b border-transparent bg-transparent",
       )}
     >
       <div className="relative mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
-        {/* Logo left */}
         <a href="#top" className="flex items-center">
           <img src="/logo-full.svg" alt="All Gas No Brakes" className="h-11 w-auto" />
         </a>
 
-        {/* Center nav — absolute centered (Finn pattern) */}
+        {/* Center nav */}
         <nav className="absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 items-center gap-1 lg:flex">
           <div
             className="relative"
             onMouseEnter={() => setEnginesOpen(true)}
             onMouseLeave={() => setEnginesOpen(false)}
           >
-            <button className="flex items-center gap-1 rounded-md px-3 py-2 text-[13.5px] font-medium text-muted-foreground transition hover:text-foreground">
+            <button className="flex items-center gap-1 rounded-md px-3 py-2 text-[13.5px] font-medium text-gray-500 transition hover:text-gray-900">
               Engines
-              <ChevronRight className={cn("size-3.5 transition", enginesOpen ? "rotate-90" : "rotate-0")} />
+              <ChevronRight className={cn("size-3.5 transition", enginesOpen ? "rotate-90" : "")} />
             </button>
             {enginesOpen && (
               <div className="absolute left-1/2 top-full w-56 -translate-x-1/2 pt-2">
-                <div className="overflow-hidden rounded-xl border border-border bg-card/95 p-1.5 shadow-xl backdrop-blur">
+                <div className="overflow-hidden rounded-xl border border-black/[0.08] bg-white p-1.5 shadow-xl">
                   {ENGINES.map((e) => (
                     <a
-                      key={e.k}
-                      href={e.href}
-                      className="flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] text-muted-foreground transition hover:bg-background hover:text-foreground"
+                      key={e}
+                      href="#cockpit"
+                      className="flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] text-gray-600 transition hover:bg-[#FAF8F4] hover:text-gray-900"
                     >
                       <span className="size-1.5 rounded-full bg-[#f97316]/60" />
-                      {e.k}
+                      {e}
                     </a>
                   ))}
                 </div>
@@ -535,37 +494,27 @@ function LandingNav() {
             )}
           </div>
           {NAV_LINKS.map((l) => (
-            <a
-              key={l.href}
-              href={l.href}
-              className="rounded-md px-3 py-2 text-[13.5px] font-medium text-muted-foreground transition hover:text-foreground"
-            >
-              {l.label}
-            </a>
+            <a key={l.href} href={l.href} className={linkCls}>{l.label}</a>
           ))}
         </nav>
 
-        {/* Right CTAs */}
-        <div className="flex items-center gap-3">
-          <span className="hidden items-center gap-1.5 rounded-full border border-border px-3 py-1 font-mono text-[11px] uppercase tracking-[0.1em] text-[#f97316] xl:inline-flex">
-            <Sparkles className="size-3" /> Private beta
-          </span>
+        {/* Right */}
+        <div className="flex items-center gap-2.5">
           <a
             href="mailto:diggi@hirefinn.ai?subject=AGNB%20Access%20Request"
-            className="hidden rounded-md px-4 py-1.5 text-[13px] font-medium text-muted-foreground transition hover:text-foreground sm:inline-flex"
+            className="hidden rounded-md px-3.5 py-2 text-[13px] font-medium text-gray-600 transition hover:text-gray-900 sm:inline-flex"
           >
             Request access
           </a>
           <a
             href="#signin"
-            className="rounded-md bg-[#f97316] px-4 py-1.5 text-[13px] font-semibold text-[#0A0A0A] transition hover:bg-[#fb923c]"
+            className="rounded-md bg-[#f97316] px-4 py-2 text-[13px] font-semibold text-white transition hover:bg-[#ea6a0c]"
           >
             Sign in
           </a>
-          {/* Mobile toggle */}
           <button
             onClick={() => setMobileOpen((v) => !v)}
-            className="inline-flex size-9 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground lg:hidden"
+            className="inline-flex size-9 items-center justify-center rounded-md text-gray-600 transition hover:text-gray-900 lg:hidden"
             aria-label="menu"
           >
             {mobileOpen ? <Minus className="size-5" /> : <Plus className="size-5" />}
@@ -573,17 +522,16 @@ function LandingNav() {
         </div>
       </div>
 
-      {/* Mobile dropdown */}
       {mobileOpen && (
-        <div className="border-t border-border bg-background/95 px-6 py-3 backdrop-blur lg:hidden">
-          {[...ENGINES.slice(0, 1), ...NAV_LINKS].map((l) => (
+        <div className="border-t border-black/[0.06] bg-[#F6F3EC]/95 px-6 py-3 backdrop-blur lg:hidden">
+          {[{ label: "Engines", href: "#cockpit" }, ...NAV_LINKS].map((l) => (
             <a
               key={l.href}
               href={l.href}
               onClick={() => setMobileOpen(false)}
-              className="block py-2.5 text-[15px] font-medium text-muted-foreground transition hover:text-foreground"
+              className="block py-2.5 text-[15px] font-medium text-gray-600 transition hover:text-gray-900"
             >
-              {"label" in l ? l.label : (l as { k: string }).k}
+              {l.label}
             </a>
           ))}
         </div>
@@ -597,18 +545,18 @@ function Faq({ q, a }: { q: string; a: string }) {
   return (
     <button
       onClick={() => setOpen((v) => !v)}
-      className="w-full border-b border-border py-5 text-left"
+      className="w-full border-b border-black/[0.08] py-5 text-left"
     >
       <div className="flex items-center justify-between gap-4">
-        <span className="text-[16px] font-semibold text-foreground">{q}</span>
+        <span className="text-[16px] font-semibold text-gray-900">{q}</span>
         {open ? (
           <Minus className="size-4 shrink-0 text-[#f97316]" />
         ) : (
-          <Plus className="size-4 shrink-0 text-muted-foreground" />
+          <Plus className="size-4 shrink-0 text-gray-400" />
         )}
       </div>
       {open && (
-        <p className="mt-3 max-w-2xl text-[14px] leading-relaxed text-muted-foreground">
+        <p className="mt-3 max-w-2xl text-[14.5px] leading-relaxed text-gray-500">
           {a}
         </p>
       )}
@@ -637,8 +585,6 @@ export function LandingPage() {
   const isAuthMode = healthQuery.data?.deploymentMode === "authenticated";
   const isLocalTrusted = healthQuery.data?.deploymentMode === "local_trusted";
 
-  // Only check session in authenticated mode — local_trusted has an implicit
-  // session that would cause an immediate redirect, hiding the landing page.
   const { data: session, isLoading: isSessionLoading } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -652,391 +598,365 @@ export function LandingPage() {
     }
   }, [isAuthMode, session, navigate, nextPath]);
 
-  // suppress unused warning — queryClient used in LoginCard via closure
   void queryClient;
 
-  const isLoading =
-    healthQuery.isLoading || (isAuthMode && isSessionLoading);
+  const isLoading = healthQuery.isLoading || (isAuthMode && isSessionLoading);
 
   if (isLoading) {
     return (
-      <div className="dark fixed inset-0 flex items-center justify-center bg-background">
-        <p className="text-sm text-muted-foreground">Loading…</p>
+      <div className="fixed inset-0 flex items-center justify-center bg-[#F6F3EC]">
+        <p className="text-sm text-gray-500">Loading…</p>
       </div>
     );
   }
 
   return (
-    <div className="dark h-screen overflow-y-auto bg-background text-foreground antialiased" style={{ overflowX: "clip" }}>
+    <div
+      className="agnb-scroll h-screen overflow-y-auto bg-[#F6F3EC] text-gray-900 antialiased"
+      style={{ overflowX: "clip" }}
+      id="top"
+    >
       <style>{`
         @keyframes agnb-marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-        .agnb-marquee { animation: agnb-marquee 28s linear infinite; }
+        .agnb-marquee { animation: agnb-marquee 30s linear infinite; }
+        @keyframes agnb-rev { 0%,100% { transform: scaleY(0.35) } 50% { transform: scaleY(1) } }
+        .agnb-rev-bar { display:block; width:2px; height:13px; border-radius:9999px; background:currentColor; transform-origin:bottom; animation: agnb-rev 0.9s ease-in-out infinite; }
       `}</style>
 
-      {/* Background glow */}
-      <div
-        className="pointer-events-none fixed inset-0 opacity-80"
-        style={{
-          background:
-            "radial-gradient(50% 38% at 50% -5%, rgba(249,115,22,0.12) 0%, transparent 72%)",
-        }}
-      />
-      {/* Speed grid */}
-      <div
-        className="pointer-events-none fixed inset-0 opacity-[0.03]"
-        style={{
-          backgroundImage:
-            "linear-gradient(rgba(255,255,255,.6) 1px, transparent 1px)",
-          backgroundSize: "100% 64px",
-        }}
-      />
+      <LandingNav />
 
-      <div className="relative" id="top">
-        {/* ── Nav ── */}
-        <LandingNav />
+      {/* ── Hero (centered, Finn-style) ── */}
+      <Section className="relative pb-12 pt-12 text-center sm:pt-16">
+        {/* warm glow */}
+        <div
+          className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[420px]"
+          style={{
+            background:
+              "radial-gradient(60% 60% at 50% 0%, rgba(249,115,22,0.10) 0%, transparent 70%)",
+          }}
+        />
 
-        {/* ── Hero ── */}
-        <Section className="grid grid-cols-1 items-center gap-12 pb-14 pt-12 lg:grid-cols-[1.1fr_0.9fr] lg:pt-20">
-          <div>
-            <p className="mb-5 inline-flex items-center gap-2 rounded-full border border-[#f97316]/30 bg-[#f97316]/5 px-3 py-1 font-mono text-[12px] uppercase tracking-wider text-[#f97316]">
-              <Activity className="size-3.5" /> Redline since day one
-            </p>
-            <h1 className="text-[clamp(46px,7.5vw,88px)] font-bold leading-[0.95] tracking-[-0.04em]">
-              All gas,
-              <br />
-              <span className="bg-gradient-to-r from-amber-400 via-orange-500 to-red-600 bg-clip-text text-transparent">no brakes.</span>
-            </h1>
-            <p className="mt-6 max-w-xl text-[17px] leading-relaxed text-muted-foreground">
-              Twelve dashboards. Six logins. Zero momentum. That ends here. Your
-              entire growth engine — outbound, inbound, content, revenue — run by
-              autonomous agents that floor it while you sleep. One cockpit.
-            </p>
-            <div className="mt-8 flex flex-wrap items-center gap-3">
-              <a
-                href="#signin"
-                className="group inline-flex items-center gap-2 rounded-md bg-[#f97316] px-6 py-3 text-sm font-semibold text-[#0A0A0A] transition hover:bg-[#fb923c]"
-              >
-                Floor it{" "}
-                <ArrowRight className="size-4 transition group-hover:translate-x-0.5" />
-              </a>
-              <a
-                href="#how"
-                className="inline-flex items-center gap-2 rounded-md border border-border px-6 py-3 text-sm font-semibold text-foreground transition hover:border-muted-foreground"
-              >
-                Watch it run
-              </a>
+        {/* Announcement pill */}
+        <a
+          href="#cockpit"
+          className="mb-7 inline-flex items-center gap-3 rounded-full border border-black/[0.08] bg-white px-1.5 py-1.5 pr-5 text-[14px] text-gray-800 shadow-sm transition hover:shadow"
+        >
+          <span className="inline-flex items-center gap-[2px] rounded-full bg-[#f97316]/10 px-3 py-1.5 text-[#f97316]">
+            <span className="agnb-rev-bar" style={{ animationDelay: "0ms" }} />
+            <span className="agnb-rev-bar" style={{ animationDelay: "120ms" }} />
+            <span className="agnb-rev-bar" style={{ animationDelay: "240ms" }} />
+            <span className="agnb-rev-bar" style={{ animationDelay: "360ms" }} />
+          </span>
+          <span className="font-medium">New: agents now run your full growth stack.</span>
+        </a>
+
+        {/* Headline */}
+        <h1 className="mx-auto max-w-[920px] text-[clamp(46px,7vw,80px)] font-extrabold leading-[1.0] tracking-[-0.04em] text-gray-900">
+          Your growth engine.
+          <span
+            className="mt-1.5 block bg-gradient-to-r from-amber-500 via-orange-500 to-red-600 bg-clip-text font-medium text-transparent"
+            style={SERIF}
+          >
+            All gas, no brakes.
+          </span>
+        </h1>
+
+        {/* Subtitle */}
+        <p className="mx-auto mb-8 mt-6 max-w-[680px] text-[19px] leading-[1.55] text-gray-500">
+          Outbound, inbound, content, and revenue — run by autonomous agents in
+          one cockpit. They do the reps across every channel and your dev work
+          too, while you sleep. Twelve dashboards become one.
+        </p>
+
+        {/* CTAs */}
+        <div className="inline-flex flex-wrap items-center justify-center gap-3">
+          <a
+            href="#signin"
+            className="group inline-flex items-center gap-2 rounded-lg bg-[#f97316] px-7 py-3.5 text-sm font-semibold text-white transition hover:bg-[#ea6a0c]"
+          >
+            Floor it <ArrowRight className="size-4 transition group-hover:translate-x-0.5" />
+          </a>
+          <a
+            href="#how"
+            className="inline-flex items-center gap-2 rounded-lg border border-black/[0.12] bg-white px-7 py-3.5 text-sm font-semibold text-gray-900 transition hover:bg-[#FAF8F4]"
+          >
+            Watch it run
+          </a>
+        </div>
+        <p className="mt-4 text-[12.5px] text-gray-400">
+          Invite-only beta · No credit card needed · Setup in under 2 minutes
+        </p>
+
+        {/* Product shot — live console */}
+        <div className="mx-auto mt-14 max-w-4xl">
+          <LiveConsole />
+        </div>
+      </Section>
+
+      {/* ── Trusted by (real Finn customer logos) ── */}
+      <Section className="py-12">
+        <p className="mb-8 text-center font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">
+          From the team behind <span className="text-gray-700">Finn</span> — trusted in production by
+        </p>
+        <div className="flex flex-wrap items-center justify-center gap-x-12 gap-y-7 opacity-60 grayscale transition hover:opacity-100 hover:grayscale-0 sm:gap-x-16">
+          {TRUSTED_LOGOS.map((l) => (
+            <img key={l.name} src={l.file} alt={l.name} className={cn(l.h, "w-auto object-contain")} />
+          ))}
+        </div>
+      </Section>
+
+      {/* ── Stats ── */}
+      <Section className="border-y border-black/[0.06] py-14">
+        <div className="grid grid-cols-2 gap-8 sm:grid-cols-4">
+          {STATS.map((s) => (
+            <div key={s.l} className="text-center">
+              <div className="text-[clamp(36px,4.4vw,56px)] font-extrabold tracking-tight text-[#f97316]">
+                <CountUp to={s.to} suffix={s.suffix} />
+              </div>
+              <div className="mt-1 text-[13px] leading-snug text-gray-500">{s.l}</div>
             </div>
-            <p className="mt-3 text-[12px] text-muted-foreground/70">
-              Invite-only beta · No credit card needed · Setup in under 2 minutes
+          ))}
+        </div>
+      </Section>
+
+      {/* ── Problem ── */}
+      <Section className="py-20">
+        <h2 className="max-w-3xl text-[clamp(30px,3.8vw,46px)] font-bold leading-[1.08] tracking-[-0.025em] text-gray-900">
+          Growth tooling is bloated, siloed, and slow.{" "}
+          <span className="text-gray-400">You weren't hired to babysit twelve dashboards.</span>
+        </h2>
+        <p className="mt-6 max-w-2xl text-[17px] leading-relaxed text-gray-500">
+          Brakes are for people who second-guess. We strip the busywork, wire
+          every channel and your dev work into one surface, and hand the grind to
+          agents that never clock out. You set the goal. They floor it.
+        </p>
+      </Section>
+
+      {/* ── Testimonials ── */}
+      <Section className="py-12">
+        <Eyebrow>From the crew</Eyebrow>
+        <h2 className="mb-10 text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900">
+          Real teams. Real momentum.
+        </h2>
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+          {TESTIMONIALS.map((t) => (
+            <div key={t.name} className="flex flex-col justify-between rounded-2xl border border-black/[0.07] bg-white p-6 shadow-sm">
+              <p className="text-[15px] leading-relaxed text-gray-700">&ldquo;{t.quote}&rdquo;</p>
+              <div className="mt-6 flex items-center justify-between">
+                <div>
+                  <p className="text-[13px] font-semibold text-gray-900">{t.name}</p>
+                  <p className="text-[12px] text-gray-500">{t.role}</p>
+                </div>
+                <span className="rounded-full border border-[#f97316]/25 bg-[#f97316]/10 px-3 py-1 font-mono text-[11px] font-medium text-[#f97316]">
+                  {t.metric}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      {/* ── Modules ── */}
+      <Section className="scroll-mt-20 py-12" id="cockpit">
+        <Eyebrow>The cockpit</Eyebrow>
+        <h2 className="mb-10 text-[clamp(28px,3.4vw,42px)] font-bold tracking-[-0.02em] text-gray-900">
+          Six engines. One throttle.
+        </h2>
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
+          {MODULES.map((m) => (
+            <div key={m.k} className="group rounded-2xl border border-black/[0.07] bg-white p-7 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+              <div className="mb-4 flex size-11 items-center justify-center rounded-xl bg-[#f97316]/10 text-[#f97316]">
+                <m.icon className="size-5" />
+              </div>
+              <h3 className="mb-2 text-[18px] font-semibold text-gray-900">{m.k}</h3>
+              <p className="text-[14px] leading-relaxed text-gray-500">{m.d}</p>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      {/* ── How it runs ── */}
+      <Section className="scroll-mt-20 py-20" id="how">
+        <div className="grid grid-cols-1 items-center gap-12 lg:grid-cols-2">
+          <div>
+            <Eyebrow>
+              <span className="inline-flex items-center gap-1.5">
+                <GitBranch className="size-3.5" /> It runs while you sleep
+              </span>
+            </Eyebrow>
+            <h2 className="max-w-md text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900">
+              The pipeline never goes cold.
+            </h2>
+            <p className="mt-4 max-w-md text-[16px] leading-relaxed text-gray-500">
+              35 jobs + your agents fire on schedule or on demand — campaigns,
+              content, syncs, PRs. Watch the real loop — drain, sync, draft,
+              observe — running nonstop.
             </p>
+            <div className="mt-8 grid grid-cols-2 gap-6">
+              {LOOP.map((s, i) => (
+                <div key={s.t}>
+                  <div className="mb-2 flex items-center gap-2">
+                    <span className="flex size-8 items-center justify-center rounded-lg bg-[#f97316]/10 text-[#f97316]">
+                      <s.icon className="size-4" />
+                    </span>
+                    <span className="font-mono text-[11px] text-gray-400">0{i + 1}</span>
+                  </div>
+                  <h4 className="text-[14px] font-semibold text-gray-900">{s.t}</h4>
+                  <p className="mt-0.5 text-[12.5px] leading-snug text-gray-500">{s.d}</p>
+                </div>
+              ))}
+            </div>
           </div>
-          <div className="flex flex-col items-center gap-3 lg:items-end">
-            <LoginCard nextPath={nextPath} />
+          <LiveConsole />
+        </div>
+      </Section>
+
+      {/* ── Surfaces ── */}
+      <Section className="py-12">
+        <Eyebrow>Everything in the cockpit</Eyebrow>
+        <h2 className="mb-8 max-w-2xl text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900">
+          One login. Every surface. <span className="text-gray-400">Zero tab-hopping.</span>
+        </h2>
+        <div className="flex flex-wrap gap-2.5">
+          {SURFACES.map((s) => (
+            <span
+              key={s}
+              className="rounded-lg border border-black/[0.08] bg-white px-3 py-1.5 font-mono text-[12px] text-gray-600 transition hover:border-[#f97316]/40 hover:text-gray-900"
+            >
+              {s}
+            </span>
+          ))}
+          <span className="rounded-lg border border-[#f97316]/30 bg-[#f97316]/5 px-3 py-1.5 font-mono text-[12px] text-[#f97316]">
+            + more
+          </span>
+        </div>
+      </Section>
+
+      {/* ── Comparison ── */}
+      <Section className="py-16">
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+          <div className="rounded-2xl border border-black/[0.07] bg-white p-8">
+            <p className="mb-4 font-mono text-[12px] font-semibold uppercase tracking-wider text-gray-400">
+              The old way
+            </p>
+            <ul className="space-y-3 text-[14px] text-gray-400">
+              {[
+                "12 tabs: CRM, Rocket, GSC, Jira, Slack — context lost",
+                "Manual CRM syncs + campaign checks at 11pm",
+                "Guessing which campaign (or agent) actually worked",
+                "Content stuck in drafts; PRs sitting for days",
+                "Attribution? A spreadsheet prayer",
+              ].map((x) => (
+                <li key={x} className="flex gap-2 line-through decoration-gray-300">
+                  <span className="text-gray-300">—</span>
+                  {x}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="rounded-2xl border border-[#f97316]/20 bg-[#f97316]/[0.04] p-8">
+            <p className="mb-4 font-mono text-[12px] font-semibold uppercase tracking-wider text-[#f97316]">
+              All gas
+            </p>
+            <ul className="space-y-3 text-[14px] text-gray-800">
+              {[
+                "Campaigns, pipeline, content, code — one cockpit, one login",
+                "Agents + 35 jobs run the channels 24/7",
+                "Campaigns ranked by reply rate; PRs merged on green",
+                "Drafts written + scheduled on autopilot",
+                "Attribution reconciled automatically",
+              ].map((x) => (
+                <li key={x} className="flex gap-2">
+                  <ChevronRight className="mt-0.5 size-4 shrink-0 text-[#f97316]" />
+                  {x}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </Section>
+
+      {/* ── Integrations ── */}
+      <Section className="scroll-mt-20 py-16" id="integrations">
+        <Eyebrow>Works with your stack</Eyebrow>
+        <h2 className="mb-8 text-[clamp(24px,3vw,38px)] font-bold tracking-[-0.02em] text-gray-900">
+          Drop it in. Nothing breaks.
+        </h2>
+        <div className="flex flex-wrap gap-3">
+          {INTEGRATIONS.map((i) => (
+            <div key={i.name} className="flex items-center gap-2.5 rounded-xl border border-black/[0.08] bg-white px-4 py-2.5 transition hover:border-[#f97316]/40">
+              <span className="flex size-6 items-center justify-center rounded bg-[#f97316]/10 font-mono text-[10px] font-bold text-[#f97316]">
+                {i.abbr}
+              </span>
+              <span className="text-[13px] font-medium text-gray-700">{i.name}</span>
+            </div>
+          ))}
+        </div>
+        <p className="mt-4 text-[12.5px] text-gray-500">
+          + HubSpot webhooks, GSC property, PostHog events, Slack alerts, LinkedIn API, and more out of the box.
+        </p>
+      </Section>
+
+      {/* ── Manifesto ── */}
+      <Section className="py-16">
+        <div className="grid grid-cols-1 gap-8 md:grid-cols-[auto_1fr] md:items-center">
+          <Gauge className="size-10 text-[#f97316]" />
+          <blockquote className="text-[clamp(24px,3vw,36px)] font-semibold leading-[1.2] tracking-[-0.02em] text-gray-900">
+            &ldquo;Ship fast, measure everything, automate the rest.
+            <span className="text-gray-400">
+              {" "}The competition is still scheduling a meeting about it.&rdquo;
+            </span>
+          </blockquote>
+        </div>
+      </Section>
+
+      {/* ── FAQ ── */}
+      <Section className="scroll-mt-20 py-12" id="faq">
+        <Eyebrow>Questions</Eyebrow>
+        <div className="mt-2">
+          {FAQS.map((f) => (
+            <Faq key={f.q} {...f} />
+          ))}
+        </div>
+      </Section>
+
+      {/* ── Sign in (moved out of hero) ── */}
+      <Section className="py-20">
+        <div className="grid grid-cols-1 items-center gap-12 rounded-3xl border border-black/[0.07] bg-white p-8 shadow-sm sm:p-12 lg:grid-cols-2">
+          <div>
+            <Eyebrow>Your instance. Your agents.</Eyebrow>
+            <h2 className="text-[clamp(30px,3.6vw,48px)] font-bold tracking-[-0.025em] text-gray-900">
+              Get in and floor it.
+            </h2>
+            <p className="mt-4 max-w-md text-[16px] leading-relaxed text-gray-500">
+              Sign in and let the agents do the work — outbound, content,
+              pipeline, and code, running on their own.
+            </p>
             {isLocalTrusted && (
               <button
                 onClick={() => navigate(nextPath, { replace: true })}
-                className="text-[13px] text-muted-foreground transition hover:text-foreground"
+                className="mt-6 text-[13px] text-gray-500 transition hover:text-gray-900"
               >
                 Skip — enter without signing in →
               </button>
             )}
           </div>
-        </Section>
-
-        {/* ── Ticker ── */}
-        <div className="border-y border-border bg-card/60 py-3">
-          <div className="flex whitespace-nowrap">
-            <div className="agnb-marquee flex shrink-0">
-              {[...TICKER, ...TICKER].map((t, i) => (
-                <span
-                  key={i}
-                  className="mx-6 inline-flex items-center gap-3 font-mono text-[12px] uppercase tracking-[0.14em] text-muted-foreground"
-                >
-                  {t} <span className="text-[#f97316]/60">/</span>
-                </span>
-              ))}
-            </div>
+          <div className="flex justify-center lg:justify-end">
+            <LoginCard nextPath={nextPath} />
           </div>
         </div>
+      </Section>
 
-        {/* ── Stats ── */}
-        <Section className="grid grid-cols-2 gap-px py-14 sm:grid-cols-4">
-          {STATS.map((s) => (
-            <div key={s.l} className="px-2 text-center">
-              <div className="text-[clamp(34px,4.4vw,52px)] font-bold tracking-tight text-[#f97316]">
-                <CountUp to={s.to} suffix={s.suffix} />
-              </div>
-              <div className="mt-1 text-[12.5px] leading-snug text-muted-foreground">
-                {s.l}
-              </div>
-            </div>
-          ))}
-        </Section>
-
-        {/* ── Trusted by (real Finn customer logos) ── */}
-        <Section className="py-10">
-          <p className="mb-7 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-            From the team behind <span className="text-foreground/70">Finn</span> — trusted in production by
-          </p>
-          <div className="flex flex-wrap items-center justify-center gap-x-10 gap-y-6 opacity-70 grayscale transition hover:opacity-100 hover:grayscale-0 sm:gap-x-14">
-            {TRUSTED_LOGOS.map((l) => (
-              <img key={l.name} src={l.file} alt={l.name} className={cn(l.h, "w-auto object-contain")} />
-            ))}
+      {/* ── Footer ── */}
+      <footer className="border-t border-black/[0.07]">
+        <Section className="flex flex-col items-center justify-between gap-3 py-8 sm:flex-row">
+          <div className="flex items-center gap-2 text-[13px] text-gray-500">
+            <img src="/favicon.svg" alt="" className="h-4 w-4" aria-hidden="true" />
+            All Gas No Brakes
           </div>
+          <div className="font-mono text-[12px] text-gray-400">© 2026 · built in stealth</div>
         </Section>
-
-        {/* ── Testimonials ── */}
-        <Section className="py-16">
-          <Eyebrow>From the crew</Eyebrow>
-          <h2 className="mb-10 text-[clamp(24px,3vw,36px)] font-bold tracking-[-0.02em]">
-            What the team is shipping with it.
-          </h2>
-          <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
-            {TESTIMONIALS.map((t) => (
-              <div key={t.handle} className="flex flex-col justify-between rounded-xl border border-border bg-card/50 p-6">
-                <p className="text-[14.5px] leading-relaxed text-foreground/80">&ldquo;{t.quote}&rdquo;</p>
-                <div className="mt-6 flex items-center justify-between">
-                  <div>
-                    <p className="text-[13px] font-semibold text-foreground">{t.name}</p>
-                    <p className="text-[12px] text-muted-foreground">{t.role}</p>
-                  </div>
-                  <span className="rounded-full border border-[#f97316]/30 bg-[#f97316]/10 px-3 py-1 font-mono text-[11px] font-medium text-[#f97316]">
-                    {t.metric}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Section>
-
-        {/* ── Problem ── */}
-        <Section className="py-16">
-          <h2 className="max-w-3xl text-[clamp(28px,3.6vw,44px)] font-bold leading-[1.08] tracking-[-0.025em]">
-            Growth tooling is bloated, siloed, and slow.{" "}
-            <span className="text-muted-foreground">
-              You weren't hired to babysit twelve dashboards.
-            </span>
-          </h2>
-          <p className="mt-5 max-w-2xl text-[16px] leading-relaxed text-muted-foreground">
-            Brakes are for people who second-guess. We strip the busywork, wire
-            every channel and your dev work into one surface, and hand the grind to
-            agents that never clock out. You set the goal. They floor it.
-          </p>
-        </Section>
-
-        {/* ── Modules ── */}
-        <Section className="scroll-mt-20 pb-8" id="cockpit">
-          <Eyebrow>The cockpit</Eyebrow>
-          <h2 className="mb-10 text-[clamp(26px,3.2vw,38px)] font-bold tracking-[-0.02em]">
-            Six engines. One throttle.
-          </h2>
-          <div className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border bg-border md:grid-cols-2 lg:grid-cols-3">
-            {MODULES.map((m) => (
-              <div key={m.k} className="group bg-background p-7 transition hover:bg-card">
-                <div className="mb-4 flex size-10 items-center justify-center rounded-lg border border-border bg-card text-[#f97316] transition group-hover:border-[#f97316]/40">
-                  <m.icon className="size-5" />
-                </div>
-                <h3 className="mb-2 text-[17px] font-semibold text-foreground">{m.k}</h3>
-                <p className="text-[13.5px] leading-relaxed text-muted-foreground">{m.d}</p>
-              </div>
-            ))}
-          </div>
-        </Section>
-
-        {/* ── Live console ── */}
-        <Section className="py-20">
-          <div
-            id="how"
-            className="grid grid-cols-1 items-center gap-10 rounded-xl border border-border bg-card/40 p-8 sm:p-12 lg:grid-cols-2"
-          >
-            <div>
-              <Eyebrow>
-                <span className="inline-flex items-center gap-1.5">
-                  <GitBranch className="size-3.5" /> It runs while you sleep
-                </span>
-              </Eyebrow>
-              <h2 className="max-w-md text-[clamp(24px,3vw,36px)] font-bold tracking-[-0.02em]">
-                The pipeline never goes cold.
-              </h2>
-              <p className="mt-4 max-w-md text-[15px] leading-relaxed text-muted-foreground">
-                35 jobs + your agents fire on schedule or on demand — campaigns,
-                content, syncs, PRs. Watch the real loop — drain, sync, draft, observe
-                — running nonstop.
-              </p>
-              <div className="mt-8 grid grid-cols-2 gap-5">
-                {LOOP.map((s, i) => (
-                  <div key={s.t}>
-                    <div className="mb-2 flex items-center gap-2">
-                      <span className="flex size-7 items-center justify-center rounded-md bg-[#f97316]/10 text-[#f97316]">
-                        <s.icon className="size-4" />
-                      </span>
-                      <span className="font-mono text-[11px] text-muted-foreground">
-                        0{i + 1}
-                      </span>
-                    </div>
-                    <h4 className="text-[14px] font-semibold text-foreground">{s.t}</h4>
-                    <p className="mt-0.5 text-[12px] leading-snug text-muted-foreground">
-                      {s.d}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <LiveConsole />
-          </div>
-        </Section>
-
-        {/* ── Capability breadth ── */}
-        <Section className="py-12">
-          <Eyebrow>Everything in the cockpit</Eyebrow>
-          <h2 className="mb-8 max-w-2xl text-[clamp(24px,3vw,36px)] font-bold tracking-[-0.02em]">
-            One login. Every surface.{" "}
-            <span className="text-muted-foreground">Zero tab-hopping.</span>
-          </h2>
-          <div className="flex flex-wrap gap-2.5">
-            {SURFACES.map((s) => (
-              <span
-                key={s}
-                className="rounded-md border border-border bg-card px-3 py-1.5 font-mono text-[12px] text-muted-foreground transition hover:border-[#f97316]/40 hover:text-foreground"
-              >
-                {s}
-              </span>
-            ))}
-            <span className="rounded-md border border-[#f97316]/30 bg-[#f97316]/5 px-3 py-1.5 font-mono text-[12px] text-[#f97316]">
-              + more
-            </span>
-          </div>
-        </Section>
-
-        {/* ── Comparison ── */}
-        <Section className="py-16">
-          <div className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border bg-border md:grid-cols-2">
-            <div className="bg-background p-8">
-              <p className="mb-4 font-mono text-[12px] uppercase tracking-wider text-muted-foreground">
-                The old way
-              </p>
-              <ul className="space-y-3 text-[14px] text-muted-foreground">
-                {[
-                  "12 tabs: CRM, Rocket, GSC, Jira, Slack — context lost",
-                  "Manual CRM syncs + campaign checks at 11pm",
-                  "Guessing which campaign (or agent) actually worked",
-                  "Content stuck in drafts; PRs sitting for days",
-                  "Attribution? A spreadsheet prayer",
-                ].map((x) => (
-                  <li key={x} className="flex gap-2 line-through decoration-border">
-                    <span className="text-border">—</span>
-                    {x}
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div className="bg-card/50 p-8">
-              <p className="mb-4 font-mono text-[12px] uppercase tracking-wider text-[#f97316]">
-                All gas
-              </p>
-              <ul className="space-y-3 text-[14px] text-foreground">
-                {[
-                  "Campaigns, pipeline, content, code — one cockpit, one login",
-                  "Agents + 35 jobs run the channels 24/7",
-                  "Campaigns ranked by reply rate; PRs merged on green",
-                  "Drafts written + scheduled on autopilot",
-                  "Attribution reconciled automatically",
-                ].map((x) => (
-                  <li key={x} className="flex gap-2">
-                    <ChevronRight className="mt-0.5 size-4 shrink-0 text-[#f97316]" />
-                    {x}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        </Section>
-
-        {/* ── Integrations ── */}
-        <Section className="scroll-mt-20 py-16" id="integrations">
-          <Eyebrow>Works with your stack</Eyebrow>
-          <h2 className="mb-8 text-[clamp(22px,2.8vw,34px)] font-bold tracking-[-0.02em]">
-            Drop it in. Nothing breaks.
-          </h2>
-          <div className="flex flex-wrap gap-3">
-            {INTEGRATIONS.map((i) => (
-              <div key={i.name} className="flex items-center gap-2.5 rounded-lg border border-border bg-card px-4 py-2.5 transition hover:border-[#f97316]/40">
-                <span className="flex size-6 items-center justify-center rounded bg-[#f97316]/10 font-mono text-[10px] font-bold text-[#f97316]">
-                  {i.abbr}
-                </span>
-                <span className="text-[13px] font-medium text-foreground/80">{i.name}</span>
-              </div>
-            ))}
-          </div>
-          <p className="mt-4 text-[12.5px] text-muted-foreground">
-            + HubSpot webhooks, GSC property, PostHog events, Slack alerts, LinkedIn API, and more out of the box.
-          </p>
-        </Section>
-
-        {/* ── Manifesto ── */}
-        <Section className="py-16">
-          <div className="grid grid-cols-1 gap-8 md:grid-cols-[auto_1fr] md:items-center">
-            <Gauge className="size-10 text-[#f97316]" />
-            <blockquote className="text-[clamp(22px,3vw,34px)] font-semibold leading-[1.2] tracking-[-0.02em] text-foreground">
-              &ldquo;Ship fast, measure everything, automate the rest.
-              <span className="text-muted-foreground">
-                {" "}
-                The competition is still scheduling a meeting about it.&rdquo;
-              </span>
-            </blockquote>
-          </div>
-        </Section>
-
-        {/* ── FAQ ── */}
-        <Section className="scroll-mt-20 py-12" id="faq">
-          <Eyebrow>Questions</Eyebrow>
-          <div className="mt-2">
-            {FAQS.map((f) => (
-              <Faq key={f.q} {...f} />
-            ))}
-          </div>
-        </Section>
-
-        {/* ── CTA ── */}
-        <Section className="py-20">
-          <div className="flex flex-col items-center rounded-xl border border-[#f97316]/20 bg-[#f97316]/[0.04] px-6 py-14 text-center">
-            <p className="font-mono text-[12px] uppercase tracking-[0.16em] text-[#f97316]">
-              Your instance. Your agents.
-            </p>
-            <h2 className="mt-3 max-w-xl text-[clamp(28px,3.6vw,46px)] font-bold tracking-[-0.025em]">
-              Get in and floor it.
-            </h2>
-            <p className="mt-4 max-w-md text-[15px] text-muted-foreground">
-              Sign in and let the agents do the work.
-            </p>
-            <div className="mt-8 flex flex-col items-center gap-3">
-              <a
-                href="#signin"
-                className="group inline-flex items-center gap-2 rounded-md bg-[#f97316] px-7 py-3 text-sm font-semibold text-[#0A0A0A] transition hover:bg-[#fb923c]"
-              >
-                Floor it{" "}
-                <ArrowRight className="size-4 transition group-hover:translate-x-0.5" />
-              </a>
-              <p className="text-[12px] text-muted-foreground/60">
-                Invite-only · No credit card · Ready in under 2 minutes
-              </p>
-            </div>
-          </div>
-        </Section>
-
-        {/* ── Footer ── */}
-        <footer className="border-t border-border">
-          <Section className="flex flex-col items-center justify-between gap-3 py-8 sm:flex-row">
-            <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
-              <img src="/favicon.svg" alt="" className="h-4 w-4" aria-hidden="true" />
-              All Gas No Brakes
-            </div>
-            <div className="font-mono text-[12px] text-muted-foreground">
-              © 2026 · built in stealth
-            </div>
-          </Section>
-        </footer>
-      </div>
+      </footer>
     </div>
   );
 }
