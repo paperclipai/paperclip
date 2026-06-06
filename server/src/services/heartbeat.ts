@@ -2979,6 +2979,59 @@ export function heartbeatService(db: Db) {
           if (!agentHasPaperclipSkill) {
             const existingIssue = await issuesSvc.getById(issueId);
             if (existingIssue && existingIssue.status !== "done" && existingIssue.status !== "cancelled") {
+              // Layer-2 anti-masquerade gate (build agents only). A Claude run
+              // that bails on a failed cargo/rebase gate still exits 0, so
+              // run-success is NOT proof the Architect opened a PR. Before
+              // auto-completing an agent whose job is to land code on a remote
+              // branch, require that the branch was actually pushed. Scoped to
+              // role === "architect" because Workers legitimately never push
+              // (their handoff is the Reviewer, not a PR), and Reviewers carry
+              // the paperclip skill so they never reach this block.
+              // Fail CLOSED only on a *confirmed* missing ref (ls-remote exit
+              // 2): leave the task in_review for re-dispatch instead of letting
+              // it masquerade as done. Fail OPEN on any other git error — the
+              // Coordinator's PR-evidence audit is a second backstop.
+              let allowAutoDone = true;
+              if (
+                agent.role === "architect" &&
+                executionWorkspace.strategy === "git_worktree" &&
+                executionWorkspace.branchName &&
+                executionWorkspace.worktreePath
+              ) {
+                try {
+                  await execFile(
+                    "git",
+                    [
+                      "-C",
+                      executionWorkspace.worktreePath,
+                      "ls-remote",
+                      "--exit-code",
+                      "--heads",
+                      "origin",
+                      executionWorkspace.branchName,
+                    ],
+                    { timeout: 30_000 },
+                  );
+                } catch (err: unknown) {
+                  const exitCode = (err as { code?: number }).code;
+                  if (exitCode === 2) {
+                    allowAutoDone = false;
+                    logger.warn(
+                      { issueId, agentId: agent.id, runId: run.id, branch: executionWorkspace.branchName },
+                      "Layer-2 masquerade guard: architect run succeeded but task branch is not on origin (no PR landed) — withholding auto-done, leaving in_review for re-dispatch",
+                    );
+                  } else {
+                    logger.warn(
+                      { err, issueId, agentId: agent.id, branch: executionWorkspace.branchName },
+                      "Layer-2 masquerade guard: ls-remote errored (not a missing-ref) — failing open; Coordinator PR-evidence audit will backstop",
+                    );
+                  }
+                }
+              }
+              if (!allowAutoDone) {
+                // Skip auto-done and pipeline advancement: the work never left
+                // the worktree. The task stays in its current (in_review) status.
+              } else {
               await issuesSvc.update(issueId, { status: "done" });
               logger.info(
                 { issueId, agentId: agent.id, runId: run.id },
@@ -2998,6 +3051,7 @@ export function heartbeatService(db: Db) {
                     logger.warn({ err, issueId, parentId: existingIssue.parentId }, "failed to wake parent on auto-done"),
                   );
                 }
+              }
               }
             }
 
