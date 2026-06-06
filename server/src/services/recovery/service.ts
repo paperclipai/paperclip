@@ -2426,6 +2426,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryCause,
     });
 
+    if (recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
+      const [currentIssue] = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, input.issue.id))
+        .limit(1);
+      if (currentIssue && currentIssue.status !== "blocked") {
+        const reblocked = await issuesSvc.update(input.issue.id, {
+          status: "blocked",
+          blockedByIssueIds: blockerIds,
+          // assigneeAgentId intentionally omitted — doer stays the assignee
+        });
+        if (reblocked) return reblocked;
+      }
+    }
+
     return updated;
   }
 
