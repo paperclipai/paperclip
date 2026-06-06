@@ -139,6 +139,7 @@ export async function createApp(
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
+    pluginHttpAllowedPrivateHosts?: string[];
     bindHost: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
@@ -285,6 +286,7 @@ export async function createApp(
         const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker, {
           pluginWorkerManager: workerManager,
           manifest,
+          allowedPrivateFetchHosts: opts.pluginHttpAllowedPrivateHosts,
         });
         hostServicesDisposers.set(pluginId, () => services.dispose());
         return createHostClientHandlers({

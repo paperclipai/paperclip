@@ -54,6 +54,14 @@ export const serverConfigSchema = z.object({
   port: z.number().int().min(1).max(65535).default(3100),
   allowedHostnames: z.array(z.string().min(1)).default([]),
   serveUi: z.boolean().default(true),
+  // DANGER: each entry here exempts a specific host:port from the plugin
+  // outbound-fetch SSRF guard, letting plugins reach an otherwise-blocked
+  // loopback / private-range address (e.g. a self-hosted Honcho on
+  // "127.0.0.1:18820"). Empty by default. Only add hosts you fully trust on a
+  // self-hosted, single-tenant instance — a malicious plugin could use a
+  // listed host to reach internal services. Match is exact on host:port as the
+  // plugin requests it (no port = default port).
+  pluginHttpAllowedPrivateHosts: z.array(z.string().min(1)).default([]),
 });
 
 export const authConfigSchema = z.object({
