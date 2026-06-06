@@ -139,7 +139,7 @@ function LoginCard({ nextPath }: { nextPath: string }) {
         <button
           type="submit"
           disabled={mutation.isPending || !canSubmit}
-          className="group mt-1 inline-flex items-center justify-center gap-2 rounded-lg bg-[#f97316] px-6 py-3 text-sm font-semibold text-white transition hover:bg-[#ea6a0c] disabled:opacity-50"
+          className="group mt-1 inline-flex items-center justify-center gap-2 rounded-lg bg-[#f97316] px-6 py-3 text-sm font-semibold text-white transition hover:bg-[#ea6a0c] disabled:cursor-not-allowed"
         >
           {mutation.isPending
             ? "Flooring it…"
@@ -1217,7 +1217,7 @@ export function LandingPage() {
         <p className="mb-8 text-center font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400 dark:text-neutral-500">
           From the team behind <span className="text-gray-700 dark:text-neutral-300">Finn</span> — trusted in production by
         </p>
-        <div className="flex flex-wrap items-center justify-center gap-x-12 gap-y-7 opacity-60 grayscale transition hover:opacity-100 hover:grayscale-0 sm:gap-x-16">
+        <div className="flex flex-wrap items-center justify-center gap-x-12 gap-y-7 opacity-90 transition sm:gap-x-16 dark:opacity-90 dark:invert">
           {TRUSTED_LOGOS.map((l) => (
             <img key={l.name} src={l.file} alt={l.name} className={cn(l.h, "w-auto object-contain")} />
           ))}
@@ -1226,15 +1226,33 @@ export function LandingPage() {
 
       {/* ── Problem ── */}
       <Section className="py-20">
-        <h2 className="max-w-3xl text-[clamp(30px,3.8vw,46px)] font-bold leading-[1.08] tracking-[-0.025em] text-gray-900 dark:text-neutral-100">
-          Growth tooling is bloated, siloed, and slow.{" "}
-          <span className="text-gray-400 dark:text-neutral-500">You weren't hired to babysit twelve dashboards.</span>
-        </h2>
-        <p className="mt-6 max-w-2xl text-[17px] leading-relaxed text-gray-500 dark:text-neutral-400">
-          Brakes are for people who second-guess. We strip the busywork, wire
-          every channel and your dev work into one surface, and hand the grind to
-          agents that never clock out. You set the goal. They floor it.
-        </p>
+        <div className="grid grid-cols-1 items-center gap-12 lg:grid-cols-[1.4fr_1fr]">
+          <div>
+            <h2 className="text-[clamp(30px,3.8vw,46px)] font-bold leading-[1.08] tracking-[-0.025em] text-gray-900 dark:text-neutral-100">
+              Growth tooling is bloated, siloed, and slow.{" "}
+              <span className="text-gray-400 dark:text-neutral-500">You weren't hired to babysit twelve dashboards.</span>
+            </h2>
+            <p className="mt-6 max-w-xl text-[17px] leading-relaxed text-gray-500 dark:text-neutral-400">
+              Brakes are for people who second-guess. We strip the busywork, wire
+              every channel and your dev work into one surface, and hand the grind to
+              agents that never clock out. You set the goal. They floor it.
+            </p>
+          </div>
+          {/* 12 -> 1 visual */}
+          <div className="flex items-center justify-center gap-5 sm:gap-8">
+            <div className="text-center">
+              <div className="text-[clamp(56px,9vw,96px)] font-extrabold leading-none tracking-tight text-gray-300 line-through decoration-gray-300/60 decoration-4 dark:text-neutral-700 dark:decoration-neutral-700/60">
+                12
+              </div>
+              <div className="mt-2 font-mono text-[11px] uppercase tracking-[0.16em] text-gray-400 dark:text-neutral-500">dashboards</div>
+            </div>
+            <ArrowRight className="size-7 shrink-0 text-[#f97316]" />
+            <div className="text-center">
+              <div className="text-[clamp(56px,9vw,96px)] font-extrabold leading-none tracking-tight text-[#f97316]">1</div>
+              <div className="mt-2 font-mono text-[11px] uppercase tracking-[0.16em] text-gray-500 dark:text-neutral-400">cockpit</div>
+            </div>
+          </div>
+        </div>
       </Section>
 
       {/* ── Before / After (visual) ── */}
@@ -1441,17 +1459,17 @@ export function LandingPage() {
         <h2 className="mb-8 text-[clamp(24px,3vw,38px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
           Drop it in. Nothing breaks.
         </h2>
-        <div className="flex flex-wrap gap-3">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           {INTEGRATIONS.map((i) => (
-            <div key={i.name} className="flex items-center gap-2.5 rounded-xl border border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-neutral-900 px-4 py-2.5 transition hover:border-[#f97316]/40">
-              <span className="flex size-6 items-center justify-center rounded bg-[#f97316]/10 font-mono text-[10px] font-bold text-[#f97316]">
+            <div key={i.name} className="group flex flex-col items-start gap-3 rounded-2xl border border-black/[0.07] bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-[#f97316]/40 hover:shadow-md dark:border-white/[0.08] dark:bg-neutral-900">
+              <span className="flex size-11 items-center justify-center rounded-xl bg-[#f97316]/10 font-mono text-[13px] font-bold text-[#f97316] transition group-hover:bg-[#f97316] group-hover:text-white">
                 {i.abbr}
               </span>
-              <span className="text-[13px] font-medium text-gray-700 dark:text-neutral-300">{i.name}</span>
+              <span className="text-[14px] font-semibold text-gray-800 dark:text-neutral-200">{i.name}</span>
             </div>
           ))}
         </div>
-        <p className="mt-4 text-[12.5px] text-gray-500 dark:text-neutral-400">
+        <p className="mt-6 text-[13px] text-gray-500 dark:text-neutral-400">
           + HubSpot webhooks, GSC property, PostHog events, Slack alerts, LinkedIn API, and more out of the box.
         </p>
       </Section>
