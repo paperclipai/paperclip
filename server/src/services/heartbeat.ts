@@ -3057,9 +3057,11 @@ function prReviewOutputHasSelfReviewSkip(
   //   "PR author is `app/allyblockcast`, so self-review is not allowed"
   //   "review was skipped as self-review"
   //   "skipped review as self-review"
+  //   "Skipped self-review: PR author is `app/allyblockcast`"
   const expressesSelfSkip =
     /\bself[-\s]?review\b[\s\S]{0,60}\b(?:not\s+allowed|disallowed|not\s+permitted|forbidden|skip(?:ped|s|ping)?)\b/i.test(text) ||
     /\bskip(?:ped|s|ping)?\b[\s\S]{0,60}\b(?:as|because|since|due\s+to)\b[\s\S]{0,40}\bself[-\s]?review\b/i.test(text) ||
+    /\bskip(?:ped|s|ping)?\s+self[-\s]?review\s*:\s*pr\s+author\b/i.test(text) ||
     /\b(?:can(?:not|['’]?t)|not\s+allowed\s+to|may\s+not|won['’]?t)\b[\s\S]{0,40}\breview\b[\s\S]{0,40}\b(?:my\s+own|its\s+own|their\s+own|own)\s+(?:pr\b|pull\s+request)/i.test(text);
   if (!expressesSelfSkip) return false;
 
