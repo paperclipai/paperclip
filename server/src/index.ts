@@ -239,9 +239,15 @@ async function startServerWithDatabaseTeardown(
     const envFilePath = resolvePaperclipEnvPath();
     try {
       appendFileSync(envFilePath, `\nPAPERCLIP_AGENT_JWT_SECRET="${generated}"\n`, "utf-8");
-    } catch {
-      // Could not persist — the in-process value still works for this run.
+      logger.info({ envFilePath }, "auto-generated PAPERCLIP_AGENT_JWT_SECRET and persisted to .env");
+    } catch (err) {
+      logger.warn(
+        { envFilePath, error: err instanceof Error ? err.message : String(err) },
+        "auto-generated PAPERCLIP_AGENT_JWT_SECRET but could not persist to .env; token injection works for this server run only",
+      );
     }
+  } else {
+    logger.info("PAPERCLIP_AGENT_JWT_SECRET loaded from environment; agent JWT injection enabled");
   }
 
   type MigrationSummary =

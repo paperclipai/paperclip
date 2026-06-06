@@ -20869,8 +20869,10 @@ export function heartbeatService(
               agentId: agent.id,
               runId: run.id,
               adapterType: agent.adapterType,
+              hasJwtSecret: Boolean(process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim()),
+              hasBetterAuthSecret: Boolean(process.env.BETTER_AUTH_SECRET?.trim()),
             },
-            "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
+            "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY — agent will not be able to authenticate API calls",
           );
         }
         let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
