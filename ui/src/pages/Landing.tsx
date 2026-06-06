@@ -219,6 +219,81 @@ function CountUp({
   );
 }
 
+// ─── Browser-chrome product shot ──────────────────────────────────────────────
+
+function Shot({
+  src,
+  alt,
+  url = "app.allgasnobrakes.online",
+  className = "",
+}: {
+  src: string;
+  alt: string;
+  url?: string;
+  className?: string;
+}) {
+  return (
+    <div className={cn("overflow-hidden rounded-xl border border-black/[0.1] bg-[#0d0d10] shadow-[0_30px_80px_-24px_rgba(0,0,0,0.5)] dark:border-white/10", className)}>
+      <div className="flex items-center gap-2 border-b border-white/10 bg-[#16161b] px-3.5 py-2.5">
+        <span className="size-2.5 rounded-full bg-red-500/70" />
+        <span className="size-2.5 rounded-full bg-yellow-500/70" />
+        <span className="size-2.5 rounded-full bg-green-500/70" />
+        <div className="ml-2 flex-1">
+          <div className="mx-auto w-fit max-w-full rounded-md bg-white/[0.06] px-3 py-1 font-mono text-[10.5px] text-neutral-400">
+            {url}
+          </div>
+        </div>
+      </div>
+      <img src={src} alt={alt} className="block w-full" loading="lazy" />
+    </div>
+  );
+}
+
+function FeatureRow({
+  eyebrow,
+  title,
+  body,
+  bullets,
+  src,
+  alt,
+  flip = false,
+}: {
+  eyebrow: string;
+  title: React.ReactNode;
+  body: string;
+  bullets: string[];
+  src: string;
+  alt: string;
+  flip?: boolean;
+}) {
+  return (
+    <div className={cn("grid grid-cols-1 items-center gap-10 lg:grid-cols-2 lg:gap-16", flip && "lg:[&>*:first-child]:order-2")}>
+      <div>
+        <Eyebrow>{eyebrow}</Eyebrow>
+        <h3 className="max-w-md text-[clamp(24px,2.8vw,34px)] font-bold leading-[1.1] tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
+          {title}
+        </h3>
+        <p className="mt-4 max-w-md text-[16px] leading-relaxed text-gray-500 dark:text-neutral-400">{body}</p>
+        <ul className="mt-6 space-y-2.5">
+          {bullets.map((b) => (
+            <li key={b} className="flex items-start gap-2.5 text-[14px] text-gray-700 dark:text-neutral-300">
+              <ChevronRight className="mt-0.5 size-4 shrink-0 text-[#f97316]" />
+              {b}
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="relative">
+        <div
+          className="pointer-events-none absolute -inset-6 -z-10 opacity-60"
+          style={{ background: "radial-gradient(50% 50% at 50% 50%, rgba(249,115,22,0.16) 0%, transparent 70%)" }}
+        />
+        <Shot src={src} alt={alt} />
+      </div>
+    </div>
+  );
+}
+
 // ─── Live console (stays dark — the product shot) ─────────────────────────────
 
 const JOB_FEED = [
@@ -698,9 +773,13 @@ export function LandingPage() {
           Invite-only beta · No credit card needed · Setup in under 2 minutes
         </p>
 
-        {/* Product shot — live console */}
-        <div className="mx-auto mt-14 max-w-4xl">
-          <LiveConsole />
+        {/* Product shot — real dashboard */}
+        <div className="relative mx-auto mt-14 max-w-5xl">
+          <div
+            className="pointer-events-none absolute -inset-x-10 -top-10 bottom-0 -z-10"
+            style={{ background: "radial-gradient(50% 45% at 50% 20%, rgba(249,115,22,0.18) 0%, transparent 70%)" }}
+          />
+          <Shot src="/shots/dashboard.png" alt="All Gas No Brakes dashboard" />
         </div>
       </Section>
 
@@ -784,6 +863,47 @@ export function LandingPage() {
             </div>
           ))}
         </div>
+      </Section>
+
+      {/* ── Feature showcase (real screenshots) ── */}
+      <Section className="space-y-24 py-16 sm:py-20">
+        <FeatureRow
+          eyebrow="One north star"
+          title={<>Every KPI that matters, <span className="text-gray-400 dark:text-neutral-500">on one screen.</span></>}
+          body="Pipeline, share of voice, review rating, mentions, backlinks, content gaps — the whole funnel rolled into one live scoreboard the agents steer by."
+          bullets={[
+            "Live pipeline value + open deals from HubSpot",
+            "Share-of-voice + review rating tracked daily",
+            "Content-gap backlog feeding the writers",
+          ]}
+          src="/shots/northstar.png"
+          alt="North Star KPI dashboard"
+        />
+        <FeatureRow
+          flip
+          eyebrow="Outbound"
+          title={<>Campaigns ranked by <span className="text-gray-400 dark:text-neutral-500">what actually replies.</span></>}
+          body="Multi-sender across email + LinkedIn, AI-drafted replies, sequence control. Stop guessing which campaign works — every one is ranked by reply rate."
+          bullets={[
+            "26 campaigns, 13 senders, one view",
+            "Reply + meeting rates per campaign",
+            "AI reply drafts queued for approval",
+          ]}
+          src="/shots/campaigns.png"
+          alt="Campaigns dashboard"
+        />
+        <FeatureRow
+          eyebrow="Revenue"
+          title={<>A pipeline that <span className="text-gray-400 dark:text-neutral-500">updates itself.</span></>}
+          body="Deals synced from HubSpot, attributed and forecast automatically. Know what's driving revenue — and what's about to churn — before it does."
+          bullets={[
+            "HubSpot deals mirrored + attributed",
+            "Forecast, renewals, win/loss in one place",
+            "No manual CRM hygiene at 11pm",
+          ]}
+          src="/shots/pipeline.png"
+          alt="Pipeline board"
+        />
       </Section>
 
       {/* ── How it runs ── */}
