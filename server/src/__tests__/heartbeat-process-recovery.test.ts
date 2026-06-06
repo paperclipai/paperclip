@@ -3333,4 +3333,154 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  // SAG-3210: attempt budget resets on assignee change
+  it("dispatches a continuation (not escalates) when exhausted attempts belong to a prior assignee", async () => {
+    // Set up: Agent A exhausted its budget on the issue, then the issue was reassigned to Agent B.
+    const companyId = randomUUID();
+    const agentAId = randomUUID();
+    const agentBId = randomUUID();
+    const issueId = randomUUID();
+    const oldRunId = randomUUID();
+    const oldWakeupId = randomUUID();
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: agentAId,
+        companyId,
+        name: "AgentA",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: agentBId,
+        companyId,
+        name: "AgentB",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    // Agent A's exhausted continuation run (process_lost → default maxAttempts=1).
+    await db.insert(agentWakeupRequests).values({
+      id: oldWakeupId,
+      companyId,
+      agentId: agentAId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId },
+      status: "failed",
+      runId: oldRunId,
+      claimedAt: now,
+      finishedAt: now,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: oldRunId,
+      companyId,
+      agentId: agentAId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "failed",
+      wakeupRequestId: oldWakeupId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+        source: "issue.continuation_recovery",
+      },
+      errorCode: "process_lost",
+      error: "process died",
+      startedAt: now,
+      finishedAt: now,
+      updatedAt: now,
+    });
+
+    // Issue is now assigned to Agent B (the new doer) and is still in_progress.
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Work reassigned after prior owner exhausted budget",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentBId,
+      checkoutRunId: oldRunId,
+      executionRunId: null,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      startedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Agent B gets a fresh budget: the sweep should dispatch a continuation, not escalate.
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    // Verify the new wakeup is for Agent B.
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentBId)));
+    expect(wakeups.length).toBeGreaterThan(0);
+    expect(wakeups[0]?.reason).toBe("issue_continuation_needed");
+
+    const newRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentBId)))
+      .then((rows) => rows[0] ?? null);
+    if (newRun) {
+      await waitForRunToSettle(heartbeat, newRun.id);
+    }
+  });
+
+  it("still escalates when exhausted attempts all belong to the current (unchanged) assignee", async () => {
+    // Negative test: same assignee throughout — the budget must NOT be spuriously reset.
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: "issue_continuation_needed",
+    });
+  });
 });
