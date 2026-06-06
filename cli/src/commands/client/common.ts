@@ -149,7 +149,7 @@ export function inferContentTypeFromPath(filePath: string): string | undefined {
     jpeg: "image/jpeg",
     jpg: "image/jpeg",
     json: "application/json",
-    m4v: "video/mp4",
+    m4v: "video/x-m4v",
     md: "text/markdown",
     mov: "video/quicktime",
     mp4: "video/mp4",

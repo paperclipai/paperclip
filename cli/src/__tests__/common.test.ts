@@ -168,6 +168,7 @@ describe("inferContentTypeFromPath", () => {
     expect(inferContentTypeFromPath("bundle.zip")).toBe("application/zip");
     expect(inferContentTypeFromPath("demo.mp4")).toBe("video/mp4");
     expect(inferContentTypeFromPath("clip.webm")).toBe("video/webm");
+    expect(inferContentTypeFromPath("teaser.m4v")).toBe("video/x-m4v");
     expect(inferContentTypeFromPath("walkthrough.mov")).toBe("video/quicktime");
     expect(inferContentTypeFromPath("report.pdf")).toBe("application/pdf");
     expect(inferContentTypeFromPath("chart.png")).toBe("image/png");
