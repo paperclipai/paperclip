@@ -326,11 +326,22 @@ export async function startServer(): Promise<StartedServer> {
     | { mode: "embedded-postgres"; dataDir: string; port: number };
   assertCloudDatabaseContract();
   if (config.databaseUrl) {
+    // The serverless control plane (Vercel) must NOT run/inspect migrations or open a
+    // second pool to the migration URL (Supabase SESSION pooler, :5432). Every cold start
+    // would otherwise burn scarce session-pooler clients (EMAXCONNSESSION) and add boot
+    // latency. Migrations are owned by the persistent worker; skip here and use a single
+    // pool against the (transaction-pooler) runtime URL.
+    const runMigrations = !process.env.VERCEL;
     const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
-    migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
-  
+    if (runMigrations) {
+      migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
+    } else {
+      migrationSummary = "skipped";
+    }
+
     db = createDb(config.databaseUrl);
-    pluginMigrationDb = config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
+    pluginMigrationDb =
+      runMigrations && config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
     // Log the resolved DB endpoint (host:port only — never credentials) so we can
     // confirm which Supabase pooler the serverless control plane actually connects to
     // (:6543 transaction pooler for serverless vs :5432 session pooler).
