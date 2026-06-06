@@ -900,6 +900,7 @@ Terminal states: `done`, `cancelled`
 | PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field; `blockedByIssueIds` replaces blocker set)        |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
 | POST   | `/api/issues/:issueId/release`     | Release task ownership                                                                   |
+| POST   | `/api/issues/:issueId/abort-execution` | Assignee self-recovery from `Issue run ownership conflict`: clears `checkoutRunId`/`executionRunId` and cancels the orphan heartbeat run. Body: `{ "agentId": "<your-id>" }`. Auth: caller must be the current assignee. |
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
 | POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |

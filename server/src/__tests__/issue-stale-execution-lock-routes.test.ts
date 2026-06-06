@@ -213,6 +213,224 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     });
   });
 
+  it("lets a wedged assignee self-recover via /abort-execution and marks the orphan run cancelled", async () => {
+    // Path A repro: manager PATCH followed by re-checkout left a stale executionRunId
+    // pointing at a non-terminal heartbeat run. The current assignee should be able
+    // to call POST /issues/:id/abort-execution and reclaim a clean state.
+    const { companyId, agentId, failedRunId: _failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+    const orphanRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: orphanRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Wedged by orphan executionRunId",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: orphanRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/abort-execution`)
+      .send({ agentId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.issue).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+    expect(res.body.previous).toEqual({
+      checkoutRunId: null,
+      executionRunId: orphanRunId,
+    });
+    expect(res.body.abortedRunIds).toEqual([orphanRunId]);
+
+    const row = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+
+    const orphan = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, orphanRunId))
+      .then((rows) => rows[0]);
+    expect(orphan).toEqual({ status: "cancelled", errorCode: "agent_self_abort" });
+
+    // The caller's own active run must not be touched.
+    const callerRun = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, currentRunId))
+      .then((rows) => rows[0]);
+    expect(callerRun?.status).toBe("running");
+
+    const audit = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.execution_aborted"))
+      .then((rows) => rows[0]);
+    expect(audit?.details).toMatchObject({
+      issueId,
+      prevCheckoutRunId: null,
+      prevExecutionRunId: orphanRunId,
+      abortedRunIds: [orphanRunId],
+      actorAgentId: agentId,
+    });
+  });
+
+  it("rejects /abort-execution when the caller is not the current assignee", async () => {
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+    const otherAgentId = randomUUID();
+    const otherRunId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: otherRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Not yours to abort",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, otherAgentId, otherRunId)))
+      .post(`/api/issues/${issueId}/abort-execution`)
+      .send({ agentId: otherAgentId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+
+    // Issue state should be untouched on rejection.
+    const row = await db
+      .select({
+        assigneeAgentId: issues.assigneeAgentId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      assigneeAgentId: agentId,
+      executionRunId: failedRunId,
+    });
+
+    // The current run (still running on someone else's behalf) should also be untouched.
+    expect(currentRunId).toBeTruthy();
+  });
+
+  it("clears stale executionRunId on PATCH blocked → in_progress (issue_blockers_resolved repro)", async () => {
+    // Path B repro: a `blocked` issue carries an orphan executionRunId from a prior
+    // pre-block run. When the blocker resolves and the wake/PATCH flips status back
+    // to `in_progress`, the orphan must be wiped — otherwise the assignee's fresh
+    // heartbeat run hits "Issue run ownership conflict" on every write.
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+    const blockerId = randomUUID();
+    const blockedId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Blocker (done)",
+        status: "done",
+        priority: "medium",
+      },
+      {
+        id: blockedId,
+        companyId,
+        title: "Blocked carrying orphan executionRunId",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: agentId,
+        // Pre-block run stuck in the column despite status=blocked. This is the
+        // broken state we reproduce: an orphan executionRunId left after the
+        // previous run terminated unexpectedly while the issue was in_progress.
+        checkoutRunId: null,
+        executionRunId: failedRunId,
+        executionAgentNameKey: "codexcoder",
+        executionLockedAt: new Date(),
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedId,
+      type: "blocks",
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${blockedId}`)
+      .send({ status: "in_progress" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, blockedId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "in_progress",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+  });
+
   it("restricts admin force-release to board users with company access and writes an audit event", async () => {
     const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
     const issueId = randomUUID();
