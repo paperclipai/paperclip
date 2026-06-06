@@ -193,6 +193,22 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+// Host-global cap on concurrently-executing heartbeat runs across ALL agents and
+// companies (TUE-13 overload protection). Each running heartbeat run is one heavy
+// adapter CLI process (claude/gemini/codex) inside paperclip.service's cgroup; a
+// single 1M-context Claude run can use 10-12 GiB RSS, so an unbounded multi-company
+// wake-wave OOMs the 15 GiB host (TUE-12 forensics). The per-agent
+// heartbeat.maxConcurrentRuns does NOT bound cross-agent concurrency, so this is the
+// only true host-global bound. Sized to RAM via env. Unset / non-numeric / <= 0
+// => disabled (legacy unbounded behavior), so the default deploy changes nothing
+// until PAPERCLIP_MAX_CONCURRENT_RUNS is set in the instance environment.
+// Read at call time (not module load) so it does not depend on import order vs the
+// instance .env dotenv hydration.
+function resolveGlobalMaxConcurrentRuns(): number {
+  const raw = Number(process.env.PAPERCLIP_MAX_CONCURRENT_RUNS);
+  if (!Number.isFinite(raw) || raw <= 0) return Number.POSITIVE_INFINITY;
+  return Math.floor(raw);
+}
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -6067,6 +6083,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  // Host-global running-run count across ALL agents/companies (TUE-13). One running
+  // run == one live adapter CLI process in the paperclip.service cgroup, so this is
+  // the proxy the host-global memory guardrail bounds.
+  async function countAllRunningRuns() {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "running"));
+    return Number(count ?? 0);
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -7135,8 +7162,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      let availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
       if (availableSlots <= 0) return [];
+
+      // Host-global concurrency cap (TUE-13): bound TOTAL concurrent runs across all
+      // agents/companies so a multi-company wake-wave cannot OOM the 15 GiB host.
+      // Leaving over-cap runs queued is starvation-safe: resumeQueuedRuns() re-drives
+      // every agent's queued work on each ~30s scheduler tick once a slot frees.
+      // Soft cap by design — withAgentStartLock is per-agent, not global, so two
+      // different agents may each claim a slot in the same instant and transiently
+      // overshoot by 1-2; the MemoryHigh cgroup throttle backs this margin.
+      const globalCap = resolveGlobalMaxConcurrentRuns();
+      if (Number.isFinite(globalCap)) {
+        const globalRunning = await countAllRunningRuns();
+        const globalAvailable = Math.max(0, globalCap - globalRunning);
+        if (globalAvailable <= 0) return [];
+        availableSlots = Math.min(availableSlots, globalAvailable);
+      }
 
       const queuedRuns = await db
         .select()
