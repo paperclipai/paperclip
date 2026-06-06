@@ -117,8 +117,11 @@ ARG CCROTATE_REF=7cf84fccd07dd3bc8b11845cb0630ae825a008f9
 # (was 2dba034): when OPENAI_API_KEY is configured, skip the OpenCode OAuth
 # bootstrap and clear stale OpenCode auth/account files so API-key backed
 # agents do not attempt a stale OAuth token refresh.
+# Re-pinned 2026-06-06 to kkroo/paperclip-adapter-opencode-k8s master 2d8c7b4
+# (was 380aea4): bound the ccrotate Codex preflight with `timeout 30s` so a
+# stuck account probe cannot block opencode_k8s Jobs before OpenCode starts.
 ARG CLAUDE_K8S_REF=1d6a08f7c814208caa3bf2333dd7c35ca50b95ae
-ARG OPENCODE_K8S_REF=380aea4a867e771064831363a1c1b871145201f9
+ARG OPENCODE_K8S_REF=2d8c7b4e1c19245a49468004815716f7d4991602
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
