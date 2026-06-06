@@ -48,6 +48,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     taskKey: "issue-1",
     hasActiveExecutionPath: false,
     hasQueuedWake: false,
+    hasActiveRoutineNextFire: false,
     hasPendingInteractionOrApproval: false,
     hasExplicitBlockerPath: false,
     hasOpenRecoveryIssue: false,
@@ -303,5 +304,31 @@ describe("successful run handoff decision", () => {
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## Successful run missing issue disposition\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## This issue still needs a next step\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("Unrelated comment")).toBe(false);
+  });
+
+  it("Contract A: does not raise missing_disposition when an active routine with a future fire targets the issue", () => {
+    const result = decide({ hasActiveRoutineNextFire: true });
+    expect(result.kind).toBe("skip");
+    if (result.kind !== "skip") return;
+    expect(result.reason).toMatch(/routine/);
+  });
+
+  it("Contract A: still raises missing_disposition for a non-routine issue in in_progress with no other next-action path", () => {
+    const result = decide({ hasActiveRoutineNextFire: false });
+    expect(result.kind).toBe("enqueue");
+  });
+
+  it("Contract A: routine suppression applies even when hasQueuedWake is false and all other skips are false", () => {
+    const result = decide({
+      hasActiveRoutineNextFire: true,
+      hasQueuedWake: false,
+      hasActiveExecutionPath: false,
+      hasPendingInteractionOrApproval: false,
+      hasExplicitBlockerPath: false,
+      hasOpenRecoveryIssue: false,
+    });
+    expect(result.kind).toBe("skip");
+    if (result.kind !== "skip") return;
+    expect(result.reason).toContain("routine");
   });
 });
