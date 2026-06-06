@@ -277,7 +277,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipGetIssue",
-      "Get a single issue by UUID or identifier. Cross-company identifiers (e.g. PEN-307) are routed by prefix; the optional company override takes precedence.",
+      "Get a single issue by UUID or identifier. Cross-company identifiers (e.g. PEN-307) are routed by prefix; the optional company override takes precedence. Dependency edges appear under `blockedBy` (issues blocking this one) and `blocks` (issues this one blocks); the write-only `blockedByIssueIds` field is null here. Use `blockedBy`/`blocks` to read the dependency graph.",
       z.object({ issueId: issueIdSchema, company: companyIdOptional }),
       async ({ issueId, company }) => {
         const companyId = await client.resolveCompany({ override: company, issueId });
@@ -471,7 +471,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipCreateIssue",
-      "Create a new issue",
+      "Create a new issue. Pass blockedByIssueIds to set dependency blockers at creation (write-only — they read back under `blockedBy`, not `blockedByIssueIds`).",
       createIssueToolSchema,
       async ({ companyId, ...body }) => {
         const resolved = await client.resolveCompany({ override: companyId });
@@ -480,7 +480,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipUpdateIssue",
-      "Patch an issue, optionally including a comment. Include comment with status changes when approving or requesting changes in a review/approval stage; include resume=true when intentionally requesting follow-up on resumable closed work",
+      "Patch an issue, optionally including a comment. Include comment with status changes when approving or requesting changes in a review/approval stage; include resume=true when intentionally requesting follow-up on resumable closed work. To set dependencies, pass blockedByIssueIds (the FULL blocker set; it replaces existing, [] clears) — this persists but is WRITE-ONLY: re-reading the issue shows the edges under `blockedBy` (and `relatedWork`), while `blockedByIssueIds` itself reads back null. Verify via `blockedBy`, not `blockedByIssueIds`.",
       updateIssueToolSchema,
       async ({ issueId, ...body }) =>
         client.requestJson("PATCH", `/issues/${encodeURIComponent(issueId)}`, { body }),

@@ -374,7 +374,12 @@ const createIssueBaseSchema = z.object({
   projectWorkspaceId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
   parentId: z.string().uuid().optional().nullable(),
-  blockedByIssueIds: z.array(z.string().uuid()).optional(),
+  blockedByIssueIds: z
+    .array(z.string().uuid())
+    .optional()
+    .describe(
+      "Write-only set of blocker issue UUIDs. Pass the FULL desired set — it REPLACES the existing blockers (send [] to clear). IMPORTANT: this field is null on READ; persisted blockers come back in the hydrated `blockedBy` array (and the reverse side under `blocks`/`relatedWork`). Verify a blocker write succeeded via `blockedBy`, never by re-reading `blockedByIssueIds`.",
+    ),
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
