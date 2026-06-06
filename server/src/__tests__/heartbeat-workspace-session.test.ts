@@ -1040,18 +1040,27 @@ describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
 });
 
 describe("parseSessionCompactionPolicy", () => {
-  it("disables Paperclip-managed rotation by default for codex and claude local", () => {
+  it("disables Paperclip-managed rotation by default for codex local (native context management)", () => {
     expect(parseSessionCompactionPolicy(buildAgent("codex_local"))).toEqual({
       enabled: true,
       maxSessionRuns: 0,
       maxRawInputTokens: 0,
       maxSessionAgeHours: 0,
+      maxCachedInputTokens: 0,
+      rotateOnZeroOpenIssues: false,
+      rotateOnNewIssueWake: false,
     });
+  });
+
+  it("applies ADR-0044 fresh-session policy by default for claude_local", () => {
     expect(parseSessionCompactionPolicy(buildAgent("claude_local"))).toEqual({
       enabled: true,
       maxSessionRuns: 0,
       maxRawInputTokens: 0,
-      maxSessionAgeHours: 0,
+      maxSessionAgeHours: 6,
+      maxCachedInputTokens: 500_000,
+      rotateOnZeroOpenIssues: true,
+      rotateOnNewIssueWake: true,
     });
   });
 
@@ -1061,12 +1070,18 @@ describe("parseSessionCompactionPolicy", () => {
       maxSessionRuns: 200,
       maxRawInputTokens: 2_000_000,
       maxSessionAgeHours: 72,
+      maxCachedInputTokens: 0,
+      rotateOnZeroOpenIssues: false,
+      rotateOnNewIssueWake: false,
     });
     expect(parseSessionCompactionPolicy(buildAgent("opencode_local"))).toEqual({
       enabled: true,
       maxSessionRuns: 200,
       maxRawInputTokens: 2_000_000,
       maxSessionAgeHours: 72,
+      maxCachedInputTokens: 0,
+      rotateOnZeroOpenIssues: false,
+      rotateOnNewIssueWake: false,
     });
   });
 
@@ -1087,6 +1102,34 @@ describe("parseSessionCompactionPolicy", () => {
       maxSessionRuns: 25,
       maxRawInputTokens: 500_000,
       maxSessionAgeHours: 0,
+      maxCachedInputTokens: 0,
+      rotateOnZeroOpenIssues: false,
+      rotateOnNewIssueWake: false,
+    });
+  });
+
+  it("supports ADR-0044 per-agent overrides (T1/T2/T3/T4)", () => {
+    expect(
+      parseSessionCompactionPolicy(
+        buildAgent("claude_local", {
+          heartbeat: {
+            sessionCompaction: {
+              maxCachedInputTokens: 1_000_000,
+              maxSessionAgeHours: 12,
+              rotateOnZeroOpenIssues: false,
+              rotateOnNewIssueWake: false,
+            },
+          },
+        }),
+      ),
+    ).toEqual({
+      enabled: true,
+      maxSessionRuns: 0,
+      maxRawInputTokens: 0,
+      maxSessionAgeHours: 12,
+      maxCachedInputTokens: 1_000_000,
+      rotateOnZeroOpenIssues: false,
+      rotateOnNewIssueWake: false,
     });
   });
 });
