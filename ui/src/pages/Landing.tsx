@@ -541,7 +541,8 @@ function LandingNav() {
     >
       <div className="relative mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
         <a href="#top" className="flex items-center">
-          <img src="/logo-full.svg" alt="All Gas No Brakes" className="h-11 w-auto" />
+          <img src="/logo-full-light.svg" alt="All Gas No Brakes" className="h-11 w-auto dark:hidden" />
+          <img src="/logo-full-dark.svg" alt="All Gas No Brakes" className="hidden h-11 w-auto dark:block" />
         </a>
 
         {/* Center nav */}
@@ -707,7 +708,8 @@ function LandingFooter() {
         <div className="grid grid-cols-1 gap-12 lg:grid-cols-12 lg:gap-10">
           {/* Brand rail */}
           <div className="lg:col-span-4">
-            <img src="/logo-full.svg" alt="All Gas No Brakes" className="h-10 w-auto" />
+            <img src="/logo-full-light.svg" alt="All Gas No Brakes" className="h-10 w-auto dark:hidden" />
+            <img src="/logo-full-dark.svg" alt="All Gas No Brakes" className="hidden h-10 w-auto dark:block" />
             <p className="mt-5 max-w-xs text-[14px] leading-relaxed text-gray-500 dark:text-neutral-400">
               Your entire growth engine — outbound, inbound, content, and revenue —
               run by autonomous agents in one cockpit.

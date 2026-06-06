@@ -77,7 +77,8 @@ export function AuthPage() {
       <div className="w-full md:w-1/2 flex flex-col overflow-y-auto">
         <div className="w-full max-w-md mx-auto my-auto px-8 py-12">
           <div className="flex items-center gap-2 mb-8">
-            <img src="/logo-full.svg" alt="All Gas No Brakes" className="h-8 w-auto" />
+            <img src="/logo-full-light.svg" alt="All Gas No Brakes" className="h-8 w-auto dark:hidden" />
+            <img src="/logo-full-dark.svg" alt="All Gas No Brakes" className="hidden h-8 w-auto dark:block" />
           </div>
 
           <h1 className="text-xl font-semibold">
