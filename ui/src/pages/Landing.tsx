@@ -364,6 +364,41 @@ const SURFACES = [
   "Search",
 ];
 
+const TESTIMONIALS = [
+  {
+    quote: "Finally — one place where campaigns, pipeline, and agents all talk to each other. We cut 4 tools in the first week.",
+    name: "Yuvraj S.",
+    role: "Co-founder",
+    handle: "@yuvraj",
+    metric: "4 tools cut",
+  },
+  {
+    quote: "The outbound loop runs while I sleep. By morning I have ranked campaigns, drafted replies, and synced deals — without touching anything.",
+    name: "Diggi H.",
+    role: "Founder",
+    handle: "@diggi",
+    metric: "Mornings reclaimed",
+  },
+  {
+    quote: "Content gap → blog idea → LinkedIn hook → YouTube title. One research run, three channels. The repurpose job is witchcraft.",
+    name: "Aditya K.",
+    role: "Head of Growth",
+    handle: "@aditya",
+    metric: "3× content output",
+  },
+];
+
+const INTEGRATIONS = [
+  { name: "HubSpot", abbr: "HS" },
+  { name: "Google Search Console", abbr: "GSC" },
+  { name: "Gemini AI", abbr: "GEM" },
+  { name: "PostHog", abbr: "PH" },
+  { name: "SerpAPI", abbr: "SERP" },
+  { name: "Slack", abbr: "SLK" },
+  { name: "LinkedIn", abbr: "LI" },
+  { name: "Claude AI", abbr: "CLX" },
+];
+
 const LOOP = [
   { icon: Zap, t: "Drain", d: "Event queue flushed every 60s — nothing sits." },
   { icon: Network, t: "Sync", d: "CRM, GSC, mentions, Rocket — pulled on schedule." },
@@ -517,15 +552,21 @@ export function LandingPage() {
         <header className="sticky top-0 z-50 border-b border-border/60 bg-background/80 backdrop-blur">
           <Section className="flex items-center justify-between py-4">
             <div className="flex items-center gap-2.5">
-              <img src="/logo-full.svg" alt="All Gas No Brakes" className="h-7 w-auto" />
+              <img src="/logo-full.svg" alt="All Gas No Brakes" className="h-14 w-auto" />
             </div>
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
               <span className="hidden items-center gap-1.5 rounded-full border border-border px-3 py-1 font-mono text-[11px] uppercase tracking-[0.1em] text-[#f97316] sm:inline-flex">
-                <Sparkles className="size-3" /> Stealth · Private beta
+                <Sparkles className="size-3" /> Private beta
               </span>
               <a
+                href="mailto:diggi@hirefinn.ai?subject=AGNB%20Access%20Request"
+                className="hidden rounded-md border border-border px-4 py-1.5 text-[13px] font-medium text-muted-foreground transition hover:border-[#f97316]/50 hover:text-foreground sm:inline-flex"
+              >
+                Request access
+              </a>
+              <a
                 href="#signin"
-                className="rounded-md border border-border px-4 py-1.5 text-[13px] font-semibold text-foreground transition hover:border-[#f97316]"
+                className="rounded-md bg-[#f97316] px-4 py-1.5 text-[13px] font-semibold text-[#0A0A0A] transition hover:bg-[#fb923c]"
               >
                 Sign in
               </a>
@@ -564,6 +605,9 @@ export function LandingPage() {
                 Watch it run
               </a>
             </div>
+            <p className="mt-3 text-[12px] text-muted-foreground/70">
+              Invite-only beta · No credit card needed · Setup in under 2 minutes
+            </p>
           </div>
           <div className="flex flex-col items-center gap-3 lg:items-end">
             <LoginCard nextPath={nextPath} />
@@ -606,6 +650,30 @@ export function LandingPage() {
               </div>
             </div>
           ))}
+        </Section>
+
+        {/* ── Testimonials ── */}
+        <Section className="py-16">
+          <Eyebrow>From the crew</Eyebrow>
+          <h2 className="mb-10 text-[clamp(24px,3vw,36px)] font-bold tracking-[-0.02em]">
+            What the team is shipping with it.
+          </h2>
+          <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+            {TESTIMONIALS.map((t) => (
+              <div key={t.handle} className="flex flex-col justify-between rounded-xl border border-border bg-card/50 p-6">
+                <p className="text-[14.5px] leading-relaxed text-foreground/80">&ldquo;{t.quote}&rdquo;</p>
+                <div className="mt-6 flex items-center justify-between">
+                  <div>
+                    <p className="text-[13px] font-semibold text-foreground">{t.name}</p>
+                    <p className="text-[12px] text-muted-foreground">{t.role}</p>
+                  </div>
+                  <span className="rounded-full border border-[#f97316]/30 bg-[#f97316]/10 px-3 py-1 font-mono text-[11px] font-medium text-[#f97316]">
+                    {t.metric}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
         </Section>
 
         {/* ── Problem ── */}
@@ -751,6 +819,27 @@ export function LandingPage() {
           </div>
         </Section>
 
+        {/* ── Integrations ── */}
+        <Section className="py-16">
+          <Eyebrow>Works with your stack</Eyebrow>
+          <h2 className="mb-8 text-[clamp(22px,2.8vw,34px)] font-bold tracking-[-0.02em]">
+            Drop it in. Nothing breaks.
+          </h2>
+          <div className="flex flex-wrap gap-3">
+            {INTEGRATIONS.map((i) => (
+              <div key={i.name} className="flex items-center gap-2.5 rounded-lg border border-border bg-card px-4 py-2.5 transition hover:border-[#f97316]/40">
+                <span className="flex size-6 items-center justify-center rounded bg-[#f97316]/10 font-mono text-[10px] font-bold text-[#f97316]">
+                  {i.abbr}
+                </span>
+                <span className="text-[13px] font-medium text-foreground/80">{i.name}</span>
+              </div>
+            ))}
+          </div>
+          <p className="mt-4 text-[12.5px] text-muted-foreground">
+            + HubSpot webhooks, GSC property, PostHog events, Slack alerts, LinkedIn API, and more out of the box.
+          </p>
+        </Section>
+
         {/* ── Manifesto ── */}
         <Section className="py-16">
           <div className="grid grid-cols-1 gap-8 md:grid-cols-[auto_1fr] md:items-center">
@@ -787,7 +876,7 @@ export function LandingPage() {
             <p className="mt-4 max-w-md text-[15px] text-muted-foreground">
               Sign in and let the agents do the work.
             </p>
-            <div className="mt-8">
+            <div className="mt-8 flex flex-col items-center gap-3">
               <a
                 href="#signin"
                 className="group inline-flex items-center gap-2 rounded-md bg-[#f97316] px-7 py-3 text-sm font-semibold text-[#0A0A0A] transition hover:bg-[#fb923c]"
@@ -795,6 +884,9 @@ export function LandingPage() {
                 Floor it{" "}
                 <ArrowRight className="size-4 transition group-hover:translate-x-0.5" />
               </a>
+              <p className="text-[12px] text-muted-foreground/60">
+                Invite-only · No credit card · Ready in under 2 minutes
+              </p>
             </div>
           </div>
         </Section>
