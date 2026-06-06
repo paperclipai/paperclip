@@ -64,6 +64,22 @@ describe("isClaudeTransientUpstreamError", () => {
     ).toBe(true);
   });
 
+  it("classifies the 'hit your session limit' subscription wording as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        errorMessage: "You've hit your session limit · resets 9:10am (Asia/Karachi)",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          is_error: true,
+          result: "You've hit your session limit · resets 9:10am (Asia/Karachi)",
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("does not classify login/auth failures as transient", () => {
     expect(
       isClaudeTransientUpstreamError({
@@ -160,6 +176,16 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+
+  it("parses the 'hit your session limit' reset hint with explicit timezone", () => {
+    const now = new Date("2026-06-06T03:00:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { errorMessage: "You've hit your session limit · resets 9:10am (Asia/Karachi)" },
+      now,
+    );
+    // 9:10am Asia/Karachi = UTC+5 → 04:10 UTC
+    expect(extracted?.toISOString()).toBe("2026-06-06T04:10:00.000Z");
   });
 
   it("prefers an ISO resetsAt field from parsed JSON over text parsing", () => {
