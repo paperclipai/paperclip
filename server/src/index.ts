@@ -20,7 +20,8 @@ import { reconcileSafeNativeReplacements } from "./services/native-runtime/nativ
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./services/execution-control-deadline.js";
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { createServer, type RequestListener } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -49,6 +50,7 @@ import {
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { resolvePaperclipEnvPath } from "./paths.js";
 import { logger } from "./middleware/logger.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
 import {
@@ -230,7 +232,18 @@ async function startServerWithDatabaseTeardown(
   if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
   }
-  
+
+  if (!process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() && !process.env.BETTER_AUTH_SECRET?.trim()) {
+    const generated = randomBytes(32).toString("hex");
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = generated;
+    const envFilePath = resolvePaperclipEnvPath();
+    try {
+      appendFileSync(envFilePath, `\nPAPERCLIP_AGENT_JWT_SECRET="${generated}"\n`, "utf-8");
+    } catch {
+      // Could not persist — the in-process value still works for this run.
+    }
+  }
+
   type MigrationSummary =
     | "skipped"
     | "already applied"
