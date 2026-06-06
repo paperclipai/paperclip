@@ -1,6 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import manifest from "./manifest.js";
-import { buildShellCommand, parseNovitaDriverConfig } from "./plugin.js";
+
+const mockSandboxConnect = vi.hoisted(() => vi.fn());
+const mockSandboxCreate = vi.hoisted(() => vi.fn());
+
+vi.mock("novita-sandbox", () => ({
+  Sandbox: {
+    connect: mockSandboxConnect,
+    create: mockSandboxCreate,
+  },
+}));
+
+import plugin, { buildShellCommand, parseNovitaDriverConfig } from "./plugin.js";
 
 describe("Novita sandbox provider plugin", () => {
   it("declares a sandbox provider environment driver", () => {
@@ -63,19 +74,39 @@ describe("Novita sandbox provider plugin", () => {
     expect(command).toContain("cd '/workspace/project'");
     expect(command).toContain("export MESSAGE='hello world';");
     expect(command).toContain("'node' '-e' 'console.log(process.env.MESSAGE)'");
-    expect(command).toContain("PAPERCLIP_STDIN_");
-    expect(command).toContain("< /tmp/.paperclip-stdin");
+    expect(command).toContain("printf '%s' 'input body' > '/tmp/.paperclip-stdin-");
+    expect(command).toMatch(/< '\/tmp\/\.paperclip-stdin-[^']+'/);
+    expect(command).toMatch(/rm -f '\/tmp\/\.paperclip-stdin-[^']+'/);
+    expect(command).toContain("exit $status");
   });
 
-  it("does not use the fixed stdin heredoc delimiter", () => {
+  it("does not use a heredoc delimiter for stdin", () => {
     const command = buildShellCommand({
       command: "cat",
       stdin: "before\nPAPERCLIP_STDIN\nafter",
     });
 
     expect(command).toContain("before\nPAPERCLIP_STDIN\nafter");
-    expect(command).toMatch(/<<'PAPERCLIP_STDIN_[A-Z0-9]+'/);
-    expect(command).not.toContain("<<'PAPERCLIP_STDIN'\n");
+    expect(command).not.toContain("<<");
+  });
+
+  it("uses a unique stdin path for each command", () => {
+    const first = buildShellCommand({
+      command: "cat",
+      stdin: "first",
+    });
+    const second = buildShellCommand({
+      command: "cat",
+      stdin: "second",
+    });
+    const firstPath = first.match(/\/tmp\/\.paperclip-stdin-[^']+/)?.[0];
+    const secondPath = second.match(/\/tmp\/\.paperclip-stdin-[^']+/)?.[0];
+
+    expect(firstPath).toBeTruthy();
+    expect(secondPath).toBeTruthy();
+    expect(firstPath).not.toBe(secondPath);
+    expect(first).not.toContain("/tmp/.paperclip-stdin <<");
+    expect(second).not.toContain("/tmp/.paperclip-stdin <<");
   });
 
   it("rejects unsafe environment variable keys", () => {
@@ -83,5 +114,32 @@ describe("Novita sandbox provider plugin", () => {
       command: "env",
       env: { "BAD-KEY": "value" },
     })).toThrow("Invalid sandbox environment variable key");
+  });
+
+  it("returns a command failure when execute is called for an expired sandbox lease", async () => {
+    mockSandboxConnect.mockRejectedValueOnce(new Error("sandbox not found"));
+
+    const result = await plugin.definition.onEnvironmentExecute?.({
+      companyId: "company-1",
+      environmentId: "env-1",
+      issueId: "issue-1",
+      runId: "run-1",
+      config: { apiKey: "sk-test" },
+      lease: { providerLeaseId: "sb-expired", metadata: {} },
+      command: "true",
+    });
+
+    expect(result).toEqual({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "Novita sandbox lease is no longer available.\n",
+      metadata: {
+        provider: "novita",
+        sandboxId: "sb-expired",
+        expired: true,
+      },
+    });
   });
 });

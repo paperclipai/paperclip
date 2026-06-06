@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { definePlugin } from "@paperclipai/plugin-sdk";
 import type {
   PluginEnvironmentAcquireLeaseParams,
@@ -95,18 +96,16 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+function singleQuoteForPrintf(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
 function isValidShellEnvKey(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
-function buildStdinToken(stdin: string): string {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const token = `PAPERCLIP_STDIN_${Math.random().toString(36).slice(2, 14).toUpperCase()}`;
-    if (!stdin.split(/\r?\n/).includes(token)) {
-      return token;
-    }
-  }
-  throw new Error("Could not create a safe stdin heredoc delimiter.");
+function buildStdinPath(): string {
+  return `/tmp/.paperclip-stdin-${randomUUID()}`;
 }
 
 export function buildShellCommand(input: {
@@ -125,19 +124,24 @@ export function buildShellCommand(input: {
 
   const exports = envEntries.map(([key, value]) => `export ${key}=${shellQuote(value)};`);
   const argv = [input.command, ...(input.args ?? [])].map(shellQuote).join(" ");
-  const stdinToken = typeof input.stdin === "string" ? buildStdinToken(input.stdin) : null;
-  const stdin =
-    stdinToken
-      ? `cat > /tmp/.paperclip-stdin <<'${stdinToken}'\n${input.stdin}\n${stdinToken}\n`
-      : "";
-  const stdinRedirect = typeof input.stdin === "string" ? " < /tmp/.paperclip-stdin" : "";
+  const stdinPath = typeof input.stdin === "string" ? buildStdinPath() : null;
+  const stdin = stdinPath ? `printf '%s' ${singleQuoteForPrintf(input.stdin ?? "")} > ${shellQuote(stdinPath)}` : "";
   const cwd = input.cwd?.trim() || "/";
+  const commandLines = stdinPath
+    ? [
+      "set +e",
+      `${argv} < ${shellQuote(stdinPath)}`,
+      "status=$?",
+      `rm -f ${shellQuote(stdinPath)}`,
+      "exit $status",
+    ]
+    : [`exec ${argv}`];
   return [
     "set -e",
     stdin,
     `cd ${shellQuote(cwd)}`,
     ...exports,
-    `exec ${argv}${stdinRedirect}`,
+    ...commandLines,
   ].filter(Boolean).join("\n");
 }
 
@@ -449,7 +453,21 @@ const plugin = definePlugin({
       };
     }
     const config = parseNovitaDriverConfig(params.config);
-    const sandbox = await connectSandbox(config, params.lease.providerLeaseId);
+    const sandbox = await getSandboxOrNull(config, params.lease.providerLeaseId);
+    if (!sandbox) {
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "Novita sandbox lease is no longer available.\n",
+        metadata: {
+          provider: "novita",
+          sandboxId: params.lease.providerLeaseId,
+          expired: true,
+        },
+      };
+    }
     return await executeInSandbox(sandbox, params, config);
   },
 });

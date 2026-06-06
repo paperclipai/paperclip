@@ -39,9 +39,8 @@ const manifest: PaperclipPluginManifestV1 = {
           },
           template: {
             type: "string",
-            default: "base",
             description:
-              "Novita sandbox template ID or name. The SDK uses the official base template when omitted.",
+              "Novita sandbox template ID or name. Leave blank to use the SDK's default base template.",
           },
           requestedCwd: {
             type: "string",
