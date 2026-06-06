@@ -517,8 +517,7 @@ export function LandingPage() {
         <header className="sticky top-0 z-50 border-b border-border/60 bg-background/80 backdrop-blur">
           <Section className="flex items-center justify-between py-4">
             <div className="flex items-center gap-2.5">
-              <span className="text-xl">🔥</span>
-              <div className="text-sm font-bold tracking-tight">All Gas No Brakes</div>
+              <img src="/logo-full.svg" alt="All Gas No Brakes" className="h-7 w-auto" />
             </div>
             <div className="flex items-center gap-4">
               <span className="hidden items-center gap-1.5 rounded-full border border-border px-3 py-1 font-mono text-[11px] uppercase tracking-[0.1em] text-[#f97316] sm:inline-flex">
@@ -804,7 +803,8 @@ export function LandingPage() {
         <footer className="border-t border-border">
           <Section className="flex flex-col items-center justify-between gap-3 py-8 sm:flex-row">
             <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
-              <span>🔥</span> All Gas No Brakes
+              <img src="/favicon.svg" alt="" className="h-4 w-4" aria-hidden="true" />
+              All Gas No Brakes
             </div>
             <div className="font-mono text-[12px] text-muted-foreground">
               © 2026 · built in stealth
