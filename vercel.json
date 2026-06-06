@@ -20,6 +20,9 @@
       ]
     }
   ],
+  "crons": [
+    { "path": "/api/health", "schedule": "*/3 * * * *" }
+  ],
   "functions": {
     "api/index.mjs": {
       "maxDuration": 300,
