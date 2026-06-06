@@ -9,6 +9,7 @@ import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
+  DEFAULT_MASTER_RUNTIME_FAILOVER,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
   type EnvironmentLeaseStatus,
@@ -18,6 +19,8 @@ import {
   type IssueExecutionMonitorPolicy,
   type IssueExecutionMonitorRecoveryPolicy,
   type ModelProfileKey,
+  type MasterRuntimeFailoverSettings,
+  type MasterRuntimeKey,
   type RoutineRevisionSnapshotV1,
   type RunLivenessState,
 } from "@paperclipai/shared";
@@ -1163,6 +1166,190 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+const MASTER_RUNTIME_ADAPTERS = {
+  claude: "claude_local",
+  codex: "codex_local",
+} as const;
+const MASTER_RUNTIME_LIMIT_DEFAULT_MS = 6 * 60 * 60 * 1000;
+const MASTER_RUNTIME_FAILOVER_RETRY_MAX_ATTEMPTS = 1;
+const MASTER_RUNTIME_HARD_LIMIT_RE =
+  /(?:usage\s+limit|usage\s+cap|weekly\s+limit|5[-\s]?hour\s+limit|out\s+of\s+extra\s+usage|hit\s+your\s+usage\s+limit|try\s+again\s+at)/i;
+const MASTER_RUNTIME_SHARED_CONFIG_KEYS = [
+  "cwd",
+  "instructionsFilePath",
+  "promptTemplate",
+  "env",
+  "workspaceStrategy",
+  "workspaceRuntime",
+  "timeoutSec",
+  "graceSec",
+] as const;
+
+function masterRuntimeForAdapter(adapterType: string): MasterRuntimeKey | null {
+  if (adapterType === MASTER_RUNTIME_ADAPTERS.claude) return "claude";
+  if (adapterType === MASTER_RUNTIME_ADAPTERS.codex) return "codex";
+  return null;
+}
+
+function adapterTypeForMasterRuntime(runtime: MasterRuntimeKey): string {
+  return MASTER_RUNTIME_ADAPTERS[runtime];
+}
+
+function oppositeMasterRuntime(runtime: MasterRuntimeKey): MasterRuntimeKey {
+  return runtime === "claude" ? "codex" : "claude";
+}
+
+function parseFutureInstant(value: string | null | undefined, now: Date): Date | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.getTime() > now.getTime() ? parsed : null;
+}
+
+export function normalizeMasterRuntimeFailoverSettings(
+  raw: MasterRuntimeFailoverSettings | null | undefined,
+  now = new Date(),
+): MasterRuntimeFailoverSettings {
+  const settings = raw ?? DEFAULT_MASTER_RUNTIME_FAILOVER;
+  const claudeLimitedUntil = parseFutureInstant(settings.claudeLimitedUntil, now)?.toISOString() ?? null;
+  const codexLimitedUntil = parseFutureInstant(settings.codexLimitedUntil, now)?.toISOString() ?? null;
+  const activeRuntime =
+    settings.mode === "force_claude"
+      ? "claude"
+      : settings.mode === "force_codex"
+        ? "codex"
+        : claudeLimitedUntil && !codexLimitedUntil
+          ? "codex"
+          : codexLimitedUntil && !claudeLimitedUntil
+            ? "claude"
+            : null;
+  return {
+    mode: settings.mode ?? "auto",
+    claudeLimitedUntil,
+    codexLimitedUntil,
+    activeRuntime,
+    reason: settings.reason ?? null,
+    updatedAt: settings.updatedAt ?? null,
+  };
+}
+
+function isMasterRuntimeLimited(
+  settings: MasterRuntimeFailoverSettings,
+  runtime: MasterRuntimeKey,
+  now: Date,
+) {
+  const value = runtime === "claude" ? settings.claudeLimitedUntil : settings.codexLimitedUntil;
+  return parseFutureInstant(value, now) !== null;
+}
+
+export function resolveMasterRuntimeAdapter(input: {
+  adapterType: string;
+  settings: MasterRuntimeFailoverSettings | null | undefined;
+  now?: Date;
+}): {
+  sourceRuntime: MasterRuntimeKey | null;
+  adapterType: string;
+  targetRuntime: MasterRuntimeKey | null;
+  reason: string | null;
+  blocked: boolean;
+} {
+  const sourceRuntime = masterRuntimeForAdapter(input.adapterType);
+  if (!sourceRuntime) {
+    return {
+      sourceRuntime: null,
+      adapterType: input.adapterType,
+      targetRuntime: null,
+      reason: null,
+      blocked: false,
+    };
+  }
+
+  const now = input.now ?? new Date();
+  const settings = normalizeMasterRuntimeFailoverSettings(input.settings, now);
+  if (settings.mode === "force_claude") {
+    return {
+      sourceRuntime,
+      targetRuntime: "claude",
+      adapterType: MASTER_RUNTIME_ADAPTERS.claude,
+      reason: sourceRuntime === "claude" ? "forced_claude" : "forced_claude_override",
+      blocked: false,
+    };
+  }
+  if (settings.mode === "force_codex") {
+    return {
+      sourceRuntime,
+      targetRuntime: "codex",
+      adapterType: MASTER_RUNTIME_ADAPTERS.codex,
+      reason: sourceRuntime === "codex" ? "forced_codex" : "forced_codex_override",
+      blocked: false,
+    };
+  }
+
+  if (!isMasterRuntimeLimited(settings, sourceRuntime, now)) {
+    return {
+      sourceRuntime,
+      targetRuntime: sourceRuntime,
+      adapterType: input.adapterType,
+      reason: null,
+      blocked: false,
+    };
+  }
+
+  const fallbackRuntime = oppositeMasterRuntime(sourceRuntime);
+  if (isMasterRuntimeLimited(settings, fallbackRuntime, now)) {
+    return {
+      sourceRuntime,
+      targetRuntime: null,
+      adapterType: input.adapterType,
+      reason: "both_master_runtimes_limited",
+      blocked: true,
+    };
+  }
+
+  return {
+    sourceRuntime,
+    targetRuntime: fallbackRuntime,
+    adapterType: adapterTypeForMasterRuntime(fallbackRuntime),
+    reason: `${sourceRuntime}_limited_failover_to_${fallbackRuntime}`,
+    blocked: false,
+  };
+}
+
+export function coerceMasterRuntimeFallbackConfig(input: {
+  config: Record<string, unknown>;
+  sourceAdapterType: string;
+  targetAdapterType: string;
+}): Record<string, unknown> {
+  if (input.sourceAdapterType === input.targetAdapterType) return input.config;
+  const config: Record<string, unknown> = {};
+  for (const key of MASTER_RUNTIME_SHARED_CONFIG_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(input.config, key)) {
+      config[key] = input.config[key];
+    }
+  }
+  return config;
+}
+
+export function isHardMasterRuntimeLimitResult(adapterType: string, result: AdapterExecutionResult) {
+  if (!masterRuntimeForAdapter(adapterType)) return false;
+  if (readNonEmptyString(result.retryNotBefore)) return true;
+  const haystack = [
+    result.errorMessage ?? "",
+    readNonEmptyString(result.errorCode) ?? "",
+    JSON.stringify(parseObject(result.resultJson)),
+  ].join("\n");
+  return MASTER_RUNTIME_HARD_LIMIT_RE.test(haystack);
+}
+
+function masterRuntimeLimitUntil(result: AdapterExecutionResult, now = new Date()) {
+  const retryNotBefore = readNonEmptyString(result.retryNotBefore);
+  const parsed = retryNotBefore ? new Date(retryNotBefore) : null;
+  if (parsed && !Number.isNaN(parsed.getTime()) && parsed.getTime() > now.getTime()) {
+    return parsed;
+  }
+  return new Date(now.getTime() + MASTER_RUNTIME_LIMIT_DEFAULT_MS);
 }
 
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
@@ -5815,6 +6002,63 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  async function recordMasterRuntimeLimit(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    runtime: MasterRuntimeKey;
+    adapterResult: AdapterExecutionResult;
+    now?: Date;
+  }) {
+    const now = input.now ?? new Date();
+    const current = normalizeMasterRuntimeFailoverSettings(
+      (await instanceSettings.getExperimental()).masterRuntimeFailover,
+      now,
+    );
+    const limitedUntil = masterRuntimeLimitUntil(input.adapterResult, now).toISOString();
+    const fallbackRuntime = oppositeMasterRuntime(input.runtime);
+    const fallbackLimited = isMasterRuntimeLimited(current, fallbackRuntime, now);
+    const next: MasterRuntimeFailoverSettings = {
+      ...current,
+      claudeLimitedUntil: input.runtime === "claude" ? limitedUntil : current.claudeLimitedUntil,
+      codexLimitedUntil: input.runtime === "codex" ? limitedUntil : current.codexLimitedUntil,
+      activeRuntime:
+        current.mode === "force_claude"
+          ? "claude"
+          : current.mode === "force_codex"
+            ? "codex"
+            : fallbackLimited
+              ? null
+              : fallbackRuntime,
+      reason: `${input.runtime}_hard_limit`,
+      updatedAt: now.toISOString(),
+    };
+
+    await instanceSettings.updateExperimental({ masterRuntimeFailover: next });
+    await appendRunEvent(input.run, await nextRunEventSeq(input.run.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: fallbackLimited || current.mode !== "auto" ? "warn" : "info",
+      message: fallbackLimited
+        ? "master runtime limit recorded; opposite master is also limited"
+        : "master runtime limit recorded",
+      payload: {
+        runtime: input.runtime,
+        fallbackRuntime,
+        limitedUntil,
+        fallbackLimited,
+        mode: current.mode,
+        activeRuntime: next.activeRuntime,
+      },
+    });
+
+    return {
+      settings: next,
+      limitedUntil,
+      fallbackRuntime,
+      fallbackLimited,
+      shouldRetryOnFallback: current.mode === "auto" && !fallbackLimited,
+    };
+  }
+
   async function promoteDueScheduledRetries(now = new Date()) {
     const dueRuns = await db
       .select()
@@ -7274,11 +7518,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return;
     }
 
-    const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
-    const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
+    const experimentalSettings = await instanceSettings.getExperimental();
+    const masterRuntimeResolution = resolveMasterRuntimeAdapter({
+      adapterType: agent.adapterType,
+      settings: experimentalSettings.masterRuntimeFailover,
+    });
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
     const issueDependencyReadiness = issueId
       ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)
@@ -7330,7 +7577,74 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             issueContext.assigneeAdapterOverrides,
           )
         : null;
-    const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+    if (masterRuntimeResolution.blocked) {
+      const message =
+        "Both master runtimes are currently marked limited. Paperclip will not route this run to non-master adapters.";
+      const failedRun = await setRunStatus(runId, "failed", {
+        error: message,
+        errorCode: "master_runtime_all_limited",
+        finishedAt: new Date(),
+        resultJson: {
+          stopReason: "master_runtime_all_limited",
+          masterRuntimeFailover: normalizeMasterRuntimeFailoverSettings(
+            experimentalSettings.masterRuntimeFailover,
+          ),
+        },
+      });
+      await setWakeupStatus(run.wakeupRequestId, "failed", {
+        finishedAt: new Date(),
+        error: message,
+      });
+      if (failedRun) {
+        await releaseIssueExecutionAndPromote(failedRun);
+      }
+      if (issueId && issueContext && issueContext.assigneeAgentId === agent.id) {
+        await issuesSvc.addComment(issueId, message, { agentId: agent.id, runId: run.id }).catch((err) => {
+          logger.warn({ err, issueId, runId: run.id }, "failed to post master runtime blocked comment");
+        });
+        await issuesSvc.update(issueId, {
+          status: "blocked",
+          actorAgentId: agent.id,
+        }).catch((err) => {
+          logger.warn({ err, issueId, runId: run.id }, "failed to mark issue blocked after master runtime exhaustion");
+        });
+      }
+      await finalizeAgentStatus(agent.id, "failed");
+      return;
+    }
+    const sourceAdapterType = agent.adapterType;
+    const executionAdapterType = masterRuntimeResolution.adapterType;
+    const sourceConfig = parseObject(agent.adapterConfig);
+    const executionConfig = coerceMasterRuntimeFallbackConfig({
+      config: sourceConfig,
+      sourceAdapterType,
+      targetAdapterType: executionAdapterType,
+    });
+    const executionAgent =
+      executionAdapterType === sourceAdapterType
+        ? agent
+        : ({
+            ...agent,
+            adapterType: executionAdapterType,
+            adapterConfig: executionConfig,
+          } as typeof agent);
+    const runtime = await ensureRuntimeState(executionAgent);
+    const sessionCodec = getAdapterSessionCodec(executionAdapterType);
+
+    if (masterRuntimeResolution.reason) {
+      context.paperclipMasterRuntime = {
+        mode: experimentalSettings.masterRuntimeFailover.mode,
+        sourceAdapterType,
+        executionAdapterType,
+        sourceRuntime: masterRuntimeResolution.sourceRuntime,
+        targetRuntime: masterRuntimeResolution.targetRuntime,
+        reason: masterRuntimeResolution.reason,
+      };
+    } else {
+      delete context.paperclipMasterRuntime;
+    }
+
+    const isolatedWorkspacesEnabled = experimentalSettings.enableIsolatedWorkspaces;
     const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
       ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings)
       : null;
@@ -7384,7 +7698,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       isolatedWorkspacesEnabled,
     );
     const taskSession = taskKey
-      ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
+      ? await getTaskSession(agent.companyId, agent.id, executionAdapterType, taskKey)
       : null;
     const resetTaskSession = shouldResetTaskSessionForWake(context);
     const sessionResetReason = describeSessionResetReason(context);
@@ -7401,14 +7715,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       explicitResumeSessionParams ??
       (explicitResumeSessionDisplayId ? { sessionId: explicitResumeSessionDisplayId } : null) ??
       normalizeSessionParams(sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null));
-    const config = parseObject(agent.adapterConfig);
+    const config = parseObject(executionAgent.adapterConfig);
     const requestedExecutionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
       issueSettings: issueExecutionWorkspaceSettings,
       legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
     });
     const resolvedWorkspace = await resolveWorkspaceForRun(
-      agent,
+      executionAgent,
       context,
       previousSessionParams,
       { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
@@ -7531,7 +7845,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           runId: run.id,
           issueId,
           agentId: agent.id,
-          adapterType: agent.adapterType,
+          adapterType: executionAdapterType,
           existingExecutionWorkspaceId: existingExecutionWorkspace?.id ?? null,
           workspaceEnvironmentId: environmentResolution.conflict.workspaceEnvironmentId,
           assigneeIntendedEnvironmentId:
@@ -7572,7 +7886,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let adapterModelProfiles: AdapterModelProfileDefinition[] = [];
     let profileResolutionFallbackReason: string | null = null;
     try {
-      adapterModelProfiles = await listAdapterModelProfiles(agent.adapterType);
+      adapterModelProfiles = await listAdapterModelProfiles(executionAdapterType);
     } catch (error) {
       profileResolutionFallbackReason = "adapter_profile_resolution_failed";
       logger.warn(
@@ -7580,7 +7894,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           err: error,
           companyId: agent.companyId,
           agentId: agent.id,
-          adapterType: agent.adapterType,
+          adapterType: executionAdapterType,
           runId: run.id,
         },
         "Failed to resolve adapter model profiles; falling back to primary adapter config",
@@ -7843,7 +8157,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       companyId: agent.companyId,
       selectedEnvironmentId: persistedEnvironmentId,
       defaultEnvironmentId: defaultEnvironment.id,
-      adapterType: agent.adapterType,
+      adapterType: executionAdapterType,
       issueId: issueId ?? null,
       heartbeatRunId: run.id,
       agentId: agent.id,
@@ -7858,7 +8172,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const realizationResult = await envOrchestrator.realizeForRun({
       environment: selectedEnvironment,
       lease: activeEnvironmentLease.lease,
-      adapterType: agent.adapterType,
+      adapterType: executionAdapterType,
       companyId: agent.companyId,
       issueId: issueId ?? null,
       heartbeatRunId: run.id,
@@ -7961,7 +8275,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
     }
-    const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
+    const runtimeSessionFallback =
+      taskKey || resetTaskSession || runtime.adapterType !== executionAdapterType
+        ? null
+        : runtime.sessionId;
     let previousSessionDisplayId = truncateDisplayId(
       explicitResumeSessionDisplayId ??
         taskSessionForRun?.sessionDisplayId ??
@@ -7974,7 +8291,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let runtimeSessionParamsForAdapter = runtimeSessionParams;
 
     const sessionCompaction = await evaluateSessionCompaction({
-      agent,
+      agent: executionAgent,
       sessionId: previousSessionDisplayId ?? runtimeSessionIdForAdapter,
       issueId,
       continuationSummaryBody: continuationSummary?.body ?? null,
@@ -8148,6 +8465,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           `[paperclip] Enabled run-scoped skills from issue mentions: ${runScopedMentionedSkillKeys.join(", ")}\n`,
         );
       }
+      if (executionAdapterType !== sourceAdapterType) {
+        await onLog(
+          "stdout",
+          `[paperclip] Master runtime failover: routing ${sourceAdapterType} run through ${executionAdapterType} (${masterRuntimeResolution.reason ?? "policy"}).\n`,
+        );
+        await appendRunEvent(currentRun, seq++, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "master runtime failover selected",
+          payload: {
+            sourceAdapterType,
+            executionAdapterType,
+            sourceRuntime: masterRuntimeResolution.sourceRuntime,
+            targetRuntime: masterRuntimeResolution.targetRuntime,
+            reason: masterRuntimeResolution.reason,
+          },
+        });
+      }
       for (const warning of runtimeWorkspaceWarnings) {
         const logEntry = formatRuntimeWorkspaceWarningLog(warning);
         await onLog(logEntry.stream, logEntry.chunk);
@@ -8220,9 +8556,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       };
 
-      const adapter = getServerAdapter(agent.adapterType);
+      const adapter = getServerAdapter(executionAdapterType);
       const authToken = adapter.supportsLocalAgentJwt
-        ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
+        ? createLocalAgentJwt(agent.id, agent.companyId, executionAdapterType, run.id)
         : null;
       if (adapter.supportsLocalAgentJwt && !authToken) {
         logger.warn(
@@ -8230,7 +8566,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             companyId: agent.companyId,
             agentId: agent.id,
             runId: run.id,
-            adapterType: agent.adapterType,
+            adapterType: executionAdapterType,
           },
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
@@ -8245,7 +8581,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           phase: "workspace_finalize",
           cwd: executionWorkspace.cwd,
           metadata: {
-            adapterType: agent.adapterType,
+            adapterType: executionAdapterType,
             executionTargetKind: executionTarget?.kind ?? "local",
             ...metadata,
           },
@@ -8261,7 +8597,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       try {
         adapterResult = await adapter.execute({
           runId: run.id,
-          agent,
+          agent: executionAgent,
           runtime: runtimeForAdapter,
           config: runtimeConfig,
           context,
@@ -8312,7 +8648,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
-            adapterType: agent.adapterType,
+            adapterType: executionAdapterType,
             runId: run.id,
             agent: {
               id: agent.id,
@@ -8448,7 +8784,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : null;
 
       const persistedResultJson = mergeHeartbeatRunResultJson(
-        mergeRunStopMetadataForAgent(agent, outcome, {
+        mergeRunStopMetadataForAgent(executionAgent, outcome, {
           resultJson: mergeModelProfileRunMetadata(
             mergeAdapterRecoveryMetadata({
               resultJson: adapterResult.resultJson ?? null,
@@ -8519,9 +8855,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
         if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
-          const policy = parseMaxTurnContinuationPolicy(agent);
+          const policy = parseMaxTurnContinuationPolicy(executionAgent);
           if (policy.enabled && policy.maxAttempts > 0) {
-            await scheduleBoundedRetryForRun(livenessRun, agent, {
+            await scheduleBoundedRetryForRun(livenessRun, executionAgent, {
               retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
               wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
               maxAttempts: policy.maxAttempts,
@@ -8539,8 +8875,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
+        } else if (outcome === "failed" && isHardMasterRuntimeLimitResult(executionAdapterType, adapterResult)) {
+          const limitedRuntime = masterRuntimeForAdapter(executionAdapterType);
+          if (limitedRuntime) {
+            const limitRecord = await recordMasterRuntimeLimit({
+              run: livenessRun,
+              runtime: limitedRuntime,
+              adapterResult,
+            });
+            if (limitRecord.shouldRetryOnFallback) {
+              await scheduleBoundedRetryForRun(livenessRun, executionAgent, {
+                retryReason: "master_runtime_failover",
+                wakeReason: "master_runtime_failover",
+                maxAttempts: MASTER_RUNTIME_FAILOVER_RETRY_MAX_ATTEMPTS,
+                delayMs: 0,
+              });
+            } else if (issueId) {
+              const blockedMessage =
+                limitRecord.fallbackLimited
+                  ? "Both Claude and Codex master runtimes are currently limited. Paperclip stopped this work instead of routing it to a non-master adapter."
+                  : `The ${limitedRuntime} master runtime is limited and instance failover mode is ${limitRecord.settings.mode}; no automatic fallback retry was queued.`;
+              await issuesSvc.addComment(issueId, blockedMessage, { agentId: agent.id, runId: livenessRun.id }).catch((err) => {
+                logger.warn({ err, issueId, runId: livenessRun.id }, "failed to post master runtime limit comment");
+              });
+              await issuesSvc.update(issueId, {
+                status: "blocked",
+                actorAgentId: agent.id,
+              }).catch((err) => {
+                logger.warn({ err, issueId, runId: livenessRun.id }, "failed to mark issue blocked after master runtime limit");
+              });
+            }
+          }
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
-          await scheduleBoundedRetryForRun(livenessRun, agent);
+          await scheduleBoundedRetryForRun(livenessRun, executionAgent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
@@ -8605,20 +8972,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       if (finalizedRun) {
-        await updateRuntimeState(agent, finalizedRun, adapterResult, {
+        await updateRuntimeState(executionAgent, finalizedRun, adapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
         if (taskKey) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
               taskKey,
-              adapterType: agent.adapterType,
+              adapterType: executionAdapterType,
             });
           } else {
             await upsertTaskSession({
               companyId: agent.companyId,
               agentId: agent.id,
-              adapterType: agent.adapterType,
+              adapterType: executionAdapterType,
               taskKey,
               sessionParamsJson: nextSessionState.params,
               sessionDisplayId: nextSessionState.displayId,
@@ -8656,7 +9023,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         error: message,
         errorCode: "adapter_failed",
         finishedAt: new Date(),
-        resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
+        resultJson: mergeRunStopMetadataForAgent(executionAgent, "failed", {
           errorCode: "adapter_failed",
           errorMessage: message,
         }),
@@ -8683,7 +9050,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
 
-        await updateRuntimeState(agent, livenessRun, {
+        await updateRuntimeState(executionAgent, livenessRun, {
           exitCode: null,
           signal: null,
           timedOut: false,
@@ -8696,7 +9063,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await upsertTaskSession({
             companyId: agent.companyId,
             agentId: agent.id,
-            adapterType: agent.adapterType,
+            adapterType: executionAdapterType,
             taskKey,
             sessionParamsJson: previousSessionParams,
             sessionDisplayId: previousSessionDisplayId,

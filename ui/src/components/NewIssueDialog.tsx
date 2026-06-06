@@ -1050,6 +1050,11 @@ export function NewIssueDialog() {
     }
   }
 
+  function openMediaPicker() {
+    if (createIssue.isPending) return;
+    stageMediaInputRef.current?.click();
+  }
+
   function handleFileDragEnter(evt: DragEvent<HTMLDivElement>) {
     if (!evt.dataTransfer.types.includes("Files")) return;
     evt.preventDefault();
@@ -1924,6 +1929,7 @@ export function NewIssueDialog() {
           <input
             ref={stageMediaInputRef}
             type="file"
+            id="new-issue-media-input"
             accept={STAGED_MEDIA_ACCEPT}
             className="hidden"
             onChange={handleStageMediaPicked}
@@ -1934,7 +1940,7 @@ export function NewIssueDialog() {
             type="button"
             data-testid="new-issue-media-button"
             className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent/50"
-            onClick={() => stageMediaInputRef.current?.click()}
+            onClick={openMediaPicker}
             disabled={createIssue.isPending}
             title="Attach media"
             aria-label="Attach media"
@@ -2039,6 +2045,24 @@ export function NewIssueDialog() {
                     {p.label}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  data-testid="new-issue-more-media-button"
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50 text-muted-foreground",
+                    createIssue.isPending && "opacity-50 cursor-not-allowed",
+                  )}
+                  onClick={() => {
+                    openMediaPicker();
+                    if (!createIssue.isPending) {
+                      setMoreOpen(false);
+                    }
+                  }}
+                  disabled={createIssue.isPending}
+                >
+                  <ImagePlus className="h-3 w-3" />
+                  Attach media
+                </button>
                 <div className="my-1 border-t border-border" />
               </div>
               <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">

@@ -47,7 +47,7 @@ import {
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
-import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { normalizeCodexLocalModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
@@ -290,7 +290,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "codex");
-  const model = asString(config.model, "");
+  const configuredModel = asString(config.model, "");
+  const model = normalizeCodexLocalModel(configuredModel);
+  const normalizedConfig = configuredModel === model ? config : { ...config, model };
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -395,6 +397,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
   const executionTargetIsSandbox =
     runtimeExecutionTarget?.kind === "remote" && runtimeExecutionTarget.transport === "sandbox";
+  const executionTargetIsLocalHeadless = !executionTargetIsRemote;
   const restoreRemoteWorkspace = preparedExecutionTargetRuntime
     ? () => preparedExecutionTargetRuntime.restoreWorkspace()
     : null;
@@ -485,6 +488,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  if (!env.GIT_AUTHOR_NAME) env.GIT_AUTHOR_NAME = "Jonas Tüchler";
+  if (!env.GIT_AUTHOR_EMAIL) env.GIT_AUTHOR_EMAIL = "mail@jonastuechler.at";
+  if (!env.GIT_COMMITTER_NAME) env.GIT_COMMITTER_NAME = "Jonas Tüchler";
+  if (!env.GIT_COMMITTER_EMAIL) env.GIT_COMMITTER_EMAIL = "mail@jonastuechler.at";
   if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
     paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
       runId,
@@ -653,9 +660,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     return notes;
   })();
+  if (configuredModel.length > 0 && configuredModel !== model) {
+    commandNotes.push(`Normalized deprecated codex model "${configuredModel}" to "${model}" for execution.`);
+  }
   if (executionTargetIsSandbox) {
     commandNotes.push(
       "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
+    );
+  }
+  if (executionTargetIsLocalHeadless) {
+    commandNotes.push(
+      "Added --skip-git-repo-check for local headless execution because Codex requires an explicit trust bypass in non-git local workspaces.",
     );
   }
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
@@ -679,10 +694,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const execArgs = buildCodexExecArgs(
-      forceSaferInvocation ? { ...config, fastMode: false } : config,
+      forceSaferInvocation ? { ...normalizedConfig, fastMode: false } : normalizedConfig,
       {
         resumeSessionId,
-        skipGitRepoCheck: executionTargetIsSandbox,
+        skipGitRepoCheck: executionTargetIsSandbox || executionTargetIsLocalHeadless,
       },
     );
     const args = execArgs.args;

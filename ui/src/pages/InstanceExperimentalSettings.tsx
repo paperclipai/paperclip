@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Clock, FlaskConical, Play, Search } from "lucide-react";
 import type {
   IssueGraphLivenessAutoRecoveryPreview,
+  MasterRuntimeFailoverSettings,
   PatchInstanceExperimentalSettings,
 } from "@paperclipai/shared";
 import { instanceSettingsApi } from "@/api/instanceSettings";
@@ -28,6 +29,13 @@ function issueHref(identifier: string | null, issueId: string) {
 
 function formatRecoveryState(state: string) {
   return state.replace(/_/g, " ");
+}
+
+function formatRuntimeLimit(value: string | null) {
+  if (!value) return "Available";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime()) || parsed.getTime() <= Date.now()) return "Available";
+  return `Limited until ${parsed.toLocaleString()}`;
 }
 
 function RecoveryPreviewDialog({
@@ -215,6 +223,8 @@ export function InstanceExperimentalSettings() {
     experimentalQuery.data?.enableTransientAgentErrorAutoClear !== false;
   const enableIssueGraphLivenessAutoRecovery =
     experimentalQuery.data?.enableIssueGraphLivenessAutoRecovery === true;
+  const masterRuntimeFailover = experimentalQuery.data?.masterRuntimeFailover;
+  const masterRuntimeMode = masterRuntimeFailover?.mode ?? "auto";
   const lookbackHours =
     experimentalQuery.data?.issueGraphLivenessAutoRecoveryLookbackHours ?? 24;
   const parsedLookbackHours = Number.parseInt(lookbackHoursDraft, 10);
@@ -251,6 +261,24 @@ export function InstanceExperimentalSettings() {
     });
   }
 
+  function updateMasterRuntimeFailover(patch: Partial<MasterRuntimeFailoverSettings>) {
+    const current = masterRuntimeFailover ?? {
+      mode: "auto" as const,
+      claudeLimitedUntil: null,
+      codexLimitedUntil: null,
+      activeRuntime: null,
+      reason: null,
+      updatedAt: null,
+    };
+    toggleMutation.mutate({
+      masterRuntimeFailover: {
+        ...current,
+        ...patch,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  }
+
   return (
     <div className="max-w-4xl space-y-6">
       <div className="space-y-2">
@@ -268,6 +296,62 @@ export function InstanceExperimentalSettings() {
           {actionError}
         </div>
       )}
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Master Runtime Failover</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Route Claude and Codex agents through the active master runtime when one account is exhausted.
+            </p>
+            <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
+              <div>Claude: {formatRuntimeLimit(masterRuntimeFailover?.claudeLimitedUntil ?? null)}</div>
+              <div>Codex: {formatRuntimeLimit(masterRuntimeFailover?.codexLimitedUntil ?? null)}</div>
+              <div>Active: {masterRuntimeFailover?.activeRuntime ?? "auto"}</div>
+              <div>Reason: {masterRuntimeFailover?.reason ?? "none"}</div>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              {[
+                ["auto", "Auto"],
+                ["force_claude", "Force Claude"],
+                ["force_codex", "Force Codex"],
+              ].map(([value, label]) => (
+                <Button
+                  key={value}
+                  type="button"
+                  variant={masterRuntimeMode === value ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => updateMasterRuntimeFailover({ mode: value as MasterRuntimeFailoverSettings["mode"] })}
+                  disabled={toggleMutation.isPending}
+                >
+                  {label}
+                </Button>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  updateMasterRuntimeFailover({
+                    claudeLimitedUntil: null,
+                    codexLimitedUntil: null,
+                    activeRuntime: null,
+                    reason: "manual_clear",
+                  })
+                }
+                disabled={toggleMutation.isPending}
+              >
+                Clear Limits
+              </Button>
+            </div>
+            <p className="max-w-xs text-xs text-muted-foreground">
+              Force modes are instance-wide and bypass automatic limit protection until Auto is selected again.
+            </p>
+          </div>
+        </div>
+      </section>
 
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">

@@ -6,6 +6,28 @@ export const MONTHLY_RETENTION_PRESETS = [1, 3, 6] as const;
 export const DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 24;
 export const MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 1;
 export const MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 24 * 30;
+export const MASTER_RUNTIME_FAILOVER_MODES = ["auto", "force_claude", "force_codex"] as const;
+
+export type MasterRuntimeFailoverMode = (typeof MASTER_RUNTIME_FAILOVER_MODES)[number];
+export type MasterRuntimeKey = "claude" | "codex";
+
+export interface MasterRuntimeFailoverSettings {
+  mode: MasterRuntimeFailoverMode;
+  claudeLimitedUntil: string | null;
+  codexLimitedUntil: string | null;
+  activeRuntime: MasterRuntimeKey | null;
+  reason: string | null;
+  updatedAt: string | null;
+}
+
+export const DEFAULT_MASTER_RUNTIME_FAILOVER: MasterRuntimeFailoverSettings = {
+  mode: "auto",
+  claudeLimitedUntil: null,
+  codexLimitedUntil: null,
+  activeRuntime: null,
+  reason: null,
+  updatedAt: null,
+};
 
 // TWB-305: bounded auto-clear of transient agent errors so crashed agents
 // self-recover to a schedulable state instead of needing a manual board reset.
@@ -40,6 +62,7 @@ export interface InstanceExperimentalSettings {
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
+  masterRuntimeFailover: MasterRuntimeFailoverSettings;
   // TWB-305: when enabled, the scheduler tick auto-clears transient agent
   // errors (adapter process exit, upstream API hiccup, timeout) back to a
   // schedulable state after a bounded backoff. Hard failures stay `error`.

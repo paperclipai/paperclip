@@ -6,6 +6,8 @@ import {
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  DEFAULT_MASTER_RUNTIME_FAILOVER,
+  MASTER_RUNTIME_FAILOVER_MODES,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   DEFAULT_TRANSIENT_AGENT_ERROR_AUTO_CLEAR_MAX_ATTEMPTS,
@@ -38,6 +40,15 @@ export const instanceGeneralSettingsSchema = z.object({
 
 export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();
 
+export const masterRuntimeFailoverSettingsSchema = z.object({
+  mode: z.enum(MASTER_RUNTIME_FAILOVER_MODES).default(DEFAULT_MASTER_RUNTIME_FAILOVER.mode),
+  claudeLimitedUntil: z.string().datetime().nullable().default(null),
+  codexLimitedUntil: z.string().datetime().nullable().default(null),
+  activeRuntime: z.enum(["claude", "codex"]).nullable().default(null),
+  reason: z.string().nullable().default(null),
+  updatedAt: z.string().datetime().nullable().default(null),
+}).strict();
+
 export const instanceExperimentalSettingsSchema = z.object({
   enableEnvironments: z.boolean().default(false),
   enableIsolatedWorkspaces: z.boolean().default(false),
@@ -51,6 +62,7 @@ export const instanceExperimentalSettingsSchema = z.object({
     .min(MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS)
     .max(MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS)
     .default(DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS),
+  masterRuntimeFailover: masterRuntimeFailoverSettingsSchema.default(DEFAULT_MASTER_RUNTIME_FAILOVER),
   enableTransientAgentErrorAutoClear: z.boolean().default(true),
   transientAgentErrorAutoClearMaxAttempts: z
     .number()
