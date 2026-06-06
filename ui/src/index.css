@@ -89,6 +89,10 @@
   --chip-match-identifier-bg: var(--muted);
   --chip-match-identifier-fg: var(--muted-foreground);
   --chip-match-identifier-border: var(--border);
+  --paperclip-doc-annotation-highlight-open: #fef08a;
+  --paperclip-doc-annotation-highlight-focused: #fde047;
+  --paperclip-doc-annotation-highlight-stale: #fef08a;
+  --paperclip-doc-annotation-highlight-resolved: #fef9c3;
 }
 
 .dark {
@@ -136,6 +140,30 @@
   --chip-match-identifier-bg: var(--muted);
   --chip-match-identifier-fg: var(--muted-foreground);
   --chip-match-identifier-border: var(--border);
+  --paperclip-doc-annotation-highlight-open: #a16207;
+  --paperclip-doc-annotation-highlight-focused: #ca8a04;
+  --paperclip-doc-annotation-highlight-stale: #854d0e;
+  --paperclip-doc-annotation-highlight-resolved: #713f12;
+}
+
+::highlight(paperclip-doc-annotation-open) {
+  background-color: var(--paperclip-doc-annotation-highlight-open);
+  color: inherit;
+}
+
+::highlight(paperclip-doc-annotation-focused) {
+  background-color: var(--paperclip-doc-annotation-highlight-focused);
+  color: inherit;
+}
+
+::highlight(paperclip-doc-annotation-stale) {
+  background-color: var(--paperclip-doc-annotation-highlight-stale);
+  color: inherit;
+}
+
+::highlight(paperclip-doc-annotation-resolved) {
+  background-color: var(--paperclip-doc-annotation-highlight-resolved);
+  color: inherit;
 }
 
 @layer base {
@@ -183,7 +211,18 @@
     min-height: 44px;
   }
 
-  [data-slot="toggle"] {
+  /* Small inline widgets keep their design size on touch devices —
+     forcing 44px here stretches checkboxes, chip menus, and icon buttons
+     that live inside dense rows (sidebar headers, issue rows, filter
+     popovers). The surrounding row provides the touch area. */
+  [data-slot="toggle"],
+  [data-slot="checkbox"],
+  [data-slot="icon-button"],
+  [data-size="xs"],
+  [data-size="icon-xs"],
+  [data-size="icon-sm"],
+  input[type="checkbox"],
+  input[type="radio"] {
     min-height: 0;
   }
 }
@@ -362,6 +401,35 @@
     animation: none;
     -webkit-text-fill-color: unset;
     background: none;
+  }
+}
+
+/* Agent heartbeat capsule motion (PAP-75).
+   `hb-pulse` marks a running agent (live); `hb-blink` marks a broken agent
+   (error). The blink alternates the fill between brand red and the page
+   background so the capsule reads as a faltering heartbeat. */
+@keyframes hb-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes hb-blink {
+  0%, 49.9% { background-color: #DC2626; }
+  50%, 100% { background-color: var(--background); }
+}
+
+.hb-pulse {
+  animation: hb-pulse 1.6s ease-in-out infinite;
+}
+
+.hb-blink {
+  animation: hb-blink 1.2s step-end infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hb-pulse,
+  .hb-blink {
+    animation: none;
   }
 }
 
@@ -706,18 +774,28 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   background: none;
 }
 
-/* Copy-to-clipboard button on fenced code blocks */
+/* Actions for fenced and indented preformatted markdown blocks */
 .paperclip-markdown-codeblock {
   position: relative;
 }
 
-.paperclip-markdown-codeblock-copy {
+.paperclip-markdown-codeblock-actions {
   position: absolute;
   top: 0.4rem;
   right: 0.4rem;
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.paperclip-markdown-codeblock-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  min-height: 1.55rem;
   padding: 0.2rem 0.4rem;
   border-radius: calc(var(--radius) - 4px);
   border: 1px solid color-mix(in oklab, var(--foreground) 14%, transparent);
@@ -726,30 +804,31 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   font-size: 0.7rem;
   line-height: 1;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 
-.paperclip-markdown-codeblock:hover .paperclip-markdown-codeblock-copy,
-.paperclip-markdown-codeblock-copy:focus-visible,
-.paperclip-markdown-codeblock-copy[data-copied] {
+.paperclip-markdown-codeblock:hover .paperclip-markdown-codeblock-actions,
+.paperclip-markdown-codeblock-actions:focus-within,
+.paperclip-markdown-codeblock-actions[data-active] {
   opacity: 1;
 }
 
-.paperclip-markdown-codeblock-copy:hover {
+.paperclip-markdown-codeblock-action:hover {
   background-color: var(--accent);
   color: var(--accent-foreground);
 }
 
-.paperclip-markdown-codeblock-copy[data-copied] {
+.paperclip-markdown-codeblock-action[data-active],
+.paperclip-markdown-codeblock-action[data-copied] {
+  border-color: color-mix(in oklab, var(--primary) 38%, transparent);
   color: var(--primary);
 }
 
-.paperclip-markdown-codeblock-copy[data-failed] {
+.paperclip-markdown-codeblock-action[data-failed] {
   color: var(--destructive);
 }
 
-.paperclip-markdown-codeblock-copy-label {
+.paperclip-markdown-codeblock-action-label {
   font-weight: 500;
 }
 

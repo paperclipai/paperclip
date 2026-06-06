@@ -574,7 +574,7 @@ describe("acpx_local execute", () => {
       const execute = createAcpxLocalExecutor({ createRuntime: () => runtime });
       const result = await execute(buildContext(root));
       expect(result.exitCode).toBe(1);
-      expect(result.errorCode).toBe("acpx_protocol_error");
+      expect(result.errorCode).toBe("acpx_session_init_failed");
       expect(result.errorMeta).toMatchObject({
         category: "protocol",
         acpCode: "ACP_SESSION_INIT_FAILED",

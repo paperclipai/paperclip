@@ -1264,7 +1264,7 @@ export function RoutineDetail() {
 
         <TabsContent value="secrets" className="space-y-3">
           <p className="text-xs text-muted-foreground">
-            Routine secrets apply to every issue this routine creates. They override matching keys in
+            Routine secrets apply to every task this routine creates. They override matching keys in
             project and agent env. <span className="font-mono">PAPERCLIP_*</span> variables are reserved.
           </p>
           <EnvVarEditor

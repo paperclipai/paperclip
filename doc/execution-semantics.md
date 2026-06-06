@@ -1,7 +1,7 @@
 # Execution Semantics
 
 Status: Current implementation guide
-Date: 2026-04-26
+Date: 2026-05-23
 Audience: Product and engineering
 
 This document explains how Paperclip interprets issue assignment, issue status, execution runs, wakeups, parent/sub-issue structure, and blocker relationships.
@@ -152,7 +152,73 @@ Blocked issues should stay idle while blockers remain unresolved. Paperclip shou
 
 If a parent is truly waiting on a child, model that with blockers. Do not rely on the parent/child relationship alone.
 
-## 7. Non-Terminal Issue Liveness Contract
+## 7. Accepted-Plan Decomposition
+
+An accepted plan confirmation is permission to decompose one specific accepted plan revision into child issues.
+
+This complements the existing accepted-plan continuation rule: once a plan is accepted, the source issue may create child implementation issues, but it must not start implementation work on the source issue itself during that continuation.
+
+Paperclip must treat accepted-plan decomposition as an exact-once control-plane primitive, not as a free-floating wake that any later run may interpret again.
+
+### Exact-once fingerprint
+
+The canonical decomposition fingerprint is:
+
+- `(sourceIssueId, acceptedPlanRevisionId)`
+
+Where:
+
+- `sourceIssueId` is the issue whose `plan` document revision was accepted
+- `acceptedPlanRevisionId` is the accepted `plan` document revision
+
+This is the product contract because the accepted revision is the thing being authorized for decomposition. Re-accepting, re-waking, or re-reading the same accepted revision must not authorize a second child tree. A later accepted revision on the same source issue is a new fingerprint and may produce a different decomposition result.
+
+An implementation may also store the accepted interaction id, acceptance run id, or other evidence, but those values must collapse onto the same uniqueness guarantee. They must not allow a second decomposition claim for the same `(sourceIssueId, acceptedPlanRevisionId)` pair.
+
+### Durable claim and durable result
+
+Before creating child issues, the first decomposition attempt must create or reuse a durable record for the fingerprint.
+
+That durable record must be able to answer, without reconstructing the thread from comments or transcripts:
+
+- whether decomposition for the fingerprint is `in_flight` or `completed`
+- which run or owner currently holds the in-flight claim
+- which child issues, if any, have already been created under that fingerprint
+- which final child issue ids belong to the completed result
+
+Paperclip does not need to mandate a specific storage shape in this document. The record may live in a dedicated table, source-issue execution state, interaction metadata, or another durable product surface. What matters is the contract:
+
+- the claim is durable before fan-out starts
+- partial progress is durable while fan-out is underway
+- the completed child result set is durable after fan-out finishes
+
+If a run creates some children and then dies, retries must continue from the same fingerprint and reuse the already-recorded partial result. They must not restart decomposition as if nothing happened.
+
+### Parent live path while decomposition is in flight
+
+While decomposition for an accepted fingerprint is incomplete, the source issue must expose an explicit live path for that same fingerprint.
+
+The accepted interaction by itself is only evidence that the plan was approved. It is not a sufficient live path once decomposition begins. The source issue must make it clear what moves the fingerprint forward next, such as:
+
+- the active decomposition run
+- a queued continuation wake for the same assignee
+- a monitor or explicit recovery action tied to the same decomposition claim
+- a blocked state that names the real blocker for finishing that claimed decomposition
+
+If the live run disappears, Paperclip must repair, resume, or visibly block the existing claim. It must not leave the source issue in a state where a second run can interpret the same acceptance as fresh permission to create sibling issues again.
+
+### Concurrent and repeat attempts
+
+Every later run that encounters the same accepted-plan fingerprint must consult the durable claim/result before creating children.
+
+- If no claim exists, the run may atomically create the claim and become the decomposition owner.
+- If a claim exists and is `in_flight`, the later run must reuse that claim. It may resume the same decomposition if it is the valid continuation owner, or it may exit after observing that another run already owns the work.
+- If a claim exists and is `completed`, the later run must reuse the recorded child result and must not create new sibling issues.
+- If the prior attempt ended after partial child creation, the retry must continue under the same fingerprint and preserve the already-created child ids.
+
+Concurrent accepted-plan runs are therefore idempotent relative to the fingerprint. Creating multiple child trees for the same `(sourceIssueId, acceptedPlanRevisionId)` pair is a product bug.
+
+## 8. Non-Terminal Issue Liveness Contract
 
 For agent-owned, non-terminal issues, Paperclip should never leave work in a state where nobody is responsible for the next move and nothing will wake or surface it.
 
@@ -170,6 +236,22 @@ The valid action-path primitives are:
 - a human owner via `assigneeUserId`
 - a first-class blocker chain whose unresolved leaf issues are themselves healthy
 - an open explicit recovery action that names the owner and action needed to restore liveness
+
+### Adapter-backed workspace coherence
+
+For adapter-backed execution, an active run or queued wake counts as a live path only when Paperclip can also prove that the selected workspace is coherent for that adapter invocation. A wake that cannot start in the intended workspace is only a failed delivery attempt, not a healthy liveness path.
+
+A workspace-coherent adapter path means:
+
+- the selected `executionWorkspaceId`, `projectWorkspaceId`, `projectId`, source issue, and company all refer to the same company-scoped work context
+- any `projectWorkspaceId` is accompanied by the owning `projectId`, and that project relationship is unambiguous
+- the adapter will receive the same effective workspace/cwd that Paperclip resolved for the run, including the same workspace ids and `PAPERCLIP_WORKSPACE_*` environment values
+- the effective cwd exists or is provider-reachable, according to the workspace provider
+- when the adapter or workspace strategy relies on git state, the cwd is git-valid for the selected workspace: it resolves to the expected repository root, required base refs or branch metadata can be resolved, and runtime-created worktrees are still registered or explicitly recoverable
+
+The state `projectWorkspaceId` plus `executionWorkspaceId` without `projectId` is invalid for project-scoped execution. Paperclip may treat it as recoverable only when it can derive exactly one owning project from the execution workspace, project workspace, or source issue in the same company and then repair the persisted state before delivery. If the owning project is missing, ambiguous, or cross-company, the queued adapter run must not be counted as a live path.
+
+Workspace incoherence feeds into the same non-terminal liveness and stranded assigned-work model as a disappeared run. The recovery path should first fail or reject the incoherent wake, then either repair and requeue one bounded continuation for the same assignee or surface an explicit recovery action. It must not leave an agent-owned `in_progress` issue healthy solely because a wake record exists that would invoke the adapter in the wrong cwd, a non-git directory where git is required, an unrelated project workspace, or an unrecoverable missing worktree.
 
 ### Explicit recovery actions
 
@@ -292,13 +374,13 @@ A blocker chain is covered only when its unresolved leaf is live or explicitly w
 
 A `blocked` issue is stalled when the unresolved blocker leaf has no active run, queued wake, typed participant, pending interaction or approval, user owner, external owner/action, or recovery action. In that case the parent should show the first stalled leaf instead of presenting the dependency as calmly covered.
 
-## 8. Crash and Restart Recovery
+## 9. Crash and Restart Recovery
 
 Paperclip now treats crash/restart recovery as a stranded-assigned-work problem, not just a stranded-run problem.
 
 There are two distinct failure modes.
 
-### 8.1 Stranded assigned `todo`
+### 9.1 Stranded assigned `todo`
 
 Example:
 
@@ -314,7 +396,7 @@ Recovery rule:
 
 This is a dispatch recovery, not a continuation recovery.
 
-### 8.2 Stranded assigned `in_progress`
+### 9.2 Stranded assigned `in_progress`
 
 Example:
 
@@ -330,7 +412,13 @@ Recovery rule:
 
 This is an active-work continuity recovery.
 
-## 9. Startup and Periodic Reconciliation
+### 9.3 Recovery model-profile lane
+
+Cheap model profiles are only for status-only operational recovery overhead. Paperclip may request `modelProfile: "cheap"` for bounded recovery-owner work that updates task liveness, clears bad status, records a disposition, or asks for human/manager intervention. Those wakes must carry guard context such as `allowDeliverableWork: false`, `allowDocumentUpdates: false`, and `resumeRequiresNormalModel: true`.
+
+Automatic retries that can continue source work must use the original/normal model lane. This includes failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, assigned-todo dispatch recovery, and any run that can update repo files, issue documents, plans, work products, or attachments. When a cheap status-only recovery determines that actual work remains, it must hand back to a normal-model worker run before source work or persistent deliverable updates resume. Cheap recovery hints must be scrubbed from copied retry, resume, child, and downstream source-work contexts.
+
+## 10. Startup and Periodic Reconciliation
 
 Startup recovery and periodic recovery are different from normal wakeup delivery.
 
@@ -344,7 +432,7 @@ On startup and on the periodic recovery loop, Paperclip now does five things in 
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
 
-## 10. Silent Active-Run Watchdog
+## 11. Silent Active-Run Watchdog
 
 An active run can still be unhealthy even when its process is `running`. Paperclip treats prolonged output silence as a watchdog signal, not as proof that the run is failed.
 
@@ -396,7 +484,7 @@ This is distinct from productivity review. Productivity review asks whether an a
 
 Detached process cleanup is operational hygiene, not source issue liveness. Cleanup should be best-effort and auditable. If cleanup fails but the source issue is already terminal with same-run durable evidence, Paperclip should preserve the cleanup failure on the run/watchdog audit trail and route only the cleanup concern to bounded recovery when a real owner/action remains.
 
-## 11. Auto-Recover vs Explicit Recovery vs Human Escalation
+## 12. Auto-Recover vs Explicit Recovery vs Human Escalation
 
 Paperclip uses three different recovery outcomes, depending on how much it can safely infer.
 
@@ -440,7 +528,7 @@ Examples:
 
 In these cases Paperclip should leave a visible issue/comment trail instead of silently retrying.
 
-## 12. What This Does Not Mean
+## 13. What This Does Not Mean
 
 These semantics do not change V1 into an auto-reassignment system.
 
@@ -457,7 +545,7 @@ The recovery model is intentionally conservative:
 - open an explicit recovery action when the system can identify a bounded recovery owner/action
 - escalate visibly when the system cannot safely keep going
 
-## 13. Practical Interpretation
+## 14. Practical Interpretation
 
 For a board operator, the intended meaning is:
 

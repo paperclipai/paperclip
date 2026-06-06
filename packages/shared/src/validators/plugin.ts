@@ -6,6 +6,7 @@ import {
   PLUGIN_UI_SLOT_TYPES,
   PLUGIN_UI_SLOT_ENTITY_TYPES,
   PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS,
+  PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS,
   PLUGIN_LAUNCHER_PLACEMENT_ZONES,
   PLUGIN_LAUNCHER_ACTIONS,
   PLUGIN_LAUNCHER_BOUNDS,
@@ -322,10 +323,10 @@ export const pluginUiSlotDeclarationSchema = z.object({
       path: ["entityTypes"],
     });
   }
-  if (value.routePath && value.type !== "page" && value.type !== "routeSidebar") {
+  if (value.routePath && value.type !== "page" && value.type !== "routeSidebar" && value.type !== "companySettingsPage") {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "routePath is only supported for page and routeSidebar slots",
+      message: "routePath is only supported for page, routeSidebar, and companySettingsPage slots",
       path: ["routePath"],
     });
   }
@@ -336,10 +337,28 @@ export const pluginUiSlotDeclarationSchema = z.object({
       path: ["routePath"],
     });
   }
+  if (value.type === "companySettingsPage" && !value.routePath) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "companySettingsPage slots require routePath",
+      path: ["routePath"],
+    });
+  }
   if (value.routePath && PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS.includes(value.routePath as (typeof PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS)[number])) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: `routePath "${value.routePath}" is reserved by the host`,
+      path: ["routePath"],
+    });
+  }
+  if (
+    value.type === "companySettingsPage"
+    && value.routePath
+    && PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS.includes(value.routePath as (typeof PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS)[number])
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `company settings routePath "${value.routePath}" is reserved by the host`,
       path: ["routePath"],
     });
   }

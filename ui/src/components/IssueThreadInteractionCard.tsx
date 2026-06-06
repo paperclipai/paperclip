@@ -7,11 +7,15 @@ import {
   buildSuggestedTaskTree,
   collectSuggestedTaskClientKeys,
   countSuggestedTaskNodes,
+  getCheckboxConfirmationSelectedLabels,
+  getRequestConfirmationTargetHref,
   getQuestionAnswerLabels,
   type AskUserQuestionsAnswer,
   type AskUserQuestionsInteraction,
   type IssueThreadInteraction,
+  type RequestCheckboxConfirmationInteraction,
   type RequestConfirmationInteraction,
+  type RequestConfirmationResult,
   type RequestConfirmationTarget,
   type SuggestTasksInteraction,
   type SuggestTasksResultCreatedTask,
@@ -26,17 +30,26 @@ import { PriorityIcon } from "./PriorityIcon";
 import { Textarea } from "./ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
+const OTHER_ANSWER_ID = "__paperclip_other__";
+
 interface IssueThreadInteractionCardProps {
   interaction: IssueThreadInteraction;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
   onAcceptInteraction?: (
-    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    interaction:
+      | SuggestTasksInteraction
+      | RequestConfirmationInteraction
+      | RequestCheckboxConfirmationInteraction,
     selectedClientKeys?: string[],
+    selectedOptionIds?: string[],
   ) => Promise<void> | void;
   onRejectInteraction?: (
-    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    interaction:
+      | SuggestTasksInteraction
+      | RequestConfirmationInteraction
+      | RequestCheckboxConfirmationInteraction,
     reason?: string,
   ) => Promise<void> | void;
   onSubmitInteractionAnswers?: (
@@ -94,6 +107,8 @@ function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
       return "Ask user questions";
     case "request_confirmation":
       return "Confirmation";
+    case "request_checkbox_confirmation":
+      return "Checkbox confirmation";
     default:
       return kind;
   }
@@ -452,7 +467,7 @@ function SuggestTasksCard({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span>{totalTasks === 1 ? "1 draft issue" : `${totalTasks} draft issues`}</span>
+        <span>{totalTasks === 1 ? "1 draft task" : `${totalTasks} draft tasks`}</span>
         {interaction.payload.defaultParentId ? (
           <TaskField label="Default parent" value={interaction.payload.defaultParentId} tone="subtle" />
         ) : null}
@@ -482,8 +497,8 @@ function SuggestTasksCard({
           </div>
           <p className="mt-1 leading-6">
             {skippedCount > 0
-              ? `Created ${createdCount} draft ${createdCount === 1 ? "issue" : "issues"} and skipped ${skippedCount} during review.`
-              : `Created all ${createdCount} draft ${createdCount === 1 ? "issue" : "issues"}.`}
+              ? `Created ${createdCount} draft ${createdCount === 1 ? "task" : "tasks"} and skipped ${skippedCount} during review.`
+              : `Created all ${createdCount} draft ${createdCount === 1 ? "task" : "tasks"}.`}
           </p>
         </div>
       ) : null}
@@ -508,8 +523,8 @@ function SuggestTasksCard({
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span>
                 {selectedCount === totalTasks
-                  ? `All ${totalTasks} draft ${totalTasks === 1 ? "issue" : "issues"} selected`
-                  : `${selectedCount} of ${totalTasks} draft ${totalTasks === 1 ? "issue" : "issues"} selected`}
+                  ? `All ${totalTasks} draft ${totalTasks === 1 ? "task" : "tasks"} selected`
+                  : `${selectedCount} of ${totalTasks} draft ${totalTasks === 1 ? "task" : "tasks"} selected`}
               </span>
               {selectedCount < totalTasks ? (
                 <span>
@@ -662,6 +677,20 @@ function AskUserQuestionsCard({
       ]),
     ),
   );
+  const [draftOtherAnswers, setDraftOtherAnswers] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      (interaction.result?.answers ?? [])
+        .filter((answer) => answer.otherText)
+        .map((answer) => [answer.questionId, answer.otherText ?? ""]),
+    ),
+  );
+  const [otherActiveQuestions, setOtherActiveQuestions] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(
+      (interaction.result?.answers ?? [])
+        .filter((answer) => answer.otherText)
+        .map((answer) => [answer.questionId, true]),
+    ),
+  );
   const [working, setWorking] = useState(false);
   const [cancelling, setCancelling] = useState(false);
 
@@ -674,15 +703,45 @@ function AskUserQuestionsCard({
         ]),
       ),
     );
+    setDraftOtherAnswers(
+      Object.fromEntries(
+        (interaction.result?.answers ?? [])
+          .filter((answer) => answer.otherText)
+          .map((answer) => [answer.questionId, answer.otherText ?? ""]),
+      ),
+    );
+    setOtherActiveQuestions(
+      Object.fromEntries(
+        (interaction.result?.answers ?? [])
+          .filter((answer) => answer.otherText)
+          .map((answer) => [answer.questionId, true]),
+      ),
+    );
   }, [interaction.result?.answers]);
 
   const questions = interaction.payload.questions;
   const requiredQuestions = questions.filter((question) => question.required);
   const canSubmit = requiredQuestions.every(
-    (question) => (draftAnswers[question.id] ?? []).length > 0,
+    (question) =>
+      (draftAnswers[question.id] ?? []).length > 0
+      || (
+        otherActiveQuestions[question.id] === true
+        && (draftOtherAnswers[question.id]?.trim().length ?? 0) > 0
+      ),
   );
 
   function toggleOption(questionId: string, optionId: string, selectionMode: "single" | "multi") {
+    if (optionId === OTHER_ANSWER_ID) {
+      setOtherActiveQuestions((current) => ({
+        ...current,
+        [questionId]: !current[questionId],
+      }));
+      if (selectionMode === "single") {
+        setDraftAnswers((current) => ({ ...current, [questionId]: [] }));
+      }
+      return;
+    }
+
     setDraftAnswers((current) => {
       const existing = current[questionId] ?? [];
       if (selectionMode === "single") {
@@ -693,6 +752,9 @@ function AskUserQuestionsCard({
         : [...existing, optionId];
       return { ...current, [questionId]: next };
     });
+    if (selectionMode === "single") {
+      setOtherActiveQuestions((current) => ({ ...current, [questionId]: false }));
+    }
   }
 
   async function handleSubmit() {
@@ -701,10 +763,16 @@ function AskUserQuestionsCard({
     try {
       await onSubmitInteractionAnswers(
         interaction,
-        questions.map((question) => ({
-          questionId: question.id,
-          optionIds: draftAnswers[question.id] ?? [],
-        })),
+        questions.map((question) => {
+          const otherText = otherActiveQuestions[question.id] === true
+            ? draftOtherAnswers[question.id]?.trim() ?? ""
+            : "";
+          return {
+            questionId: question.id,
+            optionIds: draftAnswers[question.id] ?? [],
+            ...(otherText ? { otherText } : {}),
+          };
+        }),
       );
     } finally {
       setWorking(false);
@@ -766,23 +834,53 @@ function AskUserQuestionsCard({
                 />
               </div>
 
-              <div
-                className="mt-3 grid gap-3"
-                role={question.selectionMode === "single" ? "radiogroup" : "group"}
-                aria-labelledby={`${interaction.id}-${question.id}-prompt`}
-              >
-                {question.options.map((option) => (
-                  <QuestionOptionButton
-                    key={option.id}
-                    id={`${interaction.id}-${question.id}-${option.id}`}
-                    label={option.label}
-                    description={option.description}
-                    selected={(draftAnswers[question.id] ?? []).includes(option.id)}
-                    selectionMode={question.selectionMode}
-                    onClick={() =>
-                      toggleOption(question.id, option.id, question.selectionMode)}
+              <div className="mt-3 space-y-3">
+                <div
+                  className="grid gap-3"
+                  role={question.selectionMode === "single" ? "radiogroup" : "group"}
+                  aria-labelledby={`${interaction.id}-${question.id}-prompt`}
+                >
+                  {question.options.map((option) => (
+                    <QuestionOptionButton
+                      key={option.id}
+                      id={`${interaction.id}-${question.id}-${option.id}`}
+                      label={option.label}
+                      description={option.description}
+                      selected={(draftAnswers[question.id] ?? []).includes(option.id)}
+                      selectionMode={question.selectionMode}
+                      onClick={() =>
+                        toggleOption(question.id, option.id, question.selectionMode)}
+                    />
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  id={`${interaction.id}-${question.id}-other`}
+                  aria-expanded={otherActiveQuestions[question.id] === true}
+                  className={cn(
+                    "text-sm font-medium underline underline-offset-4 transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                    otherActiveQuestions[question.id]
+                      ? "text-sky-700 hover:text-sky-800 dark:text-sky-300 dark:hover:text-sky-200"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() =>
+                    toggleOption(question.id, OTHER_ANSWER_ID, question.selectionMode)}
+                >
+                  Other
+                </button>
+                {otherActiveQuestions[question.id] ? (
+                  <Textarea
+                    aria-label={`Other answer for ${question.prompt}`}
+                    value={draftOtherAnswers[question.id] ?? ""}
+                    onChange={(event) =>
+                      setDraftOtherAnswers((current) => ({
+                        ...current,
+                        [question.id]: event.target.value,
+                      }))}
+                    placeholder="Type your answer"
+                    className="min-h-24 bg-background text-sm"
                   />
-                ))}
+                ) : null}
               </div>
             </div>
           ))}
@@ -886,33 +984,18 @@ function requestConfirmationTargetLabel(target: RequestConfirmationTarget) {
   return `${target.key}${revision}`;
 }
 
-function requestConfirmationTargetHref({
-  interaction,
-  target,
-}: {
-  interaction: RequestConfirmationInteraction;
-  target: RequestConfirmationTarget;
-}) {
-  if (target.href) return target.href;
-  if (target.type === "issue_document") {
-    const issueId = target.issueId ?? interaction.issueId;
-    return `/issues/${issueId}#document-${encodeURIComponent(target.key)}`;
-  }
-  return null;
-}
-
 function RequestConfirmationTargetChip({
-  interaction,
+  issueId,
   target,
   tone = "default",
 }: {
-  interaction: RequestConfirmationInteraction;
+  issueId: string;
   target: RequestConfirmationTarget | null | undefined;
   tone?: "default" | "subtle";
 }) {
   if (!target) return null;
 
-  const href = requestConfirmationTargetHref({ interaction, target });
+  const href = getRequestConfirmationTargetHref({ issueId, target });
   const className = cn(
     "inline-flex max-w-full items-center gap-1.5 rounded-sm border px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em]",
     tone === "default"
@@ -942,81 +1025,121 @@ function RequestConfirmationTargetChip({
   );
 }
 
+function ConfirmationDeclinedBlock({
+  issueId,
+  result,
+  target,
+}: {
+  issueId: string;
+  result: RequestConfirmationResult | null | undefined;
+  target: RequestConfirmationTarget | null;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
+        <span className="font-medium">Declined</span>
+        <RequestConfirmationTargetChip issueId={issueId} target={target} />
+      </div>
+      {result?.reason ? (
+        <blockquote className="rounded-sm border-l-2 border-rose-500/70 bg-rose-500/10 px-3 py-2 text-sm leading-6 text-rose-900 dark:text-rose-100">
+          {result.reason}
+        </blockquote>
+      ) : null}
+    </div>
+  );
+}
+
+function ConfirmationExpiredBlock({
+  issueId,
+  result,
+  target,
+}: {
+  issueId: string;
+  result: RequestConfirmationResult | null | undefined;
+  target: RequestConfirmationTarget | null;
+}) {
+  const outcome = result?.outcome;
+  const staleTarget = result?.staleTarget ?? null;
+  const expiredByComment = outcome === "superseded_by_comment";
+  const expiredByTargetChange = outcome === "stale_target";
+  return (
+    <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">
+        {expiredByComment ? "Expired by comment" : "Expired by target change"}
+      </div>
+      <p className="leading-6">
+        {expiredByComment
+          ? "A board comment superseded this request before it was resolved."
+          : "The requested target changed before this request was resolved."}
+      </p>
+      {expiredByComment && result?.commentId ? (
+        <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
+          <a href={`#comment-${result.commentId}`}>Jump to comment</a>
+        </Button>
+      ) : null}
+      {expiredByTargetChange ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <RequestConfirmationTargetChip
+            issueId={issueId}
+            target={staleTarget}
+            tone="subtle"
+          />
+          {staleTarget && target ? (
+            <ChevronRight className="h-3.5 w-3.5 text-amber-700" />
+          ) : null}
+          <RequestConfirmationTargetChip issueId={issueId} target={target} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ConfirmationFailedBlock() {
+  return (
+    <p className="text-sm leading-6 text-muted-foreground">
+      This request could not be resolved. Try again or create a new request.
+    </p>
+  );
+}
+
 function RequestConfirmationResolution({
   interaction,
 }: {
   interaction: RequestConfirmationInteraction;
 }) {
-  const outcome = interaction.result?.outcome;
   const target = interaction.payload.target ?? null;
-  const staleTarget = interaction.result?.staleTarget ?? null;
 
   if (interaction.status === "accepted") {
     return (
       <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
         <span className="font-medium">Confirmed</span>
-        <RequestConfirmationTargetChip interaction={interaction} target={target} />
+        <RequestConfirmationTargetChip issueId={interaction.issueId} target={target} />
       </div>
     );
   }
 
   if (interaction.status === "rejected") {
     return (
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
-          <span className="font-medium">Declined</span>
-          <RequestConfirmationTargetChip interaction={interaction} target={target} />
-        </div>
-        {interaction.result?.reason ? (
-          <blockquote className="rounded-sm border-l-2 border-rose-500/70 bg-rose-500/10 px-3 py-2 text-sm leading-6 text-rose-900 dark:text-rose-100">
-            {interaction.result.reason}
-          </blockquote>
-        ) : null}
-      </div>
+      <ConfirmationDeclinedBlock
+        issueId={interaction.issueId}
+        result={interaction.result}
+        target={target}
+      />
     );
   }
 
   if (interaction.status === "expired") {
-    const expiredByComment = outcome === "superseded_by_comment";
-    const expiredByTargetChange = outcome === "stale_target";
     return (
-      <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">
-          {expiredByComment ? "Expired by comment" : "Expired by target change"}
-        </div>
-        <p className="leading-6">
-          {expiredByComment
-            ? "A board comment superseded this confirmation before it was resolved."
-            : "The requested target changed before this confirmation was resolved."}
-        </p>
-        {expiredByComment && interaction.result?.commentId ? (
-          <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
-            <a href={`#comment-${interaction.result.commentId}`}>Jump to comment</a>
-          </Button>
-        ) : null}
-        {expiredByTargetChange ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <RequestConfirmationTargetChip
-              interaction={interaction}
-              target={staleTarget}
-              tone="subtle"
-            />
-            {staleTarget && target ? (
-              <ChevronRight className="h-3.5 w-3.5 text-amber-700" />
-            ) : null}
-            <RequestConfirmationTargetChip interaction={interaction} target={target} />
-          </div>
-        ) : null}
-      </div>
+      <ConfirmationExpiredBlock
+        issueId={interaction.issueId}
+        result={interaction.result}
+        target={target}
+      />
     );
   }
 
   if (interaction.status === "failed") {
-    return (
-      <p className="text-sm leading-6 text-muted-foreground">
-        This request could not be resolved. Try again or create a new request.
-      </p>
-    );
+    return <ConfirmationFailedBlock />;
   }
 
   return null;
@@ -1103,7 +1226,7 @@ function RequestConfirmationCard({
             </div>
           ) : null}
           <RequestConfirmationTargetChip
-            interaction={interaction}
+            issueId={interaction.issueId}
             target={interaction.payload.target}
           />
         </div>
@@ -1204,6 +1327,421 @@ function RequestConfirmationCard({
   );
 }
 
+const CHECKBOX_SUMMARY_LABEL_LIMIT = 8;
+
+function RequestCheckboxConfirmationResolution({
+  interaction,
+}: {
+  interaction: RequestCheckboxConfirmationInteraction;
+}) {
+  const target = interaction.payload.target ?? null;
+
+  if (interaction.status === "accepted") {
+    const totalOptions = interaction.payload.options.length;
+    const selectedLabels = getCheckboxConfirmationSelectedLabels({
+      payload: interaction.payload,
+      result: interaction.result,
+    });
+    const selectedCount = interaction.result?.selectedOptionIds?.length ?? selectedLabels.length;
+    const visibleLabels = selectedLabels.slice(0, CHECKBOX_SUMMARY_LABEL_LIMIT);
+    const hiddenCount = selectedLabels.length - visibleLabels.length;
+
+    return (
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
+          <span className="font-medium">
+            {selectedCount === 0
+              ? "Confirmed with no options selected"
+              : `Confirmed ${selectedCount} of ${totalOptions} ${totalOptions === 1 ? "option" : "options"}`}
+          </span>
+          <RequestConfirmationTargetChip issueId={interaction.issueId} target={target} />
+        </div>
+        {visibleLabels.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5">
+            {visibleLabels.map((label, index) => (
+              <TaskField key={`${label}-${index}`} label="Selected" value={label} />
+            ))}
+            {hiddenCount > 0 ? (
+              <span className="inline-flex items-center rounded-sm border border-border/60 bg-transparent px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                +{hiddenCount} more
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (interaction.status === "rejected") {
+    return (
+      <ConfirmationDeclinedBlock
+        issueId={interaction.issueId}
+        result={interaction.result}
+        target={target}
+      />
+    );
+  }
+
+  if (interaction.status === "expired") {
+    return (
+      <ConfirmationExpiredBlock
+        issueId={interaction.issueId}
+        result={interaction.result}
+        target={target}
+      />
+    );
+  }
+
+  if (interaction.status === "failed") {
+    return <ConfirmationFailedBlock />;
+  }
+
+  return null;
+}
+
+function CheckboxOptionRow({
+  id,
+  label,
+  description,
+  checked,
+  disabled,
+  onToggle,
+}: {
+  id: string;
+  label: string;
+  description?: string | null;
+  checked: boolean;
+  disabled: boolean;
+  onToggle: (checked: boolean) => void;
+}) {
+  return (
+    <label
+      htmlFor={id}
+      className={cn(
+        "flex cursor-pointer items-start gap-2.5 border-b border-border/60 px-3 py-2 last:border-b-0 transition-colors",
+        checked ? "bg-sky-500/10" : "hover:bg-sky-500/5",
+        disabled && "cursor-not-allowed opacity-60",
+      )}
+    >
+      <Checkbox
+        id={id}
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={(value) => onToggle(value === true)}
+        aria-label={label}
+        className="mt-0.5"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium leading-5 text-foreground">{label}</div>
+        {description ? (
+          <p className="mt-0.5 text-sm leading-5 text-muted-foreground">{description}</p>
+        ) : null}
+      </div>
+    </label>
+  );
+}
+
+function RequestCheckboxConfirmationCard({
+  interaction,
+  onAcceptInteraction,
+  onRejectInteraction,
+}: {
+  interaction: RequestCheckboxConfirmationInteraction;
+  onAcceptInteraction?: (
+    interaction: RequestCheckboxConfirmationInteraction,
+    selectedClientKeys: undefined,
+    selectedOptionIds: string[],
+  ) => Promise<void> | void;
+  onRejectInteraction?: (
+    interaction: RequestCheckboxConfirmationInteraction,
+    reason?: string,
+  ) => Promise<void> | void;
+}) {
+  const options = interaction.payload.options;
+  const optionIds = useMemo(() => options.map((option) => option.id), [options]);
+  const validOptionIds = useMemo(() => new Set(optionIds), [optionIds]);
+  const minSelected = interaction.payload.minSelected ?? 0;
+  const maxSelected = interaction.payload.maxSelected ?? null;
+
+  const defaultSelected = useMemo(
+    () =>
+      new Set(
+        (interaction.payload.defaultSelectedOptionIds ?? []).filter((id) => validOptionIds.has(id)),
+      ),
+    [interaction.payload.defaultSelectedOptionIds, validOptionIds],
+  );
+
+  const [selectedOptionIds, setSelectedOptionIds] = useState<Set<string>>(() => new Set(defaultSelected));
+  const [rejecting, setRejecting] = useState(false);
+  const [working, setWorking] = useState<"accept" | "reject" | null>(null);
+  const [rejectReason, setRejectReason] = useState(interaction.result?.reason ?? "");
+  const [rejectAttempted, setRejectAttempted] = useState(false);
+  const [acceptAttempted, setAcceptAttempted] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const optionSeed = useMemo(() => optionIds.join("\n"), [optionIds]);
+
+  useEffect(() => {
+    setSelectedOptionIds(new Set(defaultSelected));
+    setRejectReason(interaction.result?.reason ?? "");
+    setRejectAttempted(false);
+    setAcceptAttempted(false);
+    setActionError(null);
+    if (interaction.status !== "pending") {
+      setRejecting(false);
+      setWorking(null);
+    }
+    // optionSeed guards against option list identity churn for the same interaction.
+  }, [interaction.id, interaction.status, interaction.result?.reason, defaultSelected, optionSeed]);
+
+  const rejectRequiresReason = interaction.payload.rejectRequiresReason === true;
+  const allowDeclineReason = interaction.payload.allowDeclineReason !== false;
+  const trimmedRejectReason = rejectReason.trim();
+  const canReject = !rejectRequiresReason || trimmedRejectReason.length > 0;
+  const declineReasonInvalid = rejectRequiresReason && !canReject;
+  const declineReasonPlaceholder =
+    interaction.payload.declineReasonPlaceholder ?? "Optional: tell the agent what you'd change.";
+
+  const selectedCount = selectedOptionIds.size;
+  const totalOptions = options.length;
+  const atMax = maxSelected != null && selectedCount >= maxSelected;
+  const belowMin = selectedCount < minSelected;
+  const aboveMax = maxSelected != null && selectedCount > maxSelected;
+  const selectionValid = !belowMin && !aboveMax;
+
+  const validationMessage = belowMin
+    ? minSelected === 1
+      ? "Select at least 1 option."
+      : `Select at least ${minSelected} options.`
+    : aboveMax && maxSelected != null
+      ? maxSelected === 1
+        ? "Select at most 1 option."
+        : `Select at most ${maxSelected} options.`
+      : null;
+
+  function toggleOption(optionId: string, checked: boolean) {
+    setSelectedOptionIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(optionId);
+      } else {
+        next.delete(optionId);
+      }
+      return next;
+    });
+  }
+
+  function handleSelectAll() {
+    const capped = maxSelected != null ? optionIds.slice(0, maxSelected) : optionIds;
+    setSelectedOptionIds(new Set(capped));
+  }
+
+  function handleClearSelection() {
+    setSelectedOptionIds(new Set());
+  }
+
+  async function handleAccept() {
+    setAcceptAttempted(true);
+    if (!onAcceptInteraction || !selectionValid) return;
+    setWorking("accept");
+    setActionError(null);
+    try {
+      await onAcceptInteraction(interaction, undefined, [...selectedOptionIds]);
+    } catch {
+      setActionError("Try again");
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  async function handleReject() {
+    setRejectAttempted(true);
+    if (!onRejectInteraction || !canReject) return;
+    setWorking("reject");
+    setActionError(null);
+    try {
+      await onRejectInteraction(interaction, trimmedRejectReason || undefined);
+      setRejecting(false);
+    } catch {
+      setActionError("Try again");
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  if (interaction.status !== "pending") {
+    return (
+      <div className="space-y-4">
+        <RequestCheckboxConfirmationResolution interaction={interaction} />
+      </div>
+    );
+  }
+
+  const selectionSummary = totalOptions > 0 && selectedCount === totalOptions
+    ? `All ${totalOptions} options selected`
+    : `${selectedCount} of ${totalOptions} ${totalOptions === 1 ? "option" : "options"} selected`;
+  const boundsHint = maxSelected != null
+    ? `Pick ${minSelected === maxSelected ? `exactly ${maxSelected}` : `${minSelected}–${maxSelected}`}.`
+    : minSelected > 0
+      ? `Pick at least ${minSelected}.`
+      : null;
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
+        <div className="text-sm leading-6 text-foreground">{interaction.payload.prompt}</div>
+        {interaction.payload.detailsMarkdown ? (
+          <div className="border-t border-border/60 pt-3 text-sm">
+            <MarkdownBody>{interaction.payload.detailsMarkdown}</MarkdownBody>
+          </div>
+        ) : null}
+        <RequestConfirmationTargetChip
+          issueId={interaction.issueId}
+          target={interaction.payload.target}
+        />
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span>{selectionSummary}</span>
+            {boundsHint ? <span>{boundsHint}</span> : null}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={working !== null || selectedCount === totalOptions || (maxSelected != null && selectedCount >= maxSelected)}
+              onClick={handleSelectAll}
+            >
+              Select all
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={working !== null || selectedCount === 0}
+              onClick={handleClearSelection}
+            >
+              Clear selection
+            </Button>
+          </div>
+        </div>
+
+        <div
+          role="group"
+          aria-label="Selectable options"
+          className="max-h-80 overflow-y-auto rounded-sm border border-border/70"
+        >
+          {options.map((option) => {
+            const checked = selectedOptionIds.has(option.id);
+            return (
+              <CheckboxOptionRow
+                key={option.id}
+                id={`${interaction.id}-${option.id}`}
+                label={option.label}
+                description={option.description}
+                checked={checked}
+                disabled={working !== null || (!checked && atMax)}
+                onToggle={(value) => toggleOption(option.id, value)}
+              />
+            );
+          })}
+        </div>
+
+        {acceptAttempted && validationMessage ? (
+          <p className="text-xs text-destructive">{validationMessage}</p>
+        ) : null}
+
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button
+            size="sm"
+            variant={rejecting ? "outline" : "default"}
+            disabled={!onAcceptInteraction || working !== null}
+            onClick={() => void handleAccept()}
+          >
+            {working === "accept" ? (
+              <>
+                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                Confirming...
+              </>
+            ) : (
+              interaction.payload.acceptLabel ?? "Confirm selected"
+            )}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!onRejectInteraction || working !== null}
+            onClick={() => {
+              if (!allowDeclineReason) {
+                void handleReject();
+                return;
+              }
+              setRejectAttempted(false);
+              setRejecting((current) => !current);
+            }}
+          >
+            {interaction.payload.rejectLabel ?? "Request changes"}
+          </Button>
+        </div>
+
+        {rejecting ? (
+          <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-3">
+            <Textarea
+              value={rejectReason}
+              onChange={(event) => setRejectReason(event.target.value)}
+              placeholder={declineReasonPlaceholder}
+              aria-invalid={rejectAttempted && declineReasonInvalid}
+              className={cn(
+                "min-h-24 bg-background text-sm",
+                rejectAttempted && declineReasonInvalid
+                  && "border-rose-500 focus-visible:ring-rose-500/25",
+              )}
+            />
+            {rejectAttempted && declineReasonInvalid ? (
+              <p className="text-xs text-destructive">A reason is required.</p>
+            ) : null}
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={working !== null}
+                onClick={() => {
+                  setRejecting(false);
+                  setRejectAttempted(false);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!onRejectInteraction || working !== null}
+                onClick={() => void handleReject()}
+              >
+                {working === "reject" ? (
+                  <>
+                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  interaction.payload.rejectLabel ?? "Request changes"
+                )}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {actionError ? (
+          <div className="rounded-sm border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {actionError}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function IssueThreadInteractionCard({
   interaction,
   agentMap,
@@ -1262,7 +1800,9 @@ export function IssueThreadInteractionCard({
                 ? "Suggested task tree"
                 : interaction.kind === "ask_user_questions"
                   ? interaction.payload.title ?? "Questions for the operator"
-                  : "Confirmation requested")}
+                  : interaction.kind === "request_checkbox_confirmation"
+                    ? "Checkbox confirmation requested"
+                    : "Confirmation requested")}
           </div>
           {interaction.summary ? (
             <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
@@ -1299,6 +1839,12 @@ export function IssueThreadInteractionCard({
             interaction={interaction}
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
             onCancelInteraction={onCancelInteraction}
+          />
+        ) : interaction.kind === "request_checkbox_confirmation" ? (
+          <RequestCheckboxConfirmationCard
+            interaction={interaction}
+            onAcceptInteraction={onAcceptInteraction}
+            onRejectInteraction={onRejectInteraction}
           />
         ) : (
           <RequestConfirmationCard

@@ -2,7 +2,7 @@
 
 import type { ComponentProps, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   buildAgentMentionHref,
@@ -33,6 +33,18 @@ vi.mock("@/lib/router", () => ({
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
 }));
+
+// Defaults to null (no provider) so the existing suite exercises the permissive
+// path unchanged. Gating tests override the return value per-case.
+const mockUseOptionalCompany = vi.hoisted(() => vi.fn<() => { companies: Array<{ issuePrefix: string }> } | null>(() => null));
+
+vi.mock("../context/CompanyContext", () => ({
+  useOptionalCompany: mockUseOptionalCompany,
+}));
+
+afterEach(() => {
+  mockUseOptionalCompany.mockReturnValue(null);
+});
 
 function renderMarkdown(
   children: string,
@@ -449,9 +461,23 @@ describe("MarkdownBody", () => {
     const html = renderMarkdown("```ts\nconst a = 1;\n```");
 
     expect(html).toContain("paperclip-markdown-codeblock");
+    expect(html).toContain("paperclip-markdown-codeblock-actions");
+    expect(html).toContain("position:absolute;top:0.4rem;right:0.4rem;display:inline-flex");
+    expect(html).toContain("paperclip-markdown-codeblock-wrap");
+    expect(html).toContain('aria-label="Wrap lines"');
+    expect(html).toContain("position:static;opacity:1;display:inline-flex");
     expect(html).toContain("paperclip-markdown-codeblock-copy");
     expect(html).toContain('aria-label="Copy code"');
     expect(html).toContain("lucide-copy");
+  });
+
+  it("renders code block actions for indented preformatted markdown blocks", () => {
+    const html = renderMarkdown("Plan:\n\n    source fetch/sync -> signal inbox");
+
+    expect(html).toContain("paperclip-markdown-codeblock");
+    expect(html).toContain("paperclip-markdown-codeblock-wrap");
+    expect(html).toContain('aria-label="Wrap lines"');
+    expect(html).toContain("paperclip-markdown-codeblock-copy");
   });
 
   it("does not render a copy button on inline code", () => {
@@ -471,5 +497,39 @@ describe("MarkdownBody", () => {
     expect(html).toContain('data-mention-kind="issue"');
     expect(html).toContain("paperclip-markdown-issue-ref");
     expect(html).not.toContain("paperclip-mention-chip--issue");
+  });
+
+  it("gates bare-identifier auto-linking to known company prefixes", () => {
+    mockUseOptionalCompany.mockReturnValue({ companies: [{ issuePrefix: "PAP" }] });
+
+    const html = renderMarkdown("Depends on PAP-1271 and blocked by JIRA-2.", [
+      { identifier: "PAP-1271", status: "done" },
+      { identifier: "JIRA-2", status: "done" },
+    ]);
+
+    // Known prefix links; foreign tracker key stays as plain text.
+    expect(html).toContain('href="/issues/PAP-1271"');
+    expect(html).not.toContain('href="/issues/JIRA-2"');
+    expect(html).toContain("blocked by JIRA-2.");
+  });
+
+  it("stays permissive when companies are loaded but the list is empty", () => {
+    mockUseOptionalCompany.mockReturnValue({ companies: [] });
+
+    const html = renderMarkdown("See JIRA-2 for context.", [
+      { identifier: "JIRA-2", status: "done" },
+    ]);
+
+    expect(html).toContain('href="/issues/JIRA-2"');
+  });
+
+  it("never gates explicit internal issue paths, even for unknown prefixes", () => {
+    mockUseOptionalCompany.mockReturnValue({ companies: [{ issuePrefix: "PAP" }] });
+
+    const html = renderMarkdown("See /ACME/issues/ACME-1 for the writeup.", [
+      { identifier: "ACME-1", status: "done" },
+    ]);
+
+    expect(html).toContain('href="/issues/ACME-1"');
   });
 });

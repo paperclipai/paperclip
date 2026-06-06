@@ -124,6 +124,56 @@ export const AGENT_ICON_NAMES = [
 ] as const;
 export type AgentIconName = (typeof AGENT_ICON_NAMES)[number];
 
+/**
+ * Curated Lucide icon set for projects (PAP-68 part 3).
+ *
+ * The first entry, `"folder"`, is the default for any project without an
+ * explicit icon. The remaining entries reuse much of the agent icon set plus a
+ * handful of folder/structure icons that read well at small tile sizes.
+ */
+export const PROJECT_ICON_NAMES = [
+  "folder",
+  "rocket",
+  "code",
+  "terminal",
+  "database",
+  "globe",
+  "package",
+  "boxes",
+  "box",
+  "layers",
+  "briefcase",
+  "compass",
+  "target",
+  "flame",
+  "zap",
+  "star",
+  "bug",
+  "wrench",
+  "hammer",
+  "lightbulb",
+  "sparkles",
+  "shield",
+  "lock",
+  "search",
+  "cog",
+  "brain",
+  "cpu",
+  "git-branch",
+  "file-code",
+  "puzzle",
+  "gem",
+  "atom",
+  "heart",
+  "mail",
+  "message-square",
+  "crown",
+  "radar",
+  "telescope",
+  "hexagon",
+] as const;
+export type ProjectIconName = (typeof PROJECT_ICON_NAMES)[number];
+
 export const ISSUE_STATUSES = [
   "backlog",
   "todo",
@@ -179,8 +229,11 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
   "suggest_tasks",
   "ask_user_questions",
   "request_confirmation",
+  "request_checkbox_confirmation",
 ] as const;
 export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
+
+export const REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT = 200;
 
 export const ISSUE_THREAD_INTERACTION_STATUSES = [
   "pending",
@@ -218,6 +271,7 @@ export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number]
 export const ISSUE_RECOVERY_ACTION_KINDS = [
   "missing_disposition",
   "stranded_assigned_issue",
+  "workspace_validation",
   "active_run_watchdog",
   "issue_graph_liveness",
 ] as const;
@@ -280,6 +334,22 @@ export function isSystemIssueDocumentKey(key: string): key is SystemIssueDocumen
 }
 export const ISSUE_REFERENCE_SOURCE_KINDS = ["title", "description", "comment", "document"] as const;
 export type IssueReferenceSourceKind = (typeof ISSUE_REFERENCE_SOURCE_KINDS)[number];
+
+export const DOCUMENT_ANNOTATION_THREAD_STATUSES = ["open", "resolved"] as const;
+export type DocumentAnnotationThreadStatus = (typeof DOCUMENT_ANNOTATION_THREAD_STATUSES)[number];
+
+export const DOCUMENT_ANNOTATION_ANCHOR_STATES = ["active", "stale", "orphaned"] as const;
+export type DocumentAnnotationAnchorState = (typeof DOCUMENT_ANNOTATION_ANCHOR_STATES)[number];
+
+export const DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES = [
+  "exact",
+  "duplicate",
+  "fuzzy",
+  "ambiguous",
+  "missing",
+] as const;
+export type DocumentAnnotationAnchorConfidence =
+  (typeof DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES)[number];
 
 export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto"] as const;
 export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[number];
@@ -389,7 +459,7 @@ export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
 export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 
-export const PAUSE_REASONS = ["manual", "budget", "system"] as const;
+export const PAUSE_REASONS = ["manual", "budget", "system", "company_archived"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
 
 export const PROJECT_COLORS = [
@@ -739,6 +809,11 @@ export const PLUGIN_CAPABILITIES = [
   "activity.read",
   "costs.read",
   "issues.orchestration.read",
+  "access.members.read",
+  "access.invites.read",
+  "authorization.grants.read",
+  "authorization.policies.read",
+  "authorization.audit.read",
   "database.namespace.read",
   // Data Write
   "issues.create",
@@ -756,6 +831,10 @@ export const PLUGIN_CAPABILITIES = [
   "agents.resume",
   "agents.invoke",
   "agents.managed",
+  "access.members.write",
+  "access.invites.write",
+  "authorization.grants.write",
+  "authorization.policies.write",
   "agent.sessions.create",
   "agent.sessions.list",
   "agent.sessions.send",
@@ -857,6 +936,7 @@ export const PLUGIN_UI_SLOT_TYPES = [
   "commentAnnotation",
   "commentContextMenuItem",
   "settingsPage",
+  "companySettingsPage",
 ] as const;
 export type PluginUiSlotType = (typeof PLUGIN_UI_SLOT_TYPES)[number];
 
@@ -886,6 +966,21 @@ export const PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS = [
 ] as const;
 export type PluginReservedCompanyRouteSegment =
   (typeof PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS)[number];
+
+/**
+ * Reserved route segments under `/:companyPrefix/company/settings/...` that
+ * plugin company settings pages may not claim.
+ */
+export const PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS = [
+  "general",
+  "environments",
+  "access",
+  "members",
+  "invites",
+  "secrets",
+] as const;
+export type PluginReservedCompanySettingsRouteSegment =
+  (typeof PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS)[number];
 
 /**
  * Launcher placement zones describe where a plugin-owned launcher can appear
@@ -1070,6 +1165,7 @@ export type PluginEventType = (typeof PLUGIN_EVENT_TYPES)[number];
 export const PLUGIN_BRIDGE_ERROR_CODES = [
   "WORKER_UNAVAILABLE",
   "CAPABILITY_DENIED",
+  "INVOCATION_SCOPE_DENIED",
   "WORKER_ERROR",
   "TIMEOUT",
   "UNKNOWN",

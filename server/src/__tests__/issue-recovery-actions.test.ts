@@ -573,7 +573,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
   it("resolves an active recovery action by returning the source issue to todo", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
-    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: null, assigneeUserId: "board-user" })
+      .where(eq(issues.id, sourceIssueId));
     const recoveryActionSvc = issueRecoveryActionService(db);
     const action = await recoveryActionSvc.upsertSourceScoped({
       companyId,

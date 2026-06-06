@@ -110,10 +110,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
   },
   openclaw_gateway: {
     label: "OpenClaw Gateway",
-    description: "Invoke OpenClaw via gateway protocol",
+    description: "External gateway adapter",
     icon: Bot,
     comingSoon: true,
-    disabledLabel: "Configure OpenClaw within the App",
+    disabledLabel: "Invite external agents from the add-agent modal",
+    hideFromVisualSelection: true,
   },
   process: {
     label: "Process",

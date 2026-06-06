@@ -10,6 +10,7 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(),
   hasPermission: vi.fn(),
   getMembership: vi.fn(async () => null),
   listPrincipalGrants: vi.fn(async () => []),
@@ -120,6 +121,11 @@ describe("agent test-environment route", () => {
   beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant",
+    });
     mockEnvironmentService.getById.mockResolvedValue({
       id: "11111111-1111-4111-8111-111111111111",
       companyId: "company-1",

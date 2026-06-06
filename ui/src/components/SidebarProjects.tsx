@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { FolderOpen, Plus } from "lucide-react";
+import { FolderOpen, Loader2, LogOut, MoreHorizontal, Plus } from "lucide-react";
 import {
   DndContext,
   MouseSensor,
@@ -21,8 +21,17 @@ import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, projectRouteRef } from "../lib/utils";
 import { useProjectOrder } from "../hooks/useProjectOrder";
+import { resourceMembershipState, useResourceMembershipMutation, useResourceMemberships } from "../hooks/useResourceMemberships";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
+import { ProjectTile } from "./ProjectTile";
 import { SidebarSection, type SidebarSectionRadioChoice } from "./SidebarSection";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import {
   getProjectSortModeStorageKey,
@@ -41,6 +50,7 @@ const PROJECT_SORT_CHOICES: SidebarSectionRadioChoice[] = [
   { value: "alphabetical", label: "Alphabetical" },
   { value: "recent", label: "Recent" },
 ];
+const REORDER_POINTER_MEDIA = "(hover: hover) and (pointer: fine)";
 
 type ProjectItemProps = {
   activeProjectRef: string | null;
@@ -50,6 +60,8 @@ type ProjectItemProps = {
   project: Project;
   projectSidebarSlots: ProjectSidebarSlot[];
   setSidebarOpen: (open: boolean) => void;
+  onLeaveProject: (project: Project) => void;
+  leaving?: boolean;
   isDragging?: boolean;
 };
 
@@ -74,6 +86,26 @@ function sortProjects(projects: Project[], sortMode: ProjectSidebarSortMode): Pr
   return sorted;
 }
 
+function hasFineReorderPointer() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return true;
+  return window.matchMedia(REORDER_POINTER_MEDIA).matches;
+}
+
+function useFineReorderPointer() {
+  const [matches, setMatches] = useState(hasFineReorderPointer);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia(REORDER_POINTER_MEDIA);
+    const onChange = (event: MediaQueryListEvent) => setMatches(event.matches);
+    setMatches(query.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+
+  return matches;
+}
+
 function ProjectItem({
   activeProjectRef,
   companyId,
@@ -82,36 +114,67 @@ function ProjectItem({
   project,
   projectSidebarSlots,
   setSidebarOpen,
+  onLeaveProject,
+  leaving = false,
   isDragging = false,
 }: ProjectItemProps) {
   const routeRef = projectRouteRef(project);
 
   return (
     <div className="flex flex-col gap-0.5">
-      <NavLink
-        to={`/projects/${routeRef}/issues`}
-        state={SIDEBAR_SCROLL_RESET_STATE}
-        onClick={(e) => {
-          if (isDragging) {
-            e.preventDefault();
-            return;
-          }
-          if (isMobile) setSidebarOpen(false);
-        }}
-        className={cn(
-          "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
-          activeProjectRef === routeRef || activeProjectRef === project.id
-            ? "bg-accent text-foreground"
-            : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
-        )}
-      >
-        <span
-          className="shrink-0 h-3.5 w-3.5 rounded-sm"
-          style={{ backgroundColor: project.color ?? "#6366f1" }}
-        />
-        <span className="flex-1 truncate">{project.name}</span>
-        {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
-      </NavLink>
+      <div className="group/project relative flex items-center">
+        <NavLink
+          to={`/projects/${routeRef}/issues`}
+          state={SIDEBAR_SCROLL_RESET_STATE}
+          onClick={(e) => {
+            if (isDragging) {
+              e.preventDefault();
+              return;
+            }
+            if (isMobile) setSidebarOpen(false);
+          }}
+          className={cn(
+            "flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1.5 pr-8 pointer-coarse:py-1 text-[13px] font-medium transition-colors",
+            activeProjectRef === routeRef || activeProjectRef === project.id
+              ? "bg-accent text-foreground"
+              : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+          )}
+        >
+          <ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="xs" />
+          <span className="flex-1 truncate">{project.name}</span>
+          {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
+        </NavLink>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className={cn(
+                "absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 transition-opacity data-[state=open]:pointer-events-auto data-[state=open]:opacity-100",
+                isMobile
+                  ? "opacity-100"
+                  : "pointer-events-none opacity-0 group-hover/project:pointer-events-auto group-hover/project:opacity-100 group-focus-within/project:pointer-events-auto group-focus-within/project:opacity-100",
+              )}
+              aria-label={`Open actions for ${project.name}`}
+            >
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-44">
+            <DropdownMenuItem
+              onClick={() => {
+                if (leaving) return;
+                onLeaveProject(project);
+              }}
+              disabled={leaving}
+            >
+              {leaving ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <LogOut className="size-4" />}
+              <span>{leaving ? "Leaving..." : "Leave project"}</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
       {projectSidebarSlots.length > 0 && (
         <div className="ml-5 flex flex-col gap-0.5">
           {projectSidebarSlots.map((slot) => (
@@ -167,6 +230,7 @@ export function SidebarProjects() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { openNewProject } = useDialogActions();
   const { isMobile, setSidebarOpen } = useSidebar();
+  const fineReorderPointer = useFineReorderPointer();
   const location = useLocation();
 
   const { data: projects } = useQuery({
@@ -174,6 +238,8 @@ export function SidebarProjects() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const membershipsQuery = useResourceMemberships(selectedCompanyId);
+  const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -196,8 +262,12 @@ export function SidebarProjects() {
   });
 
   const visibleProjects = useMemo(
-    () => (projects ?? []).filter((project: Project) => !project.archivedAt),
-    [projects],
+    () => (projects ?? []).filter((project: Project) => {
+      if (project.archivedAt) return false;
+      if (!membershipsQuery.isSuccess) return true;
+      return resourceMembershipState(membershipsQuery.data, "project", project.id) !== "left";
+    }),
+    [membershipsQuery.data, membershipsQuery.isSuccess, projects],
   );
   const { orderedProjects, persistOrder } = useProjectOrder({
     projects: visibleProjects,
@@ -209,6 +279,7 @@ export function SidebarProjects() {
     [orderedProjects, sortMode],
   );
   const isTopMode = sortMode === "top";
+  const canReorderProjects = isTopMode && !isMobile && fineReorderPointer;
 
   const projectMatch = location.pathname.match(/^\/(?:[^/]+\/)?projects\/([^/]+)/);
   const activeProjectRef = projectMatch?.[1] ?? null;
@@ -276,6 +347,23 @@ export function SidebarProjects() {
     [isTopMode, orderedProjects, persistOrder],
   );
 
+  const leaveProject = useCallback(
+    (project: Project) => membershipMutation.mutate({
+      resourceType: "project",
+      resourceId: project.id,
+      resourceName: project.name,
+      state: "left",
+    }),
+    [membershipMutation],
+  );
+  const projectLeaving = useCallback(
+    (project: Project) =>
+      membershipMutation.isPending &&
+      membershipMutation.variables?.resourceType === "project" &&
+      membershipMutation.variables.resourceId === project.id,
+    [membershipMutation.isPending, membershipMutation.variables],
+  );
+
   const renderProject = (project: Project) => (
     <ProjectItem
       key={project.id}
@@ -286,6 +374,8 @@ export function SidebarProjects() {
       project={project}
       projectSidebarSlots={projectSidebarSlots}
       setSidebarOpen={setSidebarOpen}
+      onLeaveProject={leaveProject}
+      leaving={projectLeaving(project)}
     />
   );
 
@@ -310,7 +400,7 @@ export function SidebarProjects() {
         onRadioValueChange: persistSortMode,
       }}
     >
-      {isTopMode ? (
+      {canReorderProjects ? (
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -331,6 +421,8 @@ export function SidebarProjects() {
                   project={project}
                   projectSidebarSlots={projectSidebarSlots}
                   setSidebarOpen={setSidebarOpen}
+                  onLeaveProject={leaveProject}
+                  leaving={projectLeaving(project)}
                 />
               ))}
             </div>

@@ -22,6 +22,8 @@ import {
   storybookProjects,
   storybookSecretAccessEvents,
   storybookSecretBindings,
+  storybookSecretProviderConfigs,
+  storybookSecretProviderDiscoveryPreview,
   storybookSecretProviderHealth,
   storybookSecretProviders,
   storybookSecrets,
@@ -185,6 +187,20 @@ function installStorybookApiFixtures() {
     );
     if (secretProviderHealthMatch) {
       return Response.json(storybookSecretProviderHealth);
+    }
+
+    const secretProviderConfigsMatch = url.pathname.match(
+      /^\/api\/companies\/([^/]+)\/secret-provider-configs$/,
+    );
+    if (secretProviderConfigsMatch) {
+      return Response.json(storybookSecretProviderConfigs);
+    }
+
+    const secretProviderConfigDiscoveryPreviewMatch = url.pathname.match(
+      /^\/api\/companies\/([^/]+)\/secret-provider-configs\/discovery\/preview$/,
+    );
+    if (secretProviderConfigDiscoveryPreviewMatch && init?.method?.toUpperCase() === "POST") {
+      return Response.json(storybookSecretProviderDiscoveryPreview);
     }
 
     const secretUsageMatch = url.pathname.match(/^\/api\/secrets\/([^/]+)\/usage$/);

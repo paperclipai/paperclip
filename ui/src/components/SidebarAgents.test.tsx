@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, ResourceMemberships } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarAgents } from "./SidebarAgents";
 
@@ -20,6 +20,11 @@ const mockAuthApi = vi.hoisted(() => ({
 
 const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
+}));
+
+const mockResourceMembershipsApi = vi.hoisted(() => ({
+  listMine: vi.fn(),
+  updateAgent: vi.fn(),
 }));
 
 const mockOpenNewAgent = vi.hoisted(() => vi.fn());
@@ -91,12 +96,24 @@ vi.mock("../api/heartbeats", () => ({
   heartbeatsApi: mockHeartbeatsApi,
 }));
 
+vi.mock("../api/resourceMemberships", () => ({
+  resourceMembershipsApi: mockResourceMembershipsApi,
+}));
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 if (!globalThis.PointerEvent) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).PointerEvent = MouseEvent;
+}
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
 }
 
 function makeAgent(overrides: Partial<Agent>): Agent {
@@ -169,14 +186,24 @@ async function chooseSortMode(label: string) {
 
 function agentLinkLabels(container: HTMLElement) {
   return Array.from(container.querySelectorAll('a[href^="/agents/"]'))
+    .filter((anchor) => anchor.getAttribute("href") !== "/agents/all")
     .map((anchor) => anchor.textContent?.trim())
     .filter(Boolean);
+}
+
+function seeAllAgentsLink(container: HTMLElement) {
+  return (
+    Array.from(container.querySelectorAll('a[href="/agents/all"]')).find((anchor) =>
+      anchor.textContent?.includes("See all agents"),
+    ) ?? null
+  );
 }
 
 describe("SidebarAgents", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot> | null;
   let queryClient: QueryClient;
+  let memberships: ResourceMemberships;
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -193,6 +220,27 @@ describe("SidebarAgents", () => {
       user: { id: "user-1" },
     });
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    memberships = {
+      projectMemberships: {},
+      agentMemberships: {},
+      updatedAt: null,
+    };
+    mockResourceMembershipsApi.listMine.mockImplementation(() => Promise.resolve(memberships));
+    mockResourceMembershipsApi.updateAgent.mockImplementation((_companyId, agentId, data) => {
+      memberships = {
+        ...memberships,
+        agentMemberships: {
+          ...memberships.agentMemberships,
+          [agentId]: data.state,
+        },
+        updatedAt: new Date(),
+      };
+      return Promise.resolve({
+        resourceType: "agent",
+        resourceId: agentId,
+        state: data.state,
+      });
+    });
     localStorage.clear();
   });
 
@@ -210,7 +258,21 @@ describe("SidebarAgents", () => {
     vi.clearAllMocks();
   });
 
-  async function renderSidebarAgents() {
+  async function renderSidebarAgents(streamlined = true) {
+    const currentRoot = createRoot(container);
+    root = currentRoot;
+
+    await act(async () => {
+      currentRoot.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAgents streamlined={streamlined} />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+  }
+
+  async function renderSidebarAgentsWithDefaultProps() {
     const currentRoot = createRoot(container);
     root = currentRoot;
 
@@ -311,6 +373,31 @@ describe("SidebarAgents", () => {
     expect(agentLinkLabels(container)).toEqual(["Bravo", "Charlie", "Alpha"]);
   });
 
+  it("filters left agents only after membership state loads", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-1", name: "Alpha", urlKey: "alpha" }),
+      makeAgent({ id: "agent-2", name: "Beta", urlKey: "beta" }),
+    ]);
+    let resolveMemberships!: (value: unknown) => void;
+    mockResourceMembershipsApi.listMine.mockReturnValue(new Promise((resolve) => {
+      resolveMemberships = resolve;
+    }));
+
+    await renderSidebarAgents();
+    expect(agentLinkLabels(container)).toEqual(["Alpha", "Beta"]);
+
+    await act(async () => {
+      resolveMemberships({
+        projectMemberships: {},
+        agentMemberships: { "agent-1": "left" },
+        updatedAt: null,
+      });
+    });
+    await flushReact();
+
+    expect(agentLinkLabels(container)).toEqual(["Beta"]);
+  });
+
   it("shows edit and pause actions for an active sidebar agent", async () => {
     await renderSidebarAgents();
     await openAgentMenu();
@@ -331,6 +418,27 @@ describe("SidebarAgents", () => {
 
     expect(mockAgentsApi.pause).toHaveBeenCalledWith("agent-1", "company-1");
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Agent paused" }));
+  });
+
+  it("offers leave agent from each sidebar agent menu", async () => {
+    await renderSidebarAgents();
+    await openAgentMenu();
+
+    const leaveItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
+      .find((element) => element.textContent?.includes("Leave agent"));
+    expect(leaveItem).toBeTruthy();
+
+    await act(async () => {
+      leaveItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockResourceMembershipsApi.updateAgent).toHaveBeenCalledWith(
+      "company-1",
+      "agent-1",
+      { state: "left" },
+    );
+    expect(agentLinkLabels(container)).toEqual([]);
   });
 
   it("shows resume for paused sidebar agents", async () => {
@@ -380,6 +488,103 @@ describe("SidebarAgents", () => {
       .find((element) => element.textContent?.includes("Pause agent"));
     expect(betaPauseItem).toBeTruthy();
     expect(document.body.textContent).not.toContain("Updating...");
+  });
+
+  it("shows only active agents when any agent has a live run", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
+      makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
+      makeAgent({ id: "agent-c", name: "Charlie", urlKey: "charlie" }),
+    ]);
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      { id: "run-1", agentId: "agent-b", status: "running" },
+    ]);
+
+    await renderSidebarAgents();
+
+    const labels = agentLinkLabels(container);
+    expect(labels).toHaveLength(1);
+    expect(labels[0]).toContain("Bravo");
+    // PAP-76: the full-list entry point stays visible even when only active
+    // agents are shown.
+    expect(seeAllAgentsLink(container)?.getAttribute("href")).toBe("/agents/all");
+  });
+
+  it("shows up to 5 recently-active agents plus a See all link when none are running", async () => {
+    mockAgentsApi.list.mockResolvedValue(
+      Array.from({ length: 7 }, (_, index) =>
+        makeAgent({
+          id: `agent-${index}`,
+          name: `Agent ${index}`,
+          urlKey: `agent-${index}`,
+        }),
+      ),
+    );
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+
+    await renderSidebarAgents();
+
+    expect(agentLinkLabels(container)).toHaveLength(5);
+    expect(seeAllAgentsLink(container)?.getAttribute("href")).toBe("/agents/all");
+  });
+
+  it("classic mode (flag OFF) shows all agents and no See all link even when one is running", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
+      makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
+      makeAgent({ id: "agent-c", name: "Charlie", urlKey: "charlie" }),
+    ]);
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      { id: "run-1", agentId: "agent-b", status: "running" },
+    ]);
+
+    await renderSidebarAgents(false);
+
+    // Show-all: every agent is listed regardless of live-run state. (Bravo's
+    // label includes its live-run badge text, so match by prefix.)
+    const labels = agentLinkLabels(container);
+    expect(labels).toHaveLength(3);
+    expect(labels[0]).toBe("Alpha");
+    expect(labels[1]).toContain("Bravo");
+    expect(labels[2]).toBe("Charlie");
+    // No recent-5 truncation, so no "See all agents" link in classic mode.
+    expect(seeAllAgentsLink(container)).toBeNull();
+  });
+
+  it("classic mode (flag OFF) shows more than 5 agents without truncation", async () => {
+    mockAgentsApi.list.mockResolvedValue(
+      Array.from({ length: 7 }, (_, index) =>
+        makeAgent({
+          id: `agent-${index}`,
+          name: `Agent ${index}`,
+          urlKey: `agent-${index}`,
+        }),
+      ),
+    );
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+
+    await renderSidebarAgents(false);
+
+    expect(agentLinkLabels(container)).toHaveLength(7);
+    expect(seeAllAgentsLink(container)).toBeNull();
+  });
+
+  it("defaults to classic mode when rendered outside the Sidebar flag path", async () => {
+    mockAgentsApi.list.mockResolvedValue(
+      Array.from({ length: 7 }, (_, index) =>
+        makeAgent({
+          id: `agent-${index}`,
+          name: `Agent ${index}`,
+          urlKey: `agent-${index}`,
+        }),
+      ),
+    );
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+
+    await renderSidebarAgentsWithDefaultProps();
+
+    expect(agentLinkLabels(container)).toHaveLength(7);
+    expect(seeAllAgentsLink(container)).toBeNull();
   });
 
   it("does not offer sidebar resume for budget-paused agents", async () => {
