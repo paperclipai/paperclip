@@ -290,6 +290,38 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(await svc.findKubernetesEnvironment(companyId)).toBeNull();
   });
 
+  it("ignores a config.provider=kubernetes sandbox env without the managed marker", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // A tenant-created sandbox env with config.provider "kubernetes" but WITHOUT
+    // the managed metadata marker must NOT be treated as the managed k8s env,
+    // otherwise it would bypass the operator gVisor runtimeClass / Cilium egress.
+    await svc.create(companyId, {
+      name: "Tenant K8s Sandbox",
+      driver: "sandbox",
+      config: { provider: "kubernetes", reuseLease: false },
+    });
+
+    expect(await svc.findKubernetesEnvironment(companyId)).toBeNull();
+
+    // The managed env (created via ensureKubernetesEnvironment) carries the
+    // marker and is the only one found.
+    const managed = await svc.ensureKubernetesEnvironment(companyId, {
+      backend: "job",
+      inCluster: true,
+      runtimeClassName: "gvisor",
+    });
+    const found = await svc.findKubernetesEnvironment(companyId);
+    expect(found?.id).toBe(managed.id);
+  });
+
   it("allows multiple SSH environments for the same company", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

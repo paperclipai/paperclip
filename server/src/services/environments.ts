@@ -206,8 +206,7 @@ export function environmentService(db: Db) {
         .then((rows) =>
           rows.find(
             (row) =>
-              (row.metadata as Record<string, unknown> | null)?.[KUBERNETES_MANAGED_MARKER] === true ||
-              (row.config as Record<string, unknown> | null)?.provider === KUBERNETES_PROVIDER_KEY,
+              (row.metadata as Record<string, unknown> | null)?.[KUBERNETES_MANAGED_MARKER] === true,
           ) ?? null,
         );
 
@@ -267,8 +266,7 @@ export function environmentService(db: Db) {
         .orderBy(desc(environments.updatedAt));
       const match = rows.find(
         (row) =>
-          (row.metadata as Record<string, unknown> | null)?.[KUBERNETES_MANAGED_MARKER] === true ||
-          (row.config as Record<string, unknown> | null)?.provider === KUBERNETES_PROVIDER_KEY,
+          (row.metadata as Record<string, unknown> | null)?.[KUBERNETES_MANAGED_MARKER] === true,
       );
       return match ? toEnvironment(match) : null;
     },

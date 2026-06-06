@@ -127,6 +127,7 @@ export async function applyExecutionPolicyBootstrap(
 
   const companyIds = await instanceSettings.listCompanyIds();
   let configured = 0;
+  const failedCompanyIds: string[] = [];
   for (const companyId of companyIds) {
     try {
       await environments.ensureKubernetesEnvironment(companyId, bootstrap.kubernetesConfig);
@@ -136,6 +137,7 @@ export async function applyExecutionPolicyBootstrap(
         { err, companyId },
         "failed to ensure managed Kubernetes environment during execution-policy bootstrap",
       );
+      failedCompanyIds.push(companyId);
     }
   }
 
@@ -149,6 +151,12 @@ export async function applyExecutionPolicyBootstrap(
     },
     "applied forced Kubernetes execution policy",
   );
+
+  if (failedCompanyIds.length > 0) {
+    throw new Error(
+      `execution-policy bootstrap: ${failedCompanyIds.length} of ${companyIds.length} companies failed to get a managed Kubernetes environment under executionMode=${bootstrap.executionMode}; refusing to start (companies: ${failedCompanyIds.join(", ")})`,
+    );
+  }
 
   return { executionMode: bootstrap.executionMode, companiesConfigured: configured };
 }
