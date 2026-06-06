@@ -626,6 +626,193 @@ function LandingNav() {
   );
 }
 
+// ─── Footer ───────────────────────────────────────────────────────────────────
+
+const FOOTER_COLS: { title: string; links: { label: string; href: string; external?: boolean; dot?: string }[] }[] = [
+  {
+    title: "Product",
+    links: [
+      { label: "The cockpit", href: "#cockpit" },
+      { label: "How it runs", href: "#how" },
+      { label: "Integrations", href: "#integrations" },
+      { label: "Bring your own agent", href: "#cockpit" },
+    ],
+  },
+  {
+    title: "Engines",
+    links: [
+      { label: "Outbound", href: "#cockpit" },
+      { label: "Inbound", href: "#cockpit" },
+      { label: "Content Studio", href: "#cockpit" },
+      { label: "Revenue", href: "#cockpit" },
+      { label: "Autonomous Agents", href: "#cockpit" },
+    ],
+  },
+  {
+    title: "Resources",
+    links: [
+      { label: "FAQ", href: "#faq" },
+      { label: "Status", href: "#", dot: "#22c55e" },
+      { label: "Changelog", href: "#" },
+      { label: "Request access", href: "mailto:diggi@hirefinn.ai?subject=AGNB%20Access%20Request" },
+    ],
+  },
+  {
+    title: "Company",
+    links: [
+      { label: "Built by Finn", href: "https://www.hirefinn.ai", external: true },
+      { label: "Manifesto", href: "#" },
+      { label: "Careers", href: "#" },
+      { label: "Contact", href: "mailto:diggi@hirefinn.ai" },
+    ],
+  },
+];
+
+const SOCIALS: { label: string; href: string; icon: React.ReactNode }[] = [
+  {
+    label: "X",
+    href: "https://x.com/hire_finn",
+    icon: (
+      <svg viewBox="0 0 24 24" className="size-4" fill="currentColor" aria-hidden="true">
+        <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+      </svg>
+    ),
+  },
+  {
+    label: "LinkedIn",
+    href: "https://www.linkedin.com/company/finn-voice",
+    icon: (
+      <svg viewBox="0 0 24 24" className="size-4" fill="currentColor" aria-hidden="true">
+        <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
+      </svg>
+    ),
+  },
+  {
+    label: "YouTube",
+    href: "https://www.youtube.com/@hire_finn",
+    icon: (
+      <svg viewBox="0 0 24 24" className="size-4" fill="currentColor" aria-hidden="true">
+        <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+      </svg>
+    ),
+  },
+];
+
+function LandingFooter() {
+  const { theme, toggleTheme } = useTheme();
+  return (
+    <footer className="border-t border-black/[0.07] bg-[#FAF8F4] dark:border-white/[0.08] dark:bg-neutral-950">
+      {/* Top: brand rail + link grid */}
+      <Section className="py-14">
+        <div className="grid grid-cols-1 gap-12 lg:grid-cols-12 lg:gap-10">
+          {/* Brand rail */}
+          <div className="lg:col-span-4">
+            <img src="/logo-full.svg" alt="All Gas No Brakes" className="h-10 w-auto" />
+            <p className="mt-5 max-w-xs text-[14px] leading-relaxed text-gray-500 dark:text-neutral-400">
+              Your entire growth engine — outbound, inbound, content, and revenue —
+              run by autonomous agents in one cockpit.
+            </p>
+            <div className="mt-6 flex items-center gap-1.5">
+              {SOCIALS.map((s) => (
+                <a
+                  key={s.label}
+                  href={s.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={s.label}
+                  className="inline-flex size-8 items-center justify-center rounded-md text-gray-500 transition hover:bg-black/[0.05] hover:text-gray-900 dark:text-neutral-400 dark:hover:bg-white/10 dark:hover:text-neutral-100"
+                >
+                  {s.icon}
+                </a>
+              ))}
+            </div>
+          </div>
+
+          {/* Link grid */}
+          <div className="lg:col-span-8">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-8 sm:grid-cols-4">
+              {FOOTER_COLS.map((col) => (
+                <nav key={col.title}>
+                  <h3 className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-400 dark:text-neutral-500">
+                    {col.title}
+                  </h3>
+                  <ul className="mt-3 space-y-2">
+                    {col.links.map((l) => (
+                      <li key={l.label}>
+                        <a
+                          href={l.href}
+                          {...(l.external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+                          className="inline-flex items-center gap-1.5 text-[14px] text-gray-700 transition-colors hover:text-[#f97316] dark:text-neutral-300 dark:hover:text-[#f97316]"
+                        >
+                          {l.label}
+                          {l.dot && (
+                            <span className="relative inline-flex size-1.5" aria-hidden="true">
+                              <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75" style={{ backgroundColor: l.dot }} />
+                              <span className="relative inline-flex size-1.5 rounded-full" style={{ backgroundColor: l.dot }} />
+                            </span>
+                          )}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </nav>
+              ))}
+            </div>
+          </div>
+        </div>
+      </Section>
+
+      {/* Stats strip */}
+      <div className="w-full border-t border-black/[0.07] bg-white dark:border-white/[0.08] dark:bg-neutral-900">
+        <div className="mx-auto grid max-w-6xl grid-cols-2 border-l border-black/[0.07] px-6 dark:border-white/[0.08] lg:grid-cols-4">
+          {STATS.map((s) => (
+            <div key={s.l} className="flex flex-col border-r border-black/[0.07] px-6 py-7 dark:border-white/[0.08]">
+              <p className="text-[clamp(24px,2.5vw,36px)] font-extrabold leading-none tracking-[-0.03em] text-gray-900 dark:text-neutral-100">
+                {s.to}{s.suffix}
+              </p>
+              <p className="mt-2 text-[13px] leading-snug text-gray-500 dark:text-neutral-400">{s.l}</p>
+              <span className="mt-3 block h-[2px] w-8 bg-[#f97316]" aria-hidden="true" />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Bottom bar */}
+      <div className="border-t border-black/[0.07] dark:border-white/[0.08]">
+        <Section className="flex items-center justify-between py-5">
+          <p className="text-[13px] text-gray-500 dark:text-neutral-400">
+            © 2026 All Gas No Brakes · <span className="hidden sm:inline">built in stealth.</span>
+          </p>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={toggleTheme}
+              aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+              className="inline-flex size-8 items-center justify-center rounded-md text-gray-500 transition hover:bg-black/[0.05] hover:text-gray-900 dark:text-neutral-400 dark:hover:bg-white/10 dark:hover:text-neutral-100"
+            >
+              {theme === "dark" ? <Sun className="size-[18px]" /> : <Moon className="size-[18px]" />}
+            </button>
+            <span className="h-4 w-px bg-black/10 dark:bg-white/15" aria-hidden />
+            <div className="flex items-center gap-0.5">
+              {SOCIALS.map((s) => (
+                <a
+                  key={s.label}
+                  href={s.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={s.label}
+                  className="inline-flex size-8 items-center justify-center rounded-md text-gray-500 transition hover:bg-black/[0.05] hover:text-gray-900 dark:text-neutral-400 dark:hover:bg-white/10 dark:hover:text-neutral-100"
+                >
+                  {s.icon}
+                </a>
+              ))}
+            </div>
+          </div>
+        </Section>
+      </div>
+    </footer>
+  );
+}
+
 function Faq({ q, a }: { q: string; a: string }) {
   const [open, setOpen] = useState(false);
   return (
@@ -1112,15 +1299,7 @@ export function LandingPage() {
       </Section>
 
       {/* ── Footer ── */}
-      <footer className="border-t border-black/[0.07] dark:border-white/[0.08]">
-        <Section className="flex flex-col items-center justify-between gap-3 py-8 sm:flex-row">
-          <div className="flex items-center gap-2 text-[13px] text-gray-500 dark:text-neutral-400">
-            <img src="/favicon.svg" alt="" className="h-4 w-4" aria-hidden="true" />
-            All Gas No Brakes
-          </div>
-          <div className="font-mono text-[12px] text-gray-400 dark:text-neutral-500">© 2026 · built in stealth</div>
-        </Section>
-      </footer>
+      <LandingFooter />
     </div>
   );
 }
