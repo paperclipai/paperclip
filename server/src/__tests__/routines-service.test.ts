@@ -539,10 +539,83 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     ).rejects.toMatchObject({
       status: 409,
       message: "Cannot assign routines to terminated agents",
+      details: {
+        code: "agent_not_assignable",
+        reason: "assignee_terminated",
+        assigneeAgentId: agentId,
+      },
     });
     await expect(svc.get(routine.id)).resolves.toMatchObject({
       description: "revision 2",
       latestRevisionNumber: 2,
+    });
+  });
+
+  it("blocks routine reassignment to agents under terminated managers", async () => {
+    const { agentId, companyId, routine, svc } = await seedFixture();
+    const terminatedManagerId = randomUUID();
+    const blockedAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: terminatedManagerId,
+        companyId,
+        name: "TerminatedManager",
+        role: "manager",
+        status: "terminated",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: blockedAgentId,
+        companyId,
+        name: "BlockedRoutineCoder",
+        role: "engineer",
+        status: "active",
+        reportsTo: terminatedManagerId,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await expect(svc.update(routine.id, {
+      assigneeAgentId: blockedAgentId,
+    }, { userId: "board-user" })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "agent_not_assignable",
+        reason: "ancestor_terminated",
+        assigneeAgentId: blockedAgentId,
+        invalidAncestorAgentId: terminatedManagerId,
+      },
+    });
+
+    await expect(svc.get(routine.id)).resolves.toMatchObject({
+      assigneeAgentId: agentId,
+    });
+  });
+
+  it("blocks manual routine runs when the persisted assignee is no longer assignable", async () => {
+    const { agentId, routine, svc } = await seedFixture();
+    await db
+      .update(agents)
+      .set({ status: "terminated" })
+      .where(eq(agents.id, agentId));
+
+    await expect(svc.runRoutine(routine.id, {
+      source: "manual",
+      payload: null,
+      variables: null,
+    }, { userId: "board-user" })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "agent_not_assignable",
+        reason: "assignee_terminated",
+        assigneeAgentId: agentId,
+      },
     });
   });
 

@@ -27,7 +27,7 @@ export function IssueOutputSection({ workProducts, resolveCreatorName }: IssueOu
   const creatorFor = (item: IssueOutputItem) => resolveCreatorName?.(item) ?? null;
 
   return (
-    <section className="space-y-3" aria-label="Issue outputs">
+    <section className="space-y-3" aria-label="Task outputs">
       <div className="flex items-center gap-2">
         <Play className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
         <h3 className="text-sm font-medium text-muted-foreground">Output</h3>

@@ -156,6 +156,12 @@ import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
+  evaluateAgentInvokability,
+  evaluateAgentInvokabilityFromDb,
+  shouldCancelRunsForNonInvokableAgent,
+  type AgentOrgRow,
+} from "./agent-invokability.js";
+import {
   redactQuarantinedBodyForHigherTrust,
   sanitizeQuarantinedCommentForHigherTrust,
 } from "./source-trust.js";
@@ -240,6 +246,20 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
+const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
+// Keep this in sync with local adapters that require a git workspace before launch.
+const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
+  "acpx_local",
+  "claude_local",
+  "codex_local",
+  "cursor",
+  "gemini_local",
+  "grok_local",
+  "hermes_local",
+  "opencode_local",
+  "pi_local",
+]);
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -257,6 +277,17 @@ interface MaxTurnContinuationPolicy {
   enabled: boolean;
   maxAttempts: number;
   delayMs: number;
+}
+
+export class WorkspaceValidationFailure extends Error {
+  code = WORKSPACE_VALIDATION_FAILURE_CODE;
+  resultJson: Record<string, unknown>;
+
+  constructor(message: string, resultJson: Record<string, unknown>) {
+    super(message);
+    this.name = "WorkspaceValidationFailure";
+    this.resultJson = resultJson;
+  }
 }
 
 function resolveCodexTransientFallbackMode(attempt: number): CodexTransientFallbackMode {
@@ -888,6 +919,184 @@ async function ensureManagedProjectWorkspace(input: {
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`Failed to prepare managed checkout for "${input.repoUrl}" at "${cwd}": ${reason}`);
+  }
+}
+
+function isWorkspaceValidationFailure(error: unknown): error is WorkspaceValidationFailure {
+  return error instanceof WorkspaceValidationFailure;
+}
+
+function isWorkspaceValidationFailedRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
+) {
+  return run?.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE;
+}
+
+async function hasGitMetadata(cwd: string | null | undefined) {
+  const normalized = readNonEmptyString(cwd);
+  if (!normalized) return false;
+  return fs
+    .lstat(path.resolve(normalized, ".git"))
+    .then((entry) => entry.isDirectory() || entry.isFile())
+    .catch(() => false);
+}
+
+function sameResolvedPath(left: string | null | undefined, right: string | null | undefined) {
+  const leftPath = readNonEmptyString(left);
+  const rightPath = readNonEmptyString(right);
+  if (!leftPath || !rightPath) return false;
+  return path.resolve(leftPath) === path.resolve(rightPath);
+}
+
+export async function assertGitSensitiveAdapterWorkspaceValid(input: {
+  adapterType: string;
+  agentId: string;
+  issue: {
+    id: string;
+    identifier: string | null;
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+  } | null;
+  resolvedWorkspace: ResolvedWorkspaceForRun;
+  executionWorkspace: RealizedExecutionWorkspace;
+  persistedExecutionWorkspace: ExecutionWorkspace | null;
+  executionTarget: unknown;
+  environmentDriver?: string | null;
+  leaseMetadata?: unknown;
+}) {
+  if (!GIT_SENSITIVE_LOCAL_ADAPTER_TYPES.has(input.adapterType)) return;
+
+  const executionTargetKind = readNonEmptyString((input.executionTarget as { kind?: unknown } | null)?.kind) ?? "local";
+  if (executionTargetKind !== "local") return;
+
+  const issue = input.issue;
+  if (!issue) return;
+
+  const environmentDriver = readNonEmptyString(input.environmentDriver) ?? "local";
+  const leaseMetadata = parseObject(input.leaseMetadata);
+  const leaseProviderMetadata = parseObject(leaseMetadata.providerMetadata);
+  const leaseRemoteCwd =
+    readNonEmptyString(leaseMetadata.remoteCwd) ??
+    readNonEmptyString(leaseProviderMetadata.remoteCwd);
+
+  const effectiveCwd = readNonEmptyString(input.executionWorkspace.cwd);
+  const persistedCwd = readNonEmptyString(input.persistedExecutionWorkspace?.cwd);
+  const agentFallbackCwd = resolveDefaultAgentWorkspaceDir(input.agentId);
+  const workspaceExpectation =
+    Boolean(issue.projectWorkspaceId) ||
+    Boolean(input.resolvedWorkspace.workspaceId) ||
+    input.executionWorkspace.strategy === "git_worktree";
+
+  const fail = (reason: string, message: string, extra: Record<string, unknown> = {}) => {
+    throw new WorkspaceValidationFailure(message, {
+      workspaceValidation: {
+        reason,
+        adapterType: input.adapterType,
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        issueProjectId: issue.projectId,
+        issueProjectWorkspaceId: issue.projectWorkspaceId,
+        resolvedWorkspaceSource: input.resolvedWorkspace.source,
+        resolvedProjectId: input.resolvedWorkspace.projectId,
+        resolvedProjectWorkspaceId: input.resolvedWorkspace.workspaceId,
+        resolvedWorkspaceCwd: input.resolvedWorkspace.cwd,
+        executionWorkspaceCwd: effectiveCwd,
+        executionWorkspaceStrategy: input.executionWorkspace.strategy,
+        executionWorkspaceProjectId: input.executionWorkspace.projectId,
+        executionWorkspaceProjectWorkspaceId: input.executionWorkspace.workspaceId,
+        persistedExecutionWorkspaceId: input.persistedExecutionWorkspace?.id ?? null,
+        persistedWorkspaceCwd: persistedCwd,
+        persistedWorkspaceStrategy: input.persistedExecutionWorkspace?.strategyType ?? null,
+        persistedProjectId: input.persistedExecutionWorkspace?.projectId ?? null,
+        persistedProjectWorkspaceId: input.persistedExecutionWorkspace?.projectWorkspaceId ?? null,
+        persistedProviderRef: input.persistedExecutionWorkspace?.providerRef ?? null,
+        ...extra,
+      },
+    });
+  };
+
+  if (issue.projectWorkspaceId && !issue.projectId) {
+    fail(
+      "missing_project_id",
+      `Issue ${issue.identifier ?? issue.id} is linked to a project workspace but has no project id; refusing to launch ${input.adapterType} from fallback cwd.`,
+    );
+  }
+
+  if (!input.executionTarget && environmentDriver !== "local" && leaseRemoteCwd) return;
+
+  if (workspaceExpectation && !input.persistedExecutionWorkspace) {
+    fail(
+      "missing_persisted_execution_workspace",
+      `Issue ${issue.identifier ?? issue.id} requires a project execution workspace, but none was persisted before adapter launch.`,
+    );
+  }
+
+  if (workspaceExpectation && !effectiveCwd) {
+    fail(
+      "missing_effective_cwd",
+      `Issue ${issue.identifier ?? issue.id} expected a project workspace, but no adapter cwd was resolved before launch.`,
+    );
+  }
+
+  if (
+    input.persistedExecutionWorkspace &&
+    effectiveCwd &&
+    persistedCwd &&
+    !sameResolvedPath(effectiveCwd, persistedCwd)
+  ) {
+    fail(
+      "persisted_cwd_mismatch",
+      `Issue ${issue.identifier ?? issue.id} resolved adapter cwd "${effectiveCwd}" but persisted execution workspace cwd is "${persistedCwd}".`,
+    );
+  }
+
+  const expectedProjectWorkspaceId = issue.projectWorkspaceId ?? input.resolvedWorkspace.workspaceId ?? null;
+  if (
+    expectedProjectWorkspaceId &&
+    input.persistedExecutionWorkspace &&
+    !input.persistedExecutionWorkspace.projectWorkspaceId
+  ) {
+    fail(
+      "persisted_workspace_missing_project_workspace_id",
+      `Issue ${issue.identifier ?? issue.id} expected project workspace "${expectedProjectWorkspaceId}" but persisted execution workspace has no project workspace id.`,
+    );
+  }
+
+  if (
+    expectedProjectWorkspaceId &&
+    input.persistedExecutionWorkspace?.projectWorkspaceId &&
+    input.persistedExecutionWorkspace.projectWorkspaceId !== expectedProjectWorkspaceId
+  ) {
+    fail(
+      "project_workspace_mismatch",
+      `Issue ${issue.identifier ?? issue.id} expected project workspace "${expectedProjectWorkspaceId}" but persisted execution workspace points at "${input.persistedExecutionWorkspace.projectWorkspaceId}".`,
+    );
+  }
+
+  if (workspaceExpectation && effectiveCwd && sameResolvedPath(effectiveCwd, agentFallbackCwd)) {
+    fail(
+      "fallback_agent_home_cwd",
+      `Issue ${issue.identifier ?? issue.id} expected a project workspace, but ${input.adapterType} would launch from agent fallback cwd "${effectiveCwd}".`,
+    );
+  }
+
+  if (
+    input.persistedExecutionWorkspace?.strategyType === "git_worktree" &&
+    input.persistedExecutionWorkspace.providerRef &&
+    effectiveCwd &&
+    !sameResolvedPath(effectiveCwd, input.persistedExecutionWorkspace.providerRef)
+  ) {
+    fail(
+      "git_worktree_provider_ref_mismatch",
+      `Issue ${issue.identifier ?? issue.id} expected git worktree "${input.persistedExecutionWorkspace.providerRef}" but adapter cwd resolved to "${effectiveCwd}".`,
+    );
+  }
+
+  if (workspaceExpectation && effectiveCwd && !await hasGitMetadata(effectiveCwd)) {
+    fail(
+      "missing_git_metadata",
+      `Issue ${issue.identifier ?? issue.id} expected a git workspace for ${input.adapterType}, but "${effectiveCwd}" has no .git metadata.`,
+    );
   }
 }
 
@@ -2856,6 +3065,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .from(agents)
       .where(eq(agents.id, agentId))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function getAgentInvokability(agent: typeof agents.$inferSelect | null | undefined) {
+    return evaluateAgentInvokabilityFromDb(db, agent);
+  }
+
+  function toAgentOrgRow(agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "reportsTo" | "status">): AgentOrgRow {
+    return {
+      id: agent.id,
+      companyId: agent.companyId,
+      name: agent.name,
+      reportsTo: agent.reportsTo,
+      status: agent.status,
+    };
+  }
+
+  async function listCompanyAgentOrgRows(companyId: string): Promise<AgentOrgRow[]> {
+    return db
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        name: agents.name,
+        reportsTo: agents.reportsTo,
+        status: agents.status,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+  }
+
+  function groupAgentOrgRowsByCompany(agentRows: AgentOrgRow[]) {
+    const byCompany = new Map<string, AgentOrgRow[]>();
+    for (const agent of agentRows) {
+      const companyAgents = byCompany.get(agent.companyId);
+      if (companyAgents) {
+        companyAgents.push(agent);
+      } else {
+        byCompany.set(agent.companyId, [agent]);
+      }
+    }
+    return byCompany;
   }
 
   async function getRun(runId: string, opts?: { unsafeFullResultJson?: boolean }) {
@@ -4943,6 +5192,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     issueId: string,
   ) {
+    const invokability = await getAgentInvokability(agent);
+    if (!invokability.invokable) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Missing-comment retry suppressed because the agent is not invokable",
+        payload: {
+          reason: invokability.reason,
+          invalidOrgChain: invokability.invalidOrgChain,
+          ...invokability.details,
+        },
+      });
+      return null;
+    }
+
     const contextSnapshot = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
@@ -5163,6 +5428,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     now: Date,
   ) {
+    const invokability = await getAgentInvokability(agent);
+    if (!invokability.invokable) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Process-loss retry suppressed because the agent is not invokable",
+        payload: {
+          reason: invokability.reason,
+          invalidOrgChain: invokability.invalidOrgChain,
+          ...invokability.details,
+        },
+      });
+      await releaseIssueExecutionAndPromote(run);
+      return null;
+    }
+
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
@@ -5313,15 +5595,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+    const agentInvokability = await getAgentInvokability(agent);
+    if (!agentInvokability.invokable) {
       return {
         allowed: false,
         reason: "Scheduled retry suppressed because the agent is not invokable",
         errorCode: "agent_not_invokable",
         issueId,
         details: {
-          agentId: agent.id,
-          agentStatus: agent.status,
+          ...agentInvokability.details,
+          invalidOrgChain: agentInvokability.invalidOrgChain,
         },
       };
     }
@@ -5693,6 +5976,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         maxAttempts,
       };
     }
+
+    if (retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON) {
+      const invokability = await getAgentInvokability(agent);
+      if (!invokability.invokable) {
+        const contextSnapshot = parseObject(run.contextSnapshot);
+        const issueId = readNonEmptyString(contextSnapshot.issueId);
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "Scheduled retry suppressed because the agent is not invokable",
+          payload: {
+            retryReason,
+            scheduledRetryAttempt: nextAttempt,
+            maxAttempts,
+            reason: invokability.reason,
+            invalidOrgChain: invokability.invalidOrgChain,
+            ...invokability.details,
+          },
+        });
+        return {
+          outcome: "not_scheduled" as const,
+          reason: "Scheduled retry suppressed because the agent is not invokable",
+          errorCode: "agent_not_invokable" as const,
+          issueId,
+        };
+      }
+    }
+
     const schedule =
       transientRetryNotBefore && transientRetryNotBefore.getTime() > baseSchedule.dueAt.getTime()
         ? {
@@ -6311,15 +6623,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
-  async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
+  async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
     if (!agent) {
       await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
       return null;
     }
-    if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
-      await cancelRunInternal(run.id, "Cancelled because the agent is not invokable");
+    const invokability = companyAgents
+      ? evaluateAgentInvokability(toAgentOrgRow(agent), companyAgents)
+      : await getAgentInvokability(agent);
+    if (!invokability.invokable) {
+      await cancelRunInternal(run.id, `Cancelled because the agent is not invokable: ${invokability.reason}`);
       return null;
     }
 
@@ -7230,7 +7545,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
-      if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+      const invokability = await getAgentInvokability(agent);
+      if (!invokability.invokable) {
+        if (shouldCancelRunsForNonInvokableAgent(invokability)) {
+          await cancelActiveForAgentInternal(agentId, `Cancelled because the agent is not invokable: ${invokability.reason}`);
+        }
         return [];
       }
       const policy = parseHeartbeatPolicy(agent);
@@ -7264,6 +7583,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : sql`false`,
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
+      const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
       const prioritizedRuns = [...queuedRuns].sort((left, right) => {
         const leftIssueId = readNonEmptyString(parseObject(left.contextSnapshot).issueId);
         const rightIssueId = readNonEmptyString(parseObject(right.contextSnapshot).issueId);
@@ -7285,7 +7605,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun);
+        const claimed = await claimQueuedRun(queuedRun, companyAgents);
         if (claimed) claimedRuns.push(claimed);
       }
       if (claimedRuns.length === 0) return [];
@@ -8314,6 +8634,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const logEntry = formatRuntimeWorkspaceWarningLog(warning);
         await onLog(logEntry.stream, logEntry.chunk);
       }
+      await assertGitSensitiveAdapterWorkspaceValid({
+        adapterType: agent.adapterType,
+        agentId: agent.id,
+        issue: issueRef
+          ? {
+              id: issueRef.id,
+              identifier: issueRef.identifier,
+              projectId: issueRef.projectId,
+              projectWorkspaceId: issueRef.projectWorkspaceId,
+            }
+          : null,
+        resolvedWorkspace,
+        executionWorkspace,
+        persistedExecutionWorkspace,
+        executionTarget,
+        environmentDriver: selectedEnvironment.driver,
+        leaseMetadata: activeEnvironmentLease.lease.metadata,
+      });
       const adapterEnv = Object.fromEntries(
         Object.entries(parseObject(resolvedConfig.env)).filter(
           (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",
@@ -8798,6 +9136,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),
       );
+      const workspaceValidationFailure = isWorkspaceValidationFailure(err) ? err : null;
+      const failureErrorCode = workspaceValidationFailure?.code ?? "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
@@ -8818,11 +9158,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const failedRun = await setRunStatus(run.id, "failed", {
         error: message,
-        errorCode: "adapter_failed",
+        errorCode: failureErrorCode,
         finishedAt: new Date(),
         resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
-          errorCode: "adapter_failed",
+          errorCode: failureErrorCode,
           errorMessage: message,
+          resultJson: workspaceValidationFailure?.resultJson ?? null,
         }),
         stdoutExcerpt,
         stderrExcerpt,
@@ -8844,7 +9185,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
         const livenessRun = await classifyAndPersistRunLiveness(failedRun) ?? failedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
-        await finalizeIssueCommentPolicy(livenessRun, agent);
+        if (!isWorkspaceValidationFailedRun(livenessRun)) {
+          await finalizeIssueCommentPolicy(livenessRun, agent);
+        }
         await releaseIssueExecutionAndPromote(livenessRun);
 
         await updateRuntimeState(agent, livenessRun, {
@@ -8907,7 +9250,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             const failedAgent = setupFailureAgent ?? await getAgent(run.agentId).catch(() => null);
             if (failedAgent) {
               await refreshContinuationSummaryForRun(livenessRun, failedAgent).catch(() => undefined);
-              await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
+              if (!isWorkspaceValidationFailedRun(livenessRun)) {
+                await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
+              }
             }
             await releaseIssueExecutionAndPromote(livenessRun).catch(() => undefined);
           }
@@ -8946,6 +9291,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       "Paperclip automatically retried continuation for this assigned `in_progress` issue during terminal run " +
       `recovery, but it still has no live execution path.${failureSummary ?? ""} ` +
       "Moving it to `blocked` so it is visible for intervention."
+    );
+  }
+
+  function buildWorkspaceValidationRecoveryComment(input: {
+    latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
+  }) {
+    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+    return (
+      "Paperclip stopped before launching the local adapter because the issue workspace failed validation. " +
+      `This prevents git-sensitive adapters from running in an unrelated fallback cwd.${failureSummary ?? ""} ` +
+      "Moving it to `blocked` with a source-scoped recovery action so the workspace link, cwd, or git checkout can be repaired before resuming."
     );
   }
 
@@ -9001,6 +9357,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(eq(issues.id, issue.id));
       }
 
+      if (
+        isWorkspaceValidationFailedRun(run) &&
+        (issue.status === "todo" || issue.status === "in_progress") &&
+        !issue.assigneeUserId &&
+        issue.assigneeAgentId === run.agentId
+      ) {
+        return {
+          kind: "blocked" as const,
+          issue,
+          previousStatus: issue.status,
+          comment: buildWorkspaceValidationRecoveryComment({ latestRun: run }),
+          recoveryCause: WORKSPACE_VALIDATION_RECOVERY_CAUSE,
+        };
+      }
+
       while (true) {
         const deferred = await tx
           .select()
@@ -9024,13 +9395,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(eq(agents.id, deferred.agentId))
           .then((rows) => rows[0] ?? null);
 
-        if (
-          !deferredAgent ||
-          deferredAgent.companyId !== issue.companyId ||
-          deferredAgent.status === "paused" ||
-          deferredAgent.status === "terminated" ||
-          deferredAgent.status === "pending_approval"
-        ) {
+        const companyAgents = deferredAgent
+          ? await tx
+            .select({
+              id: agents.id,
+              companyId: agents.companyId,
+              name: agents.name,
+              reportsTo: agents.reportsTo,
+              status: agents.status,
+            })
+            .from(agents)
+            .where(eq(agents.companyId, issue.companyId))
+          : [];
+        const deferredInvokability =
+          deferredAgent?.companyId === issue.companyId
+            ? evaluateAgentInvokability(deferredAgent, companyAgents)
+            : evaluateAgentInvokability(null, companyAgents);
+
+        if (!deferredAgent || deferredAgent.companyId !== issue.companyId || !deferredInvokability.invokable) {
           await tx
             .update(agentWakeupRequests)
             .set({
@@ -9247,17 +9629,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const shouldBlockImmediately =
         !recoveryAgentInvokable ||
         !recoveryAgent ||
+        isWorkspaceValidationFailedRun(run) ||
         didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
       if (shouldBlockImmediately) {
-        const comment = buildImmediateExecutionPathRecoveryComment({
-          status: issue.status as "todo" | "in_progress",
-          latestRun: run,
-        });
+        const workspaceValidationFailure = isWorkspaceValidationFailedRun(run);
+        const comment = workspaceValidationFailure
+          ? buildWorkspaceValidationRecoveryComment({ latestRun: run })
+          : buildImmediateExecutionPathRecoveryComment({
+              status: issue.status as "todo" | "in_progress",
+              latestRun: run,
+            });
         return {
           kind: "blocked" as const,
           issue,
           previousStatus: issue.status,
           comment,
+          recoveryCause: workspaceValidationFailure ? WORKSPACE_VALIDATION_RECOVERY_CAUSE : undefined,
         };
       }
 
@@ -9340,6 +9727,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         previousStatus: promotionResult.previousStatus as "todo" | "in_progress",
         latestRun: run,
         comment: promotionResult.comment,
+        recoveryCause:
+          promotionResult.recoveryCause === WORKSPACE_VALIDATION_RECOVERY_CAUSE
+            ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
+            : undefined,
       });
       return;
     }
@@ -9504,12 +9895,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     }
 
-    if (
-      agent.status === "paused" ||
-      agent.status === "terminated" ||
-      agent.status === "pending_approval"
-    ) {
-      throw conflict("Agent is not invokable in its current state", { status: agent.status });
+    const invokability = await getAgentInvokability(agent);
+    if (!invokability.invokable) {
+      if (opts.requestedByActorType !== "user") {
+        await writeSkippedRequest("agent.not_invokable", {
+          error: invokability.message,
+        });
+      }
+      throw conflict(invokability.message, {
+        status: agent.status,
+        reason: invokability.reason,
+        invalidOrgChain: invokability.invalidOrgChain,
+        ...invokability.details,
+      });
     }
 
     const policy = parseHeartbeatPolicy(agent);
@@ -10313,6 +10711,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return runs.length;
   }
 
+  async function cancelPendingWakeupsForAgentsInternal(agentIds: string[], reason: string) {
+    const uniqueAgentIds = [...new Set(agentIds)].filter((agentId) => agentId.length > 0);
+    if (uniqueAgentIds.length === 0) return 0;
+
+    const now = new Date();
+    const wakeupIds = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          inArray(agentWakeupRequests.agentId, uniqueAgentIds),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+          sql`${agentWakeupRequests.runId} is null`,
+        ),
+      )
+      .then((rows) => rows.map((row) => row.id));
+
+    if (wakeupIds.length === 0) return 0;
+
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        status: "cancelled",
+        finishedAt: now,
+        error: reason,
+        updatedAt: now,
+      })
+      .where(inArray(agentWakeupRequests.id, wakeupIds));
+
+    return wakeupIds.length;
+  }
+
+  async function cancelInvocationsForAgentsInternal(agentIds: string[], reason: string) {
+    const uniqueAgentIds = [...new Set(agentIds)].filter((agentId) => agentId.length > 0);
+    let runsCancelled = 0;
+    for (const agentId of uniqueAgentIds) {
+      runsCancelled += await cancelActiveForAgentInternal(agentId, reason);
+    }
+    const wakeupsCancelled = await cancelPendingWakeupsForAgentsInternal(uniqueAgentIds, reason);
+    return {
+      agentIds: uniqueAgentIds,
+      runsCancelled,
+      wakeupsCancelled,
+    };
+  }
+
   async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
     if (scope.scopeType === "agent") {
       await cancelActiveForAgentInternal(scope.scopeId, "Cancelled due to budget pause");
@@ -10614,12 +11058,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .from(agents)
         .innerJoin(companies, eq(companies.id, agents.companyId))
         .where(eq(companies.status, "active"));
+      const agentsByCompany = groupAgentOrgRowsByCompany(allAgents.map(toAgentOrgRow));
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
 
       for (const agent of allAgents) {
-        if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
+        const invokability = evaluateAgentInvokability(toAgentOrgRow(agent), agentsByCompany.get(agent.companyId) ?? []);
+        if (!invokability.invokable) continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
@@ -10656,6 +11102,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelRun: (runId: string, reason?: string) => cancelRunInternal(runId, reason),
 
     cancelActiveForAgent: (agentId: string, reason?: string) => cancelActiveForAgentInternal(agentId, reason),
+
+    cancelInvocationsForAgents: (agentIds: string[], reason: string) =>
+      cancelInvocationsForAgentsInternal(agentIds, reason),
 
     cancelBudgetScopeWork,
 

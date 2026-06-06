@@ -168,6 +168,183 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await tempDb?.cleanup();
   });
 
+  async function seedAssignableAgentCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  function agentRow(companyId: string, input: {
+    id: string;
+    name: string;
+    status?: string;
+    reportsTo?: string | null;
+  }) {
+    return {
+      id: input.id,
+      companyId,
+      name: input.name,
+      role: "engineer",
+      status: input.status ?? "active",
+      reportsTo: input.reportsTo ?? null,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    };
+  }
+
+  it("rejects direct terminated assignees with structured conflict details", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const terminatedAgentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, {
+      id: terminatedAgentId,
+      name: "TerminatedCoder",
+      status: "terminated",
+    }));
+
+    await expect(svc.create(companyId, {
+      title: "Do not assign this",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: terminatedAgentId,
+    })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "agent_not_assignable",
+        reason: "assignee_terminated",
+        assigneeAgentId: terminatedAgentId,
+      },
+    });
+  });
+
+  it("rejects invalid ancestor-chain assignees and preserves the existing assignment", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const activeAgentId = randomUUID();
+    const terminatedManagerId = randomUUID();
+    const blockedAgentId = randomUUID();
+    await db.insert(agents).values([
+      agentRow(companyId, { id: activeAgentId, name: "ActiveCoder" }),
+      agentRow(companyId, {
+        id: terminatedManagerId,
+        name: "TerminatedManager",
+        status: "terminated",
+      }),
+      agentRow(companyId, {
+        id: blockedAgentId,
+        name: "BlockedCoder",
+        reportsTo: terminatedManagerId,
+      }),
+    ]);
+    const issue = await svc.create(companyId, {
+      title: "Keep current assignment",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: activeAgentId,
+    });
+
+    await expect(svc.update(issue.id, {
+      assigneeAgentId: blockedAgentId,
+    })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "agent_not_assignable",
+        reason: "ancestor_terminated",
+        assigneeAgentId: blockedAgentId,
+        invalidAncestorAgentId: terminatedManagerId,
+      },
+    });
+
+    const persisted = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, issue.id))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted?.assigneeAgentId).toBe(activeAgentId);
+  });
+
+  it("rejects checkout by a terminated agent before assigning the issue", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const terminatedAgentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, {
+      id: terminatedAgentId,
+      name: "TerminatedCheckoutCoder",
+      status: "terminated",
+    }));
+    const issue = await svc.create(companyId, {
+      title: "Checkout must stay unassigned",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+    });
+
+    await expect(svc.checkout(issue.id, terminatedAgentId, ["todo"], randomUUID()))
+      .rejects.toMatchObject({
+        status: 409,
+        details: {
+          code: "agent_not_assignable",
+          reason: "assignee_terminated",
+          assigneeAgentId: terminatedAgentId,
+        },
+      });
+
+    const persisted = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId, status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issue.id))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted).toMatchObject({
+      assigneeAgentId: null,
+      status: "todo",
+    });
+  });
+
+  it("rejects moving an existing terminated assignment into progress without clearing it", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const assigneeAgentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, {
+      id: assigneeAgentId,
+      name: "SoonTerminatedCoder",
+    }));
+    const issue = await svc.create(companyId, {
+      title: "Do not restart after termination",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId,
+    });
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, assigneeAgentId));
+
+    await expect(svc.update(issue.id, {
+      status: "in_progress",
+    })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "agent_not_assignable",
+        reason: "assignee_terminated",
+        assigneeAgentId,
+      },
+    });
+
+    const persisted = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId, status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issue.id))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted).toMatchObject({
+      assigneeAgentId,
+      status: "todo",
+    });
+  });
+
   it("returns issues an agent participated in across the supported signals", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -3060,6 +3237,74 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
+  it("preserves the parent project when a generic child create inherits workspace linkage", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const parentIssueId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+    });
+
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Issue worktree",
+      status: "active",
+      providerType: "git_worktree",
+    });
+
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+      },
+    });
+
+    const child = await svc.create(companyId, {
+      parentId: parentIssueId,
+      title: "Generic child issue",
+    });
+
+    expect(child.parentId).toBe(parentIssueId);
+    expect(child.projectId).toBe(projectId);
+    expect(child.projectWorkspaceId).toBe(projectWorkspaceId);
+    expect(child.executionWorkspaceId).toBe(executionWorkspaceId);
+  });
+
   it("keeps explicit workspace fields instead of inheriting the parent linkage", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -3216,18 +3461,63 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
 
     const followUp = await svc.create(companyId, {
-      projectId,
       title: "Follow-up issue",
       inheritExecutionWorkspaceFromIssueId: sourceIssueId,
     });
 
     expect(followUp.parentId).toBeNull();
+    expect(followUp.projectId).toBe(projectId);
     expect(followUp.projectWorkspaceId).toBe(projectWorkspaceId);
     expect(followUp.executionWorkspaceId).toBe(executionWorkspaceId);
     expect(followUp.executionWorkspacePreference).toBe("reuse_existing");
     expect(followUp.executionWorkspaceSettings).toEqual({
       mode: "operator_branch",
     });
+  });
+
+  it("derives project identity when an update adds workspace linkage to a projectless issue", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Projectless issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const updated = await svc.update(issueId, {
+      projectWorkspaceId,
+    });
+
+    expect(updated?.projectId).toBe(projectId);
+    expect(updated?.projectWorkspaceId).toBe(projectWorkspaceId);
   });
 
   it("syncs reused execution workspace config when issue workspace settings are updated", async () => {

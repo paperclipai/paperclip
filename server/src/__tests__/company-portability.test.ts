@@ -969,6 +969,7 @@ describe("company portability", () => {
         leadAgentId: "agent-1",
         targetDate: "2026-03-31",
         color: "#123456",
+        icon: "rocket",
         status: "planned",
         executionWorkspacePolicy: {
           enabled: true,
@@ -1057,6 +1058,7 @@ describe("company portability", () => {
     });
 
     const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    expect(extension).toContain('icon: "rocket"');
     expect(extension).toContain("workspaces:");
     expect(extension).toContain("main-repo:");
     expect(extension).toContain('repoUrl: "https://github.com/paperclipai/paperclip.git"');
@@ -1144,10 +1146,64 @@ describe("company portability", () => {
         defaultProjectWorkspaceId: "workspace-imported",
       }),
     }));
+    expect(projectSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      icon: "rocket",
+    }));
     expect(issueSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
       projectId: "project-imported",
       projectWorkspaceId: "workspace-imported",
       title: "Write launch task",
+    }));
+  });
+
+  it("normalizes invalid imported project icon names to null", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Imported Paperclip",
+    });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.list.mockResolvedValue([]);
+    projectSvc.list.mockResolvedValue([]);
+    projectSvc.create.mockResolvedValue({
+      id: "project-imported",
+      name: "Launch",
+      urlKey: "launch",
+    });
+
+    const files = {
+      "COMPANY.md": [
+        "---",
+        'schema: "agentcompanies/v1"',
+        'name: "Imported Paperclip"',
+        "---",
+        "",
+      ].join("\n"),
+      "projects/launch/PROJECT.md": [
+        "---",
+        'name: "Launch"',
+        "---",
+        "",
+      ].join("\n"),
+      ".paperclip.yaml": [
+        'schema: "paperclip/v1"',
+        "projects:",
+        "  launch:",
+        '    icon: "not-a-project-icon"',
+        "",
+      ].join("\n"),
+    };
+
+    await portability.importBundle({
+      source: { type: "inline", rootPath: "paperclip-demo", files },
+      include: { company: true, agents: false, projects: true, issues: false },
+      target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(projectSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      icon: null,
     }));
   });
 

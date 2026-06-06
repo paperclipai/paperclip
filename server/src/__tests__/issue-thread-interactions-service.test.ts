@@ -746,6 +746,164 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("A decline reason is required for this confirmation");
   });
 
+  it("accepts request_checkbox_confirmation interactions with selected option ids", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Checkbox confirmation accept");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_checkbox_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Which files should be deleted?",
+        options: [
+          { id: "file-a", label: "a.txt" },
+          { id: "file-b", label: "b.txt" },
+          { id: "file-c", label: "c.txt" },
+        ],
+        defaultSelectedOptionIds: ["file-a"],
+        minSelected: 0,
+        maxSelected: 2,
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    expect(created).toMatchObject({
+      kind: "request_checkbox_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        supersedeOnUserComment: true,
+        allowDeclineReason: true,
+      },
+    });
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {
+      selectedOptionIds: ["file-c", "file-a"],
+    }, {
+      userId: "local-board",
+    });
+
+    expect(accepted.createdIssues).toEqual([]);
+    expect(accepted.interaction).toMatchObject({
+      kind: "request_checkbox_confirmation",
+      status: "accepted",
+      result: {
+        version: 1,
+        outcome: "accepted",
+        selectedOptionIds: ["file-a", "file-c"],
+      },
+      resolvedByUserId: "local-board",
+    });
+  });
+
+  it("enforces request_checkbox_confirmation selected option references and bounds", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Checkbox confirmation bounds");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_checkbox_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Pick one or two options.",
+        options: [
+          { id: "one", label: "One" },
+          { id: "two", label: "Two" },
+          { id: "three", label: "Three" },
+        ],
+        defaultSelectedOptionIds: ["one"],
+        minSelected: 1,
+        maxSelected: 2,
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await expect(interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {
+      selectedOptionIds: [],
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("Select at least 1 checkbox confirmation option(s)");
+
+    await expect(interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {
+      selectedOptionIds: ["missing"],
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("Unknown checkbox confirmation optionId: missing");
+
+    await expect(interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {
+      selectedOptionIds: ["one", "two", "three"],
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("Select no more than 2 checkbox confirmation option(s)");
+  });
+
+  it("expires request_checkbox_confirmation interactions when a user comments after creation", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Checkbox confirmation supersede");
+    const commentId = randomUUID();
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_checkbox_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Which files should be deleted?",
+        options: [{ id: "file-a", label: "a.txt" }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: commentId,
+      createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
+      authorUserId: "local-board",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(expired).toHaveLength(1);
+    expect(expired[0]).toMatchObject({
+      id: created.id,
+      kind: "request_checkbox_confirmation",
+      status: "expired",
+      result: {
+        version: 1,
+        outcome: "superseded_by_comment",
+        commentId,
+      },
+    });
+  });
+
   it("returns agent-authored request confirmations to the creating agent when a board user accepts", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

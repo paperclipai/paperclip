@@ -97,7 +97,7 @@ function TextPreview({ artifact }: { artifact: CompanyArtifact }) {
   );
 }
 
-function ArtifactPreview({ artifact }: { artifact: CompanyArtifact }) {
+export function ArtifactPreview({ artifact }: { artifact: CompanyArtifact }) {
   switch (artifact.mediaKind) {
     case "image":
       return <ImagePreview artifact={artifact} />;

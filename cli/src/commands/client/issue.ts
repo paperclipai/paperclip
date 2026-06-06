@@ -149,6 +149,7 @@ interface IssueRecoveryResolveOptions extends BaseClientOptions {
 
 interface InteractionAcceptOptions extends BaseClientOptions {
   selectedClientKeys?: string;
+  selectedOptionIds?: string;
 }
 
 interface InteractionReasonOptions extends BaseClientOptions {
@@ -745,11 +746,13 @@ export function registerIssueCommands(program: Command): void {
       .argument("<issueId>", "Issue ID")
       .argument("<interactionId>", "Interaction ID")
       .option("--selected-client-keys <csv>", "Client keys to accept")
+      .option("--selected-option-ids <csv>", "Checkbox option IDs to accept")
       .action(async (issueId: string, interactionId: string, opts: InteractionAcceptOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
           const payload = acceptIssueThreadInteractionSchema.parse({
             selectedClientKeys: opts.selectedClientKeys === undefined ? undefined : parseCsv(opts.selectedClientKeys),
+            selectedOptionIds: opts.selectedOptionIds === undefined ? undefined : parseCsv(opts.selectedOptionIds),
           });
           const interaction = await ctx.api.post(apiPath`/api/issues/${issueId}/interactions/${interactionId}/accept`, payload);
           printOutput(interaction, { json: ctx.json });
@@ -761,7 +764,7 @@ export function registerIssueCommands(program: Command): void {
 
   for (const [name, action, schema, description] of [
     ["interaction:reject", "reject", rejectIssueThreadInteractionSchema, "Reject an issue thread interaction"],
-    ["interaction:cancel", "cancel", cancelIssueThreadInteractionSchema, "Cancel an ask_user_questions issue thread interaction"],
+    ["interaction:cancel", "cancel", cancelIssueThreadInteractionSchema, "Cancel an issue thread interaction"],
   ] as const) {
     addCommonClientOptions(
       issue

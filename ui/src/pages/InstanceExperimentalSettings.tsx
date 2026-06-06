@@ -205,6 +205,8 @@ export function InstanceExperimentalSettings() {
 
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
+  const enableStreamlinedLeftNavigation =
+    experimentalQuery.data?.enableStreamlinedLeftNavigation === true;
   const enableIssuePlanDecompositions =
     experimentalQuery.data?.enableIssuePlanDecompositions === true;
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
@@ -289,7 +291,7 @@ export function InstanceExperimentalSettings() {
             <h2 className="text-sm font-semibold">Enable Isolated Workspaces</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Show execution workspace controls in project configuration and allow isolated workspace behavior for new
-              and existing issue runs.
+              and existing task runs.
             </p>
           </div>
           <ToggleSwitch
@@ -304,9 +306,31 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Issue Plan Decomposition Panel</h2>
+            <h2 className="text-sm font-semibold">Streamlined Left Navigation Bar</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Show accepted-plan decomposition history on issue detail pages. Intended for debugging and validating
+              Reduces the maximum number of items in the left navigation bar — nests Projects under Work with a
+              dedicated Projects page, and shows only active agents (max 5 recently-active) in the sidebar.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableStreamlinedLeftNavigation}
+            onCheckedChange={() =>
+              toggleMutation.mutate({
+                enableStreamlinedLeftNavigation: !enableStreamlinedLeftNavigation,
+              })
+            }
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle streamlined left navigation experimental setting"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Task Plan Decomposition Panel</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show accepted-plan decomposition history on task detail pages. Intended for debugging and validating
               subtask creation behavior while the presentation is still being refined.
             </p>
           </div>
@@ -318,7 +342,7 @@ export function InstanceExperimentalSettings() {
               })
             }
             disabled={toggleMutation.isPending}
-            aria-label="Toggle issue plan decomposition panel experimental setting"
+            aria-label="Toggle task plan decomposition panel experimental setting"
           />
         </div>
       </section>
@@ -363,9 +387,9 @@ export function InstanceExperimentalSettings() {
         <div className="flex flex-col gap-5">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1.5">
-              <h2 className="text-sm font-semibold">Auto-Create Issue Recovery Tasks</h2>
+              <h2 className="text-sm font-semibold">Auto-Create Recovery Tasks</h2>
               <p className="max-w-2xl text-sm text-muted-foreground">
-                Let the heartbeat scheduler create recovery issues for issue dependency chains found inside the
+                Let the heartbeat scheduler create recovery tasks for task dependency chains found inside the
                 configured lookback window.
               </p>
             </div>
@@ -379,7 +403,7 @@ export function InstanceExperimentalSettings() {
                 previewForEnable();
               }}
               disabled={recoveryActionPending}
-              aria-label="Toggle issue graph liveness auto-recovery"
+              aria-label="Toggle task graph liveness auto-recovery"
             />
           </div>
 

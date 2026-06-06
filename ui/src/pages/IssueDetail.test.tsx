@@ -1028,7 +1028,7 @@ describe("IssueDetail", () => {
 
     expect(container.textContent).toContain("Plan decomposition");
     expect(container.textContent).toContain("Plan revision 2");
-    expect(container.textContent).toContain("2 of 2 child issues created");
+    expect(container.textContent).toContain("2 of 2 child tasks created");
     expect(container.textContent).toContain("First child issue");
     expect(mockIssuesApi.listAcceptedPlanDecompositions).toHaveBeenCalledWith("issue-1");
   });
@@ -1081,8 +1081,8 @@ describe("IssueDetail", () => {
       parentId: "parent-1",
       includeBlockedBy: true,
     });
-    expect(container.querySelector('a[aria-label="Previous sub-issue: PAP-1 - Previous sibling"]')).toBeTruthy();
-    expect(container.querySelector('a[aria-label="Next sub-issue: PAP-3 - Next sibling"]')).toBeTruthy();
+    expect(container.querySelector('a[aria-label="Previous sub-task: PAP-1 - Previous sibling"]')).toBeTruthy();
+    expect(container.querySelector('a[aria-label="Next sub-task: PAP-3 - Next sibling"]')).toBeTruthy();
     expect(container.textContent).toContain("Previous");
     expect(container.textContent).toContain("Previous sibling");
     expect(container.textContent).toContain("Next");
@@ -1137,7 +1137,7 @@ describe("IssueDetail", () => {
       descendantOf: "issue-parent",
       includeBlockedBy: true,
     });
-    expect(container.querySelector('a[aria-label="Next sub-issue: PAP-11 - First child"]')).toBeTruthy();
+    expect(container.querySelector('a[aria-label="Next sub-task: PAP-11 - First child"]')).toBeTruthy();
     expect(container.textContent).toContain("Next");
     expect(container.textContent).toContain("First child");
     expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].footer).toBeTruthy();
@@ -1314,7 +1314,7 @@ describe("IssueDetail", () => {
     await flushReact();
     await flushReact();
 
-    const moreButton = container.querySelector('button[aria-label="More issue actions"]') as HTMLButtonElement | null;
+    const moreButton = container.querySelector('button[aria-label="More task actions"]') as HTMLButtonElement | null;
     expect(moreButton).toBeTruthy();
 
     await act(async () => {
@@ -1424,7 +1424,7 @@ describe("IssueDetail", () => {
       metadata: { source: "issue_active_run_control", runId: "run-active-1" },
     });
 
-    const moreButton = container.querySelector('button[aria-label="More issue actions"]') as HTMLButtonElement | null;
+    const moreButton = container.querySelector('button[aria-label="More task actions"]') as HTMLButtonElement | null;
     expect(moreButton).toBeTruthy();
     await act(async () => {
       moreButton!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -1690,7 +1690,7 @@ describe("IssueDetail", () => {
     await flushReact();
     await flushReact();
 
-    const moreButton = container.querySelector('button[aria-label="More issue actions"]') as HTMLButtonElement | null;
+    const moreButton = container.querySelector('button[aria-label="More task actions"]') as HTMLButtonElement | null;
     expect(moreButton).toBeTruthy();
 
     await act(async () => {
@@ -1712,11 +1712,11 @@ describe("IssueDetail", () => {
       mode: "restore",
       releasePolicy: { strategy: "manual" },
     });
-    expect(container.textContent).toContain("Restore issues cancelled by this subtree operation so work can resume.");
+    expect(container.textContent).toContain("Restore tasks cancelled by this subtree operation so work can resume.");
     expect(container.textContent).toContain("Cancelled child");
 
     const restoreApplyButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Restore 1 issues");
+      .find((button) => button.textContent?.trim() === "Restore 1 tasks");
     expect(restoreApplyButton).toBeTruthy();
 
     await act(async () => {
@@ -1792,7 +1792,7 @@ describe("IssueDetail", () => {
     expect(bodyScrollRegion?.className).toContain("overscroll-contain");
 
     const cancelApplyButton = Array.from(dialogContent!.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Cancel 24 issues") as HTMLButtonElement | undefined;
+      .find((button) => button.textContent?.trim() === "Cancel 24 tasks") as HTMLButtonElement | undefined;
     expect(cancelApplyButton).toBeTruthy();
     expect(cancelApplyButton!.disabled).toBe(true);
 

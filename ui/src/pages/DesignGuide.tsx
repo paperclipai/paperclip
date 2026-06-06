@@ -112,10 +112,9 @@ import {
   AvatarGroup,
   AvatarGroupCount,
 } from "@/components/ui/avatar";
-import { StatusBadge } from "@/components/StatusBadge";
+import { StatusBadge, AgentStatusBadge, AgentStatusCapsule } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
 import { PriorityIcon } from "@/components/PriorityIcon";
-import { agentStatusDot, agentStatusDotDefault } from "@/lib/status-colors";
 import { EntityRow } from "@/components/EntityRow";
 import { EmptyState } from "@/components/EmptyState";
 import { MetricCard } from "@/components/MetricCard";
@@ -471,7 +470,7 @@ export function DesignGuide() {
 
         <SubSection title="With icons">
           <div className="flex items-center gap-2 flex-wrap">
-            <Button><Plus /> New Issue</Button>
+            <Button><Plus /> New Task</Button>
             <Button variant="outline"><Upload /> Upload</Button>
             <Button variant="destructive"><Trash2 /> Delete</Button>
             <Button size="sm"><Plus /> Add</Button>
@@ -551,14 +550,18 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Agent status dots">
-          <div className="flex items-center gap-4 flex-wrap">
-            {(["running", "active", "paused", "error", "archived"] as const).map((label) => (
+        <SubSection title="Agent status (capsule + chip)">
+          <p className="text-xs text-muted-foreground mb-3 max-w-prose">
+            The agents section uses a brand heartbeat capsule (8×16) plus a brand
+            <code className="mx-1">.task-chip</code>. Four states only: idle (gray),
+            running (blue, pulses), paused (amber), error (red, blinks). Motion
+            honors <code>prefers-reduced-motion</code>.
+          </p>
+          <div className="flex items-center gap-6 flex-wrap">
+            {(["idle", "running", "paused", "error"] as const).map((label) => (
               <div key={label} className="flex items-center gap-2">
-                <span className="relative flex h-2.5 w-2.5">
-                  <span className={`inline-flex h-full w-full rounded-full ${agentStatusDot[label] ?? agentStatusDotDefault}`} />
-                </span>
-                <span className="text-xs text-muted-foreground">{label}</span>
+                <AgentStatusCapsule status={label} />
+                <AgentStatusBadge status={label} />
               </div>
             ))}
           </div>
@@ -724,11 +727,11 @@ export function DesignGuide() {
               checked={menuChecked}
               onCheckedChange={(value) => setMenuChecked(value === true)}
             >
-              Watch issue
+              Watch task
             </DropdownMenuCheckboxItem>
             <DropdownMenuItem variant="destructive">
               <Trash2 className="h-4 w-4" />
-              Delete issue
+              Delete task
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -781,7 +784,7 @@ export function DesignGuide() {
           </SheetTrigger>
           <SheetContent side="right">
             <SheetHeader>
-              <SheetTitle>Issue Properties</SheetTitle>
+              <SheetTitle>Task Properties</SheetTitle>
               <SheetDescription>Edit metadata without leaving the current page.</SheetDescription>
             </SheetHeader>
             <div className="space-y-4 px-4">
@@ -833,7 +836,7 @@ export function DesignGuide() {
                 </CommandItem>
                 <CommandItem>
                   <CircleDot className="h-4 w-4" />
-                  Issues
+                  Tasks
                 </CommandItem>
               </CommandGroup>
               <CommandSeparator />
@@ -844,7 +847,7 @@ export function DesignGuide() {
                 </CommandItem>
                 <CommandItem>
                   <Plus className="h-4 w-4" />
-                  Create new issue
+                  Create new task
                 </CommandItem>
               </CommandGroup>
             </CommandList>
@@ -867,7 +870,7 @@ export function DesignGuide() {
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              <BreadcrumbPage>Issue List</BreadcrumbPage>
+              <BreadcrumbPage>Task List</BreadcrumbPage>
             </BreadcrumbItem>
           </BreadcrumbList>
         </Breadcrumb>
@@ -896,7 +899,7 @@ export function DesignGuide() {
         <SubSection title="Metric Cards">
           <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
             <MetricCard icon={Bot} value={12} label="Active Agents" description="+3 this week" />
-            <MetricCard icon={CircleDot} value={48} label="Open Issues" />
+            <MetricCard icon={CircleDot} value={48} label="Open Tasks" />
             <MetricCard icon={DollarSign} value="$1,234" label="Monthly Cost" description="Under budget" />
             <MetricCard icon={Zap} value="99.9%" label="Uptime" />
           </div>
@@ -1295,7 +1298,7 @@ export function DesignGuide() {
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <CircleDot className="h-4 w-4" />
-              Issues
+              Tasks
               <span className="ml-auto text-xs bg-primary text-primary-foreground rounded-full px-1.5 py-0.5">
                 12
               </span>
@@ -1328,7 +1331,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  GROUPED LIST (Issues pattern)                                */}
       {/* ============================================================ */}
-      <Section title="Grouped List (Issues pattern)">
+      <Section title="Grouped List (Tasks pattern)">
         <div>
           <div className="flex items-center gap-2 px-4 py-2 bg-muted/50 rounded-t-md">
             <StatusIcon status="in_progress" />
@@ -1585,7 +1588,7 @@ export function DesignGuide() {
         <div className="border border-border rounded-md divide-y divide-border text-sm">
           {[
             ["Cmd+K / Ctrl+K", "Open Command Palette"],
-            ["C", "New Issue (outside inputs)"],
+            ["C", "New Task (outside inputs)"],
             ["[", "Toggle Sidebar"],
             ["]", "Toggle Properties Panel"],
 
@@ -1601,7 +1604,7 @@ export function DesignGuide() {
         </div>
       </Section>
 
-      <Section title="Issue Output Surface">
+      <Section title="Task Output Surface">
         <SubSection title="Multiple outputs (primary video + 'Also produced')">
           <IssueOutputSection workProducts={DESIGN_GUIDE_OUTPUTS} />
         </SubSection>
@@ -1610,7 +1613,7 @@ export function DesignGuide() {
         </SubSection>
         <SubSection title="Empty state">
           <p className="text-xs text-muted-foreground">
-            When an issue has produced no artifact work products, the Output section renders nothing
+            When a task has produced no artifact work products, the Output section renders nothing
             at all (no placeholder card).
           </p>
         </SubSection>

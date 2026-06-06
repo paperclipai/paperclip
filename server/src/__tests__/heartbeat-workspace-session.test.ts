@@ -4,6 +4,7 @@ import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-lo
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
+  assertGitSensitiveAdapterWorkspaceValid,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
   deriveTaskKeyWithHeartbeatFallback,
@@ -36,6 +37,86 @@ function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}
     warnings: [],
     ...overrides,
   };
+}
+
+type WorkspaceValidationInput = Parameters<typeof assertGitSensitiveAdapterWorkspaceValid>[0];
+
+function buildWorkspaceValidationInput(
+  overrides: Partial<WorkspaceValidationInput> = {},
+): WorkspaceValidationInput {
+  return {
+    adapterType: "codex_local",
+    agentId: "agent-1",
+    issue: {
+      id: "issue-1",
+      identifier: "PAP-1",
+      projectId: "project-1",
+      projectWorkspaceId: "workspace-1",
+    },
+    resolvedWorkspace: buildResolvedWorkspace(),
+    executionWorkspace: {
+      baseCwd: "/tmp/project",
+      source: "project_primary",
+      projectId: "project-1",
+      workspaceId: "workspace-1",
+      repoUrl: null,
+      repoRef: null,
+      strategy: "project_primary",
+      cwd: "/tmp/project",
+      branchName: null,
+      worktreePath: null,
+      warnings: [],
+      created: false,
+      baseRefSha: null,
+    },
+    persistedExecutionWorkspace: {
+      id: "execution-workspace-1",
+      companyId: "company-1",
+      projectId: "project-1",
+      projectWorkspaceId: "workspace-1",
+      sourceIssueId: "issue-1",
+      mode: "project_workspace",
+      strategyType: "project_primary",
+      name: "Primary workspace",
+      status: "active",
+      cwd: "/tmp/project",
+      repoUrl: null,
+      baseRef: null,
+      branchName: null,
+      providerType: "local_path",
+      providerRef: null,
+      derivedFromExecutionWorkspaceId: null,
+      lastUsedAt: new Date("2026-06-06T00:00:00.000Z"),
+      openedAt: new Date("2026-06-06T00:00:00.000Z"),
+      closedAt: null,
+      cleanupEligibleAt: null,
+      cleanupReason: null,
+      config: null,
+      metadata: null,
+      createdAt: new Date("2026-06-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-06-06T00:00:00.000Z"),
+    },
+    executionTarget: { kind: "local" },
+    ...overrides,
+  };
+}
+
+async function expectWorkspaceValidationFailure(
+  input: WorkspaceValidationInput,
+  reason: string,
+  message: string,
+) {
+  await expect(assertGitSensitiveAdapterWorkspaceValid(input)).rejects.toMatchObject({
+    code: "workspace_validation_failed",
+    message: expect.stringContaining(message),
+    resultJson: {
+      workspaceValidation: expect.objectContaining({
+        reason,
+        adapterType: input.adapterType,
+        issueId: input.issue?.id,
+      }),
+    },
+  });
 }
 
 function buildAgent(adapterType: string, runtimeConfig: Record<string, unknown> = {}) {
@@ -124,6 +205,173 @@ function buildIssueAncestryDb(rows: Array<{ id: string; companyId: string; paren
     }),
   };
 }
+
+describe("assertGitSensitiveAdapterWorkspaceValid", () => {
+  it("rejects a project-workspace-linked issue that is missing its project id before adapter launch", async () => {
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: null,
+          projectWorkspaceId: "workspace-1",
+        },
+      }),
+      "missing_project_id",
+      "linked to a project workspace but has no project id",
+    );
+  });
+
+  it("rejects a git-sensitive local adapter when effective cwd differs from the persisted workspace cwd", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          cwd: "/tmp/agent-fallback",
+        },
+      }),
+      "persisted_cwd_mismatch",
+      'resolved adapter cwd "/tmp/agent-fallback"',
+    );
+  });
+
+  it("rejects a workspace-linked issue when no execution workspace was persisted", async () => {
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        persistedExecutionWorkspace: null,
+      }),
+      "missing_persisted_execution_workspace",
+      "requires a project execution workspace",
+    );
+  });
+
+  it("rejects a workspace-linked issue when no effective adapter cwd was resolved", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          cwd: null,
+        },
+      }),
+      "missing_effective_cwd",
+      "no adapter cwd was resolved",
+    );
+  });
+
+  it("rejects a persisted execution workspace linked to a different project workspace", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          projectWorkspaceId: "workspace-other",
+        },
+      }),
+      "project_workspace_mismatch",
+      'expected project workspace "workspace-1"',
+    );
+  });
+
+  it("rejects a persisted execution workspace missing its project workspace id", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          projectWorkspaceId: null,
+        },
+      }),
+      "persisted_workspace_missing_project_workspace_id",
+      "has no project workspace id",
+    );
+  });
+
+  it("rejects a workspace-linked issue that would launch from the agent fallback cwd", async () => {
+    const input = buildWorkspaceValidationInput();
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          cwd: fallbackCwd,
+        },
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          cwd: fallbackCwd,
+        },
+      }),
+      "fallback_agent_home_cwd",
+      "would launch from agent fallback cwd",
+    );
+  });
+
+  it("rejects a git worktree persisted workspace when cwd differs from providerRef", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          strategy: "git_worktree",
+          cwd: "/tmp/worktree-current",
+        },
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          strategyType: "git_worktree",
+          cwd: "/tmp/worktree-current",
+          providerRef: "/tmp/worktree-expected",
+        },
+      }),
+      "git_worktree_provider_ref_mismatch",
+      'expected git worktree "/tmp/worktree-expected"',
+    );
+  });
+
+  it("rejects a workspace-linked issue when adapter cwd has no git metadata", async () => {
+    const input = buildWorkspaceValidationInput();
+    const cwd = "/tmp/paperclip-workspace-without-git-metadata";
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        resolvedWorkspace: buildResolvedWorkspace({ cwd }),
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          baseCwd: cwd,
+          cwd,
+        },
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          cwd,
+        },
+      }),
+      "missing_git_metadata",
+      "has no .git metadata",
+    );
+  });
+
+  it("does not apply the git-sensitive workspace guard to non-local execution targets", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expect(
+      assertGitSensitiveAdapterWorkspaceValid(
+        buildWorkspaceValidationInput({
+          executionTarget: { kind: "cloud" },
+          executionWorkspace: {
+            ...input.executionWorkspace,
+            cwd: "/tmp/agent-fallback",
+          },
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+});
 
 describe("stripHostWorkspaceProvisionForLowTrustSandbox", () => {
   it("removes only the host-side provision command for sandbox-backed low-trust runs", () => {

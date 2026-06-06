@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { ReactNode } from "react";
+import { act, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -82,12 +82,14 @@ vi.mock("./SidebarCompanyMenu", () => ({
   SidebarCompanyMenu: () => <div>Company menu</div>,
 }));
 
-vi.mock("./SidebarProjects", () => ({
-  SidebarProjects: () => null,
+vi.mock("./SidebarAgents", () => ({
+  SidebarAgents: ({ streamlined }: { streamlined?: boolean }) => (
+    <div data-testid="sidebar-agents" data-streamlined={String(streamlined)} />
+  ),
 }));
 
-vi.mock("./SidebarAgents", () => ({
-  SidebarAgents: () => null,
+vi.mock("./SidebarProjects", () => ({
+  SidebarProjects: () => <div data-testid="sidebar-projects">Projects collapsible</div>,
 }));
 
 async function flushReact() {
@@ -146,7 +148,10 @@ describe("Sidebar", () => {
   });
 
   it("renders plugin sidebar launchers inside the Work section", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableStreamlinedLeftNavigation: true,
+    });
     const root = await renderSidebar();
 
     const workSection = [...container.querySelectorAll("nav [data-plugin-launcher-zone]")]
@@ -154,10 +159,64 @@ describe("Sidebar", () => {
     expect(workSection?.textContent).toContain("Plugin launcher outlet");
     const workSectionContainer = workSection?.parentElement?.parentElement;
     expect(workSectionContainer?.textContent).toContain("Work");
-    expect(workSectionContainer?.textContent).toContain("Issues");
+    expect(workSectionContainer?.textContent).toContain("Tasks");
     expect(workSectionContainer?.textContent).toContain("Goals");
 
     flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("streamlined (flag ON): keeps Task wording, top-level Projects link, no per-project collapsible", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableStreamlinedLeftNavigation: true,
+    });
+    const root = await renderSidebar();
+
+    expect(container.textContent).toContain("New Task");
+    expect(container.textContent).not.toContain("New Issue");
+
+    const navLabels = [...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim());
+    expect(navLabels).toContain("Tasks");
+    expect(navLabels).not.toContain("Issues");
+
+    const projectsLink = [...container.querySelectorAll("nav a")].find((a) => a.textContent?.trim() === "Projects");
+    expect(projectsLink?.getAttribute("href")).toBe("/projects");
+
+    expect(container.querySelector('[data-testid="sidebar-projects"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
+    ).toBe("true");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("classic (flag OFF): New Task button, Tasks label, per-project collapsible, no top-level Projects link", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableStreamlinedLeftNavigation: false,
+    });
+    const root = await renderSidebar();
+
+    expect(container.textContent).toContain("New Task");
+    expect(container.textContent).not.toContain("New Issue");
+
+    const navLabels = [...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim());
+    expect(navLabels).toContain("Tasks");
+    expect(navLabels).not.toContain("Issues");
+    // No top-level Projects nav link in classic mode (D5 option A).
+    expect(navLabels).not.toContain("Projects");
+
+    // Per-project collapsible restored below Work.
+    expect(container.querySelector('[data-testid="sidebar-projects"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
+    ).toBe("false");
+
+    await act(async () => {
       root.unmount();
     });
   });
