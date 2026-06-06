@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
@@ -33,6 +33,10 @@ vi.mock("@/lib/router", () => ({
     <a href={to} className={className}>{children}</a>
   ),
 }));
+
+function act(callback: () => void) {
+  flushSync(callback);
+}
 
 function renderCard(
   props: Partial<ComponentProps<typeof IssueThreadInteractionCard>> = {},
