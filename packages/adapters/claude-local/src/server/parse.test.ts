@@ -1,8 +1,35 @@
 import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
+  isClaudeModifiedThinkingReplayError,
   isClaudeTransientUpstreamError,
 } from "./parse.js";
+
+describe("isClaudeModifiedThinkingReplayError", () => {
+  it("detects Anthropic's backtick-wrapped modified thinking resume failure", () => {
+    const message =
+      "API Error: 400 messages.N.content.M: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified. These blocks must remain as they were in the original response.";
+
+    expect(
+      isClaudeModifiedThinkingReplayError({
+        result: message,
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeModifiedThinkingReplayError({
+        errors: [{ message }],
+      }),
+    ).toBe(true);
+  });
+
+  it("does not classify unrelated validation errors as modified thinking replay failures", () => {
+    expect(
+      isClaudeModifiedThinkingReplayError({
+        result: "API Error: 400 messages.0.content.0.text is required.",
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("isClaudeTransientUpstreamError", () => {
   it("classifies the 'out of extra usage' subscription window failure as transient", () => {
