@@ -42,6 +42,15 @@ jobs:
         with:
           node-version: 24
 
+      - name: Block database migrations and schema changes
+        run: |
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
+          # shellcheck disable=SC2086
+          node ./scripts/check-no-db-migrations.mjs $changed
+
+      - name: Test no-db-migrations check
+        run: node --test ./scripts/check-no-db-migrations.test.mjs
+
       - name: Validate Dockerfile deps stage
         run: node ./scripts/check-docker-deps-stage.mjs
 
