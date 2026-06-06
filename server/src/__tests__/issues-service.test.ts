@@ -149,9 +149,11 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   afterEach(async () => {
     await db.delete(issueComments);
     await db.delete(issueRelations);
+    await db.delete(issueDocuments);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(documents);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -384,6 +386,76 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     expect(result.map((issue) => issue.id)).toEqual([titleMatchId, descriptionMatchId]);
+  });
+
+  it("filters issues by whether they have a plan document", async () => {
+    const companyId = randomUUID();
+    const withPlanId = randomUUID();
+    const withoutPlanId = randomUUID();
+    const otherDocumentId = randomUUID();
+    const planDocumentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: withPlanId,
+        companyId,
+        title: "Issue with plan",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: withoutPlanId,
+        companyId,
+        title: "Issue without plan",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await db.insert(documents).values([
+      {
+        id: planDocumentId,
+        companyId,
+        title: null,
+        format: "markdown",
+        latestBody: "# Plan",
+      },
+      {
+        id: otherDocumentId,
+        companyId,
+        title: "Notes",
+        format: "markdown",
+        latestBody: "# Notes",
+      },
+    ]);
+
+    await db.insert(issueDocuments).values([
+      {
+        companyId,
+        issueId: withPlanId,
+        documentId: planDocumentId,
+        key: "plan",
+      },
+      {
+        companyId,
+        issueId: withoutPlanId,
+        documentId: otherDocumentId,
+        key: "notes",
+      },
+    ]);
+
+    const withPlan = await svc.list(companyId, { hasPlanDocument: true });
+    const withoutPlan = await svc.list(companyId, { hasPlanDocument: false });
+
+    expect(withPlan.map((issue) => issue.id)).toEqual([withPlanId]);
+    expect(withoutPlan.map((issue) => issue.id)).toEqual([withoutPlanId]);
   });
 
   it("can page issues by most recently updated before priority", async () => {

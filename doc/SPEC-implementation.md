@@ -45,6 +45,10 @@ These decisions close open questions from `SPEC.md` for V1.
 | Budget enforcement | Soft alerts + hard limit auto-pause |
 | Deployment modes | Canonical model is `local_trusted` + `authenticated` with `private/public` exposure policy (see `doc/DEPLOYMENT-MODES.md`) |
 
+Low-trust agent presets are containment controls for hostile automated work, not
+general project or issue privacy controls. The core preset resolver contract is
+documented in `doc/LOW-TRUST-PRESETS.md`.
+
 ## 4. Current Baseline (Repo Snapshot)
 
 As of 2026-02-17, the repo already includes:

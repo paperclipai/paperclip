@@ -15,6 +15,7 @@ import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { activityApi } from "../api/activity";
 import { issuesApi } from "../api/issues";
+import { projectsApi } from "../api/projects";
 import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
@@ -41,6 +42,7 @@ import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { RunButton, PauseResumeButton } from "../components/AgentActionButtons";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
+import { TrustPresetSection } from "../components/TrustPresetSection";
 import { FileTree, buildFileTree } from "../components/FileTree";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { SourceResolvedFoldCallout } from "../components/SourceResolvedFoldCallout";
@@ -101,6 +103,7 @@ import {
   type LiveEvent,
   type WorkspaceOperation,
 } from "@paperclipai/shared";
+import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
 import {
@@ -1729,6 +1732,22 @@ function ConfigurationTab({
     enabled: Boolean(companyId),
   });
 
+  const lowTrustSelected = getTrustPreset(agent.permissions) === "low_trust_review";
+
+  const { data: boundaryProjects, isLoading: boundaryProjectsLoading } = useQuery({
+    queryKey: companyId ? queryKeys.projects.list(companyId) : ["projects", "__low-trust-disabled"],
+    queryFn: () => projectsApi.list(companyId!),
+    enabled: Boolean(companyId && lowTrustSelected),
+  });
+
+  const { data: boundaryIssues, isLoading: boundaryIssuesLoading } = useQuery({
+    queryKey: companyId
+      ? [...queryKeys.issues.list(companyId), "low-trust-boundary-candidates"]
+      : ["issues", "__low-trust-disabled"],
+    queryFn: () => issuesApi.list(companyId!, { limit: 100, sortField: "updated", sortDir: "desc" }),
+    enabled: Boolean(companyId && lowTrustSelected),
+  });
+
   const updateAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) => agentsApi.update(agent.id, data, companyId),
     onMutate: () => {
@@ -1794,6 +1813,28 @@ function ConfigurationTab({
         hidePromptTemplate={hidePromptTemplate}
         hideInstructionsFile={hideInstructionsFile}
         sectionLayout="cards"
+      />
+
+      <TrustPresetSection
+        permissions={agent.permissions}
+        disabled={updatePermissions.isPending}
+        companyId={companyId}
+        projectCandidates={(boundaryProjects ?? []).map((project) => ({
+          id: project.id,
+          label: project.name,
+        }))}
+        issueCandidates={(boundaryIssues ?? []).map((issue) => ({
+          id: issue.id,
+          label: `${issue.identifier ?? issue.id.slice(0, 8)} · ${issue.title}`,
+        }))}
+        candidatesLoading={boundaryProjectsLoading || boundaryIssuesLoading}
+        onChange={(nextPermissions) =>
+          updatePermissions.mutate({
+            canCreateAgents,
+            canAssignTasks,
+            ...buildPermissionsForTrustPreset(nextPermissions, nextPermissions.trustPreset === "low_trust_review" ? "low_trust_review" : "standard"),
+          })
+        }
       />
 
       <div>

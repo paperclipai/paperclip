@@ -141,10 +141,11 @@ describe("issue thread interaction helpers", () => {
         {
           questionId: "question-1",
           optionIds: ["option-2", "option-1"],
+          otherText: "A written answer",
         },
       ],
     });
 
-    expect(labels).toEqual(["Option 2", "Option 1"]);
+    expect(labels).toEqual(["Option 2", "Option 1", "Other: A written answer"]);
   });
 });

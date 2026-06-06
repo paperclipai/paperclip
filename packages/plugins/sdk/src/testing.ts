@@ -1607,7 +1607,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       async listComments(issueId, companyId) {
         requireCapability(manifest, capabilitySet, "issue.comments.read");
         if (!isInCompany(issues.get(issueId), companyId)) return [];
-        return issueComments.get(issueId) ?? [];
+        return (issueComments.get(issueId) ?? []).map((comment) =>
+          comment.deletedAt ? { ...comment, body: "", presentation: null, metadata: null } : comment
+        );
       },
       async createComment(issueId, body, companyId, options) {
         requireCapability(manifest, capabilitySet, "issue.comments.create");

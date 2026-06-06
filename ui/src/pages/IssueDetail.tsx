@@ -70,6 +70,7 @@ import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssuePlanDecompositionsSection } from "../components/IssuePlanDecompositionsSection";
 import { IssueOutputSection } from "../components/issue-output/IssueOutputSection";
 import { isImageAttachment } from "../lib/issue-attachments";
+import { getPromotedOutputAttachmentIds } from "../lib/issue-output";
 import { IssueSiblingNavigation } from "../components/IssueSiblingNavigation";
 import { IssuesList } from "../components/IssuesList";
 import { AgentIcon } from "../components/AgentIconPicker";
@@ -664,6 +665,7 @@ type IssueDetailChatTabProps = {
   onImageUpload: (file: File) => Promise<string>;
   onAttachImage: (file: File) => Promise<IssueAttachment | void>;
   onInterruptQueued: (runId: string) => Promise<void>;
+  onDeleteComment?: (commentId: string) => Promise<void> | void;
   onPauseWorkRun?: (runId: string) => Promise<void>;
   onCancelQueued: (commentId: string) => void;
   interruptingQueuedRunId: string | null;
@@ -729,6 +731,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onImageUpload,
   onAttachImage,
   onInterruptQueued,
+  onDeleteComment,
   onPauseWorkRun,
   onCancelQueued,
   interruptingQueuedRunId,
@@ -932,6 +935,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         imageUploadHandler={onImageUpload}
         onAttachImage={onAttachImage}
         onInterruptQueued={onInterruptQueued}
+        onDeleteComment={onDeleteComment}
         onCancelQueued={onCancelQueued}
         interruptingQueuedRunId={interruptingQueuedRunId}
         stoppingRunId={pausingWorkRunId}
@@ -1656,6 +1660,11 @@ export function IssueDetail() {
     }
   }, [issueCacheRefs, queryClient]);
 
+  const invalidateIssueDocumentAnnotationState = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ["issues", "document-annotations", issueId!] });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(issueId!) });
+  }, [issueId, queryClient]);
+
   const removeCommentFromCache = useCallback((commentId: string) => {
     queryClient.setQueryData<InfiniteData<IssueComment[], string | null> | undefined>(
       queryKeys.issues.comments(issueId!),
@@ -1668,6 +1677,24 @@ export function IssueDetail() {
       },
     );
   }, [issueId, queryClient]);
+
+  const clearCommentHashIfCurrent = useCallback((commentId: string) => {
+    if (typeof window === "undefined") return;
+    if (window.location.hash !== `#comment-${commentId}`) return;
+    window.history.replaceState(null, "", `${location.pathname}${location.search}`);
+  }, [location.pathname, location.search]);
+
+  const upsertCommentInCache = useCallback((comment: IssueComment) => {
+    for (const ref of issueCacheRefs) {
+      queryClient.setQueryData<InfiniteData<IssueComment[], string | null> | undefined>(
+        queryKeys.issues.comments(ref),
+        (current) => current ? {
+          ...current,
+          pages: upsertIssueCommentInPages(current.pages, comment),
+        } : current,
+      );
+    }
+  }, [issueCacheRefs, queryClient]);
 
   const restoreQueuedCommentDraft = useCallback((body: string) => {
     commentComposerRef.current?.restoreDraft(body);
@@ -2461,6 +2488,30 @@ export function IssueDetail() {
     },
   });
 
+  const deleteComment = useMutation({
+    mutationFn: async ({ commentId }: { commentId: string }) => issuesApi.deleteComment(issueId!, commentId),
+    onSuccess: (comment) => {
+      upsertCommentInCache(comment);
+      clearCommentHashIfCurrent(comment.id);
+      invalidateIssueDetail();
+      invalidateIssueThreadLazily();
+      invalidateIssueCollections();
+      invalidateIssueDocumentAnnotationState();
+      pushToast({
+        title: "Comment deleted",
+        body: "The thread now shows a deleted-comment marker.",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Delete failed",
+        body: err instanceof Error ? err.message : "Unable to delete the comment",
+        tone: "error",
+      });
+    },
+  });
+
   const handleCancelQueuedComment = useCallback((commentId: string) => {
     if (commentId.startsWith("optimistic-")) {
       cancelledQueuedOptimisticCommentIdsRef.current.add(commentId);
@@ -2821,14 +2872,49 @@ export function IssueDetail() {
     setHandoffFocusSignal((current) => current + 1);
   }, [location.hash]);
 
+  // Scroll + briefly highlight work-product / direct-attachment anchors so the
+  // company Artifacts page (PAP-10359) can deep-link to a specific artifact in
+  // its issue context. Retries while the section data loads in.
+  useEffect(() => {
+    const match = location.hash.match(/^#(work-product|attachment)-(.+)$/);
+    if (!match) return;
+    const targetId = `${match[1]}-${decodeURIComponent(match[2]!)}`;
+    let cancelled = false;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tryScroll = () => {
+      if (cancelled) return;
+      const element = document.getElementById(targetId);
+      if (!element) {
+        if (attempts < 30) {
+          attempts += 1;
+          timer = setTimeout(tryScroll, 100);
+        }
+        return;
+      }
+      element.scrollIntoView({ behavior: "smooth", block: "center" });
+      element.classList.add("ring-2", "ring-primary/50", "transition-shadow");
+      timer = setTimeout(() => element.classList.remove("ring-2", "ring-primary/50", "transition-shadow"), 3000);
+    };
+    tryScroll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [location.hash, workProducts, attachments]);
+
   useEffect(() => {
     if (pendingCommentComposerFocusKey === 0) return;
     if (detailTab !== "chat") return;
     commentComposerRef.current?.focus();
   }, [detailTab, pendingCommentComposerFocusKey]);
 
-  const attachmentList = attachments ?? [];
-  const imageAttachments = attachmentList.filter(isImageAttachment);
+  const promotedOutputAttachmentIds = useMemo(() => getPromotedOutputAttachmentIds(workProducts), [workProducts]);
+  const attachmentList = useMemo(
+    () => (attachments ?? []).filter((attachment) => !promotedOutputAttachmentIds.has(attachment.id)),
+    [attachments, promotedOutputAttachmentIds],
+  );
+  const imageAttachments = useMemo(() => (attachments ?? []).filter(isImageAttachment), [attachments]);
 
   const handleChatImageClick = useCallback(
     (src: string) => {
@@ -3886,6 +3972,7 @@ export function IssueDetail() {
               onImageUpload={handleCommentImageUpload}
               onAttachImage={handleCommentAttachImage}
               onInterruptQueued={handleInterruptQueuedRun}
+              onDeleteComment={(commentId) => deleteComment.mutateAsync({ commentId }).then(() => undefined)}
               onPauseWorkRun={canManageTreeControl
                 ? (runId) => pauseIssueWorkRun.mutateAsync({ runId, scope: treeControlScope }).then(() => undefined)
                 : undefined}

@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@codemirror/lang-javascript": "^6.2.5",
-    "@codemirror/language": "^6.11.0",
+    "@codemirror/language": "^6.12.3",
     "@codemirror/state": "^6.4.0",
     "@codemirror/view": "^6.28.0",
     "@lezer/highlight": "^1.2.1",

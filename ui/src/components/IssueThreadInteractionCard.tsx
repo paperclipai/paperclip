@@ -26,6 +26,8 @@ import { PriorityIcon } from "./PriorityIcon";
 import { Textarea } from "./ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
+const OTHER_ANSWER_ID = "__paperclip_other__";
+
 interface IssueThreadInteractionCardProps {
   interaction: IssueThreadInteraction;
   agentMap?: Map<string, Agent>;
@@ -662,6 +664,20 @@ function AskUserQuestionsCard({
       ]),
     ),
   );
+  const [draftOtherAnswers, setDraftOtherAnswers] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      (interaction.result?.answers ?? [])
+        .filter((answer) => answer.otherText)
+        .map((answer) => [answer.questionId, answer.otherText ?? ""]),
+    ),
+  );
+  const [otherActiveQuestions, setOtherActiveQuestions] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(
+      (interaction.result?.answers ?? [])
+        .filter((answer) => answer.otherText)
+        .map((answer) => [answer.questionId, true]),
+    ),
+  );
   const [working, setWorking] = useState(false);
   const [cancelling, setCancelling] = useState(false);
 
@@ -674,15 +690,45 @@ function AskUserQuestionsCard({
         ]),
       ),
     );
+    setDraftOtherAnswers(
+      Object.fromEntries(
+        (interaction.result?.answers ?? [])
+          .filter((answer) => answer.otherText)
+          .map((answer) => [answer.questionId, answer.otherText ?? ""]),
+      ),
+    );
+    setOtherActiveQuestions(
+      Object.fromEntries(
+        (interaction.result?.answers ?? [])
+          .filter((answer) => answer.otherText)
+          .map((answer) => [answer.questionId, true]),
+      ),
+    );
   }, [interaction.result?.answers]);
 
   const questions = interaction.payload.questions;
   const requiredQuestions = questions.filter((question) => question.required);
   const canSubmit = requiredQuestions.every(
-    (question) => (draftAnswers[question.id] ?? []).length > 0,
+    (question) =>
+      (draftAnswers[question.id] ?? []).length > 0
+      || (
+        otherActiveQuestions[question.id] === true
+        && (draftOtherAnswers[question.id]?.trim().length ?? 0) > 0
+      ),
   );
 
   function toggleOption(questionId: string, optionId: string, selectionMode: "single" | "multi") {
+    if (optionId === OTHER_ANSWER_ID) {
+      setOtherActiveQuestions((current) => ({
+        ...current,
+        [questionId]: !current[questionId],
+      }));
+      if (selectionMode === "single") {
+        setDraftAnswers((current) => ({ ...current, [questionId]: [] }));
+      }
+      return;
+    }
+
     setDraftAnswers((current) => {
       const existing = current[questionId] ?? [];
       if (selectionMode === "single") {
@@ -693,6 +739,9 @@ function AskUserQuestionsCard({
         : [...existing, optionId];
       return { ...current, [questionId]: next };
     });
+    if (selectionMode === "single") {
+      setOtherActiveQuestions((current) => ({ ...current, [questionId]: false }));
+    }
   }
 
   async function handleSubmit() {
@@ -701,10 +750,16 @@ function AskUserQuestionsCard({
     try {
       await onSubmitInteractionAnswers(
         interaction,
-        questions.map((question) => ({
-          questionId: question.id,
-          optionIds: draftAnswers[question.id] ?? [],
-        })),
+        questions.map((question) => {
+          const otherText = otherActiveQuestions[question.id] === true
+            ? draftOtherAnswers[question.id]?.trim() ?? ""
+            : "";
+          return {
+            questionId: question.id,
+            optionIds: draftAnswers[question.id] ?? [],
+            ...(otherText ? { otherText } : {}),
+          };
+        }),
       );
     } finally {
       setWorking(false);
@@ -766,23 +821,53 @@ function AskUserQuestionsCard({
                 />
               </div>
 
-              <div
-                className="mt-3 grid gap-3"
-                role={question.selectionMode === "single" ? "radiogroup" : "group"}
-                aria-labelledby={`${interaction.id}-${question.id}-prompt`}
-              >
-                {question.options.map((option) => (
-                  <QuestionOptionButton
-                    key={option.id}
-                    id={`${interaction.id}-${question.id}-${option.id}`}
-                    label={option.label}
-                    description={option.description}
-                    selected={(draftAnswers[question.id] ?? []).includes(option.id)}
-                    selectionMode={question.selectionMode}
-                    onClick={() =>
-                      toggleOption(question.id, option.id, question.selectionMode)}
+              <div className="mt-3 space-y-3">
+                <div
+                  className="grid gap-3"
+                  role={question.selectionMode === "single" ? "radiogroup" : "group"}
+                  aria-labelledby={`${interaction.id}-${question.id}-prompt`}
+                >
+                  {question.options.map((option) => (
+                    <QuestionOptionButton
+                      key={option.id}
+                      id={`${interaction.id}-${question.id}-${option.id}`}
+                      label={option.label}
+                      description={option.description}
+                      selected={(draftAnswers[question.id] ?? []).includes(option.id)}
+                      selectionMode={question.selectionMode}
+                      onClick={() =>
+                        toggleOption(question.id, option.id, question.selectionMode)}
+                    />
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  id={`${interaction.id}-${question.id}-other`}
+                  aria-expanded={otherActiveQuestions[question.id] === true}
+                  className={cn(
+                    "text-sm font-medium underline underline-offset-4 transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                    otherActiveQuestions[question.id]
+                      ? "text-sky-700 hover:text-sky-800 dark:text-sky-300 dark:hover:text-sky-200"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() =>
+                    toggleOption(question.id, OTHER_ANSWER_ID, question.selectionMode)}
+                >
+                  Other
+                </button>
+                {otherActiveQuestions[question.id] ? (
+                  <Textarea
+                    aria-label={`Other answer for ${question.prompt}`}
+                    value={draftOtherAnswers[question.id] ?? ""}
+                    onChange={(event) =>
+                      setDraftOtherAnswers((current) => ({
+                        ...current,
+                        [question.id]: event.target.value,
+                      }))}
+                    placeholder="Type your answer"
+                    className="min-h-24 bg-background text-sm"
                   />
-                ))}
+                ) : null}
               </div>
             </div>
           ))}

@@ -9,9 +9,15 @@ import type {
   CompanyMembership,
   PrincipalPermissionGrant,
 } from "./access.js";
+import type {
+  TrustAuthorizationPolicy,
+  TrustPreset,
+} from "../trust-policy.js";
 
-export interface AgentPermissions {
+export interface AgentPermissions extends Record<string, unknown> {
   canCreateAgents: boolean;
+  trustPreset?: TrustPreset;
+  authorizationPolicy?: TrustAuthorizationPolicy;
 }
 
 export interface AgentModelProfileConfig {

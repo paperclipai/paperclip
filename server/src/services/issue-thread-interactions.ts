@@ -162,6 +162,17 @@ function shouldSupersedeRequestConfirmationOnUserComment(interaction: RequestCon
   return interaction.payload.supersedeOnUserComment === true;
 }
 
+function normalizeCreateInteractionInput(input: CreateIssueThreadInteraction): CreateIssueThreadInteraction {
+  if (input.kind !== "request_confirmation") return input;
+  return {
+    ...input,
+    payload: {
+      ...input.payload,
+      supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+    },
+  };
+}
+
 function isCommentAtOrAfterInteraction(args: {
   commentCreatedAt: Date | string;
   interactionCreatedAt: Date | string;
@@ -272,15 +283,20 @@ function normalizeQuestionAnswers(args: {
       throw unprocessable(`Question ${answer.questionId} only allows one answer`);
     }
 
+    const otherText = answer.otherText?.trim() ?? "";
     answerByQuestionId.set(answer.questionId, {
       questionId: answer.questionId,
       optionIds: uniqueOptionIds,
+      ...(otherText ? { otherText } : {}),
     });
   }
 
   for (const question of args.questions) {
     const answer = answerByQuestionId.get(question.id);
-    if (question.required && (!answer || answer.optionIds.length === 0)) {
+    if (
+      question.required
+      && (!answer || (answer.optionIds.length === 0 && !answer.otherText))
+    ) {
       throw unprocessable(`Question ${question.id} requires an answer`);
     }
   }
@@ -668,7 +684,7 @@ export function issueThreadInteractionService(db: Db) {
       input: CreateIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
-      const data = createIssueThreadInteractionSchema.parse(input);
+      const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input));
 
       if (data.idempotencyKey) {
         const existing = await getIdempotentInteraction({

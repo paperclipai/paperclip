@@ -27,6 +27,7 @@ import {
   MODEL_PROFILE_KEYS,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
+import { lowTrustReviewPresetPolicySchema, trustAuthorizationPolicySchema } from "./trust-policy.js";
 
 export const issueBlockedInboxStateSchema = z.enum([
   "needs_attention",
@@ -197,6 +198,8 @@ export const issueExecutionPolicySchema = z.object({
   commentRequired: z.boolean().optional().default(true),
   stages: z.array(issueExecutionStageSchema).default([]),
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
+  reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
+  authorizationPolicy: trustAuthorizationPolicySchema.optional(),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({
@@ -666,6 +669,7 @@ export const askUserQuestionsPayloadSchema = z.object({
 export const askUserQuestionsAnswerSchema = z.object({
   questionId: z.string().trim().min(1).max(120),
   optionIds: z.array(z.string().trim().min(1).max(120)).max(20),
+  otherText: multilineTextSchema.pipe(z.string().trim().max(4000)).nullable().optional(),
 });
 
 export const askUserQuestionsResultSchema = z.object({

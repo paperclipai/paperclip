@@ -59,6 +59,7 @@ import {
   ListTree,
   X,
   Eye,
+  ShieldAlert,
   ShieldCheck,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -67,6 +68,7 @@ import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDe
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import { getTrustPreset } from "../lib/trust-policy-ui";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -1075,6 +1077,7 @@ export function NewIssueDialog() {
   const currentAssignee = selectedAssigneeAgentId
     ? (agents ?? []).find((a) => a.id === selectedAssigneeAgentId)
     : null;
+  const currentAssigneeLowTrust = getTrustPreset(currentAssignee?.permissions) === "low_trust_review";
   const currentProject = orderedProjects.find((project) => project.id === projectId);
   const currentProjectExecutionWorkspacePolicy =
     experimentalSettings?.enableIsolatedWorkspaces === true
@@ -1385,6 +1388,9 @@ export function NewIssueDialog() {
                     <>
                       {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
                       <span className="truncate">{option.label}</span>
+                      {assignee && getTrustPreset(assignee.permissions) === "low_trust_review" ? (
+                        <ShieldAlert className="ml-auto h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-label="Low-trust review agent" />
+                      ) : null}
                     </>
                   );
                 }}
@@ -2026,6 +2032,18 @@ export function NewIssueDialog() {
             <Flag className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
             <span className="leading-snug">
               Assigning implies executable intent — leave status as <span className="font-medium">Backlog</span> only to deliberately park this. The assignee will not be woken until status moves to <span className="font-medium">Todo</span> or <span className="font-medium">In Progress</span>.
+            </span>
+          </div>
+        ) : null}
+
+        {currentAssigneeLowTrust ? (
+          <div
+            data-testid="new-issue-low-trust-assignee-note"
+            className="mx-4 mb-2 flex items-start gap-2 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100"
+          >
+            <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
+            <span className="leading-snug">
+              Low-trust review agent. It can only act inside its assigned review boundary; issue, project, or run policy defines the concrete scope.
             </span>
           </div>
         ) : null}

@@ -34,6 +34,7 @@ import {
 } from "@paperclipai/db";
 import type {
   AcceptedPlanDecomposition,
+  IssueComment,
   IssueCommentAuthorType,
   IssueCommentMetadata,
   IssueCommentPresentation,
@@ -43,6 +44,7 @@ import type {
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
   IssueRelationIssueSummary,
+  LowTrustBoundary,
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import {
@@ -96,6 +98,7 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+const DELETED_ISSUE_COMMENT_BODY = "";
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -241,6 +244,8 @@ export interface IssueFilters {
   includePluginOperations?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
+  hasPlanDocument?: boolean;
+  lowTrustBoundary?: LowTrustBoundary & { companyId: string };
   q?: string;
   limit?: number;
   offset?: number;
@@ -1184,6 +1189,39 @@ const PRODUCTIVITY_REVIEW_TRIGGERS: readonly IssueProductivityReviewTrigger[] = 
   "long_active_duration",
   "high_churn",
 ];
+
+function lowTrustBoundaryIssueCondition(
+  companyId: string,
+  boundary: (LowTrustBoundary & { companyId: string }) | null | undefined,
+) {
+  if (!boundary || boundary.companyId !== companyId) return null;
+  const clauses: SQL[] = [];
+  const issueIds = [...new Set(boundary.issueIds ?? [])];
+  const projectIds = [...new Set(boundary.projectIds ?? [])];
+  if (issueIds.length > 0) clauses.push(inArray(issues.id, issueIds));
+  if (projectIds.length > 0) clauses.push(inArray(issues.projectId, projectIds));
+  if (boundary.rootIssueId) {
+    clauses.push(sql<boolean>`
+      ${issues.id} IN (
+        WITH RECURSIVE descendants(id) AS (
+          SELECT ${issues.id}
+          FROM ${issues}
+          WHERE ${issues.companyId} = ${companyId}
+            AND ${issues.id} = ${boundary.rootIssueId}
+          UNION
+          SELECT ${issues.id}
+          FROM ${issues}
+          JOIN descendants ON ${issues.parentId} = descendants.id
+          WHERE ${issues.companyId} = ${companyId}
+        )
+        SELECT id FROM descendants
+      )
+    `);
+  }
+  if (clauses.length === 0) return sql<boolean>`false`;
+  return or(...clauses);
+}
+
 const BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES = ["done", "cancelled"];
 const BLOCKER_ATTENTION_MAX_DEPTH = 8;
 const BLOCKER_ATTENTION_MAX_NODES = 2000;
@@ -1937,6 +1975,7 @@ const issueListSelect = {
   executionWorkspaceId: issues.executionWorkspaceId,
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
+  sourceTrust: issues.sourceTrust,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
@@ -2173,6 +2212,19 @@ function issueRef(row: Pick<IssueRow, "id" | "identifier" | "title" | "status" |
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
   };
+}
+
+function hasPlanDocumentCondition(companyId: string, hasPlanDocument: boolean): SQL {
+  const existsPlanDocument = sql<boolean>`
+    EXISTS (
+      SELECT 1
+      FROM ${issueDocuments}
+      WHERE ${issueDocuments.companyId} = ${companyId}
+        AND ${issueDocuments.issueId} = ${issues.id}
+        AND ${issueDocuments.key} = 'plan'
+    )
+  `;
+  return hasPlanDocument ? existsPlanDocument : sql<boolean>`NOT ${existsPlanDocument}`;
 }
 
 function isoDate(value: Date | string | null | undefined): string | null {
@@ -2863,6 +2915,8 @@ async function blockedInboxIssueConditions(
       )
     `);
   }
+  const lowTrustCondition = lowTrustBoundaryIssueCondition(companyId, filters?.lowTrustBoundary);
+  if (lowTrustCondition) conditions.push(lowTrustCondition);
   if (filters?.status) {
     const statuses = filters.status.split(",").map((status) => status.trim()).filter(Boolean);
     if (statuses.length > 0) {
@@ -2887,6 +2941,9 @@ async function blockedInboxIssueConditions(
   if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
   if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
   if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+  if (filters?.hasPlanDocument !== undefined) {
+    conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
+  }
   if (!shouldIncludePluginOperationIssues(filters)) conditions.push(nonPluginOperationIssueCondition());
   if (filters?.labelId) {
     const labeledIssueIds = await dbOrTx
@@ -2963,6 +3020,7 @@ async function listBlockedInboxIssues(
         .where(and(
           eq(issueComments.companyId, companyId),
           inArray(issueComments.issueId, issueIdChunk),
+          isNull(issueComments.deletedAt),
           sql<boolean>`${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'`,
         ));
       for (const row of rows as Array<{ issueId: string }>) commentSearchMatchIssueIds.add(row.issueId);
@@ -3038,6 +3096,7 @@ async function countBlockedInboxIssues(dbOrTx: any, companyId: string, filters?:
         .where(and(
           eq(issueComments.companyId, companyId),
           inArray(issueComments.issueId, issueIdChunk),
+          isNull(issueComments.deletedAt),
           sql<boolean>`${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'`,
         ));
       for (const row of commentRows as Array<{ issueId: string }>) commentSearchMatchIssueIds.add(row.issueId);
@@ -3139,7 +3198,19 @@ export function issueService(db: Db) {
     }
   }
 
-  function redactIssueComment<T extends { body: string; authorType?: string | null; authorAgentId?: string | null; authorUserId?: string | null; presentation?: unknown; metadata?: unknown }>(
+  function redactIssueComment<T extends {
+    body: string;
+    authorType?: string | null;
+    authorAgentId?: string | null;
+    authorUserId?: string | null;
+    presentation?: unknown;
+    metadata?: unknown;
+    deletedAt?: Date | string | null;
+    deletedByType?: "agent" | "user" | null;
+    deletedByAgentId?: string | null;
+    deletedByUserId?: string | null;
+    deletedByRunId?: string | null;
+  }>(
     comment: T,
     censorUsernameInLogs: boolean,
   ): T & {
@@ -3147,6 +3218,22 @@ export function issueService(db: Db) {
     presentation: IssueCommentPresentation | null;
     metadata: IssueCommentMetadata | null;
   } {
+    const deletedAt = comment.deletedAt ?? null;
+    if (deletedAt) {
+      return {
+        ...comment,
+        authorType: deriveIssueCommentAuthorType(comment),
+        body: "",
+        presentation: null,
+        metadata: null,
+        deletedAt,
+        deletedByType: comment.deletedByType ?? null,
+        deletedByAgentId: comment.deletedByAgentId ?? null,
+        deletedByUserId: comment.deletedByUserId ?? null,
+        deletedByRunId: comment.deletedByRunId ?? null,
+      };
+    }
+
     return {
       ...comment,
       authorType: deriveIssueCommentAuthorType(comment),
@@ -3816,6 +3903,7 @@ export function issueService(db: Db) {
           FROM ${issueComments}
           WHERE ${issueComments.issueId} = ${issues.id}
             AND ${issueComments.companyId} = ${companyId}
+            AND ${issueComments.deletedAt} IS NULL
             AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
         )
       `;
@@ -3837,6 +3925,8 @@ export function issueService(db: Db) {
           )
         `);
       }
+      const lowTrustCondition = lowTrustBoundaryIssueCondition(companyId, filters?.lowTrustBoundary);
+      if (lowTrustCondition) conditions.push(lowTrustCondition);
       if (filters?.status) {
         const statuses = filters.status.split(",").map((s) => s.trim());
         conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
@@ -3873,6 +3963,9 @@ export function issueService(db: Db) {
       if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
       if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+      if (filters?.hasPlanDocument !== undefined) {
+        conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
+      }
       if (!shouldIncludePluginOperationIssues(filters)) {
         conditions.push(nonPluginOperationIssueCondition());
       }
@@ -4036,6 +4129,9 @@ export function issueService(db: Db) {
       if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
       if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+      if (filters?.hasPlanDocument !== undefined) {
+        conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
+      }
       if (!shouldIncludePluginOperationIssues(filters)) conditions.push(nonPluginOperationIssueCondition());
       const [row] = await db
         .select({ count: sql<number>`count(*)` })
@@ -4304,7 +4400,11 @@ export function issueService(db: Db) {
               createdAt: issueComments.createdAt,
             })
             .from(issueComments)
-            .where(and(eq(issueComments.companyId, parent.companyId), inArray(issueComments.issueId, childIdsForSummaries)))
+            .where(and(
+              eq(issueComments.companyId, parent.companyId),
+              inArray(issueComments.issueId, childIdsForSummaries),
+              isNull(issueComments.deletedAt),
+            ))
             .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
         : [];
       const latestCommentByIssueId = new Map<string, string>();
@@ -5787,6 +5887,54 @@ export function issueService(db: Db) {
       });
     },
 
+    tombstoneComment: async (
+      commentId: string,
+      actor: {
+        actorType: "agent" | "user";
+        agentId?: string | null;
+        userId?: string | null;
+        runId?: string | null;
+      },
+      options?: {
+        afterTombstone?: (comment: IssueComment, tx: any) => Promise<void>;
+      },
+    ) => {
+      const currentUserRedactionOptions = {
+        enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+      };
+
+      return db.transaction(async (tx) => {
+        const now = new Date();
+        const [comment] = await tx
+          .update(issueComments)
+          .set({
+            body: DELETED_ISSUE_COMMENT_BODY,
+            presentation: null,
+            metadata: null,
+            deletedAt: now,
+            deletedByType: actor.actorType,
+            deletedByAgentId: actor.actorType === "agent" ? actor.agentId ?? null : null,
+            deletedByUserId: actor.actorType === "user" ? actor.userId ?? null : null,
+            deletedByRunId: actor.runId ?? null,
+            updatedAt: now,
+          })
+          .where(and(eq(issueComments.id, commentId), isNull(issueComments.deletedAt)))
+          .returning();
+
+        if (!comment) return null;
+
+        await tx
+          .update(issues)
+          .set({ updatedAt: now })
+          .where(eq(issues.id, comment.issueId));
+
+        const redacted = redactIssueComment(comment, currentUserRedactionOptions.enabled);
+        await options?.afterTombstone?.(redacted, tx);
+
+        return redacted;
+      });
+    },
+
     addComment: async (
       issueId: string,
       body: string,
@@ -5795,6 +5943,7 @@ export function issueService(db: Db) {
         authorType?: IssueCommentAuthorType | null;
         presentation?: IssueCommentPresentation | null;
         metadata?: IssueCommentMetadata | null;
+        sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
         createdAt?: Date | string | null;
       },
     ) => {
@@ -5829,6 +5978,7 @@ export function issueService(db: Db) {
           body: redactedBody,
           presentation,
           metadata,
+          sourceTrust: options?.sourceTrust ?? null,
           ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
         })
         .returning();
@@ -6046,7 +6196,7 @@ export function issueService(db: Db) {
         const comments = await db
           .select({ body: issueComments.body })
           .from(issueComments)
-          .where(eq(issueComments.issueId, issueId));
+          .where(and(eq(issueComments.issueId, issueId), isNull(issueComments.deletedAt)));
 
         for (const comment of comments) {
           for (const projectId of extractProjectMentionIds(comment.body)) {

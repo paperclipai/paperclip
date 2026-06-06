@@ -35,23 +35,26 @@ const SCOPE_LABELS: Record<CompanySearchScope, string> = {
   issues: "Issues",
   comments: "Comments",
   documents: "Documents",
+  artifacts: "Artifacts",
   agents: "Agents",
   projects: "Projects",
 };
 
-type SubGroupKey = "issues" | "comments" | "documents" | "agents" | "projects";
+type SubGroupKey = "issues" | "comments" | "documents" | "artifacts" | "agents" | "projects";
 
-const SUBGROUP_ORDER: SubGroupKey[] = ["issues", "comments", "documents", "agents", "projects"];
+const SUBGROUP_ORDER: SubGroupKey[] = ["issues", "comments", "documents", "artifacts", "agents", "projects"];
 
 const SUBGROUP_LABELS: Record<SubGroupKey, string> = {
   issues: "Issues",
   comments: "Comments",
   documents: "Documents",
+  artifacts: "Artifacts",
   agents: "Agents",
   projects: "Projects",
 };
 
 function classifyResult(result: CompanySearchResult): SubGroupKey {
+  if (result.type === "artifact") return "artifacts";
   if (result.type === "agent") return "agents";
   if (result.type === "project") return "projects";
   const matched = new Set(result.matchedFields);
@@ -261,7 +264,7 @@ export function Search() {
     return () => window.removeEventListener("keydown", handler);
   }, [focusInput]);
 
-  const counts = data?.countsByType ?? { issue: 0, agent: 0, project: 0 };
+  const counts = data?.countsByType ?? { issue: 0, artifact: 0, agent: 0, project: 0 };
   const totalResults = data?.results.length ?? 0;
 
   const tabItems = useMemo<PageTabItem[]>(() => {
@@ -276,8 +279,9 @@ export function Search() {
     const issuesTotal = counts.issue ?? 0;
     return COMPANY_SEARCH_SCOPES.map((value) => {
       let count: number | null = null;
-      if (value === "all") count = (counts.issue ?? 0) + (counts.agent ?? 0) + (counts.project ?? 0);
+      if (value === "all") count = (counts.issue ?? 0) + (counts.artifact ?? 0) + (counts.agent ?? 0) + (counts.project ?? 0);
       else if (value === "issues") count = issuesTotal;
+      else if (value === "artifacts") count = counts.artifact ?? 0;
       else if (value === "agents") count = counts.agent ?? 0;
       else if (value === "projects") count = counts.project ?? 0;
       return {
@@ -342,7 +346,7 @@ export function Search() {
                 }
               }
             }}
-            placeholder="Search issues, comments, documents, agents, projects…"
+            placeholder="Search issues, comments, documents, artifacts, agents, projects…"
             aria-label="Search query"
             className="h-10 pl-9 pr-20 text-sm"
           />
@@ -452,7 +456,7 @@ function SearchTabContent({
         <div>
           <h2 className="text-lg font-semibold">Type to search company memory.</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Issues, comments, plan documents, agents, projects — same surface, ranked by relevance.
+            Issues, comments, plan documents, artifacts, agents, projects — same surface, ranked by relevance.
           </p>
         </div>
         {recentSearches.length > 0 ? (
