@@ -3314,6 +3314,43 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
   });
 
+  it("skips reaping a local run with no stored PID when the run is recent (grace period)", async () => {
+    // Simulate a crash-before-persistRunProcessMetadata scenario: the run is "running"
+    // in the DB but both processPid and processGroupId are null because the server
+    // crashed before writing them.  With a recent updatedAt the run should NOT be
+    // reaped — the process may still be alive and re-dispatching would create a duplicate.
+    const { runId } = await seedRunFixture({ processPid: null, processGroupId: null, includeIssue: false });
+    // Overwrite the fixture's frozen timestamp to "just now" so it falls inside the grace window.
+    await db
+      .update(heartbeatRuns)
+      .set({ updatedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result.reaped).toBe(0);
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+  });
+
+  it("reaps a local run with no stored PID after the grace period expires", async () => {
+    // Same scenario as above but the run's updatedAt is older than 10 minutes —
+    // the grace window has passed so we treat the slot as safe to reclaim.
+    // Uses includeIssue: false to avoid activityLog FK contention in cleanup.
+    const { runId } = await seedRunFixture({ processPid: null, processGroupId: null, includeIssue: false });
+    // The fixture already seeds updatedAt = 2026-03-19, which is many months ago — fine.
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toContain(runId);
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+  });
+
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {
     const { issueId, runId } = await seedStrandedIssueFixture({
       status: "todo",

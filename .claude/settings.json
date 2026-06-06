@@ -1,0 +1,64 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/block-dangerous-commands.sh",
+            "timeout": 5000,
+            "statusMessage": "Checking command safety..."
+          },
+          {
+            "type": "command",
+            "command": "if [[ \"$TOOL_ARGS\" == *\"git commit\"* ]]; then cd $(git rev-parse --show-toplevel 2>/dev/null || pwd) && echo 'Staged files:' && git diff --staged --name-only 2>/dev/null | head -20 && echo '' && echo 'Branch:' $(git branch --show-current 2>/dev/null) && echo ''; fi",
+            "statusMessage": "Verifying git state...",
+            "timeout": 3000
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/protect-files.sh",
+            "timeout": 5000,
+            "statusMessage": "Checking file protections..."
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/scan-secrets.sh",
+            "timeout": 5000,
+            "statusMessage": "Scanning for credentials..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd $(git rev-parse --show-toplevel 2>/dev/null || pwd) && FILE=$(echo \"$TOOL_ARGS\" | grep -o '\"file_path\":\"[^\"]*' | cut -d'\"' -f4) && if [[ \"$FILE\" == *.ts || \"$FILE\" == *.tsx ]]; then echo 'Type checking...' && pnpm -r typecheck 2>&1 | grep -E '(error TS|\u2713|error:)' | head -15 || echo 'TypeScript OK'; fi",
+            "statusMessage": "Running type checks...",
+            "timeout": 60000
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "which notify-send >/dev/null 2>&1 && notify-send 'Claude Code' 'Claude Code needs your attention' || true"
+          }
+        ]
+      }
+    ]
+  }
+}

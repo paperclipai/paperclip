@@ -43,6 +43,7 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
+import { runningProcesses, signalRunningProcess } from "./adapters/utils.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
@@ -488,6 +489,10 @@ export async function createApp(
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();
+    for (const running of runningProcesses.values()) {
+      try { signalRunningProcess(running, "SIGTERM"); } catch { /* already gone */ }
+    }
+    runningProcesses.clear();
   };
   app.locals.paperclipShutdown = shutdownAppServices;
 

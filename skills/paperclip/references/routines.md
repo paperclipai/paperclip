@@ -185,3 +185,65 @@ GET /api/routines/{routineId}/runs?limit=50
 ```
 
 Use the generic API endpoint tables in `skills/paperclip/references/api-reference.md` when you need a full cross-domain reference. Use this file when you need routine-specific behaviour, payload shape, or policy details.
+
+---
+
+## Idempotency Guard (Required for all routines that post comments or create tasks)
+
+Routines that run on a schedule and post status comments or create issues MUST include this guard in their description to prevent comment spam:
+
+```
+Before posting any comment or creating any issue:
+1. Fetch the last comment on the target issue via GET /api/issues/{issueId}/comments?order=desc&limit=1
+2. If the last comment was posted by you AND the content/status is unchanged → skip the comment, mark this run done silently.
+3. Only post when there is new information or a status change.
+```
+
+**Why:** A routine scanning every 15–30 minutes will flood the issue thread with identical "no change" updates unless it checks first. The guard keeps threads clean while ensuring genuine updates are never suppressed.
+
+**When creating a new monitoring/governance routine**, append this guard verbatim to the `description` field.
+
+**Patching existing routines** — run this script once with proper credentials to backfill the guard on all active routines whose descriptions do not already contain it:
+
+```bash
+#!/usr/bin/env bash
+# patch-routine-idempotency.sh
+# Usage: PAPERCLIP_API_KEY=... PAPERCLIP_API_URL=... PAPERCLIP_COMPANY_ID=... bash patch-routine-idempotency.sh
+
+set -euo pipefail
+
+GUARD=$(cat <<'GUARD'
+
+Before posting any comment or creating any issue:
+1. Fetch the last comment on the target issue via GET /api/issues/{issueId}/comments?order=desc&limit=1
+2. If the last comment was posted by you AND the content/status is unchanged → skip the comment, mark this run done silently.
+3. Only post when there is new information or a status change.
+GUARD
+)
+
+routines=$(curl -sf \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/routines")
+
+echo "$routines" | jq -c '.[] | select(.status == "active" or .status == "paused")' | while read -r routine; do
+  id=$(echo "$routine" | jq -r '.id')
+  title=$(echo "$routine" | jq -r '.title')
+  desc=$(echo "$routine" | jq -r '.description // ""')
+
+  if echo "$desc" | grep -q "Fetch the last comment"; then
+    echo "SKIP  $title ($id) — guard already present"
+    continue
+  fi
+
+  new_desc="${desc}${GUARD}"
+
+  http_code=$(curl -sf -o /dev/null -w "%{http_code}" \
+    -X PATCH \
+    -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+    -H "Content-Type: application/json" \
+    "$PAPERCLIP_API_URL/api/routines/$id" \
+    --data-binary "$(jq -n --arg d "$new_desc" '{"description": $d}')")
+
+  echo "PATCH $title ($id) → HTTP $http_code"
+done
+```
