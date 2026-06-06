@@ -2313,6 +2313,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
+      // Explicitly preserve the doer; never promote the recovery owner into the assignee slot.
+      assigneeAgentId: input.issue.assigneeAgentId,
     });
     if (!updated) return null;
 
