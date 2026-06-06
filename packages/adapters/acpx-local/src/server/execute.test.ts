@@ -316,6 +316,36 @@ describe("acpx_local runtime skill isolation", () => {
     expect(env).not.toContain("PAPERCLIP_WORKSPACE_WORKTREE_PATH=");
   });
 
+  it("uses configured Git identity defaults for ACPX Codex without hardcoded personal fallback", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+
+    await runExecutor({
+      agent: "codex",
+      agentCommand: "node ./fake-acp.js",
+      stateDir,
+      gitAuthorName: "Configured Author",
+      gitAuthorEmail: "author@example.test",
+      env: {
+        PAPERCLIP_GIT_COMMITTER_NAME: "Configured Committer",
+        PAPERCLIP_GIT_COMMITTER_EMAIL: "committer@example.test",
+      },
+    });
+
+    const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
+    const envPath = path.join(
+      stateDir,
+      "wrappers",
+      wrappers.find((name) => name.endsWith(".env"))!,
+    );
+    const env = await fs.readFile(envPath, "utf8");
+
+    expect(env).toContain("GIT_AUTHOR_NAME='Configured Author'");
+    expect(env).toContain("GIT_AUTHOR_EMAIL='author@example.test'");
+    expect(env).toContain("GIT_COMMITTER_NAME='Configured Committer'");
+    expect(env).toContain("GIT_COMMITTER_EMAIL='committer@example.test'");
+  });
+
   it("cleans aged credential wrapper scripts across ACPX agent changes", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

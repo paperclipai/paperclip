@@ -266,6 +266,59 @@ describe("codex remote execution", () => {
     ]);
   });
 
+  it("uses configured Git identity defaults without hardcoded personal fallback", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-git-env-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+    await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
+
+    await execute({
+      runId: "run-git-env",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "codex",
+        gitAuthorName: "Configured Author",
+        gitAuthorEmail: "author@example.test",
+        env: {
+          CODEX_HOME: codexHomeDir,
+          PAPERCLIP_GIT_COMMITTER_NAME: "Configured Committer",
+          PAPERCLIP_GIT_COMMITTER_EMAIL: "committer@example.test",
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    const call = runChildProcess.mock.calls[0] as unknown as
+      | [string, string, string[], { env: Record<string, string> }]
+      | undefined;
+    expect(call?.[3].env.GIT_AUTHOR_NAME).toBe("Configured Author");
+    expect(call?.[3].env.GIT_AUTHOR_EMAIL).toBe("author@example.test");
+    expect(call?.[3].env.GIT_COMMITTER_NAME).toBe("Configured Committer");
+    expect(call?.[3].env.GIT_COMMITTER_EMAIL).toBe("committer@example.test");
+  });
+
   it("resumes saved Codex sessions for remote SSH execution when the remote identity matches", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-remote-resume-match-"));
     cleanupDirs.push(rootDir);

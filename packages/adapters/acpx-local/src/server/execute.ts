@@ -98,6 +98,45 @@ interface AcpxPreparedRuntime {
   paperclipClaudeSettings: PaperclipClaudeSettingsResult | null;
 }
 
+function readGitIdentityValue(
+  env: Record<string, string>,
+  config: Record<string, unknown>,
+  configKey: string,
+  envKey: string,
+  fallback: string,
+): string {
+  return (
+    asString(config[configKey], "").trim() ||
+    asString(env[envKey], "").trim() ||
+    asString(process.env[envKey], "").trim() ||
+    fallback
+  );
+}
+
+function applyGitIdentityDefaults(env: Record<string, string>, config: Record<string, unknown>) {
+  const authorName = readGitIdentityValue(env, config, "gitAuthorName", "PAPERCLIP_GIT_AUTHOR_NAME", "Paperclip Agent");
+  const authorEmail = readGitIdentityValue(env, config, "gitAuthorEmail", "PAPERCLIP_GIT_AUTHOR_EMAIL", "agent@paperclip.local");
+  const committerName = readGitIdentityValue(
+    env,
+    config,
+    "gitCommitterName",
+    "PAPERCLIP_GIT_COMMITTER_NAME",
+    authorName,
+  );
+  const committerEmail = readGitIdentityValue(
+    env,
+    config,
+    "gitCommitterEmail",
+    "PAPERCLIP_GIT_COMMITTER_EMAIL",
+    authorEmail,
+  );
+
+  if (!env.GIT_AUTHOR_NAME) env.GIT_AUTHOR_NAME = authorName;
+  if (!env.GIT_AUTHOR_EMAIL) env.GIT_AUTHOR_EMAIL = authorEmail;
+  if (!env.GIT_COMMITTER_NAME) env.GIT_COMMITTER_NAME = committerName;
+  if (!env.GIT_COMMITTER_EMAIL) env.GIT_COMMITTER_EMAIL = committerEmail;
+}
+
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
 
 function stableJson(value: unknown): string {
@@ -835,10 +874,7 @@ async function buildRuntime(input: {
     env.ANTHROPIC_MODEL = requestedModel;
   }
   if (acpxAgent === "codex") {
-    if (!env.GIT_AUTHOR_NAME) env.GIT_AUTHOR_NAME = "Jonas Tüchler";
-    if (!env.GIT_AUTHOR_EMAIL) env.GIT_AUTHOR_EMAIL = "mail@jonastuechler.at";
-    if (!env.GIT_COMMITTER_NAME) env.GIT_COMMITTER_NAME = "Jonas Tüchler";
-    if (!env.GIT_COMMITTER_EMAIL) env.GIT_COMMITTER_EMAIL = "mail@jonastuechler.at";
+    applyGitIdentityDefaults(env, config);
   }
 
   let skillPromptInstructions = "";

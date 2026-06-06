@@ -27,3 +27,33 @@ test('dependency review uses pull_request_target event refs', async () => {
   assert.match(dependencyReviewStep, /\bcontinue-on-error:\s*true\b/);
   assert.match(dependencyReviewStep, /\bid:\s*dependency-review\b/);
 });
+
+test('commitperclip gates are skipped when the app key is unavailable', async () => {
+  const workflow = await readFile(workflowPath, 'utf8');
+  const tokenCheckStep = workflow.match(
+    /- name: Check commitperclip token availability[\s\S]*?(?=\n\s*- name:|\n\s*jobs:|\n?$)/
+  )?.[0];
+
+  assert.ok(tokenCheckStep, 'workflow should check for COMMITPERCLIP_KEY before generating a token');
+  assert.match(tokenCheckStep, /available=false/);
+  assert.match(tokenCheckStep, /COMMITPERCLIP_KEY:\s*\$\{\{\s*secrets\.COMMITPERCLIP_KEY\s*\}\}/);
+
+  for (const stepName of [
+    'Generate commitperclip token',
+    'Run quality gates',
+    'Run security gates',
+  ]) {
+    const step = workflow.match(new RegExp(`- name: ${stepName}[\\s\\S]*?(?=\\n\\s*- name:|\\n\\s*jobs:|\\n?$)`))?.[0];
+    assert.ok(step, `${stepName} step should exist`);
+    assert.match(step, /if:\s*steps\.commitperclip-key\.outputs\.available == 'true'/);
+  }
+
+  const failStep = workflow.match(
+    /- name: Fail if quality gates failed[\s\S]*?(?=\n\s*- name:|\n\s*jobs:|\n?$)/
+  )?.[0];
+  assert.ok(failStep, 'quality failure step should exist');
+  assert.match(
+    failStep,
+    /if:\s*steps\.commitperclip-key\.outputs\.available == 'true' && steps\.quality\.outcome == 'failure'/
+  );
+});
