@@ -267,7 +267,12 @@ function FeatureRow({
   flip?: boolean;
 }) {
   return (
-    <div className={cn("grid grid-cols-1 items-center gap-10 lg:grid-cols-2 lg:gap-16", flip && "lg:[&>*:first-child]:order-2")}>
+    <div className={cn("relative grid grid-cols-1 items-center gap-10 lg:grid-cols-2 lg:gap-16", flip && "lg:[&>*:first-child]:order-2")}>
+      {/* rail node — center spine */}
+      <span className="absolute left-1/2 top-1/2 z-10 hidden size-3.5 -translate-x-1/2 -translate-y-1/2 items-center justify-center lg:flex">
+        <span className="agnb-pulse-ring absolute inset-0 rounded-full bg-[#f97316]/40" />
+        <span className="relative size-3.5 rounded-full border-2 border-white bg-[#f97316] dark:border-neutral-950" />
+      </span>
       <div>
         <Eyebrow>{eyebrow}</Eyebrow>
         <h3 className="max-w-md text-[clamp(24px,2.8vw,34px)] font-bold leading-[1.1] tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
@@ -576,31 +581,37 @@ const MODULES = [
     icon: Bot,
     k: "Autonomous Agents",
     d: "Agents that plan, code, ship — and run your growth ops. Give them a goal and they do the reps: campaigns, content, tickets, syncs. Approval gates when you want them.",
+    span: "lg:col-span-2",
   },
   {
     icon: Network,
     k: "Outbound",
     d: "Campaigns ranked by reply rate, multi-sender across email + LinkedIn, AI reply drafts, sequence control. Stop guessing which campaign works — we rank them.",
+    span: "lg:col-span-2",
   },
   {
     icon: Activity,
     k: "Inbound",
-    d: "Every mention, demo, and deal — captured, attributed, scored. Share-of-voice across LLMs, pipeline + funnel sync, review monitoring. Signal, not noise.",
+    d: "Every mention, demo, and deal — captured, attributed, scored. Share-of-voice across LLMs, pipeline + funnel sync, review monitoring.",
+    span: "lg:col-span-1",
   },
   {
     icon: PenTool,
     k: "Content Studio",
-    d: "Idea → published, on rails. Mine Reddit, YouTube + competitors for trends, auto-draft blog & LinkedIn, schedule, then track GSC rank and gaps. The flywheel runs itself.",
+    d: "Idea → published, on rails. Mine trends, auto-draft blog & LinkedIn, schedule, track GSC rank. The flywheel runs itself.",
+    span: "lg:col-span-1",
   },
   {
     icon: BarChart3,
     k: "Revenue",
-    d: "Attribution that isn't a guess. Forecast, renewals, GST invoicing, win/loss. Know what's driving revenue — and what's about to churn — before it does.",
+    d: "Attribution that isn't a guess. Forecast, renewals, invoicing, win/loss — before churn hits.",
+    span: "lg:col-span-1",
   },
   {
     icon: CheckSquare,
     k: "Work OS",
-    d: "Issues, routines, goals, approvals — humans and agents in one surface. The orchestration layer that schedules, assigns, and drives every engine above.",
+    d: "Issues, routines, goals, approvals — humans and agents in one orchestration layer.",
+    span: "lg:col-span-1",
   },
 ];
 
@@ -700,6 +711,25 @@ function Eyebrow({ children }: { children: React.ReactNode }) {
       <span className="h-px w-6 bg-[#f97316]/50" />
       {children}
     </p>
+  );
+}
+
+function StatCallout({ pill, stat, body }: { pill: string; stat: string; body: string }) {
+  return (
+    <div className="relative flex flex-col items-center py-6 text-center">
+      {/* glow node */}
+      <span className="relative mb-5 flex size-3.5 items-center justify-center">
+        <span className="agnb-pulse-ring absolute inset-0 rounded-full bg-[#f97316]/50" />
+        <span className="relative size-3.5 rounded-full bg-[#f97316]" />
+      </span>
+      <span className="mb-4 inline-flex items-center gap-1.5 rounded-full border border-black/[0.08] bg-white px-3 py-1 font-mono text-[11px] uppercase tracking-[0.14em] text-gray-500 dark:border-white/10 dark:bg-neutral-900 dark:text-neutral-400">
+        {pill}
+      </span>
+      <p className="text-[clamp(40px,6vw,72px)] font-extrabold leading-none tracking-[-0.03em] text-[#f97316]">
+        {stat}
+      </p>
+      <p className="mt-4 max-w-md text-[16px] leading-relaxed text-gray-500 dark:text-neutral-400">{body}</p>
+    </div>
   );
 }
 
@@ -1219,6 +1249,15 @@ export function LandingPage() {
         </p>
       </Section>
 
+      {/* ── Stat callout ── */}
+      <Section className="py-8">
+        <StatCallout
+          pill="Did you know?"
+          stat="24/7"
+          body="Your growth engine never clocks out — 35 jobs fire around the clock, draining queues, syncing CRMs, drafting content, and ranking campaigns while you sleep."
+        />
+      </Section>
+
       {/* ── Testimonials ── */}
       <Section className="py-12">
         <Eyebrow>From the crew</Eyebrow>
@@ -1249,11 +1288,11 @@ export function LandingPage() {
         <h2 className="mb-10 text-[clamp(28px,3.4vw,42px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
           Six engines. One throttle.
         </h2>
-        <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-4">
           {MODULES.map((m) => (
-            <div key={m.k} className="group rounded-2xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-neutral-900 p-7 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
-              <div className="mb-4 flex size-11 items-center justify-center rounded-xl bg-[#f97316]/10 text-[#f97316]">
-                <m.icon className="size-5" />
+            <div key={m.k} className={cn("group rounded-2xl border border-black/[0.07] bg-white p-7 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-white/[0.08] dark:bg-neutral-900", m.span)}>
+              <div className="mb-4 flex size-12 items-center justify-center rounded-full bg-gradient-to-br from-amber-400 to-orange-600 text-white shadow-[0_6px_20px_rgba(249,115,22,0.4)]">
+                <m.icon className="size-[22px]" />
               </div>
               <h3 className="mb-2 text-[18px] font-semibold text-gray-900 dark:text-neutral-100">{m.k}</h3>
               <p className="text-[14px] leading-relaxed text-gray-500 dark:text-neutral-400">{m.d}</p>
@@ -1262,8 +1301,13 @@ export function LandingPage() {
         </div>
       </Section>
 
-      {/* ── Feature showcase (real screenshots) ── */}
-      <Section className="space-y-24 py-16 sm:py-20">
+      {/* ── Feature showcase (real screenshots) — center-spine rail ── */}
+      <Section className="relative space-y-24 py-16 sm:py-20">
+        <div
+          className="pointer-events-none absolute inset-y-10 left-1/2 hidden w-px -translate-x-1/2 lg:block"
+          style={{ backgroundImage: "repeating-linear-gradient(to bottom, rgba(249,115,22,0.4) 0 5px, transparent 5px 12px)" }}
+          aria-hidden
+        />
         <FeatureRow
           eyebrow="One north star"
           title={<>Every KPI that matters, <span className="text-gray-400 dark:text-neutral-500">on one screen.</span></>}
