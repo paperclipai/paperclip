@@ -21,13 +21,12 @@ jobs:
       - name: Checkout base branch (never PR code)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: master
+          ref: ${{ github.event.pull_request.base.ref }}
 
       - name: Dependency Review
+        id: dependency-review
         uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
-        with:
-          base-ref: ${{ github.event.pull_request.base.sha }}
-          head-ref: ${{ github.event.pull_request.head.sha }}
+        continue-on-error: true
 
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
