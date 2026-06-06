@@ -11,6 +11,7 @@ import {
   MODEL_PROFILE_KEYS,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
+  isIssueProductivityReviewOriginKind,
   type BillingType,
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
@@ -4806,6 +4807,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
         projectId: issues.projectId,
+        originKind: issues.originKind,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -4951,7 +4953,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           projectId: issue.projectId,
         })
         : Promise.resolve(null),
-      issue
+      issue && !isIssueProductivityReviewOriginKind(issue.originKind)
         ? treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id)
         : Promise.resolve(null),
     ]);
@@ -5618,6 +5620,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         executionRunId: issues.executionRunId,
         executionState: issues.executionState,
+        originKind: issues.originKind,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -5707,19 +5710,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
-    if (activePauseHold) {
-      return {
-        allowed: false,
-        reason: "Scheduled retry suppressed because the issue is held by an active subtree pause hold",
-        errorCode: "issue_paused",
-        issueId,
-        details: {
+    if (!isIssueProductivityReviewOriginKind(issue.originKind)) {
+      const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
+      if (activePauseHold) {
+        return {
+          allowed: false,
+          reason: "Scheduled retry suppressed because the issue is held by an active subtree pause hold",
+          errorCode: "issue_paused",
           issueId,
-          holdId: activePauseHold.holdId,
-          rootIssueId: activePauseHold.rootIssueId,
-        },
-      };
+          details: {
+            issueId,
+            holdId: activePauseHold.holdId,
+            rootIssueId: activePauseHold.rootIssueId,
+          },
+        };
+      }
     }
 
     const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
@@ -6650,6 +6655,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const issueId = readNonEmptyString(context.issueId);
     if (issueId) {
+      const issueOriginKind = await db
+        .select({ originKind: issues.originKind })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0]?.originKind ?? null);
+      if (!isIssueProductivityReviewOriginKind(issueOriginKind)) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
       const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(db, {
         companyId: run.companyId,
@@ -6679,6 +6690,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
         });
         return null;
+      }
       }
 
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
@@ -9427,39 +9439,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
         const deferredPayload = parseObject(deferred.payload);
         const deferredContextSeed = parseObject(deferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
-        const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
-        const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(tx, {
-          companyId: issue.companyId,
-          issueId: issue.id,
-          agentId: deferred.agentId,
-          contextSnapshot: deferredContextSeed,
-          requestedByActorType: deferred.requestedByActorType,
-          requestedByActorId: deferred.requestedByActorId,
-        });
-        if (activePauseHold && !treeHoldInteractionWake) {
-          await tx
-            .update(agentWakeupRequests)
-            .set({
-              status: "cancelled",
-              finishedAt: new Date(),
-              error: "Deferred wake suppressed by active subtree pause hold",
-              updatedAt: new Date(),
-            })
-            .where(eq(agentWakeupRequests.id, deferred.id));
-          continue;
-        }
-
         const promotedContextSeed: Record<string, unknown> = { ...deferredContextSeed };
-        if (activePauseHold) {
-          promotedContextSeed.treeHoldInteraction = true;
-          promotedContextSeed.activeTreeHold = {
-            holdId: activePauseHold.holdId,
-            rootIssueId: activePauseHold.rootIssueId,
-            mode: activePauseHold.mode,
-            reason: activePauseHold.reason,
-            releasePolicy: activePauseHold.releasePolicy,
-            interaction: true,
-          };
+        if (!isIssueProductivityReviewOriginKind(issue.originKind)) {
+          const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
+          const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(tx, {
+            companyId: issue.companyId,
+            issueId: issue.id,
+            agentId: deferred.agentId,
+            contextSnapshot: deferredContextSeed,
+            requestedByActorType: deferred.requestedByActorType,
+            requestedByActorId: deferred.requestedByActorId,
+          });
+          if (activePauseHold && !treeHoldInteractionWake) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "cancelled",
+                finishedAt: new Date(),
+                error: "Deferred wake suppressed by active subtree pause hold",
+                updatedAt: new Date(),
+              })
+              .where(eq(agentWakeupRequests.id, deferred.id));
+            continue;
+          }
+          if (activePauseHold) {
+            promotedContextSeed.treeHoldInteraction = true;
+            promotedContextSeed.activeTreeHold = {
+              holdId: activePauseHold.holdId,
+              rootIssueId: activePauseHold.rootIssueId,
+              mode: activePauseHold.mode,
+              reason: activePauseHold.reason,
+              releasePolicy: activePauseHold.releasePolicy,
+              interaction: true,
+            };
+          }
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
@@ -9614,7 +9627,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "released" as const };
       }
 
-      if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+      if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc, issue.originKind)) {
         return { kind: "released" as const };
       }
 
@@ -9922,49 +9935,56 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issueId) {
-      const activePauseHold = await treeControlSvc.getActivePauseHoldGate(agent.companyId, issueId);
-      if (activePauseHold) {
-        const treeHoldInteractionWake = await isVerifiedIssueTreeControlInteractionWake(db, {
-          companyId: agent.companyId,
-          issueId,
-          agentId,
-          contextSnapshot: enrichedContextSnapshot,
-          requestedByActorType: opts.requestedByActorType,
-          requestedByActorId: opts.requestedByActorId,
-        });
-
-        if (!treeHoldInteractionWake) {
-          await writeSkippedRequest("issue_tree_hold_active");
-          await logActivity(db, {
+      const issueOriginKind = await db
+        .select({ originKind: issues.originKind })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+        .then((rows) => rows[0]?.originKind ?? null);
+      if (!isIssueProductivityReviewOriginKind(issueOriginKind)) {
+        const activePauseHold = await treeControlSvc.getActivePauseHoldGate(agent.companyId, issueId);
+        if (activePauseHold) {
+          const treeHoldInteractionWake = await isVerifiedIssueTreeControlInteractionWake(db, {
             companyId: agent.companyId,
-            actorType: "system",
-            actorId: "system",
+            issueId,
             agentId,
-            runId: null,
-            action: "issue.tree_hold_wakeup_deferred",
-            entityType: "issue",
-            entityId: issueId,
-            details: {
-              holdId: activePauseHold.holdId,
-              rootIssueId: activePauseHold.rootIssueId,
-              requestedReason: reason,
-              source,
-              triggerDetail,
-              securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
-            },
+            contextSnapshot: enrichedContextSnapshot,
+            requestedByActorType: opts.requestedByActorType,
+            requestedByActorId: opts.requestedByActorId,
           });
-          return null;
-        }
 
-        enrichedContextSnapshot.treeHoldInteraction = true;
-        enrichedContextSnapshot.activeTreeHold = {
-          holdId: activePauseHold.holdId,
-          rootIssueId: activePauseHold.rootIssueId,
-          mode: activePauseHold.mode,
-          reason: activePauseHold.reason,
-          releasePolicy: activePauseHold.releasePolicy,
-          interaction: true,
-        };
+          if (!treeHoldInteractionWake) {
+            await writeSkippedRequest("issue_tree_hold_active");
+            await logActivity(db, {
+              companyId: agent.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId,
+              runId: null,
+              action: "issue.tree_hold_wakeup_deferred",
+              entityType: "issue",
+              entityId: issueId,
+              details: {
+                holdId: activePauseHold.holdId,
+                rootIssueId: activePauseHold.rootIssueId,
+                requestedReason: reason,
+                source,
+                triggerDetail,
+                securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
+              },
+            });
+            return null;
+          }
+
+          enrichedContextSnapshot.treeHoldInteraction = true;
+          enrichedContextSnapshot.activeTreeHold = {
+            holdId: activePauseHold.holdId,
+            rootIssueId: activePauseHold.rootIssueId,
+            mode: activePauseHold.mode,
+            reason: activePauseHold.reason,
+            releasePolicy: activePauseHold.releasePolicy,
+            interaction: true,
+          };
+        }
       }
     }
 

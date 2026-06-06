@@ -311,6 +311,10 @@ export function isPluginOperationIssueOriginKind(originKind: string | null | und
   return typeof originKind === "string" && /^plugin:[^:]+:operation(?::|$)/.test(originKind);
 }
 
+export function isIssueProductivityReviewOriginKind(originKind: string | null | undefined): boolean {
+  return originKind === "issue_productivity_review";
+}
+
 export const ISSUE_RELATION_TYPES = ["blocks"] as const;
 export type IssueRelationType = (typeof ISSUE_RELATION_TYPES)[number];
 
