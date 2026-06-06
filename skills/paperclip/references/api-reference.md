@@ -679,12 +679,173 @@ POST /api/issues/{issueId}/interactions
 
 Rules:
 
-- `continuationPolicy: "wake_assignee"` wakes the assignee only after a `request_confirmation` is accepted.
-- Rejection does not wake the assignee by default. The board/user can add a normal comment when revisions are needed.
+- `continuationPolicy: "wake_assignee"` wakes the assignee on any non-expired resolution (accept or reject).
+- `continuationPolicy: "wake_assignee_on_accept"` wakes the assignee only when the confirmation is accepted; rejection is silent.
+- `continuationPolicy: "none"` (default for `request_confirmation`) never wakes the assignee. Use it when you intend to poll status from another flow.
 - Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
 - Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
 - A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names what the board/user must decide.
 - For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before creating implementation subtasks.
+
+### Issue-thread structured questions
+
+Use `ask_user_questions` interactions when you need a structured choice from the board/user (single- or multi-select). Prefer this over a free-text comment when the answer should map cleanly onto follow-up work.
+
+Create a question set:
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "ask_user_questions",
+  "idempotencyKey": "questions:{issueId}:{topic}",
+  "title": "Source needed",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "title": "Pick a source",
+    "submitLabel": "Submit",
+    "questions": [
+      {
+        "id": "source",
+        "prompt": "Which source should we use?",
+        "helpText": "Pick one. We'll cite this in the deliverable.",
+        "selectionMode": "single",
+        "required": true,
+        "options": [
+          { "id": "a", "label": "Option A", "description": "Primary dataset" },
+          { "id": "b", "label": "Option B", "description": "Backup dataset" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Rules:
+
+- Each question needs a stable `id` unique within the interaction, and each option needs an `id` unique within its question.
+- `selectionMode: "single"` means at most one `optionId` in the response; `"multi"` allows multiple.
+- `required: true` means the user must select at least one option for that question to submit.
+- Default `continuationPolicy` for `ask_user_questions` is `wake_assignee`.
+- Up to 10 questions per interaction, up to 10 options per question.
+
+### Issue-thread task suggestions
+
+Use `suggest_tasks` interactions to propose a set of subtasks that the board/user accepts (in whole or in part). Accepted entries are created as real issues atomically; the response lists the created issue IDs and identifiers.
+
+Create a suggestion:
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "suggest_tasks",
+  "idempotencyKey": "suggest:{issueId}:{planRevisionId}",
+  "title": "Proposed breakdown",
+  "continuationPolicy": "wake_assignee_on_accept",
+  "payload": {
+    "version": 1,
+    "defaultParentId": "{issueId}",
+    "tasks": [
+      {
+        "clientKey": "t1",
+        "title": "Draft listing copy",
+        "description": "Write initial listing copy for plot 1.",
+        "priority": "high",
+        "assigneeAgentId": "{marketerAgentId}"
+      },
+      {
+        "clientKey": "t2",
+        "parentClientKey": "t1",
+        "title": "Review listing copy",
+        "priority": "medium",
+        "assigneeAgentId": "{ceoAgentId}"
+      }
+    ]
+  }
+}
+```
+
+Rules:
+
+- Each task needs a stable `clientKey` unique within the interaction. Use `parentClientKey` to nest a suggested task under another suggested task in the same interaction; use `parentId` to nest under an existing issue.
+- `assigneeAgentId` and `assigneeUserId` are mutually exclusive.
+- Up to 50 tasks per interaction.
+- On acceptance the board/user can pass `selectedClientKeys` to accept a subset; omitting it accepts everything in the payload.
+- Default `continuationPolicy` is `wake_assignee`. Use `wake_assignee_on_accept` when a rejection should be silent.
+
+### Reading interactions and responses
+
+```
+GET /api/issues/{issueId}/interactions
+```
+
+Returns interactions ordered by `createdAt asc`. Each item shares this base shape:
+
+```jsonc
+{
+  "id": "uuid",
+  "issueId": "uuid",
+  "kind": "suggest_tasks" | "ask_user_questions" | "request_confirmation",
+  "status": "pending" | "accepted" | "rejected" | "answered" | "expired" | "failed",
+  "continuationPolicy": "none" | "wake_assignee" | "wake_assignee_on_accept",
+  "title": "string | null",
+  "summary": "string | null",
+  "idempotencyKey": "string | null",
+  "createdByAgentId": "uuid | null",
+  "createdByUserId": "string | null",
+  "resolvedByAgentId": "uuid | null",
+  "resolvedByUserId": "string | null",
+  "createdAt": "ISO timestamp",
+  "updatedAt": "ISO timestamp",
+  "resolvedAt": "ISO timestamp | null",
+  "payload": { /* the original request payload */ },
+  "result":  { /* null while pending; populated on resolution, see below */ }
+}
+```
+
+`result` shape per kind (populated when `status` leaves `pending`):
+
+- `ask_user_questions` → `{ "version": 1, "answers": [{ "questionId": "...", "optionIds": ["..."] }], "summaryMarkdown": "string | null" }`
+- `suggest_tasks` → `{ "version": 1, "createdTasks": [{ "clientKey": "...", "issueId": "...", "identifier": "...", "parentIssueId": "..." }], "skippedClientKeys": ["..."], "rejectionReason": "string | null" }`
+- `request_confirmation` → `{ "version": 1, "outcome": "accepted" | "rejected" | "superseded_by_comment" | "stale_target" | "duplicate_target", "reason": "string | null", "commentId": "uuid | null" }`
+
+Polling pattern: when you have created an interaction and want to read the response, fetch `GET /api/issues/{issueId}/interactions`, find the item by `id`, and check `status`. While `pending`, `result` is `null`. Once the user resolves it, `result` carries the answer in the shape above. Prefer this over reading the database directly; the API has everything you need.
+
+### Resolving an interaction
+
+The board/user normally drives resolution. Agents with the `issue.interactions:resolve` permission may resolve `suggest_tasks` and `request_confirmation` on behalf of the assignee.
+
+```
+POST /api/issues/{issueId}/interactions/{interactionId}/accept
+{ "selectedClientKeys": ["t1", "t2"] }   // suggest_tasks only; omit to accept all
+
+POST /api/issues/{issueId}/interactions/{interactionId}/reject
+{ "reason": "explanation up to 4000 chars" }   // suggest_tasks and request_confirmation only
+
+POST /api/issues/{issueId}/interactions/{interactionId}/respond
+{ "answers": [{ "questionId": "source", "optionIds": ["a"] }], "summaryMarkdown": "optional" }
+// ask_user_questions only; board auth, not delegated to agents
+```
+
+All three endpoints return the updated interaction with its new `status` and populated `result`.
+
+### Interaction follow-up (assignee wakeup)
+
+When an interaction resolves and `continuationPolicy` triggers a wake, the assignee receives a heartbeat with `PAPERCLIP_WAKE_REASON=issue_commented`. The wake context (`heartbeat-context`) carries:
+
+- `interactionId`
+- `interactionKind` — `suggest_tasks` | `ask_user_questions` | `request_confirmation`
+- `interactionStatus` — `accepted` | `rejected` | `answered` | `expired`
+- `sourceCommentId` — the comment that anchored this interaction (if any)
+- `mutation: "interaction"`
+
+Unlike approvals, no dedicated `PAPERCLIP_INTERACTION_*` env vars are injected — read the wake context and then call `GET /api/issues/{issueId}/interactions` (or filter by id) to retrieve the populated `result`.
+
+Wake firing rules:
+
+- `continuationPolicy: "wake_assignee"` → wake on any non-expired resolution.
+- `continuationPolicy: "wake_assignee_on_accept"` → wake only when `status === "accepted"`.
+- `continuationPolicy: "none"` → never wake (default for `request_confirmation`; the creator must poll).
 
 ### Checking approval status
 
