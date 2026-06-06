@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -22,6 +23,8 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -67,6 +70,26 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "ti
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+export const MAX_MISSING_DISPOSITION_RECOVERY_ATTEMPTS = 3;
+
+export type MissingDispositionCapDecision =
+  | { action: "enqueue_wake" }
+  | { action: "post_cap_comment_and_stop" }
+  | { action: "stop_silently" };
+
+export function decideMissingDispositionCap(recoveryAction: {
+  attemptCount: number;
+  maxAttempts: number | null;
+}): MissingDispositionCapDecision {
+  if (recoveryAction.maxAttempts === null || recoveryAction.attemptCount <= recoveryAction.maxAttempts) {
+    return { action: "enqueue_wake" };
+  }
+  if (recoveryAction.attemptCount === recoveryAction.maxAttempts + 1) {
+    return { action: "post_cap_comment_and_stop" };
+  }
+  return { action: "stop_silently" };
+}
+
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
@@ -2135,7 +2158,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           reason: "no_invokable_recovery_owner",
         },
       monitorPolicy: null,
-      maxAttempts: null,
+      maxAttempts: MAX_MISSING_DISPOSITION_RECOVERY_ATTEMPTS,
       lastAttemptAt: now,
     });
 
@@ -2202,6 +2225,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       "- Guard: recovery issues do not create nested `stranded_issue_recovery` issues.",
       "",
       "Next action: the current recovery owner should inspect the failed run evidence, restore a live execution path or record the manual resolution, then move this recovery issue out of `blocked`.",
+    ].join("\n");
+  }
+
+  function buildMissingDispositionCapReachedComment(input: {
+    issue: typeof issues.$inferSelect;
+    recoveryAction: { id: string; maxAttempts: number | null; ownerAgentId: string | null };
+    recoveryOwner: { id: string; name: string | null } | null;
+    prefix: string;
+  }) {
+    const maxAttempts = input.recoveryAction.maxAttempts ?? MAX_MISSING_DISPOSITION_RECOVERY_ATTEMPTS;
+    const ownerMention = input.recoveryOwner
+      ? `[@${input.recoveryOwner.name ?? input.recoveryOwner.id}](agent://${input.recoveryOwner.id})`
+      : "@local-board";
+    return [
+      "Paperclip stopped automatic missing-disposition recovery after reaching the attempt cap.",
+      "",
+      `- Source issue: ${issueUiLink({ identifier: input.issue.identifier, id: input.issue.id }, input.prefix)}`,
+      `- Recovery action: \`${input.recoveryAction.id}\``,
+      `- Attempts used: ${maxAttempts}/${maxAttempts}`,
+      `- Recovery owner: ${ownerMention}`,
+      "- Next action: a board operator or the recovery owner should manually choose a valid disposition for this issue (done, cancelled, in_review with an owner, blocked with first-class blockers, or an explicit continuation path).",
+      "",
+      `<!-- missing_disposition_cap:${input.recoveryAction.id} -->`,
     ].join("\n");
   }
 
@@ -2421,12 +2467,45 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       },
     });
 
-    await enqueueSourceScopedStrandedRecoveryWake({
-      action: recoveryAction,
-      issue: input.issue,
-      latestRun: input.latestRun,
-      recoveryCause,
-    });
+    const capDecision = decideMissingDispositionCap(recoveryAction);
+
+    if (capDecision.action === "enqueue_wake") {
+      await enqueueSourceScopedStrandedRecoveryWake({
+        action: recoveryAction,
+        issue: input.issue,
+        latestRun: input.latestRun,
+        recoveryCause,
+      });
+    } else if (capDecision.action === "post_cap_comment_and_stop") {
+      const capCommentMarker = `missing_disposition_cap:${recoveryAction.id}`;
+      const hasCapComment = await db
+        .select({ id: issueComments.id, body: issueComments.body })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.issueId, input.issue.id),
+            eq(issueComments.authorType, "system"),
+          ),
+        )
+        .orderBy(desc(issueComments.createdAt))
+        .limit(50)
+        .then((rows) => rows.some((row) => (row.body ?? "").includes(capCommentMarker)));
+
+      if (!hasCapComment) {
+        await issuesSvc.addComment(
+          input.issue.id,
+          buildMissingDispositionCapReachedComment({
+            issue: input.issue,
+            recoveryAction,
+            recoveryOwner,
+            prefix,
+          }),
+          {},
+          { authorType: "system" },
+        );
+      }
+    }
+    // capDecision.action === "stop_silently": wake already capped and comment already posted; no action needed
 
     if (recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
       const [currentIssue] = await db
@@ -2466,6 +2545,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ),
       );
 
+    const candidateIds = candidates.map((c) => c.id);
+    const routineOwnedIssueIds = candidateIds.length > 0
+      ? await db
+        .select({ parentIssueId: routines.parentIssueId })
+        .from(routines)
+        .innerJoin(routineTriggers, eq(routineTriggers.routineId, routines.id))
+        .where(
+          and(
+            inArray(routines.parentIssueId, candidateIds),
+            eq(routines.status, "active"),
+            eq(routineTriggers.enabled, true),
+            gt(routineTriggers.nextRunAt, new Date()),
+          ),
+        )
+        .then((rows) => new Set(rows.map((r) => r.parentIssueId).filter(Boolean) as string[]))
+      : new Set<string>();
+
     const result = {
       assignmentDispatched: 0,
       dispatchRequeued: 0,
@@ -2498,6 +2594,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (routineOwnedIssueIds.has(issue.id)) {
         result.skipped += 1;
         continue;
       }
