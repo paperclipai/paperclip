@@ -60,6 +60,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { parseIssueExecutionState } from "../issue-execution-policy.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -3584,6 +3585,165 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Math.max(1, Math.floor(asNumber(raw, fallback)));
   }
 
+  // Contract B: classify whether a source issue has a valid resting disposition that makes
+  // an active recovery action stale. Mirrors classifySourceRecoveryRevalidation in routes/issues.ts
+  // but is evaluated unconditionally (no durableSourceChange guard) so it can be called from
+  // a periodic sweep that catches out-of-band status changes.
+  async function classifyOutOfBandDispositionResolution(
+    issue: {
+      id: string;
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+      executionState: unknown;
+      monitorNextCheckAt: Date | null;
+    },
+    now: Date,
+  ): Promise<string | null> {
+    if (issue.status === "done" || issue.status === "cancelled") {
+      return `Recovery action became stale because the source issue reached ${issue.status}.`;
+    }
+
+    if (issue.status === "blocked") {
+      const readiness = await issuesSvc.getDependencyReadiness(issue.id);
+      if (readiness.unresolvedBlockerCount > 0) {
+        return "Recovery action became stale because the source issue now has unresolved first-class blockers.";
+      }
+      return null;
+    }
+
+    if (issue.assigneeUserId) {
+      return "Recovery action became stale because the source issue now has a human owner.";
+    }
+
+    if ((issue.status === "todo" || issue.status === "in_progress") && issue.assigneeAgentId) {
+      return `Recovery action became stale because the source issue is ${issue.status} with an agent owner.`;
+    }
+
+    if (issue.status === "in_review") {
+      const executionState = parseIssueExecutionState(issue.executionState);
+      const participant = executionState?.status === "pending" ? executionState.currentParticipant : null;
+      if (
+        (participant?.type === "agent" && readNonEmptyString(participant.agentId)) ||
+        (participant?.type === "user" && readNonEmptyString(participant.userId))
+      ) {
+        return "Recovery action became stale because the source issue now has a typed review participant.";
+      }
+
+      const pendingInteraction = await db
+        .select({ id: issueThreadInteractions.id })
+        .from(issueThreadInteractions)
+        .where(and(eq(issueThreadInteractions.issueId, issue.id), eq(issueThreadInteractions.status, "pending")))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (pendingInteraction) {
+        return "Recovery action became stale because the source issue now has a pending issue interaction.";
+      }
+
+      const pendingApproval = await db
+        .select({ id: approvals.id })
+        .from(issueApprovals)
+        .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+        .where(and(eq(issueApprovals.issueId, issue.id), inArray(approvals.status, ["pending", "revision_requested"])))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (pendingApproval) {
+        return "Recovery action became stale because the source issue now has a pending approval.";
+      }
+    }
+
+    if (issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > now.getTime()) {
+      return "Recovery action became stale because the source issue now has a scheduled monitor.";
+    }
+
+    return null;
+  }
+
+  // Periodic sweep: for every active recovery action, check if the source issue has
+  // a valid resting disposition that was recorded out-of-band (i.e., without going
+  // through a mutation path that calls revalidateActiveSourceRecovery). If so, cancel
+  // the recovery action.
+  async function sweepOutOfBandDispositions(opts?: { now?: Date }) {
+    const now = opts?.now ?? new Date();
+
+    const candidates = await db
+      .select({
+        recoveryId: issueRecoveryActions.id,
+        companyId: issueRecoveryActions.companyId,
+        sourceIssueId: issueRecoveryActions.sourceIssueId,
+        issueId: issues.id,
+        issueIdentifier: issues.identifier,
+        issueStatus: issues.status,
+        issueAssigneeAgentId: issues.assigneeAgentId,
+        issueAssigneeUserId: issues.assigneeUserId,
+        issueExecutionState: issues.executionState,
+        issueMonitorNextCheckAt: issues.monitorNextCheckAt,
+      })
+      .from(issueRecoveryActions)
+      .innerJoin(issues, eq(issueRecoveryActions.sourceIssueId, issues.id))
+      .where(inArray(issueRecoveryActions.status, ["active", "escalated"]));
+
+    const result = { resolved: 0, skipped: 0, issueIds: [] as string[] };
+
+    for (const candidate of candidates) {
+      const resolutionNote = await classifyOutOfBandDispositionResolution(
+        {
+          id: candidate.sourceIssueId,
+          status: candidate.issueStatus,
+          assigneeAgentId: candidate.issueAssigneeAgentId,
+          assigneeUserId: candidate.issueAssigneeUserId,
+          executionState: candidate.issueExecutionState,
+          monitorNextCheckAt: candidate.issueMonitorNextCheckAt,
+        },
+        now,
+      );
+
+      if (!resolutionNote) {
+        result.skipped++;
+        continue;
+      }
+
+      const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+        companyId: candidate.companyId,
+        sourceIssueId: candidate.sourceIssueId,
+        actionId: candidate.recoveryId,
+        status: "cancelled",
+        outcome: "cancelled",
+        resolutionNote,
+      });
+
+      if (!resolved) {
+        result.skipped++;
+        continue;
+      }
+
+      await logActivity(db, {
+        companyId: candidate.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.recovery_action_resolved",
+        entityType: "issue",
+        entityId: candidate.sourceIssueId,
+        details: {
+          identifier: candidate.issueIdentifier,
+          recoveryActionId: resolved.id,
+          recoveryActionStatus: resolved.status,
+          outcome: resolved.outcome,
+          sourceIssueStatus: candidate.issueStatus,
+          resolutionNote: resolved.resolutionNote,
+          source: "out_of_band_disposition_sweep",
+        },
+      });
+
+      result.resolved++;
+      result.issueIds.push(candidate.sourceIssueId);
+    }
+
+    return result;
+  }
+
   return {
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
@@ -3594,5 +3754,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileIssueGraphLiveness,
     readRecoveryTimerIntervalMs,
+    sweepOutOfBandDispositions,
   };
 }

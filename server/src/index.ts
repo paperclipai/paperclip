@@ -760,6 +760,12 @@ export async function startServer(): Promise<StartedServer> {
           logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
         }
       })
+      .then(async () => {
+        const swept = await heartbeat.sweepOutOfBandDispositions();
+        if (swept.resolved > 0) {
+          logger.warn({ ...swept }, "startup out-of-band disposition sweep resolved stale recovery actions");
+        }
+      })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
@@ -824,6 +830,12 @@ export async function startServer(): Promise<StartedServer> {
           const reviewed = await heartbeat.reconcileProductivityReviews();
           if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
             logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
+          }
+        })
+        .then(async () => {
+          const swept = await heartbeat.sweepOutOfBandDispositions();
+          if (swept.resolved > 0) {
+            logger.warn({ ...swept }, "periodic out-of-band disposition sweep resolved stale recovery actions");
           }
         })
         .catch((err) => {
