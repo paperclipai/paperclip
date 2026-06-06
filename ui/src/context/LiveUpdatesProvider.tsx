@@ -19,6 +19,14 @@ import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
 const RECONNECT_SUPPRESS_MS = 2000;
+// Live-events transport: the WebSocket upgrade only works where a persistent server
+// holds the connection AND the in-process event bus actually sees the worker's events
+// (i.e. a self-hosted/worker deployment). On the serverless control plane (Vercel) the
+// upgrade 404s, so after a couple of quick failures we stop retrying the socket and fall
+// back to polling — periodically refetching the same DB-backed queries the socket would
+// have invalidated. Polling refetches ONLY active (mounted) observers, so it's bounded.
+const MAX_WS_ATTEMPTS_BEFORE_POLLING = 2;
+const LIVE_POLL_INTERVAL_MS = 8000;
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
@@ -762,6 +770,54 @@ function invalidateActivityQueries(
   }
 }
 
+function invalidateLiveQueries(
+  queryClient: QueryClient,
+  companyId: string,
+  pathname: string,
+) {
+  // Polling sweep used when the live-events socket isn't available (serverless).
+  // Refetches the live, DB-backed company queries. invalidateQueries only refetches
+  // ACTIVE (mounted) observers, so this is bounded to what's currently on screen.
+  const companyKeys: ReadonlyArray<readonly unknown[]> = [
+    queryKeys.liveRuns(companyId),
+    queryKeys.heartbeats(companyId),
+    queryKeys.agents.list(companyId),
+    queryKeys.org(companyId),
+    queryKeys.dashboard(companyId),
+    queryKeys.costs(companyId),
+    queryKeys.usageByProvider(companyId),
+    queryKeys.usageWindowSpend(companyId),
+    queryKeys.sidebarBadges(companyId),
+    queryKeys.activity(companyId),
+    queryKeys.issues.list(companyId),
+    queryKeys.issues.listMineByMe(companyId),
+    queryKeys.issues.listTouchedByMe(companyId),
+    queryKeys.issues.listUnreadTouchedByMe(companyId),
+    queryKeys.approvals.list(companyId),
+    queryKeys.access.joinRequests(companyId),
+    queryKeys.projects.list(companyId),
+    queryKeys.goals.list(companyId),
+    queryKeys.companies.all,
+    ["routines"],
+  ];
+  for (const key of companyKeys) {
+    queryClient.invalidateQueries({ queryKey: key });
+  }
+
+  // Detail surfaces for the issue currently on screen.
+  const context = resolveVisibleIssueRouteContext(queryClient, pathname);
+  if (context) {
+    for (const ref of context.issueRefs) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(ref) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(ref) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(ref) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref) });
+    }
+  }
+}
+
 interface ToastGate {
   cooldownHits: Map<string, number[]>;
   suppressUntil: number;
@@ -959,6 +1015,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     let closed = false;
     let reconnectAttempt = 0;
     let reconnectTimer: number | null = null;
+    let pollTimer: number | null = null;
     let socket: WebSocket | null = null;
 
     const clearReconnect = () => {
@@ -968,9 +1025,35 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       }
     };
 
+    const clearPoll = () => {
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    };
+
+    const sweep = () => {
+      if (closed || !isPageForegrounded()) return;
+      invalidateLiveQueries(queryClient, liveCompanyId, pathnameRef.current);
+    };
+
+    // Fallback when the WebSocket can't be established (serverless control plane):
+    // poll the DB-backed live queries instead of hammering the socket. Sweep once
+    // immediately so the UI is fresh, then on an interval while the tab is visible.
+    const startPolling = () => {
+      if (closed || pollTimer !== null) return;
+      sweep();
+      pollTimer = window.setInterval(sweep, LIVE_POLL_INTERVAL_MS);
+    };
+
     const scheduleReconnect = () => {
       if (closed) return;
       reconnectAttempt += 1;
+      if (reconnectAttempt > MAX_WS_ATTEMPTS_BEFORE_POLLING) {
+        // The socket isn't available here — stop retrying it and poll instead.
+        startPolling();
+        return;
+      }
       const delayMs = Math.min(15000, 1000 * 2 ** Math.min(reconnectAttempt - 1, 4));
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null;
@@ -991,6 +1074,8 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           closeSocketQuietly(nextSocket, "stale_connection");
           return;
         }
+        // Socket is live — cancel any polling fallback that had taken over.
+        clearPoll();
         if (reconnectAttempt > 0) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
         }
@@ -1025,6 +1110,13 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       };
     };
 
+    // While polling, refresh immediately when the tab is refocused.
+    const onVisibility = () => {
+      if (pollTimer !== null) sweep();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onVisibility);
+
     // Delay initial connect slightly so React StrictMode's double-invoke
     // cleanup fires before the WebSocket is created, avoiding the
     // "WebSocket closed before connection established" dev-mode error.
@@ -1034,6 +1126,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       closed = true;
       window.clearTimeout(connectTimer);
       clearReconnect();
+      clearPoll();
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onVisibility);
       const activeSocket = socket;
       socket = null;
       closeSocketQuietly(activeSocket, "provider_unmount");

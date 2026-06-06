@@ -3858,10 +3858,16 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
     let closed = false;
     let reconnectTimer: number | null = null;
+    let reconnectAttempt = 0;
     let socket: WebSocket | null = null;
 
     const scheduleReconnect = () => {
       if (closed) return;
+      reconnectAttempt += 1;
+      // Stop reconnecting where the socket can't be established (serverless control
+      // plane) instead of retrying every 1.5s forever. Run/agent data still refreshes
+      // via react-query (LiveUpdatesProvider polls those queries on an interval).
+      if (reconnectAttempt > 3) return;
       reconnectTimer = window.setTimeout(connect, 1500);
     };
 
@@ -3873,6 +3879,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       socket = new WebSocket(url);
 
       socket.onopen = () => {
+        reconnectAttempt = 0;
         setIsStreamingConnected(true);
       };
 

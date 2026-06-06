@@ -10,6 +10,10 @@ import { buildSameOriginWebSocketUrl } from "../../lib/websocket-url";
 
 const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
+// The live-log socket is an optimization on top of the readRunLog fetch-poll above.
+// Where it can't connect (serverless control plane), stop retrying after a few attempts
+// instead of reconnecting every 1.5s forever — the 2s log poll keeps the transcript live.
+const MAX_TRANSCRIPT_WS_ATTEMPTS = 3;
 const EMPTY_RUN_LOG_CHUNKS: RunLogChunk[] = [];
 
 export interface RunTranscriptSource {
@@ -271,10 +275,15 @@ export function useLiveRunTranscripts({
 
     let closed = false;
     let reconnectTimer: number | null = null;
+    let reconnectAttempt = 0;
     let socket: WebSocket | null = null;
 
     const scheduleReconnect = () => {
       if (closed) return;
+      reconnectAttempt += 1;
+      // Stop reconnecting where the socket can't be established (serverless); the
+      // readRunLog fetch-poll keeps the transcript updating, so no 1.5s storm.
+      if (reconnectAttempt > MAX_TRANSCRIPT_WS_ATTEMPTS) return;
       reconnectTimer = window.setTimeout(connect, 1500);
     };
 
@@ -284,6 +293,10 @@ export function useLiveRunTranscripts({
         `/api/companies/${encodeURIComponent(companyId)}/events/ws`,
       );
       socket = new WebSocket(url);
+
+      socket.onopen = () => {
+        reconnectAttempt = 0;
+      };
 
       socket.onmessage = (message) => {
         const raw = typeof message.data === "string" ? message.data : "";
