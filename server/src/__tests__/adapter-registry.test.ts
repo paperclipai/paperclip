@@ -385,6 +385,72 @@ describe("server adapter registry", () => {
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
   });
 
+  it("passes the realized Paperclip workspace cwd into Hermes config", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {},
+      config: {},
+      context: {
+        paperclipWorkspace: {
+          cwd: "/tmp/paperclip-realized-workspace",
+        },
+      },
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.config.workspaceDir).toBe("/tmp/paperclip-realized-workspace");
+    expect(patchedCtx.agent.adapterConfig.cwd).toBe("/tmp/paperclip-realized-workspace");
+  });
+
+  it("preserves explicit Hermes cwd while still exposing workspaceDir", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          cwd: "/tmp/explicit-hermes-cwd",
+        },
+      },
+      runtime: {},
+      config: {},
+      context: {
+        paperclipWorkspace: {
+          cwd: "/tmp/paperclip-realized-workspace",
+        },
+      },
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.config.workspaceDir).toBe("/tmp/paperclip-realized-workspace");
+    expect(patchedCtx.agent.adapterConfig.cwd).toBe("/tmp/explicit-hermes-cwd");
+  });
+
   it("passes the original Hermes context through when authToken is absent", async () => {
     const adapter = requireServerAdapter("hermes_local");
     const ctx = {

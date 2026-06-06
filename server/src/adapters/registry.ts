@@ -187,6 +187,10 @@ function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
     ctx && typeof ctx === "object" && "config" in ctx && ctx.config && typeof ctx.config === "object"
       ? (ctx.config as Record<string, unknown>)
       : null;
+  const context =
+    ctx && typeof ctx === "object" && "context" in ctx && ctx.context && typeof ctx.context === "object"
+      ? (ctx.context as Record<string, unknown>)
+      : null;
   const agent =
     ctx && typeof ctx === "object" && "agent" in ctx && ctx.agent && typeof ctx.agent === "object"
       ? (ctx.agent as Record<string, unknown>)
@@ -208,6 +212,27 @@ function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
   }
   if (agentAdapterConfig && !agentAdapterConfig.hermesCommand && agentCommand) {
     agentAdapterConfig.hermesCommand = agentCommand;
+  }
+
+  const paperclipWorkspace =
+    context?.paperclipWorkspace && typeof context.paperclipWorkspace === "object"
+      ? (context.paperclipWorkspace as Record<string, unknown>)
+      : null;
+  const workspaceCwd =
+    typeof paperclipWorkspace?.cwd === "string" && paperclipWorkspace.cwd.trim().length > 0
+      ? paperclipWorkspace.cwd.trim()
+      : null;
+  const hasConfigWorkspaceDir =
+    typeof config?.workspaceDir === "string" && config.workspaceDir.trim().length > 0;
+  const hasAgentCwd =
+    typeof agentAdapterConfig?.cwd === "string" && agentAdapterConfig.cwd.trim().length > 0;
+  if (workspaceCwd) {
+    if (config && !hasConfigWorkspaceDir) {
+      config.workspaceDir = workspaceCwd;
+    }
+    if (agentAdapterConfig && !hasAgentCwd) {
+      agentAdapterConfig.cwd = workspaceCwd;
+    }
   }
 
   return ctx;
