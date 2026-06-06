@@ -3,6 +3,8 @@ import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
 import { OnboardingWizard } from "./components/OnboardingWizard";
+import { CoachOnboardingPage } from "./components/CoachOnboardingPage";
+import { OnboardingChat } from "./components/OnboardingChat";
 import { CloudAccessGate } from "./components/CloudAccessGate";
 import { Dashboard } from "./pages/Dashboard";
 import { DashboardLive } from "./pages/DashboardLive";
@@ -70,7 +72,9 @@ function boardRoutes() {
       <Route index element={<Navigate to="dashboard" replace />} />
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="dashboard/live" element={<DashboardLive />} />
-      <Route path="onboarding" element={<OnboardingRoutePage />} />
+      <Route path="onboarding" element={<CoachOnboardingPage />} />
+      <Route path="onboarding/classic" element={<OnboardingRoutePage />} />
+      <Route path="onboarding/chat/:issueRef" element={<OnboardingChat />} />
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
       <Route path="company/settings/environments" element={<CompanyEnvironments />} />
@@ -291,7 +295,8 @@ export function App() {
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />
-          <Route path="onboarding" element={<OnboardingRoutePage />} />
+          <Route path="onboarding" element={<CoachOnboardingPage />} />
+          <Route path="onboarding/classic" element={<OnboardingRoutePage />} />
           <Route path="instance" element={<Navigate to="/instance/settings/general" replace />} />
           <Route path="instance/settings" element={<Layout />}>
             <Route index element={<Navigate to="general" replace />} />

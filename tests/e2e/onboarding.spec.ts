@@ -22,7 +22,9 @@ const TASK_TITLE = "E2E test task";
 
 test.describe("Onboarding wizard", () => {
   test("completes full wizard flow", async ({ page }) => {
-    await page.goto("/onboarding");
+    // The classic wizard moved to /onboarding/classic; the bare /onboarding
+    // route renders the new Coach-driven flow.
+    await page.goto("/onboarding/classic");
 
     const wizardHeading = page.locator("h3", { hasText: "Name your company" });
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isClassicOnboardingPath,
   isOnboardingPath,
   resolveRouteOnboardingOptions,
   shouldRedirectCompanylessRouteToOnboarding,
@@ -14,39 +15,84 @@ describe("isOnboardingPath", () => {
     expect(isOnboardingPath("/pap/onboarding")).toBe(true);
   });
 
+  it("matches the classic onboarding suffix at the global route", () => {
+    expect(isOnboardingPath("/onboarding/classic")).toBe(true);
+  });
+
+  it("matches the classic onboarding suffix at the company-prefixed route", () => {
+    expect(isOnboardingPath("/pap/onboarding/classic")).toBe(true);
+  });
+
   it("ignores non-onboarding routes", () => {
     expect(isOnboardingPath("/pap/dashboard")).toBe(false);
   });
 });
 
+describe("isClassicOnboardingPath", () => {
+  it("matches the global classic onboarding route", () => {
+    expect(isClassicOnboardingPath("/onboarding/classic")).toBe(true);
+  });
+
+  it("matches the company-prefixed classic onboarding route", () => {
+    expect(isClassicOnboardingPath("/pap/onboarding/classic")).toBe(true);
+  });
+
+  it("does not match the bare onboarding route", () => {
+    expect(isClassicOnboardingPath("/onboarding")).toBe(false);
+  });
+
+  it("does not match the company-prefixed bare onboarding route", () => {
+    expect(isClassicOnboardingPath("/pap/onboarding")).toBe(false);
+  });
+});
+
 describe("resolveRouteOnboardingOptions", () => {
-  it("opens company creation for the global onboarding route", () => {
+  it("opens company creation for the global classic onboarding route", () => {
     expect(
       resolveRouteOnboardingOptions({
-        pathname: "/onboarding",
+        pathname: "/onboarding/classic",
         companies: [],
       }),
     ).toEqual({ initialStep: 1 });
   });
 
-  it("opens agent creation when the prefixed company exists", () => {
+  it("opens agent creation when the classic prefixed company exists", () => {
     expect(
       resolveRouteOnboardingOptions({
-        pathname: "/pap/onboarding",
+        pathname: "/pap/onboarding/classic",
         companyPrefix: "pap",
         companies: [{ id: "company-1", issuePrefix: "PAP" }],
       }),
     ).toEqual({ initialStep: 2, companyId: "company-1" });
   });
 
-  it("falls back to company creation when the prefixed company is missing", () => {
+  it("falls back to company creation when the classic prefixed company is missing", () => {
     expect(
       resolveRouteOnboardingOptions({
-        pathname: "/pap/onboarding",
+        pathname: "/pap/onboarding/classic",
         companyPrefix: "pap",
         companies: [],
       }),
     ).toEqual({ initialStep: 1 });
+  });
+
+  it("does not auto-open the wizard for the new Coach onboarding route", () => {
+    expect(
+      resolveRouteOnboardingOptions({
+        pathname: "/onboarding",
+        companies: [],
+      }),
+    ).toBeNull();
+  });
+
+  it("does not auto-open the wizard for the company-prefixed Coach onboarding route", () => {
+    expect(
+      resolveRouteOnboardingOptions({
+        pathname: "/pap/onboarding",
+        companyPrefix: "pap",
+        companies: [{ id: "company-1", issuePrefix: "PAP" }],
+      }),
+    ).toBeNull();
   });
 });
 
@@ -64,6 +110,15 @@ describe("shouldRedirectCompanylessRouteToOnboarding", () => {
     expect(
       shouldRedirectCompanylessRouteToOnboarding({
         pathname: "/onboarding",
+        hasCompanies: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not redirect when already on classic onboarding", () => {
+    expect(
+      shouldRedirectCompanylessRouteToOnboarding({
+        pathname: "/onboarding/classic",
         hasCompanies: false,
       }),
     ).toBe(false);

@@ -58,4 +58,12 @@ export const companiesApi = {
     api.post<CompanyPortabilityPreviewResult>("/companies/import/preview", data),
   importBundle: (data: CompanyPortabilityImportRequest) =>
     api.post<CompanyPortabilityImportResult>("/companies/import", data),
+  applyImportToCompany: (
+    companyId: string,
+    data: CompanyPortabilityImportRequest,
+  ) =>
+    api.post<CompanyPortabilityImportResult>(
+      `/companies/${companyId}/imports/apply`,
+      data,
+    ),
 };

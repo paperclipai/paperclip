@@ -10,7 +10,9 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const companyName = `PAP-3413-${timestamp}`;
   const screenshotDir = "test-results/planning-mode";
 
-  await page.goto("/onboarding");
+  // The classic wizard moved to /onboarding/classic; the bare /onboarding
+  // route renders the new Coach-driven flow.
+  await page.goto("/onboarding/classic");
   await expect(page.locator("h3", { hasText: "Name your company" })).toBeVisible({ timeout: 5_000 });
 
   await page.locator('input[placeholder="Acme Corp"]').fill(companyName);

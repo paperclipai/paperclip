@@ -4,14 +4,44 @@ type OnboardingRouteCompany = {
 };
 
 export function isOnboardingPath(pathname: string): boolean {
-  const segments = pathname.split("/").filter(Boolean);
+  const segments = pathname.split("/").filter(Boolean).map((s) => s.toLowerCase());
 
-  if (segments.length === 1) {
-    return segments[0]?.toLowerCase() === "onboarding";
+  // Strip a trailing /classic segment so /onboarding and /onboarding/classic
+  // (and the company-prefixed equivalents) are both recognized as onboarding
+  // entry points by the redirect logic.
+  const trimmed =
+    segments.length > 0 && segments[segments.length - 1] === "classic"
+      ? segments.slice(0, -1)
+      : segments;
+
+  if (trimmed.length === 1) {
+    return trimmed[0] === "onboarding";
   }
 
+  if (trimmed.length === 2) {
+    return trimmed[1] === "onboarding";
+  }
+
+  return false;
+}
+
+// The dialog-style onboarding wizard auto-opens only on the classic route. The
+// new Coach-driven flow at `/onboarding` is a regular page.
+export function isClassicOnboardingPath(pathname: string): boolean {
+  const segments = pathname.split("/").filter(Boolean);
+
   if (segments.length === 2) {
-    return segments[1]?.toLowerCase() === "onboarding";
+    return (
+      segments[0]?.toLowerCase() === "onboarding"
+      && segments[1]?.toLowerCase() === "classic"
+    );
+  }
+
+  if (segments.length === 3) {
+    return (
+      segments[1]?.toLowerCase() === "onboarding"
+      && segments[2]?.toLowerCase() === "classic"
+    );
   }
 
   return false;
@@ -24,7 +54,9 @@ export function resolveRouteOnboardingOptions(params: {
 }): { initialStep: 1 | 2; companyId?: string } | null {
   const { pathname, companyPrefix, companies } = params;
 
-  if (!isOnboardingPath(pathname)) return null;
+  // Only auto-open the dialog wizard for the classic onboarding route. The
+  // new Coach-driven flow at `/onboarding` is a regular page (CoachOnboardingPage).
+  if (!isClassicOnboardingPath(pathname)) return null;
 
   if (!companyPrefix) {
     return { initialStep: 1 };

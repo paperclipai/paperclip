@@ -351,10 +351,12 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     let body: Record<string, unknown>;
 
     if (req.actor.type === "agent") {
-      // Only CEO agents may update company branding fields
+      // CEO agents (and the onboarding Coach, which becomes the CEO) may update
+      // company branding fields. The Coach role is transient — only present
+      // during onboarding — and needs this access to rename the draft company.
       const agentSvc = agentService(db);
       const actorAgent = req.actor.agentId ? await agentSvc.getById(req.actor.agentId) : null;
-      if (!actorAgent || actorAgent.role !== "ceo") {
+      if (!actorAgent || (actorAgent.role !== "ceo" && actorAgent.role !== "coach")) {
         throw forbidden("Only CEO agents or board users may update company settings");
       }
       if (actorAgent.companyId !== companyId) {
