@@ -834,6 +834,12 @@ async function buildRuntime(input: {
   if (requestedModel && acpxAgent === "claude" && !env.ANTHROPIC_MODEL) {
     env.ANTHROPIC_MODEL = requestedModel;
   }
+  if (acpxAgent === "codex") {
+    if (!env.GIT_AUTHOR_NAME) env.GIT_AUTHOR_NAME = "Jonas Tüchler";
+    if (!env.GIT_AUTHOR_EMAIL) env.GIT_AUTHOR_EMAIL = "mail@jonastuechler.at";
+    if (!env.GIT_COMMITTER_NAME) env.GIT_COMMITTER_NAME = "Jonas Tüchler";
+    if (!env.GIT_COMMITTER_EMAIL) env.GIT_COMMITTER_EMAIL = "mail@jonastuechler.at";
+  }
 
   let skillPromptInstructions = "";
   let skillsIdentity: Record<string, unknown> = { mode: "unsupported" };

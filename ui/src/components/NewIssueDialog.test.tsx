@@ -842,6 +842,63 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("stages media from the mobile overflow menu action and uploads it after creation", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleInput = container.querySelector('textarea[placeholder="Issue title"]') as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+    await typeTextareaValue(titleInput!, "Issue with mobile overflow media");
+
+    const moreMenuTrigger = container.querySelector('[data-testid="new-issue-more-menu-trigger"]') as HTMLButtonElement | null;
+    expect(moreMenuTrigger).not.toBeNull();
+    await act(async () => {
+      moreMenuTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const moreMediaButton = container.querySelector('[data-testid="new-issue-more-media-button"]') as HTMLButtonElement | null;
+    const mediaInput = container.querySelector('[data-testid="new-issue-media-input"]') as HTMLInputElement | null;
+    expect(moreMediaButton).not.toBeNull();
+    expect(mediaInput).not.toBeNull();
+
+    const videoFile = new File(["mobile-video-bytes"], "phone.mp4", {
+      type: "video/mp4",
+      lastModified: 1,
+    });
+    await act(async () => {
+      moreMediaButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      Object.defineProperty(mediaInput!, "files", {
+        configurable: true,
+        value: [videoFile],
+      });
+      mediaInput!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain("phone.mp4");
+    expect(container.textContent).toContain("video/mp4");
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Issue with mobile overflow media",
+      }),
+    );
+    expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledWith("company-1", "issue-2", videoFile);
+
+    act(() => root.unmount());
+  });
+
   it("allows editor autocomplete portal pointer events inside the modal", async () => {
     const { root } = renderDialog(container);
     await flush();

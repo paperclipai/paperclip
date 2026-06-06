@@ -4,6 +4,7 @@ import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  DEFAULT_MASTER_RUNTIME_FAILOVER,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
@@ -50,6 +51,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       issueGraphLivenessAutoRecoveryLookbackHours:
         parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
         DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+      masterRuntimeFailover: parsed.data.masterRuntimeFailover ?? DEFAULT_MASTER_RUNTIME_FAILOVER,
     };
   }
   return {
@@ -61,6 +63,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableIssueGraphLivenessAutoRecovery: false,
     issueGraphLivenessAutoRecoveryLookbackHours:
       DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+    masterRuntimeFailover: DEFAULT_MASTER_RUNTIME_FAILOVER,
   };
 }
 

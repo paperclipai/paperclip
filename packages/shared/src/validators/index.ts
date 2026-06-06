@@ -4,6 +4,7 @@ export {
   type InstanceGeneralSettings,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
+  masterRuntimeFailoverSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   type InstanceExperimentalSettings,

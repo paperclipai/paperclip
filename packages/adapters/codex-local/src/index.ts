@@ -5,9 +5,17 @@ export const label = "Codex (local)";
 
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 
-export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.3-codex";
+export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.5";
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = ["gpt-5.4"] as const;
+export const CODEX_LOCAL_DEPRECATED_MODEL_ALIASES: Record<string, string> = {
+  "gpt-5.3-codex": "gpt-5.5",
+} as const;
+
+export function normalizeCodexLocalModel(model: string | null | undefined): string {
+  const normalizedModel = normalizeModelId(model);
+  return CODEX_LOCAL_DEPRECATED_MODEL_ALIASES[normalizedModel] ?? normalizedModel;
+}
 
 function normalizeModelId(model: string | null | undefined): string {
   return typeof model === "string" ? model.trim() : "";

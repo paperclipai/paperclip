@@ -10,9 +10,9 @@ const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
-  /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
+  /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|session\s+limit|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
-  /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+  /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|session\s+limit|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
@@ -129,19 +129,31 @@ export function extractClaudeLoginUrl(text: string): string | null {
   return match[0]?.replace(/[\])}.!,?;:'\"]+$/g, "") ?? null;
 }
 
+export function isClaudeLimitError(parsed: Record<string, unknown> | null): boolean {
+  if (!parsed) return false;
+  const resultText = asString(parsed.result, "");
+  const errors = extractClaudeErrorMessages(parsed);
+  const haystack = [resultText, ...errors].join("\n");
+  return CLAUDE_TRANSIENT_UPSTREAM_RE.test(haystack);
+}
+
 export function detectClaudeLoginRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
 }): { requiresLogin: boolean; loginUrl: string | null } {
   const resultText = asString(input.parsed?.result, "").trim();
-  const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), input.stdout, input.stderr]
+  const stdout = input.parsed ? "" : input.stdout;
+  const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), stdout, input.stderr]
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
 
-  const requiresLogin = messages.some((line) => CLAUDE_AUTH_REQUIRED_RE.test(line));
+  let requiresLogin = messages.some((line) => CLAUDE_AUTH_REQUIRED_RE.test(line));
+  if (requiresLogin && input.parsed && isClaudeLimitError(input.parsed)) {
+    requiresLogin = false;
+  }
   return {
     requiresLogin,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),

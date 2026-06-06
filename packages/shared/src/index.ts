@@ -753,9 +753,14 @@ export {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_MASTER_RUNTIME_FAILOVER,
+  MASTER_RUNTIME_FAILOVER_MODES,
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  type MasterRuntimeFailoverMode,
+  type MasterRuntimeKey,
+  type MasterRuntimeFailoverSettings,
 } from "./types/instance.js";
 
 export type {
@@ -784,6 +789,7 @@ export {
   patchInstanceGeneralSettingsSchema,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
+  masterRuntimeFailoverSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   type PatchInstanceExperimentalSettings,

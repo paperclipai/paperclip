@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
 } from "./parse.js";
@@ -61,6 +62,14 @@ describe("isClaudeTransientUpstreamError", () => {
         errorMessage: "5-hour limit reached.",
       }),
     ).toBe(true);
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          is_error: true,
+          result: "You've hit your session limit · resets 3:30pm (Europe/Vienna)",
+        },
+      }),
+    ).toBe(true);
   });
 
   it("does not classify login/auth failures as transient", () => {
@@ -68,6 +77,20 @@ describe("isClaudeTransientUpstreamError", () => {
       isClaudeTransientUpstreamError({
         stderr: "Please log in. Run `claude login` first.",
       }),
+    ).toBe(false);
+  });
+
+  it("does not treat unrelated stdout context as login-required when a structured limit result exists", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: {
+          type: "result",
+          is_error: true,
+          result: "You've hit your session limit · resets 3:30pm (Europe/Vienna)",
+        },
+        stdout: "Historical issue notes: login return path preserves deep links after auth.",
+        stderr: "",
+      }).requiresLogin,
     ).toBe(false);
   });
 
@@ -104,6 +127,15 @@ describe("extractClaudeRetryNotBefore", () => {
       now,
     );
     expect(extracted?.toISOString()).toBe("2026-04-22T21:00:00.000Z");
+  });
+
+  it("parses the session limit reset hint in its explicit timezone", () => {
+    const now = new Date("2026-06-06T12:15:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { errorMessage: "You've hit your session limit · resets 3:30pm (Europe/Vienna)" },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2026-06-06T13:30:00.000Z");
   });
 
   it("rolls forward past midnight when the reset time has already passed today", () => {
