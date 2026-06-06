@@ -104,13 +104,14 @@ export async function startServer(): Promise<StartedServer> {
   const bootMark = (phase: string): void => {
     if (!__bootTimingEnabled) return;
     const now = performance.now();
-    logger.info(
-      {
-        bootPhase: phase,
-        phaseMs: Math.round(now - __bootLast),
-        sinceStartMs: Math.round(now - __bootStart),
-      },
-      `boot-timing: ${phase} (+${Math.round(now - __bootLast)}ms, ${Math.round(now - __bootStart)}ms total)`,
+    const phaseMs = Math.round(now - __bootLast);
+    const sinceStartMs = Math.round(now - __bootStart);
+    // console.log (not logger.info): the prod pino level filters out info, which
+    // silently dropped these marks on the first measurement pass. console.log is
+    // captured by Vercel regardless of log level, matching the module-import mark.
+    console.log(
+      `boot-timing: ${phase} (+${phaseMs}ms, ${sinceStartMs}ms total) ` +
+        JSON.stringify({ bootPhase: phase, phaseMs, sinceStartMs }),
     );
     __bootLast = now;
   };
