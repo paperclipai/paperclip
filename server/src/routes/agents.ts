@@ -107,6 +107,31 @@ import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
 
+type AgentInboxLiteIssueStatus = "todo" | "in_progress" | "in_review" | "blocked";
+type AgentInboxRunnableWorkReason =
+  | "ready"
+  | "issue_blocked"
+  | "awaiting_review"
+  | "active_run"
+  | "active_recovery_action"
+  | "blocked_dependencies"
+  | "continuation_required";
+
+function classifyAgentInboxRunnableWork(input: {
+  status: AgentInboxLiteIssueStatus;
+  activeRun: unknown;
+  activeRecoveryAction: unknown;
+  dependencyReady: boolean;
+}): { runnable: boolean; reason: AgentInboxRunnableWorkReason } {
+  if (input.status === "blocked") return { runnable: false, reason: "issue_blocked" };
+  if (input.status === "in_review") return { runnable: false, reason: "awaiting_review" };
+  if (input.activeRun) return { runnable: false, reason: "active_run" };
+  if (input.activeRecoveryAction) return { runnable: false, reason: "active_recovery_action" };
+  if (!input.dependencyReady) return { runnable: false, reason: "blocked_dependencies" };
+  if (input.status === "todo") return { runnable: true, reason: "ready" };
+  return { runnable: true, reason: "continuation_required" };
+}
+
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
   if (!Number.isFinite(parsed)) return RUN_LOG_DEFAULT_LIMIT_BYTES;
@@ -1853,7 +1878,7 @@ export function agentRoutes(
     const recoveryActionsSvc = issueRecoveryActionService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
       assigneeAgentId: req.actor.agentId,
-      status: "todo,in_progress,blocked",
+      status: "todo,in_progress,in_review,blocked",
       includeRoutineExecutions: true,
       limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
@@ -1864,22 +1889,34 @@ export function agentRoutes(
     ]);
 
     res.json(
-      rows.map((issue) => ({
-        id: issue.id,
-        identifier: issue.identifier,
-        title: issue.title,
-        status: issue.status,
-        priority: issue.priority,
-        projectId: issue.projectId,
-        goalId: issue.goalId,
-        parentId: issue.parentId,
-        updatedAt: issue.updatedAt,
-        activeRun: issue.activeRun,
-        activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
-        dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
-        unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
-        unresolvedBlockerIssueIds: dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [],
-      })),
+      rows.map((issue) => {
+        const readiness = dependencyReadiness.get(issue.id);
+        const activeRecoveryAction = recoveryActionByIssue.get(issue.id) ?? null;
+        const dependencyReady = readiness?.isDependencyReady ?? true;
+
+        return {
+          id: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          status: issue.status,
+          priority: issue.priority,
+          projectId: issue.projectId,
+          goalId: issue.goalId,
+          parentId: issue.parentId,
+          updatedAt: issue.updatedAt,
+          activeRun: issue.activeRun,
+          activeRecoveryAction,
+          dependencyReady,
+          unresolvedBlockerCount: readiness?.unresolvedBlockerCount ?? 0,
+          unresolvedBlockerIssueIds: readiness?.unresolvedBlockerIssueIds ?? [],
+          runnableWork: classifyAgentInboxRunnableWork({
+            status: issue.status as AgentInboxLiteIssueStatus,
+            activeRun: issue.activeRun,
+            activeRecoveryAction,
+            dependencyReady,
+          }),
+        };
+      }),
     );
   });
 
