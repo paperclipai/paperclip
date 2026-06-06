@@ -292,11 +292,48 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluations).toHaveLength(1);
     expect(evaluations[0]?.id).toBe(firstEvaluationId);
 
+    // The diagnostic event is written once per closed-evaluation episode, not once per
+    // tick, so two suppressing scans still produce exactly one log entry.
     const suppressionEvents = await db
       .select()
       .from(activityLog)
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "heartbeat.output_stale_suppressed")));
-    expect(suppressionEvents.length).toBeGreaterThanOrEqual(1);
+    expect(suppressionEvents).toHaveLength(1);
+    expect(suppressionEvents[0]?.runId).toBe(runId);
+  });
+
+  it("suppresses re-filing when the prior evaluation was closed as cancelled", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const firstEvaluationId = first.evaluationIssueIds[0];
+    expect(firstEvaluationId).toBeTruthy();
+
+    // The alert is dismissed via `cancelled` rather than `done`; suppression must
+    // treat both closed states identically (findLatestClosedStaleRunEvaluation matches both).
+    await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, firstEvaluationId!));
+
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(second).toMatchObject({ created: 0, suppressed: 1 });
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(1);
+    expect(evaluations[0]?.id).toBe(firstEvaluationId);
+
+    const suppressionEvents = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "heartbeat.output_stale_suppressed")));
+    expect(suppressionEvents).toHaveLength(1);
     expect(suppressionEvents[0]?.runId).toBe(runId);
   });
 

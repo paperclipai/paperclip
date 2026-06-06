@@ -878,6 +878,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Boolean(row);
   }
 
+  async function hasSuppressionLogAfter(companyId: string, runId: string, after: Date) {
+    const [row] = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.runId, runId),
+          eq(activityLog.action, "heartbeat.output_stale_suppressed"),
+          gt(activityLog.createdAt, after),
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1584,23 +1600,34 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         priorClosed.createdAt,
       );
       if (!runProgressedSincePriorAlert && !rewatchedSincePriorAlert) {
-        await logActivity(db, {
-          companyId: input.run.companyId,
-          actorType: "system",
-          actorId: "system",
-          agentId: input.run.agentId,
-          runId: input.run.id,
-          action: "heartbeat.output_stale_suppressed",
-          entityType: "heartbeat_run",
-          entityId: input.run.id,
-          details: {
-            source: "recovery.scan_silent_active_runs",
-            priorEvaluationIssueId: priorClosed.id,
-            priorEvaluationStatus: priorClosed.status,
-            reason: "already_flagged_run_closed_without_progress",
-            lastOutputAt: input.run.lastOutputAt?.toISOString() ?? null,
-          },
-        });
+        // A permanently-orphaned run is suppressed on every scan tick, so write the
+        // diagnostic event only once per closed-evaluation episode (keyed by the prior
+        // alert's close) rather than once per tick — otherwise the activity log grows
+        // unbounded for runs that never reach a terminal state.
+        const alreadyLogged = await hasSuppressionLogAfter(
+          input.run.companyId,
+          input.run.id,
+          priorClosed.createdAt,
+        );
+        if (!alreadyLogged) {
+          await logActivity(db, {
+            companyId: input.run.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: input.run.agentId,
+            runId: input.run.id,
+            action: "heartbeat.output_stale_suppressed",
+            entityType: "heartbeat_run",
+            entityId: input.run.id,
+            details: {
+              source: "recovery.scan_silent_active_runs",
+              priorEvaluationIssueId: priorClosed.id,
+              priorEvaluationStatus: priorClosed.status,
+              reason: "already_flagged_run_closed_without_progress",
+              lastOutputAt: input.run.lastOutputAt?.toISOString() ?? null,
+            },
+          });
+        }
         return { kind: "suppressed" as const };
       }
     }
