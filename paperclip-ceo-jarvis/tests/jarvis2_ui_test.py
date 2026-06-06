@@ -18,12 +18,14 @@ def main() -> None:
     assert "function loadUnifiedDashboard" in app_js
     assert "function renderUnifiedDashboard" in app_js
     assert "function unifiedProviderChooserHtml" in app_js
+    assert "function apiWithTimeout" in app_js
+    assert "Promise.allSettled" in app_js
     assert "function loadJarvis2" in app_js
     assert "function renderJarvis2" in app_js
     assert "function jarvis2DecisionAction" in app_js
     assert "function jarvis2SeedLiveDefaults" in app_js
-    assert "api('/providers/catalog')" in app_js
-    assert "api('/v5/company/health-forecast')" in app_js
+    assert "apiWithTimeout('/providers/catalog'" in app_js
+    assert "apiWithTimeout('/v5/company/health-forecast'" in app_js
     assert "api('/v5/audit')" in app_js
     assert "Zip import benchmark" not in app_js
     assert 'id="unifiedDashboard"' in index_html

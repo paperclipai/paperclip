@@ -8,6 +8,19 @@ async function api(path, options = {}) {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+async function apiWithTimeout(path, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error(`Request timed out after ${timeoutMs}ms`)), timeoutMs);
+  try {
+    const mergedHeaders = path === '/health' ? {} : { ...headers, ...(options.headers || {}) };
+    const res = await fetch(API + path, { ...options, headers: mergedHeaders, signal: controller.signal });
+    if (!res.ok) throw new Error(await res.text());
+    return await res.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 function pretty(x) { return JSON.stringify(x, null, 2); }
 function set(id, val) { document.getElementById(id).textContent = typeof val === 'string' ? val : pretty(val); }
 async function wrap(id, fn) { try { set(id, 'Working…'); set(id, await fn()); } catch (e) { set(id, 'Error: ' + e.message); } }
@@ -438,30 +451,31 @@ async function loadUnifiedDashboard(force = false) {
   unifiedState.loading = true;
   set('status', 'Loading unified dashboard…');
   try {
-    const [snapshot, agents, briefing, ritual, healthForecast, v5Audit, integrations, approvals, workflows, insights, providers] = await Promise.all([
-      api('/dashboard/god-view'),
-      api('/agents'),
-      api('/ceo/morning-briefing'),
-      api('/mission-control/daily-ritual'),
-      api('/v5/company/health-forecast'),
-      api('/v5/audit'),
-      api('/integrations'),
-      api('/governance/approvals?status=all'),
-      api('/mission-control/workflows?status=all'),
-      api('/autonomy/insights'),
-      api('/providers/catalog'),
+    const results = await Promise.allSettled([
+      apiWithTimeout('/dashboard/god-view', {}, 8000),
+      apiWithTimeout('/agents', {}, 8000),
+      apiWithTimeout('/ceo/morning-briefing', {}, 8000),
+      apiWithTimeout('/mission-control/daily-ritual', {}, 8000),
+      apiWithTimeout('/v5/company/health-forecast', {}, 8000),
+      apiWithTimeout('/v5/audit', {}, 8000),
+      apiWithTimeout('/integrations', {}, 8000),
+      apiWithTimeout('/governance/approvals?status=all', {}, 8000),
+      apiWithTimeout('/mission-control/workflows?status=all', {}, 8000),
+      apiWithTimeout('/autonomy/insights', {}, 8000),
+      apiWithTimeout('/providers/catalog', {}, 8000),
     ]);
-    unifiedState.snapshot = snapshot;
-    unifiedState.agents = Array.isArray(agents.agents) ? agents.agents : [];
+    const [snapshot, agents, briefing, ritual, healthForecast, v5Audit, integrations, approvals, workflows, insights, providers] = results.map((result) => (result.status === 'fulfilled' ? result.value : null));
+    unifiedState.snapshot = snapshot || {};
+    unifiedState.agents = Array.isArray(agents?.agents) ? agents.agents : [];
     unifiedState.briefing = briefing;
     unifiedState.ritual = ritual;
     unifiedState.healthForecast = healthForecast;
     unifiedState.v5Audit = v5Audit;
-    unifiedState.integrations = integrations;
-    unifiedState.approvals = approvals;
-    unifiedState.workflows = workflows;
-    unifiedState.insights = insights;
-    unifiedState.providers = Array.isArray(providers.providers) ? providers.providers : [];
+    unifiedState.integrations = integrations || {};
+    unifiedState.approvals = approvals || {};
+    unifiedState.workflows = workflows || {};
+    unifiedState.insights = insights || {};
+    unifiedState.providers = Array.isArray(providers?.providers) ? providers.providers : [];
     unifiedState.loadedAt = new Date();
     if (!unifiedState.seededDefaults) {
       jarvis2SeedLiveDefaults(snapshot, healthForecast);
@@ -508,16 +522,17 @@ async function loadJarvis2(force = false) {
   const view = document.getElementById('jarvis2View');
   if (view) view.innerHTML = '<div class="jarvis2-empty">Loading command center…</div>';
   try {
-    const [snapshot, agents, briefing, ritual, healthForecast, v5Audit] = await Promise.all([
-      api('/dashboard/god-view'),
-      api('/agents'),
-      api('/ceo/morning-briefing'),
-      api('/mission-control/daily-ritual'),
-      api('/v5/company/health-forecast'),
-      api('/v5/audit'),
+    const results = await Promise.allSettled([
+      apiWithTimeout('/dashboard/god-view', {}, 8000),
+      apiWithTimeout('/agents', {}, 8000),
+      apiWithTimeout('/ceo/morning-briefing', {}, 8000),
+      apiWithTimeout('/mission-control/daily-ritual', {}, 8000),
+      apiWithTimeout('/v5/company/health-forecast', {}, 8000),
+      apiWithTimeout('/v5/audit', {}, 8000),
     ]);
-    jarvis2State.snapshot = snapshot;
-    jarvis2State.agents = Array.isArray(agents.agents) ? agents.agents : [];
+    const [snapshot, agents, briefing, ritual, healthForecast, v5Audit] = results.map((result) => (result.status === 'fulfilled' ? result.value : null));
+    jarvis2State.snapshot = snapshot || {};
+    jarvis2State.agents = Array.isArray(agents?.agents) ? agents.agents : [];
     jarvis2State.briefing = briefing;
     jarvis2State.ritual = ritual;
     jarvis2State.healthForecast = healthForecast;
