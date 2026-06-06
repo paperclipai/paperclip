@@ -26,10 +26,15 @@ export interface TerminalResultCleanupOptions {
   graceMs?: number;
 }
 
-interface RunningProcess {
+export interface LocalProcessCgroupScope {
+  unitName: string;
+}
+
+export interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
   processGroupId: number | null;
+  cgroupScope?: LocalProcessCgroupScope | null;
 }
 
 interface SpawnTarget {
@@ -58,10 +63,31 @@ function resolveProcessGroupId(child: ChildProcess) {
   return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
 }
 
+function signalSystemdScope(unitName: string, signal: NodeJS.Signals) {
+  try {
+    const child = spawn(
+      "systemctl",
+      ["--user", "kill", "--kill-whom=all", `--signal=${signal}`, unitName],
+      {
+        detached: false,
+        shell: false,
+        stdio: "ignore",
+      },
+    );
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function signalRunningProcess(
-  running: Pick<RunningProcess, "child" | "processGroupId">,
+  running: Pick<RunningProcess, "child" | "processGroupId" | "cgroupScope">,
   signal: NodeJS.Signals,
 ) {
+  if (running.cgroupScope?.unitName && signalSystemdScope(running.cgroupScope.unitName, signal)) {
+    return;
+  }
   if (process.platform !== "win32" && running.processGroupId && running.processGroupId > 0) {
     try {
       process.kill(-running.processGroupId, signal);
@@ -945,10 +971,48 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
   const apiUrl =
     process.env.PAPERCLIP_RUNTIME_API_URL ??
-    process.env.PAPERCLIP_API_URL ??
     `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;
+}
+
+function sanitizeSystemdUnitName(value: string): string {
+  const normalized = value
+    .trim()
+    .replace(/[^a-zA-Z0-9_.-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || "run";
+}
+
+export function buildSystemdScopeUnitName(prefix: string, runId: string): string {
+  const safePrefix = sanitizeSystemdUnitName(prefix).slice(0, 40);
+  const safeRunId = sanitizeSystemdUnitName(runId).slice(0, 80);
+  return `${safePrefix}-${safeRunId}`;
+}
+
+export function buildSystemdRunScopeCommand(input: {
+  unitName: string;
+  command: string;
+  args: string[];
+}): { command: string; args: string[] } {
+  return {
+    command: "systemd-run",
+    args: [
+      "--user",
+      "--scope",
+      `--unit=${input.unitName}`,
+      "-p",
+      "KillMode=control-group",
+      "-p",
+      "KillSignal=SIGTERM",
+      "-p",
+      "TimeoutStopSec=5s",
+      "--",
+      input.command,
+      ...input.args,
+    ],
+  };
 }
 
 export function applyPaperclipWorkspaceEnv(
@@ -2085,6 +2149,7 @@ export async function runChildProcess(
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
     terminalResultCleanup?: TerminalResultCleanupOptions;
+    localCgroupScope?: LocalProcessCgroupScope | null;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
   },
@@ -2117,15 +2182,26 @@ export async function runChildProcess(
       remoteEnv: opts.remoteExecution ? opts.env : null,
     })
       .then((target) => {
-        const child = spawn(target.command, target.args, {
+        const localCgroupScope =
+          !opts.remoteExecution && process.platform === "linux" && opts.localCgroupScope?.unitName
+            ? opts.localCgroupScope
+            : null;
+        const spawnTarget = localCgroupScope
+          ? buildSystemdRunScopeCommand({
+              unitName: localCgroupScope.unitName,
+              command: target.command,
+              args: target.args,
+            })
+          : target;
+        const child = spawn(spawnTarget.command, spawnTarget.args, {
           cwd: target.cwd ?? opts.cwd,
           env: mergedEnv,
-          detached: process.platform !== "win32",
+          detached: process.platform !== "win32" && !localCgroupScope,
           shell: false,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
-        const processGroupId = resolveProcessGroupId(child);
+        const processGroupId = localCgroupScope ? null : resolveProcessGroupId(child);
 
         const spawnPersistPromise =
           typeof child.pid === "number" && child.pid > 0 && opts.onSpawn
@@ -2134,7 +2210,12 @@ export async function runChildProcess(
             })
             : Promise.resolve();
 
-        runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
+        runningProcesses.set(runId, {
+          child,
+          graceSec: opts.graceSec,
+          processGroupId,
+          cgroupScope: localCgroupScope,
+        });
 
         let timedOut = false;
         let stdout = "";
@@ -2146,6 +2227,7 @@ export async function runChildProcess(
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
+        const runningProcessSignalTarget = { child, processGroupId, cgroupScope: localCgroupScope };
 
         const clearTerminalCleanupTimers = () => {
           if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
@@ -2181,10 +2263,10 @@ export async function runChildProcess(
             terminalCleanupTimer = null;
             if (terminalCleanupStarted || timedOut) return;
             terminalCleanupStarted = true;
-            signalRunningProcess({ child, processGroupId }, "SIGTERM");
+            signalRunningProcess(runningProcessSignalTarget, "SIGTERM");
             terminalCleanupKillTimer = setTimeout(() => {
               terminalCleanupKillTimer = null;
-              signalRunningProcess({ child, processGroupId }, "SIGKILL");
+              signalRunningProcess(runningProcessSignalTarget, "SIGKILL");
             }, Math.max(1, opts.graceSec) * 1000);
           }, graceMs);
         };
@@ -2194,9 +2276,9 @@ export async function runChildProcess(
             ? setTimeout(() => {
                 timedOut = true;
                 clearTerminalCleanupTimers();
-                signalRunningProcess({ child, processGroupId }, "SIGTERM");
+                signalRunningProcess(runningProcessSignalTarget, "SIGTERM");
                 setTimeout(() => {
-                  signalRunningProcess({ child, processGroupId }, "SIGKILL");
+                  signalRunningProcess(runningProcessSignalTarget, "SIGKILL");
                 }, Math.max(1, opts.graceSec) * 1000);
               }, opts.timeoutSec * 1000)
             : null;

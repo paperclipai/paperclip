@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -743,6 +743,192 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
     expect(readyRun?.status).toBe("succeeded");
     expect(mockAdapterExecute.mock.calls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("reserves two company codex slots for governance while engineering is saturated", async () => {
+    const companyId = randomUUID();
+    const engineerAgentIds = Array.from({ length: 14 }, () => randomUUID());
+    const runningEngineerAgentIds = engineerAgentIds.slice(0, 13);
+    const queuedEngineerAgentId = engineerAgentIds[13];
+    const governanceAgentId = randomUUID();
+    const queuedEngineerIssueId = randomUUID();
+    const governanceIssueId = randomUUID();
+    const queuedEngineerRunId = randomUUID();
+    const governanceRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      ...engineerAgentIds.map((agentId, index) => ({
+        id: agentId,
+        companyId,
+        name: `Engineer ${index + 1}`,
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: 1,
+          },
+        },
+        permissions: {},
+      })),
+      {
+        id: governanceAgentId,
+        companyId,
+        name: "Audit Lead",
+        role: "audit",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: 1,
+          },
+        },
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: queuedEngineerIssueId,
+        companyId,
+        title: "Engineering queue",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: queuedEngineerAgentId,
+      },
+      {
+        id: governanceIssueId,
+        companyId,
+        title: "Audit queue",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: governanceAgentId,
+      },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      ...runningEngineerAgentIds.map((agentId) => ({
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        startedAt: new Date(),
+        contextSnapshot: { issueId: randomUUID(), wakeReason: "issue_assigned" },
+      })),
+      {
+        id: queuedEngineerRunId,
+        companyId,
+        agentId: queuedEngineerAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "queued",
+        contextSnapshot: { issueId: queuedEngineerIssueId, wakeReason: "issue_assigned" },
+      },
+    ]);
+
+    await heartbeat.resumeQueuedRuns();
+
+    const engineerRun = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, queuedEngineerRunId))
+      .then((rows) => rows[0] ?? null);
+    const laneRejection = await db
+      .select({
+        action: activityLog.action,
+        agentId: activityLog.agentId,
+        details: activityLog.details,
+      })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "codex_lane_dispatch_rejected"),
+      ))
+      .then((rows) => rows[0] ?? null);
+
+    expect(engineerRun?.status).toBe("queued");
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(0);
+    expect(laneRejection).toMatchObject({
+      action: "codex_lane_dispatch_rejected",
+      agentId: queuedEngineerAgentId,
+    });
+    expect(laneRejection?.details).toMatchObject({
+      reason: "codex_lane_saturated",
+      agentLane: "engineering",
+      maxConcurrentRuns: 15,
+      governanceReservedSlots: 2,
+      engineeringLimit: 13,
+      runningCodex: 13,
+      runningEngineeringCodex: 13,
+      queueDepth: {
+        engineering: 1,
+        governance: 0,
+        total: 1,
+      },
+      nextQueuedRunId: queuedEngineerRunId,
+      nextQueuedIssueId: queuedEngineerIssueId,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: governanceRunId,
+      companyId,
+      agentId: governanceAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      contextSnapshot: { issueId: governanceIssueId, wakeReason: "issue_assigned" },
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: governanceIssueId,
+      authorAgentId: governanceAgentId,
+      authorType: "agent",
+      createdByRunId: governanceRunId,
+      body: "Governance run completed.",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    const governanceRunSucceeded = await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, governanceRunId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+    expect(governanceRunSucceeded).toBe(true);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    const governanceRunFinalized = await waitForCondition(async () => {
+      const [run, runtime] = await Promise.all([
+        db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, governanceRunId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ lastRunStatus: agentRuntimeState.lastRunStatus })
+          .from(agentRuntimeState)
+          .where(eq(agentRuntimeState.agentId, governanceAgentId))
+          .then((rows) => rows[0] ?? null),
+      ]);
+      return run?.status === "succeeded" && runtime?.lastRunStatus === "succeeded";
+    });
+    expect(governanceRunFinalized).toBe(true);
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "cancelled", finishedAt: new Date() })
+      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.agentId, runningEngineerAgentIds)));
   });
 
   it("suppresses normal wakeups while allowing comment interaction wakes under a pause hold", async () => {

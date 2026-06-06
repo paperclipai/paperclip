@@ -37,6 +37,7 @@ import {
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
+  buildSystemdScopeUnitName,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseCodexJsonl,
@@ -52,6 +53,32 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
+const DEFAULT_CODEX_TIMEOUT_SEC_BY_WORK_MODE: Record<string, number> = {
+  standard: 30 * 60,
+  validation: 45 * 60,
+  build_verification: 60 * 60,
+};
+
+function resolveCodexDefaultTimeoutSec(input: {
+  context: Record<string, unknown>;
+  agent: { name?: string | null; role?: string | null };
+}) {
+  const contextWorkMode = readPaperclipIssueWorkModeFromContext(input.context);
+  const explicitLaneTimeout = contextWorkMode && contextWorkMode !== "standard"
+    ? DEFAULT_CODEX_TIMEOUT_SEC_BY_WORK_MODE[contextWorkMode]
+    : undefined;
+  if (typeof explicitLaneTimeout === "number") return explicitLaneTimeout;
+
+  const agentText = `${input.agent.role ?? ""} ${input.agent.name ?? ""}`.toLowerCase();
+  if (/\bbuild(?:[-_\s]+verification|[-_\s]+verifier)?\b/.test(agentText)) {
+    return DEFAULT_CODEX_TIMEOUT_SEC_BY_WORK_MODE.build_verification;
+  }
+  if (/\b(validation|validator|qa)\b/.test(agentText)) {
+    return DEFAULT_CODEX_TIMEOUT_SEC_BY_WORK_MODE.validation;
+  }
+  return DEFAULT_CODEX_TIMEOUT_SEC_BY_WORK_MODE[contextWorkMode ?? "standard"] ??
+    DEFAULT_CODEX_TIMEOUT_SEC_BY_WORK_MODE.standard;
+}
 
 function stripCodexRolloutNoise(text: string): string {
   const parts = text.split(/\r?\n/);
@@ -361,9 +388,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
     executionTarget,
-    asNumber(config.timeoutSec, 0),
+    asNumber(config.timeoutSec, resolveCodexDefaultTimeoutSec({ context, agent })),
   );
-  const graceSec = asNumber(config.graceSec, 20);
+  const graceSec = asNumber(config.graceSec, 5);
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const preparedExecutionTargetRuntime = executionTargetIsRemote
     ? await (async () => {
@@ -713,6 +740,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdin: prompt,
       timeoutSec,
       graceSec,
+      localCgroupScope:
+        runtimeExecutionTarget?.kind === "remote" || process.platform !== "linux"
+          ? null
+          : { unitName: buildSystemdScopeUnitName("codex", runId) },
       onSpawn,
       onLog: async (stream, chunk) => {
         if (stream !== "stderr") {

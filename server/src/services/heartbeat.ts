@@ -6,7 +6,6 @@ import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
-  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
   envBindingSchema,
@@ -202,9 +201,10 @@ export function redactDetectedSuccessfulRunProgressSummaryForBoard(
 
 const MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS = 100;
 const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
-const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 15;
+const HEARTBEAT_GOVERNANCE_RESERVED_CODEX_SLOTS = 2;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
-const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -6311,6 +6311,148 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  function isCodexLocalAgent(agent: Pick<typeof agents.$inferSelect, "adapterType">) {
+    return agent.adapterType === "codex_local";
+  }
+
+  function isGovernanceAgent(agent: Pick<typeof agents.$inferSelect, "role" | "name">) {
+    const haystack = `${agent.role ?? ""} ${agent.name ?? ""}`.toLowerCase();
+    return /\b(ceo|cto|audit|merge|governance|delivery|director|lead|coordinator)\b/.test(haystack);
+  }
+
+  async function countRunningCodexRuns(companyId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "running"),
+        eq(agents.adapterType, "codex_local"),
+      ));
+    return Number(count ?? 0);
+  }
+
+  async function countRunningEngineeringCodexRuns(companyId: string) {
+    const rows = await db
+      .select({
+        role: agents.role,
+        name: agents.name,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "running"),
+        eq(agents.adapterType, "codex_local"),
+      ));
+    return rows.filter((row) => !isGovernanceAgent(row)).length;
+  }
+
+  async function countQueuedCodexRunsByLane(companyId: string) {
+    const rows = await db
+      .select({
+        role: agents.role,
+        name: agents.name,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "queued"),
+        eq(agents.adapterType, "codex_local"),
+      ));
+    let governance = 0;
+    let engineering = 0;
+    for (const row of rows) {
+      if (isGovernanceAgent(row)) {
+        governance += 1;
+      } else {
+        engineering += 1;
+      }
+    }
+    return { governance, engineering, total: rows.length };
+  }
+
+  async function countRunningCodexLaneAvailableSlots(agent: typeof agents.$inferSelect) {
+    if (!isCodexLocalAgent(agent)) {
+      return {
+        availableSlots: Number.POSITIVE_INFINITY,
+        totalAvailableSlots: Number.POSITIVE_INFINITY,
+        runningCodex: 0,
+        runningEngineeringCodex: 0,
+        engineeringLimit: Number.POSITIVE_INFINITY,
+        agentLane: "non_codex" as const,
+      };
+    }
+    const runningCodex = await countRunningCodexRuns(agent.companyId);
+    const totalAvailable = Math.max(0, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT - runningCodex);
+    const agentLane = isGovernanceAgent(agent) ? "governance" as const : "engineering" as const;
+
+    const engineeringLimit = Math.max(
+      0,
+      HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT - HEARTBEAT_GOVERNANCE_RESERVED_CODEX_SLOTS,
+    );
+    const runningEngineering = await countRunningEngineeringCodexRuns(agent.companyId);
+    return {
+      availableSlots:
+        agentLane === "governance"
+          ? totalAvailable
+          : Math.min(totalAvailable, Math.max(0, engineeringLimit - runningEngineering)),
+      totalAvailableSlots: totalAvailable,
+      runningCodex,
+      runningEngineeringCodex: runningEngineering,
+      engineeringLimit,
+      agentLane,
+    };
+  }
+
+  async function logCodexLaneDispatchRejected(
+    agent: typeof agents.$inferSelect,
+    detail: Awaited<ReturnType<typeof countRunningCodexLaneAvailableSlots>>,
+    reason: string,
+  ) {
+    if (!isCodexLocalAgent(agent)) return;
+    const queueDepth = await countQueuedCodexRunsByLane(agent.companyId);
+    const nextQueuedRun = await db
+      .select({
+        id: heartbeatRuns.id,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.status, "queued")))
+      .orderBy(asc(heartbeatRuns.createdAt))
+      .then((rows) => rows[0] ?? null);
+
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "system",
+      actorId: "heartbeat_scheduler",
+      action: "codex_lane_dispatch_rejected",
+      entityType: "company",
+      entityId: agent.companyId,
+      agentId: agent.id,
+      details: {
+        reason,
+        agentLane: detail.agentLane,
+        maxConcurrentRuns: HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT,
+        governanceReservedSlots: HEARTBEAT_GOVERNANCE_RESERVED_CODEX_SLOTS,
+        engineeringLimit: detail.engineeringLimit,
+        runningCodex: detail.runningCodex,
+        runningEngineeringCodex: detail.runningEngineeringCodex,
+        totalAvailableSlots: Number.isFinite(detail.totalAvailableSlots) ? detail.totalAvailableSlots : null,
+        queueDepth,
+        rejectedAgentId: agent.id,
+        rejectedAgentName: agent.name,
+        rejectedAgentRole: agent.role,
+        nextQueuedRunId: nextQueuedRun?.id ?? null,
+        nextQueuedIssueId: nextQueuedRun
+          ? readNonEmptyString(parseObject(nextQueuedRun.contextSnapshot).issueId)
+          : null,
+      },
+    });
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -7235,8 +7377,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
-      if (availableSlots <= 0) return [];
+      const codexLaneCapacity = await countRunningCodexLaneAvailableSlots(agent);
+      const availableSlots = Math.max(0, Math.min(
+        policy.maxConcurrentRuns - runningCount,
+        codexLaneCapacity.availableSlots,
+      ));
 
       const queuedRuns = await db
         .select()
@@ -7244,6 +7389,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
         .orderBy(asc(heartbeatRuns.createdAt));
       if (queuedRuns.length === 0) return [];
+      if (availableSlots <= 0) {
+        if (codexLaneCapacity.availableSlots <= 0) {
+          await logCodexLaneDispatchRejected(agent, codexLaneCapacity, "codex_lane_saturated");
+        }
+        return [];
+      }
 
       const dependencyReadiness = await listQueuedRunDependencyReadiness(agent.companyId, queuedRuns);
       const queuedIssueIds = [...new Set(
