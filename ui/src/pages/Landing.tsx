@@ -514,6 +514,54 @@ function GoalTrace() {
   );
 }
 
+// ─── Orbit (the "after" — one core, every channel) ────────────────────────────
+
+const ORBIT_ENGINES = ["Outbound", "Inbound", "Content", "Revenue", "Agents", "Work OS"];
+
+function Orbit() {
+  const R = 42; // radius %
+  return (
+    <div className="relative mx-auto aspect-square w-full max-w-[380px]">
+      {/* dashed rings */}
+      <div className="agnb-spin absolute inset-[6%] rounded-full border border-dashed border-[#f97316]/25" />
+      <div className="agnb-spin-rev absolute inset-[22%] rounded-full border border-dashed border-[#f97316]/15" />
+      {/* connector lines */}
+      <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" fill="none" aria-hidden>
+        {ORBIT_ENGINES.map((_, i) => {
+          const a = (i / ORBIT_ENGINES.length) * 2 * Math.PI - Math.PI / 2;
+          return <line key={i} x1="50" y1="50" x2={50 + R * Math.cos(a)} y2={50 + R * Math.sin(a)} stroke="#f97316" strokeOpacity="0.18" strokeWidth="0.4" />;
+        })}
+      </svg>
+      {/* center core */}
+      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+        <span className="agnb-pulse-ring absolute inset-0 rounded-full bg-[#f97316]/40" />
+        <div className="relative flex size-16 items-center justify-center rounded-full border border-[#f97316]/30 bg-white shadow-[0_8px_30px_rgba(249,115,22,0.35)] dark:bg-neutral-900">
+          <img src="/favicon.svg" alt="" className="size-8" />
+        </div>
+      </div>
+      {/* engine nodes — placed on the ring via left/top % */}
+      {ORBIT_ENGINES.map((e, i) => {
+        const a = (i / ORBIT_ENGINES.length) * 2 * Math.PI - Math.PI / 2;
+        const left = 50 + R * Math.cos(a);
+        const top = 50 + R * Math.sin(a);
+        return (
+          <div
+            key={e}
+            className="absolute -translate-x-1/2 -translate-y-1/2"
+            style={{ left: `${left}%`, top: `${top}%` }}
+          >
+            <span className="whitespace-nowrap rounded-full border border-black/[0.08] bg-white px-3 py-1.5 text-[11.5px] font-semibold text-gray-800 shadow-sm dark:border-white/10 dark:bg-neutral-800 dark:text-neutral-100">
+              {e}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const MESSY_TOOLS = ["CRM", "GSC", "Jira", "Slack", "Sheets", "Rocket", "Notion", "Calendar", "Email", "Analytics", "Docs", "Ads"];
+
 // ─── Data ─────────────────────────────────────────────────────────────────────
 
 const STATS = [
@@ -1050,6 +1098,12 @@ export function LandingPage() {
         .agnb-marquee { animation: agnb-marquee 30s linear infinite; }
         @keyframes agnb-rev { 0%,100% { transform: scaleY(0.35) } 50% { transform: scaleY(1) } }
         .agnb-rev-bar { display:block; width:2px; height:13px; border-radius:9999px; background:currentColor; transform-origin:bottom; animation: agnb-rev 0.9s ease-in-out infinite; }
+        @keyframes agnb-spin { to { transform: rotate(360deg) } }
+        @keyframes agnb-spin-rev { to { transform: rotate(-360deg) } }
+        .agnb-spin { animation: agnb-spin 40s linear infinite; }
+        .agnb-spin-rev { animation: agnb-spin-rev 55s linear infinite; }
+        @keyframes agnb-pulse-ring { 0% { transform: scale(0.9); opacity: 0.6 } 70%,100% { transform: scale(1.6); opacity: 0 } }
+        .agnb-pulse-ring { animation: agnb-pulse-ring 2.8s ease-out infinite; }
       `}</style>
 
       <LandingNav />
@@ -1328,46 +1382,44 @@ export function LandingPage() {
         </div>
       </Section>
 
-      {/* ── Comparison ── */}
+      {/* ── Before / After (visual) ── */}
       <Section className="py-16">
-        <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-          <div className="rounded-2xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-neutral-900 p-8">
-            <p className="mb-4 font-mono text-[12px] font-semibold uppercase tracking-wider text-gray-400 dark:text-neutral-500">
-              The old way
-            </p>
-            <ul className="space-y-3 text-[14px] text-gray-400 dark:text-neutral-500">
-              {[
-                "12 tabs: CRM, Rocket, GSC, Jira, Slack — context lost",
-                "Manual CRM syncs + campaign checks at 11pm",
-                "Guessing which campaign (or agent) actually worked",
-                "Content stuck in drafts; PRs sitting for days",
-                "Attribution? A spreadsheet prayer",
-              ].map((x) => (
-                <li key={x} className="flex gap-2 line-through decoration-gray-300 dark:decoration-neutral-700">
-                  <span className="text-gray-300">—</span>
-                  {x}
-                </li>
-              ))}
-            </ul>
+        <div className="mb-10 text-center">
+          <Eyebrow><span className="mx-auto">Twelve dashboards become one</span></Eyebrow>
+          <h2 className="text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
+            From tab chaos to one orbit.
+          </h2>
+        </div>
+        <div className="grid grid-cols-1 items-stretch gap-5 md:grid-cols-2">
+          {/* Before — messy */}
+          <div className="relative overflow-hidden rounded-2xl border border-black/[0.07] bg-white p-8 dark:border-white/[0.08] dark:bg-neutral-900">
+            <p className="mb-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-neutral-500">Before</p>
+            <p className="mb-2 text-[15px] font-semibold text-gray-700 dark:text-neutral-300">12 tabs. Zero momentum.</p>
+            <div className="relative h-[300px]">
+              {MESSY_TOOLS.map((t, i) => {
+                const seed = (i * 977) % 100;
+                const top = 8 + ((i * 53) % 78);
+                const left = 4 + ((i * 71) % 80);
+                const rot = (seed % 40) - 20;
+                return (
+                  <span
+                    key={t}
+                    className="absolute rounded-lg border border-black/[0.08] bg-[#FAF8F4] px-2.5 py-1.5 font-mono text-[11px] text-gray-400 grayscale dark:border-white/10 dark:bg-neutral-800/70 dark:text-neutral-500"
+                    style={{ top: `${top}%`, left: `${left}%`, transform: `rotate(${rot}deg)`, opacity: 0.55 + (seed % 30) / 100 }}
+                  >
+                    {t}
+                  </span>
+                );
+              })}
+            </div>
           </div>
-          <div className="rounded-2xl border border-[#f97316]/20 bg-[#f97316]/[0.04] p-8">
-            <p className="mb-4 font-mono text-[12px] font-semibold uppercase tracking-wider text-[#f97316]">
-              All gas
-            </p>
-            <ul className="space-y-3 text-[14px] text-gray-800 dark:text-neutral-200">
-              {[
-                "Campaigns, pipeline, content, code — one cockpit, one login",
-                "Agents + 35 jobs run the channels 24/7",
-                "Campaigns ranked by reply rate; PRs merged on green",
-                "Drafts written + scheduled on autopilot",
-                "Attribution reconciled automatically",
-              ].map((x) => (
-                <li key={x} className="flex gap-2">
-                  <ChevronRight className="mt-0.5 size-4 shrink-0 text-[#f97316]" />
-                  {x}
-                </li>
-              ))}
-            </ul>
+          {/* After — orbit */}
+          <div className="relative overflow-hidden rounded-2xl border border-[#f97316]/20 bg-[#f97316]/[0.04] p-8">
+            <p className="mb-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-[#f97316]">After</p>
+            <p className="mb-2 text-[15px] font-semibold text-gray-800 dark:text-neutral-200">One cockpit. Every channel.</p>
+            <div className="flex h-[300px] items-center justify-center">
+              <Orbit />
+            </div>
           </div>
         </div>
       </Section>
