@@ -33,6 +33,21 @@ pre { white-space:pre-wrap; word-break:break-word; color:#dbeafe; background:#05
 .jarvis2-head { align-items:flex-start; }
 .jarvis2-kicker { margin:6px 0 0; color:var(--muted); }
 .jarvis2-hero { display:flex; flex-direction:column; align-items:flex-end; gap:10px; min-width:220px; }
+.jarvis2-provider-toolbar { display:grid; grid-template-columns:1.4fr 1fr 1fr; gap:10px; }
+.jarvis2-provider-toolbar input, .jarvis2-provider-toolbar select { margin:0; }
+.jarvis2-provider-grid { display:grid; grid-template-columns:1fr 1.2fr; gap:14px; }
+.jarvis2-provider-list, .jarvis2-provider-detail { min-height:auto; }
+.jarvis2-analytics-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:14px; }
+.jarvis2-chart { display:flex; flex-direction:column; gap:10px; }
+.jarvis2-chart-row { display:grid; grid-template-columns:minmax(90px, 1fr) 2fr auto; gap:10px; align-items:center; }
+.jarvis2-chart-labels { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.jarvis2-chart-labels span { font-weight:700; color:var(--text); font-size:13px; }
+.jarvis2-chart-labels small { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
+.jarvis2-chart-bar { height:12px; background:#0b1220; border-radius:999px; overflow:hidden; }
+.jarvis2-chart-bar span { display:block; height:100%; background:linear-gradient(135deg, var(--accent), #c4b5fd); }
+.jarvis2-chart strong { color:var(--text); font-size:12px; text-align:right; }
+.jarvis2-sparkline { width:100%; height:84px; display:block; margin-top:10px; }
+.jarvis2-sparkline polyline { fill:none; stroke:var(--accent); stroke-width:3; stroke-linecap:round; stroke-linejoin:round; }
 .jarvis2-clock { display:flex; flex-direction:column; gap:4px; align-items:flex-end; color:var(--muted); }
 .jarvis2-clock span { font-size:11px; letter-spacing:.14em; text-transform:uppercase; }
 .jarvis2-clock strong { font-size:18px; color:var(--text); }
@@ -68,4 +83,4 @@ pre { white-space:pre-wrap; word-break:break-word; color:#dbeafe; background:#05
 .jarvis2-badge.bad { background:rgba(163,45,45,.18); color:#ffb1b1; }
 .jarvis2-badge.info { background:rgba(24,95,165,.18); color:#9ed0ff; }
 
-@media (max-width: 900px) { .hero { flex-direction:column; } .grid { grid-template-columns:1fr; } .card.wide { grid-column:auto; } .hero-actions { align-items:flex-start; } .jarvis2-hero { align-items:flex-start; } .jarvis2-nav button.ghost { margin-left:0; } }
+@media (max-width: 900px) { .hero { flex-direction:column; } .grid { grid-template-columns:1fr; } .card.wide { grid-column:auto; } .hero-actions { align-items:flex-start; } .jarvis2-hero { align-items:flex-start; } .jarvis2-nav button.ghost { margin-left:0; } .jarvis2-provider-toolbar { grid-template-columns:1fr; } .jarvis2-provider-grid { grid-template-columns:1fr; } }

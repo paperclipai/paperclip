@@ -17,6 +17,9 @@ function showTab(id, btn) {
   document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
   document.getElementById(id).classList.add('active');
   btn.classList.add('active');
+  if (id === 'overview') {
+    loadUnifiedDashboard();
+  }
   if (id === 'jarvis2') {
     loadJarvis2();
   }
@@ -28,9 +31,32 @@ const jarvis2State = {
   agents: [],
   briefing: null,
   ritual: null,
+  healthForecast: null,
+  v5Audit: null,
   loadedAt: null,
   selectedAlertId: null,
   loading: false,
+  seededDefaults: false,
+};
+
+const unifiedState = {
+  snapshot: null,
+  agents: [],
+  briefing: null,
+  ritual: null,
+  providers: [],
+  healthForecast: null,
+  v5Audit: null,
+  integrations: [],
+  approvals: [],
+  workflows: [],
+  insights: [],
+  loadedAt: null,
+  loading: false,
+  selectedProviderId: null,
+  selectedModelId: null,
+  providerQuery: '',
+  seededDefaults: false,
 };
 
 function escapeHtml(value) {
@@ -59,8 +85,117 @@ function jarvis2Bar(value) {
   return `<div class="jarvis2-bar"><span style="width:${jarvis2Clamp(value)}%"></span></div>`;
 }
 
+function jarvis2Percent(value, digits = 0) {
+  const num = Number(value);
+  if (Number.isNaN(num)) return '0%';
+  return `${(num * 100).toFixed(digits)}%`;
+}
+
+function jarvis2SeedLiveDefaults(snapshot, healthForecast) {
+  const recommendations = Array.isArray(snapshot?.ceo_recommendations) ? snapshot.ceo_recommendations : [];
+  const alerts = Array.isArray(snapshot?.governance?.alerts) ? snapshot.governance.alerts : [];
+  const approvals = Array.isArray(snapshot?.governance?.pending_approvals) ? snapshot.governance.pending_approvals : [];
+  const companies = Array.isArray(snapshot?.portfolio?.companies) ? snapshot.portfolio.companies : [];
+  const workflows = Array.isArray(snapshot?.mission_control?.active_workflows) ? snapshot.mission_control.active_workflows : [];
+  const insights = Array.isArray(snapshot?.autonomy_kernel?.open_insights) ? snapshot.autonomy_kernel.open_insights : [];
+  const systemStatuses = Array.isArray(snapshot?.cross_system_orchestration?.system_statuses) ? snapshot.cross_system_orchestration.system_statuses : [];
+  const topEnchantmentCategories = Array.isArray(snapshot?.enchantment_lab?.top_candidates)
+    ? [...new Set(snapshot.enchantment_lab.top_candidates.map((item) => item.category).filter(Boolean))].join(',')
+    : '';
+  const fieldValues = {
+    decisionTitle: approvals[0]?.title || alerts[0]?.title || recommendations[0] || '',
+    decisionBody: approvals[0]?.rationale || alerts[0]?.detail || recommendations[1] || '',
+    reasonQuestion: recommendations[0] || '',
+    knowledgeQuery: alerts[0]?.title || insights[0]?.title || '',
+    swarmTask: recommendations[2] || '',
+    approvalTitle: approvals[0]?.title || recommendations[0] || '',
+    approvalAction: recommendations[1] || '',
+    missionCommand: recommendations[0] || '',
+    playbookKey: workflows[0]?.template_key || '',
+    playbookTitle: workflows[0]?.title || '',
+    federationFocus: systemStatuses.map((status) => `${status.system}: ${status.status}`).join(', '),
+    federationRouteTask: recommendations[3] || '',
+    federationExecuteTask: recommendations[4] || '',
+    contentTopic: companies[0]?.name || '',
+    contentFacts: [
+      healthForecast?.health_score != null ? `Health forecast: ${healthForecast.health_score}%` : '',
+      `Pending approvals: ${approvals.length}`,
+      `Open alerts: ${alerts.length}`,
+      recommendations[0] || '',
+    ].filter(Boolean).join('\n'),
+    autonomyAction: recommendations[5] || '',
+    carbonTask: recommendations[4] || '',
+    contextTask: recommendations[1] || '',
+    boardProposal: recommendations[0] || '',
+    constitutionalAction: recommendations[0] || '',
+    planCategories: topEnchantmentCategories,
+    teamSignal: healthForecast?.capability_gap_score != null && healthForecast.capability_gap_score >= 0.3 ? 'Live capability gap detected; propose capacity.' : '',
+    ztActor: '',
+    ztResource: '',
+    ztScope: '',
+  };
+
+  for (const [id, value] of Object.entries(fieldValues)) {
+    const field = document.getElementById(id);
+    if (field && 'value' in field) {
+      field.value = String(value || '');
+    }
+  }
+}
+
 function jarvis2List(items, renderItem) {
   return `<div class="jarvis2-list">${items.map(renderItem).join('') || '<div class="jarvis2-empty">Nothing to show.</div>'}</div>`;
+}
+
+function jarvis2Sparkline(values) {
+  const numbers = values.map((value) => Number(value)).filter((value) => !Number.isNaN(value));
+  if (!numbers.length) return '<div class="jarvis2-empty">No graph data.</div>';
+  const width = 300;
+  const height = 84;
+  const max = Math.max(...numbers);
+  const min = Math.min(...numbers);
+  const span = max - min || 1;
+  const points = numbers
+    .map((value, index) => {
+      const x = numbers.length === 1 ? width / 2 : (index / (numbers.length - 1)) * width;
+      const y = height - ((value - min) / span) * (height - 16) - 8;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
+  return `<svg class="jarvis2-sparkline" viewBox="0 0 ${width} ${height}" role="img" aria-label="Sparkline chart"><polyline points="${points}"/></svg>`;
+}
+
+function jarvis2ChartBars(items, accentClass = '') {
+  const max = Math.max(...items.map((item) => Number(item.value) || 0), 1);
+  return `<div class="jarvis2-chart ${accentClass}">${items
+    .map((item) => {
+      const value = Number(item.value) || 0;
+      const width = Math.max(4, (value / max) * 100);
+      return `<div class="jarvis2-chart-row"><div class="jarvis2-chart-labels"><span>${escapeHtml(item.label)}</span><small>${escapeHtml(item.detail || '')}</small></div><div class="jarvis2-chart-bar"><span style="width:${width}%"></span></div><strong>${escapeHtml(item.value)}</strong></div>`;
+    })
+    .join('')}</div>`;
+}
+
+function unifiedProviderQuery() {
+  const input = document.getElementById('providerSearch');
+  return String(input?.value ?? unifiedState.providerQuery ?? '').trim().toLowerCase();
+}
+
+function unifiedSelectProvider(providerId) {
+  unifiedState.selectedProviderId = providerId || null;
+  const provider = unifiedState.providers.find((item) => item.id === unifiedState.selectedProviderId);
+  unifiedState.selectedModelId = provider?.models?.[0]?.id || null;
+  renderUnifiedDashboard();
+}
+
+function unifiedSelectModel(modelId) {
+  unifiedState.selectedModelId = modelId || null;
+  renderUnifiedDashboard();
+}
+
+function unifiedProviderSearchChanged() {
+  unifiedState.providerQuery = unifiedProviderQuery();
+  renderUnifiedDashboard();
 }
 
 function jarvis2Metric(label, value, detail) {
@@ -81,6 +216,273 @@ function jarvis2SetView(view) {
 function jarvis2SelectAlert(alertId) {
   jarvis2State.selectedAlertId = String(alertId);
   renderJarvis2();
+}
+
+function unifiedVisibleProviders() {
+  const query = unifiedProviderQuery();
+  const providers = Array.isArray(unifiedState.providers) ? unifiedState.providers : [];
+  return providers.filter((provider) => {
+    if (!query) return true;
+    const haystack = [
+      provider.name,
+      provider.category,
+      provider.description,
+      ...(Array.isArray(provider.models) ? provider.models.map((model) => `${model.id} ${model.name} ${model.notes || ''}`) : []),
+    ].join(' ').toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
+function unifiedCategoryCounts(providers) {
+  const counts = new Map();
+  for (const provider of providers) {
+    counts.set(provider.category, (counts.get(provider.category) || 0) + 1);
+  }
+  return [...counts.entries()].map(([label, value]) => ({ label, value }));
+}
+
+function unifiedModelCountByProvider(providers) {
+  return providers.map((provider) => ({ label: provider.name, value: Array.isArray(provider.models) ? provider.models.length : 0, detail: provider.category }));
+}
+
+function unifiedProviderChooserHtml() {
+  const filteredProviders = unifiedVisibleProviders();
+  if (!filteredProviders.length) {
+    return '<div class="jarvis2-empty">No providers match your search.</div>';
+  }
+  const selectedProvider = filteredProviders.find((provider) => provider.id === unifiedState.selectedProviderId) || filteredProviders[0];
+  if (selectedProvider && selectedProvider.id !== unifiedState.selectedProviderId) {
+    unifiedState.selectedProviderId = selectedProvider.id;
+  }
+  const models = Array.isArray(selectedProvider?.models) ? selectedProvider.models : [];
+  const selectedModel = models.find((model) => model.id === unifiedState.selectedModelId) || models[0] || null;
+  if (selectedModel && selectedModel.id !== unifiedState.selectedModelId) {
+    unifiedState.selectedModelId = selectedModel.id;
+  }
+  return `
+    <div class="jarvis2-provider-grid">
+      <article class="jarvis2-provider-list card">
+        <h3>Providers</h3>
+        ${jarvis2List(filteredProviders, (provider) => `
+          <div class="jarvis2-item ${provider.id === selectedProvider.id ? 'selected' : ''}" onclick="unifiedSelectProvider('${escapeHtml(provider.id)}')">
+            <div class="jarvis2-item-head">
+              <strong>${escapeHtml(provider.name)}</strong>
+              <span class="jarvis2-badge info">${escapeHtml(provider.category)}</span>
+            </div>
+            <p>${escapeHtml(provider.description)}</p>
+            <div class="jarvis2-item-foot">${escapeHtml(Array.isArray(provider.models) ? provider.models.length : 0)} models</div>
+          </div>
+        `)}
+      </article>
+      <article class="jarvis2-provider-detail card">
+        <h3>${escapeHtml(selectedProvider.name)}</h3>
+        <p class="jarvis2-label">${escapeHtml(selectedProvider.category)}</p>
+        <p>${escapeHtml(selectedProvider.description)}</p>
+        <p class="jarvis2-detail">Website: ${escapeHtml(selectedProvider.website || '')}</p>
+        <div class="jarvis2-feature">
+          <span class="jarvis2-badge good">${escapeHtml(selectedProvider.models.length)} models</span>
+          <span class="jarvis2-badge info">${escapeHtml(selectedProvider.refresh_mode || 'catalog')}</span>
+        </div>
+        <div class="jarvis2-list">${models.map((model) => `
+          <div class="jarvis2-item ${model.id === unifiedState.selectedModelId ? 'selected' : ''}" onclick="unifiedSelectModel('${escapeHtml(model.id)}')">
+            <div class="jarvis2-item-head">
+              <strong>${escapeHtml(model.name)}</strong>
+              <span class="jarvis2-badge warn">${escapeHtml(model.context_window)}</span>
+            </div>
+            <p>${escapeHtml(model.notes || '')}</p>
+            <div class="jarvis2-item-foot">${escapeHtml((model.modalities || []).join(' · '))}</div>
+          </div>
+        `).join('')}</div>
+        ${selectedModel ? `<div class="jarvis2-detail">Selected model: <strong>${escapeHtml(selectedModel.name)}</strong> (${escapeHtml(selectedModel.id)})</div>` : ''}
+      </article>
+    </div>`;
+}
+
+function unifiedAnalyticsHtml() {
+  const snapshot = unifiedState.snapshot || {};
+  const portfolio = snapshot.portfolio || {};
+  const governance = snapshot.governance || {};
+  const missionControl = snapshot.mission_control || {};
+  const people = snapshot.people_and_agents || {};
+  const orchestration = snapshot.cross_system_orchestration || {};
+  const health = unifiedState.healthForecast || {};
+  const providers = Array.isArray(unifiedState.providers) ? unifiedState.providers : [];
+  const providerCategoryCounts = unifiedCategoryCounts(providers);
+  const pressureChart = jarvis2ChartBars([
+    { label: 'Tasks', value: portfolio.open_tasks || 0, detail: 'Open tasks' },
+    { label: 'Approvals', value: Array.isArray(governance.pending_approvals) ? governance.pending_approvals.length : 0, detail: 'Pending approvals' },
+    { label: 'Alerts', value: Array.isArray(governance.alerts) ? governance.alerts.length : 0, detail: 'Open alerts' },
+    { label: 'Workflows', value: Array.isArray(missionControl.active_workflows) ? missionControl.active_workflows.length : 0, detail: 'Running workflows' },
+    { label: 'Traces', value: orchestration.trace_count || 0, detail: 'Federation traces' },
+  ]);
+  const providerModelChart = jarvis2ChartBars(unifiedModelCountByProvider(providers).slice(0, 10));
+  return `
+    <div class="jarvis2-analytics-grid">
+      <article class="card jarvis2-card">
+        <h3>Corporate Health</h3>
+        ${jarvis2Metric('Health Score', `${health.health_score ?? 0}%`, `Horizon ${health.horizon_days ?? 90} days`)}
+        ${jarvis2Sparkline([health.health_score ?? 0, 100 - (Number(health.burnout_risk ?? 0) * 100), 100 - (Number(health.strategic_risk ?? 0) * 100), 100 - (Number(health.capability_gap_score ?? 0) * 100)])}
+      </article>
+      <article class="card jarvis2-card wide">
+        <h3>Corporate Pressure</h3>
+        ${pressureChart}
+      </article>
+      <article class="card jarvis2-card">
+        <h3>Provider Categories</h3>
+        ${jarvis2ChartBars(providerCategoryCounts)}
+      </article>
+      <article class="card jarvis2-card">
+        <h3>Provider Depth</h3>
+        ${providerModelChart}
+      </article>
+      <article class="card jarvis2-card wide">
+        <h3>Operational Overview</h3>
+        <div class="jarvis2-mini-grid">
+          ${jarvis2Metric('Companies', `${portfolio.company_count ?? 0}`, `${portfolio.average_health ?? 0}% average health`)}
+          ${jarvis2Metric('Active Agents', `${people.federated_agents ?? 0}`, `${people.agent_health ?? 0}% agent health`)}
+          ${jarvis2Metric('Open Insights', `${Array.isArray(snapshot.autonomy_kernel?.open_insights) ? snapshot.autonomy_kernel.open_insights.length : 0}`, 'Autonomy kernel')}
+          ${jarvis2Metric('V5 Coverage', `${unifiedState.v5Audit?.score ?? 0}%`, `${Array.isArray(unifiedState.v5Audit?.remaining_gaps) ? unifiedState.v5Audit.remaining_gaps.length : 0} gaps`)}
+        </div>
+      </article>
+    </div>`;
+}
+
+function unifiedSummaryHtml() {
+  const snapshot = unifiedState.snapshot || {};
+  const portfolio = snapshot.portfolio || {};
+  const governance = snapshot.governance || {};
+  const missionControl = snapshot.mission_control || {};
+  const integrations = Array.isArray(unifiedState.integrations.integrations) ? unifiedState.integrations.integrations : [];
+  const approvals = Array.isArray(unifiedState.approvals.approvals) ? unifiedState.approvals.approvals : [];
+  const workflows = Array.isArray(unifiedState.workflows.workflows) ? unifiedState.workflows.workflows : [];
+  const insights = Array.isArray(unifiedState.insights.insights) ? unifiedState.insights.insights : [];
+  const alerts = Array.isArray(governance.alerts) ? governance.alerts : [];
+  const providers = Array.isArray(unifiedState.providers) ? unifiedState.providers : [];
+  const providerModels = providers.reduce((sum, provider) => sum + (Array.isArray(provider.models) ? provider.models.length : 0), 0);
+  return `
+    <div class="jarvis2-mini-grid">
+      ${jarvis2Metric('Companies', `${portfolio.company_count ?? 0}`, `${portfolio.average_health ?? 0}% avg health`)}
+      ${jarvis2Metric('Agents', `${unifiedState.agents.length}`, `${Array.isArray(snapshot.people_and_agents?.workload?.by_role) ? snapshot.people_and_agents.workload.by_role.length : 0} workload buckets`)}
+      ${jarvis2Metric('Approvals', `${approvals.length}`, `${alerts.length} alerts`)}
+      ${jarvis2Metric('Workflows', `${workflows.length}`, `${integrations.length} integrations`)}
+      ${jarvis2Metric('Providers', `${providers.length}`, `${providerModels} models`)}
+      ${jarvis2Metric('Insights', `${insights.length}`, `${unifiedState.loadedAt ? unifiedState.loadedAt.toLocaleTimeString() : 'not loaded'}`)}
+    </div>
+    <div class="jarvis2-grid">
+      <article class="card jarvis2-card wide">
+        <h3>Live Summary</h3>
+        <p class="jarvis2-detail">${escapeHtml(snapshot.ceo_recommendations?.[0] || 'Live data is loaded from platform, workers, provider catalog, and corporate metrics endpoints.')}</p>
+        ${jarvis2List([
+          { title: 'Open tasks', summary: String(portfolio.open_tasks ?? 0) },
+          { title: 'Pending approvals', summary: String(approvals.length) },
+          { title: 'Open alerts', summary: String(alerts.length) },
+          { title: 'Queued workflows', summary: String(workflows.length) },
+        ], (item) => `<div class="jarvis2-item"><div class="jarvis2-item-head"><strong>${escapeHtml(item.title)}</strong><span class="jarvis2-badge info">live</span></div><p>${escapeHtml(item.summary)}</p></div>`)}
+      </article>
+    </div>`;
+}
+
+function renderUnifiedDashboard() {
+  const dashboard = document.getElementById('unifiedDashboard');
+  const providerCatalog = document.getElementById('providerCatalog');
+  const corpAnalytics = document.getElementById('corpAnalytics');
+  const snapshot = document.getElementById('snapshot');
+  const meta = document.getElementById('jarvis2Meta');
+  const providerSearch = document.getElementById('providerSearch');
+  const providerSelect = document.getElementById('providerSelect');
+  const modelSelect = document.getElementById('modelSelect');
+  const filteredProviders = unifiedVisibleProviders();
+  const selectedProvider = filteredProviders.find((provider) => provider.id === unifiedState.selectedProviderId) || filteredProviders[0] || null;
+  const selectedModels = Array.isArray(selectedProvider?.models) ? selectedProvider.models : [];
+  const selectedModel = selectedModels.find((model) => model.id === unifiedState.selectedModelId) || selectedModels[0] || null;
+  if (selectedProvider) {
+    unifiedState.selectedProviderId = selectedProvider.id;
+  }
+  if (selectedModel) {
+    unifiedState.selectedModelId = selectedModel.id;
+  }
+  if (providerSearch && providerSearch.value !== unifiedState.providerQuery) {
+    providerSearch.value = unifiedState.providerQuery;
+  }
+  if (providerSelect) {
+    providerSelect.innerHTML = filteredProviders.map((provider) => `<option value="${escapeHtml(provider.id)}" ${provider.id === unifiedState.selectedProviderId ? 'selected' : ''}>${escapeHtml(provider.name)} · ${escapeHtml(provider.category)}</option>`).join('');
+    providerSelect.value = unifiedState.selectedProviderId || '';
+  }
+  if (modelSelect) {
+    modelSelect.innerHTML = selectedModels.map((model) => `<option value="${escapeHtml(model.id)}" ${model.id === unifiedState.selectedModelId ? 'selected' : ''}>${escapeHtml(model.name)} · ${escapeHtml(model.context_window)}</option>`).join('');
+    modelSelect.value = unifiedState.selectedModelId || '';
+  }
+  if (dashboard) dashboard.innerHTML = unifiedSummaryHtml();
+  if (providerCatalog) providerCatalog.innerHTML = unifiedProviderChooserHtml();
+  if (corpAnalytics) corpAnalytics.innerHTML = unifiedAnalyticsHtml();
+  if (snapshot && unifiedState.snapshot) {
+    snapshot.textContent = pretty({
+      generated_at: unifiedState.loadedAt?.toISOString() || null,
+      providers: unifiedState.providers.length,
+      models: unifiedState.providers.reduce((sum, provider) => sum + (Array.isArray(provider.models) ? provider.models.length : 0), 0),
+      health: unifiedState.healthForecast,
+      audit_score: unifiedState.v5Audit?.score ?? null,
+    });
+  }
+  if (meta) {
+    meta.textContent = `${unifiedState.providers.length} providers · ${unifiedState.providers.reduce((sum, provider) => sum + (Array.isArray(provider.models) ? provider.models.length : 0), 0)} models · ${unifiedState.integrations.integrations?.length ?? 0} integrations · ${unifiedState.loadedAt ? unifiedState.loadedAt.toLocaleTimeString() : 'loading'}`;
+  }
+}
+
+async function loadUnifiedDashboard(force = false) {
+  if (unifiedState.loading) return;
+  if (!force && unifiedState.snapshot) {
+    renderUnifiedDashboard();
+    return;
+  }
+  unifiedState.loading = true;
+  set('status', 'Loading unified dashboard…');
+  try {
+    const [snapshot, agents, briefing, ritual, healthForecast, v5Audit, integrations, approvals, workflows, insights, providers] = await Promise.all([
+      api('/dashboard/god-view'),
+      api('/agents'),
+      api('/ceo/morning-briefing'),
+      api('/mission-control/daily-ritual'),
+      api('/v5/company/health-forecast'),
+      api('/v5/audit'),
+      api('/integrations'),
+      api('/governance/approvals?status=all'),
+      api('/mission-control/workflows?status=all'),
+      api('/autonomy/insights'),
+      api('/providers/catalog'),
+    ]);
+    unifiedState.snapshot = snapshot;
+    unifiedState.agents = Array.isArray(agents.agents) ? agents.agents : [];
+    unifiedState.briefing = briefing;
+    unifiedState.ritual = ritual;
+    unifiedState.healthForecast = healthForecast;
+    unifiedState.v5Audit = v5Audit;
+    unifiedState.integrations = integrations;
+    unifiedState.approvals = approvals;
+    unifiedState.workflows = workflows;
+    unifiedState.insights = insights;
+    unifiedState.providers = Array.isArray(providers.providers) ? providers.providers : [];
+    unifiedState.loadedAt = new Date();
+    if (!unifiedState.seededDefaults) {
+      jarvis2SeedLiveDefaults(snapshot, healthForecast);
+      unifiedState.seededDefaults = true;
+    }
+    if (!unifiedState.selectedProviderId) {
+      unifiedState.selectedProviderId = unifiedState.providers[0]?.id || null;
+    }
+    const selectedProvider = unifiedState.providers.find((provider) => provider.id === unifiedState.selectedProviderId) || unifiedState.providers[0] || null;
+    if (selectedProvider && (!Array.isArray(selectedProvider.models) || !selectedProvider.models.find((model) => model.id === unifiedState.selectedModelId))) {
+      unifiedState.selectedModelId = selectedProvider.models?.[0]?.id || null;
+    }
+    renderUnifiedDashboard();
+    set('status', `Unified dashboard loaded ${unifiedState.loadedAt.toLocaleTimeString()}`);
+  } catch (e) {
+    set('status', 'Error: ' + e.message);
+    const dashboard = document.getElementById('unifiedDashboard');
+    if (dashboard) dashboard.innerHTML = '<div class="jarvis2-empty">Failed to load unified dashboard.</div>';
+  } finally {
+    unifiedState.loading = false;
+  }
 }
 
 async function jarvis2DecisionAction(id, action) {
@@ -106,19 +508,27 @@ async function loadJarvis2(force = false) {
   const view = document.getElementById('jarvis2View');
   if (view) view.innerHTML = '<div class="jarvis2-empty">Loading command center…</div>';
   try {
-    const [snapshot, agents, briefing, ritual] = await Promise.all([
+    const [snapshot, agents, briefing, ritual, healthForecast, v5Audit] = await Promise.all([
       api('/dashboard/god-view'),
       api('/agents'),
       api('/ceo/morning-briefing'),
       api('/mission-control/daily-ritual'),
+      api('/v5/company/health-forecast'),
+      api('/v5/audit'),
     ]);
     jarvis2State.snapshot = snapshot;
     jarvis2State.agents = Array.isArray(agents.agents) ? agents.agents : [];
     jarvis2State.briefing = briefing;
     jarvis2State.ritual = ritual;
+    jarvis2State.healthForecast = healthForecast;
+    jarvis2State.v5Audit = v5Audit;
     jarvis2State.loadedAt = new Date();
     const alerts = snapshot?.governance?.alerts || [];
     jarvis2State.selectedAlertId = jarvis2State.selectedAlertId || (alerts[0] ? String(alerts[0].id) : null);
+    if (!jarvis2State.seededDefaults) {
+      jarvis2SeedLiveDefaults(snapshot, healthForecast);
+      jarvis2State.seededDefaults = true;
+    }
     renderJarvis2();
     set('jarvis2Status', `Loaded ${jarvis2State.loadedAt.toLocaleTimeString()}`);
   } catch (e) {
@@ -294,15 +704,20 @@ function renderJarvis2View() {
 
   if (jarvis2State.activeView === 'analytics') {
     const capability = missionControl.capability_readiness || {};
+    const health = jarvis2State.healthForecast || {};
+    const v5Audit = jarvis2State.v5Audit || {};
     return `
       <div class="jarvis2-mini-grid">
-        ${jarvis2Metric('Decision Accuracy', '94.2%', 'Zip import benchmark')}
-        ${jarvis2Metric('Alert Precision', '87.6%', 'Zip import benchmark')}
-        ${jarvis2Metric('Average Response Time', '2.3s', 'Zip import benchmark')}
-        ${jarvis2Metric('Uptime', '99.98%', 'Zip import benchmark')}
+        ${jarvis2Metric('Company Health', `${health.health_score ?? 0}%`, `Forecast horizon ${health.horizon_days ?? 90} days`)}
+        ${jarvis2Metric('Burnout Risk', jarvis2Percent(health.burnout_risk), 'Live company forecast')}
+        ${jarvis2Metric('Strategic Risk', jarvis2Percent(health.strategic_risk), 'Live company forecast')}
+        ${jarvis2Metric('Capability Gap', jarvis2Percent(health.capability_gap_score), 'Live company forecast')}
         ${jarvis2Metric('Ready Capabilities', `${capability.ready ?? 0}/${capability.total ?? 0}`, `${capability.approval_gated ?? 0} approval gated`)}
+        ${jarvis2Metric('V5 Coverage', `${v5Audit.score ?? 0}%`, `${Array.isArray(v5Audit.remaining_gaps) ? v5Audit.remaining_gaps.length : 0} remaining gaps`)}
+        ${jarvis2Metric('Open Alerts', `${alerts.length}`, `${governance.open_risk_score ?? 0} risk score`)}
         ${jarvis2Metric('Open Insights', `${autonomy.open_insights?.length ?? 0}`, `${orchestration.trace_count ?? 0} trace events`)}
-      </div>`;
+      </div>
+      <div class="jarvis2-detail">Live metrics pulled from the dashboard snapshot, company health forecast, and v5 audit.</div>`;
   }
 
   const topThings = jarvis2List(topItems.slice(0, 3), (item) => `
@@ -424,7 +839,7 @@ function generateContent() {
 function loadIntegrations() { return wrap('integrationsOut', () => api('/integrations')); }
 
 checkHealth();
-loadSnapshot();
+loadUnifiedDashboard();
 setInterval(() => {
   const clock = document.getElementById('jarvis2Time');
   if (clock) clock.textContent = new Date().toLocaleTimeString();

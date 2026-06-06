@@ -32,6 +32,7 @@ def main() -> None:
             ("GET", "/governance/approvals?status=all", None),
             ("GET", "/temporal/timeline?horizon_days=90", None),
             ("GET", "/integrations", None),
+            ("GET", "/providers/catalog", None),
             ("GET", "/mission-control/playbooks", None),
             ("GET", "/mission-control/daily-ritual", None),
             ("POST", "/mission-control/command", {"command": "Should we launch Jarvis publicly after adding Gmail?", "autonomous": False}),

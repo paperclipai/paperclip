@@ -14,7 +14,7 @@ v5 turns the v4 executive operating room into a governed company operating syste
 - **Notification queue**: dashboard notifications for workflow starts, blocked steps, and readiness issues.
 - **Daily CEO ritual**: one endpoint combining briefing, 14-day execution view, opportunity windows, debt, risks, and next-best actions.
 - **Cross-system orchestration**: Jarvis briefs, routes, and executes across Paperclip, Hermes, Pi, and OpenCode with trace IDs.
-- **Upgraded dashboard**: Mission Control, Federation, and Capabilities tabs added.
+- **Upgraded dashboard**: Mission Control, Federation, Capabilities, unified analytics, and provider catalog panels added.
 
 ## v2 foundations still included
 
@@ -115,6 +115,8 @@ curl -H 'X-Jarvis-Key: dev-change-me' http://localhost:8000/dashboard/god-view
 curl -H 'X-Jarvis-Key: dev-change-me' http://localhost:8000/mission-control/daily-ritual
 
 curl -H 'X-Jarvis-Key: dev-change-me' http://localhost:8000/capabilities/readiness
+
+curl -H 'X-Jarvis-Key: dev-change-me' http://localhost:8000/providers/catalog
 
 curl -H 'X-Jarvis-Key: dev-change-me' http://localhost:8000/federation/systems
 

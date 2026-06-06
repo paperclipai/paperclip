@@ -27,6 +27,7 @@ from .routers import (
     risk,
     content,
     integrations,
+    providers,
     mission_control,
     federation,
     capabilities,
@@ -79,6 +80,7 @@ app.include_router(temporal.router)
 app.include_router(risk.router)
 app.include_router(content.router)
 app.include_router(integrations.router)
+app.include_router(providers.router)
 
 app.include_router(mission_control.router)
 app.include_router(federation.router)

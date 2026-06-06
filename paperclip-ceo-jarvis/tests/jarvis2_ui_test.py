@@ -15,9 +15,20 @@ def main() -> None:
     assert 'id="jarvis2View"' in index_html
     assert 'id="jarvis2Status"' in index_html
     assert 'Command Center' in readme
+    assert "function loadUnifiedDashboard" in app_js
+    assert "function renderUnifiedDashboard" in app_js
+    assert "function unifiedProviderChooserHtml" in app_js
     assert "function loadJarvis2" in app_js
     assert "function renderJarvis2" in app_js
     assert "function jarvis2DecisionAction" in app_js
+    assert "function jarvis2SeedLiveDefaults" in app_js
+    assert "api('/providers/catalog')" in app_js
+    assert "api('/v5/company/health-forecast')" in app_js
+    assert "api('/v5/audit')" in app_js
+    assert "Zip import benchmark" not in app_js
+    assert 'id="unifiedDashboard"' in index_html
+    assert 'id="providerCatalog"' in index_html
+    assert 'id="corpAnalytics"' in index_html
     assert (ROOT / "docs" / "jarvis2" / "JARVIS_QUICK_START.md").exists()
     assert (ROOT / "docs" / "jarvis2" / "jarvis_system_spec.md").exists()
     assert (ROOT / "docs" / "jarvis2" / "jarvis_agent_orchestration.md").exists()
