@@ -5,6 +5,7 @@ import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { queryKeys } from "@/lib/queryKeys";
 import { getRememberedInvitePath } from "@/lib/invite-memory";
+import { cn } from "@/lib/utils";
 import {
   ArrowRight,
   Activity,
@@ -388,6 +389,15 @@ const TESTIMONIALS = [
   },
 ];
 
+const TRUSTED_LOGOS = [
+  { name: "Snazzy", file: "/customers/snazzy.svg", h: "h-6" },
+  { name: "Orbit Wallet", file: "/customers/orbit.svg", h: "h-7" },
+  { name: "Frinks AI", file: "/customers/frinks.svg", h: "h-6" },
+  { name: "RocketSDR", file: "/customers/rocketsdr.svg", h: "h-5" },
+  { name: "PBS", file: "/customers/pbs.svg", h: "h-7" },
+  { name: "Tofa", file: "/customers/tofa.svg", h: "h-6" },
+];
+
 const INTEGRATIONS = [
   { name: "HubSpot", abbr: "HS" },
   { name: "Google Search Console", abbr: "GSC" },
@@ -430,12 +440,14 @@ const FAQS = [
 function Section({
   children,
   className = "",
+  id,
 }: {
   children: React.ReactNode;
   className?: string;
+  id?: string;
 }) {
   return (
-    <section className={`mx-auto max-w-6xl px-6 ${className}`}>{children}</section>
+    <section id={id} className={`mx-auto max-w-6xl px-6 ${className}`}>{children}</section>
   );
 }
 
@@ -445,6 +457,138 @@ function Eyebrow({ children }: { children: React.ReactNode }) {
       <span className="h-px w-6 bg-[#f97316]/50" />
       {children}
     </p>
+  );
+}
+
+// ─── Nav ──────────────────────────────────────────────────────────────────────
+
+const NAV_LINKS = [
+  { label: "How it runs", href: "#how" },
+  { label: "Integrations", href: "#integrations" },
+  { label: "FAQ", href: "#faq" },
+];
+
+const ENGINES = [
+  { k: "Autonomous Agents", href: "#cockpit" },
+  { k: "Outbound", href: "#cockpit" },
+  { k: "Inbound", href: "#cockpit" },
+  { k: "Content Studio", href: "#cockpit" },
+  { k: "Revenue", href: "#cockpit" },
+  { k: "Work OS", href: "#cockpit" },
+];
+
+function LandingNav() {
+  const [scrolled, setScrolled] = useState(false);
+  const [enginesOpen, setEnginesOpen] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  useEffect(() => {
+    const el = document.querySelector(".overflow-y-auto");
+    const onScroll = () => setScrolled((el?.scrollTop ?? window.scrollY) > 20);
+    el?.addEventListener("scroll", onScroll);
+    window.addEventListener("scroll", onScroll);
+    return () => {
+      el?.removeEventListener("scroll", onScroll);
+      window.removeEventListener("scroll", onScroll);
+    };
+  }, []);
+
+  return (
+    <header
+      className={cn(
+        "sticky top-0 z-50 w-full backdrop-blur-xl transition-all",
+        scrolled ? "border-b border-border/60 bg-background/70" : "border-b border-transparent bg-transparent",
+      )}
+    >
+      <div className="relative mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
+        {/* Logo left */}
+        <a href="#top" className="flex items-center">
+          <img src="/logo-full.svg" alt="All Gas No Brakes" className="h-11 w-auto" />
+        </a>
+
+        {/* Center nav — absolute centered (Finn pattern) */}
+        <nav className="absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 items-center gap-1 lg:flex">
+          <div
+            className="relative"
+            onMouseEnter={() => setEnginesOpen(true)}
+            onMouseLeave={() => setEnginesOpen(false)}
+          >
+            <button className="flex items-center gap-1 rounded-md px-3 py-2 text-[13.5px] font-medium text-muted-foreground transition hover:text-foreground">
+              Engines
+              <ChevronRight className={cn("size-3.5 transition", enginesOpen ? "rotate-90" : "rotate-0")} />
+            </button>
+            {enginesOpen && (
+              <div className="absolute left-1/2 top-full w-56 -translate-x-1/2 pt-2">
+                <div className="overflow-hidden rounded-xl border border-border bg-card/95 p-1.5 shadow-xl backdrop-blur">
+                  {ENGINES.map((e) => (
+                    <a
+                      key={e.k}
+                      href={e.href}
+                      className="flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] text-muted-foreground transition hover:bg-background hover:text-foreground"
+                    >
+                      <span className="size-1.5 rounded-full bg-[#f97316]/60" />
+                      {e.k}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          {NAV_LINKS.map((l) => (
+            <a
+              key={l.href}
+              href={l.href}
+              className="rounded-md px-3 py-2 text-[13.5px] font-medium text-muted-foreground transition hover:text-foreground"
+            >
+              {l.label}
+            </a>
+          ))}
+        </nav>
+
+        {/* Right CTAs */}
+        <div className="flex items-center gap-3">
+          <span className="hidden items-center gap-1.5 rounded-full border border-border px-3 py-1 font-mono text-[11px] uppercase tracking-[0.1em] text-[#f97316] xl:inline-flex">
+            <Sparkles className="size-3" /> Private beta
+          </span>
+          <a
+            href="mailto:diggi@hirefinn.ai?subject=AGNB%20Access%20Request"
+            className="hidden rounded-md px-4 py-1.5 text-[13px] font-medium text-muted-foreground transition hover:text-foreground sm:inline-flex"
+          >
+            Request access
+          </a>
+          <a
+            href="#signin"
+            className="rounded-md bg-[#f97316] px-4 py-1.5 text-[13px] font-semibold text-[#0A0A0A] transition hover:bg-[#fb923c]"
+          >
+            Sign in
+          </a>
+          {/* Mobile toggle */}
+          <button
+            onClick={() => setMobileOpen((v) => !v)}
+            className="inline-flex size-9 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground lg:hidden"
+            aria-label="menu"
+          >
+            {mobileOpen ? <Minus className="size-5" /> : <Plus className="size-5" />}
+          </button>
+        </div>
+      </div>
+
+      {/* Mobile dropdown */}
+      {mobileOpen && (
+        <div className="border-t border-border bg-background/95 px-6 py-3 backdrop-blur lg:hidden">
+          {[...ENGINES.slice(0, 1), ...NAV_LINKS].map((l) => (
+            <a
+              key={l.href}
+              href={l.href}
+              onClick={() => setMobileOpen(false)}
+              className="block py-2.5 text-[15px] font-medium text-muted-foreground transition hover:text-foreground"
+            >
+              {"label" in l ? l.label : (l as { k: string }).k}
+            </a>
+          ))}
+        </div>
+      )}
+    </header>
   );
 }
 
@@ -547,32 +691,9 @@ export function LandingPage() {
         }}
       />
 
-      <div className="relative">
+      <div className="relative" id="top">
         {/* ── Nav ── */}
-        <header className="sticky top-0 z-50 border-b border-border/60 bg-background/80 backdrop-blur">
-          <Section className="flex items-center justify-between py-4">
-            <div className="flex items-center gap-2.5">
-              <img src="/logo-full.svg" alt="All Gas No Brakes" className="h-14 w-auto" />
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="hidden items-center gap-1.5 rounded-full border border-border px-3 py-1 font-mono text-[11px] uppercase tracking-[0.1em] text-[#f97316] sm:inline-flex">
-                <Sparkles className="size-3" /> Private beta
-              </span>
-              <a
-                href="mailto:diggi@hirefinn.ai?subject=AGNB%20Access%20Request"
-                className="hidden rounded-md border border-border px-4 py-1.5 text-[13px] font-medium text-muted-foreground transition hover:border-[#f97316]/50 hover:text-foreground sm:inline-flex"
-              >
-                Request access
-              </a>
-              <a
-                href="#signin"
-                className="rounded-md bg-[#f97316] px-4 py-1.5 text-[13px] font-semibold text-[#0A0A0A] transition hover:bg-[#fb923c]"
-              >
-                Sign in
-              </a>
-            </div>
-          </Section>
-        </header>
+        <LandingNav />
 
         {/* ── Hero ── */}
         <Section className="grid grid-cols-1 items-center gap-12 pb-14 pt-12 lg:grid-cols-[1.1fr_0.9fr] lg:pt-20">
@@ -652,6 +773,18 @@ export function LandingPage() {
           ))}
         </Section>
 
+        {/* ── Trusted by (real Finn customer logos) ── */}
+        <Section className="py-10">
+          <p className="mb-7 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+            From the team behind <span className="text-foreground/70">Finn</span> — trusted in production by
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-x-10 gap-y-6 opacity-70 grayscale transition hover:opacity-100 hover:grayscale-0 sm:gap-x-14">
+            {TRUSTED_LOGOS.map((l) => (
+              <img key={l.name} src={l.file} alt={l.name} className={cn(l.h, "w-auto object-contain")} />
+            ))}
+          </div>
+        </Section>
+
         {/* ── Testimonials ── */}
         <Section className="py-16">
           <Eyebrow>From the crew</Eyebrow>
@@ -692,7 +825,7 @@ export function LandingPage() {
         </Section>
 
         {/* ── Modules ── */}
-        <Section className="pb-8">
+        <Section className="scroll-mt-20 pb-8" id="cockpit">
           <Eyebrow>The cockpit</Eyebrow>
           <h2 className="mb-10 text-[clamp(26px,3.2vw,38px)] font-bold tracking-[-0.02em]">
             Six engines. One throttle.
@@ -820,7 +953,7 @@ export function LandingPage() {
         </Section>
 
         {/* ── Integrations ── */}
-        <Section className="py-16">
+        <Section className="scroll-mt-20 py-16" id="integrations">
           <Eyebrow>Works with your stack</Eyebrow>
           <h2 className="mb-8 text-[clamp(22px,2.8vw,34px)] font-bold tracking-[-0.02em]">
             Drop it in. Nothing breaks.
@@ -855,7 +988,7 @@ export function LandingPage() {
         </Section>
 
         {/* ── FAQ ── */}
-        <Section className="py-12">
+        <Section className="scroll-mt-20 py-12" id="faq">
           <Eyebrow>Questions</Eyebrow>
           <div className="mt-2">
             {FAQS.map((f) => (
