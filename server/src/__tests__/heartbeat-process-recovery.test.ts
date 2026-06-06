@@ -13,6 +13,7 @@ import {
   agentWakeupRequests,
   budgetPolicies,
   companySkills,
+  companyMemberships,
   companies,
   costEvents,
   documentAnnotationAnchorSnapshots,
@@ -408,6 +409,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(companySkills);
+      await db.delete(companyMemberships);
       await db.delete(workspaceOperations);
       await db.delete(executionWorkspaces);
       await db.delete(projectWorkspaces);
@@ -2020,6 +2022,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("leaves assigned todo work non-terminal and comments when native dispatch finds a stale repo-backed checkout", async () => {
+    mockAdapterExecute.mockClear();
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -2112,6 +2115,40 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("failed freshness validation");
     expect(comments[0]?.body).toContain("untracked file");
     expect(comments[0]?.body).toContain("behind origin/main by 10 commits");
+
+    const secondIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: secondIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Second assigned todo on dirty checkout",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+
+    const pausedResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(pausedResult.assignmentDispatched).toBe(0);
+    expect(pausedResult.dispatchRequeued).toBe(0);
+
+    const runsAfterPause = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runsAfterPause).toHaveLength(1);
+
+    const firstIssueCommentsAfterPause = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(firstIssueCommentsAfterPause).toHaveLength(1);
+
+    const secondIssueComments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, secondIssueId));
+    expect(secondIssueComments).toHaveLength(0);
   });
 
   it("does not duplicate initial assigned todo dispatch when a queued wake already exists", async () => {
@@ -2139,6 +2176,140 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeups).toHaveLength(1);
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     expect(runs).toHaveLength(0);
+  });
+
+  it("creates one [DAN-FYI] alert when a managed checkout hits the rescue rate cap", async () => {
+    const statePath = path.join(os.homedir(), ".paperclip", "state", "managed-checkout-freshness.json");
+    const previousState = await fs.readFile(statePath, "utf8").catch(() => null);
+
+    try {
+      const companyId = randomUUID();
+      const projectId = randomUUID();
+      const projectWorkspaceId = randomUUID();
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      const issuePrefix = "PAP";
+
+      await db.insert(companies).values({ id: companyId, name: "EVF" });
+      await db.insert(companyMemberships).values({
+        companyId,
+        principalType: "user",
+        principalId: "local-board",
+        status: "active",
+        membershipRole: "owner",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Koda",
+        model: "gpt-5.4",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Repo-backed project",
+      });
+
+      const repoRoot = await createTempRepo();
+      const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-heartbeat-remote-"));
+      await runGit(remoteRoot, ["init", "--bare"]);
+      await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
+      await runGit(repoRoot, ["push", "-u", "origin", "main"]);
+
+      const staleClone = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-heartbeat-managed-clone-"));
+      await runGit(staleClone, ["clone", remoteRoot, "."]);
+      await runGit(staleClone, ["config", "user.email", "paperclip@example.com"]);
+      await runGit(staleClone, ["config", "user.name", "Paperclip Test"]);
+      await fs.mkdir(path.join(staleClone, "persistent-dirt"), { recursive: true });
+      await fs.writeFile(path.join(staleClone, "persistent-dirt", "README.md"), "dirty\n", "utf8");
+
+      await db.insert(projectWorkspaces).values({
+        id: projectWorkspaceId,
+        companyId,
+        projectId,
+        name: "primary",
+        sourceType: "local_path",
+        cwd: staleClone,
+        repoUrl: remoteRoot,
+        repoRef: "origin/main",
+        defaultRef: "origin/main",
+        isPrimary: true,
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        title: "Assigned todo work on rate-capped checkout",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      await fs.mkdir(path.dirname(statePath), { recursive: true });
+      const now = Date.now();
+      await fs.writeFile(
+        statePath,
+        JSON.stringify({
+          checkouts: {
+            [staleClone]: {
+              signature: "same-failure",
+              count: 3,
+              updatedAt: new Date(now).toISOString(),
+              rescueHistory: [
+                new Date(now - 3 * 60 * 60 * 1000).toISOString(),
+                new Date(now - 2 * 60 * 60 * 1000).toISOString(),
+                new Date(now - 1 * 60 * 60 * 1000).toISOString(),
+              ],
+              remediation: {
+                signature: "same-failure",
+                count: 3,
+                updatedAt: new Date(now).toISOString(),
+              },
+            },
+          },
+        }, null, 2),
+        "utf8",
+      );
+
+      const heartbeat = heartbeatService(db);
+      const firstResult = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(firstResult.assignmentDispatched).toBe(0);
+      expect(firstResult.escalated).toBe(1);
+
+      const alertIssues = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.assigneeUserId, "local-board")));
+      expect(alertIssues).toHaveLength(1);
+      expect(alertIssues[0]?.title).toContain("[DAN-FYI]");
+      expect(alertIssues[0]?.description).toContain("rate-limited automatic managed-checkout rescue");
+      expect(alertIssues[0]?.description).toContain("Rescue attempts in last 24h: `3`");
+
+      const secondResult = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(secondResult.assignmentDispatched).toBe(0);
+
+      const alertIssuesAfterSecondPass = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.assigneeUserId, "local-board")));
+      expect(alertIssuesAfterSecondPass).toHaveLength(1);
+    } finally {
+      if (previousState === null) {
+        await fs.rm(statePath, { force: true });
+      } else {
+        await fs.writeFile(statePath, previousState, "utf8");
+      }
+    }
   });
 
   it("skips budget-blocked assigned todo work with no prior run and continues the sweep", async () => {

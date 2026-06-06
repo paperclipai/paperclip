@@ -150,6 +150,9 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     await db.delete(issueComments);
+    await db.delete(issueDocuments);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(issueRelations);
     await db.delete(issueDocuments);
     await db.delete(issueInboxArchives);
@@ -4591,36 +4594,12 @@ describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
   let svc!: ReturnType<typeof issueService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
-  beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-terminal-gate-");
-    db = createDb(tempDb.connectionString);
-    svc = issueService(db);
-    await ensureIssueRelationsTable(db);
-  }, 20_000);
-
-  afterEach(async () => {
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
-    await db.delete(issueComments);
-    await db.delete(issueRelations);
-    await db.delete(issueInboxArchives);
-    await db.delete(activityLog);
-    await db.delete(issues);
-    await db.delete(executionWorkspaces);
-    await db.delete(projectWorkspaces);
-    await db.delete(projects);
-    await db.delete(goals);
-    await db.delete(heartbeatRuns);
-    await db.delete(agents);
-    await db.delete(instanceSettings);
-    await db.delete(companies);
-  });
-
-  afterAll(async () => {
-    await tempDb?.cleanup();
-  });
-
-  it("rejects terminal transitions for repo-backed issues without a verified merged PR", async () => {
+  async function seedRepoBackedIssue(args?: {
+    repoUrl?: string;
+    title?: string;
+    description?: string;
+    identifier?: string;
+  }) {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const workspaceId = randomUUID();
@@ -4643,7 +4622,7 @@ describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
       projectId,
       name: "primary",
       sourceType: "git_repo",
-      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      repoUrl: args?.repoUrl ?? "https://github.com/paperclipai/paperclip.git",
       repoRef: "origin/main",
       defaultRef: "origin/main",
       isPrimary: true,
@@ -4653,10 +4632,91 @@ describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
       companyId,
       projectId,
       projectWorkspaceId: workspaceId,
-      title: "Close without proof",
-      description: "No PR linked here.",
+      title: args?.title ?? "Repo-backed issue",
+      description: args?.description ?? "No PR linked here.",
       status: "todo",
       priority: "high",
+      identifier: args?.identifier ?? "PAP-9000",
+    });
+
+    return { companyId, projectId, workspaceId, issueId };
+  }
+
+  async function attachIssueDocumentRevision(input: {
+    companyId: string;
+    issueId: string;
+    key: string;
+    revisionNumber: number;
+    body?: string;
+  }) {
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    const body = input.body ?? "Triage decision";
+    await db.insert(documents).values({
+      id: documentId,
+      companyId: input.companyId,
+      title: input.key,
+      format: "markdown",
+      latestBody: body,
+      latestRevisionId: revisionId,
+      latestRevisionNumber: input.revisionNumber,
+      createdByAgentId: null,
+      updatedByAgentId: null,
+    });
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId: input.companyId,
+      documentId,
+      revisionNumber: input.revisionNumber,
+      title: input.key,
+      format: "markdown",
+      body,
+      createdByAgentId: null,
+    });
+    await db.insert(issueDocuments).values({
+      companyId: input.companyId,
+      issueId: input.issueId,
+      documentId,
+      key: input.key,
+    });
+  }
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-terminal-gate-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    await db.delete(issueComments);
+    await db.delete(issueDocuments);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("rejects terminal transitions for repo-backed issues without a verified merged PR", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Close without proof",
+      description: "No PR linked here.",
       identifier: "PAP-9001",
     });
 
@@ -4677,47 +4737,14 @@ describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
   });
 
   it("allows terminal transitions after verifying a merged PR in the issue thread", async () => {
-    const companyId = randomUUID();
-    const projectId = randomUUID();
-    const workspaceId = randomUUID();
-    const issueId = randomUUID();
-
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: true,
       json: async () => ({ merged: true }),
     } as Response)));
 
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: "PAP",
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(projects).values({
-      id: projectId,
-      companyId,
-      name: "Server",
-    });
-    await db.insert(projectWorkspaces).values({
-      id: workspaceId,
-      companyId,
-      projectId,
-      name: "primary",
-      sourceType: "git_repo",
-      repoUrl: "https://github.com/paperclipai/paperclip.git",
-      repoRef: "origin/main",
-      defaultRef: "origin/main",
-      isPrimary: true,
-    });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      projectId,
-      projectWorkspaceId: workspaceId,
+    const { issueId } = await seedRepoBackedIssue({
       title: "Close with merged PR",
       description: "Reference: https://github.com/paperclipai/paperclip/pull/3303",
-      status: "todo",
-      priority: "high",
       identifier: "PAP-9002",
     });
 
@@ -4726,47 +4753,15 @@ describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
   });
 
   it("accepts GitHub SSH-alias repo bindings when verifying a merged PR", async () => {
-    const companyId = randomUUID();
-    const projectId = randomUUID();
-    const workspaceId = randomUUID();
-    const issueId = randomUUID();
-
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: true,
       json: async () => ({ merged: true }),
     } as Response)));
 
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: "PAP",
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(projects).values({
-      id: projectId,
-      companyId,
-      name: "Server",
-    });
-    await db.insert(projectWorkspaces).values({
-      id: workspaceId,
-      companyId,
-      projectId,
-      name: "primary",
-      sourceType: "git_repo",
+    const { issueId } = await seedRepoBackedIssue({
       repoUrl: "git@github.com-paperclip:paperclipai/paperclip.git",
-      repoRef: "origin/main",
-      defaultRef: "origin/main",
-      isPrimary: true,
-    });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      projectId,
-      projectWorkspaceId: workspaceId,
       title: "Close with merged PR on aliased host",
       description: "Reference: https://github.com/paperclipai/paperclip/pull/3303",
-      status: "todo",
-      priority: "high",
       identifier: "PAP-9002A",
     });
 
@@ -4774,43 +4769,106 @@ describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
     expect(updated?.status).toBe("done");
   });
 
-  it("allows human-authored terminal transitions without repo-backed PR verification", async () => {
-    const companyId = randomUUID();
-    const projectId = randomUUID();
-    const workspaceId = randomUUID();
-    const issueId = randomUUID();
+  it("allows repo-backed decision deliverables when terminalEvidence resolves to a document revision", async () => {
+    const { companyId, issueId } = await seedRepoBackedIssue({
+      title: "Decision-backed close",
+      description: [
+        "deliverable: decision",
+        "subjectRepo: Alchemist-DevAI/wotww-planner",
+        "terminalEvidence: document:edg5792_rescue_triage#rev:1",
+      ].join("\n"),
+      identifier: "PAP-9002B",
+    });
+    await attachIssueDocumentRevision({
+      companyId,
+      issueId,
+      key: "edg5792_rescue_triage",
+      revisionNumber: 1,
+    });
 
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: "PAP",
-      requireBoardApprovalForNewAgents: false,
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
+  it("keeps explicit code deliverables behind merged PR proof", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Explicit code deliverable",
+      description: "deliverable: code",
+      identifier: "PAP-9002C",
     });
-    await db.insert(projects).values({
-      id: projectId,
-      companyId,
-      name: "Server",
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "merged_pr",
+      }),
     });
-    await db.insert(projectWorkspaces).values({
-      id: workspaceId,
-      companyId,
-      projectId,
-      name: "primary",
-      sourceType: "git_repo",
-      repoUrl: "https://github.com/paperclipai/paperclip.git",
-      repoRef: "origin/main",
-      defaultRef: "origin/main",
-      isPrimary: true,
+  });
+
+  it("verifies cross-repo code PRs against subjectRepo instead of the workspace repo", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: true }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Cross-repo code deliverable",
+      description: [
+        "deliverable: code",
+        "subjectRepo: Alchemist-DevAI/wotww-planner",
+        "Reference: https://github.com/Alchemist-DevAI/wotww-planner/pull/123",
+      ].join("\n"),
+      identifier: "PAP-9002D",
     });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      projectId,
-      projectWorkspaceId: workspaceId,
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toContain("/repos/Alchemist-DevAI/wotww-planner/pulls/123");
+  });
+
+  it("rejects decision-style terminal transitions when terminalEvidence is missing", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Decision without evidence",
+      description: [
+        "deliverable: decision",
+        "subjectRepo: Alchemist-DevAI/wotww-planner",
+      ].join("\n"),
+      identifier: "PAP-9002E",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "terminal_evidence",
+      }),
+    });
+  });
+
+  it("fails closed for title-only triage issues without structured terminal signals", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "[TRIAGE] title-only exemption should fail",
+      description: "Investigated the situation but left no structured signals.",
+      identifier: "PAP-9002F",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "merged_pr",
+      }),
+    });
+  });
+
+  it("allows human-authored terminal transitions without repo-backed PR verification", async () => {
+    const { issueId } = await seedRepoBackedIssue({
       title: "Board can close directly",
       description: "No PR linked here.",
-      status: "todo",
-      priority: "medium",
       identifier: "PAP-9003",
     });
 

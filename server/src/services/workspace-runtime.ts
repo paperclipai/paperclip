@@ -72,6 +72,10 @@ export interface RealizedExecutionWorkspace extends ExecutionWorkspaceInput {
 
 const DEFAULT_STALE_BEHIND_THRESHOLD = 10;
 const DEFAULT_MANAGED_CHECKOUT_REMEDIATION_THRESHOLD = 3;
+const DEFAULT_MANAGED_CHECKOUT_REMEDIATION_BACKOFF_MS = 5 * 60 * 1000;
+const MAX_MANAGED_CHECKOUT_REMEDIATION_BACKOFF_MS = 60 * 60 * 1000;
+const DEFAULT_MANAGED_CHECKOUT_RESCUE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_MANAGED_CHECKOUT_RESCUE_LIMIT = 3;
 const DEFAULT_MANAGED_CHECKOUT_FRESHNESS_STATE_PATH = resolveHomeAwarePath(
   "~/.paperclip/state/managed-checkout-freshness.json",
 );
@@ -616,13 +620,33 @@ function repoCoordinatesEqual(expected: RepoCoordinates | null, actual: RepoCoor
   return expected.host === actual.host && expected.owner === actual.owner && expected.repo === actual.repo;
 }
 
+function canonicalizeExistingPath(value: string) {
+  try {
+    return realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
 async function inspectGitWorkingTreeStatus(cwd: string) {
+  const repoRoot = canonicalizeExistingPath(await runGit(["rev-parse", "--show-toplevel"], cwd));
+  const nestedRegisteredWorktrees = new Set(
+    parseGitWorktreeListPorcelain(await runGit(["worktree", "list", "--porcelain"], cwd))
+      .map((entry) => canonicalizeExistingPath(entry.worktree))
+      .filter((worktreePath) => worktreePath !== repoRoot && worktreePath.startsWith(`${repoRoot}${path.sep}`)),
+  );
   const statusOutput = await runGit(["status", "--porcelain=v1", "--untracked-files=all"], cwd);
   let dirtyEntryCount = 0;
   let untrackedEntryCount = 0;
   for (const line of statusOutput.split(/\r?\n/)) {
     if (!line) continue;
     if (line.startsWith("??")) {
+      const rawPath = line.slice(3).trim().replace(/[\\/]+$/, "");
+      const resolvedPath = canonicalizeExistingPath(path.resolve(cwd, rawPath));
+      const isRegisteredNestedWorktree = [...nestedRegisteredWorktrees].some((worktreePath) =>
+        resolvedPath === worktreePath || resolvedPath.startsWith(`${worktreePath}${path.sep}`)
+      );
+      if (isRegisteredNestedWorktree) continue;
       untrackedEntryCount += 1;
       continue;
     }
@@ -631,8 +655,19 @@ async function inspectGitWorkingTreeStatus(cwd: string) {
   return { dirtyEntryCount, untrackedEntryCount };
 }
 
+type ManagedCheckoutFreshnessCheckpoint = {
+  signature: string;
+  count: number;
+  updatedAt: string;
+};
+
+type ManagedCheckoutFreshnessCheckoutState = ManagedCheckoutFreshnessCheckpoint & {
+  remediation?: ManagedCheckoutFreshnessCheckpoint;
+  rescueHistory?: string[];
+};
+
 type ManagedCheckoutFreshnessState = {
-  checkouts?: Record<string, { signature: string; count: number; updatedAt: string }>;
+  checkouts?: Record<string, ManagedCheckoutFreshnessCheckoutState>;
 };
 
 async function loadManagedCheckoutFreshnessState(statePath: string): Promise<ManagedCheckoutFreshnessState> {
@@ -662,6 +697,38 @@ function managedCheckoutFailureSignature(details: ExecutionWorkspaceFreshnessErr
   });
 }
 
+function managedCheckoutRemediationBackoffMs(attempts: number) {
+  if (attempts <= 0) return DEFAULT_MANAGED_CHECKOUT_REMEDIATION_BACKOFF_MS;
+  return Math.min(
+    DEFAULT_MANAGED_CHECKOUT_REMEDIATION_BACKOFF_MS * Math.pow(2, Math.max(0, attempts - 1)),
+    MAX_MANAGED_CHECKOUT_REMEDIATION_BACKOFF_MS,
+  );
+}
+
+function pruneManagedCheckoutRescueHistory(entries: readonly string[], now = Date.now()) {
+  return entries.filter((value) => {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) && now - parsed <= DEFAULT_MANAGED_CHECKOUT_RESCUE_WINDOW_MS;
+  });
+}
+
+function summarizeManagedCheckoutRescueHistory(entries: readonly string[], now = Date.now()) {
+  const recentEntries = pruneManagedCheckoutRescueHistory(entries, now);
+  const latestRescueAt = recentEntries.length > 0 ? recentEntries[recentEntries.length - 1] ?? null : null;
+  const rateLimitReached = recentEntries.length >= DEFAULT_MANAGED_CHECKOUT_RESCUE_LIMIT;
+  const oldestRelevantAt = rateLimitReached ? recentEntries[0] ?? null : null;
+  const rateLimitResetsAt = oldestRelevantAt
+    ? new Date(Date.parse(oldestRelevantAt) + DEFAULT_MANAGED_CHECKOUT_RESCUE_WINDOW_MS).toISOString()
+    : null;
+  return {
+    recentEntries,
+    recentCount: recentEntries.length,
+    latestRescueAt,
+    rateLimitReached,
+    rateLimitResetsAt,
+  };
+}
+
 async function recordManagedCheckoutFreshnessFailure(input: {
   cwd: string;
   signature: string;
@@ -674,6 +741,8 @@ async function recordManagedCheckoutFreshnessFailure(input: {
   state.checkouts = {
     ...(state.checkouts ?? {}),
     [input.cwd]: {
+      ...(current?.remediation ? { remediation: current.remediation } : {}),
+      ...(current?.rescueHistory ? { rescueHistory: current.rescueHistory } : {}),
       signature: input.signature,
       count: nextCount,
       updatedAt: new Date().toISOString(),
@@ -692,6 +761,99 @@ async function clearManagedCheckoutFreshnessFailure(input: {
   if (!state.checkouts?.[input.cwd]) return;
   delete state.checkouts[input.cwd];
   await saveManagedCheckoutFreshnessState(statePath, state);
+}
+
+export async function readManagedCheckoutFreshnessPause(input: {
+  cwd: string;
+  statePath?: string;
+}): Promise<{
+  count: number;
+  updatedAt: string;
+  dirtyEntryCount: number;
+  untrackedEntryCount: number;
+  recentRescueCount: number;
+  latestRescueAt: string | null;
+  rescueRateLimitReached: boolean;
+  rescueRateLimitResetsAt: string | null;
+} | null> {
+  const statePath = input.statePath ?? DEFAULT_MANAGED_CHECKOUT_FRESHNESS_STATE_PATH;
+  const state = await loadManagedCheckoutFreshnessState(statePath);
+  const current = state.checkouts?.[input.cwd];
+  if (!current || current.count <= 0) return null;
+
+  const gitStatus = await inspectGitWorkingTreeStatus(input.cwd).catch(() => null);
+  if (!gitStatus) return null;
+  if (gitStatus.dirtyEntryCount === 0 && gitStatus.untrackedEntryCount === 0) {
+    await clearManagedCheckoutFreshnessFailure({ cwd: input.cwd, statePath });
+    return null;
+  }
+
+  const rescueSummary = summarizeManagedCheckoutRescueHistory(current.rescueHistory ?? []);
+
+  return {
+    count: current.count,
+    updatedAt: current.updatedAt,
+    dirtyEntryCount: gitStatus.dirtyEntryCount,
+    untrackedEntryCount: gitStatus.untrackedEntryCount,
+    recentRescueCount: rescueSummary.recentCount,
+    latestRescueAt: rescueSummary.latestRescueAt,
+    rescueRateLimitReached: rescueSummary.rateLimitReached,
+    rescueRateLimitResetsAt: rescueSummary.rateLimitResetsAt,
+  };
+}
+
+async function readManagedCheckoutRemediationCooldown(input: {
+  cwd: string;
+  fingerprint: string;
+  statePath?: string;
+}): Promise<{ count: number; nextRetryAt: string } | null> {
+  const statePath = input.statePath ?? DEFAULT_MANAGED_CHECKOUT_FRESHNESS_STATE_PATH;
+  const state = await loadManagedCheckoutFreshnessState(statePath);
+  const remediation = state.checkouts?.[input.cwd]?.remediation;
+  if (!remediation || remediation.signature !== input.fingerprint || remediation.count <= 0) return null;
+
+  const updatedAtMs = Date.parse(remediation.updatedAt);
+  if (!Number.isFinite(updatedAtMs)) return null;
+
+  const nextRetryAt = new Date(updatedAtMs + managedCheckoutRemediationBackoffMs(remediation.count));
+  if (Date.now() >= nextRetryAt.getTime()) return null;
+  return {
+    count: remediation.count,
+    nextRetryAt: nextRetryAt.toISOString(),
+  };
+}
+
+async function recordManagedCheckoutRemediationAttempt(input: {
+  cwd: string;
+  fingerprint: string;
+  statePath?: string;
+}): Promise<{ duplicateFingerprintCount: number; recentRescueCount: number }> {
+  const statePath = input.statePath ?? DEFAULT_MANAGED_CHECKOUT_FRESHNESS_STATE_PATH;
+  const state = await loadManagedCheckoutFreshnessState(statePath);
+  const current = state.checkouts?.[input.cwd];
+  const remediation = current?.remediation;
+  const nextCount = remediation?.signature === input.fingerprint ? remediation.count + 1 : 1;
+  const nowIso = new Date().toISOString();
+  const rescueHistory = [...pruneManagedCheckoutRescueHistory(current?.rescueHistory ?? []), nowIso];
+  state.checkouts = {
+    ...(state.checkouts ?? {}),
+    [input.cwd]: {
+      signature: current?.signature ?? input.fingerprint,
+      count: current?.count ?? 0,
+      updatedAt: current?.updatedAt ?? nowIso,
+      rescueHistory,
+      remediation: {
+        signature: input.fingerprint,
+        count: nextCount,
+        updatedAt: nowIso,
+      },
+    },
+  };
+  await saveManagedCheckoutFreshnessState(statePath, state);
+  return {
+    duplicateFingerprintCount: nextCount,
+    recentRescueCount: rescueHistory.length,
+  };
 }
 
 function formatShortSha(value: string | null | undefined) {
@@ -1040,6 +1202,82 @@ async function preserveManagedCheckoutAndReset(input: {
   return warnings;
 }
 
+async function preserveDirtyWorktreeWipBeforeCleanup(input: {
+  worktreePath: string;
+  repoRoot: string;
+  branchName: string | null;
+  recorder?: WorkspaceOperationRecorder | null;
+}): Promise<string | null> {
+  const dirtyStatus = await runGit(["status", "--porcelain=v1", "--untracked-files=all"], input.worktreePath)
+    .catch(() => "");
+  if (!dirtyStatus.trim()) {
+    return null;
+  }
+
+  const currentBranchName =
+    await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], input.worktreePath).catch(() => null) ??
+    input.branchName ??
+    "detached";
+  const rescueBranch = `rescue/${branchSlug(currentBranchName)}-${isoBranchTimestamp()}`;
+
+  await recordGitOperation(input.recorder, {
+    phase: "worktree_cleanup",
+    args: ["checkout", "-B", rescueBranch],
+    cwd: input.worktreePath,
+    metadata: {
+      workspacePath: input.worktreePath,
+      branchName: currentBranchName,
+      rescueBranch,
+      cleanupAction: "preserve_dirty_wip_checkout",
+    },
+    successMessage: `Checked out rescue branch ${rescueBranch}\n`,
+    failureLabel: `git checkout -B ${rescueBranch}`,
+  });
+  await recordGitOperation(input.recorder, {
+    phase: "worktree_cleanup",
+    args: ["add", "-A"],
+    cwd: input.worktreePath,
+    metadata: {
+      workspacePath: input.worktreePath,
+      branchName: currentBranchName,
+      rescueBranch,
+      cleanupAction: "preserve_dirty_wip_stage",
+    },
+    successMessage: `Staged dirty worktree changes for ${rescueBranch}\n`,
+    failureLabel: "git add -A",
+  });
+  const stagedChanges = await runGit(["diff", "--cached", "--name-only"], input.worktreePath).catch(() => "");
+  if (stagedChanges.trim()) {
+    await recordGitOperation(input.recorder, {
+      phase: "worktree_cleanup",
+      args: ["commit", "-m", `paperclip: preserve worktree WIP before teardown (${currentBranchName})`],
+      cwd: input.worktreePath,
+      metadata: {
+        workspacePath: input.worktreePath,
+        branchName: currentBranchName,
+        rescueBranch,
+        cleanupAction: "preserve_dirty_wip_commit",
+      },
+      successMessage: `Committed dirty worktree changes to ${rescueBranch}\n`,
+      failureLabel: `git commit dirty worktree WIP for ${rescueBranch}`,
+    });
+  }
+
+  const hasOrigin = await runGit(["remote", "get-url", "origin"], input.repoRoot)
+    .then((value) => value.trim().length > 0)
+    .catch(() => false);
+  if (hasOrigin) {
+    await pushBranchIfNeeded(input.repoRoot, rescueBranch).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to push rescue branch "${rescueBranch}": ${message}`);
+    });
+  }
+
+  return hasOrigin
+    ? `Preserved dirty worktree WIP on "${rescueBranch}" before teardown and pushed it to origin.`
+    : `Preserved dirty worktree WIP on "${rescueBranch}" before teardown.`;
+}
+
 export async function ensureManagedCheckoutFreshness(input: {
   cwd: string;
   expectedRepoUrl?: string | null;
@@ -1090,10 +1328,55 @@ export async function ensureManagedCheckoutFreshness(input: {
     statePath: input.remediationStatePath,
   });
   if (failureCount >= remediationFailureThreshold) {
+    const remediationFingerprint = managedCheckoutFailureSignature(details);
+    const statePath = input.remediationStatePath;
+    const cooldown = await readManagedCheckoutRemediationCooldown({
+      cwd: input.cwd,
+      fingerprint: remediationFingerprint,
+      statePath,
+    });
+    if (cooldown) {
+      autoWarnings.push(
+        `Paperclip skipped duplicate managed-checkout auto-remediation for an unchanged failure fingerprint after ${cooldown.count} prior remediation attempt${cooldown.count === 1 ? "" : "s"}; next retry after ${cooldown.nextRetryAt}.`,
+      );
+      throw new ExecutionWorkspaceFreshnessError(
+        `Execution workspace freshness check failed: ${details.failures.join(" ")}`,
+        {
+          ...details,
+          warnings: [...details.warnings, ...autoWarnings],
+        },
+      );
+    }
+    const pause = await readManagedCheckoutFreshnessPause({
+      cwd: input.cwd,
+      statePath,
+    });
+    if (pause?.rescueRateLimitReached) {
+      autoWarnings.push(
+        `Paperclip skipped managed-checkout auto-remediation after ${pause.recentRescueCount} rescue attempts within 24h for this checkout; rate limit resets after ${pause.rescueRateLimitResetsAt}.`,
+      );
+      throw new ExecutionWorkspaceFreshnessError(
+        `Execution workspace freshness check failed: ${details.failures.join(" ")}`,
+        {
+          ...details,
+          warnings: [...details.warnings, ...autoWarnings],
+        },
+      );
+    }
+    const remediationAttempt = await recordManagedCheckoutRemediationAttempt({
+      cwd: input.cwd,
+      fingerprint: remediationFingerprint,
+      statePath,
+    });
+    if (remediationAttempt.recentRescueCount >= DEFAULT_MANAGED_CHECKOUT_RESCUE_LIMIT) {
+      autoWarnings.push(
+        `Paperclip reached the managed-checkout rescue rate cap (${remediationAttempt.recentRescueCount} rescues in 24h) for this checkout; further auto-remediations will pause until the window expires.`,
+      );
+    }
     autoWarnings.push(...await preserveManagedCheckoutAndReset({ cwd: input.cwd, details }));
     details = await inspectExecutionWorkspaceFreshness(input);
     if (details.failures.length === 0) {
-      await clearManagedCheckoutFreshnessFailure({ cwd: input.cwd, statePath: input.remediationStatePath });
+      await clearManagedCheckoutFreshnessFailure({ cwd: input.cwd, statePath });
       return {
         ...details,
         warnings: [...details.warnings, ...autoWarnings],
@@ -2023,11 +2306,21 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
 
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
     const worktreeExists = await directoryExists(workspacePath);
+    let removedWorktree = false;
     if (worktreeExists) {
       if (!repoRoot) {
         warnings.push(`Could not resolve git repo root for "${workspacePath}".`);
       } else {
         try {
+          const rescueWarning = await preserveDirtyWorktreeWipBeforeCleanup({
+            worktreePath: workspacePath,
+            repoRoot,
+            branchName: input.workspace.branchName,
+            recorder: input.recorder,
+          });
+          if (rescueWarning) {
+            warnings.push(rescueWarning);
+          }
           await recordGitOperation(input.recorder, {
             phase: "worktree_cleanup",
             args: ["worktree", "remove", "--force", workspacePath],
@@ -2041,12 +2334,13 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
             successMessage: `Removed git worktree ${workspacePath}\n`,
             failureLabel: `git worktree remove ${workspacePath}`,
           });
+          removedWorktree = true;
         } catch (err) {
           warnings.push(err instanceof Error ? err.message : String(err));
         }
       }
     }
-    if (createdByRuntime && input.workspace.branchName) {
+    if (removedWorktree && createdByRuntime && input.workspace.branchName) {
       if (!repoRoot) {
         warnings.push(`Could not resolve git repo root to delete branch "${input.workspace.branchName}".`);
       } else {

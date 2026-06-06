@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
@@ -45,6 +46,14 @@ function readDesiredState(value: unknown): WorkspaceRuntimeDesiredState | null {
   return value === "running" || value === "stopped" || value === "manual" ? value : null;
 }
 
+function canonicalizeExistingPath(value: string) {
+  try {
+    return path.resolve(realpathSync(value));
+  } catch {
+    return path.resolve(value);
+  }
+}
+
 function readServiceStates(value: unknown): ExecutionWorkspaceConfig["serviceStates"] {
   if (!isRecord(value)) return null;
   const entries = Object.entries(value).filter(([, state]) =>
@@ -67,6 +76,27 @@ async function pathExists(value: string | null | undefined) {
 
 async function runGit(args: string[], cwd: string) {
   return await execFileAsync("git", ["-C", cwd, ...args], { cwd });
+}
+
+type GitWorktreeListEntry = {
+  worktree: string;
+};
+
+function parseGitWorktreeListPorcelain(raw: string): GitWorktreeListEntry[] {
+  const entries: GitWorktreeListEntry[] = [];
+  let current: Partial<GitWorktreeListEntry> = {};
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) {
+      if (current.worktree) entries.push({ worktree: current.worktree });
+      current = {};
+      continue;
+    }
+    if (line.startsWith("worktree ")) {
+      current.worktree = line.slice("worktree ".length).trim();
+    }
+  }
+  if (current.worktree) entries.push({ worktree: current.worktree });
+  return entries;
 }
 
 async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
@@ -132,10 +162,24 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   let untrackedEntryCount = 0;
   if (repoRoot) {
     try {
+      const resolvedRepoRoot = canonicalizeExistingPath(repoRoot);
+      const nestedRegisteredWorktrees = new Set(
+        parseGitWorktreeListPorcelain((await runGit(["worktree", "list", "--porcelain"], workspacePath)).stdout)
+          .map((entry) => canonicalizeExistingPath(entry.worktree))
+          .filter((worktreePath) =>
+            worktreePath !== resolvedRepoRoot && worktreePath.startsWith(`${resolvedRepoRoot}${path.sep}`)
+          ),
+      );
       const statusOutput = (await runGit(["status", "--porcelain=v1", "--untracked-files=all"], workspacePath)).stdout;
       for (const line of statusOutput.split(/\r?\n/)) {
         if (!line) continue;
         if (line.startsWith("??")) {
+          const rawPath = line.slice(3).trim().replace(/[\\/]+$/, "");
+          const resolvedPath = canonicalizeExistingPath(path.resolve(workspacePath, rawPath));
+          const isRegisteredNestedWorktree = [...nestedRegisteredWorktrees].some((worktreePath) =>
+            resolvedPath === worktreePath || resolvedPath.startsWith(`${worktreePath}${path.sep}`)
+          );
+          if (isRegisteredNestedWorktree) continue;
           untrackedEntryCount += 1;
           continue;
         }

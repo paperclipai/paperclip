@@ -103,6 +103,24 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
 const DELETED_ISSUE_COMMENT_BODY = "";
 const REPO_BACKED_TERMINAL_GATE_EXEMPTION_KIND = "repo_backed_terminal_state_gate";
 const REPO_BACKED_TERMINAL_GATE_CODE = "repo_backed_terminal_state_gate_failed";
+const TERMINAL_GATE_NON_CODE_DELIVERABLES = new Set([
+  "decision",
+  "audit",
+  "diagnostic",
+  "qa",
+  "ops",
+  "governance",
+]);
+type TerminalGateDeliverable = "code" | "decision" | "audit" | "diagnostic" | "qa" | "ops" | "governance";
+type TerminalGateDocumentEvidence = {
+  key: string;
+  revisionNumber: number;
+};
+type TerminalGateSignals = {
+  deliverable: TerminalGateDeliverable | null;
+  subjectRepo: RepoCoordinates | null;
+  terminalEvidence: TerminalGateDocumentEvidence | null;
+};
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -174,9 +192,35 @@ function parseRepoCoordinates(rawUrl: string | null | undefined): RepoCoordinate
   }
 }
 
+function parseSubjectRepoCoordinates(rawValue: string | null | undefined): RepoCoordinates | null {
+  const trimmed = rawValue?.trim();
+  if (!trimmed) return null;
+  const simple = trimmed.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
+  if (simple) {
+    return {
+      host: "github.com",
+      owner: simple[1]!,
+      repo: simple[2]!,
+    };
+  }
+  const withHost = trimmed.match(/^github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/i);
+  if (withHost) {
+    return {
+      host: "github.com",
+      owner: withHost[1]!,
+      repo: withHost[2]!,
+    };
+  }
+  return parseRepoCoordinates(trimmed);
+}
+
 function repoCoordinatesEqual(expected: RepoCoordinates | null, actual: RepoCoordinates | null) {
   if (!expected || !actual) return false;
   return expected.host === actual.host && expected.owner === actual.owner && expected.repo === actual.repo;
+}
+
+function repoLabel(repo: RepoCoordinates) {
+  return `${repo.owner}/${repo.repo}`;
 }
 
 function extractMatchingPullRequestNumbers(text: string | null | undefined, repo: RepoCoordinates): number[] {
@@ -194,6 +238,63 @@ function extractMatchingPullRequestNumbers(text: string | null | undefined, repo
     if (Number.isFinite(value) && value > 0) matches.add(value);
   }
   return Array.from(matches);
+}
+
+function parseTerminalGateDeliverable(value: string | null | undefined): TerminalGateDeliverable | null {
+  const normalized = value?.trim().toLowerCase();
+  switch (normalized) {
+    case "code":
+    case "decision":
+    case "audit":
+    case "diagnostic":
+    case "qa":
+    case "ops":
+    case "governance":
+      return normalized;
+    default:
+      return null;
+  }
+}
+
+function parseTerminalGateDocumentEvidence(value: string | null | undefined): TerminalGateDocumentEvidence | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/^document:([a-z0-9][a-z0-9_-]{0,63})#rev:(\d+)$/i);
+  if (!match) return null;
+  const revisionNumber = Number.parseInt(match[2] ?? "", 10);
+  if (!Number.isFinite(revisionNumber) || revisionNumber <= 0) return null;
+  return {
+    key: match[1]!,
+    revisionNumber,
+  };
+}
+
+function extractTerminalGateSignalsFromText(text: string | null | undefined): Partial<TerminalGateSignals> {
+  const signals: Partial<TerminalGateSignals> = {};
+  if (!text) return signals;
+  const deliverableMatch = text.match(/^\s*deliverable\s*:\s*([^\n\r]+)\s*$/im);
+  const subjectRepoMatch = text.match(/^\s*subjectRepo\s*:\s*([^\n\r]+)\s*$/im);
+  const terminalEvidenceMatch = text.match(/^\s*terminalEvidence\s*:\s*([^\n\r]+)\s*$/im);
+  const deliverable = parseTerminalGateDeliverable(deliverableMatch?.[1] ?? null);
+  const subjectRepo = parseSubjectRepoCoordinates(subjectRepoMatch?.[1] ?? null);
+  const terminalEvidence = parseTerminalGateDocumentEvidence(terminalEvidenceMatch?.[1] ?? null);
+  if (deliverable) signals.deliverable = deliverable;
+  if (subjectRepo) signals.subjectRepo = subjectRepo;
+  if (terminalEvidence) signals.terminalEvidence = terminalEvidence;
+  return signals;
+}
+
+function mergeTerminalGateSignals(
+  description: string | null | undefined,
+  latestAgentComment: string | null | undefined,
+): TerminalGateSignals {
+  const descriptionSignals = extractTerminalGateSignalsFromText(description);
+  const latestCommentSignals = extractTerminalGateSignalsFromText(latestAgentComment);
+  return {
+    deliverable: latestCommentSignals.deliverable ?? descriptionSignals.deliverable ?? null,
+    subjectRepo: latestCommentSignals.subjectRepo ?? descriptionSignals.subjectRepo ?? null,
+    terminalEvidence: latestCommentSignals.terminalEvidence ?? descriptionSignals.terminalEvidence ?? null,
+  };
 }
 
 function readTerminalStateExemption(value: unknown) {
@@ -316,6 +417,29 @@ async function recordRepoBackedTerminalGateComment(input: {
     .update(issues)
     .set({ updatedAt: new Date() })
     .where(eq(issues.id, input.issueId));
+}
+
+async function issueDocumentRevisionExists(input: {
+  dbOrTx: any;
+  companyId: string;
+  issueId: string;
+  key: string;
+  revisionNumber: number;
+}) {
+  const row = await input.dbOrTx
+    .select({ documentId: issueDocuments.documentId })
+    .from(issueDocuments)
+    .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+    .innerJoin(documentRevisions, eq(documentRevisions.documentId, documents.id))
+    .where(and(
+      eq(issueDocuments.companyId, input.companyId),
+      eq(issueDocuments.issueId, input.issueId),
+      eq(issueDocuments.key, input.key),
+      eq(documentRevisions.companyId, input.companyId),
+      eq(documentRevisions.revisionNumber, input.revisionNumber),
+    ))
+    .then((rows: Array<{ documentId: string }>) => rows[0] ?? null);
+  return Boolean(row);
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -5278,55 +5402,99 @@ export function issueService(db: Db) {
             executionWorkspaceId: nextExecutionWorkspaceId,
           });
           if (repoBinding) {
-            const commentBodies = await dbOrTx
+            const latestAgentComment = await dbOrTx
               .select({ body: issueComments.body })
               .from(issueComments)
-              .where(eq(issueComments.issueId, existing.id));
-            const pullNumbers = new Set<number>();
-            for (const pullNumber of extractMatchingPullRequestNumbers(nextDescription, repoBinding)) {
-              pullNumbers.add(pullNumber);
-            }
-            for (const row of commentBodies) {
-              for (const pullNumber of extractMatchingPullRequestNumbers(row.body, repoBinding)) {
+              .where(and(
+                eq(issueComments.issueId, existing.id),
+                sql`${issueComments.authorAgentId} is not null`,
+              ))
+              .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+              .limit(1)
+              .then((rows: Array<{ body: string }>) => rows[0]?.body ?? null);
+            const gateSignals = mergeTerminalGateSignals(nextDescription, latestAgentComment);
+            const verificationRepo = gateSignals.subjectRepo ?? repoBinding;
+            if (gateSignals.deliverable && TERMINAL_GATE_NON_CODE_DELIVERABLES.has(gateSignals.deliverable)) {
+              const evidence = gateSignals.terminalEvidence;
+              const evidenceExists = evidence
+                ? await issueDocumentRevisionExists({
+                    dbOrTx,
+                    companyId: existing.companyId,
+                    issueId: existing.id,
+                    key: evidence.key,
+                    revisionNumber: evidence.revisionNumber,
+                  })
+                : false;
+              if (!evidenceExists) {
+                const reason = evidence
+                  ? `Paperclip refused a terminal transition for repo-backed ${gateSignals.deliverable} issue ${existing.identifier ?? existing.id} because terminalEvidence document:${evidence.key}#rev:${evidence.revisionNumber} does not resolve to an issue document revision.`
+                  : `Paperclip refused a terminal transition for repo-backed ${gateSignals.deliverable} issue ${existing.identifier ?? existing.id} because structured terminalEvidence is required.`;
+                await recordRepoBackedTerminalGateComment({
+                  dbHandle: db,
+                  issueId: existing.id,
+                  companyId: existing.companyId,
+                  body: reason,
+                });
+                throw unprocessable(
+                  "Repo-backed non-code terminal transitions require document-backed terminalEvidence.",
+                  {
+                    code: REPO_BACKED_TERMINAL_GATE_CODE,
+                    repo: repoLabel(verificationRepo),
+                    missing: "terminal_evidence",
+                  },
+                );
+              }
+            } else {
+              const commentBodies = await dbOrTx
+                .select({ body: issueComments.body })
+                .from(issueComments)
+                .where(eq(issueComments.issueId, existing.id));
+              const pullNumbers = new Set<number>();
+              for (const pullNumber of extractMatchingPullRequestNumbers(nextDescription, verificationRepo)) {
                 pullNumbers.add(pullNumber);
               }
-            }
+              for (const row of commentBodies) {
+                for (const pullNumber of extractMatchingPullRequestNumbers(row.body, verificationRepo)) {
+                  pullNumbers.add(pullNumber);
+                }
+              }
 
-            let verifiedMergedPull = false;
-            let verificationFailure: string | null = null;
-            for (const pullNumber of pullNumbers) {
-              try {
-                if (await verifyMergedPullRequestForRepo({ repo: repoBinding, pullNumber })) {
-                  verifiedMergedPull = true;
+              let verifiedMergedPull = false;
+              let verificationFailure: string | null = null;
+              for (const pullNumber of pullNumbers) {
+                try {
+                  if (await verifyMergedPullRequestForRepo({ repo: verificationRepo, pullNumber })) {
+                    verifiedMergedPull = true;
+                    break;
+                  }
+                } catch (error) {
+                  verificationFailure = error instanceof Error ? error.message : String(error);
                   break;
                 }
-              } catch (error) {
-                verificationFailure = error instanceof Error ? error.message : String(error);
-                break;
               }
-            }
 
-            if (!verifiedMergedPull) {
-              const repoLabel = `${repoBinding.owner}/${repoBinding.repo}`;
-              const reason = verificationFailure
-                ? `Paperclip could not verify a merged PR for repo-backed issue close on ${repoLabel}: ${verificationFailure}`
-                : pullNumbers.size === 0
-                  ? `Paperclip refused a terminal transition for repo-backed issue ${existing.identifier ?? existing.id} because the issue thread does not reference any PR URL for ${repoLabel}.`
-                  : `Paperclip refused a terminal transition for repo-backed issue ${existing.identifier ?? existing.id} because none of the referenced PRs for ${repoLabel} are verified merged.`;
-              await recordRepoBackedTerminalGateComment({
-                dbHandle: db,
-                issueId: existing.id,
-                companyId: existing.companyId,
-                body: reason,
-              });
-              throw unprocessable(
-                "Repo-backed issues may only move to a terminal state after a verified merged PR or explicit exemption.",
-                {
-                  code: REPO_BACKED_TERMINAL_GATE_CODE,
-                  repo: repoLabel,
-                  missing: verificationFailure ? "merged_pr_verification_failed" : "merged_pr",
-                },
-              );
+              if (!verifiedMergedPull) {
+                const targetRepoLabel = repoLabel(verificationRepo);
+                const reason = verificationFailure
+                  ? `Paperclip could not verify a merged PR for repo-backed issue close on ${targetRepoLabel}: ${verificationFailure}`
+                  : pullNumbers.size === 0
+                    ? `Paperclip refused a terminal transition for repo-backed issue ${existing.identifier ?? existing.id} because the issue thread does not reference any PR URL for ${targetRepoLabel}.`
+                    : `Paperclip refused a terminal transition for repo-backed issue ${existing.identifier ?? existing.id} because none of the referenced PRs for ${targetRepoLabel} are verified merged.`;
+                await recordRepoBackedTerminalGateComment({
+                  dbHandle: db,
+                  issueId: existing.id,
+                  companyId: existing.companyId,
+                  body: reason,
+                });
+                throw unprocessable(
+                  "Repo-backed issues may only move to a terminal state after a verified merged PR or explicit exemption.",
+                  {
+                    code: REPO_BACKED_TERMINAL_GATE_CODE,
+                    repo: targetRepoLabel,
+                    missing: verificationFailure ? "merged_pr_verification_failed" : "merged_pr",
+                  },
+                );
+              }
             }
           }
         }

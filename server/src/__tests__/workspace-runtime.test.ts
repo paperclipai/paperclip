@@ -537,6 +537,23 @@ describe("realizeExecutionWorkspace", () => {
     });
   });
 
+  it("ignores registered nested git worktrees when checking managed checkout freshness", async () => {
+    const repoRoot = await createTempRepo();
+    await fs.mkdir(path.join(repoRoot, ".worktrees"), { recursive: true });
+    await execFileAsync("git", ["worktree", "add", path.join(repoRoot, ".worktrees", "demo"), "-b", "demo", "HEAD"], {
+      cwd: repoRoot,
+    });
+
+    const details = await inspectExecutionWorkspaceFreshness({
+      cwd: repoRoot,
+      expectedBranchName: "main",
+    });
+
+    expect(details.failures).toEqual([]);
+    expect(details.dirtyEntryCount).toBe(0);
+    expect(details.untrackedEntryCount).toBe(0);
+  });
+
   it("auto-merges the base ref for a clean managed checkout branch that is behind", async () => {
     const repoRoot = await createTempRepo();
     const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
@@ -635,6 +652,161 @@ describe("realizeExecutionWorkspace", () => {
     expect(
       remoteBranches.some((line) => line.startsWith("origin/rescue/feature-dirty-managed-checkout-")),
     ).toBe(true);
+  });
+
+  it("deduplicates repeated managed-checkout rescue branches while a post-remediation fingerprint is unchanged", async () => {
+    const repoRoot = await createTempRepo();
+    const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
+    await runGit(remoteRoot, ["init", "--bare"]);
+    await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
+    await runGit(repoRoot, ["push", "-u", "origin", "main"]);
+
+    const staleClone = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-managed-clone-"));
+    await runGit(staleClone, ["clone", remoteRoot, "."]);
+    await runGit(staleClone, ["config", "user.email", "paperclip@example.com"]);
+    await runGit(staleClone, ["config", "user.name", "Paperclip Test"]);
+
+    const nestedRepo = path.join(staleClone, "persistent-nested-repo");
+    await fs.mkdir(nestedRepo, { recursive: true });
+    await runGit(nestedRepo, ["init"]);
+    await runGit(nestedRepo, ["config", "user.email", "paperclip@example.com"]);
+    await runGit(nestedRepo, ["config", "user.name", "Paperclip Test"]);
+    await fs.writeFile(path.join(nestedRepo, "README.md"), "nested\n", "utf8");
+    await runGit(nestedRepo, ["add", "README.md"]);
+    await runGit(nestedRepo, ["commit", "-m", "Initial nested commit"]);
+
+    const statePath = path.join(os.tmpdir(), `paperclip-managed-checkout-state-${randomUUID()}.json`);
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(
+        ensureManagedCheckoutFreshness({
+          cwd: staleClone,
+          expectedBaseRef: "origin/main",
+          remediationStatePath: statePath,
+          remediationFailureThreshold: 3,
+        }),
+      ).rejects.toMatchObject({
+        code: "execution_workspace_freshness_failed",
+        details: expect.objectContaining({
+          failures: expect.arrayContaining([expect.stringContaining("untracked file")]),
+          warnings: expect.arrayContaining([
+            expect.stringContaining("armed managed-checkout auto-remediation after"),
+          ]),
+        }),
+      });
+    }
+
+    await expect(
+      ensureManagedCheckoutFreshness({
+        cwd: staleClone,
+        expectedBaseRef: "origin/main",
+        remediationStatePath: statePath,
+        remediationFailureThreshold: 1,
+      }),
+    ).rejects.toMatchObject({
+      code: "execution_workspace_freshness_failed",
+      details: expect.objectContaining({
+        warnings: expect.arrayContaining([
+          expect.stringContaining('Preserved the shared managed checkout on "rescue/main-'),
+        ]),
+      }),
+    });
+
+    const rescueBranchesAfterFirstRemediation = (await readGit(staleClone, ["branch", "-r"]))
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("origin/rescue/main-"));
+    expect(rescueBranchesAfterFirstRemediation).toHaveLength(1);
+
+    await expect(
+      ensureManagedCheckoutFreshness({
+        cwd: staleClone,
+        expectedBaseRef: "origin/main",
+        remediationStatePath: statePath,
+        remediationFailureThreshold: 1,
+      }),
+    ).rejects.toMatchObject({
+      code: "execution_workspace_freshness_failed",
+      details: expect.objectContaining({
+        failures: expect.arrayContaining([expect.stringContaining("untracked file")]),
+        warnings: expect.arrayContaining([
+          expect.stringContaining("skipped duplicate managed-checkout auto-remediation"),
+        ]),
+      }),
+    });
+
+    const rescueBranchesAfterCooldownSkip = (await readGit(staleClone, ["branch", "-r"]))
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("origin/rescue/main-"));
+    expect(rescueBranchesAfterCooldownSkip).toHaveLength(1);
+  });
+
+  it("rate-limits managed-checkout rescues after 3 attempts within 24 hours", async () => {
+    const repoRoot = await createTempRepo();
+    const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
+    await runGit(remoteRoot, ["init", "--bare"]);
+    await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
+    await runGit(repoRoot, ["push", "-u", "origin", "main"]);
+
+    const staleClone = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-managed-clone-"));
+    await runGit(staleClone, ["clone", remoteRoot, "."]);
+    await runGit(staleClone, ["config", "user.email", "paperclip@example.com"]);
+    await runGit(staleClone, ["config", "user.name", "Paperclip Test"]);
+
+    const nestedRepo = path.join(staleClone, "persistent-nested-repo");
+    await fs.mkdir(nestedRepo, { recursive: true });
+    await runGit(nestedRepo, ["init"]);
+    await fs.writeFile(path.join(nestedRepo, "README.md"), "nested\n", "utf8");
+
+    const now = Date.now();
+    const statePath = path.join(os.tmpdir(), `paperclip-managed-checkout-state-${randomUUID()}.json`);
+    await fs.writeFile(
+      statePath,
+      JSON.stringify({
+        checkouts: {
+          [staleClone]: {
+            signature: "same-failure",
+            count: 3,
+            updatedAt: new Date(now).toISOString(),
+            rescueHistory: [
+              new Date(now - 3 * 60 * 60 * 1000).toISOString(),
+              new Date(now - 2 * 60 * 60 * 1000).toISOString(),
+              new Date(now - 1 * 60 * 60 * 1000).toISOString(),
+            ],
+            remediation: {
+              signature: "older-fingerprint",
+              count: 1,
+              updatedAt: new Date(now - 6 * 60 * 60 * 1000).toISOString(),
+            },
+          },
+        },
+      }, null, 2),
+      "utf8",
+    );
+
+    await expect(
+      ensureManagedCheckoutFreshness({
+        cwd: staleClone,
+        expectedBaseRef: "origin/main",
+        remediationStatePath: statePath,
+        remediationFailureThreshold: 1,
+      }),
+    ).rejects.toMatchObject({
+      code: "execution_workspace_freshness_failed",
+      details: expect.objectContaining({
+        failures: expect.arrayContaining([expect.stringContaining("untracked file")]),
+        warnings: expect.arrayContaining([
+          expect.stringContaining("skipped managed-checkout auto-remediation after 3 rescue attempts within 24h"),
+        ]),
+      }),
+    });
+
+    const rescueBranches = (await readGit(staleClone, ["branch", "-r"]))
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("origin/rescue/"));
+    expect(rescueBranches).toHaveLength(0);
   });
 
   it("accepts GitHub SSH-alias remotes when verifying expected repo coordinates", async () => {
@@ -2082,7 +2254,7 @@ describe("realizeExecutionWorkspace", () => {
     const bareRemote = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-bare-symref-"));
     await runGit(bareRemote, ["init", "--bare"]);
     await runGit(repoRoot, ["remote", "add", "origin", bareRemote]);
-    await runGit(repoRoot, ["push", "-u", "origin", "main", "master"]);
+    await runGit(repoRoot, ["push", "-u", "origin", "main"]);
     await runGit(repoRoot, ["fetch", "origin"]);
     // Explicitly set refs/remotes/origin/HEAD to exercise the symbolic-ref path
     // (git remote set-head -a requires the remote to advertise HEAD, so we set it manually)
@@ -2102,7 +2274,7 @@ describe("realizeExecutionWorkspace", () => {
       config: {
         workspaceStrategy: {
           type: "git_worktree",
-          // No baseRef configured — origin/master is preferred over the symbolic-ref.
+          // No baseRef configured — use origin/HEAD when it is available.
         },
       },
       issue: {
@@ -2122,7 +2294,7 @@ describe("realizeExecutionWorkspace", () => {
     expect(workspace.created).toBe(true);
     const worktreeOp = operations.find(op => op.phase === "worktree_prepare" && op.metadata?.created);
     expect(worktreeOp).toBeDefined();
-    expect(worktreeOp!.metadata!.baseRef).toBe("origin/master");
+    expect(worktreeOp!.metadata!.baseRef).toBe("origin/main");
   }, 10_000);
 
   it("removes a created git worktree and branch during cleanup", async () => {
@@ -2252,6 +2424,78 @@ describe("realizeExecutionWorkspace", () => {
       stdout: expect.stringContaining(workspace.branchName!),
     });
   }, 10_000);
+
+  it("preserves dirty runtime-created worktree WIP on a rescue branch before teardown", async () => {
+    const repoRoot = await createTempRepo();
+
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-5925",
+        title: "Preserve worktree WIP on teardown",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    await fs.writeFile(path.join(workspace.cwd, "draft.txt"), "keep this work\n", "utf8");
+    await fs.writeFile(path.join(workspace.cwd, "README.md"), "changed\n", "utf8");
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({
+      workspace: {
+        id: "execution-workspace-1",
+        cwd: workspace.cwd,
+        providerType: "git_worktree",
+        providerRef: workspace.worktreePath,
+        branchName: workspace.branchName,
+        repoUrl: workspace.repoUrl,
+        baseRef: workspace.repoRef,
+        projectId: workspace.projectId,
+        projectWorkspaceId: workspace.workspaceId,
+        sourceIssueId: "issue-1",
+        metadata: {
+          createdByRuntime: true,
+        },
+      },
+      projectWorkspace: {
+        cwd: repoRoot,
+        cleanupCommand: null,
+      },
+    });
+
+    expect(cleanup.cleaned).toBe(true);
+    expect(cleanup.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('Preserved dirty worktree WIP on "rescue/'),
+    ]));
+
+    const rescueBranches = (await readGit(repoRoot, ["branch", "--list", "rescue/*"]))
+      .split("\n")
+      .map((line) => line.replace(/^\*\s*/, "").trim())
+      .filter(Boolean);
+    expect(rescueBranches).toHaveLength(1);
+    await expect(
+      execFileAsync("git", ["show", `${rescueBranches[0]}:draft.txt`], { cwd: repoRoot }),
+    ).resolves.toMatchObject({
+      stdout: "keep this work\n",
+    });
+  });
 
   it("records teardown and cleanup operations when a recorder is provided", async () => {
     const repoRoot = await createTempRepo();
