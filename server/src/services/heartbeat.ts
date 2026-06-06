@@ -2847,6 +2847,12 @@ export function derivePaperclipPrReview(contextSnapshot: Record<string, unknown>
     reviewAuthorLogin: readNonEmptyString(contextSnapshot.githubPrReviewAuthorLogin),
     requestCommentBody: readNonEmptyString(contextSnapshot.githubPrReviewRequestBody),
     requestCommentAuthorLogin: readNonEmptyString(contextSnapshot.githubPrReviewRequestAuthorLogin),
+    // BLO-9293: the PR author login from the signed webhook (`pull_request.user.login`).
+    // Used by the reviewer-output gate to anchor an intentional self-review skip:
+    // Ally reviews every PR including ones it authored itself, and GitHub forbids
+    // self-review, so the gate must confirm the PR was genuinely bot-authored
+    // before accepting a "skipped as self-review" summary.
+    prAuthorLogin: readNonEmptyString(contextSnapshot.githubPrAuthorLogin),
   };
 }
 
@@ -3001,6 +3007,74 @@ function prReviewOutputHasGithubAuthExpiry(text: string) {
   return false;
 }
 
+// BLO-9293: escape a string for safe interpolation into a RegExp. Normalized
+// GitHub handles are [a-z0-9-] only, but `prAuthorLogin` ultimately derives from
+// external webhook data, so escape defensively before building the anchor regex.
+function escapeRegExpLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// BLO-9293: normalize a GitHub author handle for self-identity comparison. A
+// GitHub App's bot user surfaces in webhook payloads as "<app-slug>[bot]" (e.g.
+// "allyblockcast[bot]"), while Ally's own completion summaries name the author
+// as "app/<slug>" or "@<slug>". Strip the @ / app/ prefix and the [bot] suffix
+// and lowercase so all of those forms compare equal.
+function normalizeGithubAuthorHandle(login: string): string {
+  return login
+    .trim()
+    .toLowerCase()
+    .replace(/^@/, "")
+    .replace(/^app\//, "")
+    .replace(/\[bot\]$/, "")
+    .trim();
+}
+
+// BLO-9293: an INTENTIONAL self-review skip. Ally is woken to review every PR on
+// the configured repos, including PRs it authored itself (a fix it shipped).
+// GitHub forbids a user from reviewing their own PR, so Ally correctly exits
+// WITHOUT posting and records that the PR author is its own bot identity. That
+// run published nothing, so — like the older `already_reviewed` /
+// `archived_repo_skipped` intentional skips — without an explicit marker it fell
+// through to `pr_review_output_missing`, flipping Ally to `error` and tripping
+// the agent-health sweep (BLO-3202) once three landed in a row.
+//
+// The phrase match alone is NOT trusted (the BLO-8195 lesson: anchor free text
+// to the signed wake context). The skip is accepted ONLY when the signed-webhook
+// PR author (`prAuthorLogin`, from `pull_request.user.login`) is present AND the
+// summary's self-review reasoning names that same handle — so a genuinely
+// missing review on a human- or OTHER-bot-authored PR cannot dodge the gate by
+// merely mentioning "self-review".
+function prReviewOutputHasSelfReviewSkip(
+  text: string,
+  prReview: { prAuthorLogin: string | null },
+): boolean {
+  if (!prReview.prAuthorLogin) return false;
+  const author = normalizeGithubAuthorHandle(prReview.prAuthorLogin);
+  if (author.length === 0) return false;
+
+  // (1) The summary must express an intentional self-review skip — not a
+  // mid-review failure. Three shapes seen in real Ally runs (BLO-9293):
+  //   "PR author is `app/allyblockcast`, so self-review is not allowed"
+  //   "review was skipped as self-review"
+  //   "skipped review as self-review"
+  const expressesSelfSkip =
+    /\bself[-\s]?review\b[\s\S]{0,60}\b(?:not\s+allowed|disallowed|not\s+permitted|forbidden|skip(?:ped|s|ping)?)\b/i.test(text) ||
+    /\bskip(?:ped|s|ping)?\b[\s\S]{0,60}\b(?:as|because|since|due\s+to)\b[\s\S]{0,40}\bself[-\s]?review\b/i.test(text) ||
+    /\b(?:can(?:not|['’]?t)|not\s+allowed\s+to|may\s+not|won['’]?t)\b[\s\S]{0,40}\breview\b[\s\S]{0,40}\b(?:my\s+own|its\s+own|their\s+own|own)\s+(?:pr\b|pull\s+request)/i.test(text);
+  if (!expressesSelfSkip) return false;
+
+  // (2) The summary must name the SAME author handle the signed webhook recorded
+  // as the PR author — anchoring the free-text claim to a fact the model cannot
+  // forge. Match the bare handle with an optional @ / app/ prefix and optional
+  // [bot] suffix, on non-word-character boundaries.
+  const handle = escapeRegExpLiteral(author);
+  const handlePattern = new RegExp(
+    `(?:^|[^A-Za-z0-9_-])(?:@|app/)?${handle}(?:\\[bot\\])?(?![A-Za-z0-9_-])`,
+    "i",
+  );
+  return handlePattern.test(text);
+}
+
 export function evaluatePrReviewCompletionEvidence(
   contextSnapshot: Record<string, unknown> | null | undefined,
   output: {
@@ -3052,6 +3126,18 @@ export function evaluatePrReviewCompletionEvidence(
     !prReviewOutputHasPostedReviewNegation(text)
   ) {
     return { status: "posted_review" as const };
+  }
+
+  // BLO-9293: an intentional self-review skip on a PR the reviewer authored
+  // itself. Checked AFTER all posted-review markers (a genuinely posted review
+  // wins) and BEFORE the auth-expiry / missing fallbacks. Accepted only when the
+  // signed-webhook PR author matches the self-identity the summary cites, so it
+  // cannot mask a real missing review. Like the other intentional skips it is
+  // NOT an override status (see prReviewIncompleteOverride), so the run stays
+  // `succeeded` and is never flagged `pr_review_output_missing` / `agent_in_error`
+  // (the agent-health sweep on BLO-3202 keys on the failed-run errorCode).
+  if (prReviewOutputHasSelfReviewSkip(text, prReview)) {
+    return { status: "self_review_skipped" as const };
   }
 
   // BLO-8215: the run left no posted-review / intentional-skip marker. Before

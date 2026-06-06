@@ -132,6 +132,11 @@ interface ResolvedEventContext {
   reviewState?: string | null;
   reviewAuthorLogin?: string | null;
   reviewUrl?: string | null;
+  // BLO-9293: PR author login (pull_request.user.login / issue.user.login on a
+  // PR comment). Surfaced to the reviewer wake context so the reviewer-output
+  // gate can confirm an intentional self-review skip is on a genuinely
+  // bot-authored PR. Distinct from reviewAuthorLogin (the review *event* author).
+  prAuthorLogin?: string | null;
   // issue_comment.created only -- drives reviewer reruns requested by
   // an operator via "@ally" in a PR comment.
   commentId?: number | null;
@@ -183,6 +188,7 @@ function resolveEventContext(
         title: null as string | null,
         url: null as string | null,
         headSha: null as string | null,
+        authorLogin: null as string | null,
       };
     }
     const head = pr.head as Record<string, unknown> | undefined;
@@ -190,12 +196,18 @@ function resolveEventContext(
     const title = pr.title as string | undefined;
     const body = pr.body as string | undefined;
     const number = (pr.number as number | undefined) ?? null;
+    // BLO-9293: PR author login (`pull_request.user.login`). Drives the reviewer
+    // self-review-skip gate — NOT the merged-PR issue↔PR link below, which
+    // deliberately keys only on the BLO- ref. A distinct, signed-webhook-sourced
+    // fact the reviewer run's free-text "self-review" claim is anchored against.
+    const user = pr.user as Record<string, unknown> | undefined;
     return {
       ids: extractPaperclipIdentifiers(branch, title, body),
       number,
       title: title ?? null,
       url: githubPrUrl(repoFullName, number, readStringField(pr, "html_url")),
       headSha: readStringField(head, "sha"),
+      authorLogin: (user?.login as string | undefined) ?? null,
     };
   };
 
@@ -298,6 +310,9 @@ function resolveEventContext(
       const commentBody = comment?.body as string | undefined;
       if (!hasPrReviewerRequestMention(commentBody)) return null;
       const commentUser = comment?.user as Record<string, unknown> | undefined;
+      // BLO-9293: on a PR's issue_comment payload, `issue.user.login` is the PR
+      // author (the comment author is `comment.user.login`, captured separately).
+      const issueUser = issue.user as Record<string, unknown> | undefined;
       const prNumber = (issue.number as number | undefined) ?? null;
       const prUrl = githubPrUrl(repoFullName, prNumber, readStringField(issue, "html_url"));
       const commentUrl = readStringField(comment, "html_url");
@@ -316,6 +331,7 @@ function resolveEventContext(
         commentId: (comment?.id as number | undefined) ?? null,
         commentBody: clampReviewBody(commentBody),
         commentAuthorLogin: (commentUser?.login as string | undefined) ?? null,
+        prAuthorLogin: (issueUser?.login as string | undefined) ?? null,
         commentUrl,
       };
     }
@@ -341,6 +357,7 @@ function resolveEventContext(
         prUrl: collected.url,
         eventUrl: reviewUrl ?? collected.url,
         headSha: collected.headSha,
+        prAuthorLogin: collected.authorLogin,
         reviewBody,
         reviewState,
         reviewAuthorLogin,
@@ -379,6 +396,7 @@ function resolveEventContext(
         prUrl: collected.url,
         eventUrl: collected.url,
         headSha: collected.headSha,
+        prAuthorLogin: collected.authorLogin,
         // Merge metadata for forward-capture. additions/deletions are present
         // on the pull_request payload; per-file authored-LOC needs a follow-up
         // pulls/{n}/files fetch (enrichment), so it is not read here.
@@ -431,6 +449,8 @@ function githubContextMetadata(context: ResolvedEventContext) {
     ...(context.headSha ? { githubHeadSha: context.headSha } : {}),
     ...(context.commentUrl ? { githubCommentUrl: context.commentUrl } : {}),
     ...(context.reviewUrl ? { githubReviewUrl: context.reviewUrl } : {}),
+    // BLO-9293: PR author login for the reviewer self-review-skip gate.
+    ...(context.prAuthorLogin ? { githubPrAuthorLogin: context.prAuthorLogin } : {}),
     ...(context.identifiers.length > 0 ? { githubPaperclipIdentifiers: context.identifiers } : {}),
   };
 }

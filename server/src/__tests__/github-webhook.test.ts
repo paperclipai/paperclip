@@ -140,6 +140,26 @@ describe("github-webhook pure helpers", () => {
     });
   });
 
+  it("extracts the PR author login from pull_request.opened for the self-review-skip gate (BLO-9293)", () => {
+    const ctx = __test_resolveEventContext("pull_request", {
+      action: "opened",
+      pull_request: {
+        number: 235,
+        title: "Fix BLO-9293",
+        body: null,
+        html_url: "https://github.com/Blockcast/Network-Operator-Portal/pull/235",
+        head: { ref: "fix/BLO-9293", sha: "9f3ac21" },
+        user: { login: "allyblockcast[bot]" },
+      },
+      repository: { full_name: "Blockcast/Network-Operator-Portal" },
+    });
+    expect(ctx).toMatchObject({
+      wakeReason: "github_pr_opened",
+      prNumber: 235,
+      prAuthorLogin: "allyblockcast[bot]",
+    });
+  });
+
   it("resolves pull_request reopened as a reviewer wake signal (BLO-7426)", () => {
     const ctx = __test_resolveEventContext("pull_request", {
       action: "reopened",

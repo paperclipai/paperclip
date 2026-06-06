@@ -235,7 +235,21 @@ describe("derivePaperclipPrReview", () => {
       reviewAuthorLogin: null,
       requestCommentBody: null,
       requestCommentAuthorLogin: null,
+      prAuthorLogin: null,
     });
+  });
+
+  it("surfaces the PR author login when present (BLO-9293)", () => {
+    expect(
+      derivePaperclipPrReview({
+        wakeReason: "github_pr_opened",
+        githubPrNumber: 235,
+        githubRepoFullName: "Blockcast/Network-Operator-Portal",
+        reviewKind: "pr_review",
+        prRole: "reviewer",
+        githubPrAuthorLogin: "allyblockcast[bot]",
+      }),
+    ).toMatchObject({ prAuthorLogin: "allyblockcast[bot]" });
   });
 
   it("surfaces prRole='author' + review body/state/login on assignee wakes (BLO-6300)", () => {
@@ -655,6 +669,92 @@ describe("evaluatePrReviewCompletionEvidence", () => {
         summary: "Review posted successfully against head `1672bf45` after an earlier 401 Bad credentials was retried.",
       }),
     ).toEqual({ status: "posted_review" });
+  });
+
+  // BLO-9293: an INTENTIONAL self-review skip. Ally is woken to review every PR
+  // including ones it authored itself; GitHub forbids self-review, so Ally exits
+  // without posting. With the signed-webhook PR author confirming Ally's own bot
+  // identity, the gate must accept this as `self_review_skipped` (a non-override
+  // status → run stays `succeeded`), NOT `pr_review_output_missing` (which flips
+  // Ally `error` and tripped the BLO-3202 sweep on three skips in a row).
+  const selfReviewCtx = {
+    reviewKind: "pr_review",
+    prRole: "reviewer",
+    githubPrNumber: 235,
+    githubRepoFullName: "Blockcast/Network-Operator-Portal",
+    githubHeadSha: "9f3ac21",
+    // pull_request.user.login from the signed webhook — a GitHub App bot surfaces
+    // as "<slug>[bot]"; Ally's summary names the same author as "app/<slug>".
+    githubPrAuthorLogin: "allyblockcast[bot]",
+  };
+
+  it.each([
+    // run 143cdf48 — Network-Operator-Portal#235
+    { label: "#235 self-review not allowed", summary: "PR author is `app/allyblockcast`, so self-review is not allowed. Exiting without posting a review on Blockcast/Network-Operator-Portal#235." },
+    // run 458b075f — Network-Operator-Portal#234
+    { label: "#234 self-review not allowed", summary: "Reviewed Blockcast/Network-Operator-Portal#234: the PR author is `app/allyblockcast`, so self-review is not allowed; skipped." },
+    // run 2455a2d9 — Network-Operator-Portal#232
+    { label: "#232 skipped as self-review", summary: "PR author is `app/allyblockcast`; review was skipped as self-review for #232." },
+  ])("BLO-9293: accepts an intentional self-review skip on a bot-authored PR ($label)", ({ summary }) => {
+    expect(evaluatePrReviewCompletionEvidence(selfReviewCtx, { summary })).toEqual({
+      status: "self_review_skipped",
+    });
+  });
+
+  it("BLO-9293: accepts a self-review skip when the author handle is given without the app/ prefix", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(
+        { ...selfReviewCtx, githubPrAuthorLogin: "allyblockcast" },
+        { summary: "Cannot review my own PR — the author is allyblockcast (this bot). Skipping #235." },
+      ),
+    ).toEqual({ status: "self_review_skipped" });
+  });
+
+  // Masking guard 1: the summary claims a self-review skip but the signed-webhook
+  // PR author is a DIFFERENT identity (a human, or another bot). The free-text
+  // claim is not corroborated, so it must NOT mask a real missing review.
+  it("BLO-9293: a self-review claim whose author handle does not match the webhook author stays missing", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(
+        { ...selfReviewCtx, githubPrAuthorLogin: "some-human-dev" },
+        { summary: "PR author is `app/allyblockcast`, so self-review is not allowed; skipping #235." },
+      ),
+    ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
+  });
+
+  // Masking guard 2: a self-review skip phrase with NO PR author on the wake
+  // context cannot be anchored, so it stays missing (text alone is never trusted).
+  it("BLO-9293: a self-review claim with no webhook PR author stays missing", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(
+        { reviewKind: "pr_review", prRole: "reviewer", githubPrNumber: 235, githubRepoFullName: "Blockcast/Network-Operator-Portal" },
+        { summary: "PR author is `app/allyblockcast`, so self-review is not allowed; skipping #235." },
+      ),
+    ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
+  });
+
+  // Negative case (issue verifying signal): a genuinely missing review — bot
+  // author present, but the run produced no posted-review AND no self-review-skip
+  // evidence — must still fail with `pr_review_output_missing`.
+  it("BLO-9293: a real missing-output run on a bot-authored PR still fails pr_review_output_missing", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(selfReviewCtx, {
+        summary: "No prior Ally review exists for Blockcast/Network-Operator-Portal#235 at head 9f3ac21; I am fetching metadata and diff now.",
+      }),
+    ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
+  });
+
+  // Precedence guard: Ally should still REVIEW another bot's PR (e.g. dependabot)
+  // — a missing review there is a real failure, not a self-skip — and an
+  // unrelated mention of "self-review" must not flip it green when the author
+  // handle (dependabot) is not what any self-skip phrase cites.
+  it("BLO-9293: a missing review on another bot's PR is not masked as a self-skip", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(
+        { ...selfReviewCtx, githubPrAuthorLogin: "dependabot[bot]" },
+        { summary: "Fetching diff for #235 at head 9f3ac21; I will post the consolidated review next." },
+      ),
+    ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
   });
 });
 
