@@ -91,6 +91,30 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
+  // --- cold-start boot timing -------------------------------------------------
+  // One-shot per process: startServer runs exactly once per (cold) instance, so
+  // these marks fire once and partition the cold start into named segments.
+  // Read them in the Vercel function runtime logs after a cold hit to find which
+  // phase owns the ~7s serverless cold start. Gated to Vercel (or an explicit
+  // flag) so the always-on Railway worker emits no extra log noise.
+  const __bootTimingEnabled =
+    !!process.env.VERCEL || process.env.VALADRIEN_OS_BOOT_TIMING === "true";
+  const __bootStart = performance.now();
+  let __bootLast = __bootStart;
+  const bootMark = (phase: string): void => {
+    if (!__bootTimingEnabled) return;
+    const now = performance.now();
+    logger.info(
+      {
+        bootPhase: phase,
+        phaseMs: Math.round(now - __bootLast),
+        sinceStartMs: Math.round(now - __bootStart),
+      },
+      `boot-timing: ${phase} (+${Math.round(now - __bootLast)}ms, ${Math.round(now - __bootStart)}ms total)`,
+    );
+    __bootLast = now;
+  };
+
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.VALADRIEN_OS_SECRETS_PROVIDER === undefined) {
@@ -309,6 +333,7 @@ export async function startServer(): Promise<StartedServer> {
     logger.info("Using external PostgreSQL via DATABASE_URL/config");
     activeDatabaseConnectionString = config.databaseUrl;
     startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
+    bootMark("db+migrations");
   } else {
     const moduleName = "embedded-postgres";
     let EmbeddedPostgres: EmbeddedPostgresCtor;
@@ -554,6 +579,7 @@ export async function startServer(): Promise<StartedServer> {
     await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
     authReady = true;
   }
+  bootMark("auth");
 
   if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
     config.embeddedPostgresPort = resolvedEmbeddedPostgresPort;
@@ -654,6 +680,7 @@ export async function startServer(): Promise<StartedServer> {
     pluginWorkerManager,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
+  bootMark("app-built");
 
   // Increase keep-alive timeouts to safely outlive default idle timeouts
   // of common reverse proxies and load balancers (like AWS ALB, Nginx, or Traefik).
@@ -856,6 +883,7 @@ export async function startServer(): Promise<StartedServer> {
   // reject valid external adapter types during the startup loading window.
   const { waitForExternalAdapters } = await import("./adapters/registry.js");
   await waitForExternalAdapters();
+  bootMark("adapters");
 
   const startedServer = {
     server,
@@ -865,6 +893,7 @@ export async function startServer(): Promise<StartedServer> {
     apiUrl: configuredApiUrl,
     databaseUrl: activeDatabaseConnectionString,
   };
+  bootMark("ready");
 
   if (process.env.VERCEL) {
     printStartupBanner({
