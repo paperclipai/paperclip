@@ -199,20 +199,16 @@ function OnboardingRoutePage() {
 }
 
 function CompanyRootRedirect() {
-  const { companies, loading } = useCompany();
+  const { loading } = useCompany();
 
   if (loading) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
   }
 
-  // Exactly one accessible company → skip the chooser and drop straight into it.
-  // Zero or several → land on the instance-owner home, where the owner can open an
-  // existing tenant's dashboard or add a new company — instead of being silently
-  // routed into the first company or forced into the create-company wizard.
-  if (companies.length === 1) {
-    return <Navigate to={`/${companies[0].issuePrefix}/dashboard`} replace />;
-  }
-
+  // Always land on the instance-owner home so the owner can choose: open an
+  // existing tenant's dashboard, or add a new company (tenant). This replaces the
+  // old behaviour that silently dove into the first company OR — when there were
+  // none — forced the create-company wizard, leaving no place to manage tenants.
   return <InstanceHome />;
 }
 
