@@ -7,6 +7,7 @@ import { CloudAccessGate } from "./components/CloudAccessGate";
 import { Dashboard } from "./pages/Dashboard";
 import { DashboardLive } from "./pages/DashboardLive";
 import { Companies } from "./pages/Companies";
+import { InstanceHome } from "./pages/InstanceHome";
 import { Agents } from "./pages/Agents";
 import { AgentDetail } from "./pages/AgentDetail";
 import { Projects } from "./pages/Projects";
@@ -198,27 +199,21 @@ function OnboardingRoutePage() {
 }
 
 function CompanyRootRedirect() {
-  const { companies, selectedCompany, loading } = useCompany();
-  const location = useLocation();
+  const { companies, loading } = useCompany();
 
   if (loading) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
   }
 
-  const targetCompany = selectedCompany ?? companies[0] ?? null;
-  if (!targetCompany) {
-    if (
-      shouldRedirectCompanylessRouteToOnboarding({
-        pathname: location.pathname,
-        hasCompanies: false,
-      })
-    ) {
-      return <Navigate to="/onboarding" replace />;
-    }
-    return <NoCompaniesStartPage />;
+  // Exactly one accessible company → skip the chooser and drop straight into it.
+  // Zero or several → land on the instance-owner home, where the owner can open an
+  // existing tenant's dashboard or add a new company — instead of being silently
+  // routed into the first company or forced into the create-company wizard.
+  if (companies.length === 1) {
+    return <Navigate to={`/${companies[0].issuePrefix}/dashboard`} replace />;
   }
 
-  return <Navigate to={`/${targetCompany.issuePrefix}/dashboard`} replace />;
+  return <InstanceHome />;
 }
 
 function UnprefixedBoardRedirect() {
