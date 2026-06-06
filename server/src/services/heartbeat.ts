@@ -9461,58 +9461,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             interaction: true,
           };
         }
-        const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
-        const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
-        // Only human/comment-reopen interactions should revive completed issues;
-        // system follow-ups such as retry or cleanup wakes must not reopen closed work.
-        const shouldReopenDeferredCommentWake =
-          deferredCommentIds.length > 0 &&
-          (issue.status === "done" || issue.status === "cancelled") &&
-          (
-            deferred.requestedByActorType === "user" ||
-            deferredWakeReason === "issue_reopened_via_comment"
-          );
-        let reopenedActivity: LogActivityInput | null = null;
-
-        if (shouldReopenDeferredCommentWake) {
-          const reopenedFromStatus = issue.status;
-          const reopenedIssue = await issuesSvc.update(
-            issue.id,
-            {
-              status: "todo",
-              executionState: null,
-            },
-            tx,
-          );
-          if (reopenedIssue) {
-            issue = {
-              ...issue,
-              identifier: reopenedIssue.identifier,
-              status: reopenedIssue.status,
-              executionRunId: reopenedIssue.executionRunId,
-            };
-            if (!readNonEmptyString(promotedContextSeed.reopenedFrom)) {
-              promotedContextSeed.reopenedFrom = reopenedFromStatus;
-            }
-            reopenedActivity = {
-              companyId: issue.companyId,
-              actorType: "system",
-              actorId: "heartbeat",
-              agentId: deferred.agentId,
-              runId: run.id,
-              action: "issue.updated",
-              entityType: "issue",
-              entityId: issue.id,
-              details: {
-                status: "todo",
-                reopened: true,
-                reopenedFrom: reopenedFromStatus,
-                source: "deferred_comment_wake",
-                identifier: issue.identifier,
-              },
-            };
-          }
-        }
+        // Deferred wake promotion runs without mutating issue status. A closed issue
+        // that accumulated deferred comment wakes stays closed; promoted runs simply
+        // receive the comment context and decide what to do. Explicit reopen remains
+        // available via the comment/PATCH paths with `reopen: true`, which board/user
+        // comments also take when they arrive through the issues route.
+        //
+        // This supersedes the partial guard added in #4383, which scoped the deferred
+        // reopen to user-authored / `issue_reopened_via_comment` wakes but still
+        // mutated status on promotion. The deferred wake surface should not be a
+        // second write path for issue lifecycle.
 
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
         const promotedSource =
@@ -9583,7 +9541,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return {
           kind: "promoted" as const,
           run: newRun,
-          reopenedActivity,
         };
       }
 
@@ -9746,10 +9703,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const promotedRun = promotionResult?.run ?? null;
     if (!promotedRun) return;
-
-    if (promotionResult?.kind === "promoted" && promotionResult.reopenedActivity) {
-      await logActivity(db, promotionResult.reopenedActivity);
-    }
 
     publishLiveEvent({
       companyId: promotedRun.companyId,

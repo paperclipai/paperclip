@@ -4,6 +4,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { WebSocketServer } from "ws";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
   companies,
@@ -631,7 +632,7 @@ describe("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("promotes deferred comment wakes after the active run closes the issue", async () => {
+  it("promotes deferred comment wakes without reopening an issue the active run closed", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -787,7 +788,7 @@ describe("heartbeat comment wake batching", () => {
         );
       }, 90_000);
 
-      const reopenedIssue = await db
+      const postPromotionIssue = await db
         .select({
           status: issues.status,
           completedAt: issues.completedAt,
@@ -796,10 +797,23 @@ describe("heartbeat comment wake batching", () => {
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
 
-      expect(reopenedIssue).toMatchObject({
-        status: "in_progress",
-        completedAt: null,
-      });
+      expect(postPromotionIssue?.status).toBe("done");
+      expect(postPromotionIssue?.completedAt).not.toBeNull();
+
+      const reopenActivity = await db
+        .select()
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, issueId),
+            eq(activityLog.action, "issue.updated"),
+          ),
+        );
+      for (const entry of reopenActivity) {
+        const details = (entry.details ?? {}) as Record<string, unknown>;
+        expect(details.source).not.toBe("deferred_comment_wake");
+      }
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toMatchObject({
@@ -811,7 +825,7 @@ describe("heartbeat comment wake batching", () => {
             id: issueId,
             identifier: `${issuePrefix}-1`,
             title: "Reopen after deferred comment",
-            status: "in_progress",
+            status: "done",
             priority: "medium",
           },
         },

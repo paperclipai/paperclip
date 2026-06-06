@@ -552,6 +552,27 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  it("does not implicitly move a blocked issue to todo when the commenter is an agent", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "44444444-4444-4444-8444-444444444444",
+        companyId: "company-1",
+        runId: "run-agent-unblock",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "blocker resolved, ready to continue" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+  });
+
   it("moves assigned blocked issues back to todo via POST comments", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
