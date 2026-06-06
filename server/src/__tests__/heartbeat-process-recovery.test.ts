@@ -2036,6 +2036,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await runGit(remoteRoot, ["init", "--bare"]);
     await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
     await runGit(repoRoot, ["push", "-u", "origin", "main"]);
+    await runGit(remoteRoot, ["symbolic-ref", "HEAD", "refs/heads/main"]);
 
     const staleClone = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-heartbeat-stale-clone-"));
     await runGit(staleClone, ["clone", remoteRoot, "."]);
