@@ -15,6 +15,11 @@ import { queryKeys } from "../lib/queryKeys";
 import { toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
+import {
+  isLiveSocketDisabled,
+  markLiveSocketAvailable,
+  markLiveSocketUnavailable,
+} from "../lib/live-socket-availability";
 
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
@@ -1050,7 +1055,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       if (closed) return;
       reconnectAttempt += 1;
       if (reconnectAttempt > MAX_WS_ATTEMPTS_BEFORE_POLLING) {
-        // The socket isn't available here — stop retrying it and poll instead.
+        // The socket isn't available here — flag it session-wide so other live hooks
+        // (and our own remounts) skip it too, then poll instead of retrying.
+        markLiveSocketUnavailable();
         startPolling();
         return;
       }
@@ -1074,7 +1081,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           closeSocketQuietly(nextSocket, "stale_connection");
           return;
         }
-        // Socket is live — cancel any polling fallback that had taken over.
+        // Socket is live — clear the session-wide "unavailable" flag and cancel any
+        // polling fallback that had taken over.
+        markLiveSocketAvailable();
         clearPoll();
         if (reconnectAttempt > 0) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
@@ -1117,14 +1126,19 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("focus", onVisibility);
 
-    // Delay initial connect slightly so React StrictMode's double-invoke
-    // cleanup fires before the WebSocket is created, avoiding the
-    // "WebSocket closed before connection established" dev-mode error.
-    const connectTimer = window.setTimeout(connect, 0);
+    // If the socket was already found unusable this session, skip it entirely and poll
+    // (so remounts can't re-storm /events/ws). Otherwise connect; the slight delay lets
+    // React StrictMode's double-invoke cleanup fire before the socket opens.
+    let connectTimer: number | null = null;
+    if (isLiveSocketDisabled()) {
+      startPolling();
+    } else {
+      connectTimer = window.setTimeout(connect, 0);
+    }
 
     return () => {
       closed = true;
-      window.clearTimeout(connectTimer);
+      if (connectTimer !== null) window.clearTimeout(connectTimer);
       clearReconnect();
       clearPoll();
       document.removeEventListener("visibilitychange", onVisibility);

@@ -46,6 +46,11 @@ import { SourceResolvedFoldCallout } from "../components/SourceResolvedFoldCallo
 import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
+import {
+  isLiveSocketDisabled,
+  markLiveSocketAvailable,
+  markLiveSocketUnavailable,
+} from "../lib/live-socket-availability";
 import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
@@ -3855,6 +3860,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   // Stream live updates from websocket (primary path for running runs).
   useEffect(() => {
     if (!isLive) return;
+    // Socket already found unusable this session (serverless) — skip it; run/agent data
+    // still refreshes via react-query (LiveUpdatesProvider polls those queries). Prevents
+    // re-storming /events/ws when this view remounts.
+    if (isLiveSocketDisabled()) return;
 
     let closed = false;
     let reconnectTimer: number | null = null;
@@ -3864,10 +3873,12 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     const scheduleReconnect = () => {
       if (closed) return;
       reconnectAttempt += 1;
-      // Stop reconnecting where the socket can't be established (serverless control
-      // plane) instead of retrying every 1.5s forever. Run/agent data still refreshes
-      // via react-query (LiveUpdatesProvider polls those queries on an interval).
-      if (reconnectAttempt > 3) return;
+      // Can't establish the socket here — flag it session-wide and stop retrying it
+      // (run/agent data still refreshes via react-query polling).
+      if (reconnectAttempt > 3) {
+        markLiveSocketUnavailable();
+        return;
+      }
       reconnectTimer = window.setTimeout(connect, 1500);
     };
 
@@ -3880,6 +3891,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
       socket.onopen = () => {
         reconnectAttempt = 0;
+        markLiveSocketAvailable();
         setIsStreamingConnected(true);
       };
 

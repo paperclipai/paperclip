@@ -7,6 +7,11 @@ import { heartbeatsApi } from "../../api/heartbeats";
 import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type TranscriptEntry } from "../../adapters";
 import { queryKeys } from "../../lib/queryKeys";
 import { buildSameOriginWebSocketUrl } from "../../lib/websocket-url";
+import {
+  isLiveSocketDisabled,
+  markLiveSocketAvailable,
+  markLiveSocketUnavailable,
+} from "../../lib/live-socket-availability";
 
 const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
@@ -272,6 +277,10 @@ export function useLiveRunTranscripts({
   useEffect(() => {
     if (!enableRealtimeUpdates) return;
     if (!companyId || activeRunIds.size === 0) return;
+    // The socket was already found unusable this session (e.g. serverless) — skip it;
+    // the readRunLog fetch-poll above keeps the transcript live. Prevents this hook
+    // (which remounts on every live-runs poll) from re-storming /events/ws.
+    if (isLiveSocketDisabled()) return;
 
     let closed = false;
     let reconnectTimer: number | null = null;
@@ -281,9 +290,13 @@ export function useLiveRunTranscripts({
     const scheduleReconnect = () => {
       if (closed) return;
       reconnectAttempt += 1;
-      // Stop reconnecting where the socket can't be established (serverless); the
-      // readRunLog fetch-poll keeps the transcript updating, so no 1.5s storm.
-      if (reconnectAttempt > MAX_TRANSCRIPT_WS_ATTEMPTS) return;
+      // Can't establish the socket here — flag it session-wide (so this hook's remounts
+      // and other live hooks skip it) and stop; the readRunLog fetch-poll keeps the
+      // transcript updating.
+      if (reconnectAttempt > MAX_TRANSCRIPT_WS_ATTEMPTS) {
+        markLiveSocketUnavailable();
+        return;
+      }
       reconnectTimer = window.setTimeout(connect, 1500);
     };
 
@@ -296,6 +309,7 @@ export function useLiveRunTranscripts({
 
       socket.onopen = () => {
         reconnectAttempt = 0;
+        markLiveSocketAvailable();
       };
 
       socket.onmessage = (message) => {
