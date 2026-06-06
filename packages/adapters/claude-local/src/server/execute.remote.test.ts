@@ -431,4 +431,100 @@ describe("claude remote execution", () => {
     expect(logs.some((l) => l.includes("retrying with a fresh session"))).toBe(true);
   });
 
+  it("retries with a new process when the Claude CLI crashes on a fresh (non-resume) run (STATUS_ACCESS_VIOLATION / exit 3221225477)", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-fresh-crash-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    // First call: fresh run crashes with STATUS_ACCESS_VIOLATION and no output.
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 3221225477,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: 200,
+      startedAt: new Date().toISOString(),
+    });
+    // Second call (retry): succeeds.
+
+    const logs: string[] = [];
+    const result = await execute({
+      runId: "run-fresh-crash",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: { command: "claude" },
+      context: {
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+      executionTransport: {},
+      onLog: async (_stream, line) => { logs.push(line); },
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(2);
+    const firstCall = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    const secondCall = runChildProcess.mock.calls[1] as unknown as [string, string, string[]] | undefined;
+    expect(firstCall?.[2]).not.toContain("--resume");
+    expect(secondCall?.[2]).not.toContain("--resume");
+    expect(logs.some((l) => l.includes("3221225477") && l.includes("retrying with a new process"))).toBe(true);
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("surfaces exit 127 as an explicit missing-dependency error with the offending command", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exit127-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 127,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "bash: claude: command not found",
+      pid: 201,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await execute({
+      runId: "run-exit127",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: { command: "claude" },
+      context: {
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+      executionTransport: {},
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    expect(result.exitCode).toBe(127);
+    expect(result.errorMessage).toContain("claude");
+    expect(result.errorMessage).toContain("127");
+  });
+
 });

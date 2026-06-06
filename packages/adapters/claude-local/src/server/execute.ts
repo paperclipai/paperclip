@@ -700,6 +700,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return "Failed to parse claude JSON output";
     }
 
+    // Exit 127: shell could not resolve the command — surface the missing executable name.
+    if (proc.exitCode === 127) {
+      const cmdMatch = stderrLine.match(/(?:bash|sh|zsh|cmd):\s*(.+?):\s*(?:command not found|not found|is not recognized)/i);
+      const cmd = cmdMatch?.[1]?.trim();
+      if (cmd) {
+        return `Command not found: "${cmd}" (exit 127). Ensure the executable is installed and on PATH.`;
+      }
+      return stderrLine
+        ? `Command not found (exit 127): ${stderrLine}`
+        : "Command not found (exit 127). Ensure the executable is installed and on PATH.";
+    }
+
     return stderrLine
       ? `Claude exited with code ${proc.exitCode ?? -1}: ${stderrLine}`
       : `Claude exited with code ${proc.exitCode ?? -1}`;
@@ -934,6 +946,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  const emitRateLimitLog = async (result: AdapterExecutionResult) => {
+    if (result.errorCode === "claude_transient_upstream") {
+      await onLog(
+        "stdout",
+        `[paperclip] ${JSON.stringify({ type: "rate_limit", resetsAt: result.retryNotBefore ?? null, agentId: agent.id })}\n`,
+      );
+    }
+  };
+
   try {
     const initial = await runAttempt(sessionId ?? null);
     if (
@@ -955,23 +976,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         );
         const retry = await runAttempt(null);
         const retryResult = toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
-        if (retryResult.errorCode === "claude_transient_upstream") {
-          await onLog(
-            "stdout",
-            `[paperclip] ${JSON.stringify({ type: "rate_limit", resetsAt: retryResult.retryNotBefore ?? null, agentId: agent.id })}\n`,
-          );
-        }
+        await emitRateLimitLog(retryResult);
         return retryResult;
       }
     }
 
-    const result = toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
-    if (result.errorCode === "claude_transient_upstream") {
+    // Fresh-session native crash with no output (e.g. Windows STATUS_ACCESS_VIOLATION /
+    // exit 3221225477 from MCP server shutdown or native addon initialization): retry
+    // once with a new process before surfacing the failure.
+    if (
+      !initial.proc.timedOut &&
+      initial.proc.exitCode === 3221225477 &&
+      initial.parsed === null &&
+      initial.parsedStream.resultJson === null
+    ) {
       await onLog(
         "stdout",
-        `[paperclip] ${JSON.stringify({ type: "rate_limit", resetsAt: result.retryNotBefore ?? null, agentId: agent.id })}\n`,
+        `[paperclip] Claude crashed (exit code ${initial.proc.exitCode}) before producing output; retrying with a new process.\n`,
       );
+      const retry = await runAttempt(null);
+      const retryResult = toAdapterResult(retry, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+      await emitRateLimitLog(retryResult);
+      return retryResult;
     }
+
+    const result = toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    await emitRateLimitLog(result);
     return result;
   } finally {
     if (paperclipBridge) {
