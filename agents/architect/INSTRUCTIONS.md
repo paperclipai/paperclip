@@ -34,6 +34,25 @@ asks you to review, audit, or evaluate, refuse it (see §Step 0 check 5).
 Hard gate. No fallback. If any check fails, comment on the task and
 exit — do NOT edit, do NOT commit, do NOT push.
 
+> **CRITICAL — `cd` does NOT persist across Bash calls in this runtime.**
+> Each Bash tool invocation starts fresh at the launch cwd (the primary
+> checkout `$PAPERCLIP_PROJECT`, which sits on `main`). A `cd` in one call
+> is GONE by the next call. This caused the "committed-but-unpushed
+> masquerade" incident class (AA-1408/1412/1422/1428/1436/1437/1448/1457):
+> Step 0 `cd`s into the worktree, but the later "Opening the PR" block ran
+> in a fresh call from the main checkout, so `git push` / `gh pr create`
+> operated on the wrong tree and silently exited 0 with no PR.
+> **Therefore: EVERY Bash block that runs git/cargo/gh MUST begin by
+> re-entering the worktree.** Start every such block with:
+> ```sh
+> set -euo pipefail
+> WORKTREE="${PAPERCLIP_PROJECT:?set PAPERCLIP_PROJECT}/.paperclip/worktrees/{task-id}"
+> cd "$WORKTREE"
+> ```
+> Operator-env vars (`PAPERCLIP_PROJECT`, `PAPERCLIP_GH_USER`) DO persist
+> across calls — only `cd` and shell-local `export`s do not. Never assume a
+> prior block's directory survived.
+
 The gate has two flavors keyed off the task label. Both flavors run
 the same five checks; only step 4's expected base differs.
 
@@ -112,9 +131,14 @@ These are hard rules. Past Architect runs have wasted 60+ minutes wrestling with
 
 ## Committing your fixes
 
-If verification needed any code changes, commit them to the task branch:
+If verification needed any code changes, commit them to the task branch.
+Self-contained block — re-enter the worktree first (see Step 0 cwd warning):
 
 ```sh
+set -euo pipefail
+WORKTREE="${PAPERCLIP_PROJECT:?set PAPERCLIP_PROJECT}/.paperclip/worktrees/{task-id}"
+cd "$WORKTREE"
+test "$(git branch --show-current)" = "task/{task-id}" || { echo "WRONG BRANCH/CWD — aborting"; exit 1; }
 git add <files-you-changed>
 git commit -m "fix: <what compilation issue>" -m "Stage: architect"
 ```
@@ -125,19 +149,32 @@ straight to PR creation.
 ## Opening the PR
 
 After verification passes (with or without fixes), open the PR from the
-task branch to `main`:
+task branch to `main`.
+
+**This MUST be one self-contained block.** It re-enters the worktree, sets
+`set -euo pipefail` (so any failing step aborts non-zero instead of
+silently exiting 0), and ends with a trailing assertion that the PR
+actually exists — a missing PR makes the whole run FAIL. Do not split
+these steps across separate Bash calls; the `cd` would not carry over.
 
 ```sh
+set -euo pipefail
+# 0. Re-enter the worktree — cd does NOT persist across Bash calls (see Step 0).
+WORKTREE="${PAPERCLIP_PROJECT:?set PAPERCLIP_PROJECT}/.paperclip/worktrees/{task-id}"
+cd "$WORKTREE"
+test "$(git branch --show-current)" = "task/{task-id}" \
+  || { echo "WRONG BRANCH/CWD: $(git branch --show-current) — aborting, NOT on task/{task-id}"; exit 1; }
+
 # 1. Make sure we're on the right GitHub account
 gh auth switch --user "${PAPERCLIP_GH_USER:?set PAPERCLIP_GH_USER to your repo's write account}"
 
-# 2. Push the task branch
-git push -u origin task/{task-id}
+# 2. Push the task branch (from inside the worktree, on the task branch)
+git push -u origin "task/{task-id}"
 
 # 3. Open the PR — base = main, head = task branch
 gh pr create \
   --base main \
-  --head task/{task-id} \
+  --head "task/{task-id}" \
   --title "<task title>" \
   --body "$(cat <<EOF
 ## Summary
@@ -152,6 +189,15 @@ Closes #<task-id>
 - [ ] cargo test (passed)
 EOF
 )"
+
+# 4. STRUCTURAL POSTCONDITION — a missing PR fails the run (non-zero exit).
+#    This is the anti-masquerade gate: run-success is NOT verification;
+#    a PR (or at minimum a pushed remote branch) must exist.
+git ls-remote --exit-code --heads origin "task/{task-id}" >/dev/null \
+  || { echo "NO REMOTE BRANCH task/{task-id} — push failed silently"; exit 1; }
+gh pr list --head "task/{task-id}" --state all --json number -q '.[0].number' | grep -q . \
+  || { echo "NO PR CREATED for task/{task-id} — run failed"; exit 1; }
+echo "PR confirmed for task/{task-id}"
 ```
 
 **Always run `gh auth switch --user "$PAPERCLIP_GH_USER"` first.** If a
