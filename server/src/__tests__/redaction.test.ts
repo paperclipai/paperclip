@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_EVENT_VALUE, redactEventPayload, redactSensitiveText, sanitizeRecord } from "../redaction.js";
+import {
+  REDACTED_EVENT_VALUE,
+  REDACTED_SECRET_VALUE,
+  SecretValueScrubber,
+  createSecretValueScrubber,
+  redactEventPayload,
+  redactSensitiveText,
+  sanitizeRecord,
+} from "../redaction.js";
+
 
 describe("redaction", () => {
   it("redacts sensitive keys and nested secret values", () => {
@@ -134,5 +143,143 @@ describe("redaction", () => {
 
     expect(result?.args).toEqual(["--api-key", "not-a-command-secret"]);
     expect(result?.argv).toEqual(["--api-key", REDACTED_EVENT_VALUE]);
+  });
+});
+
+describe("SecretValueScrubber", () => {
+  it("scrubs a known secret value from free text", () => {
+    const scrubber = new SecretValueScrubber(["super-secret-password-123"]);
+    expect(scrubber.scrubText("I found the password: super-secret-password-123 in the config")).toBe(
+      `I found the password: ${REDACTED_SECRET_VALUE} in the config`,
+    );
+  });
+
+  it("scrubs multiple different secret values", () => {
+    const scrubber = new SecretValueScrubber(["secretA_value", "another-secret-42"]);
+    const input = "env: DB_PASS=secretA_value and API_KEY=another-secret-42 done";
+    const result = scrubber.scrubText(input);
+    expect(result).not.toContain("secretA_value");
+    expect(result).not.toContain("another-secret-42");
+    expect(result).toContain(REDACTED_SECRET_VALUE);
+    expect(result).toContain("env: DB_PASS=");
+    expect(result).toContain(" done");
+  });
+
+  it("scrubs all occurrences of the same secret", () => {
+    const scrubber = new SecretValueScrubber(["reused_secret"]);
+    const input = "first: reused_secret, second: reused_secret";
+    const result = scrubber.scrubText(input);
+    expect(result).toBe(`first: ${REDACTED_SECRET_VALUE}, second: ${REDACTED_SECRET_VALUE}`);
+  });
+
+  it("ignores values shorter than 4 characters", () => {
+    const scrubber = new SecretValueScrubber(["abc", "xy", "a"]);
+    expect(scrubber.active).toBe(false);
+    expect(scrubber.scrubText("abc xy a")).toBe("abc xy a");
+  });
+
+  it("includes values exactly 4 characters long", () => {
+    const scrubber = new SecretValueScrubber(["abcd"]);
+    expect(scrubber.active).toBe(true);
+    expect(scrubber.scrubText("found abcd here")).toContain(REDACTED_SECRET_VALUE);
+  });
+
+  it("returns input unchanged when no secrets are configured", () => {
+    const scrubber = new SecretValueScrubber([]);
+    const input = "nothing to scrub here";
+    expect(scrubber.scrubText(input)).toBe(input);
+    expect(scrubber.active).toBe(false);
+  });
+
+  it("returns empty string for empty input", () => {
+    const scrubber = new SecretValueScrubber(["some-secret"]);
+    expect(scrubber.scrubText("")).toBe("");
+  });
+
+  it("handles regex special characters in secret values", () => {
+    const scrubber = new SecretValueScrubber(["p@ss.w0rd+special[chars]"]);
+    expect(scrubber.scrubText("credentials: p@ss.w0rd+special[chars]")).toBe(
+      `credentials: ${REDACTED_SECRET_VALUE}`,
+    );
+  });
+
+  it("matches longest value first when secrets overlap", () => {
+    const scrubber = new SecretValueScrubber(["secret", "super-secret-long"]);
+    const input = "found super-secret-long here";
+    const result = scrubber.scrubText(input);
+    // The entire "super-secret-long" should be replaced, not just "secret" within it
+    expect(result).toBe(`found ${REDACTED_SECRET_VALUE} here`);
+  });
+
+  it("trims whitespace from secret values", () => {
+    const scrubber = new SecretValueScrubber(["  trimmed-secret  "]);
+    expect(scrubber.scrubText("value: trimmed-secret")).toBe(
+      `value: ${REDACTED_SECRET_VALUE}`,
+    );
+  });
+
+  it("deduplicates identical secret values", () => {
+    const scrubber = new SecretValueScrubber(["same-value", "same-value", "same-value"]);
+    expect(scrubber.active).toBe(true);
+    expect(scrubber.scrubText("found same-value")).toContain(REDACTED_SECRET_VALUE);
+  });
+
+  describe("scrubValue", () => {
+    it("deep-scrubs nested objects", () => {
+      const scrubber = new SecretValueScrubber(["deep-secret-val"]);
+      const input = {
+        outer: "safe",
+        nested: {
+          inner: "contains deep-secret-val here",
+          number: 42,
+        },
+      };
+      const result = scrubber.scrubValue(input);
+      expect(result.outer).toBe("safe");
+      expect(result.nested.inner).toContain(REDACTED_SECRET_VALUE);
+      expect(result.nested.inner).not.toContain("deep-secret-val");
+      expect(result.nested.number).toBe(42);
+    });
+
+    it("deep-scrubs arrays", () => {
+      const scrubber = new SecretValueScrubber(["array-secret"]);
+      const input = ["safe", "contains array-secret", 123];
+      const result = scrubber.scrubValue(input);
+      expect(result[0]).toBe("safe");
+      expect(result[1]).toContain(REDACTED_SECRET_VALUE);
+      expect(result[2]).toBe(123);
+    });
+
+    it("handles null and undefined gracefully", () => {
+      const scrubber = new SecretValueScrubber(["some-secret"]);
+      expect(scrubber.scrubValue(null)).toBeNull();
+      expect(scrubber.scrubValue(undefined)).toBeUndefined();
+    });
+
+    it("returns non-object primitives unchanged", () => {
+      const scrubber = new SecretValueScrubber(["some-secret"]);
+      expect(scrubber.scrubValue(42)).toBe(42);
+      expect(scrubber.scrubValue(true)).toBe(true);
+    });
+  });
+
+  describe("createSecretValueScrubber", () => {
+    it("returns a no-op scrubber for empty set", () => {
+      const scrubber = createSecretValueScrubber(new Set());
+      expect(scrubber.active).toBe(false);
+      expect(scrubber.scrubText("anything")).toBe("anything");
+    });
+
+    it("returns an active scrubber for non-empty set", () => {
+      const scrubber = createSecretValueScrubber(new Set(["real-secret-value"]));
+      expect(scrubber.active).toBe(true);
+      expect(scrubber.scrubText("found real-secret-value")).toContain(REDACTED_SECRET_VALUE);
+    });
+
+    it("returns the same no-op instance for repeated empty calls", () => {
+      const a = createSecretValueScrubber(new Set());
+      const b = createSecretValueScrubber(new Set());
+      expect(a).toBe(b);
+    });
   });
 });

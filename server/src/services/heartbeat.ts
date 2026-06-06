@@ -164,7 +164,7 @@ import {
   redactCurrentUserValue,
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
-import { redactEventPayload, redactSensitiveText } from "../redaction.js";
+import { redactEventPayload, redactSensitiveText, createSecretValueScrubber, SecretValueScrubber } from "../redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -2798,6 +2798,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  const activeRunScrubbers = new Map<string, SecretValueScrubber>();
+
+  const originalAddComment = issuesSvc.addComment.bind(issuesSvc);
+  issuesSvc.addComment = async (issueId, body, actor, options) => {
+    let scrubbedBody = body;
+    if (actor?.runId) {
+      const scrubber = activeRunScrubbers.get(actor.runId);
+      if (scrubber) {
+        scrubbedBody = scrubber.scrubText(body);
+      }
+    }
+    return originalAddComment(issueId, scrubbedBody, actor, options);
+  };
+
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -4778,13 +4792,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
   ) {
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
-    const sanitizedMessage = event.message
-      ? redactCurrentUserText(event.message, currentUserRedactionOptions)
-      : event.message;
+    const secretScrubber = activeRunScrubbers.get(run.id);
+    let originalMessage = event.message;
+    if (originalMessage && secretScrubber) {
+      originalMessage = secretScrubber.scrubText(originalMessage);
+    }
+    const sanitizedMessage = originalMessage
+      ? redactCurrentUserText(originalMessage, currentUserRedactionOptions)
+      : originalMessage;
     const boundedPayload = event.payload
       ? boundHeartbeatRunEventPayloadForStorage(event.payload)
       : event.payload;
-    const secretSanitizedPayload = boundedPayload ? redactEventPayload(boundedPayload) : boundedPayload;
+    let payloadToSanitize = boundedPayload;
+    if (payloadToSanitize && secretScrubber) {
+      payloadToSanitize = secretScrubber.scrubValue(payloadToSanitize);
+    }
+    const secretSanitizedPayload = payloadToSanitize ? redactEventPayload(payloadToSanitize) : payloadToSanitize;
     const sanitizedPayload = secretSanitizedPayload
       ? redactCurrentUserValue(secretSanitizedPayload, currentUserRedactionOptions)
       : secretSanitizedPayload;
@@ -7761,6 +7784,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       secretsSvc,
       trustPreset,
     });
+    const secretValues = new Set<string>();
+    const envRecord = parseObject(resolvedConfig.env);
+    if (secretKeys && secretKeys.size > 0) {
+      for (const key of secretKeys) {
+        const value = envRecord[key];
+        if (typeof value === "string" && value.trim()) {
+          secretValues.add(value);
+        }
+      }
+    }
+    const secretScrubber = createSecretValueScrubber(secretValues);
+    activeRunScrubbers.set(run.id, secretScrubber);
+
     if (secretManifest.length > 0) {
       context.paperclipSecrets = {
         manifest: secretManifest,
@@ -8261,8 +8297,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
+        const scrubbedChunk = secretScrubber.scrubText(chunk);
         const sanitizedChunk = compactRunLogChunk(
-          redactCurrentUserText(chunk, currentUserRedactionOptions),
+          redactCurrentUserText(scrubbedChunk, currentUserRedactionOptions),
         );
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
@@ -8627,28 +8664,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         adapterResult.summary ?? null,
       );
 
+      const scrubbedRunErrorMessage = runErrorMessage
+        ? secretScrubber.scrubText(runErrorMessage)
+        : runErrorMessage;
+      const scrubbedStdoutExcerpt = stdoutExcerpt
+        ? secretScrubber.scrubText(stdoutExcerpt)
+        : stdoutExcerpt;
+      const scrubbedStderrExcerpt = stderrExcerpt
+        ? secretScrubber.scrubText(stderrExcerpt)
+        : stderrExcerpt;
+      const scrubbedResultJson = persistedResultJson
+        ? secretScrubber.scrubValue(persistedResultJson)
+        : persistedResultJson;
+
       let persistedRun = await setRunStatus(run.id, status, {
         finishedAt: new Date(),
-        error: runErrorMessage,
+        error: scrubbedRunErrorMessage,
         errorCode: runErrorCode,
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
         usageJson,
-        resultJson: persistedResultJson,
+        resultJson: scrubbedResultJson,
         sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
-        stdoutExcerpt,
-        stderrExcerpt,
+        stdoutExcerpt: scrubbedStdoutExcerpt,
+        stderrExcerpt: scrubbedStderrExcerpt,
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
       });
       if (persistedRun) {
-        persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
+        persistedRun = await classifyAndPersistRunLiveness(persistedRun, scrubbedResultJson) ?? persistedRun;
       }
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
-        error: runErrorMessage,
+        error: scrubbedRunErrorMessage,
       });
 
       const finalizedRun = persistedRun ?? (await getRun(run.id));
@@ -8769,9 +8819,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       if (finalizedRun) {
-        await updateRuntimeState(agent, finalizedRun, adapterResult, {
-          legacySessionId: nextSessionState.legacySessionId,
-        }, normalizedUsage);
+        await updateRuntimeState(
+          agent,
+          finalizedRun,
+          {
+            ...adapterResult,
+            errorMessage: adapterResult.errorMessage
+              ? secretScrubber.scrubText(adapterResult.errorMessage)
+              : adapterResult.errorMessage,
+          },
+          {
+            legacySessionId: nextSessionState.legacySessionId,
+          },
+          normalizedUsage,
+        );
         if (taskKey) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
@@ -8787,7 +8848,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               sessionParamsJson: nextSessionState.params,
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
-              lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
+              lastError: outcome === "succeeded" ? null : (scrubbedRunErrorMessage ?? "run_failed"),
             });
           }
         }
@@ -8799,6 +8860,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await getCurrentUserRedactionOptions(),
       );
       logger.error({ err, runId }, "heartbeat execution failed");
+
+      const scrubbedMessage = message ? secretScrubber.scrubText(message) : message;
+      const scrubbedStdoutExcerpt = stdoutExcerpt ? secretScrubber.scrubText(stdoutExcerpt) : stdoutExcerpt;
+      const scrubbedStderrExcerpt = stderrExcerpt ? secretScrubber.scrubText(stderrExcerpt) : stderrExcerpt;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
@@ -8817,22 +8882,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       const failedRun = await setRunStatus(run.id, "failed", {
-        error: message,
+        error: scrubbedMessage,
         errorCode: "adapter_failed",
         finishedAt: new Date(),
         resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
           errorCode: "adapter_failed",
-          errorMessage: message,
+          errorMessage: scrubbedMessage,
         }),
-        stdoutExcerpt,
-        stderrExcerpt,
+        stdoutExcerpt: scrubbedStdoutExcerpt,
+        stderrExcerpt: scrubbedStderrExcerpt,
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
-        error: message,
+        error: scrubbedMessage,
       });
 
       if (failedRun) {
@@ -8840,7 +8905,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eventType: "error",
           stream: "system",
           level: "error",
-          message,
+          message: scrubbedMessage,
         });
         const livenessRun = await classifyAndPersistRunLiveness(failedRun) ?? failedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
@@ -8851,7 +8916,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           exitCode: null,
           signal: null,
           timedOut: false,
-          errorMessage: message,
+          errorMessage: scrubbedMessage,
         }, {
           legacySessionId: runtimeForAdapter.sessionId,
         });
@@ -8865,7 +8930,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             sessionParamsJson: previousSessionParams,
             sessionDisplayId: previousSessionDisplayId,
             lastRunId: failedRun.id,
-            lastError: message,
+            lastError: scrubbedMessage,
           });
         }
       }
@@ -8876,22 +8941,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
           const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          const scrubbedMessage = activeRunScrubbers.get(run.id)?.scrubText(message) ?? message;
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           await setRunStatus(runId, "failed", {
-            error: message,
+            error: scrubbedMessage,
             errorCode: "adapter_failed",
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
                 errorCode: "adapter_failed",
-                errorMessage: message,
+                errorMessage: scrubbedMessage,
               }),
             } : {}),
           }).catch(() => undefined);
           await setWakeupStatus(run.wakeupRequestId, "failed", {
             finishedAt: new Date(),
-            error: message,
+            error: scrubbedMessage,
           }).catch(() => undefined);
           const failedRun = await getRun(runId).catch(() => null);
           if (failedRun) {
@@ -8901,7 +8967,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eventType: "error",
               stream: "system",
               level: "error",
-              message,
+              message: scrubbedMessage,
             }).catch(() => undefined);
             const livenessRun = await classifyAndPersistRunLiveness(failedRun).catch(() => failedRun);
             const failedAgent = setupFailureAgent ?? await getAgent(run.agentId).catch(() => null);
@@ -8925,6 +8991,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           });
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
+          activeRunScrubbers.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
         }
   }

@@ -132,3 +132,66 @@ export function redactSensitiveText(input: string): string {
     REDACTED_EVENT_VALUE,
   );
 }
+
+export const REDACTED_SECRET_VALUE = "***REDACTED_SECRET***";
+
+const MIN_SCRUB_SECRET_LENGTH = 4;
+
+function escapeRegExpForScrubber(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export class SecretValueScrubber {
+  private readonly pattern: RegExp | null;
+
+  constructor(secretValues: Iterable<string>) {
+    const candidates = [...secretValues]
+      .map((v) => v.trim())
+      .filter((v) => v.length >= MIN_SCRUB_SECRET_LENGTH)
+      // Deduplicate
+      .filter((v, i, arr) => arr.indexOf(v) === i)
+      // Longest first so overlapping substrings match the most-specific value
+      .sort((a, b) => b.length - a.length);
+
+    if (candidates.length === 0) {
+      this.pattern = null;
+      return;
+    }
+
+    this.pattern = new RegExp(
+      candidates.map(escapeRegExpForScrubber).join("|"),
+      "g",
+    );
+  }
+
+  get active(): boolean {
+    return this.pattern !== null;
+  }
+
+  scrubText(input: string): string {
+    if (!this.pattern || !input) return input;
+    this.pattern.lastIndex = 0;
+    return input.replace(this.pattern, REDACTED_SECRET_VALUE);
+  }
+
+  scrubValue<T>(value: T): T {
+    if (!this.pattern) return value;
+    if (typeof value === "string") return this.scrubText(value) as T;
+    if (Array.isArray(value)) return value.map((entry) => this.scrubValue(entry)) as T;
+    if (isPlainObject(value)) {
+      const scrubbed: Record<string, unknown> = {};
+      for (const [key, entry] of Object.entries(value)) {
+        scrubbed[key] = this.scrubValue(entry);
+      }
+      return scrubbed as T;
+    }
+    return value;
+  }
+}
+
+const NOOP_SCRUBBER = new SecretValueScrubber([]);
+
+export function createSecretValueScrubber(secretValues: Set<string>): SecretValueScrubber {
+  if (secretValues.size === 0) return NOOP_SCRUBBER;
+  return new SecretValueScrubber(secretValues);
+}
