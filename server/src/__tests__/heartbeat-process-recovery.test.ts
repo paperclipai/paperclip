@@ -2232,7 +2232,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("escalation preserves assigneeAgentId when recovery owner is an invokable manager (not the doer)", async () => {
     // Seeds a stranded in_progress issue where doer.reportsTo = manager (idle, invokable).
-    // Dispatch-recovery is exhausted (retryReason: "assignment_recovery").
+    // Continuation-recovery is exhausted (retryReason: "issue_continuation_needed").
     // After escalation the issue should be status=blocked but STILL assigned to the doer —
     // the recovery owner (manager) gets woken to shepherd but must not inherit ownership.
     const companyId = randomUUID();
