@@ -840,6 +840,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function hasAnyStaleRunEvaluation(companyId: string, runId: string) {
+    const [row] = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .limit(1);
+    return row != null;
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1489,6 +1505,34 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           silenceAgeMs: silenceAgeMsForRun(input.run, input.now),
           now: input.now,
         });
+      }
+      // Source-terminal recur guard. The source issue already reached
+      // `done`/`cancelled` without same-run evidence, so foldSourceResolvedStaleRun
+      // cannot safely terminate the process. The first scan still files an eval
+      // for operator visibility, but once that eval is closed the run handle stays
+      // orphaned — the unique-active constraint allows the next scan to file
+      // another, and so on (BASA-28081 saw ~500 such issues from one orphan).
+      // After at least one eval exists (open or closed), skip the recurring file.
+      // Process termination remains foldSourceResolvedStaleRun's responsibility
+      // (it requires same-run evidence to safely terminate).
+      if (!existing && await hasAnyStaleRunEvaluation(input.run.companyId, input.run.id)) {
+        await logActivity(db, {
+          companyId: input.run.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: input.run.agentId,
+          runId: input.run.id,
+          action: "heartbeat.output_stale_source_terminal_skipped",
+          entityType: "heartbeat_run",
+          entityId: input.run.id,
+          details: {
+            source: "recovery.scan_silent_active_runs",
+            sourceIssueId: sourceIssue.id,
+            sourceIssueIdentifier: sourceIssue.identifier ?? null,
+            sourceIssueStatus: sourceIssue.status,
+          },
+        });
+        return { kind: "skipped" as const };
       }
     }
     const prefix = await getCompanyIssuePrefix(input.run.companyId);

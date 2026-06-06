@@ -367,26 +367,51 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(event?.message).toContain("Source-resolved watchdog fold");
   });
 
-  it("still escalates terminal source issues without same-run terminal evidence", async () => {
+  it("files one evaluation for a terminal-source orphan and skips subsequent scans after the eval is closed", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
-    const { companyId, runId } = await seedRunningRun({
+    const { companyId, issueId, runId } = await seedRunningRun({
       now,
       ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
       sourceStatus: "done",
     });
     const heartbeat = heartbeatService(db);
 
-    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first).toMatchObject({ created: 1, folded: 0, skipped: 0 });
+    const evaluationIssueId = first.evaluationIssueIds[0];
+    expect(evaluationIssueId).toBeTruthy();
 
-    expect(result).toMatchObject({ created: 1, folded: 0 });
-    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(run?.status).toBe("running");
-    const [evaluation] = await db
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, evaluationIssueId!));
+
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const third = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(second).toMatchObject({ created: 0, folded: 0, existing: 0, skipped: 1 });
+    expect(third).toMatchObject({ created: 0, folded: 0, existing: 0, skipped: 1 });
+
+    const evaluations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
-    expect(evaluation?.originId).toBe(runId);
-    expect(evaluation?.parentId).toBeNull();
+    expect(evaluations).toHaveLength(1);
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run?.status).toBe("running");
+
+    const skipLogs = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.runId, runId),
+          eq(activityLog.action, "heartbeat.output_stale_source_terminal_skipped"),
+        ),
+      );
+    expect(skipLogs).toHaveLength(2);
+    expect(skipLogs[0]?.details).toMatchObject({
+      source: "recovery.scan_silent_active_runs",
+      sourceIssueId: issueId,
+      sourceIssueStatus: "done",
+    });
   });
 
   it("still escalates when a same-run comment is followed by another actor marking the source done", async () => {
