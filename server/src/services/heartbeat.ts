@@ -228,6 +228,28 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+
+// TWB-305: classification + backoff for auto-clearing transient agent errors.
+// A failed/timed-out heartbeat sets the agent to `status: "error"`; without this
+// the agent stays stuck there until a manual board reset. These error codes mirror
+// the run-level continuation classifier in recovery/service.ts.
+const TRANSIENT_AGENT_ERROR_CODES = new Set<string>([
+  "adapter_failed",
+  "codex_transient_upstream",
+  "claude_transient_upstream",
+  "timeout",
+]);
+const HARD_AGENT_ERROR_CODES = new Set<string>([
+  "agent_not_invokable",
+  "agent_not_found",
+  "budget_blocked",
+  "budget_exhausted",
+  "issue_paused",
+  "issue_dependencies_blocked",
+]);
+// Reuse the same backoff ladder as the run-level transient retry (2m/10m/30m/2h).
+const TRANSIENT_AGENT_ERROR_AUTO_CLEAR_BACKOFF_MS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS;
+
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -265,6 +287,21 @@ function readHeartbeatRunErrorFamily(
     return "transient_upstream";
   }
   return null;
+}
+
+// TWB-305: classify a terminal heartbeat run as a transient (auto-clearable) or
+// hard (human-attention) failure. Unknown/absent codes on a failed run are treated
+// as hard so we never auto-clear something we don't understand.
+function classifyAgentErrorRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "status" | "errorCode" | "resultJson">,
+): "transient" | "hard" {
+  if (readHeartbeatRunErrorFamily(run) === "transient_upstream") return "transient";
+  const code = readNonEmptyString(run.errorCode);
+  if (code && HARD_AGENT_ERROR_CODES.has(code)) return "hard";
+  if (code && TRANSIENT_AGENT_ERROR_CODES.has(code)) return "transient";
+  // A timeout with no explicit code is an infra hiccup → transient.
+  if (run.status === "timed_out") return "transient";
+  return "hard";
 }
 
 function isMaxTurnExhaustionRun(
@@ -6481,6 +6518,155 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  // TWB-305: durable self-recovery for crashed agents. `finalizeAgentStatus` parks
+  // an agent in `status: "error"` on any failed/timed-out heartbeat with no
+  // transient-vs-hard distinction; engineers run with heartbeats off, so nothing
+  // ever returns them to a schedulable state without a manual board reset. This
+  // reconciler — run from the scheduler tick — auto-clears transient errors back to
+  // `idle` after a bounded backoff, while leaving hard failures (and agents that
+  // have exhausted the bounded retry budget) in `error` for human attention.
+  async function reconcileTransientAgentErrors(now: Date = new Date()) {
+    const experimental = await instanceSettings.getExperimental();
+    if (!experimental.enableTransientAgentErrorAutoClear) {
+      return { scanned: 0, cleared: 0, retained: 0 };
+    }
+    const maxAttempts = experimental.transientAgentErrorAutoClearMaxAttempts;
+
+    const erroredAgents = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.status, "error"));
+
+    let cleared = 0;
+    let retained = 0;
+
+    for (const agent of erroredAgents) {
+      // A concurrently-running run owns the agent's status; let finalize handle it.
+      if ((await countRunningRunsForAgent(agent.id)) > 0) {
+        retained += 1;
+        continue;
+      }
+
+      // Pull recent terminal runs (newest first) — enough to measure the
+      // consecutive-failure streak against the bounded budget.
+      const recentRuns = await db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          resultJson: heartbeatRuns.resultJson,
+          finishedAt: heartbeatRuns.finishedAt,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agent.id),
+            inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.finishedAt))
+        .limit(maxAttempts + 2);
+
+      const latest = recentRuns[0];
+      const latestIsUnsuccessful =
+        latest &&
+        UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+          latest.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+        );
+      if (!latest || !latestIsUnsuccessful) {
+        // No failure evidence (or the latest terminal run succeeded). Don't touch
+        // it — something other than this heartbeat path set the error status.
+        retained += 1;
+        continue;
+      }
+
+      if (classifyAgentErrorRun(latest) === "hard") {
+        retained += 1;
+        continue;
+      }
+
+      // Count the consecutive run of transient unsuccessful terminal failures.
+      let consecutive = 0;
+      for (const run of recentRuns) {
+        const unsuccessful = UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+          run.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+        );
+        if (!unsuccessful || classifyAgentErrorRun(run) !== "transient") break;
+        consecutive += 1;
+      }
+
+      // Bounded retry budget — a genuinely broken agent stops thrashing and is left
+      // for a human after `maxAttempts` consecutive transient failures.
+      if (consecutive > maxAttempts) {
+        retained += 1;
+        logger.warn(
+          {
+            agentId: agent.id,
+            companyId: agent.companyId,
+            consecutiveTransientFailures: consecutive,
+            maxAttempts,
+            lastErrorCode: latest.errorCode,
+          },
+          "TWB-305: transient agent error retained in error status (retry budget exhausted)",
+        );
+        continue;
+      }
+
+      // Backoff from the last failure before re-arming the agent.
+      const ladderIndex = Math.min(
+        Math.max(consecutive - 1, 0),
+        TRANSIENT_AGENT_ERROR_AUTO_CLEAR_BACKOFF_MS.length - 1,
+      );
+      const backoffMs = TRANSIENT_AGENT_ERROR_AUTO_CLEAR_BACKOFF_MS[ladderIndex];
+      const finishedAtMs = latest.finishedAt
+        ? new Date(latest.finishedAt).getTime()
+        : now.getTime();
+      if (now.getTime() < finishedAtMs + backoffMs) {
+        retained += 1;
+        continue;
+      }
+
+      // Re-arm: error → idle (schedulable). Guard on status to avoid clobbering a
+      // run that started since we read the agent.
+      const updated = await db
+        .update(agents)
+        .set({ status: "idle", updatedAt: now })
+        .where(and(eq(agents.id, agent.id), eq(agents.status, "error")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!updated) {
+        retained += 1;
+        continue;
+      }
+
+      cleared += 1;
+      logger.info(
+        {
+          agentId: updated.id,
+          companyId: updated.companyId,
+          consecutiveTransientFailures: consecutive,
+          backoffMs,
+          lastErrorCode: latest.errorCode,
+          lastFailedRunId: latest.id,
+        },
+        "TWB-305: auto-cleared transient agent error → idle (agent returned to schedulable state)",
+      );
+      publishLiveEvent({
+        companyId: updated.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: updated.id,
+          status: updated.status,
+          outcome: "transient_error_auto_cleared",
+          autoCleared: true,
+          consecutiveTransientFailures: consecutive,
+        },
+      });
+    }
+
+    return { scanned: erroredAgents.length, cleared, retained };
+  }
+
   function mergeRunStopMetadataForAgent(
     agent: Pick<typeof agents.$inferSelect, "adapterType" | "adapterConfig">,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
@@ -10195,6 +10381,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     buildRunOutputSilence,
 
     tickTimers: async (now = new Date()) => {
+      // TWB-305: re-arm transiently-crashed agents (error → idle) before the
+      // schedule pass so any cleared agent is eligible again in this same tick.
+      // A reconciler failure must never break the scheduler tick.
+      try {
+        await reconcileTransientAgentErrors(now);
+      } catch (err) {
+        logger.warn({ err }, "TWB-305: transient agent error reconcile failed");
+      }
+
       const allAgents = await db.select().from(agents);
       let checked = 0;
       let enqueued = 0;
@@ -10234,6 +10429,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         skipped: skipped + issueMonitors.skipped,
       };
     },
+
+    reconcileTransientAgentErrors,
 
     cancelRun: (runId: string) => cancelRunInternal(runId),
 

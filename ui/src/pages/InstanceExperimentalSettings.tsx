@@ -209,6 +209,10 @@ export function InstanceExperimentalSettings() {
     experimentalQuery.data?.enableIssuePlanDecompositions === true;
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
+  // TWB-305: defaults to enabled, so treat anything other than an explicit `false`
+  // as on (avoids a misleading "off" flash while the query is loading).
+  const enableTransientAgentErrorAutoClear =
+    experimentalQuery.data?.enableTransientAgentErrorAutoClear !== false;
   const enableIssueGraphLivenessAutoRecovery =
     experimentalQuery.data?.enableIssueGraphLivenessAutoRecovery === true;
   const lookbackHours =
@@ -355,6 +359,31 @@ export function InstanceExperimentalSettings() {
             onCheckedChange={() => toggleMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })}
             disabled={toggleMutation.isPending}
             aria-label="Toggle guarded dev-server auto-restart"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Auto-Clear Transient Agent Errors</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              When an agent crashes on a transient failure (adapter process exit, upstream API hiccup, timeout) it is
+              parked in <code>error</code> and skipped by the scheduler until reset. With this on, the scheduler tick
+              returns such agents to a schedulable <code>idle</code> state after a bounded backoff (2m → 10m → 30m → 2h),
+              with a capped retry budget so a genuinely broken agent stops thrashing. Hard failures are never
+              auto-cleared and stay <code>error</code> for human attention.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableTransientAgentErrorAutoClear}
+            onCheckedChange={() =>
+              toggleMutation.mutate({
+                enableTransientAgentErrorAutoClear: !enableTransientAgentErrorAutoClear,
+              })
+            }
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle transient agent error auto-clear"
           />
         </div>
       </section>
