@@ -695,6 +695,8 @@ describe("evaluatePrReviewCompletionEvidence", () => {
     { label: "#234 self-review not allowed", summary: "Reviewed Blockcast/Network-Operator-Portal#234: the PR author is `app/allyblockcast`, so self-review is not allowed; skipped." },
     // run 2455a2d9 — Network-Operator-Portal#232
     { label: "#232 skipped as self-review", summary: "PR author is `app/allyblockcast`; review was skipped as self-review for #232." },
+    // run fd135efa — penstock-llm-proxy-core#70
+    { label: "#70 skipped self-review prefix", summary: "Skipped self-review: PR author is `app/allyblockcast`." },
   ])("BLO-9293: accepts an intentional self-review skip on a bot-authored PR ($label)", ({ summary }) => {
     expect(evaluatePrReviewCompletionEvidence(selfReviewCtx, { summary })).toEqual({
       status: "self_review_skipped",
