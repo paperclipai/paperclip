@@ -1,38 +1,42 @@
-# Novita Sandbox Provider Plugin
+# `@paperclipai/plugin-novita-sandbox`
 
 Published Novita Agent Sandbox provider plugin for Paperclip.
 
-This plugin registers a Paperclip `sandbox` environment provider with provider key `novita`.
-It provisions [Novita Agent Sandbox](https://novita.ai/sandbox) instances and runs Paperclip
-agent commands inside those sandboxes.
+This package lives in the Paperclip monorepo, but it is intentionally excluded from the root `pnpm` workspace and shaped to publish and install like a standalone npm package. That means operators can install it from the Plugins page by package name, and the host will fetch its transitive dependencies at install time without adding lockfile churn to the Paperclip repo.
+
+## Install
+
+From a Paperclip instance, install:
+
+```text
+@paperclipai/plugin-novita-sandbox
+```
+
+The host plugin installer runs `npm install` into the managed plugin directory, so package dependencies such as `novita-sandbox` are pulled in during installation.
 
 ## Configuration
 
-The environment uses core `driver: "sandbox"` with `provider: "novita"`.
+Configure Novita from `Company Settings -> Environments`, not from the plugin's instance settings page.
 
-| Field | Required | Description |
-| --- | --- | --- |
-| `apiKey` | No | Novita API key. If omitted, the plugin uses `NOVITA_API_KEY` from the worker environment. |
-| `domain` | No | Optional Novita API domain override. |
-| `template` | No | Novita sandbox template ID or name. Defaults to the SDK's base template. |
-| `requestedCwd` | No | Workspace directory inside the sandbox. Defaults to `/home/user/paperclip-workspace`. |
-| `timeoutMs` | No | Sandbox lifetime and default command timeout. Defaults to `300000`. |
-| `requestTimeoutMs` | No | Novita SDK request timeout. Defaults to `30000`. |
-| `secure` | No | Optional secure connection flag passed to the Novita SDK. |
-| `autoPause` | No | Enables Novita auto-pause behavior when supported by the selected template. |
-| `reuseLease` | No | Pause/resume the sandbox across runs instead of killing it on release. |
+- Put the Novita API key on the sandbox environment itself.
+- When you save an environment, Paperclip stores pasted API keys as company secrets.
+- `NOVITA_API_KEY` remains an optional host-level fallback when an environment omits the key.
 
-## Behavior
+## Local development
 
-- `probe` creates a temporary Novita sandbox, verifies the workspace directory, detects `bash`/`sh`, then kills it.
-- `acquireLease` creates a sandbox and returns the sandbox ID as Paperclip's provider lease ID.
-- `resumeLease` reconnects to the sandbox ID and extends its timeout.
-- `releaseLease` kills the sandbox by default. When `reuseLease` is enabled, it calls `betaPause()`.
-- `destroyLease` always kills the sandbox.
-- `execute` runs Paperclip commands through `sandbox.commands.run()`.
+```bash
+cd packages/plugins/sandbox-providers/novita
+pnpm install --ignore-workspace --no-lockfile
+pnpm build
+pnpm test
+pnpm typecheck
+```
 
-## Links
+These commands assume the repo root has already been installed once so the local `@paperclipai/plugin-sdk` workspace package is available to the compiler during development.
 
-- Novita Agent Sandbox: https://novita.ai/sandbox
-- Novita Sandbox docs: https://novita.ai/docs/guides/sandbox-overview
-- Novita API keys: https://novita.ai/settings/key-management
+## Package layout
+
+- `src/manifest.ts` declares the sandbox-provider driver metadata
+- `src/plugin.ts` implements the environment lifecycle hooks
+- `src/worker.ts` boots the plugin under the host worker runtime
+- `paperclipPlugin.manifest` and `paperclipPlugin.worker` point the host at the built plugin entrypoints in `dist/`
