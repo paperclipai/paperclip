@@ -502,7 +502,7 @@ describe("realizeExecutionWorkspace", () => {
   it("fails freshness checks for a reused checkout that is dirty and stale", async () => {
     const repoRoot = await createTempRepo();
     const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
-    await runGit(remoteRoot, ["init", "--bare"]);
+    await runGit(remoteRoot, ["init", "--bare", "--initial-branch=main"]);
     await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
     await runGit(repoRoot, ["push", "-u", "origin", "main"]);
 
@@ -557,7 +557,7 @@ describe("realizeExecutionWorkspace", () => {
   it("auto-merges the base ref for a clean managed checkout branch that is behind", async () => {
     const repoRoot = await createTempRepo();
     const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
-    await runGit(remoteRoot, ["init", "--bare"]);
+    await runGit(remoteRoot, ["init", "--bare", "--initial-branch=main"]);
     await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
     await runGit(repoRoot, ["push", "-u", "origin", "main"]);
 
@@ -590,7 +590,7 @@ describe("realizeExecutionWorkspace", () => {
   it("accumulates freshness failures across changing behind counts before remediation triggers", async () => {
     const repoRoot = await createTempRepo();
     const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
-    await runGit(remoteRoot, ["init", "--bare"]);
+    await runGit(remoteRoot, ["init", "--bare", "--initial-branch=main"]);
     await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
     await runGit(repoRoot, ["push", "-u", "origin", "main"]);
 
@@ -653,7 +653,7 @@ describe("realizeExecutionWorkspace", () => {
   it("preserves and resets a repeatedly failing managed checkout after the remediation threshold", async () => {
     const repoRoot = await createTempRepo();
     const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
-    await runGit(remoteRoot, ["init", "--bare"]);
+    await runGit(remoteRoot, ["init", "--bare", "--initial-branch=main"]);
     await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
     await runGit(repoRoot, ["push", "-u", "origin", "main"]);
 
@@ -720,7 +720,7 @@ describe("realizeExecutionWorkspace", () => {
   it("deduplicates repeated managed-checkout rescue branches while a post-remediation fingerprint is unchanged", async () => {
     const repoRoot = await createTempRepo();
     const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
-    await runGit(remoteRoot, ["init", "--bare"]);
+    await runGit(remoteRoot, ["init", "--bare", "--initial-branch=main"]);
     await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
     await runGit(repoRoot, ["push", "-u", "origin", "main"]);
 
@@ -808,7 +808,7 @@ describe("realizeExecutionWorkspace", () => {
   it("rate-limits managed-checkout rescues after 3 attempts within 24 hours", async () => {
     const repoRoot = await createTempRepo();
     const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
-    await runGit(remoteRoot, ["init", "--bare"]);
+    await runGit(remoteRoot, ["init", "--bare", "--initial-branch=main"]);
     await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
     await runGit(repoRoot, ["push", "-u", "origin", "main"]);
 
