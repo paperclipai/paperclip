@@ -118,32 +118,38 @@ function SidebarAgentItem({
           if (isMobile) setSidebarOpen(false);
         }}
         className={cn(
-          "flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1.5 pointer-coarse:py-1 pr-8 text-[13px] font-medium transition-colors",
+          "relative flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1.5 pointer-coarse:py-1 pr-8 text-[13px] font-medium transition-colors",
           isActive
-            ? "bg-accent text-foreground"
+            ? "bg-primary/10 text-foreground before:absolute before:left-0 before:top-1 before:bottom-1 before:w-[2px] before:rounded-full before:bg-primary"
             : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
         )}
       >
         <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
         <span className="flex-1 truncate">{agent.name}</span>
-        {(agent.pauseReason === "budget" || runCount > 0) && (
-          <span className="ml-auto flex items-center gap-1.5 shrink-0">
-            {agent.pauseReason === "budget" ? (
-              <BudgetSidebarMarker title="Agent paused by budget" />
-            ) : null}
-            {runCount > 0 ? (
-              <span className="relative flex h-2 w-2">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-              </span>
-            ) : null}
-            {runCount > 0 ? (
-              <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
-                {runCount} live
-              </span>
-            ) : null}
-          </span>
-        )}
+        {/* status dot: color = state (running/error/paused/idle) — the living nav */}
+        <span className="ml-auto flex items-center gap-1.5 shrink-0">
+          {agent.pauseReason === "budget" ? (
+            <BudgetSidebarMarker title="Agent paused by budget" />
+          ) : null}
+          {runCount > 0 ? (
+            <span className="relative flex h-2 w-2" title={`${runCount} running`}>
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-running opacity-70" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-status-running" />
+            </span>
+          ) : (
+            <span
+              className={cn(
+                "h-1.5 w-1.5 rounded-full",
+                agent.status === "error"
+                  ? "bg-status-error"
+                  : isPaused
+                    ? "bg-status-warning"
+                    : "bg-muted-foreground/40"
+              )}
+              title={agent.status === "error" ? "Error" : isPaused ? "Paused" : "Idle"}
+            />
+          )}
+        </span>
       </NavLink>
 
       <DropdownMenu>

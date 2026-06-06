@@ -1,8 +1,13 @@
 import { Link } from "@/lib/router";
 import { Menu } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
+import { heartbeatsApi } from "../api/heartbeats";
+import { dashboardApi } from "../api/dashboard";
+import { queryKeys } from "../lib/queryKeys";
+import { cn, formatCents } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   Breadcrumb,
@@ -30,6 +35,46 @@ function GlobalToolbarPlugins({ context }: { context: GlobalToolbarContext }) {
   );
 }
 
+// Instrument strip: live working count + month-spend cost tape, on every
+// in-company top bar. Reuses the dashboard/live-runs query caches.
+function InstrumentStrip({ companyId }: { companyId: string }) {
+  const { data: liveRuns } = useQuery({
+    queryKey: queryKeys.liveRuns(companyId),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+    enabled: !!companyId,
+    refetchInterval: 10_000,
+  });
+  const { data: summary } = useQuery({
+    queryKey: queryKeys.dashboard(companyId),
+    queryFn: () => dashboardApi.summary(companyId),
+    enabled: !!companyId,
+  });
+  const working = liveRuns?.length ?? 0;
+  return (
+    <div className="hidden items-center gap-2 md:flex">
+      <span className="inline-flex items-center gap-1.5 rounded-[3px] border border-border px-2 py-1 font-mono text-[11px] text-muted-foreground">
+        <span className="relative flex h-1.5 w-1.5">
+          {working > 0 && (
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-status-running opacity-70" />
+          )}
+          <span
+            className={cn(
+              "relative inline-flex h-1.5 w-1.5 rounded-full",
+              working > 0 ? "bg-status-running" : "bg-muted-foreground/40",
+            )}
+          />
+        </span>
+        {working} working
+      </span>
+      {summary ? (
+        <span className="inline-flex items-center gap-1.5 rounded-[3px] border border-border px-2 py-1 font-mono text-[11px] text-muted-foreground">
+          mo <span className="text-primary">{formatCents(summary.costs.monthSpendCents)}</span>
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 export function BreadcrumbBar() {
   const { breadcrumbs, mobileToolbar } = useBreadcrumbs();
   const { toggleSidebar, isMobile } = useSidebar();
@@ -44,6 +89,12 @@ export function BreadcrumbBar() {
   );
 
   const globalToolbarSlots = <GlobalToolbarPlugins context={globalToolbarSlotContext} />;
+  const rightSide = (
+    <div className="ml-auto flex items-center gap-2 shrink-0 pl-2">
+      {selectedCompanyId ? <InstrumentStrip companyId={selectedCompanyId} /> : null}
+      {globalToolbarSlots}
+    </div>
+  );
 
   if (isMobile && mobileToolbar) {
     return (
@@ -55,8 +106,8 @@ export function BreadcrumbBar() {
 
   if (breadcrumbs.length === 0) {
     return (
-      <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center justify-end">
-        {globalToolbarSlots}
+      <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center">
+        {rightSide}
       </div>
     );
   }
@@ -83,7 +134,7 @@ export function BreadcrumbBar() {
             {breadcrumbs[0].label}
           </h1>
         </div>
-        {globalToolbarSlots}
+        {rightSide}
       </div>
     );
   }
@@ -115,7 +166,7 @@ export function BreadcrumbBar() {
           </BreadcrumbList>
         </Breadcrumb>
       </div>
-      {globalToolbarSlots}
+      {rightSide}
     </div>
   );
 }

@@ -120,9 +120,9 @@ function ProjectItem({
           if (isMobile) setSidebarOpen(false);
         }}
         className={cn(
-          "flex items-center gap-2.5 px-3 py-1.5 pointer-coarse:py-1 text-[13px] font-medium transition-colors",
+          "relative flex items-center gap-2.5 px-3 py-1.5 pointer-coarse:py-1 text-[13px] font-medium transition-colors",
           activeProjectRef === routeRef || activeProjectRef === project.id
-            ? "bg-accent text-foreground"
+            ? "bg-primary/10 text-foreground before:absolute before:left-0 before:top-1 before:bottom-1 before:w-[2px] before:rounded-full before:bg-primary"
             : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
         )}
       >
