@@ -67,6 +67,7 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import { NO_PID_GRACE_MS } from "./process-lifecycle-constants.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
@@ -185,6 +186,7 @@ import {
 } from "./low-trust-runtime-containment.js";
 import { resolveCoreTrustPreset, type TrustPresetResolution } from "./trust-preset-resolver.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { fetchAllQuotaWindows } from "./quota-windows.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -5313,7 +5315,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+    if (agent.status !== "idle" && agent.status !== "active" && agent.status !== "running") {
       return {
         allowed: false,
         reason: "Scheduled retry suppressed because the agent is not invokable",
@@ -6311,6 +6313,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function countPendingRunsForAgent(agentId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+        ),
+      );
+    return Number(count ?? 0);
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -6318,7 +6333,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
       return null;
     }
-    if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+    if (agent.status !== "idle" && agent.status !== "active" && agent.status !== "running") {
       await cancelRunInternal(run.id, "Cancelled because the agent is not invokable");
       return null;
     }
@@ -7006,6 +7021,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+
+      // When a local-adapter run has no stored PID (the server crashed before
+      // persistRunProcessMetadata ran), we cannot check whether the child process
+      // is still alive.  Immediately treating it as dead causes spurious re-dispatch:
+      // the orphaned process keeps running while a duplicate is spawned, leading to
+      // exponential process pile-up across restarts.  Apply a 10-minute grace period
+      // so the slot stays "occupied" long enough for the process to either finish
+      // naturally or be caught by the periodic reaper (staleThresholdMs=5 min).
+      if (tracksLocalChild && !run.processPid && !run.processGroupId) {
+        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+        if (now.getTime() - refTime < NO_PID_GRACE_MS) continue;
+      }
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
@@ -7096,7 +7123,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
-      await finalizeAgentStatus(run.agentId, "failed");
+      // Process loss is an external event (OOM kill, SIGKILL, crash) — treat as
+      // cancelled so the agent returns to idle rather than error state, allowing
+      // immediate re-dispatch without manual intervention.
+      await finalizeAgentStatus(run.agentId, "cancelled");
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
@@ -7230,7 +7260,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
-      if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+      // Only dispatch to agents that are idle, active, or running with available slots.
+      // Explicitly block all other states (paused, terminated, pending_approval, error,
+      // and any future states) rather than using a blocklist that can miss new values.
+      if (agent.status !== "idle" && agent.status !== "active" && agent.status !== "running") {
         return [];
       }
       const policy = parseHeartbeatPolicy(agent);
@@ -10618,8 +10651,51 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let enqueued = 0;
       let skipped = 0;
 
+      // Pre-flight: check provider quota before waking any timer-based agents.
+      // If the 5-hour or Sonnet 7-day window is critically exhausted (>=95%),
+      // skip all timer wakes this tick and log when quota resets.
+      let quotaBlocked = false;
+      let quotaResetAt: string | null = null;
+      try {
+        const quotaResults = await fetchAllQuotaWindows();
+        const anthropicResult = quotaResults.find((r) => r.provider === "anthropic");
+        if (anthropicResult?.ok && anthropicResult.windows.length > 0) {
+          const criticalWindow = anthropicResult.windows.find(
+            (w) => typeof w.usedPercent === "number" && w.usedPercent >= 95,
+          );
+          if (criticalWindow) {
+            quotaBlocked = true;
+            quotaResetAt = criticalWindow.resetsAt ?? null;
+            logger.warn(
+              { window: criticalWindow.label, usedPercent: criticalWindow.usedPercent, resetsAt: quotaResetAt },
+              "heartbeat_timer_quota_blocked: quota critical, skipping all timer wakes this tick",
+            );
+          }
+        }
+      } catch (err) {
+        // Quota check failure must not block agent wakes — log and proceed.
+        logger.warn({ err }, "heartbeat_timer_quota_check_failed: proceeding without quota guard");
+      }
+
+      // Auto-recover agents stuck in error state with no active runs after 5 min.
+      // Covers cases where process_lost reaper didn't clear the status (e.g. the
+      // agent errored mid-heartbeat for a transient reason unrelated to process loss).
+      const ERROR_AUTO_RECOVER_MS = 5 * 60 * 1000;
       for (const agent of allAgents) {
-        if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
+        if (agent.status === "error") {
+          const stuckMs = now.getTime() - new Date(agent.updatedAt ?? agent.createdAt).getTime();
+          if (stuckMs > ERROR_AUTO_RECOVER_MS) {
+            const runningCount = await countRunningRunsForAgent(agent.id);
+            if (runningCount === 0) {
+              await db.update(agents).set({ status: "idle", updatedAt: new Date() }).where(eq(agents.id, agent.id));
+              logger.info({ agentId: agent.id, agentName: agent.name, stuckMs }, "auto-recovered agent from error state");
+            }
+          }
+        }
+      }
+
+      for (const agent of allAgents) {
+        if (agent.status !== "idle" && agent.status !== "active" && agent.status !== "running") continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
@@ -10627,6 +10703,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        if (quotaBlocked) {
+          skipped += 1;
+          continue;
+        }
+
+        // Skip if the agent already has pending runs (queued/running/scheduled_retry).
+        // Those runs will drive the inbox forward; stacking another timer wake only
+        // inflates the queue and wastes quota on empty-inbox heartbeats.
+        const pendingCount = await countPendingRunsForAgent(agent.id);
+        if (pendingCount > 0) {
+          skipped += 1;
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
@@ -10650,6 +10740,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         checked: checked + issueMonitors.checked,
         enqueued: enqueued + issueMonitors.triggered,
         skipped: skipped + issueMonitors.skipped,
+        quotaBlocked,
+        quotaResetAt,
       };
     },
 

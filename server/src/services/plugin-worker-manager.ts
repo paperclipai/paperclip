@@ -53,6 +53,7 @@ import type {
   InitializeParams,
 } from "@paperclipai/plugin-sdk";
 import { logger } from "../middleware/logger.js";
+import { SIGTERM_GRACE_MS } from "./process-lifecycle-constants.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -69,9 +70,6 @@ const INITIALIZE_TIMEOUT_MS = 15_000;
 
 /** Timeout for the shutdown RPC call before escalating to SIGTERM. */
 const SHUTDOWN_DRAIN_MS = 10_000;
-
-/** Time to wait after SIGTERM before sending SIGKILL. */
-const SIGTERM_GRACE_MS = 5_000;
 
 /** Minimum backoff delay for crash recovery (1 second). */
 const MIN_BACKOFF_MS = 1_000;
