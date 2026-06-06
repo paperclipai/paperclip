@@ -329,9 +329,21 @@ export function loadConfig(): Config {
     storageS3ForcePathStyle,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
-    heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
+    // The heartbeat scheduler (reaper/monitor/productivity loops) belongs ONLY on the
+    // persistent execution worker — not the Vercel serverless control plane, where each
+    // cold instance would start its own loop, double-run against the worker, and pile
+    // connections onto the pooler. Default: on everywhere EXCEPT Vercel; explicit env
+    // (HEARTBEAT_SCHEDULER_ENABLED=true/false) overrides either way.
+    heartbeatSchedulerEnabled:
+      process.env.HEARTBEAT_SCHEDULER_ENABLED === "true"
+        ? true
+        : process.env.HEARTBEAT_SCHEDULER_ENABLED === "false"
+          ? false
+          : !process.env.VERCEL,
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
-    telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    // Local file-state telemetry can't persist on serverless (no writable home →
+    // `mkdir ENOENT`, which crashes the error handler and compounds 500s). Off on Vercel.
+    telemetryEnabled: process.env.VERCEL ? false : (fileConfig?.telemetry?.enabled ?? true),
   };
 }

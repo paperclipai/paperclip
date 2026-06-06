@@ -46,7 +46,23 @@ export type MigrationState =
     };
 
 export function createDb(url: string) {
-  const sql = postgres(url);
+  // Serverless (Vercel) instances are ephemeral and arrive in bursts (the SPA fires
+  // ~25 concurrent calls on load). postgres.js defaults to a pool of 10 PER INSTANCE,
+  // so a cold-start burst across a few Fluid instances — plus the persistent worker
+  // and the heartbeat scheduler — blows past the Supabase pooler's client cap and
+  // every request 500s with `EMAXCONNSESSION`. Cap connections hard on serverless and
+  // release them quickly so frozen instances don't keep holding pooler slots. The
+  // persistent (Railway) worker keeps the larger default pool.
+  const isServerless = !!process.env.VERCEL;
+  const usesTransactionPooler = /:6543(\/|\?|$)/.test(url) || /[?&]pgbouncer=true/i.test(url);
+  const sql = postgres(url, {
+    max: isServerless ? 3 : 10,
+    idle_timeout: isServerless ? 20 : undefined,
+    max_lifetime: isServerless ? 60 * 10 : undefined,
+    connect_timeout: 30,
+    // pgbouncer transaction mode (Supabase :6543) can't use prepared statements.
+    prepare: usesTransactionPooler ? false : undefined,
+  });
   return drizzlePg(sql, { schema });
 }
 
