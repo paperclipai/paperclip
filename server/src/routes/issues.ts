@@ -148,6 +148,7 @@ import {
 } from "../services/task-watchdog-scope.js";
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
+import { publishLiveEvent } from "../services/live-events.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
@@ -9735,6 +9736,22 @@ export function issueRoutes(
       }
     })();
 
+    // Fire board push events for immediate and digest lanes.
+    if (issue.assigneeUserId && issue.assigneeUserId !== existing.assigneeUserId) {
+      publishLiveEvent({
+        companyId: issue.companyId,
+        type: "issue.user_assigned",
+        payload: { issueId: issue.id, issueIdentifier: issue.identifier ?? "", issueTitle: issue.title },
+      });
+    }
+    if (issue.status === "blocked" && existing.status !== "blocked") {
+      publishLiveEvent({
+        companyId: issue.companyId,
+        type: "issue.blocked",
+        payload: { issueId: issue.id, issueIdentifier: issue.identifier ?? "", issueTitle: issue.title },
+      });
+    }
+
     await queueTaskWatchdogEvaluation(issue, actor.runId);
     const changes = issueResponse.changes ?? {};
     if (prefersMinimalIssueUpdateResponse(req)) {
@@ -10102,6 +10119,16 @@ export function issueRoutes(
         interactionId: interaction.id,
         agentId: interaction.addresseeAgentId,
       }, "failed to wake addressee on issue interaction creation"));
+    }
+    if (
+      (interaction.kind === "request_confirmation" || interaction.kind === "ask_user_questions") &&
+      interaction.status === "pending"
+    ) {
+      publishLiveEvent({
+        companyId: issue.companyId,
+        type: "issue.interaction.pending",
+        payload: { issueId: issue.id, issueIdentifier: issue.identifier ?? "", issueTitle: issue.title },
+      });
     }
 
     res.status(201).json(interaction);
