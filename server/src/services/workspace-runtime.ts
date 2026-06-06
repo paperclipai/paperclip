@@ -690,10 +690,11 @@ function managedCheckoutFailureSignature(details: ExecutionWorkspaceFreshnessErr
   return JSON.stringify({
     currentBranchName: details.currentBranchName,
     expectedBaseRef: details.expectedBaseRef,
-    behindCount: details.behindCount,
     dirtyEntryCount: details.dirtyEntryCount,
     untrackedEntryCount: details.untrackedEntryCount,
-    failures: [...details.failures].sort(),
+    failures: [...details.failures]
+      .map((failure) => failure.replace(/\d+ commits? \(stale threshold \d+\)/, "<behind>"))
+      .sort(),
   });
 }
 
@@ -1294,6 +1295,7 @@ export async function ensureManagedCheckoutFreshness(input: {
   if (
     details.expectedBaseRef &&
     details.currentBranchName &&
+    details.failures.length === 0 &&
     details.dirtyEntryCount === 0 &&
     details.untrackedEntryCount === 0 &&
     typeof details.behindCount === "number" &&

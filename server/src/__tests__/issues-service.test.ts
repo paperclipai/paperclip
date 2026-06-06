@@ -4769,6 +4769,37 @@ describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
     expect(updated?.status).toBe("done");
   });
 
+  it("continues verifying later PR references after an earlier lookup failure", async () => {
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      if (String(url).endsWith("/pulls/3303")) {
+        return {
+          ok: false,
+          status: 404,
+          statusText: "Not Found",
+          text: async () => "missing",
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({ merged: true }),
+      } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Close with one bad PR reference and one merged PR",
+      description: [
+        "Reference: https://github.com/paperclipai/paperclip/pull/3303",
+        "Reference: https://github.com/paperclipai/paperclip/pull/3304",
+      ].join("\n"),
+      identifier: "PAP-9002AA",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("allows repo-backed decision deliverables when terminalEvidence resolves to a document revision", async () => {
     const { companyId, issueId } = await seedRepoBackedIssue({
       title: "Decision-backed close",

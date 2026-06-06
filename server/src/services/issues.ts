@@ -5460,7 +5460,7 @@ export function issueService(db: Db) {
               }
 
               let verifiedMergedPull = false;
-              let verificationFailure: string | null = null;
+              const verificationFailures: string[] = [];
               for (const pullNumber of pullNumbers) {
                 try {
                   if (await verifyMergedPullRequestForRepo({ repo: verificationRepo, pullNumber })) {
@@ -5468,10 +5468,10 @@ export function issueService(db: Db) {
                     break;
                   }
                 } catch (error) {
-                  verificationFailure = error instanceof Error ? error.message : String(error);
-                  break;
+                  verificationFailures.push(error instanceof Error ? error.message : String(error));
                 }
               }
+              const verificationFailure = verificationFailures.length > 0 ? verificationFailures.join("; ") : null;
 
               if (!verifiedMergedPull) {
                 const targetRepoLabel = repoLabel(verificationRepo);

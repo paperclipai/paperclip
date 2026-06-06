@@ -587,6 +587,69 @@ describe("realizeExecutionWorkspace", () => {
     await expect(fs.readFile(path.join(staleClone, "fresh.txt"), "utf8")).resolves.toBe("fresh\n");
   });
 
+  it("accumulates freshness failures across changing behind counts before remediation triggers", async () => {
+    const repoRoot = await createTempRepo();
+    const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
+    await runGit(remoteRoot, ["init", "--bare"]);
+    await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
+    await runGit(repoRoot, ["push", "-u", "origin", "main"]);
+
+    const staleClone = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-managed-clone-"));
+    await runGit(staleClone, ["clone", remoteRoot, "."]);
+    await runGit(staleClone, ["config", "user.email", "paperclip@example.com"]);
+    await runGit(staleClone, ["config", "user.name", "Paperclip Test"]);
+    await runGit(staleClone, ["checkout", "-b", "feature/changing-behind-count"]);
+    await fs.writeFile(path.join(staleClone, "local-only.txt"), "dirty\n", "utf8");
+
+    const statePath = path.join(os.tmpdir(), `paperclip-managed-checkout-state-${randomUUID()}.json`);
+
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      await fs.writeFile(path.join(repoRoot, `fresh-${attempt}.txt`), `${attempt}\n`, "utf8");
+      await runGit(repoRoot, ["add", `fresh-${attempt}.txt`]);
+      await runGit(repoRoot, ["commit", "-m", `Fresh commit ${attempt}`]);
+      await runGit(repoRoot, ["push", "origin", "main"]);
+
+      await expect(
+        ensureManagedCheckoutFreshness({
+          cwd: staleClone,
+          expectedBaseRef: "origin/main",
+          remediationStatePath: statePath,
+          remediationFailureThreshold: 3,
+        }),
+      ).rejects.toMatchObject({
+        code: "execution_workspace_freshness_failed",
+        details: expect.objectContaining({
+          failures: expect.arrayContaining([
+            expect.stringContaining("untracked file"),
+          ]),
+          warnings: expect.arrayContaining([
+            expect.stringContaining(`behind origin/main by ${attempt} commit`),
+            expect.stringContaining("armed managed-checkout auto-remediation after"),
+          ]),
+        }),
+      });
+    }
+
+    await fs.writeFile(path.join(repoRoot, "fresh-3.txt"), "3\n", "utf8");
+    await runGit(repoRoot, ["add", "fresh-3.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Fresh commit 3"]);
+    await runGit(repoRoot, ["push", "origin", "main"]);
+
+    const details = await ensureManagedCheckoutFreshness({
+      cwd: staleClone,
+      expectedBaseRef: "origin/main",
+      remediationStatePath: statePath,
+      remediationFailureThreshold: 3,
+    });
+
+    expect(details.failures).toEqual([]);
+    expect(details.currentBranchName).toBe("main");
+    expect(await readGit(staleClone, ["status", "--porcelain"])).toBe("");
+    expect(details.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('Preserved the shared managed checkout on "rescue/feature-changing-behind-count-'),
+    ]));
+  });
+
   it("preserves and resets a repeatedly failing managed checkout after the remediation threshold", async () => {
     const repoRoot = await createTempRepo();
     const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
