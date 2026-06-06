@@ -5033,6 +5033,12 @@ export function issueRoutes(
           },
           "issue update rejected with 422",
         );
+      } else if (err instanceof Error && err.message.includes("issues_parent_id_issues_id_fk")) {
+        res.status(400).json({ error: "parent issue not found" });
+        return;
+      } else if (err instanceof Error && err.message.includes("issues_goal_id_goals_id_fk")) {
+        res.status(400).json({ error: "goal not found" });
+        return;
       }
       throw err;
     }
