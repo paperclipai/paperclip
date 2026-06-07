@@ -92,6 +92,11 @@ import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
+  evaluatePreflightAcceptanceGuard,
+  evaluatePostflightProofGuard,
+  readEnforcementWindowFromEnv,
+} from "../services/definition-of-done.js";
+import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
@@ -704,15 +709,28 @@ function isClosedIssueStatus(status: string | null | undefined): status is "done
   return status === "done" || status === "cancelled";
 }
 
+// HUM-196: local_implicit board attribution is the default for any unauthenticated
+// request in local_trusted mode, including agent curls that did not present their
+// API key/JWT. Treating those as human comments silently reopened closed issues
+// every time an agent posted an acknowledgment. We require an authenticated human
+// source (session, board_key, cloud_tenant) for implicit reopen. Local humans and
+// agents can still reopen via explicit `reopen: true` or `status: "todo"` PATCH.
+function isConfirmedHumanActorSource(actorSource: string | null | undefined) {
+  if (typeof actorSource !== "string") return false;
+  return actorSource === "session" || actorSource === "board_key" || actorSource === "cloud_tenant";
+}
+
 function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  actorSource: string | null | undefined;
 }) {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
+  if (!isConfirmedHumanActorSource(input.actorSource)) return false;
   if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
@@ -723,9 +741,11 @@ function shouldHumanCommentResumeInProgressScheduledRetry(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
+  actorSource: string | null | undefined;
 }) {
   if (!input.hasComment) return false;
   if (input.actorType !== "user") return false;
+  if (!isConfirmedHumanActorSource(input.actorSource)) return false;
   if (input.issueStatus !== "in_progress") return false;
   return typeof input.assigneeAgentId === "string" && input.assigneeAgentId.length > 0;
 }
@@ -4722,6 +4742,39 @@ export function issueRoutes(
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
+
+    {
+      const transitioningToDone =
+        updateFields.status === "done" && existing.status !== "done";
+      if (transitioningToDone && existing.assigneeAgentId) {
+        const enforcement = readEnforcementWindowFromEnv();
+        const recentComments = await svc.listComments(existing.id, {
+          order: "desc",
+          limit: 1,
+        });
+        const latest = recentComments[0] ?? null;
+        const proof = evaluatePostflightProofGuard({
+          existingAssigneeAgentId: existing.assigneeAgentId,
+          existingCreatedAt: existing.createdAt ?? null,
+          transitioningToDone: true,
+          latestAssigneeComment: latest
+            ? {
+                body: latest.body ?? null,
+                authorAgentId: latest.authorAgentId ?? null,
+                derivedAuthorAgentId:
+                  (latest as { derivedAuthorAgentId?: string | null })
+                    .derivedAuthorAgentId ?? null,
+              }
+            : null,
+          enforcement,
+        });
+        if (!proof.allowed) {
+          res.status(proof.status).json({ error: proof.error });
+          return;
+        }
+      }
+    }
+
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
       return;
@@ -4770,6 +4823,7 @@ export function issueRoutes(
         issueStatus: existing.status,
         assigneeAgentId: requestedAssigneeAgentId,
         actorType: actor.actorType,
+        actorSource: actor.actorSource,
       })
         ? await svc.getCurrentScheduledRetry(existing.id)
         : null;
@@ -4784,6 +4838,7 @@ export function issueRoutes(
           assigneeAgentId: requestedAssigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
+          actorSource: actor.actorSource,
         })) ||
       shouldResumeInProgressScheduledRetry;
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
@@ -4972,6 +5027,32 @@ export function issueRoutes(
           assigneeAgentId: nextAssigneeAgentId,
           assigneeUserId: nextAssigneeUserId,
         });
+      }
+    }
+
+    {
+      const preflight = evaluatePreflightAcceptanceGuard({
+        existing: {
+          description: existing.description ?? null,
+          assigneeAgentId: existing.assigneeAgentId ?? null,
+          assigneeUserId: existing.assigneeUserId ?? null,
+          createdByAgentId: existing.createdByAgentId ?? null,
+          createdByUserId: existing.createdByUserId ?? null,
+        },
+        requestedAssigneeAgentId: normalizedAssigneeAgentId,
+        requestedDescription:
+          req.body.description === undefined
+            ? undefined
+            : (req.body.description as string | null),
+        actor: {
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+        },
+      });
+      if (!preflight.allowed) {
+        res.status(preflight.status).json({ error: preflight.error });
+        return;
       }
     }
 
@@ -6526,6 +6607,7 @@ export function issueRoutes(
         issueStatus: issue.status,
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
+        actorSource: actor.actorSource,
       })
         ? await svc.getCurrentScheduledRetry(issue.id)
         : null;
@@ -6539,6 +6621,7 @@ export function issueRoutes(
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
         actorId: actor.actorId,
+        actorSource: actor.actorSource,
       }) ||
       shouldResumeInProgressScheduledRetry;
     const hasUnresolvedFirstClassBlockers =

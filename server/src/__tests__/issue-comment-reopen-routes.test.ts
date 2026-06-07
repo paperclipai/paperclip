@@ -174,7 +174,7 @@ async function installActor(app: express.Express, actor?: Record<string, unknown
       type: "board",
       userId: "local-board",
       companyIds: ["company-1"],
-      source: "local_implicit",
+      source: "board_key",
       isInstanceAdmin: false,
     };
     next();
@@ -182,6 +182,20 @@ async function installActor(app: express.Express, actor?: Record<string, unknown
   app.use("/api", issueRoutes(mockDb as any, {} as any));
   app.use(errorHandler);
   return app;
+}
+
+// HUM-196: actor for unauthenticated local-trusted curls (the implicit board
+// attribution applied to any request that does not present a bearer token).
+// CEO-agent curls without auth fall into this bucket and must not silently
+// trigger the human-comment-reopens-closed rule.
+function implicitBoardActor() {
+  return {
+    type: "board",
+    userId: "local-board",
+    companyIds: ["company-1"],
+    source: "local_implicit",
+    isInstanceAdmin: false,
+  };
 }
 
 async function normalizePolicy(input: {
@@ -520,6 +534,40 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     ));
+  });
+
+  // HUM-196: regression for the silent done -> todo flap. An agent curl posted
+  // without an auth header is attributed to the local-board user with
+  // source "local_implicit". The previous reopen rule treated that as a human
+  // comment and flipped the closed issue back to todo on every acknowledgment.
+  it("HUM-196: does not flip done -> todo via POST comments from a local_implicit board actor", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+    const res = await request(await installActor(createApp(), implicitBoardActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "final ack from CEO" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("HUM-196: does not flip done -> todo via the PATCH comment path from a local_implicit board actor", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp(), implicitBoardActor()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "final ack from CEO" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
   });
 
   it("rejects non-assignee agent POST comments on closed issues", async () => {
