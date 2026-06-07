@@ -1116,6 +1116,7 @@ export function LandingPage() {
 
       <PageRail>
 
+      <div data-rail-group>
       {/* ── Hero (Group 1 opener) ── */}
       <Section className="relative pb-12 pt-12 sm:pt-16">
         {/* warm glow */}
@@ -1199,6 +1200,9 @@ export function LandingPage() {
         </div>
       </Section>
 
+      </div>
+
+      <div data-rail-group>
       {/* ── Problem (Group 2 opener) ── */}
       <Section className="py-20">
         <RailHead icon={Network} kicker="The problem">
@@ -1283,7 +1287,10 @@ export function LandingPage() {
         />
       </Section>
 
-      {/* ── Modules ── */}
+      </div>
+
+      <div data-rail-group>
+      {/* ── Modules (Group 3 opener) ── */}
       <Section className="scroll-mt-20 py-12" id="cockpit">
         <RailHead icon={Gauge} kicker="The cockpit">
         <h2 className="mb-10 text-[clamp(28px,3.4vw,42px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
@@ -1363,11 +1370,16 @@ export function LandingPage() {
         </div>
       </Section>
 
+      </div>
+
+      <div data-rail-group>
       {/* ── How it runs — scroll-driven story timeline (Group 4) ── */}
       <StorySection />
+      </div>
 
+      <div data-rail-group>
       {/* ── Testimonials (Group 5 opener) ── */}
-      <Section className="py-12 pl-14 md:pl-20">
+      <Section className="py-12">
         <RailHead icon={CheckSquare} kicker="From the crew">
         <h2 className="mb-10 text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
           Real teams. Real momentum.
@@ -1445,6 +1457,9 @@ export function LandingPage() {
         </div>
       </Section>
 
+      </div>
+
+      <div data-rail-group>
       {/* ── Manifesto (Group 6 opener) ── */}
       <Section className="py-16">
         <RailHead icon={BarChart3} kicker="The mission">
@@ -1493,6 +1508,7 @@ export function LandingPage() {
           </div>
         </div>
       </Section>
+      </div>
 
       </PageRail>
 

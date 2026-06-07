@@ -25,32 +25,49 @@ function reduceMotion() {
 // ── The page thread — an SVG line that bows out to each node ───────────────────
 
 const BASE_X = 7; // resting x of the vertical line (in the left gutter)
+const END_FADE = 120; // fade-in/out length at the very top & bottom (px)
+const BREAK_FADE = 48; // fade length on each side of a group break (px)
+const BREAK_GAP = 7; // transparent gap at a group break (px)
 
-type Seg = { y0: number; y1: number; nodes: { x: number; y: number }[] };
+type Node = { x: number; y: number };
 
-// One continuous line down the whole page, bowing out to each node, fading
-// only at the very top and bottom.
-function buildSegments(nodes: { x: number; y: number }[], height: number): Seg[] {
-  if (!height) return [];
-  return [{ y0: 0, y1: height, nodes }];
-}
-
-function railPath(seg: Seg): string {
-  const { y0, y1, nodes } = seg;
-  let d = `M ${BASE_X} ${y0}`;
+function railPath(nodes: Node[], height: number): string {
+  let d = `M ${BASE_X} 0`;
   for (const n of nodes) {
     const ax = Math.max(BASE_X, n.x); // bow apex (out to the node)
     d += ` L ${BASE_X} ${(n.y - 26).toFixed(1)}`;
     d += ` C ${BASE_X} ${(n.y - 13).toFixed(1)}, ${ax} ${(n.y - 13).toFixed(1)}, ${ax} ${n.y.toFixed(1)}`;
     d += ` C ${ax} ${(n.y + 13).toFixed(1)}, ${BASE_X} ${(n.y + 13).toFixed(1)}, ${BASE_X} ${(n.y + 26).toFixed(1)}`;
   }
-  d += ` L ${BASE_X} ${y1}`;
+  d += ` L ${BASE_X} ${height}`;
   return d;
+}
+
+// Build gradient stops: solid orange, fading in/out at the page ends and
+// dipping to transparent at each group boundary (the line-breaks).
+function gradientStops(height: number, breaks: number[]): { o: number; op: number }[] {
+  if (!height) return [];
+  const pts: { o: number; op: number }[] = [
+    { o: 0, op: 0 },
+    { o: END_FADE / height, op: 0.82 },
+  ];
+  for (const y of breaks) {
+    pts.push({ o: (y - BREAK_FADE) / height, op: 0.82 });
+    pts.push({ o: (y - BREAK_GAP) / height, op: 0 });
+    pts.push({ o: (y + BREAK_GAP) / height, op: 0 });
+    pts.push({ o: (y + BREAK_FADE) / height, op: 0.82 });
+  }
+  pts.push({ o: 1 - END_FADE / height, op: 0.82 });
+  pts.push({ o: 1, op: 0 });
+  return pts
+    .map((p) => ({ o: Math.max(0, Math.min(1, p.o)), op: p.op }))
+    .sort((a, b) => a.o - b.o);
 }
 
 function RailSvg({ rootRef }: { rootRef: React.RefObject<HTMLDivElement | null> }) {
   const boxRef = useRef<HTMLDivElement>(null);
-  const [segs, setSegs] = useState<Seg[]>([]);
+  const [nodes, setNodes] = useState<Node[]>([]);
+  const [breaks, setBreaks] = useState<number[]>([]);
   const [size, setSize] = useState({ w: 0, h: 0 });
 
   useLayoutEffect(() => {
@@ -60,15 +77,23 @@ function RailSvg({ rootRef }: { rootRef: React.RefObject<HTMLDivElement | null> 
       if (!root || !box) return;
       const br = box.getBoundingClientRect();
       const h = root.offsetHeight;
-      const nodes = Array.from(root.querySelectorAll<HTMLElement>("[data-rail-bow]"))
+      const ns = Array.from(root.querySelectorAll<HTMLElement>("[data-rail-bow]"))
         .map((n) => {
           const r = n.getBoundingClientRect();
           return { x: r.left - br.left + r.width / 2, y: r.top - br.top + r.height / 2 };
         })
         .filter((n) => n.y >= 0)
         .sort((a, b) => a.y - b.y);
+      // group boundaries = the top edge of every group except the first
+      const groups = Array.from(root.querySelectorAll<HTMLElement>("[data-rail-group]"));
+      const bks = groups
+        .slice(1)
+        .map((g) => g.getBoundingClientRect().top - br.top)
+        .filter((y) => y > END_FADE && y < h - END_FADE)
+        .sort((a, b) => a - b);
       setSize({ w: br.width, h });
-      setSegs(buildSegments(nodes, h));
+      setNodes(ns);
+      setBreaks(bks);
     };
     measure();
     const root = rootRef.current;
@@ -85,6 +110,8 @@ function RailSvg({ rootRef }: { rootRef: React.RefObject<HTMLDivElement | null> 
     };
   }, [rootRef]);
 
+  const stops = gradientStops(size.h, breaks);
+
   return (
     <div className="pointer-events-none absolute inset-0 z-0" aria-hidden>
       <div ref={boxRef} className="mx-auto h-full max-w-6xl">
@@ -98,29 +125,19 @@ function RailSvg({ rootRef }: { rootRef: React.RefObject<HTMLDivElement | null> 
             fill="none"
           >
             <defs>
-              {segs.map((s, i) => {
-                const span = Math.max(1, s.y1 - s.y0);
-                const f = Math.min(0.45, 130 / span); // ~130px fade at each end
-                return (
-                  <linearGradient key={i} id={`rail-fade-${i}`} gradientUnits="userSpaceOnUse" x1="0" y1={s.y0} x2="0" y2={s.y1}>
-                    <stop offset="0%" stopColor="#f97316" stopOpacity="0" />
-                    <stop offset={`${(f * 100).toFixed(2)}%`} stopColor="#f97316" stopOpacity="0.8" />
-                    <stop offset={`${((1 - f) * 100).toFixed(2)}%`} stopColor="#fb923c" stopOpacity="0.8" />
-                    <stop offset="100%" stopColor="#fb923c" stopOpacity="0" />
-                  </linearGradient>
-                );
-              })}
+              <linearGradient id="rail-fade" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2={size.h}>
+                {stops.map((s, i) => (
+                  <stop key={i} offset={`${(s.o * 100).toFixed(3)}%`} stopColor="#f97316" stopOpacity={s.op} />
+                ))}
+              </linearGradient>
             </defs>
-            {segs.map((s, i) => (
-              <path
-                key={i}
-                d={railPath(s)}
-                stroke={`url(#rail-fade-${i})`}
-                strokeWidth="1.6"
-                strokeLinecap="round"
-                vectorEffect="non-scaling-stroke"
-              />
-            ))}
+            <path
+              d={railPath(nodes, size.h)}
+              stroke="url(#rail-fade)"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+            />
           </svg>
         )}
       </div>
