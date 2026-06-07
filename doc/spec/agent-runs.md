@@ -696,6 +696,7 @@ All wakeup/run state mutations must create `activity_log` entries:
 - `heartbeat.failed`
 - `heartbeat.cancelled`
 - `runtime_state.updated`
+- `stale_lock_takeover` — written when the checkout endpoint takes over an issue whose `checkoutRunId` (or `executionRunId`) points to a terminal-or-missing prior heartbeat run owned by the same agent. The `details` payload includes `issueId`, `actorAgentId`, `actorRunId`, `priorRunId`, `priorRunStatus`, and `trigger` (`"checkout"` or `"assert_checkout_owner"`). This is the safety-net counterpart to the server-shutdown run-termination hook; a sudden spike in `stale_lock_takeover` rows is a leading indicator that the termination hook is not firing for some failure mode (typically SIGKILL or process panic).
 
 ## 14. Heartbeat Service Implementation Plan
 

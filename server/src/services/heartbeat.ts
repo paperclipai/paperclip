@@ -9346,12 +9346,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
 
       if (issue.executionRunId === run.id) {
+        // Also clear checkoutRunId when it matches the terminating run. Historically the
+        // run-termination hook only cleared executionRunId, leaving a stale checkoutRunId
+        // behind; subsequent same-agent wakes were rejected by the checkout endpoint with
+        // `Issue run ownership conflict` because the prior run id still occupied the lock
+        // even though the run itself had ended. See GAT-205 for the failure trace.
+        const shouldClearCheckoutRunId = issue.checkoutRunId === run.id;
         await tx
           .update(issues)
           .set({
             executionRunId: null,
             executionAgentNameKey: null,
             executionLockedAt: null,
+            ...(shouldClearCheckoutRunId ? { checkoutRunId: null } : {}),
             updatedAt: new Date(),
           })
           .where(eq(issues.id, issue.id));
@@ -11145,6 +11152,91 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .orderBy(desc(heartbeatRuns.startedAt))
         .limit(1);
       return run ?? null;
+    },
+
+    /**
+     * Server-shutdown hook (GAT-205 Option 3, "Run-termination hook").
+     *
+     * Called from the process-level SIGTERM/SIGINT handler before exit. For every
+     * heartbeat run this process believes is still in-flight, we:
+     *   1. Mark `runs.status = 'terminated'` (a new terminal status, distinct from
+     *      `cancelled`/`timed_out`, that observers can read as "reaped by shutdown")
+     *      so subsequent same-agent wakes know the lock is releasable.
+     *   2. Clear `checkoutRunId`, `executionRunId`, `executionLockedAt` on every issue
+     *      where `executionRunId == run.id` so a fresh process is not blocked by stale
+     *      locks left behind by a dying process.
+     *
+     * The Option 1 checkout-time safety net (see `adoptStaleCheckoutRun`) covers the
+     * SIGKILL/panic case where this hook never gets to run.
+     */
+    terminateInFlightRunsForShutdown: async (reason?: string): Promise<{
+      terminatedRunCount: number;
+      releasedIssueCount: number;
+      runIds: string[];
+    }> => {
+      const inFlightRunIds = Array.from(activeRunExecutions);
+      if (inFlightRunIds.length === 0) {
+        return { terminatedRunCount: 0, releasedIssueCount: 0, runIds: [] };
+      }
+
+      const now = new Date();
+      const errorMessage = reason
+        ? `Run terminated during server shutdown: ${reason}`
+        : "Run terminated during server shutdown";
+
+      let terminatedRunCount = 0;
+      let releasedIssueCount = 0;
+
+      for (const runId of inFlightRunIds) {
+        try {
+          const updatedRun = await db
+            .update(heartbeatRuns)
+            .set({
+              status: "terminated",
+              finishedAt: now,
+              error: errorMessage,
+              errorCode: "server_shutdown",
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(heartbeatRuns.id, runId),
+                inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+              ),
+            )
+            .returning({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId })
+            .then((rows) => rows[0] ?? null);
+
+          if (!updatedRun) continue;
+          terminatedRunCount += 1;
+
+          const released = await db
+            .update(issues)
+            .set({
+              checkoutRunId: null,
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(issues.companyId, updatedRun.companyId),
+                eq(issues.executionRunId, runId),
+              ),
+            )
+            .returning({ id: issues.id });
+          releasedIssueCount += released.length;
+        } catch (err) {
+          logger.warn({ err, runId }, "failed to terminate in-flight run during shutdown");
+        }
+      }
+
+      return {
+        terminatedRunCount,
+        releasedIssueCount,
+        runIds: inFlightRunIds,
+      };
     },
   };
 }

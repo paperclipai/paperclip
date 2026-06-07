@@ -72,6 +72,7 @@ import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from ".
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
+import { logActivity } from "./activity-log.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
@@ -380,7 +381,17 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   return checkoutRunId == null;
 }
 
-const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+// `terminated` is written by the run-termination hook (graceful exit / timeout / SIGTERM)
+// when the server detects an in-flight run is being cut short and clears its issue locks.
+// It is intentionally distinct from `cancelled`/`timed_out` so observers can tell apart
+// a run that was actively reaped from one the agent chose to stop.
+export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set([
+  "succeeded",
+  "failed",
+  "cancelled",
+  "timed_out",
+  "terminated",
+]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
@@ -3679,14 +3690,58 @@ export function issueService(db: Db) {
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
   }
 
+  async function readHeartbeatRunStatus(runId: string): Promise<string | null> {
+    const run = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    return run?.status ?? null;
+  }
+
+  async function writeStaleLockTakeoverAuditLog(input: {
+    companyId: string;
+    issueId: string;
+    actorAgentId: string;
+    actorRunId: string;
+    priorRunId: string | null;
+    priorRunStatus: string | null;
+    trigger: "checkout" | "assert_checkout_owner";
+  }) {
+    await logActivity(db, {
+      companyId: input.companyId,
+      actorType: "agent",
+      actorId: input.actorAgentId,
+      action: "stale_lock_takeover",
+      entityType: "issue",
+      entityId: input.issueId,
+      agentId: input.actorAgentId,
+      runId: input.actorRunId,
+      details: {
+        issueId: input.issueId,
+        actorAgentId: input.actorAgentId,
+        actorRunId: input.actorRunId,
+        priorRunId: input.priorRunId,
+        priorRunStatus: input.priorRunStatus,
+        trigger: input.trigger,
+      },
+    }).catch((err) => {
+      logger.warn({ err, issueId: input.issueId }, "failed to write stale_lock_takeover audit row");
+    });
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
     actorRunId: string;
     expectedCheckoutRunId: string;
+    companyId: string;
+    trigger: "checkout" | "assert_checkout_owner";
   }) {
     const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
     if (!stale) return null;
+
+    const priorRunStatus = await readHeartbeatRunStatus(input.expectedCheckoutRunId);
 
     const now = new Date();
     const adopted = await db
@@ -3714,6 +3769,18 @@ export function issueService(db: Db) {
       })
       .then((rows) => rows[0] ?? null);
 
+    if (adopted) {
+      await writeStaleLockTakeoverAuditLog({
+        companyId: input.companyId,
+        issueId: input.issueId,
+        actorAgentId: input.actorAgentId,
+        actorRunId: input.actorRunId,
+        priorRunId: input.expectedCheckoutRunId,
+        priorRunStatus,
+        trigger: input.trigger,
+      });
+    }
+
     return adopted;
   }
 
@@ -3721,6 +3788,9 @@ export function issueService(db: Db) {
     issueId: string;
     actorAgentId: string;
     actorRunId: string;
+    companyId: string;
+    trigger: "checkout" | "assert_checkout_owner";
+    priorExecutionRunId?: string | null;
   }) {
     const now = new Date();
     const adopted = await db
@@ -3748,6 +3818,19 @@ export function issueService(db: Db) {
         executionRunId: issues.executionRunId,
       })
       .then((rows) => rows[0] ?? null);
+
+    if (adopted && input.priorExecutionRunId && input.priorExecutionRunId !== input.actorRunId) {
+      const priorRunStatus = await readHeartbeatRunStatus(input.priorExecutionRunId);
+      await writeStaleLockTakeoverAuditLog({
+        companyId: input.companyId,
+        issueId: input.issueId,
+        actorAgentId: input.actorAgentId,
+        actorRunId: input.actorRunId,
+        priorRunId: input.priorExecutionRunId,
+        priorRunStatus,
+        trigger: input.trigger,
+      });
+    }
 
     return adopted;
   }
@@ -5443,6 +5526,8 @@ export function issueService(db: Db) {
           actorAgentId: agentId,
           actorRunId: checkoutRunId,
           expectedCheckoutRunId: current.checkoutRunId,
+          companyId: issueCompany.companyId,
+          trigger: "checkout",
         });
         if (adopted) {
           const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
@@ -5478,6 +5563,7 @@ export function issueService(db: Db) {
       const current = await db
         .select({
           id: issues.id,
+          companyId: issues.companyId,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
@@ -5508,6 +5594,9 @@ export function issueService(db: Db) {
           issueId: id,
           actorAgentId,
           actorRunId,
+          companyId: current.companyId,
+          trigger: "assert_checkout_owner",
+          priorExecutionRunId: current.executionRunId,
         });
 
         if (adopted) {
@@ -5530,6 +5619,8 @@ export function issueService(db: Db) {
           actorAgentId,
           actorRunId,
           expectedCheckoutRunId: current.checkoutRunId,
+          companyId: current.companyId,
+          trigger: "assert_checkout_owner",
         });
 
         if (adopted) {
