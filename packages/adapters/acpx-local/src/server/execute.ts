@@ -160,6 +160,26 @@ async function ensureParentDir(target: string): Promise<void> {
   await fs.mkdir(path.dirname(target), { recursive: true });
 }
 
+async function isExpectedSymlink(target: string, resolvedSource: string): Promise<boolean> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (!existing?.isSymbolicLink()) return false;
+
+  const linkedPath = await fs.readlink(target).catch(() => null);
+  if (!linkedPath) return false;
+
+  return path.resolve(path.dirname(target), linkedPath) === resolvedSource;
+}
+
+async function createExpectedSymlink(target: string, resolvedSource: string): Promise<void> {
+  try {
+    await fs.symlink(resolvedSource, target);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST" && await isExpectedSymlink(target, resolvedSource)) return;
+    throw error;
+  }
+}
+
 async function writeFileAtomically(input: {
   target: string;
   contents: string;
@@ -185,24 +205,20 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
-    await fs.symlink(resolvedSource, target);
+    await createExpectedSymlink(target, resolvedSource);
     return;
   }
 
   if (!existing.isSymbolicLink()) {
     await fs.rm(target, { recursive: true, force: true });
-    await fs.symlink(resolvedSource, target);
+    await createExpectedSymlink(target, resolvedSource);
     return;
   }
 
-  const linkedPath = await fs.readlink(target).catch(() => null);
-  if (!linkedPath) return;
-
-  const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
-  if (resolvedLinkedPath === resolvedSource) return;
+  if (await isExpectedSymlink(target, resolvedSource)) return;
 
   await fs.unlink(target);
-  await fs.symlink(resolvedSource, target);
+  await createExpectedSymlink(target, resolvedSource);
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {

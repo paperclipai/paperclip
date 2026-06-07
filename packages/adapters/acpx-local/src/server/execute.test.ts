@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AcpRuntimeOptions } from "acpx/runtime";
 import { createAcpxLocalExecutor } from "./execute.js";
 
@@ -14,6 +14,7 @@ async function makeTempRoot() {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
@@ -224,6 +225,59 @@ describe("acpx_local runtime skill isolation", () => {
 
     const authStat = await fs.lstat(managedAuth);
     expect(authStat.isSymbolicLink()).toBe(true);
+    expect(path.resolve(path.dirname(managedAuth), await fs.readlink(managedAuth))).toBe(sourceAuth);
+  });
+
+  it.skipIf(process.platform === "win32")("treats a concurrently-created managed Codex auth symlink as success", async () => {
+    const root = await makeTempRoot();
+    const sourceCodexHome = path.join(root, "source-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const paperclipInstanceId = "test-instance";
+    const managedCodexHome = path.join(
+      paperclipHome,
+      "instances",
+      paperclipInstanceId,
+      "companies",
+      "company-1",
+      "codex-home",
+    );
+    const sourceAuth = path.join(sourceCodexHome, "auth.json");
+    const managedAuth = path.join(managedCodexHome, "auth.json");
+
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    await fs.writeFile(sourceAuth, "{\"source\":true}", "utf8");
+
+    const originalSymlink = fs.symlink.bind(fs);
+    vi.spyOn(fs, "symlink").mockImplementationOnce(async (source, target, type) => {
+      await originalSymlink(source, target, type);
+      const error = new Error("file already exists") as NodeJS.ErrnoException;
+      error.code = "EEXIST";
+      throw error;
+    });
+
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    try {
+      process.env.CODEX_HOME = sourceCodexHome;
+      process.env.PAPERCLIP_HOME = paperclipHome;
+      process.env.PAPERCLIP_INSTANCE_ID = paperclipInstanceId;
+      await runExecutor({
+        agent: "codex",
+        stateDir: path.join(root, "state"),
+        paperclipRuntimeSkills: [],
+        paperclipSkillSync: { desiredSkills: [] },
+      });
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+    }
+
+    expect((await fs.lstat(managedAuth)).isSymbolicLink()).toBe(true);
     expect(path.resolve(path.dirname(managedAuth), await fs.readlink(managedAuth))).toBe(sourceAuth);
   });
 
