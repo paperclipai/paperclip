@@ -744,7 +744,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           interactionId: interaction.id,
           interactionKind: interaction.kind,
           mutation: "stalled_interaction_recovery",
-        }),
+        }, "normal_model"),
         requestedByActorType: "system",
         requestedByActorId: null,
         contextSnapshot: withRecoveryModelProfileHint({
@@ -757,7 +757,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           sourceRunId: interaction.sourceRunId ?? null,
           wakeReason: "issue_interaction_stalled",
           source: "recovery.reconcile_stalled_issue_thread_interactions",
-        }),
+        }, "normal_model"),
       });
 
       if (queued) {
