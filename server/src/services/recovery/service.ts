@@ -2966,7 +2966,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       monitorPolicy: recoveryCause === "provider_quota" && !ownerAgentId
         ? { type: "wait_recovery", retryAgentId: routing.returnOwnerAgentId }
         : null,
-      maxAttempts: MAX_MISSING_DISPOSITION_RECOVERY_ATTEMPTS,
+      maxAttempts: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+        ? MAX_MISSING_DISPOSITION_RECOVERY_ATTEMPTS
+        : null,
       lastAttemptAt: now,
     });
 
@@ -3540,6 +3542,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .then((rows) => rows.some((row) => (row.body ?? "").includes(capCommentMarker)));
 
       if (!hasCapComment) {
+        const prefix = await getCompanyIssuePrefix(input.issue.companyId);
         await issuesSvc.addComment(
           input.issue.id,
           buildMissingDispositionCapReachedComment({
