@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseGeminiJsonl } from "./parse.js";
+import { isGeminiUnknownSessionError, parseGeminiJsonl } from "./parse.js";
 
 describe("parseGeminiJsonl", () => {
   it("collects assistant text from message events with string content", () => {
@@ -129,5 +129,26 @@ describe("parseGeminiJsonl", () => {
 
     const result = parseGeminiJsonl(stdout);
     expect(result.errorMessage).toBe("boom");
+  });
+});
+
+describe("isGeminiUnknownSessionError", () => {
+  it("returns true for 'No previous sessions found' message (Gemini CLI v0.43+)", () => {
+    expect(
+      isGeminiUnknownSessionError(
+        "",
+        "Error resuming session: No previous sessions found for this project.",
+      ),
+    ).toBe(true);
+  });
+
+  it("returns true for existing patterns", () => {
+    expect(isGeminiUnknownSessionError("", "unknown session xyz")).toBe(true);
+    expect(isGeminiUnknownSessionError("", "cannot resume")).toBe(true);
+    expect(isGeminiUnknownSessionError("", "failed to resume session")).toBe(true);
+  });
+
+  it("returns false for unrelated errors", () => {
+    expect(isGeminiUnknownSessionError("", "rate limit exceeded")).toBe(false);
   });
 });
