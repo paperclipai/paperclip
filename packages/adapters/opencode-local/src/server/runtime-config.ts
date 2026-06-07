@@ -1,3 +1,5 @@
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -29,6 +31,90 @@ async function readJsonObject(filepath: string): Promise<Record<string, unknown>
   } catch {
     return {};
   }
+}
+
+type ProxyHandle = { proxyUrl: string; close: () => Promise<void> };
+
+// Starts a local HTTP proxy that transparently forwards all requests to
+// `targetBaseUrl`, but injects `think: false` into POST request bodies whose
+// `model` field matches /gemma4/i. This suppresses Gemma 4 harmony-channel
+// thinking tokens without any opencode config schema changes (opencode strips
+// unknown model-config fields like `providerOptions`).
+function startGemma4ThinkProxy(targetBaseUrl: string): Promise<ProxyHandle> {
+  return new Promise((resolve, reject) => {
+    let targetOrigin: string;
+    let targetPathname: string;
+    try {
+      const parsed = new URL(targetBaseUrl);
+      targetOrigin = parsed.origin;
+      targetPathname = parsed.pathname === "/" ? "" : parsed.pathname;
+    } catch {
+      reject(new Error(`Invalid Ollama baseURL: ${targetBaseUrl}`));
+      return;
+    }
+
+    const server = http.createServer((clientReq, clientRes) => {
+      const chunks: Buffer[] = [];
+      clientReq.on("data", (chunk: Buffer) => chunks.push(chunk));
+      clientReq.on("end", () => {
+        let body = Buffer.concat(chunks);
+
+        if (clientReq.method === "POST" && body.length > 0) {
+          try {
+            const parsed = JSON.parse(body.toString("utf8")) as Record<string, unknown>;
+            const model = typeof parsed.model === "string" ? parsed.model : "";
+            if (/gemma4/i.test(model) && !("think" in parsed)) {
+              parsed.think = false;
+              body = Buffer.from(JSON.stringify(parsed));
+            }
+          } catch {
+            // Non-JSON body — forward unchanged
+          }
+        }
+
+        const forwardHeaders: http.OutgoingHttpHeaders = { ...clientReq.headers };
+        const targetHostname = new URL(targetOrigin).hostname;
+        const targetPort = new URL(targetOrigin).port;
+        forwardHeaders["host"] = targetPort
+          ? `${targetHostname}:${targetPort}`
+          : targetHostname;
+        if (body.length > 0) forwardHeaders["content-length"] = String(body.length);
+        delete forwardHeaders["transfer-encoding"];
+
+        const proxyReq = http.request(
+          {
+            hostname: targetHostname,
+            port: targetPort ? Number(targetPort) : 80,
+            path: clientReq.url ?? "/",
+            method: clientReq.method,
+            headers: forwardHeaders,
+          },
+          (proxyRes) => {
+            clientRes.writeHead(proxyRes.statusCode ?? 200, proxyRes.headers);
+            proxyRes.pipe(clientRes);
+          },
+        );
+
+        proxyReq.on("error", () => {
+          if (!clientRes.headersSent) clientRes.writeHead(502);
+          clientRes.end();
+        });
+
+        if (body.length > 0) proxyReq.write(body);
+        proxyReq.end();
+      });
+    });
+
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      const proxyUrl = `http://127.0.0.1:${port}${targetPathname}`;
+      resolve({
+        proxyUrl,
+        close: () => new Promise<void>((res) => server.close(() => res())),
+      });
+    });
+  });
 }
 
 export async function prepareOpenCodeRuntimeConfig(input: {
@@ -81,13 +167,42 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   const existingPermission = isPlainObject(existingConfig.permission)
     ? existingConfig.permission
     : {};
-  const nextConfig = {
+  const nextConfig: Record<string, unknown> = {
     ...existingConfig,
     permission: {
       ...existingPermission,
       external_directory: "allow",
     },
   };
+
+  const notes: string[] = [
+    "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
+  ];
+
+  // Opencode strips unknown model-config fields (e.g. providerOptions, thinking),
+  // so config-level think suppression does not work. Instead, for each provider
+  // whose model map contains a gemma4 key, start a thin HTTP proxy that injects
+  // `think: false` into POST bodies before forwarding to the real Ollama endpoint.
+  const proxyHandles: Array<{ close: () => Promise<void> }> = [];
+  if (isPlainObject(nextConfig.provider)) {
+    for (const providerData of Object.values(nextConfig.provider)) {
+      if (!isPlainObject(providerData)) continue;
+      const models = isPlainObject(providerData.models) ? providerData.models : {};
+      const hasGemma4 = Object.keys(models).some((k) => /gemma4/i.test(k));
+      if (!hasGemma4) continue;
+      const options = isPlainObject(providerData.options) ? providerData.options : {};
+      const baseURL = typeof options.baseURL === "string" ? options.baseURL : null;
+      if (!baseURL) continue;
+
+      const proxy = await startGemma4ThinkProxy(baseURL);
+      proxyHandles.push(proxy);
+      providerData.options = { ...options, baseURL: proxy.proxyUrl };
+      notes.push(
+        `Started think:false proxy for Gemma 4 models (${baseURL} → ${proxy.proxyUrl}).`,
+      );
+    }
+  }
+
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
 
   return {
@@ -95,11 +210,12 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       ...input.env,
       XDG_CONFIG_HOME: runtimeConfigHome,
     },
-    notes: [
-      "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
-    ],
+    notes,
     cleanup: async () => {
-      await fs.rm(runtimeConfigHome, { recursive: true, force: true });
+      await Promise.all([
+        fs.rm(runtimeConfigHome, { recursive: true, force: true }),
+        ...proxyHandles.map((h) => h.close()),
+      ]);
     },
   };
 }
