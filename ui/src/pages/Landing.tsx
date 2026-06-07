@@ -31,11 +31,6 @@ import {
 // page  #F6F3EC · alt #FAF8F4 · card #FFFFFF · heading gray-900 · muted #737373
 // accent #f97316 · accent-hover #ea6a0c · borders black/[0.08]
 
-const SERIF: React.CSSProperties = {
-  fontFamily: "Georgia, 'Times New Roman', serif",
-  fontStyle: "italic",
-};
-
 // ─── Auth mode ───────────────────────────────────────────────────────────────
 
 type AuthMode = "sign_in" | "sign_up";
@@ -1027,8 +1022,8 @@ export function LandingPage() {
           <br />
           now autonomous.
           <span
-            className="mt-1.5 block bg-gradient-to-r from-amber-500 via-orange-500 to-red-600 bg-clip-text font-medium text-transparent"
-            style={SERIF}
+            className="mt-2 block bg-gradient-to-r from-amber-400 via-orange-500 to-red-600 bg-clip-text text-[0.92em] font-black uppercase italic tracking-[-0.01em] text-transparent"
+            style={{ transform: "skewX(-9deg)" }}
           >
             All gas, no brakes.
           </span>
