@@ -246,10 +246,16 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
     try {
       plugin = await registry.getById(pluginId);
     } catch (error) {
-      const maybeCode =
-        typeof error === "object" && error !== null && "code" in error
-          ? (error as { code?: unknown }).code
-          : undefined;
+      // DrizzleQueryError wraps the original Postgres error in `.cause`, so
+      // `error.code` is undefined — check both the top-level code and the
+      // nested cause to correctly identify the invalid-UUID error (22P02).
+      const getCode = (e: unknown): unknown => {
+        if (typeof e !== "object" || e === null) return undefined;
+        if ("code" in e) return (e as { code?: unknown }).code;
+        if ("cause" in e) return getCode((e as { cause?: unknown }).cause);
+        return undefined;
+      };
+      const maybeCode = getCode(error);
       if (maybeCode !== "22P02") {
         throw error;
       }
