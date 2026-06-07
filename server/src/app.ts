@@ -47,7 +47,6 @@ import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
-import { notFound } from "./errors.js";
 import { companyService } from "./services/companies.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
@@ -138,7 +137,10 @@ function companyReferenceRewriteMiddleware(db: Db): express.RequestHandler {
       const rawSegment = match[1];
       const companyRef = decodeURIComponent(rawSegment);
       const company = await companies.resolveReference(companyRef);
-      if (!company) throw notFound("Company not found");
+      if (!company) {
+        next();
+        return;
+      }
       if (rawSegment !== company.id) {
         req.url = req.url.replace(`/companies/${rawSegment}`, `/companies/${encodeURIComponent(company.id)}`);
       }

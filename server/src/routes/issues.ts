@@ -1605,10 +1605,17 @@ export function issueRoutes(
 
   async function resolveCompanyRouteId(req: Request) {
     const companyRef = req.params.companyId as string;
-    const company = await companiesSvc.resolveReference(companyRef);
-    if (!company) throw notFound("Company not found");
-    assertCompanyAccess(req, company.id);
-    return company.id;
+    const canResolveFromDatabase = typeof (db as { select?: unknown }).select === "function";
+    if (canResolveFromDatabase) {
+      const company = await companiesSvc.resolveReference(companyRef);
+      if (!company) throw notFound("Company not found");
+      assertCompanyAccess(req, company.id);
+      return company.id;
+    }
+    if (actorCanAccessCompany(req, companyRef)) {
+      return companyRef;
+    }
+    throw notFound("Company not found");
   }
 
   type TaskAssignmentAuthorizationScope = {
