@@ -11,7 +11,15 @@ const mockAccessService = vi.hoisted(() => ({
   hasPermission: vi.fn(),
 }));
 
+const mockCompanyService = vi.hoisted(() => ({
+  resolveReference: vi.fn(),
+}));
+
 const mockCompanySkillService = vi.hoisted(() => ({
+  list: vi.fn(),
+  detail: vi.fn(),
+  updateStatus: vi.fn(),
+  readFile: vi.fn(),
   importFromSource: vi.fn(),
   installFromCatalog: vi.fn(),
   deleteSkill: vi.fn(),
@@ -55,11 +63,16 @@ function registerModuleMocks() {
     companySkillService: () => mockCompanySkillService,
   }));
 
+  vi.doMock("../services/companies.js", () => ({
+    companyService: () => mockCompanyService,
+  }));
+
   vi.doMock("../services/skills-catalog.js", () => mockCatalogService);
 
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    companyService: () => mockCompanyService,
     companySkillService: () => mockCompanySkillService,
     logActivity: mockLogActivity,
   }));
@@ -89,6 +102,7 @@ describe("company skill mutation permissions", () => {
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
     vi.doUnmock("../services/agents.js");
+    vi.doUnmock("../services/companies.js");
     vi.doUnmock("../services/company-skills.js");
     vi.doUnmock("../services/skills-catalog.js");
     vi.doUnmock("../services/index.js");
@@ -98,6 +112,14 @@ describe("company skill mutation permissions", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
+    mockCompanyService.resolveReference.mockImplementation(async (companyRef: string) => ({
+      id: companyRef === "HAS" ? "company-1" : companyRef,
+      issuePrefix: companyRef === "HAS" ? "HAS" : "CMP",
+    }));
+    mockCompanySkillService.list.mockResolvedValue([]);
+    mockCompanySkillService.detail.mockResolvedValue(null);
+    mockCompanySkillService.updateStatus.mockResolvedValue(null);
+    mockCompanySkillService.readFile.mockResolvedValue(null);
     mockCompanySkillService.importFromSource.mockResolvedValue({
       imported: [],
       warnings: [],
@@ -276,6 +298,43 @@ describe("company skill mutation permissions", () => {
     expect(mockCatalogService.getCatalogSkillOrThrow).toHaveBeenCalledWith("review");
     expect(mockCatalogService.readCatalogSkillFile).toHaveBeenCalledWith("review", "SKILL.md");
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("resolves company issue prefixes before listing company skills", async () => {
+    mockCompanySkillService.list.mockResolvedValue([
+      {
+        id: "skill-1",
+        companyId: "company-1",
+        key: "paperclipai/bundled/software-development/github-pr-workflow",
+        slug: "github-pr-workflow",
+        name: "github-pr-workflow",
+        description: "Prepare pull requests and verification notes.",
+        sourceType: "catalog",
+        sourceLocator: null,
+        sourceRef: "sha256:abc",
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+        metadata: null,
+        createdAt: new Date("2026-06-07T00:00:00.000Z"),
+        updatedAt: new Date("2026-06-07T00:00:00.000Z"),
+        usedByAgents: [],
+        sourceBadge: "catalog",
+      },
+    ]);
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .get("/api/companies/HAS/skills");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanyService.resolveReference).toHaveBeenCalledWith("HAS");
+    expect(mockCompanySkillService.list).toHaveBeenCalledWith("company-1");
   });
 
   it("installs catalog skills with mutation permissions and logs provenance", async () => {

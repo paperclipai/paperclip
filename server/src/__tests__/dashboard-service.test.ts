@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
+import express from "express";
+import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { dashboardService, getUtcMonthStart } from "../services/dashboard.ts";
+import { dashboardRoutes } from "../routes/dashboard.ts";
+import { errorHandler } from "../middleware/error-handler.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -48,6 +52,7 @@ describeEmbeddedPostgres("dashboard service", () => {
 
   afterEach(async () => {
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -165,5 +170,124 @@ describeEmbeddedPostgres("dashboard service", () => {
       other: 1,
       total: 3,
     });
+  });
+
+  it("resolves company issue prefixes and returns issue activity from backend aggregation", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const today = utcDay(0);
+    const yesterday = utcDay(-1);
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "HA Santeny",
+        issuePrefix: "HAS",
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other",
+        issuePrefix: "OTH",
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: randomUUID(),
+        companyId,
+        identifier: "HAS-1",
+        title: "Critical blocker",
+        status: "blocked",
+        priority: "critical",
+        createdAt: today,
+        updatedAt: today,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        identifier: "HAS-2",
+        title: "Review work",
+        status: "in_review",
+        priority: "high",
+        createdAt: yesterday,
+        updatedAt: yesterday,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        identifier: "HAS-hidden",
+        title: "Hidden work",
+        status: "todo",
+        priority: "medium",
+        hiddenAt: today,
+        createdAt: today,
+        updatedAt: today,
+      },
+      {
+        id: randomUUID(),
+        companyId: otherCompanyId,
+        identifier: "OTH-1",
+        title: "Other tenant work",
+        status: "blocked",
+        priority: "critical",
+        createdAt: today,
+        updatedAt: today,
+      },
+    ]);
+
+    const summary = await dashboardService(db).summary("has");
+
+    expect(summary.companyId).toBe(companyId);
+    expect(summary.sourceStatus).toBe("complete");
+    expect(summary.partialErrors).toEqual([]);
+    expect(new Date(summary.generatedAt).toString()).not.toBe("Invalid Date");
+    expect(summary.tasks).toMatchObject({ open: 2, blocked: 1, done: 0 });
+    expect(summary.recentIssues.map((issue) => issue.identifier)).toEqual(["HAS-1", "HAS-2"]);
+
+    const todayBucket = summary.issueActivity.find((bucket) => bucket.date === utcDateKey(today));
+    const yesterdayBucket = summary.issueActivity.find((bucket) => bucket.date === utcDateKey(yesterday));
+
+    expect(todayBucket).toMatchObject({
+      byPriority: { critical: 1, high: 0, medium: 0, low: 0 },
+      byStatus: { blocked: 1 },
+      total: 1,
+    });
+    expect(yesterdayBucket).toMatchObject({
+      byPriority: { critical: 0, high: 1, medium: 0, low: 0 },
+      byStatus: { in_review: 1 },
+      total: 1,
+    });
+  });
+
+  it("serves dashboard routes by company prefix without leaking a UUID parse failure", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "HA Santeny",
+      issuePrefix: "HAS",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        type: "board",
+        source: "local_implicit",
+        userId: "board",
+        isInstanceAdmin: true,
+      };
+      next();
+    });
+    app.use("/api", dashboardRoutes(db));
+    app.use(errorHandler);
+
+    const res = await request(app).get("/api/companies/HAS/dashboard");
+
+    expect(res.status).toBe(200);
+    expect(res.body.companyId).toBe(companyId);
+    expect(res.body.sourceStatus).toBe("complete");
   });
 });

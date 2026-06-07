@@ -277,6 +277,9 @@ function makeExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): Ex
 
 const dashboard: DashboardSummary = {
   companyId: "company-1",
+  generatedAt: "2026-03-11T03:00:00.000Z",
+  sourceStatus: "complete",
+  partialErrors: [],
   agents: {
     active: 1,
     running: 0,
@@ -302,6 +305,8 @@ const dashboard: DashboardSummary = {
     pausedProjects: 0,
   },
   runActivity: [],
+  issueActivity: [],
+  recentIssues: [],
 };
 
 describe("inbox helpers", () => {

@@ -1,4 +1,4 @@
-import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, isNull, lt, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companies,
@@ -50,6 +50,7 @@ const SYSTEM_COMPANY_ACTOR: CompanyActivityActor = {
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const environmentsSvc = environmentService(db);
   const heartbeat = heartbeatService(db);
 
@@ -199,6 +200,14 @@ export function companyService(db: Db) {
       .leftJoin(companyLogos, eq(companyLogos.companyId, companies.id));
   }
 
+  function companyReferencePredicate(reference: string) {
+    const normalized = reference.trim();
+    const normalizedPrefix = normalized.toUpperCase();
+    return UUID_RE.test(normalized)
+      ? or(eq(companies.id, normalized), eq(companies.issuePrefix, normalizedPrefix))
+      : eq(companies.issuePrefix, normalizedPrefix);
+  }
+
   function deriveIssuePrefixBase(name: string) {
     const normalized = name.toUpperCase().replace(/[^A-Z]/g, "");
     return normalized.slice(0, 3) || ISSUE_PREFIX_FALLBACK;
@@ -253,6 +262,15 @@ export function companyService(db: Db) {
     getById: async (id: string) => {
       const row = await getCompanyQuery(db)
         .where(eq(companies.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      const [hydrated] = await hydrateCompanySpend([row], db);
+      return enrichCompany(hydrated);
+    },
+
+    resolveReference: async (reference: string) => {
+      const row = await getCompanyQuery(db)
+        .where(companyReferencePredicate(reference))
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
       const [hydrated] = await hydrateCompanySpend([row], db);

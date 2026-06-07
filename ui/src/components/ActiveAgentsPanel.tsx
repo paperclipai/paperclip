@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useId, useMemo } from "react";
 import { Link } from "@/lib/router";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import type { Issue, IssueRecoveryAction } from "@paperclipai/shared";
@@ -75,14 +75,42 @@ export function ActiveAgentsPanel({
   queryScope = "dashboard",
   showMoreLink = true,
 }: ActiveAgentsPanelProps) {
+  const liveHeadingId = useId();
+  const recentHeadingId = useId();
+  const liveFetchLimit = fetchLimit;
   const { data: liveRuns } = useQuery({
-    queryKey: [...queryKeys.liveRuns(companyId), queryScope, { minRunCount, fetchLimit }],
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, { minCount: minRunCount, limit: fetchLimit }),
+    queryKey: [...queryKeys.liveRuns(companyId), queryScope, "live", { liveFetchLimit }],
+    queryFn: () => heartbeatsApi.liveRunsForCompany(
+      companyId,
+      liveFetchLimit ? { limit: liveFetchLimit } : undefined,
+    ),
   });
 
-  const runs = liveRuns ?? [];
-  const visibleRuns = useMemo(() => runs.slice(0, cardLimit), [cardLimit, runs]);
-  const hiddenRunCount = Math.max(0, runs.length - visibleRuns.length);
+  const { data: paddedRuns } = useQuery({
+    queryKey: [...queryKeys.liveRuns(companyId), queryScope, "recent", { minRunCount, fetchLimit }],
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, { minCount: minRunCount, limit: fetchLimit }),
+    enabled: minRunCount > 0,
+  });
+
+  const liveOnlyRuns = useMemo(() => (liveRuns ?? []).filter(isRunActive), [liveRuns]);
+  const recentOnlyRuns = useMemo(
+    () => (paddedRuns ?? []).filter((run) => !isRunActive(run)),
+    [paddedRuns],
+  );
+  const visibleLiveRuns = useMemo(() => liveOnlyRuns.slice(0, cardLimit), [cardLimit, liveOnlyRuns]);
+  const recentCardLimit = Math.max(0, cardLimit - visibleLiveRuns.length);
+  const visibleRecentRuns = useMemo(
+    () => recentOnlyRuns.slice(0, recentCardLimit),
+    [recentCardLimit, recentOnlyRuns],
+  );
+  const visibleRuns = useMemo(
+    () => [...visibleLiveRuns, ...visibleRecentRuns],
+    [visibleLiveRuns, visibleRecentRuns],
+  );
+  const hiddenRunCount = Math.max(
+    0,
+    liveOnlyRuns.length + recentOnlyRuns.length - visibleRuns.length,
+  );
   const visibleIssueIds = useMemo(
     () => [...new Set(visibleRuns.map((run) => run.issueId).filter((issueId): issueId is string => Boolean(issueId)))],
     [visibleRuns],
@@ -120,30 +148,59 @@ export function ActiveAgentsPanel({
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
         {title}
       </h3>
-      {runs.length === 0 ? (
+      {visibleRuns.length === 0 ? (
         <div className="rounded-xl border border-border p-4">
           <p className="text-sm text-muted-foreground">{emptyMessage}</p>
         </div>
       ) : (
-        <div className={cn("grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4", gridClassName)}>
-          {visibleRuns.map((run) => (
-            <AgentRunCard
-              key={run.id}
-              companyId={companyId}
-              run={run}
-              issue={run.issueId ? issueById.get(run.issueId) : undefined}
-              transcript={transcriptByRun.get(run.id) ?? EMPTY_TRANSCRIPT}
-              hasOutput={hasOutputForRun(run.id)}
-              isActive={isRunActive(run)}
-              className={cardClassName}
-            />
-          ))}
+        <div className="space-y-3">
+          {visibleLiveRuns.length > 0 && (
+            <section aria-labelledby={liveHeadingId}>
+              <h4 id={liveHeadingId} className="sr-only">Live agent runs</h4>
+              <div className={cn("grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4", gridClassName)}>
+                {visibleLiveRuns.map((run) => (
+                  <AgentRunCard
+                    key={run.id}
+                    companyId={companyId}
+                    run={run}
+                    issue={run.issueId ? issueById.get(run.issueId) : undefined}
+                    transcript={transcriptByRun.get(run.id) ?? EMPTY_TRANSCRIPT}
+                    hasOutput={hasOutputForRun(run.id)}
+                    isActive
+                    className={cardClassName}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+
+          {visibleRecentRuns.length > 0 && (
+            <section aria-labelledby={recentHeadingId}>
+              <h4 id={recentHeadingId} className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Recent runs
+              </h4>
+              <div className={cn("grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4", gridClassName)}>
+                {visibleRecentRuns.map((run) => (
+                  <AgentRunCard
+                    key={run.id}
+                    companyId={companyId}
+                    run={run}
+                    issue={run.issueId ? issueById.get(run.issueId) : undefined}
+                    transcript={transcriptByRun.get(run.id) ?? EMPTY_TRANSCRIPT}
+                    hasOutput={hasOutputForRun(run.id)}
+                    isActive={false}
+                    className={cardClassName}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       )}
       {showMoreLink && hiddenRunCount > 0 && (
         <div className="mt-3 flex justify-end text-xs text-muted-foreground">
-          <Link to="/dashboard/live" className="hover:text-foreground hover:underline">
-            {hiddenRunCount} more active/recent run{hiddenRunCount === 1 ? "" : "s"}
+          <Link to="/dashboard/live" className="hover:text-foreground hover:underline" aria-label={`Open ${hiddenRunCount} more live or recent agent runs`}>
+            {hiddenRunCount} more live/recent run{hiddenRunCount === 1 ? "" : "s"}
           </Link>
         </div>
       )}
@@ -181,12 +238,12 @@ const AgentRunCard = memo(function AgentRunCard({
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               {isActive ? (
-                <span className="relative flex h-2.5 w-2.5 shrink-0">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-70" />
-                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-cyan-500" />
+                <span className="relative flex h-2.5 w-2.5 shrink-0" role="status" aria-label="Live run">
+                  <span className="absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-70 motion-safe:animate-ping" />
+                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-cyan-500" aria-hidden />
                 </span>
               ) : (
-                <span className="inline-flex h-2.5 w-2.5 rounded-full bg-muted-foreground/35" />
+                <span className="inline-flex h-2.5 w-2.5 rounded-full bg-muted-foreground/35" aria-hidden />
               )}
               <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-[11px]" />
             </div>
@@ -198,8 +255,10 @@ const AgentRunCard = memo(function AgentRunCard({
           <Link
             to={`/agents/${run.agentId}/runs/${run.id}`}
             className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2 py-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+            aria-label={`Open ${run.agentName} run ${run.id.slice(0, 8)}`}
+            title={`Open ${run.agentName} run`}
           >
-            <ExternalLink className="h-2.5 w-2.5" />
+            <ExternalLink className="h-2.5 w-2.5" aria-hidden />
           </Link>
         </div>
 

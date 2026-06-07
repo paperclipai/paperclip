@@ -1,4 +1,4 @@
-import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import type { DashboardIssueActivityDay, DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
 
 /* ---- Utilities ---- */
 
@@ -40,6 +40,23 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
           {item.label}
         </span>
       ))}
+    </div>
+  );
+}
+
+function ChartA11yFrame({
+  label,
+  summary,
+  children,
+}: {
+  label: string;
+  summary: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div role="img" aria-label={`${label}. ${summary}`}>
+      <div aria-hidden="true">{children}</div>
+      <p className="sr-only">{summary}</p>
     </div>
   );
 }
@@ -91,11 +108,23 @@ export function RunActivityChart(props: RunChartProps) {
 
   const maxValue = Math.max(...activity.map(v => v.total), 1);
   const hasData = activity.some(v => v.total > 0);
+  const totals = activity.reduce(
+    (acc, day) => ({
+      succeeded: acc.succeeded + day.succeeded,
+      failed: acc.failed + day.failed,
+      other: acc.other + day.other,
+      total: acc.total + day.total,
+    }),
+    { succeeded: 0, failed: 0, other: 0, total: 0 },
+  );
 
   if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
 
   return (
-    <div>
+    <ChartA11yFrame
+      label="Run activity for the last 14 days"
+      summary={`${totals.total} runs: ${totals.succeeded} succeeded, ${totals.failed} failed, ${totals.other} other.`}
+    >
       <div className="flex items-end gap-[3px] h-20">
         {days.map(day => {
           const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 };
@@ -117,7 +146,7 @@ export function RunActivityChart(props: RunChartProps) {
         })}
       </div>
       <DateLabels days={days} />
-    </div>
+    </ChartA11yFrame>
   );
 }
 
@@ -130,35 +159,78 @@ const priorityColors: Record<string, string> = {
 
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
 
-export function PriorityChart({ issues }: { issues: { priority: string; createdAt: Date }[] }) {
+type IssueChartProps =
+  | { activity?: DashboardIssueActivityDay[] | null; issues?: never }
+  | { issues?: { priority: string; status?: string; createdAt: Date | string }[] | null; activity?: never };
+
+function newIssueActivityBucket(date: string): DashboardIssueActivityDay {
+  return {
+    date,
+    byPriority: { critical: 0, high: 0, medium: 0, low: 0 },
+    byStatus: { backlog: 0, todo: 0, in_progress: 0, in_review: 0, done: 0, blocked: 0, cancelled: 0 },
+    total: 0,
+  };
+}
+
+function aggregateIssues(issues: readonly { priority?: string; status?: string; createdAt: Date | string }[] = []): DashboardIssueActivityDay[] {
   const days = getLast14Days();
-  const grouped = new Map<string, Record<string, number>>();
-  for (const day of days) grouped.set(day, { critical: 0, high: 0, medium: 0, low: 0 });
+  const grouped = new Map(days.map((day) => [day, newIssueActivityBucket(day)]));
   for (const issue of issues) {
     const day = new Date(issue.createdAt).toISOString().slice(0, 10);
     const entry = grouped.get(day);
     if (!entry) continue;
-    if (issue.priority in entry) entry[issue.priority]++;
+    if (issue.priority && priorityOrder.includes(issue.priority as typeof priorityOrder[number])) {
+      entry.byPriority[issue.priority as typeof priorityOrder[number]]++;
+    }
+    if (issue.status && statusOrderAll.includes(issue.status as typeof statusOrderAll[number])) {
+      const status = issue.status as typeof statusOrderAll[number];
+      entry.byStatus[status]++;
+    }
+    entry.total++;
   }
+  return Array.from(grouped.values());
+}
 
-  const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
-  const hasData = Array.from(grouped.values()).some(v => Object.values(v).reduce((a, b) => a + b, 0) > 0);
+function resolveIssueActivity(props: IssueChartProps): DashboardIssueActivityDay[] {
+  if (Array.isArray(props.activity)) return props.activity;
+  if (Array.isArray(props.issues)) return aggregateIssues(props.issues);
+  return [];
+}
+
+export function PriorityChart(props: IssueChartProps) {
+  const activity = resolveIssueActivity(props);
+  const days = activity.length > 0 ? activity.map((day) => day.date) : getLast14Days();
+  const grouped = new Map(activity.map((day) => [day.date, day]));
+
+  const maxValue = Math.max(...activity.map(v => v.total), 1);
+  const hasData = activity.some(v => v.total > 0);
+  const totals = activity.reduce(
+    (acc, day) => {
+      for (const priority of priorityOrder) acc[priority] += day.byPriority[priority];
+      return acc;
+    },
+    { critical: 0, high: 0, medium: 0, low: 0 },
+  );
+  const totalIssues = Object.values(totals).reduce((sum, count) => sum + count, 0);
 
   if (!hasData) return <p className="text-xs text-muted-foreground">No tasks</p>;
 
   return (
-    <div>
+    <ChartA11yFrame
+      label="Issues by priority for the last 14 days"
+      summary={`${totalIssues} issues: ${totals.critical} critical, ${totals.high} high, ${totals.medium} medium, ${totals.low} low.`}
+    >
       <div className="flex items-end gap-[3px] h-20">
         {days.map(day => {
-          const entry = grouped.get(day)!;
-          const total = Object.values(entry).reduce((a, b) => a + b, 0);
+          const entry = grouped.get(day) ?? newIssueActivityBucket(day);
+          const total = entry.total;
           const heightPct = (total / maxValue) * 100;
           return (
             <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
-                  {priorityOrder.map(p => entry[p] > 0 ? (
-                    <div key={p} style={{ flex: entry[p], backgroundColor: priorityColors[p] }} />
+                  {priorityOrder.map(p => entry.byPriority[p] > 0 ? (
+                    <div key={p} style={{ flex: entry.byPriority[p], backgroundColor: priorityColors[p] }} />
                   ) : null)}
                 </div>
               ) : (
@@ -170,7 +242,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
       </div>
       <DateLabels days={days} />
       <ChartLegend items={priorityOrder.map(p => ({ color: priorityColors[p], label: p.charAt(0).toUpperCase() + p.slice(1) }))} />
-    </div>
+    </ChartA11yFrame>
   );
 }
 
@@ -194,38 +266,49 @@ const statusLabels: Record<string, string> = {
   backlog: "Backlog",
 };
 
-export function IssueStatusChart({ issues }: { issues: { status: string; createdAt: Date }[] }) {
-  const days = getLast14Days();
+const statusOrderAll = ["todo", "in_progress", "in_review", "done", "blocked", "cancelled", "backlog"] as const;
+
+export function IssueStatusChart(props: IssueChartProps) {
+  const activity = resolveIssueActivity(props);
+  const days = activity.length > 0 ? activity.map((day) => day.date) : getLast14Days();
+  const grouped = new Map(activity.map((day) => [day.date, day]));
   const allStatuses = new Set<string>();
-  const grouped = new Map<string, Record<string, number>>();
-  for (const day of days) grouped.set(day, {});
-  for (const issue of issues) {
-    const day = new Date(issue.createdAt).toISOString().slice(0, 10);
-    const entry = grouped.get(day);
-    if (!entry) continue;
-    entry[issue.status] = (entry[issue.status] ?? 0) + 1;
-    allStatuses.add(issue.status);
+  for (const day of activity) {
+    for (const status of statusOrderAll) {
+      if (day.byStatus[status] > 0) allStatuses.add(status);
+    }
   }
 
-  const statusOrder = ["todo", "in_progress", "in_review", "done", "blocked", "cancelled", "backlog"].filter(s => allStatuses.has(s));
-  const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
+  const statusOrder = statusOrderAll.filter(s => allStatuses.has(s));
+  const maxValue = Math.max(...activity.map(v => v.total), 1);
   const hasData = allStatuses.size > 0;
+  const totals = activity.reduce<Record<string, number>>((acc, day) => {
+    for (const status of statusOrderAll) acc[status] = (acc[status] ?? 0) + day.byStatus[status];
+    return acc;
+  }, {});
+  const totalIssues = Object.values(totals).reduce((sum, count) => sum + count, 0);
+  const summary = statusOrder
+    .map((status) => `${totals[status] ?? 0} ${statusLabels[status] ?? status}`)
+    .join(", ");
 
   if (!hasData) return <p className="text-xs text-muted-foreground">No tasks</p>;
 
   return (
-    <div>
+    <ChartA11yFrame
+      label="Issues by status for the last 14 days"
+      summary={`${totalIssues} issues: ${summary}.`}
+    >
       <div className="flex items-end gap-[3px] h-20">
         {days.map(day => {
-          const entry = grouped.get(day)!;
-          const total = Object.values(entry).reduce((a, b) => a + b, 0);
+          const entry = grouped.get(day) ?? newIssueActivityBucket(day);
+          const total = entry.total;
           const heightPct = (total / maxValue) * 100;
           return (
             <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
-                  {statusOrder.map(s => (entry[s] ?? 0) > 0 ? (
-                    <div key={s} style={{ flex: entry[s], backgroundColor: statusColors[s] ?? "#6b7280" }} />
+                  {statusOrder.map(s => entry.byStatus[s] > 0 ? (
+                    <div key={s} style={{ flex: entry.byStatus[s], backgroundColor: statusColors[s] ?? "#6b7280" }} />
                   ) : null)}
                 </div>
               ) : (
@@ -237,7 +320,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
       </div>
       <DateLabels days={days} />
       <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "#6b7280", label: statusLabels[s] ?? s }))} />
-    </div>
+    </ChartA11yFrame>
   );
 }
 
@@ -247,10 +330,18 @@ export function SuccessRateChart(props: RunChartProps) {
   const grouped = new Map(activity.map((day) => [day.date, day]));
 
   const hasData = activity.some(v => v.total > 0);
+  const totals = activity.reduce(
+    (acc, day) => ({ succeeded: acc.succeeded + day.succeeded, total: acc.total + day.total }),
+    { succeeded: 0, total: 0 },
+  );
+  const overallRate = totals.total > 0 ? Math.round((totals.succeeded / totals.total) * 100) : 0;
   if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
 
   return (
-    <div>
+    <ChartA11yFrame
+      label="Run success rate for the last 14 days"
+      summary={`${overallRate}% success rate, ${totals.succeeded} of ${totals.total} runs succeeded.`}
+    >
       <div className="flex items-end gap-[3px] h-20">
         {days.map(day => {
           const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 };
@@ -268,6 +359,6 @@ export function SuccessRateChart(props: RunChartProps) {
         })}
       </div>
       <DateLabels days={days} />
-    </div>
+    </ChartA11yFrame>
   );
 }
