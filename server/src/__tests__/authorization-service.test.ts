@@ -709,4 +709,104 @@ describeEmbeddedPostgres("authorization service", () => {
       grant: { permissionKey: "tasks:assign" },
     });
   });
+
+  describe("issue:mutate boundary walks the reports-to subtree", () => {
+    async function buildOrgChain(label: string) {
+      const company = await createCompany(db, label);
+      const ceo = await createAgent(db, company.id, { role: "ceo", reportsTo: null });
+      const manager = await createAgent(db, company.id, { reportsTo: ceo.id });
+      const ic = await createAgent(db, company.id, { reportsTo: manager.id });
+      const grandchild = await createAgent(db, company.id, { reportsTo: ic.id });
+      const siblingManager = await createAgent(db, company.id, { reportsTo: ceo.id });
+      const siblingIc = await createAgent(db, company.id, { reportsTo: siblingManager.id });
+      return { company, ceo, manager, ic, grandchild, siblingManager, siblingIc };
+    }
+
+    function buildDecide(db: ReturnType<typeof createDb>, actorAgentId: string, companyId: string) {
+      const svc = authorizationService(db);
+      return (assigneeAgentId: string | null, issueId: string | null = null) =>
+        svc.decide({
+          actor: { type: "agent", agentId: actorAgentId, companyId, source: "agent_key" },
+          action: "issue:mutate",
+          resource: {
+            type: "issue",
+            companyId,
+            issueId,
+            assigneeAgentId,
+            assigneeUserId: null,
+            status: "todo",
+          },
+        });
+    }
+
+    it("allows a manager to mutate an issue assigned to a direct report", async () => {
+      const org = await buildOrgChain("ManagerDirectReport");
+      const decide = buildDecide(db, org.manager.id, org.company.id);
+
+      const decision = await decide(org.ic.id);
+
+      expect(decision).toMatchObject({
+        allowed: true,
+        reason: "allow_manager_chain",
+      });
+    });
+
+    it("allows a manager to mutate an issue assigned to a grandchild report", async () => {
+      const org = await buildOrgChain("ManagerGrandchild");
+      const decide = buildDecide(db, org.manager.id, org.company.id);
+
+      const decision = await decide(org.grandchild.id);
+
+      expect(decision).toMatchObject({
+        allowed: true,
+        reason: "allow_manager_chain",
+      });
+    });
+
+    it("allows the CEO to mutate any issue in the company", async () => {
+      const org = await buildOrgChain("CeoRoot");
+      const decide = buildDecide(db, org.ceo.id, org.company.id);
+
+      const directReport = await decide(org.manager.id);
+      const grandchild = await decide(org.grandchild.id);
+      const otherSubtree = await decide(org.siblingIc.id);
+
+      expect(directReport.allowed).toBe(true);
+      expect(grandchild.allowed).toBe(true);
+      expect(otherSubtree.allowed).toBe(true);
+      expect(directReport.reason).toBe("allow_manager_chain");
+    });
+
+    it("rejects a sibling-subtree actor (preserves isolation)", async () => {
+      const org = await buildOrgChain("SiblingIsolation");
+      const decide = buildDecide(db, org.siblingManager.id, org.company.id);
+
+      const decision = await decide(org.ic.id);
+
+      expect(decision.allowed).toBe(false);
+      expect(decision.reason).toBe("deny_missing_grant");
+    });
+
+    it("rejects an IC trying to mutate their manager's issue (no upward writes)", async () => {
+      const org = await buildOrgChain("UpwardWriteBlocked");
+      const decide = buildDecide(db, org.ic.id, org.company.id);
+
+      const decision = await decide(org.manager.id);
+
+      expect(decision.allowed).toBe(false);
+      expect(decision.reason).toBe("deny_missing_grant");
+    });
+
+    it("still allows the actor to mutate their own assigned issue", async () => {
+      const org = await buildOrgChain("AssigneeSelf");
+      const decide = buildDecide(db, org.ic.id, org.company.id);
+
+      const decision = await decide(org.ic.id);
+
+      expect(decision).toMatchObject({
+        allowed: true,
+        reason: "allow_self",
+      });
+    });
+  });
 });
