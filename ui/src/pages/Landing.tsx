@@ -1020,19 +1020,16 @@ const STORY_GROUPS: {
 function StorySection() {
   return (
     <Section id="how" className="scroll-mt-20 py-20">
-      <div className="mb-14 max-w-2xl pl-11 md:pl-14">
-        <Eyebrow>
-          <span className="inline-flex items-center gap-1.5">
-            <GitBranch className="size-3.5" /> From goal to growth
-          </span>
-        </Eyebrow>
-        <h2 className="text-[clamp(26px,3.4vw,42px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
-          One story, start to finish.
-        </h2>
-        <p className="mt-4 max-w-xl text-[16px] leading-relaxed text-gray-500 dark:text-neutral-400">
-          Three chapters, six moves — set the goal, build the team, and let it run while you sleep.
-        </p>
-      </div>
+      <RailHead icon={GitBranch} kicker="From goal to growth">
+        <div className="mb-14 max-w-2xl">
+          <h2 className="text-[clamp(26px,3.4vw,42px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
+            One story, start to finish.
+          </h2>
+          <p className="mt-4 max-w-xl text-[16px] leading-relaxed text-gray-500 dark:text-neutral-400">
+            Three chapters, six moves — set the goal, build the team, and let it run while you sleep.
+          </p>
+        </div>
+      </RailHead>
 
       <div className="space-y-16 md:space-y-24">
         {STORY_GROUPS.map((g) => (
