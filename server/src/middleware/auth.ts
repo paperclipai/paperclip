@@ -22,6 +22,7 @@ const TRUSTED_PROXY_AUTH_EMAIL_ENV = "PAPERCLIP_TRUST_PROXY_AUTH_EMAIL";
 const TRUSTED_PROXY_EMAIL_HEADERS = [
   "x-auth-request-email",
   "x-forwarded-email",
+  "x-forwarded-user",
   "x-forwarded-preferred-username",
 ];
 

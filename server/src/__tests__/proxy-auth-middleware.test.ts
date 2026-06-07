@@ -76,13 +76,16 @@ describe("trusted proxy auth middleware", () => {
     expect(resolveSession).not.toHaveBeenCalled();
   });
 
-  it("provisions the allowlisted proxy user when it does not already exist", async () => {
+  it.each([
+    ["X-Forwarded-Email"],
+    ["X-Forwarded-User"],
+  ])("provisions the allowlisted proxy user from %s when it does not already exist", async (header) => {
     process.env.PAPERCLIP_TRUST_PROXY_AUTH_EMAIL = "lennie@trustedhealth.com";
     const db = createDb();
 
     const res = await request(createApp(db))
       .get("/whoami")
-      .set("X-Forwarded-Email", "lennie@trustedhealth.com");
+      .set(header, "lennie@trustedhealth.com");
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
