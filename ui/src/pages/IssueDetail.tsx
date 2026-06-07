@@ -63,7 +63,11 @@ import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
-import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
+import {
+  IssueChatThread,
+  type IssueChatComposerHandle,
+  type IssueChatRunFinalizationAction,
+} from "../components/IssueChatThread";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
@@ -161,6 +165,24 @@ import {
   type SuggestTasksInteraction,
   type IssueTreeControlMode,
 } from "@paperclipai/shared";
+
+type StopAndFinalizeRunError = Error & {
+  runCancelledBeforeStatusUpdateFailed?: boolean;
+};
+
+function createRunCancelledStatusUpdateError(err: unknown): StopAndFinalizeRunError {
+  const message = err instanceof Error
+    ? `Run was stopped, but updating the task failed: ${err.message}`
+    : "Run was stopped, but updating the task failed. Retry the task status update.";
+  const error = new Error(message) as StopAndFinalizeRunError;
+  error.runCancelledBeforeStatusUpdateFailed = true;
+  return error;
+}
+
+function didRunCancelBeforeStatusUpdateFail(err: unknown): err is StopAndFinalizeRunError {
+  return err instanceof Error &&
+    (err as StopAndFinalizeRunError).runCancelledBeforeStatusUpdateFailed === true;
+}
 
 type CommentReassignment = IssueCommentReassignment;
 type ActionableIssueThreadInteraction =
@@ -671,6 +693,7 @@ type IssueDetailChatTabProps = {
   onInterruptQueued: (runId: string) => Promise<void>;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
   onPauseWorkRun?: (runId: string) => Promise<void>;
+  runFinalizationActions?: readonly IssueChatRunFinalizationAction[];
   onCancelQueued: (commentId: string) => void;
   interruptingQueuedRunId: string | null;
   pausingWorkRunId: string | null;
@@ -738,6 +761,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onInterruptQueued,
   onDeleteComment,
   onPauseWorkRun,
+  runFinalizationActions,
   onCancelQueued,
   interruptingQueuedRunId,
   pausingWorkRunId,
@@ -948,6 +972,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         stopRunLabel="Pause work"
         stoppingRunLabel="Pausing..."
         stopRunVariant="pause"
+        runFinalizationActions={runFinalizationActions}
         onAcceptInteraction={onAcceptInteraction}
         onRejectInteraction={onRejectInteraction}
         onSubmitInteractionAnswers={(interaction, answers) =>
@@ -1966,6 +1991,45 @@ export function IssueDetail() {
         body: err instanceof Error ? err.message : "Please try again.",
         tone: "error",
       });
+    },
+  });
+  const stopAndFinalizeRun = useMutation({
+    mutationFn: async ({ runId, status }: { runId: string; status: "cancelled" | "done" }) => {
+      await heartbeatsApi.cancel(runId);
+      try {
+        return await issuesApi.update(issueId!, { status });
+      } catch (err) {
+        throw createRunCancelledStatusUpdateError(err);
+      }
+    },
+    onSuccess: ({ comment: _comment, ...nextIssue }, { status }) => {
+      const issueRefs = new Set<string>([issueId!, nextIssue.id]);
+      if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
+      mergeIssueResponseIntoCaches(issueRefs, nextIssue);
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
+      invalidateIssueRunState();
+      invalidateIssueCollections();
+      pushToast({
+        title: status === "done" ? "Run stopped and task done" : "Run stopped and task cancelled",
+        tone: "success",
+      });
+    },
+    onError: (err, { status }) => {
+      const runWasStopped = didRunCancelBeforeStatusUpdateFail(err);
+      pushToast({
+        title: runWasStopped
+          ? "Run stopped; task update failed"
+          : status === "done" ? "Stop and done failed" : "Stop and cancel failed",
+        body: err instanceof Error ? err.message : "Unable to stop the run and update the task",
+        tone: "error",
+      });
+    },
+    onSettled: (_data, err) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      if (err) invalidateIssueRunState();
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      }
     },
   });
   const handleIssuePropertiesUpdate = useCallback((data: Record<string, unknown>) => {
@@ -3087,6 +3151,34 @@ export function IssueDetail() {
   const handleInterruptQueuedRun = useCallback(async (runId: string) => {
     await interruptQueuedComment.mutateAsync(runId);
   }, [interruptQueuedComment]);
+  const runFinalizationActions = useMemo<readonly IssueChatRunFinalizationAction[]>(() => [
+    {
+      id: "cancel",
+      label: "Stop and cancel",
+      pendingLabel: "Stopping and cancelling...",
+      isPending:
+        stopAndFinalizeRun.isPending &&
+        stopAndFinalizeRun.variables?.status === "cancelled",
+      disabled: stopAndFinalizeRun.isPending,
+      onSelect: (runId) =>
+        stopAndFinalizeRun.mutateAsync({ runId, status: "cancelled" }).then(() => undefined, () => undefined),
+    },
+    {
+      id: "done",
+      label: "Stop and done",
+      pendingLabel: "Stopping and marking done...",
+      isPending:
+        stopAndFinalizeRun.isPending &&
+        stopAndFinalizeRun.variables?.status === "done",
+      disabled: stopAndFinalizeRun.isPending,
+      onSelect: (runId) =>
+        stopAndFinalizeRun.mutateAsync({ runId, status: "done" }).then(() => undefined, () => undefined),
+    },
+  ], [
+    stopAndFinalizeRun.isPending,
+    stopAndFinalizeRun.mutateAsync,
+    stopAndFinalizeRun.variables?.status,
+  ]);
   const handleAcceptInteraction = useCallback(async (
     interaction: ActionableIssueThreadInteraction,
     selectedClientKeys?: string[],
@@ -3986,6 +4078,7 @@ export function IssueDetail() {
               onPauseWorkRun={canManageTreeControl
                 ? (runId) => pauseIssueWorkRun.mutateAsync({ runId, scope: treeControlScope }).then(() => undefined)
                 : undefined}
+              runFinalizationActions={runFinalizationActions}
               onWorkModeChange={(nextMode) => {
                 const currentMode: IssueWorkMode = issue.workMode ?? "standard";
                 if (currentMode === nextMode) return;

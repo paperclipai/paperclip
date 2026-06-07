@@ -219,6 +219,11 @@ vi.mock("../components/IssueChatThread", () => ({
     onStopRun?: (runId: string) => Promise<void>;
     stopRunLabel?: string;
     stoppingRunLabel?: string;
+    runFinalizationActions?: readonly {
+      id: string;
+      label: string;
+      onSelect: (runId: string) => Promise<void> | void;
+    }[];
     footer?: ReactNode;
   }) => {
     mockIssueChatThreadRender(props);
@@ -230,6 +235,15 @@ vi.mock("../components/IssueChatThread", () => ({
             {props.stopRunLabel ?? "Stop run"}
           </button>
         ) : null}
+        {props.runFinalizationActions?.map((action) => (
+          <button
+            key={action.id}
+            type="button"
+            onClick={() => void action.onSelect("run-active-1")}
+          >
+            {action.label}
+          </button>
+        ))}
         {props.footer}
       </div>
     );
@@ -1434,6 +1448,103 @@ describe("IssueDetail", () => {
     const pauseMenuButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === "Pause work...");
     expect(pauseMenuButton).toBeTruthy();
+  });
+
+  it("routes live-run finalization actions through run cancellation before issue status update", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_progress",
+      assigneeAgentId: "agent-1",
+      executionRunId: "run-active-1",
+    }));
+    mockIssuesApi.update.mockImplementation((_id, data) =>
+      Promise.resolve(createIssue({
+        status: data.status as Issue["status"],
+        assigneeAgentId: "agent-1",
+      })),
+    );
+    mockHeartbeatsApi.cancel.mockResolvedValue(undefined);
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-1" },
+      user: { id: "user-1" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const stopAndDoneButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Stop and done");
+    expect(stopAndDoneButton).toBeTruthy();
+
+    await act(async () => {
+      stopAndDoneButton!.click();
+    });
+    await flushReact();
+
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-active-1");
+    expect(mockIssuesApi.update).toHaveBeenCalledWith("PAP-1", { status: "done" });
+    expect(mockHeartbeatsApi.cancel.mock.invocationCallOrder[0])
+      .toBeLessThan(mockIssuesApi.update.mock.invocationCallOrder[0]);
+
+    const stopAndCancelButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Stop and cancel");
+    expect(stopAndCancelButton).toBeTruthy();
+
+    await act(async () => {
+      stopAndCancelButton!.click();
+    });
+    await flushReact();
+
+    expect(mockIssuesApi.update).toHaveBeenLastCalledWith("PAP-1", { status: "cancelled" });
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledTimes(2);
+    expect(mockHeartbeatsApi.cancel.mock.invocationCallOrder[1])
+      .toBeLessThan(mockIssuesApi.update.mock.invocationCallOrder[1]);
+  });
+
+  it("reports partial success when run finalization stops the run but task status update fails", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_progress",
+      assigneeAgentId: "agent-1",
+      executionRunId: "run-active-1",
+    }));
+    mockIssuesApi.update.mockRejectedValue(new Error("Status write failed"));
+    mockHeartbeatsApi.cancel.mockResolvedValue(undefined);
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-1" },
+      user: { id: "user-1" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const stopAndDoneButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Stop and done");
+    expect(stopAndDoneButton).toBeTruthy();
+
+    await act(async () => {
+      stopAndDoneButton!.click();
+    });
+    await flushReact();
+
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-active-1");
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Run stopped; task update failed",
+      body: "Run was stopped, but updating the task failed: Status write failed",
+      tone: "error",
+    }));
   });
 
   it("passes planning work mode to the issue chat thread", async () => {
