@@ -39,12 +39,12 @@ describe("buildInviteOnboardingTextDocument", () => {
       allowedHostnames: [],
     });
 
-    expect(text).toContain("Paperclip Agent Onboarding");
+    expect(text).toContain("AGNB Agent Onboarding");
     expect(text).toContain("/api/invites/token-123/accept");
     expect(text).toContain("/api/join-requests/{requestId}/claim-api-key");
     expect(text).toContain("/api/invites/token-123/onboarding.txt");
     expect(text).toContain("/api/invites/token-123/skills/paperclip");
-    expect(text).toContain("Suggested Paperclip base URLs to try");
+    expect(text).toContain("Suggested AGNB base URLs to try");
     expect(text).toContain("http://localhost:3100");
     expect(text).toContain("host.docker.internal");
     expect(text).toContain("paperclipApiUrl");
@@ -54,7 +54,7 @@ describe("buildInviteOnboardingTextDocument", () => {
     expect(text).toContain("set the first reachable candidate as agentDefaultsPayload.paperclipApiUrl");
     expect(text).toContain("PAPERCLIP_API_KEY");
     expect(text).toContain("Use your runtime's normal skill or instruction installation path.");
-    expect(text).toContain("Decide which Paperclip adapter type matches your runtime.");
+    expect(text).toContain("Decide which AGNB adapter type matches your runtime.");
   });
 
   it("includes loopback diagnostics for authenticated/private onboarding", () => {
