@@ -162,7 +162,7 @@ export function AssetDetail() {
               <Button variant="outline" size="sm" onClick={downloadHtml}><Download className="mr-1 h-3.5 w-3.5" /> HTML</Button>
               <Button size="sm" onClick={saveFill} disabled={saveBusy}><Save className="mr-1 h-3.5 w-3.5" /> Save fill</Button>
             </div>
-            <iframe srcDoc={rendered || "<p style='font-family:sans-serif;color:#999;padding:24px'>No template HTML.</p>"} sandbox="" title="preview" className="h-[640px] w-full rounded-md border border-border bg-white" />
+            <iframe srcDoc={rendered || "<p style='font-family:sans-serif;color:#999;padding:24px'>No template HTML.</p>"} sandbox="allow-same-origin" title="preview" className="h-[640px] w-full rounded-md border border-border bg-white" />
           </div>
         </div>
       ) : (
