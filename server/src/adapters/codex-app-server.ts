@@ -118,9 +118,7 @@ function isLoopbackHost(hostname: string): boolean {
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
-function isUuidLike(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-}
+function looksLikeRemoteMissingThread(message: string): boolean {
 
 function looksLikeRemoteMissingThread(message: string): boolean {
   return /thread .* not found|unknown thread|missing rollout path/i.test(message);
