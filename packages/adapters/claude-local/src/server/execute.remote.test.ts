@@ -447,7 +447,7 @@ describe("claude remote execution", () => {
       pid: 200,
       startedAt: new Date().toISOString(),
     });
-    // Second call (retry): succeeds.
+    // Second call (attempt 2): succeeds.
 
     const logs: string[] = [];
     const result = await execute({
@@ -478,8 +478,106 @@ describe("claude remote execution", () => {
     const secondCall = runChildProcess.mock.calls[1] as unknown as [string, string, string[]] | undefined;
     expect(firstCall?.[2]).not.toContain("--resume");
     expect(secondCall?.[2]).not.toContain("--resume");
-    expect(logs.some((l) => l.includes("3221225477") && l.includes("retrying with a new process"))).toBe(true);
+    expect(logs.some((l) => l.includes("3221225477") && l.includes("attempt 1") && l.includes("attempt 2"))).toBe(true);
     expect(result.exitCode).toBe(0);
+  });
+
+  it("retries up to 3 times on repeated STATUS_ACCESS_VIOLATION crashes on a fresh run", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-fresh-crash-3x-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const violationResult = {
+      exitCode: 3221225477,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: 210,
+      startedAt: new Date().toISOString(),
+    };
+    // Attempt 1: crash. Attempt 2: crash. Attempt 3: succeeds (default mock).
+    runChildProcess.mockResolvedValueOnce(violationResult);
+    runChildProcess.mockResolvedValueOnce(violationResult);
+
+    const logs: string[] = [];
+    const result = await execute({
+      runId: "run-fresh-crash-3x",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: { command: "claude" },
+      context: {
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+      executionTransport: {},
+      onLog: async (_stream, line) => { logs.push(line); },
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(3);
+    expect(logs.some((l) => l.includes("attempt 1") && l.includes("attempt 2"))).toBe(true);
+    expect(logs.some((l) => l.includes("attempt 2") && l.includes("attempt 3"))).toBe(true);
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("surfaces the failure after 3 consecutive STATUS_ACCESS_VIOLATION crashes on a fresh run", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-fresh-crash-all-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const violationResult = {
+      exitCode: 3221225477,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: 220,
+      startedAt: new Date().toISOString(),
+    };
+    runChildProcess.mockResolvedValueOnce(violationResult);
+    runChildProcess.mockResolvedValueOnce(violationResult);
+    runChildProcess.mockResolvedValueOnce(violationResult);
+
+    const result = await execute({
+      runId: "run-fresh-crash-all",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: { command: "claude" },
+      context: {
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+      executionTransport: {},
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(3);
+    // With no stream output produced, this is not a teardown crash — it's a genuine startup
+    // failure that should surface as a real error, not an empty success.
+    expect(result.exitCode).toBe(3221225477);
+    expect(result.errorMessage).toBeTruthy();
   });
 
   it("surfaces exit 127 as an explicit missing-dependency error with the offending command", async () => {

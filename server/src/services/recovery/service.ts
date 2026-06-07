@@ -430,6 +430,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getRunLivenessStateById(companyId: string, runId: string): Promise<LatestIssueRun> {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        livenessState: heartbeatRuns.livenessState,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.id, runId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
     const [run, deferredWake] = await Promise.all([
       db
@@ -2051,6 +2073,42 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+        // Before blocking, check whether the run that triggered this continuation
+        // already posted a substantive completion. If so, a transient crash on the
+        // continuation retry (e.g. STATUS_ACCESS_VIOLATION before the agent did
+        // anything) should not strand the issue — re-queue once more as a handoff
+        // rather than blocking. Guard against infinite loops by only doing this when
+        // the failed run itself was not already a crash-handoff retry.
+        const failedContext = parseObject(latestRun?.contextSnapshot);
+        const isAlreadyCrashHandoffRetry =
+          readNonEmptyString(failedContext.source) === "issue.crashed_continuation_handoff_recovery";
+        if (!isAlreadyCrashHandoffRetry) {
+          const sourceRunId = readNonEmptyString(failedContext.retryOfRunId);
+          if (sourceRunId) {
+            const sourceRun = await getRunLivenessStateById(issue.companyId, sourceRunId);
+            if (sourceRun && isProductiveContinuationRun(sourceRun)) {
+              // The source run made real progress; the continuation crashed before it
+              // could record the final disposition. Re-queue as a handoff run so the
+              // agent can post a proper final state.
+              const queued = await enqueueStrandedIssueRecovery({
+                issueId: issue.id,
+                agentId,
+                reason: "issue_continuation_needed",
+                retryReason: "issue_continuation_needed",
+                source: "issue.crashed_continuation_handoff_recovery",
+                retryOfRunId: sourceRunId,
+              });
+              if (queued) {
+                result.continuationRequeued += 1;
+                result.issueIds.push(issue.id);
+              } else {
+                result.skipped += 1;
+              }
+              continue;
+            }
+          }
+        }
+
         const failureSummary = summarizeRunFailureForIssueComment(latestRun);
         const updated = await escalateStrandedAssignedIssue({
           issue,

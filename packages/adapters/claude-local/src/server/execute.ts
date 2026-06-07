@@ -883,7 +883,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // Claude finished its work and wrote valid non-error output, but native cleanup code
     // (Node.js addons, MCP server shutdown) crashed on exit. The run outcome should not
     // be affected — all API calls completed before the process exited.
-    const isTeardownCrash = proc.exitCode === 3221225477 && !parsedIsError;
+    // Require actual stream output (parsedStream.resultJson !== null) so that pure startup
+    // crashes — where the process dies before producing anything — are still reported as failures.
+    const isTeardownCrash = proc.exitCode === 3221225477 && !parsedIsError && parsedStream.resultJson !== null;
     const failed = isTeardownCrash ? false : ((proc.exitCode ?? 0) !== 0 || parsedIsError);
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
@@ -983,7 +985,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     // Fresh-session native crash with no output (e.g. Windows STATUS_ACCESS_VIOLATION /
     // exit 3221225477 from MCP server shutdown or native addon initialization): retry
-    // once with a new process before surfacing the failure.
+    // up to twice (3 total attempts) before surfacing the failure.
     if (
       !initial.proc.timedOut &&
       initial.proc.exitCode === 3221225477 &&
@@ -992,9 +994,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ) {
       await onLog(
         "stdout",
-        `[paperclip] Claude crashed (exit code ${initial.proc.exitCode}) before producing output; retrying with a new process.\n`,
+        `[paperclip] STATUS_ACCESS_VIOLATION (exit 3221225477) on attempt 1; retrying (attempt 2).\n`,
       );
       const retry = await runAttempt(null);
+      if (
+        !retry.proc.timedOut &&
+        retry.proc.exitCode === 3221225477 &&
+        retry.parsed === null &&
+        retry.parsedStream.resultJson === null
+      ) {
+        await onLog(
+          "stdout",
+          `[paperclip] STATUS_ACCESS_VIOLATION on attempt 2; retrying (attempt 3, final).\n`,
+        );
+        const retry2 = await runAttempt(null);
+        const retry2Result = toAdapterResult(retry2, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+        await emitRateLimitLog(retry2Result);
+        return retry2Result;
+      }
       const retryResult = toAdapterResult(retry, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
       await emitRateLimitLog(retryResult);
       return retryResult;
