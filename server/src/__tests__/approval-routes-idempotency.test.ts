@@ -363,6 +363,48 @@ describe("approval routes idempotent retries", () => {
     );
   });
 
+  it("allows a board user to resubmit an approval revision requested by an agent", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-10",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "revision_requested",
+      payload: { title: "Original request" },
+      requestedByAgentId: "agent-2",
+      requestedByUserId: null,
+    });
+    mockApprovalService.resubmit.mockResolvedValue({
+      id: "approval-10",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: { title: "Board updated request" },
+      requestedByAgentId: "agent-2",
+      requestedByUserId: null,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-10/resubmit")
+      .send({ payload: { title: "Board updated request" } });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.resubmit).toHaveBeenCalledWith("approval-10", {
+      title: "Board updated request",
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        actorType: "user",
+        actorId: "user-1",
+        agentId: null,
+        action: "approval.resubmitted",
+        entityType: "approval",
+        entityId: "approval-10",
+      }),
+    );
+  });
+
   it("lets agents create generic issue-linked board approval requests", async () => {
     mockApprovalService.create.mockResolvedValue({
       id: "approval-1",
