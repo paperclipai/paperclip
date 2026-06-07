@@ -648,7 +648,7 @@ describe("claude execute", () => {
       const capture = JSON.parse(await fs.readFile(capturePath1, "utf8")) as CapturePayload;
       expect(capture.argv).toContain("--allowedTools");
       expect(capture.argv).toContain(
-        "Task AskUserQuestion Bash(*) CronCreate CronDelete CronList Edit EnterPlanMode EnterWorktree ExitPlanMode ExitWorktree Glob Grep Monitor NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill TaskOutput TaskStop TodoWrite ToolSearch WebFetch WebSearch Write",
+        "Task AskUserQuestion Bash CronCreate CronDelete CronList Edit EnterPlanMode EnterWorktree ExitPlanMode ExitWorktree Glob Grep Monitor NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill TaskOutput TaskStop TodoWrite ToolSearch WebFetch WebSearch Write",
       );
       expect(capture.argv).not.toContain("--dangerously-skip-permissions");
       expect(capture.claudeConfigDir).toBe(path.join(remoteWorkspace, ".paperclip-runtime", "claude", "config"));

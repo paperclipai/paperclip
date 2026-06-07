@@ -12,7 +12,7 @@
 // silently disables it inside sandboxes, which can look like the tool is
 // "broken" rather than intentionally gated.
 const SANDBOX_ALLOWED_TOOLS =
-  "Task AskUserQuestion Bash(*) CronCreate CronDelete CronList Edit " +
+  "Task AskUserQuestion Bash CronCreate CronDelete CronList Edit " +
   "EnterPlanMode EnterWorktree ExitPlanMode ExitWorktree Glob Grep Monitor " +
   "NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill " +
   "TaskOutput TaskStop TodoWrite ToolSearch WebFetch WebSearch Write";
