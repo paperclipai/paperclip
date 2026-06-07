@@ -2389,23 +2389,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               ),
             );
       }),
-      // BLU-10337: only the perpetual-tracker label affects liveness classification,
-      // so the join stays cheap — match the single label name across analyzed issues.
-      issueRowsPromise.then((rows) => {
-        const issueIdsUnderAnalysis = rows.map((row) => row.id);
-        return issueIdsUnderAnalysis.length === 0
-          ? []
-          : db
-            .select({ issueId: issueLabels.issueId })
-            .from(issueLabels)
-            .innerJoin(labels, eq(issueLabels.labelId, labels.id))
-            .where(
-              and(
-                eq(labels.name, PERPETUAL_TRACKER_LABEL),
-                inArray(issueLabels.issueId, issueIdsUnderAnalysis),
-              ),
-            );
-      }),
+      // BLU-10337: only the perpetual-tracker label affects liveness classification.
+      // Match the single label name unconditionally so this runs concurrently with the
+      // issue scan instead of waiting on it — results are scoped to analyzed issues at
+      // classifier-input build time via perpetualTrackerIssueIds.has(row.id).
+      db
+        .select({ issueId: issueLabels.issueId })
+        .from(issueLabels)
+        .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+        .where(eq(labels.name, PERPETUAL_TRACKER_LABEL)),
     ]);
 
     const perpetualTrackerIssueIds = new Set(perpetualTrackerLabelRows.map((row) => row.issueId));
