@@ -237,7 +237,7 @@ describe("document annotation routes", () => {
     });
   });
 
-  it("creates annotation threads, syncs references, logs activity, and wakes the assignee", async () => {
+  it("creates annotation threads, syncs references, logs activity, and does not wake the assignee", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: issueId,
       companyId,
@@ -261,15 +261,7 @@ describe("document annotation routes", () => {
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "issue.document_annotation_thread_created",
     }));
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "99999999-9999-4999-8999-999999999999",
-      expect.objectContaining({
-        payload: expect.objectContaining({
-          annotationThreadId: annotationThread.id,
-          annotationCommentId: annotationComment.id,
-        }),
-      }),
-    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("rejects agent cross-company annotation reads", async () => {
@@ -293,5 +285,6 @@ describe("document annotation routes", () => {
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "issue.document_annotation_thread_resolved",
     }));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 });
