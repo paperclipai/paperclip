@@ -4,6 +4,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import { SiteNav } from "@/components/SiteNav";
+import { LandingFooter } from "./Landing";
 
 type Page = { path: string; title: string };
 type Group = { group: string; pages: Page[] };
@@ -158,6 +159,8 @@ export function DocsViewer() {
           )}
         </main>
       </div>
+
+      <LandingFooter />
 
       <style>{`
         .agnb-docs { font-size: 15.5px; line-height: 1.7; color: #374151; }

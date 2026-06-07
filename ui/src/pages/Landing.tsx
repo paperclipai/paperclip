@@ -754,7 +754,7 @@ export const FOOTER_COLS: { title: string; links: { label: string; href: string;
     title: "Developers",
     links: [
       { label: "Documentation", href: "/docs" },
-      { label: "API reference", href: "/api" },
+      { label: "API reference", href: "/developers/api" },
     ],
   },
   {

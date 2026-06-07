@@ -140,7 +140,7 @@ export function GetStartedPage() {
 
       <Block title="Four steps to live" intro="No credit card, no sales call. Most teams are running agents the same day.">
         <Steps items={[
-          { t: "Request access", d: "Email us for an invite. We send a one-click link scoped to your workspace." },
+          { t: "Contact sales", d: "Reach out for an invite. We send a one-click link scoped to your workspace." },
           { t: "Sign in & set your password", d: "Open the invite link, create your account, and you're in the cockpit. Email confirmation isn't required in beta." },
           { t: "Connect a data source", d: "Point AGNB at HubSpot, GSC, or your CRM. Keys are stored as encrypted secrets; sync jobs activate automatically on key presence." },
           { t: "Hire your first agent", d: "Spin up a producer under a project, give it a goal, and let the heartbeat run it. Approval gates stay on until it earns your trust." },
@@ -207,7 +207,7 @@ POST /api/agnb/jobs/reviews-sync/run`}</Code>
         <Grid items={[
           { t: "Agents →", d: "Understand roles, the org chart, and the heartbeat. /platform/agents" },
           { t: "Governance →", d: "Budgets, approvals, and the default-off model. /platform/governance" },
-          { t: "API reference →", d: "Drive everything from /api/agnb. /api" },
+          { t: "API reference →", d: "Drive everything from /api/agnb. /developers/api" },
         ]} />
       </Block>
       <CtaRow />
@@ -373,7 +373,7 @@ const DOC_CARDS = [
   { t: "Agents", d: "Roles, adapters, the org chart, and the heartbeat.", href: "/platform/agents" },
   { t: "Governance", d: "Approvals, budgets, audit, and the default-off model.", href: "/platform/governance" },
   { t: "Integrations", d: "Connectors and the key-presence activation model.", href: "/platform/integrations" },
-  { t: "API reference", d: "The /api/agnb endpoints that back the cockpit.", href: "/api" },
+  { t: "API reference", d: "The /api/agnb endpoints that back the cockpit.", href: "/developers/api" },
 ];
 
 export function DocsPage() {
@@ -896,10 +896,10 @@ export function PricingPage() {
               ) : (
                 <div className="mb-5">
                   <p className="flex items-baseline gap-1.5">
-                    <span className="text-[28px] font-extrabold tracking-tight text-gray-900 dark:text-neutral-100">{p.rate}</span>
+                    <span className="text-[28px] font-extrabold tracking-tight text-gray-900 dark:text-neutral-100">{p.rateUsd}</span>
                     <span className="text-[13px] text-gray-500 dark:text-neutral-400">/ credit</span>
                   </p>
-                  <p className="mt-1 text-[12.5px] text-gray-500 dark:text-neutral-400">{p.rateUsd} · top up from {p.min} ({p.minUsd})</p>
+                  <p className="mt-1 text-[12.5px] text-gray-500 dark:text-neutral-400">{p.rate} · top up from {p.minUsd} ({p.min})</p>
                   <p className="mt-2 inline-flex rounded-md bg-[#f97316]/10 px-2.5 py-1 font-mono text-[11px] font-medium text-[#f97316]">≈ {p.credits} credits</p>
                 </div>
               )}

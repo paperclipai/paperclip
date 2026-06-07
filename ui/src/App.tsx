@@ -453,7 +453,7 @@ export function App() {
         <Route path="platform/governance" element={<GovernancePage />} />
         <Route path="platform/integrations" element={<IntegrationsPage />} />
         <Route path="docs/*" element={<DocsViewer />} />
-        <Route path="api" element={<ApiPage />} />
+        <Route path="developers/api" element={<ApiPage />} />
         <Route path="blog" element={<BlogPage />} />
         <Route path="changelog" element={<ChangelogPage />} />
         <Route path="privacy" element={<PrivacyPage />} />
