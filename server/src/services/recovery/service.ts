@@ -584,6 +584,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
+  const WAITING_INTERACTION_KINDS = ["ask_user_questions", "request_confirmation", "suggest_tasks"] as const;
+  const WAITING_CONTINUATION_POLICIES = ["wake_assignee", "wake_on_response"] as const;
+
+  async function hasOpenWaitingInteraction(companyId: string, issueId: string) {
+    return db
+      .select({
+        id: issueThreadInteractions.id,
+        kind: issueThreadInteractions.kind,
+        continuationPolicy: issueThreadInteractions.continuationPolicy,
+      })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.issueId, issueId),
+          inArray(issueThreadInteractions.status, ["open", "pending"]),
+          inArray(issueThreadInteractions.kind, [...WAITING_INTERACTION_KINDS]),
+          inArray(issueThreadInteractions.continuationPolicy, [...WAITING_CONTINUATION_POLICIES]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function enqueueStrandedIssueRecovery(input: {
     issueId: string;
     agentId: string;
@@ -2498,6 +2522,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const openInteraction = await hasOpenWaitingInteraction(issue.companyId, issue.id);
+      if (openInteraction) {
+        logger.info(
+          { issueId: issue.id, kind: openInteraction.kind, continuationPolicy: openInteraction.continuationPolicy },
+          `skipped: open_interaction(${openInteraction.kind}, ${openInteraction.continuationPolicy})`,
+        );
         result.skipped += 1;
         continue;
       }
