@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -707,6 +708,107 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision).toMatchObject({
       allowed: true,
       grant: { permissionKey: "tasks:assign" },
+    });
+  });
+
+  describe("issue:mutate reports-to subtree boundary", () => {
+    async function buildOrgChain() {
+      const company = await createCompany(db, "MutateSubtree");
+      const ceo = await createAgent(db, company.id, { role: "ceo" });
+      const manager = await createAgent(db, company.id, { role: "engineer", reportsTo: ceo.id });
+      const ic = await createAgent(db, company.id, { role: "engineer", reportsTo: manager.id });
+      const outsider = await createAgent(db, company.id, { role: "engineer" });
+      const icIssue = await createIssue(db, company.id, { assigneeAgentId: ic.id });
+      const managerIssue = await createIssue(db, company.id, { assigneeAgentId: manager.id });
+      return { company, ceo, manager, ic, outsider, icIssue, managerIssue };
+    }
+
+    function actor(agentId: string, companyId: string) {
+      return { type: "agent" as const, agentId, companyId, runId: null, source: "agent_jwt" as const };
+    }
+
+    function issueResource(
+      issue: { id: string; companyId: string; assigneeAgentId: string | null },
+    ) {
+      return {
+        type: "issue" as const,
+        companyId: issue.companyId,
+        issueId: issue.id,
+        assigneeAgentId: issue.assigneeAgentId,
+        assigneeUserId: null,
+        projectId: null,
+        parentIssueId: null,
+        status: "todo",
+      };
+    }
+
+    it("allows a manager to mutate a direct report's issue", async () => {
+      const { company, manager, icIssue } = await buildOrgChain();
+      const decision = await authorizationService(db).decide({
+        actor: actor(manager.id, company.id),
+        action: "issue:mutate",
+        resource: issueResource(icIssue),
+      });
+      expect(decision).toMatchObject({ allowed: true, reason: "allow_manager_chain" });
+    });
+
+    it("allows the CEO to mutate a grandchild's issue across a three-deep org chain", async () => {
+      const { company, ceo, icIssue } = await buildOrgChain();
+      const decision = await authorizationService(db).decide({
+        actor: actor(ceo.id, company.id),
+        action: "issue:mutate",
+        resource: issueResource(icIssue),
+      });
+      expect(decision).toMatchObject({ allowed: true, reason: "allow_manager_chain" });
+    });
+
+    it("still denies an unrelated sibling agent (Outsider)", async () => {
+      const { company, outsider, icIssue } = await buildOrgChain();
+      const decision = await authorizationService(db).decide({
+        actor: actor(outsider.id, company.id),
+        action: "issue:mutate",
+        resource: issueResource(icIssue),
+      });
+      expect(decision.allowed).toBe(false);
+    });
+
+    it("still denies an IC writing up the chain to a manager's issue", async () => {
+      const { company, ic, managerIssue } = await buildOrgChain();
+      const decision = await authorizationService(db).decide({
+        actor: actor(ic.id, company.id),
+        action: "issue:mutate",
+        resource: issueResource(managerIssue),
+      });
+      expect(decision.allowed).toBe(false);
+    });
+
+    it("allows the assignee themselves (allow_self) before the manager walk", async () => {
+      const { company, ic, icIssue } = await buildOrgChain();
+      const decision = await authorizationService(db).decide({
+        actor: actor(ic.id, company.id),
+        action: "issue:mutate",
+        resource: issueResource(icIssue),
+      });
+      expect(decision).toMatchObject({ allowed: true, reason: "allow_self" });
+    });
+
+    it("reflects reports_to changes immediately (no stale cache)", async () => {
+      const { company, ic, outsider, icIssue } = await buildOrgChain();
+      const denied = await authorizationService(db).decide({
+        actor: actor(outsider.id, company.id),
+        action: "issue:mutate",
+        resource: issueResource(icIssue),
+      });
+      expect(denied.allowed).toBe(false);
+
+      await db.update(agents).set({ reportsTo: outsider.id }).where(eq(agents.id, ic.id));
+
+      const allowed = await authorizationService(db).decide({
+        actor: actor(outsider.id, company.id),
+        action: "issue:mutate",
+        resource: issueResource(icIssue),
+      });
+      expect(allowed).toMatchObject({ allowed: true, reason: "allow_manager_chain" });
     });
   });
 });
