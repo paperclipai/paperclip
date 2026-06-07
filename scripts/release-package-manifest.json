@@ -10,6 +10,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/antigravity-local",
+    "name": "@paperclipai/adapter-antigravity-local",
+    "publishFromCi": true
+  },
+  {
     "dir": "packages/adapters/claude-local",
     "name": "@paperclipai/adapter-claude-local",
     "publishFromCi": true
