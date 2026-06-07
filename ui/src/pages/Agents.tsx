@@ -9,9 +9,9 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
-import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
+import { agentLiveState } from "../lib/status-colors";
+import { AgentPortrait } from "../components/AgentPortrait";
 import { EntityRow } from "../components/EntityRow";
-import { AgentIcon } from "../components/AgentIconPicker";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
@@ -278,16 +278,12 @@ export function Agents() {
                     "relative before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full before:bg-primary",
                 )}
                 leading={
-                  <>
-                    <span className="relative flex h-2.5 w-2.5">
-                      <span
-                        className={`absolute inline-flex h-full w-full rounded-full ${agentStatusDot[agent.status] ?? agentStatusDotDefault}`}
-                      />
-                    </span>
-                    <span className="flex h-7 w-7 items-center justify-center rounded-[3px] border border-border bg-card">
-                      <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 text-muted-foreground" />
-                    </span>
-                  </>
+                  <AgentPortrait
+                    src={null}
+                    name={agent.name}
+                    state={agentLiveState(agent.status)}
+                    size={28}
+                  />
                 }
                 trailing={
                   <div className="flex items-center gap-3">
@@ -379,17 +375,19 @@ function OrgTreeNode({
 }) {
   const agent = agentMap.get(node.id);
 
-  const statusColor = agentStatusDot[node.status] ?? agentStatusDotDefault;
-
   return (
     <div style={{ paddingLeft: depth * 24 }}>
       <Link
         to={agent ? agentUrl(agent) : `/agents/${node.id}`}
         className={cn("flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit", agent?.pausedAt && tab !== "paused" && "opacity-50")}
       >
-        <span className="relative flex h-2.5 w-2.5 shrink-0">
-          <span className={`absolute inline-flex h-full w-full rounded-full ${statusColor}`} />
-        </span>
+        <AgentPortrait
+          src={null}
+          name={node.name}
+          state={agentLiveState(node.status)}
+          size={24}
+          className="shrink-0"
+        />
         <div className="flex-1 min-w-0">
           <span className="text-sm font-medium">{node.name}</span>
           <span className="text-xs text-muted-foreground ml-2">

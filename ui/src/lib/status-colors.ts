@@ -110,3 +110,57 @@ export const priorityColor: Record<string, string> = {
 };
 
 export const priorityColorDefault = "text-status-warning";
+
+// ---------------------------------------------------------------------------
+// Live "alive" state for the signature components (AgentFace / HeartbeatSpine /
+// AgentPortrait). Maps app statuses onto the four GLASSHOUSE life states.
+// ---------------------------------------------------------------------------
+
+/** Subset accepted by AgentFace, HeartbeatSpine, and AgentPortrait `state` props. */
+export type AgentLiveState = "running" | "blocked" | "done" | "idle";
+
+/** Agent status (active/paused/idle/running/error/pending_approval/terminated) → life state. */
+export function agentLiveState(status: string): AgentLiveState {
+  switch (status) {
+    case "running":
+      return "running";
+    case "error":
+      return "blocked";
+    default:
+      // active, idle, paused, pending_approval, terminated → quiet grey ("color is proof of life")
+      return "idle";
+  }
+}
+
+/** Run status (queued/running/succeeded/failed/timed_out/cancelled) → life state. */
+export function runLiveState(status: string): AgentLiveState {
+  switch (status) {
+    case "running":
+    case "queued":
+      return "running";
+    case "succeeded":
+      return "done";
+    case "failed":
+    case "timed_out":
+    case "terminated":
+      return "blocked";
+    default:
+      return "idle";
+  }
+}
+
+/**
+ * Deterministic per-entity cadence so a roster never beats/blinks in unison
+ * (DESIGN.md: "Each agent beats on its own cadence"). Seed with the agent id.
+ */
+export function liveCadence(seed: string): { beat: number; delay: number; look: number; scan: number } {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  const f = (h % 1000) / 1000; // 0..1, stable per seed
+  return {
+    beat: 2.0 + f * 1.2, // 2.0–3.2s
+    delay: f * 1.6, // 0–1.6s phase offset
+    look: 2.6 + f * 1.0, // 2.6–3.6s
+    scan: 1.8 + f * 0.8, // 1.8–2.6s
+  };
+}
