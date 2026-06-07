@@ -3063,6 +3063,47 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ).rejects.toMatchObject({ status: 422 });
   });
 
+  it("rejects checkout on status-blocked issues even with no formal blockedByIssueIds", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Status-blocked issue",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId,
+    });
+
+    // No blockedByIssueIds — status-only blocked. Checkout must still be rejected.
+    await expect(
+      svc.checkout(issueId, assigneeAgentId, ["todo", "blocked", "in_review"], null),
+    ).rejects.toMatchObject({ status: 422 });
+
+    // Verify status was NOT silently promoted to in_progress
+    const row = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)).then((r) => r[0]);
+    expect(row?.status).toBe("blocked");
+  });
+
   it("wakes parents only when all direct children are terminal", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();

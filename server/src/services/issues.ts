@@ -5377,6 +5377,7 @@ export function issueService(db: Db) {
           and(
             eq(issues.id, id),
             inArray(issues.status, expectedStatuses),
+            ne(issues.status, "blocked"),
             or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
             executionLockCondition,
           ),
@@ -5402,6 +5403,13 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!current) throw notFound("Issue not found");
+
+      if (current.status === "blocked") {
+        throw unprocessable("Issue is blocked — resolve blockedByIssueIds or explicitly unblock before checking out", {
+          issueId: current.id,
+          status: current.status,
+        });
+      }
 
       if (
         current.assigneeAgentId === agentId &&

@@ -138,6 +138,12 @@ import {
 } from "../services/trust-preset-resolver.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+// Guardrail 2: auto-pause an agent that posts this many consecutive comments
+// with no human or other-agent reply on the same issue.
+const CONSECUTIVE_AGENT_COMMENT_CAP = 3;
+// System CTO agent ID — receives the auto-pause notification comment.
+const SYSTEM_CTO_AGENT_ID = "1320f476-10cb-4c28-b2f6-3d313cd1a787";
+
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -713,7 +719,7 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  if (!isClosedIssueStatus(input.issueStatus)) return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -5548,7 +5554,7 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        const skipAssigneeCommentWake = selfComment || isClosed || issue.status === "blocked";
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
@@ -6709,13 +6715,46 @@ export function issueRoutes(
       blockedToTodoRecovery: reopened && reopenFromStatus === "blocked" && currentIssue.status === "todo",
     });
 
+    // Guardrail 2: consecutive agent comment cap.
+    // If the assignee agent has posted N+ consecutive comments (no human/other-agent in between),
+    // auto-pause: set the issue to blocked (which also clears checkout fields) and post a
+    // system notification tagging the CTO so a human can review before the agent resumes.
+    let autoPausedByConsecutiveCap = false;
+    if (!reopened && !isClosed && actor.actorType === "agent" && actor.actorId && actor.actorId === currentIssue.assigneeAgentId) {
+      const recentComments = await svc.listComments(id, { order: "desc", limit: CONSECUTIVE_AGENT_COMMENT_CAP + 2 });
+      let consecutiveCount = 0;
+      for (const c of recentComments) {
+        if (c.authorAgentId === actor.actorId) consecutiveCount++;
+        else break;
+      }
+      if (consecutiveCount >= CONSECUTIVE_AGENT_COMMENT_CAP) {
+        try {
+          await svc.update(id, { status: "blocked" });
+          await svc.addComment(
+            id,
+            `**[System: Auto-pause — Guardrail 2]** Agent posted ${consecutiveCount} consecutive comments with no human or other-agent reply. Issue automatically set to \`blocked\` and checkout cleared.\n\n[@CTO](agent://${SYSTEM_CTO_AGENT_ID}) — please review the thread and manually unblock (set status to \`todo\` or reassign) when appropriate.`,
+            {},
+            { authorType: "system" },
+          );
+          autoPausedByConsecutiveCap = true;
+          logger.warn(
+            { issueId: id, agentId: actor.actorId, consecutiveCount },
+            "guardrail2: auto-paused agent on consecutive comment cap",
+          );
+        } catch (err) {
+          logger.error({ err, issueId: id, agentId: actor.actorId }, "guardrail2: failed to auto-pause agent");
+        }
+      }
+    }
+
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
+      const isBlockedWithoutReopen = currentIssue.status === "blocked" && !reopened;
+      const skipWake = autoPausedByConsecutiveCap || selfComment || isClosed || isBlockedWithoutReopen;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
