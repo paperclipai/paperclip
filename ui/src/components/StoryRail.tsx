@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ComponentType, ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
@@ -22,54 +22,127 @@ function reduceMotion() {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-// ── The continuous page thread ────────────────────────────────────────────────
+// ── The page thread — an SVG line that bows out to each node ───────────────────
+
+const BASE_X = 7; // resting x of the vertical line (in the left gutter)
+
+type Seg = { y0: number; y1: number; nodes: { x: number; y: number }[] };
+
+// Break the rail into segments at large vertical gaps between nodes, so the
+// line fades out and back in between blocks (instead of one unbroken e2e line).
+// Each segment fades at both ends; the gaps are the "line breaks".
+const SEG_GAP = 1000; // px between consecutive nodes that triggers a break
+const SEG_PAD_TOP = 150;
+const SEG_PAD_BOT = 170;
+
+function buildSegments(nodes: { x: number; y: number }[], height: number): Seg[] {
+  if (!height || nodes.length === 0) return [];
+  const groups: { x: number; y: number }[][] = [[nodes[0]]];
+  for (let i = 1; i < nodes.length; i++) {
+    if (nodes[i].y - nodes[i - 1].y > SEG_GAP) groups.push([nodes[i]]);
+    else groups[groups.length - 1].push(nodes[i]);
+  }
+  return groups.map((g) => ({
+    y0: Math.max(0, g[0].y - SEG_PAD_TOP),
+    y1: Math.min(height, g[g.length - 1].y + SEG_PAD_BOT),
+    nodes: g,
+  }));
+}
+
+function railPath(seg: Seg): string {
+  const { y0, y1, nodes } = seg;
+  let d = `M ${BASE_X} ${y0}`;
+  for (const n of nodes) {
+    const ax = Math.max(BASE_X, n.x); // bow apex (out to the node)
+    d += ` L ${BASE_X} ${(n.y - 26).toFixed(1)}`;
+    d += ` C ${BASE_X} ${(n.y - 13).toFixed(1)}, ${ax} ${(n.y - 13).toFixed(1)}, ${ax} ${n.y.toFixed(1)}`;
+    d += ` C ${ax} ${(n.y + 13).toFixed(1)}, ${BASE_X} ${(n.y + 13).toFixed(1)}, ${BASE_X} ${(n.y + 26).toFixed(1)}`;
+  }
+  d += ` L ${BASE_X} ${y1}`;
+  return d;
+}
+
+function RailSvg({ rootRef }: { rootRef: React.RefObject<HTMLDivElement | null> }) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [segs, setSegs] = useState<Seg[]>([]);
+  const [size, setSize] = useState({ w: 0, h: 0 });
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const root = rootRef.current;
+      const box = boxRef.current;
+      if (!root || !box) return;
+      const br = box.getBoundingClientRect();
+      const h = root.offsetHeight;
+      const nodes = Array.from(root.querySelectorAll<HTMLElement>("[data-rail-bow]"))
+        .map((n) => {
+          const r = n.getBoundingClientRect();
+          return { x: r.left - br.left + r.width / 2, y: r.top - br.top + r.height / 2 };
+        })
+        .filter((n) => n.y >= 0)
+        .sort((a, b) => a.y - b.y);
+      setSize({ w: br.width, h });
+      setSegs(buildSegments(nodes, h));
+    };
+    measure();
+    const root = rootRef.current;
+    const ro = new ResizeObserver(measure);
+    if (root) ro.observe(root);
+    window.addEventListener("resize", measure);
+    const t1 = setTimeout(measure, 250);
+    const t2 = setTimeout(measure, 1200); // after fonts/images settle
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [rootRef]);
+
+  return (
+    <div className="pointer-events-none absolute inset-0 z-0" aria-hidden>
+      <div ref={boxRef} className="mx-auto h-full max-w-6xl">
+        {size.h > 0 && (
+          <svg
+            className="h-full w-full overflow-visible"
+            width={size.w}
+            height={size.h}
+            viewBox={`0 0 ${size.w || 1} ${size.h}`}
+            preserveAspectRatio="none"
+            fill="none"
+          >
+            <defs>
+              {segs.map((s, i) => (
+                <linearGradient key={i} id={`rail-fade-${i}`} gradientUnits="userSpaceOnUse" x1="0" y1={s.y0} x2="0" y2={s.y1}>
+                  <stop offset="0%" stopColor="#f97316" stopOpacity="0" />
+                  <stop offset="9%" stopColor="#f97316" stopOpacity="0.85" />
+                  <stop offset="91%" stopColor="#fb923c" stopOpacity="0.85" />
+                  <stop offset="100%" stopColor="#fb923c" stopOpacity="0" />
+                </linearGradient>
+              ))}
+            </defs>
+            {segs.map((s, i) => (
+              <path
+                key={i}
+                d={railPath(s)}
+                stroke={`url(#rail-fade-${i})`}
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                vectorEffect="non-scaling-stroke"
+              />
+            ))}
+          </svg>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export function PageRail({ children }: { children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [p, setP] = useState(0);
-
-  useEffect(() => {
-    if (reduceMotion()) {
-      setP(1);
-      return;
-    }
-    let raf = 0;
-    const onScroll = () => {
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        raf = 0;
-        const el = ref.current;
-        if (!el) return;
-        const r = el.getBoundingClientRect();
-        const anchor = window.innerHeight * 0.5;
-        // progress of the page body past the viewport mid-line
-        setP(Math.max(0, Math.min(1, (anchor - r.top) / Math.max(1, r.height - window.innerHeight * 0.6))));
-      });
-    };
-    onScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", onScroll);
-    return () => {
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", onScroll);
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, []);
-
   return (
     <div ref={ref} className="relative">
-      {/* line overlay — sits at the content column's left padding */}
-      <div className="pointer-events-none absolute inset-0 z-0" aria-hidden>
-        <div className="mx-auto h-full max-w-6xl px-6">
-          <div className="relative h-full">
-            <div className="absolute left-0 top-0 h-full w-px bg-black/[0.07] dark:bg-white/[0.09]" />
-            <div
-              className="absolute left-0 top-0 w-px bg-gradient-to-b from-[#f97316] via-[#fb923c] to-[#f97316]/30"
-              style={{ height: `${p * 100}%` }}
-            />
-          </div>
-        </div>
-      </div>
+      <RailSvg rootRef={ref} />
       <div className="relative z-10">{children}</div>
     </div>
   );
@@ -104,7 +177,7 @@ export function RailGroup({
   return (
     <div className="relative">
       {/* big node on the main thread */}
-      <span className="absolute left-0 top-0 z-20 -translate-x-1/2">
+      <span data-rail-bow className="absolute left-0 top-0 z-20 -translate-x-1/2">
         <GroupNode icon={icon} />
       </span>
       <div className="pl-14 md:pl-20">
@@ -201,7 +274,7 @@ export function RailHead({
 }) {
   return (
     <div className="relative">
-      <span className="absolute left-0 top-0 z-20 -translate-x-1/2">
+      <span data-rail-bow className="absolute left-0 top-0 z-20 -translate-x-1/2">
         <GroupNode icon={icon} />
       </span>
       <div className="pl-14 md:pl-20">
