@@ -5861,6 +5861,18 @@ export function issueRoutes(
       return;
     }
 
+    // Cancel orphaned runs so the Silence-Monitor doesn't generate false-positive alerts.
+    // Force-release means we gave up on the run; mark it terminal so it leaves the "running" pool.
+    const orphanedRunIds = [
+      result.previous.checkoutRunId,
+      result.previous.executionRunId,
+    ].filter((runId): runId is string => runId != null);
+    await Promise.all(
+      [...new Set(orphanedRunIds)].map((runId) =>
+        heartbeat.cancelRun(runId).catch(() => undefined),
+      ),
+    );
+
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: result.issue.companyId,
