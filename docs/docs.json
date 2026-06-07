@@ -13,12 +13,6 @@
     "dark": "/images/logo-dark.svg",
     "light": "/images/logo-light.svg"
   },
-  "topbarLinks": [
-    {
-      "name": "GitHub",
-      "url": "https://github.com/paperclip-ai/paperclip"
-    }
-  ],
   "navigation": {
     "tabs": [
       {
@@ -160,8 +154,5 @@
         ]
       }
     ]
-  },
-  "footerSocials": {
-    "github": "https://github.com/paperclip-ai/paperclip"
   }
 }
