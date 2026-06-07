@@ -823,4 +823,140 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(decision.createdByRunId).toBe(managerRunId);
   });
+
+  // FMA-2176 freshness-gate regression tests
+  // These tests prove the required behavior described in FMA-2175:
+  //   1. Repeated scans with no fresh evidence must produce at most ONE evaluation per run.
+  //   2. Genuinely new evidence (new output, events) must still allow a new evaluation.
+  //   3. The SDR 1649167f duplicate-loop shape must not recur.
+  //
+  // If the freshness gate is correctly implemented all three pass.
+  // If createOrUpdateStaleRunEvaluation still keys only on "no open evaluation exists"
+  // (i.e. the gate was not implemented), tests 1 and 3 fail with created=1 where 0 is expected.
+
+  it("freshness gate [1/3]: closing evaluation without a continue decision suppresses duplicate on next scan", async () => {
+    const now = new Date("2026-05-26T10:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // First scan: evaluation should be created.
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const firstEvaluationId = first.evaluationIssueIds[0];
+    expect(firstEvaluationId).toBeTruthy();
+
+    // Operator closes the evaluation without recording a continue/snooze decision.
+    // This simulates the false-positive dismissal pattern in the SDR duplicate loop.
+    await db
+      .update(issues)
+      .set({ status: "done", completedAt: now, updatedAt: now })
+      .where(eq(issues.id, firstEvaluationId!));
+
+    // No new output or events have occurred on the run — no fresh evidence.
+    // A second scan should NOT spawn another evaluation.
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(second.created).toBe(0, "Freshness gate must suppress a sibling when no new evidence exists");
+
+    // Third scan — still no new evidence — still no new evaluation.
+    const third = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(third.created).toBe(0, "Freshness gate must be stable across repeated scans");
+
+    // Only one evaluation issue must ever exist for this run.
+    const allEvaluations = await db
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(allEvaluations).toHaveLength(1);
+    expect(allEvaluations[0]?.status).toBe("done");
+  });
+
+  it("freshness gate [2/3]: new run output after a terminal evaluation unlocks a new evaluation", async () => {
+    const now = new Date("2026-05-26T10:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // First scan: evaluation created.
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const firstEvaluationId = first.evaluationIssueIds[0]!;
+
+    // Operator closes without a continue decision.
+    await db
+      .update(issues)
+      .set({ status: "done", completedAt: now, updatedAt: now })
+      .where(eq(issues.id, firstEvaluationId));
+
+    // Advance time: the run produces new output (fresh evidence).
+    const outputAt = new Date(now.getTime() + 5 * 60_000);
+    await db
+      .update(heartbeatRuns)
+      .set({ lastOutputAt: outputAt, lastOutputSeq: 5, lastOutputStream: "stdout", updatedAt: outputAt })
+      .where(eq(heartbeatRuns.id, runId));
+
+    // A scan after new output should create a fresh evaluation.
+    const nowWithNewOutput = new Date(outputAt.getTime() + ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000);
+    const second = await heartbeat.scanSilentActiveRuns({ now: nowWithNewOutput, companyId });
+    expect(second.created).toBe(1, "New run output must be accepted as fresh evidence to trigger a new evaluation");
+    expect(second.evaluationIssueIds[0]).not.toBe(firstEvaluationId);
+
+    const activeEvaluations = await db
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")))
+      .then((rows) => rows.filter((r) => !["done", "cancelled"].includes(r.status)));
+    expect(activeEvaluations).toHaveLength(1);
+  });
+
+  it("freshness gate [3/3]: SDR 1649167f duplicate-loop shape — repeated close cycles create at most one evaluation", async () => {
+    // Reproduces the loop observed on SDR run 1649167f-3c60-46f6-876d-ae6fa239f764:
+    //   close evaluation → next scan spawns identical sibling → close → next scan → ...
+    // After the freshness gate, the loop must be broken: at most one evaluation per run.
+    const now = new Date("2026-05-26T10:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // Simulate 5 close→scan cycles (as observed in the live queue).
+    for (let cycle = 0; cycle < 5; cycle++) {
+      const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+      if (cycle === 0) {
+        // First scan must create the evaluation.
+        expect(scan.created).toBe(1);
+      } else {
+        // All subsequent scans after close must not create new evaluations.
+        expect(scan.created).toBe(
+          0,
+          `Cycle ${cycle}: freshness gate must suppress duplicate creation after prior evaluation was closed without new evidence`,
+        );
+      }
+
+      // Close the active evaluation (simulating the operator resolving each review).
+      const openEvalIds = scan.evaluationIssueIds;
+      for (const evalId of openEvalIds) {
+        await db
+          .update(issues)
+          .set({ status: "done", completedAt: now, updatedAt: now })
+          .where(eq(issues.id, evalId));
+      }
+    }
+
+    // Final assertion: total evaluations across all cycles must be exactly 1.
+    const totalEvaluations = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(totalEvaluations).toHaveLength(
+      1,
+      "Freshness gate must limit total evaluations to 1 for an unchanging run regardless of how many times prior evaluations are closed",
+    );
+  });
 });

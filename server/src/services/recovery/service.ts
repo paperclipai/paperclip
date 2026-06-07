@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lte, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -844,6 +844,218 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function findLatestTerminalStaleRunEvaluation(companyId: string, runId: string) {
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        updatedAt: issues.updatedAt,
+        createdAt: issues.createdAt,
+        completedAt: issues.completedAt,
+        cancelledAt: issues.cancelledAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1);
+    return row ?? null;
+  }
+
+  function staleRunEvaluationFreshnessAnchor(input: {
+    createdAt: Date;
+    updatedAt: Date;
+    completedAt: Date | null;
+    cancelledAt: Date | null;
+  }) {
+    return input.completedAt ?? input.cancelledAt ?? input.updatedAt ?? input.createdAt;
+  }
+
+  function staleActiveRunReasonSignature(level: "suspicious" | "critical") {
+    return `output_silence:${level}`;
+  }
+
+  const SOURCE_FRESHNESS_ACTIVITY_KEYS = [
+    "status",
+    "assigneeAgentId",
+    "assigneeUserId",
+    "priority",
+    "workMode",
+    "blockedByIssueIds",
+    "executionPolicy",
+    "executionState",
+    "monitorNextCheckAt",
+    "monitorWakeRequestedAt",
+    "monitorLastTriggeredAt",
+    "monitorAttemptCount",
+    "monitorNotes",
+    "monitorScheduledBy",
+    "executionWorkspaceId",
+    "executionWorkspacePreference",
+    "executionWorkspaceSettings",
+  ] as const;
+
+  function hasFreshSourceIssueActivityDetails(details: Record<string, unknown>) {
+    if (asBoolean(details.resumeIntent, false) || asBoolean(details.reopened, false)) return true;
+    const previous = parseObject(details._previous);
+    return SOURCE_FRESHNESS_ACTIVITY_KEYS.some((key) =>
+      Object.prototype.hasOwnProperty.call(details, key) ||
+      Object.prototype.hasOwnProperty.call(previous, key)
+    );
+  }
+
+  async function collectStaleRunFreshnessSignals(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect | null;
+    latestTerminalEvaluation: NonNullable<Awaited<ReturnType<typeof findLatestTerminalStaleRunEvaluation>>>;
+    level: "suspicious" | "critical";
+    now: Date;
+  }) {
+    const reasons = new Set<string>();
+    const freshnessSince = staleRunEvaluationFreshnessAnchor(input.latestTerminalEvaluation);
+
+    if (input.level === "critical" && input.latestTerminalEvaluation.priority !== "high") {
+      reasons.add("threshold_band_crossed");
+    }
+    if (input.run.lastOutputAt && input.run.lastOutputAt > freshnessSince) {
+      reasons.add("run_output_delta");
+    }
+
+    const [recentRunEvent, sourceUpdates, activeRecoveryAction, expiredQuietDecision] = await Promise.all([
+      db
+        .select({ id: heartbeatRunEvents.id })
+        .from(heartbeatRunEvents)
+        .where(
+          and(
+            eq(heartbeatRunEvents.companyId, input.run.companyId),
+            eq(heartbeatRunEvents.runId, input.run.id),
+            gt(heartbeatRunEvents.createdAt, freshnessSince),
+          ),
+        )
+        .orderBy(desc(heartbeatRunEvents.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      input.sourceIssue
+        ? db
+          .select({ details: activityLog.details })
+          .from(activityLog)
+          .where(
+            and(
+              eq(activityLog.companyId, input.run.companyId),
+              eq(activityLog.action, "issue.updated"),
+              eq(activityLog.entityType, "issue"),
+              eq(activityLog.entityId, input.sourceIssue.id),
+              gt(activityLog.createdAt, freshnessSince),
+            ),
+          )
+          .orderBy(desc(activityLog.createdAt))
+          .limit(10)
+        : Promise.resolve([]),
+      input.sourceIssue
+        ? db
+          .select({
+            id: issueRecoveryActions.id,
+            kind: issueRecoveryActions.kind,
+            status: issueRecoveryActions.status,
+            updatedAt: issueRecoveryActions.updatedAt,
+          })
+          .from(issueRecoveryActions)
+          .where(
+            and(
+              eq(issueRecoveryActions.companyId, input.run.companyId),
+              eq(issueRecoveryActions.sourceIssueId, input.sourceIssue.id),
+              inArray(issueRecoveryActions.status, ["active", "escalated"]),
+              gt(issueRecoveryActions.updatedAt, freshnessSince),
+            ),
+          )
+          .orderBy(desc(issueRecoveryActions.updatedAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      db
+        .select({
+          id: heartbeatRunWatchdogDecisions.id,
+          decision: heartbeatRunWatchdogDecisions.decision,
+        })
+        .from(heartbeatRunWatchdogDecisions)
+        .where(
+          and(
+            eq(heartbeatRunWatchdogDecisions.companyId, input.run.companyId),
+            eq(heartbeatRunWatchdogDecisions.runId, input.run.id),
+            eq(heartbeatRunWatchdogDecisions.evaluationIssueId, input.latestTerminalEvaluation.id),
+            inArray(heartbeatRunWatchdogDecisions.decision, ["snooze", "continue"]),
+            lte(heartbeatRunWatchdogDecisions.snoozedUntil, input.now),
+          ),
+        )
+        .orderBy(desc(heartbeatRunWatchdogDecisions.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    if (recentRunEvent) {
+      reasons.add("run_event_delta");
+    }
+    if (sourceUpdates.some((row) => hasFreshSourceIssueActivityDetails(parseObject(row.details)))) {
+      reasons.add("source_issue_delta");
+    }
+    if (activeRecoveryAction) {
+      reasons.add("recovery_action_delta");
+    }
+    if (expiredQuietDecision) {
+      reasons.add("expired_quiet_window");
+    }
+
+    return {
+      freshnessSince,
+      reasons: Array.from(reasons),
+      staleReasonSignature: staleActiveRunReasonSignature(input.level),
+    };
+  }
+
+  async function recordSuppressedDuplicateStaleRunEvaluation(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect | null;
+    latestTerminalEvaluation: NonNullable<Awaited<ReturnType<typeof findLatestTerminalStaleRunEvaluation>>>;
+    level: "suspicious" | "critical";
+    freshnessSince: Date;
+    staleReasonSignature: string;
+  }) {
+    const payload = {
+      previousEvaluationIssueId: input.latestTerminalEvaluation.id,
+      previousEvaluationIssueIdentifier: input.latestTerminalEvaluation.identifier,
+      previousEvaluationStatus: input.latestTerminalEvaluation.status,
+      previousEvaluationResolvedAt: input.freshnessSince.toISOString(),
+      sourceIssueId: input.sourceIssue?.id ?? null,
+      sourceIssueIdentifier: input.sourceIssue?.identifier ?? null,
+      level: input.level,
+      staleReasonSignature: input.staleReasonSignature,
+    };
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      action: "heartbeat.output_stale_duplicate_suppressed",
+      entityType: "heartbeat_run",
+      entityId: input.run.id,
+      details: {
+        source: "recovery.scan_silent_active_runs",
+        ...payload,
+      },
+    });
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1531,6 +1743,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
       }
       return { kind: "existing" as const, evaluationIssueId: existing.id };
+    }
+
+    const latestTerminalEvaluation = await findLatestTerminalStaleRunEvaluation(input.run.companyId, input.run.id);
+    if (latestTerminalEvaluation) {
+      const freshness = await collectStaleRunFreshnessSignals({
+        run: input.run,
+        sourceIssue,
+        latestTerminalEvaluation,
+        level,
+        now: input.now,
+      });
+      if (freshness.reasons.length === 0) {
+        await recordSuppressedDuplicateStaleRunEvaluation({
+          run: input.run,
+          sourceIssue,
+          latestTerminalEvaluation,
+          level,
+          freshnessSince: freshness.freshnessSince,
+          staleReasonSignature: freshness.staleReasonSignature,
+        });
+        return { kind: "skipped" as const };
+      }
     }
 
     const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
