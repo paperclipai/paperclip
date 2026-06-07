@@ -14,6 +14,7 @@ import {
   accessService,
   heartbeatService,
   issueApprovalService,
+  issueService,
   logActivity,
   secretService,
 } from "../services/index.js";
@@ -39,8 +40,177 @@ export function approvalRoutes(
     pluginWorkerManager: options.pluginWorkerManager,
   });
   const issueApprovalsSvc = issueApprovalService(db);
+  const issuesSvc = issueService(db);
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+
+  function approvalDecisionContext(approval: { payload: Record<string, unknown>; decisionNote?: string | null }) {
+    const payload = typeof approval.payload === "object" && approval.payload !== null ? approval.payload : {};
+    const readString = (value: unknown) => typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+    return {
+      title: readString(payload.title),
+      summary: readString(payload.summary),
+      recommendedAction: readString(payload.recommendedAction),
+      planRevisionId:
+        readString(payload.planRevisionId)
+        ?? readString(payload.revisionId)
+        ?? readString(payload.plan_revision_id)
+        ?? readString((payload.plan as Record<string, unknown> | undefined)?.revisionId),
+      decisionNote: readString(approval.decisionNote),
+    };
+  }
+
+  function approvalResolutionComment(input: {
+    approval: { id: string; status: string; type: string; payload: Record<string, unknown>; decisionNote?: string | null; requestedByAgentId?: string | null; requestedByUserId?: string | null };
+    linkedIssueIds: string[];
+    outcome: "approved" | "rejected" | "revision_requested";
+  }) {
+    const context = approvalDecisionContext(input.approval);
+    const nextOwner =
+      input.outcome === "revision_requested"
+        ? `requester${input.approval.requestedByAgentId ? ` agent ${input.approval.requestedByAgentId}` : ""}${input.approval.requestedByUserId ? ` user ${input.approval.requestedByUserId}` : ""}`
+        : "requesting agent or linked issue owner";
+    const nextAction =
+      input.outcome === "approved"
+        ? "Resume the linked issue from the approved decision."
+        : input.outcome === "rejected"
+          ? "Record the rejected decision and choose a revised path or close the linked work."
+          : "Revise and resubmit the approval, or close the linked work if the request is no longer needed.";
+    const lines = [
+      `Approval ${input.outcome}: ${input.approval.id}`,
+      "",
+      `- status: ${input.approval.status}`,
+      `- type: ${input.approval.type}`,
+      `- linkedIssueIds: ${input.linkedIssueIds.join(", ") || "none"}`,
+      `- nextOwner: ${nextOwner}`,
+      `- nextAction: ${nextAction}`,
+    ];
+    if (context.planRevisionId) lines.push(`- planRevisionId: ${context.planRevisionId}`);
+    if (context.title) lines.push(`- title: ${context.title}`);
+    if (context.summary) lines.push(`- summary: ${context.summary}`);
+    if (context.recommendedAction) lines.push(`- recommendedAction: ${context.recommendedAction}`);
+    if (context.decisionNote) lines.push(`- decisionNote: ${context.decisionNote}`);
+    return lines.join("\n");
+  }
+
+  async function transitionLinkedIssuesToApprovalWait(input: {
+    approvalId: string;
+    linkedIssueIds: string[];
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    for (const issueId of input.linkedIssueIds) {
+      const issue = await issuesSvc.getById(issueId);
+      if (!issue || !["todo", "in_progress"].includes(issue.status)) continue;
+      await issuesSvc.update(issueId, {
+        status: "in_review",
+        actorAgentId: input.actor.agentId ?? null,
+        actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+      });
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: input.actor.actorType,
+        actorId: input.actor.actorId,
+        agentId: input.actor.agentId,
+        action: "issue.approval_wait_started",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          approvalId: input.approvalId,
+          previousStatus: issue.status,
+          nextStatus: "in_review",
+          reason: "linked approval owns the next action",
+        },
+      });
+    }
+  }
+
+  async function recordLinkedApprovalDecision(input: {
+    approval: { id: string; companyId: string; status: string; type: string; payload: Record<string, unknown>; decisionNote?: string | null; requestedByAgentId?: string | null; requestedByUserId?: string | null };
+    outcome: "approved" | "rejected" | "revision_requested";
+    actorUserId: string;
+  }) {
+    const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(input.approval.id);
+    const linkedIssueIds = linkedIssues.map((issue) => issue.id);
+    const body = approvalResolutionComment({
+      approval: input.approval,
+      linkedIssueIds,
+      outcome: input.outcome,
+    });
+
+    for (const issue of linkedIssues) {
+      const comment = await issuesSvc.addComment(issue.id, body, {}, {
+        authorType: "system",
+        metadata: {
+          version: 1,
+          sections: [
+            {
+              title: "Approval resolution",
+              rows: [
+                { type: "key_value", label: "approvalId", value: input.approval.id },
+                { type: "key_value", label: "approvalStatus", value: input.approval.status },
+                { type: "key_value", label: "outcome", value: input.outcome },
+                { type: "key_value", label: "linkedIssueIds", value: linkedIssueIds.join(", ") || "none" },
+              ],
+            },
+          ],
+        },
+      });
+      await logActivity(db, {
+        companyId: input.approval.companyId,
+        actorType: "system",
+        actorId: "approval_lifecycle",
+        action: "issue.approval_resolution_recorded",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          approvalId: input.approval.id,
+          approvalStatus: input.approval.status,
+          outcome: input.outcome,
+          linkedIssueIds,
+          commentId: comment.id,
+        },
+      });
+    }
+
+    return { linkedIssues, linkedIssueIds };
+  }
+
+  async function wakeApprovalRequester(input: {
+    approval: { id: string; companyId: string; status: string; requestedByAgentId?: string | null; payload: Record<string, unknown>; decisionNote?: string | null };
+    linkedIssueIds: string[];
+    reason: "approval_approved" | "approval_rejected" | "approval_revision_requested";
+    actorUserId: string;
+  }) {
+    const primaryIssueId = input.linkedIssueIds[0] ?? null;
+    if (!input.approval.requestedByAgentId) return null;
+    const decisionContext = approvalDecisionContext(input.approval);
+    return heartbeat.wakeup(input.approval.requestedByAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: input.reason,
+      payload: {
+        approvalId: input.approval.id,
+        approvalStatus: input.approval.status,
+        issueId: primaryIssueId,
+        issueIds: input.linkedIssueIds,
+        linkedIssueIds: input.linkedIssueIds,
+        decisionContext,
+      },
+      requestedByActorType: "user",
+      requestedByActorId: input.actorUserId,
+      contextSnapshot: {
+        source: `approval.${input.approval.status}`,
+        approvalId: input.approval.id,
+        approvalStatus: input.approval.status,
+        issueId: primaryIssueId,
+        issueIds: input.linkedIssueIds,
+        linkedIssueIds: input.linkedIssueIds,
+        taskId: primaryIssueId,
+        wakeReason: input.reason,
+        decisionContext,
+      },
+    });
+  }
 
   async function requireApprovalAccess(req: Request, id: string) {
     const approval = await svc.getById(id);
@@ -121,6 +291,11 @@ export function approvalRoutes(
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
+      await transitionLinkedIssuesToApprovalWait({
+        approvalId: approval.id,
+        linkedIssueIds: uniqueIssueIds,
+        actor,
+      });
     }
 
     await logActivity(db, {
@@ -161,9 +336,11 @@ export function approvalRoutes(
     const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
-      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
-      const linkedIssueIds = linkedIssues.map((issue) => issue.id);
-      const primaryIssueId = linkedIssueIds[0] ?? null;
+      const { linkedIssueIds } = await recordLinkedApprovalDecision({
+        approval,
+        outcome: "approved",
+        actorUserId: decidedByUserId,
+      });
 
       await logActivity(db, {
         companyId: approval.companyId,
@@ -181,27 +358,11 @@ export function approvalRoutes(
 
       if (approval.requestedByAgentId) {
         try {
-          const wakeRun = await heartbeat.wakeup(approval.requestedByAgentId, {
-            source: "automation",
-            triggerDetail: "system",
+          const wakeRun = await wakeApprovalRequester({
+            approval,
+            linkedIssueIds,
             reason: "approval_approved",
-            payload: {
-              approvalId: approval.id,
-              approvalStatus: approval.status,
-              issueId: primaryIssueId,
-              issueIds: linkedIssueIds,
-            },
-            requestedByActorType: "user",
-            requestedByActorId: req.actor.userId ?? "board",
-            contextSnapshot: {
-              source: "approval.approved",
-              approvalId: approval.id,
-              approvalStatus: approval.status,
-              issueId: primaryIssueId,
-              issueIds: linkedIssueIds,
-              taskId: primaryIssueId,
-              wakeReason: "approval_approved",
-            },
+            actorUserId: decidedByUserId,
           });
 
           await logActivity(db, {
@@ -257,6 +418,12 @@ export function approvalRoutes(
     const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
+      const { linkedIssueIds } = await recordLinkedApprovalDecision({
+        approval,
+        outcome: "rejected",
+        actorUserId: decidedByUserId,
+      });
+
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
@@ -264,8 +431,57 @@ export function approvalRoutes(
         action: "approval.rejected",
         entityType: "approval",
         entityId: approval.id,
-        details: { type: approval.type },
+        details: { type: approval.type, linkedIssueIds },
       });
+
+      if (approval.requestedByAgentId) {
+        try {
+          const wakeRun = await wakeApprovalRequester({
+            approval,
+            linkedIssueIds,
+            reason: "approval_rejected",
+            actorUserId: decidedByUserId,
+          });
+
+          await logActivity(db, {
+            companyId: approval.companyId,
+            actorType: "user",
+            actorId: req.actor.userId ?? "board",
+            action: "approval.requester_wakeup_queued",
+            entityType: "approval",
+            entityId: approval.id,
+            details: {
+              requesterAgentId: approval.requestedByAgentId,
+              wakeRunId: wakeRun?.id ?? null,
+              linkedIssueIds,
+              wakeReason: "approval_rejected",
+            },
+          });
+        } catch (err) {
+          logger.warn(
+            {
+              err,
+              approvalId: approval.id,
+              requestedByAgentId: approval.requestedByAgentId,
+            },
+            "failed to queue requester wakeup after approval rejection",
+          );
+          await logActivity(db, {
+            companyId: approval.companyId,
+            actorType: "user",
+            actorId: req.actor.userId ?? "board",
+            action: "approval.requester_wakeup_failed",
+            entityType: "approval",
+            entityId: approval.id,
+            details: {
+              requesterAgentId: approval.requestedByAgentId,
+              linkedIssueIds,
+              wakeReason: "approval_rejected",
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
+      }
     }
 
     res.json(redactApprovalPayload(approval));
@@ -283,6 +499,11 @@ export function approvalRoutes(
       }
       const decidedByUserId = req.actor.userId ?? "board";
       const approval = await svc.requestRevision(id, decidedByUserId, req.body.decisionNote);
+      const { linkedIssueIds } = await recordLinkedApprovalDecision({
+        approval,
+        outcome: "revision_requested",
+        actorUserId: decidedByUserId,
+      });
 
       await logActivity(db, {
         companyId: approval.companyId,
@@ -291,8 +512,56 @@ export function approvalRoutes(
         action: "approval.revision_requested",
         entityType: "approval",
         entityId: approval.id,
-        details: { type: approval.type },
+        details: { type: approval.type, linkedIssueIds },
       });
+
+      if (approval.requestedByAgentId) {
+        try {
+          const wakeRun = await wakeApprovalRequester({
+            approval,
+            linkedIssueIds,
+            reason: "approval_revision_requested",
+            actorUserId: decidedByUserId,
+          });
+          await logActivity(db, {
+            companyId: approval.companyId,
+            actorType: "user",
+            actorId: req.actor.userId ?? "board",
+            action: "approval.requester_wakeup_queued",
+            entityType: "approval",
+            entityId: approval.id,
+            details: {
+              requesterAgentId: approval.requestedByAgentId,
+              wakeRunId: wakeRun?.id ?? null,
+              linkedIssueIds,
+              wakeReason: "approval_revision_requested",
+            },
+          });
+        } catch (err) {
+          logger.warn(
+            {
+              err,
+              approvalId: approval.id,
+              requestedByAgentId: approval.requestedByAgentId,
+            },
+            "failed to queue requester wakeup after approval revision request",
+          );
+          await logActivity(db, {
+            companyId: approval.companyId,
+            actorType: "user",
+            actorId: req.actor.userId ?? "board",
+            action: "approval.requester_wakeup_failed",
+            entityType: "approval",
+            entityId: approval.id,
+            details: {
+              requesterAgentId: approval.requestedByAgentId,
+              linkedIssueIds,
+              wakeReason: "approval_revision_requested",
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
+      }
 
       res.json(redactApprovalPayload(approval));
     },
