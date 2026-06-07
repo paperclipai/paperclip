@@ -698,6 +698,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
+    // Inject PAPERCLIP_* vars via --settings so they reach Claude Code's tool
+    // layer (Bash/PowerShell). On Windows/WSL deployments the tool shells are
+    // spawned as new WSL processes that don't inherit the Windows parent env;
+    // Claude Code's settings `env` key is the supported path for tool-level
+    // env injection and works cross-platform.
+    const settingsEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(env)) {
+      if (!key.startsWith("PAPERCLIP_")) continue;
+      if (key.endsWith("_JSON")) continue;
+      if (typeof value !== "string" || value.length === 0) continue;
+      settingsEnv[key] = value;
+    }
+    if (Object.keys(settingsEnv).length > 0) {
+      args.push("--settings", JSON.stringify({ env: settingsEnv }));
+    }
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };

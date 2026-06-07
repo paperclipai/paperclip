@@ -298,6 +298,15 @@ describe("successful run handoff decision", () => {
     expect(noticeMetadataReferencesRecoveryAction(notice.metadata, "88888888-8888-4888-8888-888888888888")).toBe(false);
   });
 
+  it("does not queue for stale_active_run_evaluation review-origin issues", () => {
+    expect(
+      decide({ issue: { ...issue, originKind: "stale_active_run_evaluation" } }),
+    ).toEqual({
+      kind: "skip",
+      reason: "review-origin issue is disposed of by analysis alone",
+    });
+  });
+
   it("recognizes new notices and legacy markdown headings for fallback deduplication", () => {
     expect(isSuccessfulRunHandoffRequiredNoticeBody(SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY)).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## Successful run missing issue disposition\n\nold body")).toBe(true);
