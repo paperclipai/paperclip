@@ -81,12 +81,12 @@ function LoginCard({ nextPath }: { nextPath: string }) {
   };
 
   const inputClass =
-    "rounded-lg border border-black/[0.1] dark:border-white/10 bg-[#FAF8F4] dark:bg-neutral-800/60 px-4 py-3 text-[15px] text-gray-900 dark:text-neutral-100 placeholder:text-gray-400 dark:placeholder:text-neutral-500 focus:border-[#f97316] focus:bg-white dark:focus:bg-neutral-800 focus:outline-none focus:ring-2 focus:ring-[#f97316]/20 transition";
+    "rounded-lg border border-black/[0.1] dark:border-white/10 bg-[#FAF8F4] dark:bg-[#2f271f]/60 px-4 py-3 text-[15px] text-gray-900 dark:text-neutral-100 placeholder:text-gray-400 dark:placeholder:text-neutral-500 focus:border-[#f97316] focus:bg-white dark:focus:bg-neutral-800 focus:outline-none focus:ring-2 focus:ring-[#f97316]/20 transition";
 
   return (
     <div
       id="signin"
-      className="w-full max-w-md rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-neutral-900 p-7 shadow-[0_8px_40px_rgba(0,0,0,0.06)] sm:p-8"
+      className="w-full max-w-md rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-[#261f19] p-7 shadow-[0_8px_40px_rgba(0,0,0,0.06)] sm:p-8"
     >
       <div className="mb-5 flex items-center justify-between">
         <div>
@@ -236,8 +236,8 @@ function Shot({
   eager?: boolean;
 }) {
   return (
-    <div className={cn("overflow-hidden rounded-xl border border-black/[0.1] bg-[#0d0d10] shadow-[0_30px_80px_-24px_rgba(0,0,0,0.5)] dark:border-white/10", className)}>
-      <div className="flex items-center gap-2 border-b border-white/10 bg-[#16161b] px-3.5 py-2.5">
+    <div className={cn("overflow-hidden rounded-xl border border-black/[0.1] bg-[#15110d] shadow-[0_30px_80px_-24px_rgba(0,0,0,0.5)] dark:border-white/10", className)}>
+      <div className="flex items-center gap-2 border-b border-white/10 bg-[#1e1813] px-3.5 py-2.5">
         <span className="size-2.5 rounded-full bg-red-500/70" />
         <span className="size-2.5 rounded-full bg-yellow-500/70" />
         <span className="size-2.5 rounded-full bg-green-500/70" />
@@ -342,8 +342,8 @@ function LiveConsole() {
   }, []);
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-black/10 bg-[#0d0d10] font-mono text-[12.5px] shadow-[0_24px_70px_-20px_rgba(0,0,0,0.45)]">
-      <div className="flex items-center gap-2 border-b border-white/10 bg-[#16161b] px-4 py-3">
+    <div className="overflow-hidden rounded-2xl border border-black/10 bg-[#15110d] font-mono text-[12.5px] shadow-[0_24px_70px_-20px_rgba(0,0,0,0.45)]">
+      <div className="flex items-center gap-2 border-b border-white/10 bg-[#1e1813] px-4 py-3">
         <span className="size-3 rounded-full bg-red-500/70" />
         <span className="size-3 rounded-full bg-yellow-500/70" />
         <span className="size-3 rounded-full bg-[#f97316]/80" />
@@ -377,13 +377,13 @@ function LiveConsole() {
 
 // ─── Diagrams (custom, AGNB data) ─────────────────────────────────────────────
 
-const cardCls = "rounded-2xl border border-black/[0.07] bg-white p-6 shadow-sm dark:border-white/[0.08] dark:bg-neutral-900";
+const cardCls = "rounded-2xl border border-black/[0.07] bg-white p-6 shadow-sm dark:border-white/[0.08] dark:bg-[#261f19]";
 
 export function OrgChart() {
   const node = (role: string, agent: string, accent = false) => (
     <div className={cn(
       "rounded-xl border px-3.5 py-2.5 text-center",
-      accent ? "border-[#f97316]/30 bg-[#f97316]/[0.06]" : "border-black/[0.08] bg-[#FAF8F4] dark:border-white/10 dark:bg-neutral-800/50",
+      accent ? "border-[#f97316]/30 bg-[#f97316]/[0.06]" : "border-black/[0.08] bg-[#FAF8F4] dark:border-white/10 dark:bg-[#2f271f]/50",
     )}>
       <div className="text-[12.5px] font-semibold text-gray-900 dark:text-neutral-100">{role}</div>
       <div className="font-mono text-[10.5px] text-gray-400 dark:text-neutral-500">{agent}</div>
@@ -444,7 +444,7 @@ export function Heartbeat() {
               <div className="font-mono text-[11px] text-gray-700 dark:text-neutral-300">{h.job}</div>
               <div className="font-mono text-[9.5px] text-gray-400 dark:text-neutral-500">every {h.every}</div>
             </div>
-            <div className="relative h-5 flex-1 rounded-md bg-[#FAF8F4] dark:bg-neutral-800/60">
+            <div className="relative h-5 flex-1 rounded-md bg-[#FAF8F4] dark:bg-[#2f271f]/60">
               {Array.from({ length: Math.min(h.n, 48) }).map((_, i) => (
                 <span
                   key={i}
@@ -550,7 +550,7 @@ export function Orbit() {
       {/* center core */}
       <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
         <span className="agnb-pulse-ring absolute inset-0 rounded-full bg-[#f97316]/40" />
-        <div className="relative flex size-16 items-center justify-center rounded-full border border-[#f97316]/30 bg-white shadow-[0_8px_30px_rgba(249,115,22,0.35)] dark:bg-neutral-900">
+        <div className="relative flex size-16 items-center justify-center rounded-full border border-[#f97316]/30 bg-white shadow-[0_8px_30px_rgba(249,115,22,0.35)] dark:bg-[#261f19]">
           <img src="/favicon.svg" alt="" className="size-8" />
         </div>
       </div>
@@ -565,7 +565,7 @@ export function Orbit() {
             className="absolute -translate-x-1/2 -translate-y-1/2"
             style={{ left: `${left}%`, top: `${top}%` }}
           >
-            <span className="whitespace-nowrap rounded-full border border-black/[0.08] bg-white px-3 py-1.5 text-[11.5px] font-semibold text-gray-800 shadow-sm dark:border-white/10 dark:bg-neutral-800 dark:text-neutral-100">
+            <span className="whitespace-nowrap rounded-full border border-black/[0.08] bg-white px-3 py-1.5 text-[11.5px] font-semibold text-gray-800 shadow-sm dark:border-white/10 dark:bg-[#2f271f] dark:text-neutral-100">
               {e}
             </span>
           </div>
@@ -725,7 +725,7 @@ function StatCallout({ pill, stat, body }: { pill: string; stat: string; body: s
         <span className="agnb-pulse-ring absolute inset-0 rounded-full bg-[#f97316]/50" />
         <span className="relative size-3.5 rounded-full bg-[#f97316]" />
       </span>
-      <span className="mb-4 inline-flex items-center gap-1.5 rounded-full border border-black/[0.08] bg-white px-3 py-1 font-mono text-[11px] uppercase tracking-[0.14em] text-gray-500 dark:border-white/10 dark:bg-neutral-900 dark:text-neutral-400">
+      <span className="mb-4 inline-flex items-center gap-1.5 rounded-full border border-black/[0.08] bg-white px-3 py-1 font-mono text-[11px] uppercase tracking-[0.14em] text-gray-500 dark:border-white/10 dark:bg-[#261f19] dark:text-neutral-400">
         {pill}
       </span>
       <p className="text-[clamp(40px,6vw,72px)] font-extrabold leading-none tracking-[-0.03em] text-[#f97316]">
@@ -804,7 +804,7 @@ const SOCIALS: { label: string; href: string; icon: React.ReactNode }[] = [
 export function LandingFooter() {
   const { theme, toggleTheme } = useTheme();
   return (
-    <footer className="border-t border-black/[0.07] bg-[#FAF8F4] dark:border-white/[0.08] dark:bg-neutral-950">
+    <footer className="border-t border-black/[0.07] bg-[#FAF8F4] dark:border-white/[0.08] dark:bg-[#1b1410]">
       {/* Top: brand rail + link grid */}
       <Section className="py-14">
         <div className="grid grid-cols-1 gap-12 lg:grid-cols-12 lg:gap-10">
@@ -867,7 +867,7 @@ export function LandingFooter() {
       </Section>
 
       {/* Stats strip */}
-      <div className="w-full border-t border-black/[0.07] bg-white dark:border-white/[0.08] dark:bg-neutral-900">
+      <div className="w-full border-t border-black/[0.07] bg-white dark:border-white/[0.08] dark:bg-[#261f19]">
         <div className="mx-auto grid max-w-6xl grid-cols-2 border-l border-black/[0.07] px-6 dark:border-white/[0.08] lg:grid-cols-4">
           {STATS.map((s) => (
             <div key={s.l} className="flex flex-col border-r border-black/[0.07] px-6 py-7 dark:border-white/[0.08]">
@@ -969,7 +969,7 @@ export function LandingPage() {
 
   if (isLoading) {
     return (
-      <div className="fixed inset-0 flex items-center justify-center bg-[#F6F3EC] dark:bg-neutral-950">
+      <div className="fixed inset-0 flex items-center justify-center bg-[#F6F3EC] dark:bg-[#1b1410]">
         <p className="text-sm text-gray-500 dark:text-neutral-400">Loading…</p>
       </div>
     );
@@ -977,7 +977,7 @@ export function LandingPage() {
 
   return (
     <div
-      className="agnb-scroll h-screen overflow-y-auto bg-[#F6F3EC] dark:bg-neutral-950 text-gray-900 dark:text-neutral-100 antialiased"
+      className="agnb-scroll h-screen overflow-y-auto bg-[#F6F3EC] dark:bg-[#1b1410] text-gray-900 dark:text-neutral-100 antialiased"
       style={{ overflowX: "clip" }}
       id="top"
     >
@@ -1010,7 +1010,7 @@ export function LandingPage() {
         {/* Announcement pill */}
         <a
           href="#cockpit"
-          className="mb-7 inline-flex items-center gap-3 rounded-full border border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-neutral-900 px-1.5 py-1.5 pr-5 text-[14px] text-gray-800 dark:text-neutral-200 shadow-sm transition hover:shadow"
+          className="mb-7 inline-flex items-center gap-3 rounded-full border border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-[#261f19] px-1.5 py-1.5 pr-5 text-[14px] text-gray-800 dark:text-neutral-200 shadow-sm transition hover:shadow"
         >
           <span className="inline-flex items-center gap-[2px] rounded-full bg-[#f97316]/10 px-3 py-1.5 text-[#f97316]">
             <span className="agnb-rev-bar" style={{ animationDelay: "0ms" }} />
@@ -1049,7 +1049,7 @@ export function LandingPage() {
           </a>
           <a
             href="#how"
-            className="inline-flex items-center gap-2 rounded-lg border border-black/[0.12] dark:border-white/15 bg-white dark:bg-neutral-900 px-7 py-3.5 text-sm font-semibold text-gray-900 dark:text-neutral-100 transition hover:bg-[#FAF8F4] dark:bg-neutral-900 dark:hover:bg-neutral-800"
+            className="inline-flex items-center gap-2 rounded-lg border border-black/[0.12] dark:border-white/15 bg-white dark:bg-[#261f19] px-7 py-3.5 text-sm font-semibold text-gray-900 dark:text-neutral-100 transition hover:bg-[#FAF8F4] dark:bg-[#261f19] dark:hover:bg-neutral-800"
           >
             Watch it run
           </a>
@@ -1121,7 +1121,7 @@ export function LandingPage() {
         </div>
         <div className="grid grid-cols-1 items-stretch gap-5 md:grid-cols-2">
           {/* Before — messy */}
-          <div className="relative overflow-hidden rounded-2xl border border-black/[0.07] bg-white p-8 dark:border-white/[0.08] dark:bg-neutral-900">
+          <div className="relative overflow-hidden rounded-2xl border border-black/[0.07] bg-white p-8 dark:border-white/[0.08] dark:bg-[#261f19]">
             <p className="mb-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-neutral-500">Before</p>
             <p className="mb-2 text-[15px] font-semibold text-gray-700 dark:text-neutral-300">12 tabs. Zero momentum.</p>
             <div className="relative h-[300px]">
@@ -1133,7 +1133,7 @@ export function LandingPage() {
                 return (
                   <span
                     key={t}
-                    className="absolute rounded-lg border border-black/[0.08] bg-[#FAF8F4] px-2.5 py-1.5 font-mono text-[11px] text-gray-400 grayscale dark:border-white/10 dark:bg-neutral-800/70 dark:text-neutral-500"
+                    className="absolute rounded-lg border border-black/[0.08] bg-[#FAF8F4] px-2.5 py-1.5 font-mono text-[11px] text-gray-400 grayscale dark:border-white/10 dark:bg-[#2f271f]/70 dark:text-neutral-500"
                     style={{ top: `${top}%`, left: `${left}%`, transform: `rotate(${rot}deg)`, opacity: 0.55 + (seed % 30) / 100 }}
                   >
                     {t}
@@ -1170,7 +1170,7 @@ export function LandingPage() {
         </h2>
         <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-4">
           {MODULES.map((m) => (
-            <div key={m.k} className={cn("group rounded-2xl border border-black/[0.07] bg-white p-7 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-white/[0.08] dark:bg-neutral-900", m.span)}>
+            <div key={m.k} className={cn("group rounded-2xl border border-black/[0.07] bg-white p-7 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-white/[0.08] dark:bg-[#261f19]", m.span)}>
               <div className="mb-4 flex size-12 items-center justify-center rounded-full bg-gradient-to-br from-amber-400 to-orange-600 text-white shadow-[0_6px_20px_rgba(249,115,22,0.4)]">
                 <m.icon className="size-[22px]" />
               </div>
@@ -1257,7 +1257,7 @@ export function LandingPage() {
         </h2>
         <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
           {TESTIMONIALS.map((t) => (
-            <div key={t.name} className="flex flex-col justify-between rounded-2xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-neutral-900 p-6 shadow-sm">
+            <div key={t.name} className="flex flex-col justify-between rounded-2xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-[#261f19] p-6 shadow-sm">
               <p className="text-[15px] leading-relaxed text-gray-700 dark:text-neutral-300">&ldquo;{t.quote}&rdquo;</p>
               <div className="mt-6 flex items-center justify-between">
                 <div>
@@ -1317,7 +1317,7 @@ export function LandingPage() {
         </h2>
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           {INTEGRATIONS.map((i) => (
-            <div key={i.name} className="group flex flex-col items-start gap-3 rounded-2xl border border-black/[0.07] bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-[#f97316]/40 hover:shadow-md dark:border-white/[0.08] dark:bg-neutral-900">
+            <div key={i.name} className="group flex flex-col items-start gap-3 rounded-2xl border border-black/[0.07] bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-[#f97316]/40 hover:shadow-md dark:border-white/[0.08] dark:bg-[#261f19]">
               <span className="flex size-11 items-center justify-center rounded-xl bg-[#f97316]/10 font-mono text-[13px] font-bold text-[#f97316] transition group-hover:bg-[#f97316] group-hover:text-white">
                 {i.abbr}
               </span>
@@ -1332,7 +1332,7 @@ export function LandingPage() {
 
       {/* ── Bring your own agent ── */}
       <Section className="py-16">
-        <div className="rounded-3xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-neutral-900 p-8 sm:p-12">
+        <div className="rounded-3xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-[#261f19] p-8 sm:p-12">
           <div className="flex flex-col items-center text-center">
             <Eyebrow>Bring your own agent</Eyebrow>
             <h2 className="max-w-2xl text-[clamp(24px,3vw,38px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
@@ -1388,7 +1388,7 @@ export function LandingPage() {
 
       {/* ── Sign in (moved out of hero) ── */}
       <Section className="py-20">
-        <div className="grid grid-cols-1 items-center gap-12 rounded-3xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-neutral-900 p-8 shadow-sm sm:p-12 lg:grid-cols-2">
+        <div className="grid grid-cols-1 items-center gap-12 rounded-3xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-[#261f19] p-8 shadow-sm sm:p-12 lg:grid-cols-2">
           <div>
             <Eyebrow>Your instance. Your agents.</Eyebrow>
             <h2 className="text-[clamp(30px,3.6vw,48px)] font-bold tracking-[-0.025em] text-gray-900 dark:text-neutral-100">

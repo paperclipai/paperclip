@@ -23,7 +23,7 @@ function Shell({ eyebrow, title, sub, children }: { eyebrow: string; title: stri
     if (t) document.documentElement.classList.toggle("dark", t === "dark");
   }, []);
   return (
-    <div className="agnb-scroll h-screen overflow-y-auto bg-[#F6F3EC] text-gray-900 antialiased dark:bg-neutral-950 dark:text-neutral-100">
+    <div className="agnb-scroll h-screen overflow-y-auto bg-[#F6F3EC] text-gray-900 antialiased dark:bg-[#1b1410] dark:text-neutral-100">
       <SiteNav />
       <section className="relative mx-auto max-w-6xl px-6 pb-10 pt-16 text-center sm:pt-20">
         <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[340px]" style={{ background: "radial-gradient(55% 55% at 50% 0%, rgba(249,115,22,0.10) 0%, transparent 70%)" }} />
@@ -37,7 +37,7 @@ function Shell({ eyebrow, title, sub, children }: { eyebrow: string; title: stri
   );
 }
 
-const card = "rounded-2xl border border-black/[0.07] bg-white p-7 shadow-sm dark:border-white/[0.08] dark:bg-neutral-900";
+const card = "rounded-2xl border border-black/[0.07] bg-white p-7 shadow-sm dark:border-white/[0.08] dark:bg-[#261f19]";
 
 function Block({ title, intro, children, className = "" }: { title?: string; intro?: string; children: React.ReactNode; className?: string }) {
   return (
@@ -67,7 +67,7 @@ function Steps({ items }: { items: { t: string; d: string }[] }) {
 
 function Code({ children }: { children: string }) {
   return (
-    <pre className="overflow-x-auto rounded-xl border border-white/10 bg-[#0d0d10] p-4 font-mono text-[12.5px] leading-relaxed text-neutral-200">
+    <pre className="overflow-x-auto rounded-xl border border-white/10 bg-[#15110d] p-4 font-mono text-[12.5px] leading-relaxed text-neutral-200">
       <code>{children}</code>
     </pre>
   );
@@ -115,7 +115,7 @@ function CtaRow() {
       <a href="/auth" className="group inline-flex items-center gap-2 rounded-lg bg-[#f97316] px-7 py-3.5 text-sm font-semibold text-white transition hover:bg-[#ea6a0c]">
         Floor it <ArrowRight className="size-4 transition group-hover:translate-x-0.5" />
       </a>
-      <a href="mailto:diggi@hirefinn.ai?subject=AGNB%20Access%20Request" className="inline-flex items-center gap-2 rounded-lg border border-black/[0.12] bg-white px-7 py-3.5 text-sm font-semibold text-gray-900 transition hover:bg-[#FAF8F4] dark:border-white/15 dark:bg-neutral-900 dark:text-neutral-100 dark:hover:bg-neutral-800">
+      <a href="mailto:diggi@hirefinn.ai?subject=AGNB%20Access%20Request" className="inline-flex items-center gap-2 rounded-lg border border-black/[0.12] bg-white px-7 py-3.5 text-sm font-semibold text-gray-900 transition hover:bg-[#FAF8F4] dark:border-white/15 dark:bg-[#261f19] dark:text-neutral-100 dark:hover:bg-neutral-800">
         Request access
       </a>
     </div>
@@ -579,7 +579,7 @@ function LegalShell({ title, updated, lines }: { title: string; updated: string;
     if (t) document.documentElement.classList.toggle("dark", t === "dark");
   }, []);
   return (
-    <div className="agnb-scroll h-screen overflow-y-auto bg-[#F6F3EC] text-gray-900 antialiased dark:bg-neutral-950 dark:text-neutral-100">
+    <div className="agnb-scroll h-screen overflow-y-auto bg-[#F6F3EC] text-gray-900 antialiased dark:bg-[#1b1410] dark:text-neutral-100">
       <SiteNav />
       <article className="mx-auto max-w-3xl px-6 py-16">
         <p className="mb-3 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[#f97316]">Legal</p>

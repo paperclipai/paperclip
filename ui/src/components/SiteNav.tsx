@@ -37,7 +37,7 @@ export function SiteNav() {
       className={cn(
         "sticky top-0 z-50 w-full backdrop-blur-xl transition-all",
         scrolled
-          ? "border-b border-black/[0.06] bg-[#F6F3EC]/80 dark:border-white/[0.06] dark:bg-neutral-950/80"
+          ? "border-b border-black/[0.06] bg-[#F6F3EC]/80 dark:border-white/[0.06] dark:bg-[#1b1410]/80"
           : "border-b border-transparent bg-transparent",
       )}
     >
@@ -73,7 +73,7 @@ export function SiteNav() {
       </div>
 
       {mobileOpen && (
-        <div className="border-t border-black/[0.06] bg-[#F6F3EC]/95 px-6 py-3 backdrop-blur dark:border-white/[0.06] dark:bg-neutral-950/95 lg:hidden">
+        <div className="border-t border-black/[0.06] bg-[#F6F3EC]/95 px-6 py-3 backdrop-blur dark:border-white/[0.06] dark:bg-[#1b1410]/95 lg:hidden">
           {LINKS.map((l) => (
             <a key={l.href} href={l.href} onClick={() => setMobileOpen(false)} className="block py-2.5 text-[15px] font-medium text-gray-600 transition hover:text-gray-900 dark:text-neutral-400 dark:hover:text-neutral-100">
               {l.label}
