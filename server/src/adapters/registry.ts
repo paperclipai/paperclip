@@ -566,13 +566,30 @@ function getDisabledAdapterTypesFromStore(): string[] {
 export function resolveExternalAdapterRegistration(
   externalAdapter: ServerAdapterModule,
 ): ServerAdapterModule {
-  return {
-    ...externalAdapter,
-    sessionManagement:
-      externalAdapter.sessionManagement
-        ?? getAdapterSessionManagement(externalAdapter.type)
-        ?? undefined,
+  const registrySessionManagement =
+    getAdapterSessionManagement(externalAdapter.type) ?? undefined;
+  const resolvedSessionManagement =
+    externalAdapter.sessionManagement ?? registrySessionManagement;
+
+  // Preserve the adapter object's full shape while applying the host-provided
+  // session-management fallback. A plain object spread drops prototype methods
+  // and non-enumerable properties, which can make externally supplied adapter
+  // capabilities (for example getConfigSchema()) disappear from the registry.
+  if (resolvedSessionManagement === externalAdapter.sessionManagement) {
+    return externalAdapter;
+  }
+
+  const descriptors = Object.getOwnPropertyDescriptors(externalAdapter);
+  descriptors.sessionManagement = {
+    value: resolvedSessionManagement,
+    enumerable: true,
+    configurable: true,
+    writable: true,
   };
+
+  const resolved = Object.create(Object.getPrototypeOf(externalAdapter)) as ServerAdapterModule;
+  Object.defineProperties(resolved, descriptors);
+  return resolved;
 }
 
 /**

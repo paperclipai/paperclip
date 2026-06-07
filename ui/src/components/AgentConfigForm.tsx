@@ -936,7 +936,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {/* Adapter-specific fields are rendered inside Permissions & Configuration */}
+          {/*
+            Local adapters render their adapter-specific fields in the
+            Permissions & Configuration section below. Non-local external
+            adapters, such as OpenClaw Bridge, do not get that section, so
+            render their schema-backed fields here instead.
+          */}
+          {!isLocal && <uiAdapter.ConfigFields {...adapterFieldProps} />}
         </div>
 
       </div>

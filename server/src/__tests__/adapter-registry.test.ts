@@ -546,6 +546,44 @@ describe("resolveExternalAdapterRegistration", () => {
 
     const resolved = resolveExternalAdapterRegistration(adapter);
 
+    expect(resolved).toBe(adapter);
     expect(resolved.sessionManagement).toBeUndefined();
+  });
+
+  it("preserves prototype adapter capabilities when adding fallback sessionManagement", () => {
+    class ExternalClaudeAdapter implements ServerAdapterModule {
+      type = "claude_local";
+
+      async execute() {
+        return { exitCode: 0, signal: null, timedOut: false };
+      }
+
+      async testEnvironment() {
+        return {
+          adapterType: "claude_local",
+          status: "pass" as const,
+          checks: [],
+          testedAt: new Date(0).toISOString(),
+        };
+      }
+
+      getConfigSchema() {
+        return {
+          version: 1,
+          fields: [{ key: "url", type: "text" as const, label: "URL" }],
+        };
+      }
+    }
+
+    const adapter = new ExternalClaudeAdapter();
+    const resolved = resolveExternalAdapterRegistration(adapter);
+
+    expect(resolved).not.toBe(adapter);
+    expect(resolved).toBeInstanceOf(ExternalClaudeAdapter);
+    expect(resolved.sessionManagement).toBeDefined();
+    expect(typeof resolved.getConfigSchema).toBe("function");
+    expect(resolved.getConfigSchema?.()).toMatchObject({
+      fields: [{ key: "url" }],
+    });
   });
 });
