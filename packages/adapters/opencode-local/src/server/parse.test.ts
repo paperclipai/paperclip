@@ -74,4 +74,97 @@ describe("parseOpenCodeJsonl", () => {
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
     expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
   });
+
+  // Gemma 4 harmony token regression — SAG-3393/SAG-3395
+  // Run dd1f4e1f/14650921 (SAG-3391) showed Gemma 4 emitting OpenAI-harmony channel
+  // control tokens as type:"text" parts, leaking raw reasoning into posted comments.
+
+  it("strips Gemma harmony — degenerate thought/channel loop yields empty summary", () => {
+    // Exact token shape from SAG-3391 leaked comment: repeated thought<channel|> tail
+    const degenerateLoop = "thought<channel|>thought<channel|>thought<channel|>thought<channel|>";
+    const stdout = JSON.stringify({
+      type: "text",
+      sessionID: "session_gem",
+      part: { text: degenerateLoop },
+    });
+
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.summary).toBe("");
+    expect(parsed.summary).not.toMatch(/<\|?channel\|?>/);
+    expect(parsed.summary).not.toMatch(/<\|?message\|?>/);
+    expect(parsed.summary).not.toContain("thought");
+  });
+
+  it("strips Gemma harmony — analysis channel discarded, final channel kept (canonical tokens)", () => {
+    const harmonyText =
+      "<|channel|>analysis<|message|>Internal reasoning: step 1, step 2." +
+      "<|channel|>final<|message|>The answer is 42.";
+    const stdout = JSON.stringify({
+      type: "text",
+      sessionID: "session_gem",
+      part: { text: harmonyText },
+    });
+
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.summary).toBe("The answer is 42.");
+    expect(parsed.summary).not.toMatch(/<\|?channel\|?>/);
+    expect(parsed.summary).not.toMatch(/<\|?message\|?>/);
+    expect(parsed.summary).not.toContain("Internal reasoning");
+  });
+
+  it("strips Gemma harmony — mangled single-pipe <channel|> variant", () => {
+    const harmonyText =
+      "<channel|>analysis<|message|>Some internal thoughts." +
+      "<channel|>final<|message|>Final answer here.";
+    const stdout = JSON.stringify({
+      type: "text",
+      sessionID: "session_gem",
+      part: { text: harmonyText },
+    });
+
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.summary).toBe("Final answer here.");
+    expect(parsed.summary).not.toMatch(/<\|?channel\|?>/);
+    expect(parsed.summary).not.toContain("Some internal thoughts");
+  });
+
+  it("strips Gemma harmony — thought channel discarded (no final channel → empty)", () => {
+    // Only a non-final channel present — entire text is reasoning, discard
+    const harmonyText = "<|channel|>thought<|message|>I am thinking about things.<|channel|>commentary<|message|>More thoughts.";
+    const stdout = JSON.stringify({
+      type: "text",
+      sessionID: "session_gem",
+      part: { text: harmonyText },
+    });
+
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.summary).toBe("");
+    expect(parsed.summary).not.toContain("thinking");
+  });
+
+  it("strips Gemma harmony — plain pre-marker text preserved alongside final channel", () => {
+    const harmonyText =
+      "Preamble text. " +
+      "<|channel|>analysis<|message|>Private reasoning." +
+      "<|channel|>final<|message|>Public answer.";
+    const stdout = JSON.stringify({
+      type: "text",
+      sessionID: "session_gem",
+      part: { text: harmonyText },
+    });
+
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.summary).toContain("Preamble text.");
+    expect(parsed.summary).toContain("Public answer.");
+    expect(parsed.summary).not.toContain("Private reasoning");
+    expect(parsed.summary).not.toMatch(/<\|?channel\|?>/);
+  });
+
+  it("plain text with no harmony markers passes through byte-for-byte (no regression)", () => {
+    for (const text of ["Hello from OpenCode", "Recovered and completed the task", "No special tokens here."]) {
+      const stdout = JSON.stringify({ type: "text", sessionID: "s", part: { text } });
+      const parsed = parseOpenCodeJsonl(stdout);
+      expect(parsed.summary).toBe(text);
+    }
+  });
 });
