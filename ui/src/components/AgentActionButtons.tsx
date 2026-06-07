@@ -17,6 +17,14 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { AgentStatusBadge } from "./StatusBadge";
 import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
@@ -158,6 +166,7 @@ export function AgentActionButtons({
   const { openNewIssue } = useDialogActions();
   const { pushToast } = useToastActions();
   const [moreOpen, setMoreOpen] = useState(false);
+  const [confirmTerminateOpen, setConfirmTerminateOpen] = useState(false);
 
   const resolvedCompanyId = companyId ?? agent.companyId;
   const canonicalAgentRef = agentRouteRef(agent);
@@ -339,15 +348,55 @@ export function AgentActionButtons({
           <button
             className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
             onClick={() => {
-              agentAction.mutate("terminate");
               setMoreOpen(false);
+              setConfirmTerminateOpen(true);
             }}
           >
             <Trash2 className="h-3 w-3" />
-            Terminate
+            Terminate Agent
           </button>
         </PopoverContent>
       </Popover>
+
+      <Dialog open={confirmTerminateOpen} onOpenChange={setConfirmTerminateOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Terminate {agent.name}?</DialogTitle>
+            <DialogDescription>
+              This permanently terminates the agent and cannot be undone. The agent stops all
+              heartbeats and can no longer be assigned work. Open issues already assigned to it stay
+              open — reassign them first if they still need an owner.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setConfirmTerminateOpen(false)}
+              disabled={agentAction.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={agentAction.isPending}
+              onClick={() => {
+                agentAction.mutate("terminate", {
+                  onSuccess: () => setConfirmTerminateOpen(false),
+                });
+              }}
+            >
+              {agentAction.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin sm:mr-1" />
+              ) : (
+                <Trash2 className="h-3.5 w-3.5 sm:mr-1" />
+              )}
+              Terminate Agent
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
