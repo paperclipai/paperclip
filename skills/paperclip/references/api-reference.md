@@ -834,6 +834,7 @@ POST /api/issues/{issueId}/interactions
 Field rules:
 
 - `payload.version` is required and must be `1`.
+- `payload.title` (≤ 240) and `payload.submitLabel` (≤ 120) are optional form-level labels, distinct from the envelope-level `title` (the thread card title).
 - `questions`: 1–10 items, each `id` unique. `options`: 1–10 per question, each `id` unique.
 - `prompt` ≤ 500 chars; option `label` ≤ 120; option `description` ≤ 500; `helpText` ≤ 1000.
 - `selectionMode` is required and is `"single"` or `"multi"`.
@@ -887,6 +888,7 @@ POST /api/issues/{issueId}/interactions
 Field rules:
 
 - `payload.version` is required and must be `1`.
+- `payload.defaultParentId` (optional issue UUID) nests every suggested task under that issue unless a task overrides it with its own `parentId`/`parentClientKey`.
 - `tasks`: 1–50 items; each `clientKey` is required and unique within the interaction; `title` is required (≤ 240).
 - Optional per task: `description`, `priority`, `workMode`, `parentClientKey`/`parentId`, `projectId`, `goalId`, `billingCode`, `labels`, `hiddenInPreview`.
 - A task may set `assigneeAgentId` **or** `assigneeUserId`, never both.
@@ -899,7 +901,7 @@ POST /api/issues/{issueId}/interactions/{interactionId}/accept
 { "selectedClientKeys": ["identify"] }
 ```
 
-Omitting `selectedClientKeys` accepts all suggested tasks.
+Omit `selectedClientKeys` entirely to accept all suggested tasks. Do **not** send an empty array — `selectedClientKeys` requires at least one entry (min 1), so `[]` returns `422`. To accept nothing, reject the interaction instead.
 
 ### Checking approval status
 
