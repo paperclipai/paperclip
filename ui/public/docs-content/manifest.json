@@ -166,52 +166,6 @@
       ]
     },
     {
-      "tab": "Deploy",
-      "groups": [
-        {
-          "group": "Deployment",
-          "pages": [
-            {
-              "path": "deploy/overview",
-              "title": "Deployment Overview"
-            },
-            {
-              "path": "deploy/local-development",
-              "title": "Local Development"
-            },
-            {
-              "path": "deploy/tailscale-private-access",
-              "title": "Tailscale Private Access"
-            },
-            {
-              "path": "deploy/docker",
-              "title": "Docker"
-            },
-            {
-              "path": "deploy/deployment-modes",
-              "title": "Deployment Modes"
-            },
-            {
-              "path": "deploy/database",
-              "title": "Database"
-            },
-            {
-              "path": "deploy/secrets",
-              "title": "Secrets Management"
-            },
-            {
-              "path": "deploy/storage",
-              "title": "Storage"
-            },
-            {
-              "path": "deploy/environment-variables",
-              "title": "Environment Variables"
-            }
-          ]
-        }
-      ]
-    },
-    {
       "tab": "Adapters",
       "groups": [
         {

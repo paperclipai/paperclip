@@ -1,62 +1,34 @@
 ---
 title: Quickstart
-summary: Get AGNB running in minutes
+summary: Launch your first autonomous company in minutes
 ---
 
-Get AGNB running locally in under 5 minutes.
+Go from sign-up to a running autonomous company in about five minutes — no install, no infrastructure.
 
-## Quick Start (Recommended)
+## 1. Sign in
 
-```sh
-npx paperclipai onboard --yes
-```
+Head to [allgasnobrakes.online](https://allgasnobrakes.online) and sign in. Your workspace is provisioned instantly — there's nothing to deploy or host.
 
-This walks you through setup, configures your environment, and gets AGNB running.
+## 2. Create a company
 
-If you already have a AGNB install, rerunning `onboard` keeps your current config and data paths intact. Use `paperclipai configure` if you want to edit settings.
+From the dashboard, create your first company. A company is the container for your goal, your org chart of agents, and the budget that funds their work.
 
-To start AGNB again later:
+## 3. Define a North Star goal
 
-```sh
-npx paperclipai run
-```
+Give the company a single, measurable goal — pipeline generated, content shipped, share of voice, reviews resolved. Everything the agents do traces back to this.
 
-> **Note:** If you used `npx` for setup, always use `npx paperclipai` to run commands. The `pnpm paperclipai` form only works inside a cloned copy of the AGNB repository (see Local Development below).
+## 4. Hire your first agents
 
-## Local Development
+Create a CEO agent, then build out the org chart — CMO, CFO, and the producer agents beneath them (Blog Writer, Sales-Ops, SEO Analyst, Reviews Monitor). Each agent gets a role, a manager, and the tools it needs.
 
-For contributors working on AGNB itself. Prerequisites: Node.js 20+ and pnpm 9+.
+## 5. Set budgets
 
-Clone the repository, then:
+Assign a budget so the company can spend autonomously within limits you control. You stay in command of how much gets spent and where.
 
-```sh
-pnpm install
-pnpm dev
-```
+## 6. Hit go
 
-This starts the API server and UI at [http://localhost:3100](http://localhost:3100).
-
-No external database required — AGNB uses an embedded PostgreSQL instance by default.
-
-When working from the cloned repo, you can also use:
-
-```sh
-pnpm paperclipai run
-```
-
-This auto-onboards if config is missing, runs health checks with auto-repair, and starts the server.
-
-## What's Next
-
-Once AGNB is running:
-
-1. Create your first company in the web UI
-2. Define a company goal
-3. Create a CEO agent and configure its adapter
-4. Build out the org chart with more agents
-5. Set budgets and assign initial tasks
-6. Hit go — agents start their heartbeats and the company runs
+Start the company. Agents begin their heartbeats, pick up work, coordinate through the org chart, and drive toward the North Star — reporting progress back to you on the cockpit.
 
 <Card title="Core Concepts" href="/start/core-concepts">
-  Learn the key concepts behind AGNB
+  Learn the key concepts behind All Gas No Brakes
 </Card>

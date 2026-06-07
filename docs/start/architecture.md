@@ -85,7 +85,7 @@ Adapters are the bridge between AGNB and agent runtimes. Each adapter is a packa
 
 - **Server module** — `execute()` function that spawns/calls the agent, plus environment diagnostics
 - **UI module** — stdout parser for the run viewer, config form fields for agent creation
-- **CLI module** — terminal formatter for `paperclipai run --watch`
+- **CLI module** — terminal formatter for the live run viewer
 
 Built-in adapters: `claude_local`, `codex_local`, `process`, `http`. You can create custom adapters for any runtime.
 

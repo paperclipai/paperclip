@@ -83,25 +83,6 @@
         ]
       },
       {
-        "tab": "Deploy",
-        "groups": [
-          {
-            "group": "Deployment",
-            "pages": [
-              "deploy/overview",
-              "deploy/local-development",
-              "deploy/tailscale-private-access",
-              "deploy/docker",
-              "deploy/deployment-modes",
-              "deploy/database",
-              "deploy/secrets",
-              "deploy/storage",
-              "deploy/environment-variables"
-            ]
-          }
-        ]
-      },
-      {
         "tab": "Adapters",
         "groups": [
           {

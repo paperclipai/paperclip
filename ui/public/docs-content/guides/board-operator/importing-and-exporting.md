@@ -21,7 +21,7 @@ my-company/
 │   └── review/SKILL.md
 ├── tasks/
 │   └── onboarding/TASK.md
-└── .paperclip.yaml     # Adapter config, env inputs, routines
+└── .paperclip.yaml          # Adapter config, env inputs, routines
 ```
 
 - **COMPANY.md** defines company name, description, and metadata.
@@ -31,38 +31,21 @@ my-company/
 
 ## Exporting a Company
 
-Export a company into a portable folder:
+Export a company from the cockpit (**Company → Export**) or via the API. You choose what to include and where it goes.
 
-```sh
-paperclipai company export <company-id> --out ./my-export
-```
+### What you can include
 
-### Options
+| Set | Description | Default |
+|-----|-------------|---------|
+| `company` | Company name, description, and metadata | included |
+| `agents` | Agent names, roles, reporting structure, and instructions | included |
+| `projects` | Project definitions and workspace config | optional |
+| `issues` / `tasks` | Issue and task descriptions | optional |
+| `skills` | Skill packages, as references or vendored content | optional |
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--out <path>` | Output directory (required) | — |
-| `--include <values>` | Comma-separated set: `company`, `agents`, `projects`, `issues`, `tasks`, `skills` | `company,agents` |
-| `--skills <values>` | Export only specific skill slugs | all |
-| `--projects <values>` | Export only specific project shortnames or IDs | all |
-| `--issues <values>` | Export specific issue identifiers or IDs | none |
-| `--project-issues <values>` | Export issues belonging to specific projects | none |
-| `--expand-referenced-skills` | Vendor skill file contents instead of keeping upstream references | `false` |
+You can scope an export to specific skill slugs, project shortnames, or issue identifiers, and choose whether to vendor referenced skill contents or keep upstream references.
 
-### Examples
-
-```sh
-# Export company with agents and projects
-paperclipai company export abc123 --out ./backup --include company,agents,projects
-
-# Export everything including tasks and skills
-paperclipai company export abc123 --out ./full-export --include company,agents,projects,tasks,skills
-
-# Export only specific skills
-paperclipai company export abc123 --out ./skills-only --include skills --skills review,deploy
-```
-
-### What Gets Exported
+### What gets exported
 
 - Company name, description, and metadata
 - Agent names, roles, reporting structure, and instructions
@@ -75,46 +58,33 @@ Secret values, machine-local paths, and database IDs are **never** exported.
 
 ## Importing a Company
 
-Import from a local directory, GitHub URL, or GitHub shorthand:
+Import from a local directory, a GitHub URL, or GitHub shorthand:
 
-```sh
-# From a local folder
-paperclipai company import ./my-export
+- Full URL — `https://github.com/org/repo`
+- Subfolder URL — `https://github.com/org/repo/tree/main/companies/acme`
+- Shorthand — `org/repo` or `org/repo/companies/acme`
 
-# From a GitHub URL
-paperclipai company import https://github.com/org/repo
-
-# From a GitHub subfolder
-paperclipai company import https://github.com/org/repo/tree/main/companies/acme
-
-# From GitHub shorthand
-paperclipai company import org/repo
-paperclipai company import org/repo/companies/acme
-```
-
-### Options
+### Import options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--target <mode>` | `new` (create a new company) or `existing` (merge into existing) | inferred from context |
-| `--company-id <id>` | Target company ID for `--target existing` | current context |
-| `--new-company-name <name>` | Override company name for `--target new` | from package |
-| `--include <values>` | Comma-separated set: `company`, `agents`, `projects`, `issues`, `tasks`, `skills` | auto-detected |
-| `--agents <list>` | Comma-separated agent slugs to import, or `all` | `all` |
-| `--collision <mode>` | How to handle name conflicts: `rename`, `skip`, or `replace` | `rename` |
-| `--ref <value>` | Git ref for GitHub imports (branch, tag, or commit) | default branch |
-| `--dry-run` | Preview what would be imported without applying | `false` |
-| `--yes` | Skip the interactive confirmation prompt | `false` |
-| `--json` | Output result as JSON | `false` |
+| Target | `new` (create a new company) or `existing` (merge into an existing one) | inferred from context |
+| Company | Target company for `existing` imports | current context |
+| New company name | Override company name for `new` imports | from package |
+| Include | Which sets to import: `company`, `agents`, `projects`, `issues`, `tasks`, `skills` | auto-detected |
+| Agents | Which agent slugs to import, or `all` | `all` |
+| Collision | How to handle name conflicts: `rename`, `skip`, or `replace` | `rename` |
+| Ref | Git ref for GitHub imports (branch, tag, or commit) | default branch |
+| Dry run | Preview what would be imported without applying | off |
 
-### Target Modes
+### Target modes
 
 - **`new`** — Creates a fresh company from the package. Good for duplicating a company template.
-- **`existing`** — Merges the package into an existing company. Use `--company-id` to specify the target.
+- **`existing`** — Merges the package into an existing company.
 
-If `--target` is not specified, AGNB infers it: if a `--company-id` is provided (or one exists in context), it defaults to `existing`; otherwise `new`.
+If a target is not specified, AGNB infers it: if a company is provided (or one exists in context), it defaults to `existing`; otherwise `new`.
 
-### Collision Strategies
+### Collision strategies
 
 When importing into an existing company, agent or project names may conflict with existing ones:
 
@@ -122,19 +92,10 @@ When importing into an existing company, agent or project names may conflict wit
 - **`skip`** — Skips entities that already exist.
 - **`replace`** — Overwrites existing entities. Only available for non-safe imports (not available through the CEO API).
 
-### Interactive Selection
+### Preview before applying
 
-When running interactively (no `--yes` or `--json` flags), the import command shows a selection picker before applying. You can choose exactly which agents, projects, skills, and tasks to import using a checkbox interface.
+Always preview first with a dry run. The preview shows:
 
-### Preview Before Applying
-
-Always preview first with `--dry-run`:
-
-```sh
-paperclipai company import org/repo --target existing --company-id abc123 --dry-run
-```
-
-The preview shows:
 - **Package contents** — How many agents, projects, tasks, and skills are in the source
 - **Import plan** — What will be created, renamed, skipped, or replaced
 - **Env inputs** — Environment variables that may need values after import
@@ -142,44 +103,9 @@ The preview shows:
 
 Imported agents always land with timer heartbeats disabled. Assignment/on-demand wake behavior from the package is preserved, but scheduled runs stay off until a board operator re-enables them.
 
-### Common Workflows
-
-**Clone a company template from GitHub:**
-
-```sh
-paperclipai company import org/company-templates/engineering-team \
-  --target new \
-  --new-company-name "My Engineering Team"
-```
-
-**Add agents from a package into your existing company:**
-
-```sh
-paperclipai company import ./shared-agents \
-  --target existing \
-  --company-id abc123 \
-  --include agents \
-  --collision rename
-```
-
-**Import a specific branch or tag:**
-
-```sh
-paperclipai company import org/repo --ref v2.0.0 --dry-run
-```
-
-**Non-interactive import (CI/scripts):**
-
-```sh
-paperclipai company import ./package \
-  --target new \
-  --yes \
-  --json
-```
-
 ## API Endpoints
 
-The CLI commands use these API endpoints under the hood:
+The same export/import flows are available over the REST API:
 
 | Action | Endpoint |
 |--------|----------|
@@ -200,4 +126,4 @@ AGNB supports several GitHub URL formats:
 - Shorthand: `org/repo`
 - Shorthand with path: `org/repo/path/to/company`
 
-Use `--ref` to pin to a specific branch, tag, or commit hash when importing from GitHub.
+Pin to a specific branch, tag, or commit hash with a Git ref when importing from GitHub.
