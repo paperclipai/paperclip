@@ -29,6 +29,12 @@ interface AssetVar {
   defaultValue: string;
 }
 
+// Funnel stages + lifecycle statuses the UI offers. Validated server-side so a
+// rogue/buggy client can't persist an out-of-set value that then renders in no
+// stat bucket and is hidden by every stage filter (a "ghost" asset).
+const STAGES = new Set(["awareness", "interest", "evaluation", "decision", "onboard", "retention"]);
+const STATUSES = new Set(["draft", "active", "archived"]);
+
 const VAR_TYPES = new Set<VarType>(["text", "number", "date", "image", "textarea"]);
 const ACRONYMS = new Set([
   "inr", "usd", "eur", "gbp",
@@ -218,6 +224,12 @@ export function registerMarketing(router: Router, db: Db) {
     if (!body.title || !body.stage || !body.kind || !body.html) {
       return res.status(400).json({ ok: false, error: "title, stage, kind, html required" });
     }
+    if (!STAGES.has(body.stage)) {
+      return res.status(400).json({ ok: false, error: "invalid stage" });
+    }
+    if (body.status !== undefined && !STATUSES.has(body.status)) {
+      return res.status(400).json({ ok: false, error: "invalid status" });
+    }
 
     const variables = extractVars(body.html);
     const result = await db.execute(sql`
@@ -247,6 +259,13 @@ export function registerMarketing(router: Router, db: Db) {
       notes?: string | null;
       bumpVersion?: boolean;
     };
+
+    if (body.stage !== undefined && !STAGES.has(body.stage)) {
+      return res.status(400).json({ ok: false, error: "invalid stage" });
+    }
+    if (body.status !== undefined && !STATUSES.has(body.status)) {
+      return res.status(400).json({ ok: false, error: "invalid status" });
+    }
 
     const sets = [sql`updated_at = ${new Date().toISOString()}`];
     if (body.title !== undefined) sets.push(sql`title = ${body.title}`);

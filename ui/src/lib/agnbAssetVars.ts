@@ -73,29 +73,41 @@ export function extractVars(html: string): AssetVar[] {
   return Array.from(seen.values());
 }
 
+/** HTML-escape a fill value so it can't break out of text/attribute context. */
+function escapeValue(v: string): string {
+  return v
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export function render(html: string, values: Record<string, string>): string {
   const blocks: string[] = [];
   const placeholder = (i: number) => ` AGNBBLOCK${i} `;
+  // Drop <script> entirely — rendered output is downloaded/saved and reopened as
+  // a live document, so template scripts are an XSS vector with no legit use here.
+  // <style> is stashed (not stripped) so variable substitution can't corrupt CSS.
   const stripped = html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, (mm) => {
-      blocks.push(mm);
-      return placeholder(blocks.length - 1);
-    })
-    .replace(/<script[\s\S]*?<\/script>/gi, (mm) => {
       blocks.push(mm);
       return placeholder(blocks.length - 1);
     });
 
+  // Fill values are user-supplied plain text — always escaped. The template
+  // markup itself is author-controlled and passes through untouched.
   let out = stripped.replace(
     /\{\{\s*([a-z_][a-z0-9_]*)(?:\s*\|\s*[a-z]+)?\s*\}\}/gi,
-    (_full, name: string) => String(values[name.toLowerCase()] ?? ""),
+    (_full, name: string) => escapeValue(String(values[name.toLowerCase()] ?? "")),
   );
   out = out.replace(
     /(?<!\{)\{\s*([a-z_][a-z0-9_]*)(?:\s*\|\s*[a-z]+)?\s*\}(?!\})/gi,
     (full, name: string) => {
       if (/[:;=]/.test(full)) return full;
       const v = values[name.toLowerCase()];
-      return v === undefined ? full : String(v);
+      return v === undefined ? full : escapeValue(String(v));
     },
   );
 
