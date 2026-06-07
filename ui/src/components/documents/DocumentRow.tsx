@@ -13,10 +13,10 @@ import {
 import type { LucideIcon } from "lucide-react";
 import type { CompanyDocumentSummary, DocumentType } from "@paperclipai/shared";
 import { EntityRow } from "../EntityRow";
-import { StatusBadge } from "../StatusBadge";
 import { Identity, deriveInitials } from "../Identity";
 import { relativeTime } from "@/lib/utils";
 import { cn } from "@/lib/utils";
+import { statusBadge, statusBadgeDefault } from "@/lib/status-colors";
 
 const DOC_TYPE_ICON: Record<DocumentType, LucideIcon> = {
   plan: ListTodo,
@@ -34,6 +34,13 @@ const STATUS_DOT: Record<string, string> = {
   archived: "bg-muted-foreground",
 };
 
+const DOC_STATUS_LABEL: Record<string, string> = {
+  draft: "Draft",
+  in_review: "In review",
+  approved: "Approved",
+  archived: "Archived",
+};
+
 export interface DocumentOwner {
   name: string;
   avatarUrl?: string | null;
@@ -47,6 +54,7 @@ interface DocumentRowProps {
   /** Short identifier shown in monospace — typically the issue document key. */
   identifier?: string;
   selected?: boolean;
+  companyPrefix?: string;
 }
 
 /**
@@ -54,7 +62,7 @@ interface DocumentRowProps {
  * issues/projects list rhythm: leading status dot + type icon, monospace
  * identifier, title, then owner / source-trust / feedback-count / updated meta.
  */
-export function DocumentRow({ document, to, owner, identifier, selected }: DocumentRowProps) {
+export function DocumentRow({ document, to, owner, identifier, selected, companyPrefix }: DocumentRowProps) {
   const TypeIcon = DOC_TYPE_ICON[document.documentType] ?? FileText;
   const counts = document.feedbackCounts;
   const openComments = counts.openComments + counts.openReviewThreads;
@@ -71,6 +79,12 @@ export function DocumentRow({ document, to, owner, identifier, selected }: Docum
 
   const resolvedIdentifier = identifier ?? primaryBacklink?.issueDocumentKey ?? undefined;
 
+  const displayIdentifier = resolvedIdentifier
+    ? companyPrefix
+      ? `${companyPrefix} · ${resolvedIdentifier}`
+      : resolvedIdentifier
+    : undefined;
+
   return (
     <EntityRow
       to={to}
@@ -84,13 +98,15 @@ export function DocumentRow({ document, to, owner, identifier, selected }: Docum
           <TypeIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         </>
       }
-      identifier={resolvedIdentifier}
+      identifier={displayIdentifier}
       title={document.title ?? "Untitled document"}
       subtitle={document.summary ?? undefined}
       reserveSubtitleSpace
       meta={
         <>
-          <StatusBadge status={document.status} />
+          <span className={cn("inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap shrink-0", statusBadge[document.status] ?? statusBadgeDefault)}>
+            {DOC_STATUS_LABEL[document.status] ?? document.status}
+          </span>
           {owner ? (
             <Identity
               name={owner.name}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Check, FileText, Search, SlidersHorizontal, X } from "lucide-react";
+import { Check, FileText, Plus, Search, SlidersHorizontal, X } from "lucide-react";
 import type { DocumentStatus, DocumentType } from "@paperclipai/shared";
 import { DOCUMENT_STATUSES, DOCUMENT_TYPES } from "@paperclipai/shared";
 import { documentsApi, type CompanyDocumentListFilters } from "../api/documents";
@@ -52,6 +52,14 @@ const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: "status", label: "Status" },
 ];
 
+const SORT_LABELS: Record<SortOption, string> = {
+  updated_desc: "Updated ↓",
+  updated_asc: "Updated ↑",
+  title_asc: "Title A–Z",
+  feedback_desc: "Most feedback",
+  status: "Status",
+};
+
 function parseMulti<T extends string>(values: string[], allowed: readonly T[]): T[] {
   const set = new Set<string>(allowed);
   return values.filter((value): value is T => set.has(value));
@@ -89,8 +97,10 @@ export function Documents() {
   const trustedOnly = searchParams.get("trusted") === "1";
   const includeArchived = statusFilter.includes("archived");
   const sort = parseSort(searchParams.get("sort"));
+  const linkedFilter = searchParams.get("linked") ?? "";
 
   const [draftQuery, setDraftQuery] = useState(query);
+  const [draftLinked, setDraftLinked] = useState(linkedFilter);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Documents" }]);
@@ -100,6 +110,11 @@ export function Documents() {
   useEffect(() => {
     setDraftQuery((prev) => (prev.trim() === query ? prev : query));
   }, [query]);
+
+  // Keep linked input synced with URL param.
+  useEffect(() => {
+    setDraftLinked((prev) => (prev.trim() === linkedFilter ? prev : linkedFilter));
+  }, [linkedFilter]);
 
   // Debounce the search box into the `q` URL param.
   useEffect(() => {
@@ -118,6 +133,24 @@ export function Documents() {
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [draftQuery, query, setSearchParams]);
+
+  // Debounce the linked input into the `linked` URL param.
+  useEffect(() => {
+    const trimmed = draftLinked.trim();
+    if (trimmed === linkedFilter) return;
+    const timer = setTimeout(() => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (trimmed) next.set("linked", trimmed);
+          else next.delete("linked");
+          return next;
+        },
+        { replace: true },
+      );
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [draftLinked, linkedFilter, setSearchParams]);
 
   const updateParams = useCallback(
     (mutate: (params: URLSearchParams) => void) => {
@@ -166,6 +199,7 @@ export function Documents() {
 
   const clearFilters = useCallback(() => {
     setDraftQuery("");
+    setDraftLinked("");
     setSearchParams({}, { replace: true });
   }, [setSearchParams]);
 
@@ -233,8 +267,21 @@ export function Documents() {
     return list;
   }, [documents, sort]);
 
+  const displayDocuments = linkedFilter.trim()
+    ? sortedDocuments.filter((doc) =>
+        doc.backlinks.some((bl) =>
+          (bl.identifier ?? "").toLowerCase().includes(linkedFilter.trim().toLowerCase()),
+        ),
+      )
+    : sortedDocuments;
+
   const activeFilterCount =
-    statusFilter.length + typeFilter.length + (ownerFilter ? 1 : 0) + (hasFeedback ? 1 : 0) + (trustedOnly ? 1 : 0);
+    statusFilter.length +
+    typeFilter.length +
+    (ownerFilter ? 1 : 0) +
+    (hasFeedback ? 1 : 0) +
+    (trustedOnly ? 1 : 0) +
+    (linkedFilter.trim() ? 1 : 0);
   const hasActiveFilters = activeFilterCount > 0 || query.length > 0;
 
   if (!selectedCompanyId) {
@@ -365,7 +412,77 @@ export function Documents() {
             </DropdownMenuContent>
           </DropdownMenu>
 
-          {/* Toggles + sort */}
+          {/* Linked work filter */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className={cn("h-8", linkedFilter.trim() && "bg-accent")}
+                data-testid="documents-linked-filter"
+              >
+                {linkedFilter.trim() ? linkedFilter.trim() : "Linked"}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52 p-2">
+              <DropdownMenuLabel>Linked work</DropdownMenuLabel>
+              <div className="mt-1 px-1">
+                <Input
+                  value={draftLinked}
+                  onChange={(event) => setDraftLinked(event.currentTarget.value)}
+                  placeholder="e.g. PAP-10440"
+                  className="h-8 text-sm"
+                  autoFocus
+                  onKeyDown={(event) => event.stopPropagation()}
+                />
+              </div>
+              {draftLinked.trim() ? (
+                <div className="mt-1 px-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftLinked("");
+                      updateParams((params) => params.delete("linked"));
+                    }}
+                    className="w-full rounded px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                  >
+                    Clear
+                  </button>
+                </div>
+              ) : null}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Sort */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8"
+                data-testid="documents-sort"
+              >
+                {SORT_LABELS[sort]}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuLabel>Sort by</DropdownMenuLabel>
+              {SORT_OPTIONS.map((option) => (
+                <DropdownMenuItem
+                  key={option.value}
+                  onSelect={() => setSort(option.value)}
+                  className="justify-between"
+                >
+                  {option.label}
+                  {sort === option.value ? <Check className="h-3.5 w-3.5" /> : null}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Toggles */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -373,8 +490,8 @@ export function Documents() {
                 variant="outline"
                 size="icon"
                 className={cn("h-8 w-8", (hasFeedback || trustedOnly) && "bg-accent")}
-                aria-label="More filters and sort"
-                title="More filters and sort"
+                aria-label="More filters"
+                title="More filters"
                 data-testid="documents-more-filters"
               >
                 <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
@@ -400,20 +517,21 @@ export function Documents() {
               >
                 Trusted sources only
               </DropdownMenuCheckboxItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel>Sort by</DropdownMenuLabel>
-              {SORT_OPTIONS.map((option) => (
-                <DropdownMenuItem
-                  key={option.value}
-                  onSelect={() => setSort(option.value)}
-                  className="justify-between"
-                >
-                  {option.label}
-                  {sort === option.value ? <Check className="h-3.5 w-3.5" /> : null}
-                </DropdownMenuItem>
-              ))}
             </DropdownMenuContent>
           </DropdownMenu>
+
+          {/* New document CTA */}
+          <Button
+            type="button"
+            variant="default"
+            size="sm"
+            className="h-8"
+            onClick={() => {}}
+            data-testid="documents-new"
+          >
+            <Plus className="h-3.5 w-3.5 mr-1" />
+            New document
+          </Button>
         </div>
       </div>
 
@@ -432,6 +550,15 @@ export function Documents() {
               onRemove={() => updateParams((params) => params.delete("owner"))}
             />
           ) : null}
+          {linkedFilter.trim() ? (
+            <FilterChip
+              label={`Linked: ${linkedFilter.trim()}`}
+              onRemove={() => {
+                setDraftLinked("");
+                updateParams((params) => params.delete("linked"));
+              }}
+            />
+          ) : null}
           {hasFeedback ? <FilterChip label="Open feedback" onRemove={() => toggleFlag("feedback")} /> : null}
           {trustedOnly ? <FilterChip label="Trusted sources" onRemove={() => toggleFlag("trusted")} /> : null}
           <button
@@ -448,18 +575,20 @@ export function Documents() {
 
       {isLoading ? (
         <PageSkeleton variant="list" />
-      ) : sortedDocuments.length === 0 ? (
+      ) : displayDocuments.length === 0 ? (
         hasActiveFilters ? (
           <EmptyState icon={FileText} message="No documents match these filters." action="Clear filters" onAction={clearFilters} />
         ) : (
           <EmptyState
             icon={FileText}
             message="No documents yet. Plans, specs, and briefs from across the company will appear here for review."
+            action="New document"
+            onAction={() => {}}
           />
         )
       ) : (
         <div className="overflow-hidden rounded-md border border-border">
-          {sortedDocuments.map((document) => (
+          {displayDocuments.map((document) => (
             <DocumentRow
               key={document.id}
               document={document}

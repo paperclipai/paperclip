@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { FileText, Search, SlidersHorizontal, X } from "lucide-react";
+import { ChevronDown, FileText, Plus, Search, SlidersHorizontal, X } from "lucide-react";
 import type { CompanyDocumentSummary } from "@paperclipai/shared";
 import { DocumentRow } from "@/components/documents/DocumentRow";
 import { EmptyState } from "@/components/EmptyState";
@@ -157,8 +157,19 @@ function LibraryShell({ children }: { children: React.ReactNode }) {
             <Button variant="outline" size="sm" className="h-8">
               Owner
             </Button>
-            <Button variant="outline" size="icon" className="h-8 w-8" aria-label="More filters and sort">
+            <Button variant="outline" size="sm" className="h-8">
+              Linked
+            </Button>
+            <Button variant="outline" size="sm" className="h-8 gap-1">
+              Updated ↓
+              <ChevronDown className="h-3 w-3 text-muted-foreground" />
+            </Button>
+            <Button variant="outline" size="icon" className="h-8 w-8" aria-label="More filters">
               <SlidersHorizontal className="h-3.5 w-3.5" />
+            </Button>
+            <Button variant="default" size="sm" className="h-8 gap-1">
+              <Plus className="h-3.5 w-3.5" />
+              New document
             </Button>
           </div>
         </div>
@@ -194,6 +205,7 @@ export const Populated: Story = {
             to={`/documents/${doc.id}`}
             owner={owner}
             identifier={identifier}
+            companyPrefix="PAP"
           />
         ))}
       </div>
@@ -208,6 +220,8 @@ export const Empty: Story = {
         <EmptyState
           icon={FileText}
           message="No documents yet. Plans, specs, and briefs from across the company will appear here for review."
+          action="New document"
+          onAction={() => {}}
         />
       </div>
     </div>
@@ -231,6 +245,7 @@ export const Mobile: Story = {
               to={`/documents/${doc.id}`}
               owner={owner}
               identifier={identifier}
+              companyPrefix="PAP"
             />
           ))}
         </div>
