@@ -92,6 +92,13 @@ import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
+  commentIdempotencyCache,
+  enforceCommentFreshness,
+  idempotencyActorKey,
+  readIdempotencyKey,
+  type CommentFreshnessDependencies,
+} from "../services/comment-freshness.js";
+import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
@@ -2259,6 +2266,26 @@ export function issueRoutes(
 
     return { project, goal: null };
   }
+
+  const commentFreshnessDeps: CommentFreshnessDependencies = {
+    getCommentCursor: async (issueId: string) => {
+      const { latestCommentId, totalComments } = await svc.getCommentCursor(issueId);
+      return { latestCommentId, totalComments };
+    },
+    listMissedComments: async (issueId: string, afterCommentId: string) => {
+      const rows = await svc.listComments(issueId, {
+        afterCommentId,
+        order: "asc",
+        limit: 50,
+      });
+      return rows.map((row) => ({
+        id: row.id,
+        authorType: row.authorType ?? "system",
+        createdAt: row.createdAt,
+        body: row.body ?? "",
+      }));
+    },
+  };
 
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
   router.param("id", async (req, res, next, rawId) => {
@@ -4702,6 +4729,27 @@ export function issueRoutes(
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
     const isBlocked = existing.status === "blocked";
+    const patchHasComment = typeof req.body?.comment === "string" && req.body.comment.length > 0;
+    const patchIdempotencyKey = patchHasComment ? readIdempotencyKey(req) : null;
+    const patchIdempotencyScope = `PATCH /issues/${existing.id}`;
+    const patchIdempotencyActor = idempotencyActorKey(req);
+    if (patchIdempotencyKey) {
+      const cached = commentIdempotencyCache.get(patchIdempotencyScope, patchIdempotencyActor, patchIdempotencyKey);
+      if (cached) {
+        res.status(cached.status).json(cached.body);
+        return;
+      }
+    }
+    if (patchHasComment) {
+      if (!(await enforceCommentFreshness({
+        req,
+        res,
+        issueId: existing.id,
+        endpoint: "PATCH /issues/:id",
+        actor: { agentId: actor.agentId ?? null, runId: actor.runId ?? null },
+        deps: commentFreshnessDeps,
+      }))) return;
+    }
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       existing.companyId,
       req.body.assigneeAgentId as string | null | undefined,
@@ -5673,7 +5721,11 @@ export function issueRoutes(
       }
     })();
 
-    res.json({ ...issueResponse, comment });
+    const patchResponseBody = { ...issueResponse, comment };
+    if (patchIdempotencyKey) {
+      commentIdempotencyCache.put(patchIdempotencyScope, patchIdempotencyActor, patchIdempotencyKey, 200, patchResponseBody);
+    }
+    res.json(patchResponseBody);
   });
 
   router.delete("/issues/:id", async (req, res) => {
@@ -5958,6 +6010,15 @@ export function issueRoutes(
     const agentSourceRunId = req.actor.type === "agent" ? requireAgentRunId(req, res) : null;
     if (req.actor.type === "agent" && !agentSourceRunId) return;
 
+    if (!(await enforceCommentFreshness({
+      req,
+      res,
+      issueId: issue.id,
+      endpoint: "POST /issues/:id/interactions",
+      actor: { agentId: actor.agentId ?? null, runId: actor.runId ?? null },
+      deps: commentFreshnessDeps,
+    }))) return;
+
     const interaction = await issueThreadInteractionService(db).create(issue, {
       ...req.body,
       sourceRunId: req.actor.type === "agent" ? agentSourceRunId : req.body.sourceRunId ?? null,
@@ -6001,6 +6062,14 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
+      if (!(await enforceCommentFreshness({
+        req,
+        res,
+        issueId: issue.id,
+        endpoint: "POST /issues/:id/interactions/:interactionId/accept",
+        actor: { agentId: actor.agentId ?? null, runId: actor.runId ?? null },
+        deps: commentFreshnessDeps,
+      }))) return;
       const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
@@ -6108,6 +6177,14 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
+      if (!(await enforceCommentFreshness({
+        req,
+        res,
+        issueId: issue.id,
+        endpoint: "POST /issues/:id/interactions/:interactionId/reject",
+        actor: { agentId: actor.agentId ?? null, runId: actor.runId ?? null },
+        deps: commentFreshnessDeps,
+      }))) return;
       const interaction = await issueThreadInteractionService(db).rejectInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
@@ -6164,6 +6241,14 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
+      if (!(await enforceCommentFreshness({
+        req,
+        res,
+        issueId: issue.id,
+        endpoint: "POST /issues/:id/interactions/:interactionId/respond",
+        actor: { agentId: actor.agentId ?? null, runId: actor.runId ?? null },
+        deps: commentFreshnessDeps,
+      }))) return;
       const interaction = await issueThreadInteractionService(db).answerQuestions(issue, interactionId, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
@@ -6510,6 +6595,26 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+
+    const idempotencyKey = readIdempotencyKey(req);
+    const idempotencyScope = `POST /issues/${issue.id}/comments`;
+    const idempotencyActor = idempotencyActorKey(req);
+    if (idempotencyKey) {
+      const cached = commentIdempotencyCache.get(idempotencyScope, idempotencyActor, idempotencyKey);
+      if (cached) {
+        res.status(cached.status).json(cached.body);
+        return;
+      }
+    }
+
+    if (!(await enforceCommentFreshness({
+      req,
+      res,
+      issueId: issue.id,
+      endpoint: "POST /issues/:id/comments",
+      actor: { agentId: actor.agentId ?? null, runId: actor.runId ?? null },
+      deps: commentFreshnessDeps,
+    }))) return;
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
@@ -6807,6 +6912,9 @@ export function issueRoutes(
       }
     })();
 
+    if (idempotencyKey) {
+      commentIdempotencyCache.put(idempotencyScope, idempotencyActor, idempotencyKey, 201, comment);
+    }
     res.status(201).json(comment);
   });
 

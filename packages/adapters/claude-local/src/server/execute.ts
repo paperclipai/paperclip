@@ -33,6 +33,7 @@ import {
   buildPaperclipEnv,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
+  readPaperclipLatestCommentIdFromContext,
   joinPromptSections,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
@@ -219,6 +220,10 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   }
   if (wakeCommentId) {
     env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
+  }
+  const latestCommentId = readPaperclipLatestCommentIdFromContext(context);
+  if (latestCommentId) {
+    env.PAPERCLIP_LATEST_COMMENT_ID = latestCommentId;
   }
   if (approvalId) {
     env.PAPERCLIP_APPROVAL_ID = approvalId;
