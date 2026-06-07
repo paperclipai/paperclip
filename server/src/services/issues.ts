@@ -59,6 +59,7 @@ import {
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import { logActivity } from "./activity-log.js";
 import { parseObject } from "../adapters/utils.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -3707,12 +3708,41 @@ export function issueService(db: Db) {
       )
       .returning({
         id: issues.id,
+        companyId: issues.companyId,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
         checkoutRunId: issues.checkoutRunId,
         executionRunId: issues.executionRunId,
       })
       .then((rows) => rows[0] ?? null);
+
+    if (adopted) {
+      // Audit trail for stale-lock takeover so operators can reconstruct what
+      // happened when an issue silently changed `checkoutRunId` ownership.
+      // Best-effort: a logging failure must never block checkout adoption.
+      try {
+        await logActivity(db, {
+          companyId: adopted.companyId,
+          actorType: "agent",
+          actorId: input.actorAgentId,
+          agentId: input.actorAgentId,
+          runId: input.actorRunId,
+          action: "issue.stale_lock_takeover",
+          entityType: "issue",
+          entityId: input.issueId,
+          details: {
+            priorCheckoutRunId: input.expectedCheckoutRunId,
+            actorRunId: input.actorRunId,
+            source: "adoptStaleCheckoutRun",
+          },
+        });
+      } catch (err) {
+        logger.warn(
+          { err, issueId: input.issueId },
+          "stale lock takeover audit log failed",
+        );
+      }
+    }
 
     return adopted;
   }
