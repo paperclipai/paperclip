@@ -7,7 +7,7 @@ const LINKS = [
   { label: "Governance", href: "/platform/governance" },
   { label: "Integrations", href: "/platform/integrations" },
   { label: "Pricing", href: "/pricing" },
-  { label: "Docs", href: "https://docs.allgasnobrakes.online", external: true },
+  { label: "Docs", href: "/docs" },
 ];
 
 const CONTACT = "/contact";
@@ -53,7 +53,6 @@ export function SiteNav() {
             <a
               key={l.href}
               href={l.href}
-              {...(("external" in l && l.external) ? { target: "_blank", rel: "noopener noreferrer" } : {})}
               className={linkCls}
             >
               {l.label}
@@ -85,7 +84,6 @@ export function SiteNav() {
             <a
               key={l.href}
               href={l.href}
-              {...(("external" in l && l.external) ? { target: "_blank", rel: "noopener noreferrer" } : {})}
               onClick={() => setMobileOpen(false)}
               className="block py-2.5 text-[15px] font-medium text-gray-600 transition hover:text-gray-900 dark:text-neutral-400 dark:hover:text-neutral-100"
             >
