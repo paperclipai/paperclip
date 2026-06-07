@@ -812,7 +812,8 @@ async function resolveAncestorProjectId(
     ORDER BY depth ASC
     LIMIT 1
   `);
-  return rows.rows[0]?.project_id ?? null;
+  const first = Array.isArray(rows) ? rows[0] as { project_id: string | null } | undefined : undefined;
+  return first?.project_id ?? null;
 }
 
 function touchedByUserCondition(companyId: string, userId: string) {
