@@ -42,6 +42,28 @@ process.exit(1);
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeCrashingCodexCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+// Exits immediately with no JSON output — simulates unexpected crash
+process.exit(1);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+async function writeHangingAfterTurnCodexCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+// Writes turn.completed but does NOT exit — simulates Codex staying alive after finishing
+console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-session-hang" }));
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "done" } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));
+// Stay alive until killed
+setInterval(() => {}, 60_000);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 type CapturePayload = {
   argv: string[];
   prompt: string;
@@ -1230,6 +1252,85 @@ describe("codex execute", () => {
       else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("emits a diagnostic log when the Codex process exits without a terminal turn event", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-crash-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeCrashingCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    const logs: LogEntry[] = [];
+    try {
+      const result = await execute({
+        runId: "run-crash",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: commandPath, cwd: workspace, promptTemplate: "Do the thing." },
+        context: {},
+        onLog: async (stream, chunk) => { logs.push({ stream, chunk }); },
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(logs.some((l) => l.stream === "stderr" && l.chunk.includes("Codex process exited without a normal turn handshake"))).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("terminates a Codex process that stays alive after emitting turn.completed", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-hang-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeHangingAfterTurnCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-hang",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Do the thing.",
+          // Short cleanup grace so the test doesn't take long
+          terminalResultCleanupGraceMs: 200,
+          graceSec: 2,
+        },
+        context: {},
+        onLog: async () => {},
+      });
+
+      // The process should have been killed after turn.completed — session preserved, no error
+      expect(result.sessionId).toBe("codex-session-hang");
+      expect(result.errorMessage).toBeNull();
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
     }
   });

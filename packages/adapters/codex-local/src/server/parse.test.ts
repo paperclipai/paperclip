@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractCodexRetryNotBefore,
+  hasCodexTerminalResult,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
   parseCodexJsonl,
@@ -64,6 +65,30 @@ describe("parseCodexJsonl", () => {
       },
       errorMessage: null,
     });
+  });
+});
+
+describe("hasCodexTerminalResult", () => {
+  it("returns true when stdout contains turn.completed", () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "t1" }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }),
+    ].join("\n");
+    expect(hasCodexTerminalResult(stdout)).toBe(true);
+  });
+
+  it("returns true when stdout contains turn.failed", () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "t1" }),
+      JSON.stringify({ type: "turn.failed", error: { message: "model error" } }),
+    ].join("\n");
+    expect(hasCodexTerminalResult(stdout)).toBe(true);
+  });
+
+  it("returns false when process exits without any terminal event", () => {
+    expect(hasCodexTerminalResult("")).toBe(false);
+    expect(hasCodexTerminalResult(JSON.stringify({ type: "thread.started", thread_id: "t1" }))).toBe(false);
+    expect(hasCodexTerminalResult("some non-json output\nprocess crashed")).toBe(false);
   });
 });
 
