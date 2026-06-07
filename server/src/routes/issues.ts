@@ -5550,7 +5550,7 @@ export function issueRoutes(
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
         const skipAssigneeCommentWake = selfComment || isClosed;
 
-        if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
+        if (assigneeId && !assigneeChanged && !selfComment && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
             source: "automation",
             triggerDetail: "system",
@@ -6716,7 +6716,7 @@ export function issueRoutes(
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
       const skipWake = selfComment || isClosed;
-      if (assigneeId && (reopened || !skipWake)) {
+      if (assigneeId && !selfComment && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
             source: "automation",
