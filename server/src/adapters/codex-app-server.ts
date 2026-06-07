@@ -587,7 +587,7 @@ export async function executeCodexViaAppServer(
       cwd,
       commandArgs: [url],
       commandNotes,
-      env: redactEnvForLogs(headers),
+      env: redactEnvForLogs(env),
       prompt: metaPrompt,
       context,
     });
