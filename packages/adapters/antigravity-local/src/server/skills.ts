@@ -27,7 +27,7 @@ function resolveAntigravitySkillsHome(config: Record<string, unknown>) {
       : {};
   const configuredHome = asString(env.HOME);
   const home = configuredHome ? path.resolve(configuredHome) : os.homedir();
-  return path.join(home, ".gemini", "antigravity-cli", "skills");
+  return path.join(home, ".gemini", "skills");
 }
 
 async function buildAntigravitySkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
@@ -41,7 +41,7 @@ async function buildAntigravitySkillSnapshot(config: Record<string, unknown>): P
     desiredSkills,
     installed,
     skillsHome,
-    locationLabel: "~/.gemini/antigravity-cli/skills",
+    locationLabel: "~/.gemini/skills",
     missingDetail: "Configured but not currently linked into the Antigravity skills home.",
     externalConflictDetail: "Skill name is occupied by an external installation.",
     externalDetail: "Installed outside Paperclip management.",

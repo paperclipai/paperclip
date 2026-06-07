@@ -58,7 +58,7 @@ import {
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 function antigravitySkillsHome(): string {
-  return path.join(os.homedir(), ".gemini", "antigravity-cli", "skills");
+  return path.join(os.homedir(), ".gemini", "skills");
 }
 
 async function ensureAntigravitySkillsInjected(
@@ -318,7 +318,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             onLog,
           });
       if (remoteHomeDir && preparedExecutionTargetRuntime.assetDirs.skills) {
-        remoteSkillsDir = path.posix.join(remoteHomeDir, ".gemini", "antigravity-cli", "skills");
+        remoteSkillsDir = path.posix.join(remoteHomeDir, ".gemini", "skills");
         await runAdapterExecutionTargetShellCommand(
           runId,
           executionTarget,
