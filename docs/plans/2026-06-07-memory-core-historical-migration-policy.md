@@ -3,6 +3,8 @@
 Status: draft for review
 Owner: CTO
 Applies to: Memory Core Phase 6 historical-memory migration
+Date: 2026-06-07
+Source work: [IRI-178](/IRI/issues/IRI-178), parent [IRI-163](/IRI/issues/IRI-163), GitHub issue `#1131`.
 
 ## Objective
 
@@ -10,6 +12,29 @@ Define the default policy, review lifecycle, and candidate schema for migrating
 historical agent memory into Memory Core without turning private local state into
 authoritative product data. Phase 6 may recall historical memory as context for
 review, but it must not bulk-import old memories by default.
+
+This document is policy only. It does not authorize importing memory, moving
+private payloads, changing live configuration, exposing logs, or writing secrets
+into source, comments, pull requests, or issue artifacts.
+
+## Scope
+
+In scope:
+
+- historical memory candidates proposed for Memory Core
+- candidate metadata, review lifecycle, and validation expectations
+- migration approval boundaries for OpenClaw, Mac Codex, and Hermes clients
+- source-managed policy suitable for pull request review
+
+Out of scope for Phase 6:
+
+- broad automatic import of historical memory
+- raw memory payload storage in git, issue comments, pull request bodies, logs,
+  or source-managed test fixtures
+- secrets, credentials, private keys, live service config, databases, backups,
+  private runtime logs, tokens, or customer-private material
+- allowing recalled memory to override canonical live sources
+- Hermes self-approval of operator-shared or company-shared memory
 
 ## Policy
 
@@ -133,6 +158,16 @@ Validation expectations:
 - `operator_shared` and `company_internal` candidates require an approval from a
   principal different from the proposing Hermes agent.
 
+Recommended fields:
+
+- `confidence`: `high`, `medium`, or `low` source accuracy confidence.
+- `conflictRefs`: known sources that disagree with the candidate.
+- `dedupeKey`: stable duplicate-detection key.
+- `clientScope`: clients allowed to recall the memory, such as OpenClaw, Mac
+  Codex, Hermes, or operator-only.
+- `auditRefs`: migration job id, review issue, pull request, or approval
+  references.
+
 ## Migration Rules
 
 1. Scan or recall historical memory into candidates only.
@@ -147,6 +182,21 @@ Validation expectations:
    confidence and visible staleness.
 8. Delete or expire candidates when retention policy, privacy review, or owner
    request requires it.
+
+## Operational Handling
+
+Reviewers should treat historical memory as untrusted until proven otherwise. A
+candidate can help an agent remember context, but it cannot be the final
+authority for operational state.
+
+If a candidate names host health, uptime, backup state, credentials, network
+configuration, service exposure, or runtime behavior, the owner must verify the
+relevant live source before acting on it. If live verification is unavailable,
+the candidate remains advisory and should carry `staleLive: "unknown"`.
+
+If a candidate contains or appears to contain sensitive material, stop review of
+that candidate and route it through the approved private handling path. Do not
+paste the material into the issue thread while asking for help.
 
 ## Rejected Alternatives
 
@@ -179,3 +229,17 @@ must remain removable, including derived indexes and cached recall entries.
 - Add rollback/delete execution for migrated records and derived indexes.
 - Add tests proving bulk import is not the default path and non-authoritative
   recall cannot override canonical source checks.
+
+## Phase 6 Exit Criteria
+
+Phase 6 historical-memory migration policy is ready for engineering handoff
+when:
+
+- this policy is reviewed through normal source review
+- a candidate schema validator or issue-document template is planned or
+  implemented
+- approval rules for `operator_shared` and `company_internal` records are
+  enforceable
+- migration tooling refuses candidates missing required metadata
+- delete/rollback verification is part of migration receipts
+- no raw private payloads or secrets are present in source-managed artifacts
