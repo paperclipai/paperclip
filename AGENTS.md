@@ -30,8 +30,9 @@ Before making changes, read in this order:
 - `packages/adapter-utils/`: shared adapter utilities
 - `packages/plugins/`: plugin system packages
 - `doc/`: operational and product docs
+- `docs/`: public docs, API references, deploy guides, and agent/operator guides
 
-## 3.1 Checkout Readiness
+Checkout readiness:
 
 Before implementation, review, or deploy handoff, complete the source-only readiness checklist in `docs/README.md`.
 
