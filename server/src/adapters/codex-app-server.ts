@@ -123,7 +123,7 @@ function isUuidLike(value: string): boolean {
 }
 
 function looksLikeRemoteMissingThread(message: string): boolean {
-  return /thread .* not found|unknown thread|missing rollout path|rollout path/i.test(message);
+  return /thread .* not found|unknown thread|missing rollout path/i.test(message);
 }
 
 function firstNonEmptyLine(text: string): string {
