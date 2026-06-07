@@ -386,7 +386,6 @@ const antigravityLocalAdapter: ServerAdapterModule = {
   modelProfiles: antigravityModelProfiles,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
-  instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
   getRuntimeCommandSpec: (config) => ({
     command: readConfiguredCommand(config, "agy"),
