@@ -2739,6 +2739,8 @@ const issueListSelect = {
   unblockDescriptor: issues.unblockDescriptor,
   blockedTransitionAt: issues.blockedTransitionAt,
   blockedOwnerNotifiedAt: issues.blockedOwnerNotifiedAt,
+  recoveryKind: issues.recoveryKind,
+  previousAssigneeAgentId: issues.previousAssigneeAgentId,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,

@@ -21,6 +21,7 @@ import type {
   IssueRecoveryActionOutcome,
   IssueRecoveryActionOwnerType,
   IssueRecoveryActionStatus,
+  IssueRecoveryDispositionKind,
   IssueWorkMode,
   ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
@@ -784,6 +785,8 @@ export interface Issue {
   blockedOwnerNotifiedAt?: Date | null;
   productivityReview?: IssueProductivityReview | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
+  recoveryKind?: IssueRecoveryDispositionKind | null;
+  previousAssigneeAgentId?: string | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   watchdog?: IssueWatchdogSummary | null;
   scheduledRetry?: IssueScheduledRetry | null;
