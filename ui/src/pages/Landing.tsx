@@ -525,7 +525,7 @@ const ORBIT_ENGINES = ["Outbound", "Inbound", "Content", "Revenue", "Agents", "W
 export function Orbit() {
   const R = 42; // radius %
   return (
-    <div className="relative mx-auto aspect-square w-full max-w-[380px]">
+    <div className="relative mx-auto aspect-square w-full max-w-[280px]">
       {/* dashed rings */}
       <div className="agnb-spin absolute inset-[6%] rounded-full border border-dashed border-[#f97316]/25" />
       <div className="agnb-spin-rev absolute inset-[22%] rounded-full border border-dashed border-[#f97316]/15" />
@@ -1199,7 +1199,7 @@ export function LandingPage() {
 
       {/* ── Problem ── */}
       <Section className="py-20 pl-14 md:pl-20">
-        <div className="grid grid-cols-1 items-center gap-12 lg:grid-cols-[1.4fr_1fr]">
+        <div className="grid grid-cols-1 items-start gap-12 lg:grid-cols-[1.4fr_1fr]">
           <div>
             <h2 className="text-[clamp(30px,3.8vw,46px)] font-bold leading-[1.08] tracking-[-0.025em] text-gray-900 dark:text-neutral-100">
               Growth tooling is bloated, siloed, and slow.{" "}

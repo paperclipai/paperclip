@@ -180,13 +180,7 @@ export function RailGroup({
         {intro && (
           <p className="mt-2 max-w-xl text-[15.5px] leading-relaxed text-gray-500 dark:text-neutral-400">{intro}</p>
         )}
-        {children && (
-          <div className="relative mt-9">
-            {/* sub-rail for the mini-stories */}
-            <div className="pointer-events-none absolute bottom-8 left-2 top-1 w-px bg-[#f97316]/25 dark:bg-[#f97316]/30" />
-            <div className="space-y-12">{children}</div>
-          </div>
-        )}
+        {children && <div className="mt-9 space-y-12">{children}</div>}
       </div>
     </div>
   );
@@ -228,10 +222,7 @@ export function RailMini({
   }, []);
 
   return (
-    <div ref={ref} className="relative pl-9">
-      {/* small node on the sub-rail + horizontal tick */}
-      <span className="absolute left-2 top-1.5 z-10 size-3 -translate-x-1/2 rounded-full bg-[#f97316] shadow-[0_0_10px_2px_rgba(249,115,22,0.5)] ring-4 ring-[#f97316]/15" />
-      <span className="pointer-events-none absolute left-2 top-3 h-px w-5 bg-[#f97316]/25" aria-hidden />
+    <div ref={ref} className="relative">
       <div
         className={cn(
           "transition-all duration-700 md:grid md:grid-cols-2 md:items-center md:gap-9",
