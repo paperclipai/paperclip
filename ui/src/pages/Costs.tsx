@@ -529,6 +529,10 @@ export function Costs() {
       (sum, row) => sum + row.inputTokens + row.cachedInputTokens + row.outputTokens,
       0,
     );
+  // Distinguish "not loaded yet / query disabled" from a real $0 so the summary tiles
+  // never show a misleading $0.00 while their query is still in flight.
+  const spendReady = !!spendData;
+  const financeReady = !!financeData;
 
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
@@ -613,8 +617,8 @@ export function Costs() {
           <div className="grid gap-3 lg:grid-cols-4">
             <MetricTile
               label="Inference spend"
-              value={formatCents(spendData?.summary.spendCents ?? 0)}
-              subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
+              value={spendReady ? formatCents(spendData!.summary.spendCents) : "—"}
+              subtitle={spendReady ? `${formatTokens(inferenceTokenTotal)} tokens across request-scoped events` : "Loading…"}
               icon={DollarSign}
               accent="money"
             />
@@ -636,15 +640,15 @@ export function Costs() {
             />
             <MetricTile
               label="Finance net"
-              value={formatCents(financeData?.summary.netCents ?? 0)}
-              subtitle={`${formatCents(financeData?.summary.debitCents ?? 0)} debits · ${formatCents(financeData?.summary.creditCents ?? 0)} credits`}
+              value={financeReady ? formatCents(financeData!.summary.netCents) : "—"}
+              subtitle={financeReady ? `${formatCents(financeData!.summary.debitCents)} debits · ${formatCents(financeData!.summary.creditCents)} credits` : "Loading…"}
               icon={ReceiptText}
               accent={(financeData?.summary.netCents ?? 0) >= 0 ? "credit" : "money"}
             />
             <MetricTile
               label="Finance events"
-              value={String(financeData?.summary.eventCount ?? 0)}
-              subtitle={`${formatCents(financeData?.summary.estimatedDebitCents ?? 0)} estimated in range`}
+              value={financeReady ? String(financeData!.summary.eventCount) : "—"}
+              subtitle={financeReady ? `${formatCents(financeData!.summary.estimatedDebitCents)} estimated in range` : "Loading…"}
               icon={ArrowUpRight}
             />
           </div>
