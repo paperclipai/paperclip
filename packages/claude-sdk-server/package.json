@@ -1,0 +1,56 @@
+{
+  "name": "@paperclipai/claude-sdk-server",
+  "version": "0.1.0",
+  "license": "MIT",
+  "homepage": "https://github.com/paperclipai/paperclip",
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/claude-sdk-server"
+  },
+  "type": "module",
+  "bin": {
+    "paperclip-claude-sdk-server": "./dist/cli.js"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "bin": {
+      "paperclip-claude-sdk-server": "./dist/cli.js"
+    },
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc --emitDeclarationOnly && node ./esbuild.config.mjs",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@paperclipai/adapter-claude-local": "workspace:*",
+    "@paperclipai/adapter-utils": "workspace:*",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.8"
+  }
+}

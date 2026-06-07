@@ -41,6 +41,38 @@ Common choices:
 
 For `claude_local`, Paperclip assumes the CLI is already installed and authenticated on the host machine.
 
+For `claude_local`, there are two transport modes:
+
+- Local CLI mode: Paperclip launches the local `claude` binary directly on the Paperclip host.
+- Remote SDK bridge mode: if `agentSdkServerUrl` is set in adapter config, Paperclip connects to a Paperclip-defined Claude SDK bridge over WebSocket instead of spawning `claude` locally.
+
+In remote SDK bridge mode, the remote Claude host is responsible for Claude installation/authentication, and the bridge is expected to run Claude locally on its own host and stream stdout/stderr back to Paperclip. This is a Paperclip bridge protocol for self-hosted Claude infrastructure, not an official Anthropic remote-control API.
+
+Paperclip can optionally send a bearer token during the SDK bridge WebSocket handshake. If you expose the bridge beyond loopback, prefer `wss://` or an SSH-forwarded loopback listener instead of plaintext `ws://`.
+
+The bridge server currently lives in this repository as `@paperclipai/claude-sdk-server`. On the remote Claude host, install dependencies, build the bridge package, and then start it on loopback:
+
+```bash
+pnpm install
+pnpm --filter @paperclipai/claude-sdk-server build
+
+node packages/claude-sdk-server/dist/cli.js --listen ws://127.0.0.1:4400
+```
+
+If you want the bridge to require bearer auth, create a token file and start it with `--token-file`:
+
+```bash
+mkdir -p "$HOME/.claude"
+openssl rand -hex 32 > "$HOME/.claude/paperclip-bridge.token"
+chmod 600 "$HOME/.claude/paperclip-bridge.token"
+
+node packages/claude-sdk-server/dist/cli.js \
+  --listen ws://127.0.0.1:4400 \
+  --token-file "$HOME/.claude/paperclip-bridge.token"
+```
+
+The preferred operator pattern is to SSH-forward that loopback listener back to the Paperclip host and point `agentSdkServerUrl` at the forwarded local address. If you do connect directly over the network, Paperclip can send `agentSdkServerBearerToken` as `Authorization: Bearer <token>` during the WebSocket handshake.
+
 For `codex_local`, there are two transport modes:
 
 - Local CLI mode: Paperclip launches the local `codex` binary directly on the Paperclip host.
@@ -95,7 +127,14 @@ For `codex_local`, you can also set:
 - `appServerUrl` to switch from local CLI execution to remote Codex App Server execution
 - `appServerBearerToken` to send `Authorization: Bearer <token>` during the remote App Server WebSocket handshake when the listener requires bearer auth
 
+For `claude_local`, you can also set:
+
+- `agentSdkServerUrl` to switch from local CLI execution to remote Claude SDK bridge execution
+- `agentSdkServerBearerToken` to send `Authorization: Bearer <token>` during the remote bridge WebSocket handshake when the listener requires bearer auth
+
 When using `appServerUrl`, prefer an SSH-forwarded local address such as `ws://127.0.0.1:<forwarded-port>` instead of pointing Paperclip at a token-protected external listener.
+
+When using `agentSdkServerUrl`, prefer an SSH-forwarded local address or `wss://` rather than a plaintext remote `ws://` listener.
 
 ## 3.4 Prompt templates
 

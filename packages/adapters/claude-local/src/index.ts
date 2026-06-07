@@ -51,6 +51,15 @@ Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
 
+Remote SDK bridge fields:
+- agentSdkServerUrl (string, optional): ws:// or wss:// Paperclip Claude SDK server endpoint. When set, Paperclip talks to the remote bridge over WebSocket instead of launching local \`claude\`
+- agentSdkServerBearerToken (string, optional): bearer token sent as \`Authorization\` during the remote bridge WebSocket handshake
+- agentSdkServerHeaders (object, optional): extra WebSocket handshake headers for remote bridge auth
+
 Notes:
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
+- Remote bridge mode is a Paperclip protocol for self-hosted Claude infrastructure, not an official Anthropic Claude Code remote-control API.
+- The remote bridge is expected to run Claude locally on its own host and stream stdout/stderr back to Paperclip.
+- The standalone bridge server lives in this repo as \`@paperclipai/claude-sdk-server\` and can be started with \`node packages/claude-sdk-server/dist/cli.js --listen ws://127.0.0.1:4400\` after \`pnpm --filter @paperclipai/claude-sdk-server build\`.
+- For the safest setup, run the bridge on loopback on the remote host and SSH-forward that port back to the Paperclip host. If you expose it directly, prefer \`wss://\` and set \`agentSdkServerBearerToken\` when the bridge requires bearer auth.
 `;

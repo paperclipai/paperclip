@@ -143,10 +143,27 @@ import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 import {
+  executeClaudeViaSdkServer,
+  isRemoteClaudeSdkConfig,
+  testClaudeSdkServerEnvironment,
+} from "./claude-sdk-server.js";
+import {
   executeCodexViaAppServer,
   isRemoteCodexConfig,
   testCodexAppServerEnvironment,
 } from "./codex-app-server.js";
+
+const claudeAdapterConfigurationDoc = `${claudeAgentConfigurationDoc}
+
+Remote SDK bridge fields:
+- agentSdkServerUrl (string, optional): ws:// or wss:// Paperclip Claude SDK server endpoint. When set, Paperclip talks to the remote bridge over WebSocket instead of launching local \`claude\`.
+- agentSdkServerBearerToken (string, optional): bearer token sent as \`Authorization\` during the WebSocket handshake when remote auth is required.
+- agentSdkServerHeaders (object, optional): extra WebSocket handshake headers for remote auth.
+
+Remote mode notes:
+- This is a Paperclip bridge protocol for self-hosted Claude infrastructure, not an official Anthropic remote-control API.
+- The remote bridge is expected to run Claude locally on its own host and stream stdout/stderr back to Paperclip.
+`;
 
 const codexAdapterConfigurationDoc = `${codexAgentConfigurationDoc}
 
@@ -175,6 +192,20 @@ async function testCodexAdapterEnvironment(ctx: Parameters<typeof codexTestEnvir
     return testCodexAppServerEnvironment(ctx);
   }
   return codexTestEnvironment(ctx);
+}
+
+async function executeClaudeAdapter(ctx: Parameters<typeof claudeExecute>[0]) {
+  if (isRemoteClaudeSdkConfig(ctx.config)) {
+    return executeClaudeViaSdkServer(ctx);
+  }
+  return claudeExecute(ctx);
+}
+
+async function testClaudeAdapterEnvironment(ctx: Parameters<typeof claudeTestEnvironment>[0]) {
+  if (isRemoteClaudeSdkConfig(ctx.config)) {
+    return testClaudeSdkServerEnvironment(ctx);
+  }
+  return claudeTestEnvironment(ctx);
 }
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
@@ -281,8 +312,8 @@ async function listAcpxModels(): Promise<AdapterModel[]> {
 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
-  execute: claudeExecute,
-  testEnvironment: claudeTestEnvironment,
+  execute: executeClaudeAdapter,
+  testEnvironment: testClaudeAdapterEnvironment,
   listSkills: listClaudeSkills,
   syncSkills: syncClaudeSkills,
   sessionCodec: claudeSessionCodec,
@@ -297,7 +328,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: false,
   getRuntimeCommandSpec: (config) =>
     buildNpmRuntimeCommandSpec(config, "claude", "@anthropic-ai/claude-code"),
-  agentConfigurationDoc: claudeAgentConfigurationDoc,
+  agentConfigurationDoc: claudeAdapterConfigurationDoc,
   getQuotaWindows: claudeGetQuotaWindows,
 };
 
