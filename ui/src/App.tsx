@@ -142,6 +142,7 @@ import {
   TermsPage,
   ContactPage,
   SignInPage,
+  PricingPage,
 } from "./pages/marketing";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
@@ -459,6 +460,7 @@ export function App() {
         <Route path="terms" element={<TermsPage />} />
         <Route path="contact" element={<ContactPage />} />
         <Route path="signin" element={<SignInPage />} />
+        <Route path="pricing" element={<PricingPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />

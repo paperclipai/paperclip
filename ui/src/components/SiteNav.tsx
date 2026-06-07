@@ -6,6 +6,7 @@ const LINKS = [
   { label: "Agents", href: "/platform/agents" },
   { label: "Governance", href: "/platform/governance" },
   { label: "Integrations", href: "/platform/integrations" },
+  { label: "Pricing", href: "/pricing" },
   { label: "Docs", href: "https://docs.allgasnobrakes.online", external: true },
 ];
 

@@ -816,3 +816,144 @@ export function SignInPage() {
     </div>
   );
 }
+
+// ─── Pricing (wallet + AI-credit model) ───────────────────────────────────────
+
+type Plan = {
+  name: string;
+  rate?: string; rateUsd?: string;
+  min?: string; minUsd?: string;
+  credits?: string;
+  highlight?: boolean;
+  custom?: boolean;
+  cta: string; ctaHref: string;
+  perks: string[];
+  note?: string;
+};
+
+const PLANS: Plan[] = [
+  {
+    name: "Starter",
+    rate: "₹10", rateUsd: "$0.12", min: "₹2,000", minUsd: "$24", credits: "200",
+    cta: "Start free", ctaHref: "/signin",
+    note: "50 free credits on signup",
+    perks: ["1 company", "All six engines", "Bring your own model", "Community support"],
+  },
+  {
+    name: "Pro",
+    rate: "₹7", rateUsd: "$0.08", min: "₹10,000", minUsd: "$160", credits: "1,400",
+    highlight: true,
+    cta: "Top up", ctaHref: "/signin",
+    perks: ["Everything in Starter", "Unlimited agents", "All 35 scheduled jobs", "Every integration", "Approval gates + per-agent budgets", "Priority support"],
+  },
+  {
+    name: "Scale",
+    rate: "₹6", rateUsd: "$0.06", min: "₹50,000", minUsd: "$600", credits: "8,300",
+    cta: "Top up", ctaHref: "/signin",
+    perks: ["Everything in Pro", "Higher concurrency", "Dedicated capacity", "Custom budgets", "Private Slack support"],
+  },
+  {
+    name: "Enterprise",
+    custom: true,
+    cta: "Contact Sales", ctaHref: "/contact",
+    perks: ["Everything in Scale", "SSO + SAML", "DPA + SOC 2", "Dedicated infrastructure", "Solutions engineer"],
+  },
+];
+
+const PRICING_FAQ = [
+  { q: "What is an AI credit?", a: "A unit of agent work. Credits are deducted as agents run — drafting, syncing, ranking, planning. Your plan sets the per-credit rate; the cheaper the plan, the more work each top-up buys." },
+  { q: "Is there a subscription?", a: "No. You top up a wallet and credits are deducted as the agents work. No monthly lock-in, no setup fees. Switch plans any time." },
+  { q: "Do credits expire?", a: "Never. Top up once, run agents until the wallet is empty, top up again when you need more." },
+  { q: "How do budgets work?", a: "The CFO meters spend per agent. Set a monthly cap; agents warn at 80% and stop cleanly at 100%, so a runaway agent can't drain your wallet." },
+];
+
+export function PricingPage() {
+  return (
+    <Shell eyebrow="Pricing" title="Top up once. The agents run on credits." sub="No subscription. Fund a wallet, and AI credits are deducted as the agents work — at your plan's rate. Switch plans any time. Credits never expire.">
+      {/* Plan cards */}
+      <Block>
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-4">
+          {PLANS.map((p) => (
+            <div
+              key={p.name}
+              className={cn(
+                "flex flex-col rounded-2xl border p-6 shadow-sm",
+                p.highlight
+                  ? "border-[#f97316]/40 bg-white ring-2 ring-[#f97316]/30 dark:bg-[#261f19]"
+                  : "border-black/[0.07] bg-white dark:border-white/[0.08] dark:bg-[#261f19]",
+              )}
+            >
+              <div className="mb-4 flex items-center justify-between">
+                <h3 className="text-[17px] font-bold text-gray-900 dark:text-neutral-100">{p.name}</h3>
+                {p.highlight && <span className="rounded-full bg-[#f97316] px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-white">Popular</span>}
+              </div>
+
+              {p.custom ? (
+                <div className="mb-5">
+                  <p className="text-[28px] font-extrabold tracking-tight text-gray-900 dark:text-neutral-100">Custom</p>
+                  <p className="mt-1 text-[12.5px] text-gray-500 dark:text-neutral-400">Volume rates + dedicated capacity.</p>
+                </div>
+              ) : (
+                <div className="mb-5">
+                  <p className="flex items-baseline gap-1.5">
+                    <span className="text-[28px] font-extrabold tracking-tight text-gray-900 dark:text-neutral-100">{p.rate}</span>
+                    <span className="text-[13px] text-gray-500 dark:text-neutral-400">/ credit</span>
+                  </p>
+                  <p className="mt-1 text-[12.5px] text-gray-500 dark:text-neutral-400">{p.rateUsd} · top up from {p.min} ({p.minUsd})</p>
+                  <p className="mt-2 inline-flex rounded-md bg-[#f97316]/10 px-2.5 py-1 font-mono text-[11px] font-medium text-[#f97316]">≈ {p.credits} credits</p>
+                </div>
+              )}
+
+              <a
+                href={p.ctaHref}
+                className={cn(
+                  "mb-5 inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-[13px] font-semibold transition",
+                  p.highlight || p.custom
+                    ? "bg-[#f97316] text-white hover:bg-[#ea6a0c]"
+                    : "border border-black/[0.12] bg-white text-gray-900 hover:bg-[#FAF8F4] dark:border-white/15 dark:bg-[#2f271f] dark:text-neutral-100 dark:hover:bg-[#3a3027]",
+                )}
+              >
+                {p.cta}
+              </a>
+
+              <ul className="space-y-2.5">
+                {p.perks.map((perk) => (
+                  <li key={perk} className="flex items-start gap-2 text-[13px] text-gray-600 dark:text-neutral-300">
+                    <Check className="mt-0.5 size-4 shrink-0 text-[#f97316]" />{perk}
+                  </li>
+                ))}
+                {p.note && (
+                  <li className="flex items-start gap-2 text-[13px] font-medium text-[#f97316]">
+                    <Check className="mt-0.5 size-4 shrink-0" />{p.note}
+                  </li>
+                )}
+              </ul>
+            </div>
+          ))}
+        </div>
+        <p className="mt-6 text-center text-[13px] text-gray-500 dark:text-neutral-400">
+          All plans include every integration, governance, and bring-your-own-model. Plans only set the per-credit rate.
+        </p>
+      </Block>
+
+      {/* Wallet explainer */}
+      <Block title="How the wallet works">
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-3">
+          {[
+            { t: "1 · Top up", d: "Fund your wallet once. No subscription, no setup fee." },
+            { t: "2 · Agents work", d: "Credits are deducted as agents run — drafting, syncing, ranking, planning." },
+            { t: "3 · Stay in control", d: "Per-agent budgets cap spend; agents stop cleanly at 100%. Top up again when you're ready." },
+          ].map((s) => (
+            <div key={s.t} className={card}>
+              <h3 className="mb-2 text-[15.5px] font-semibold text-gray-900 dark:text-neutral-100">{s.t}</h3>
+              <p className="text-[13.5px] leading-relaxed text-gray-500 dark:text-neutral-400">{s.d}</p>
+            </div>
+          ))}
+        </div>
+      </Block>
+
+      <Faqs items={PRICING_FAQ} />
+      <CtaRow />
+    </Shell>
+  );
+}
