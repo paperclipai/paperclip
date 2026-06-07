@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { SiteNav } from "@/components/SiteNav";
-import { LandingFooter, OrgChart, Heartbeat, BudgetTable, GoalTrace } from "./Landing";
+import { LandingFooter, LoginCard, OrgChart, Heartbeat, BudgetTable, GoalTrace } from "./Landing";
 import {
   ArrowRight,
   ArrowLeft,
@@ -115,8 +115,8 @@ function CtaRow() {
       <a href="/auth" className="group inline-flex items-center gap-2 rounded-lg bg-[#f97316] px-7 py-3.5 text-sm font-semibold text-white transition hover:bg-[#ea6a0c]">
         Floor it <ArrowRight className="size-4 transition group-hover:translate-x-0.5" />
       </a>
-      <a href="mailto:diggi@hirefinn.ai?subject=AGNB%20Access%20Request" className="inline-flex items-center gap-2 rounded-lg border border-black/[0.12] bg-white px-7 py-3.5 text-sm font-semibold text-gray-900 transition hover:bg-[#FAF8F4] dark:border-white/15 dark:bg-[#261f19] dark:text-neutral-100 dark:hover:bg-neutral-800">
-        Request access
+      <a href="/contact" className="inline-flex items-center gap-2 rounded-lg border border-black/[0.12] bg-white px-7 py-3.5 text-sm font-semibold text-gray-900 transition hover:bg-[#FAF8F4] dark:border-white/15 dark:bg-[#261f19] dark:text-neutral-100 dark:hover:bg-[#2f271f]">
+        Contact Sales
       </a>
     </div>
   );
@@ -679,4 +679,140 @@ export function PrivacyPage() {
 
 export function TermsPage() {
   return <LegalShell title="Terms of Service" updated="7 June 2026" lines={TERMS_LINES} />;
+}
+
+// ─── Contact Sales ────────────────────────────────────────────────────────────
+
+const CONTACT_BENEFITS = [
+  { t: "Priority onboarding", d: "We connect your stack, hire your first agents, and get the loop running with you." },
+  { t: "Premium support", d: "A direct line to our team via a private Slack channel — humans, not tickets." },
+  { t: "Data security", d: "Encryption in transit and at rest, role-based access, and a DPA on request. SOC 2 in progress." },
+  { t: "Scale & budgets", d: "Per-agent budgets, higher limits, and dedicated capacity as your agent company grows." },
+];
+
+const TEAM_SIZES = ["1–10", "11–50", "51–200", "201–1000", "1000+"];
+
+export function ContactPage() {
+  useEffect(() => {
+    const t = (() => { try { return localStorage.getItem("paperclip.theme"); } catch { return null; } })();
+    if (t) document.documentElement.classList.toggle("dark", t === "dark");
+  }, []);
+  const [sent, setSent] = useState(false);
+
+  const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    const name = String(f.get("name") ?? "").trim();
+    const email = String(f.get("email") ?? "").trim();
+    const company = String(f.get("company") ?? "").trim();
+    const size = String(f.get("size") ?? "").trim();
+    const msg = String(f.get("message") ?? "").trim();
+    const body = `Name: ${name}%0D%0AWork email: ${email}%0D%0ACompany: ${company}%0D%0ATeam size: ${size}%0D%0A%0D%0A${msg}`;
+    window.location.href = `mailto:hq@hirefinn.ai?subject=AGNB%20—%20Contact%20Sales%20(${encodeURIComponent(company || name)})&body=${body}`;
+    setSent(true);
+  };
+
+  const input = "w-full rounded-lg border border-black/[0.1] bg-[#FAF8F4] px-4 py-3 text-[15px] text-gray-900 placeholder:text-gray-400 focus:border-[#f97316] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#f97316]/20 dark:border-white/10 dark:bg-[#2f271f]/60 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:bg-[#2f271f]";
+  const label = "mb-1.5 block text-[13px] font-medium text-gray-700 dark:text-neutral-300";
+
+  return (
+    <div className="agnb-scroll h-screen overflow-y-auto bg-[#F6F3EC] text-gray-900 antialiased dark:bg-[#1b1410] dark:text-neutral-100">
+      <SiteNav />
+      <div className="mx-auto flex max-w-6xl flex-col gap-12 px-6 py-16 lg:flex-row lg:gap-20 lg:py-20">
+        {/* Left rail */}
+        <div className="flex-1">
+          <p className="mb-3 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[#f97316]">Contact Sales</p>
+          <h1 className="text-[clamp(34px,4.5vw,52px)] font-extrabold leading-[1.05] tracking-[-0.03em]">Talk to the team.</h1>
+          <p className="mt-4 max-w-md text-[17px] leading-[1.55] text-gray-500 dark:text-neutral-400">
+            See how an autonomous agent company runs your growth — and get set up with priority onboarding.
+          </p>
+          <div className="mt-8 divide-y divide-black/[0.08] border-y border-black/[0.08] dark:divide-white/[0.08] dark:border-white/[0.08]">
+            {CONTACT_BENEFITS.map((b) => (
+              <div key={b.t} className="flex items-start gap-3 py-4">
+                <ShieldCheck className="mt-0.5 size-5 shrink-0 text-[#f97316]" />
+                <p className="text-[14px] leading-relaxed">
+                  <span className="font-semibold text-gray-900 dark:text-neutral-100">{b.t} </span>
+                  <span className="text-gray-500 dark:text-neutral-400">— {b.d}</span>
+                </p>
+              </div>
+            ))}
+          </div>
+          <p className="mt-6 text-[13px] text-gray-500 dark:text-neutral-400">
+            Prefer email? Reach us at <a href="mailto:hq@hirefinn.ai" className="font-medium text-[#f97316] hover:underline">hq@hirefinn.ai</a>.
+          </p>
+        </div>
+
+        {/* Form */}
+        <div className="w-full lg:max-w-md">
+          <div className="rounded-2xl border border-black/[0.07] bg-white p-7 shadow-[0_8px_40px_rgba(0,0,0,0.06)] dark:border-white/[0.08] dark:bg-[#261f19] sm:p-8">
+            {sent ? (
+              <div className="flex flex-col items-center gap-3 py-10 text-center">
+                <Check className="size-9 text-[#f97316]" />
+                <h2 className="text-[18px] font-bold text-gray-900 dark:text-neutral-100">Thanks — your email is ready.</h2>
+                <p className="text-[14px] text-gray-500 dark:text-neutral-400">Send the pre-filled message and we'll be in touch shortly.</p>
+              </div>
+            ) : (
+              <form onSubmit={onSubmit} className="space-y-5">
+                <div>
+                  <label htmlFor="name" className={label}>Full name</label>
+                  <input id="name" name="name" required placeholder="Jane Doe" className={input} />
+                </div>
+                <div>
+                  <label htmlFor="email" className={label}>Work email</label>
+                  <input id="email" name="email" type="email" required placeholder="jane@company.com" className={input} />
+                </div>
+                <div>
+                  <label htmlFor="company" className={label}>Company</label>
+                  <input id="company" name="company" placeholder="company.com" className={input} />
+                </div>
+                <div>
+                  <label htmlFor="size" className={label}>Team size</label>
+                  <select id="size" name="size" className={input} defaultValue="">
+                    <option value="" disabled>Select</option>
+                    {TEAM_SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="message" className={label}>What do you want to automate?</label>
+                  <textarea id="message" name="message" rows={3} placeholder="Outbound, content, pipeline, dev work…" className={input} />
+                </div>
+                <button type="submit" className="group inline-flex w-full items-center justify-center gap-2 rounded-lg bg-[#f97316] px-6 py-3 text-sm font-semibold text-white transition hover:bg-[#ea6a0c]">
+                  Contact Sales <ArrowRight className="size-4 transition group-hover:translate-x-0.5" />
+                </button>
+              </form>
+            )}
+          </div>
+        </div>
+      </div>
+      <LandingFooter />
+    </div>
+  );
+}
+
+// ─── Sign in ──────────────────────────────────────────────────────────────────
+
+export function SignInPage() {
+  useEffect(() => {
+    const t = (() => { try { return localStorage.getItem("paperclip.theme"); } catch { return null; } })();
+    if (t) document.documentElement.classList.toggle("dark", t === "dark");
+  }, []);
+  return (
+    <div className="agnb-scroll relative flex h-screen flex-col overflow-y-auto bg-[#F6F3EC] text-gray-900 antialiased dark:bg-[#1b1410] dark:text-neutral-100">
+      <SiteNav />
+      <div className="relative flex flex-1 items-center justify-center px-6 py-16">
+        <div className="pointer-events-none absolute inset-0 -z-10" style={{ background: "radial-gradient(50% 40% at 50% 30%, rgba(249,115,22,0.12) 0%, transparent 70%)" }} />
+        <div className="w-full max-w-md">
+          <div className="mb-6 text-center">
+            <h1 className="text-[clamp(28px,4vw,38px)] font-extrabold tracking-[-0.03em]">Welcome back.</h1>
+            <p className="mt-2 text-[15px] text-gray-500 dark:text-neutral-400">Sign in and let the agents do the work.</p>
+          </div>
+          <LoginCard nextPath="/" />
+          <p className="mt-6 text-center text-[13px] text-gray-500 dark:text-neutral-400">
+            Need access? <a href="/contact" className="font-medium text-[#f97316] hover:underline">Contact Sales</a>
+          </p>
+        </div>
+      </div>
+      <LandingFooter />
+    </div>
+  );
 }

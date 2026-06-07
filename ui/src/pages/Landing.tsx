@@ -40,7 +40,7 @@ const SERIF: React.CSSProperties = {
 
 type AuthMode = "sign_in" | "sign_up";
 
-function LoginCard({ nextPath }: { nextPath: string }) {
+export function LoginCard({ nextPath }: { nextPath: string }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [mode, setMode] = useState<AuthMode>("sign_in");

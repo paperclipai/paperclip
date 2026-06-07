@@ -7,11 +7,10 @@ const LINKS = [
   { label: "Governance", href: "/platform/governance" },
   { label: "Integrations", href: "/platform/integrations" },
   { label: "Docs", href: "/docs" },
-  { label: "Contact Sales", href: "mailto:diggi@hirefinn.ai?subject=AGNB%20—%20Contact%20Sales" },
 ];
 
-const REQUEST_ACCESS = "mailto:diggi@hirefinn.ai?subject=AGNB%20Access%20Request";
-const SIGN_IN = "/auth#signin";
+const CONTACT = "/contact";
+const SIGN_IN = "/signin";
 
 /** Shared top nav for the landing + all marketing pages. */
 export function SiteNav() {
@@ -56,8 +55,8 @@ export function SiteNav() {
 
         {/* Right */}
         <div className="flex items-center gap-2.5">
-          <a href={REQUEST_ACCESS} className="hidden rounded-md px-3.5 py-2 text-[13px] font-medium text-gray-600 transition hover:text-gray-900 dark:text-neutral-400 dark:hover:text-neutral-100 sm:inline-flex">
-            Request access
+          <a href={CONTACT} className="hidden rounded-md px-3.5 py-2 text-[13px] font-medium text-gray-600 transition hover:text-gray-900 dark:text-neutral-400 dark:hover:text-neutral-100 sm:inline-flex">
+            Contact Sales
           </a>
           <a href={SIGN_IN} className="rounded-md bg-[#f97316] px-4 py-2 text-[13px] font-semibold text-white transition hover:bg-[#ea6a0c]">
             Sign in
@@ -79,7 +78,7 @@ export function SiteNav() {
               {l.label}
             </a>
           ))}
-          <a href={REQUEST_ACCESS} className="block py-2.5 text-[15px] font-medium text-gray-600 dark:text-neutral-400">Request access</a>
+          <a href={CONTACT} className="block py-2.5 text-[15px] font-medium text-gray-600 dark:text-neutral-400">Contact Sales</a>
         </div>
       )}
     </header>

@@ -140,6 +140,8 @@ import {
   ChangelogPage,
   PrivacyPage,
   TermsPage,
+  ContactPage,
+  SignInPage,
 } from "./pages/marketing";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
@@ -455,6 +457,8 @@ export function App() {
         <Route path="changelog" element={<ChangelogPage />} />
         <Route path="privacy" element={<PrivacyPage />} />
         <Route path="terms" element={<TermsPage />} />
+        <Route path="contact" element={<ContactPage />} />
+        <Route path="signin" element={<SignInPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
