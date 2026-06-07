@@ -94,7 +94,7 @@ export type AgnbSubnavGroup = keyof typeof AGNB_SUBNAV;
 /** Horizontal tab bar for an AGNB section. Links are company-prefixed by the router. */
 export function AgnbSubnav({ group }: { group: AgnbSubnavGroup }) {
   return (
-    <div className="flex flex-wrap gap-1 border-b border-border pb-2">
+    <div className="flex min-h-9 flex-wrap items-center gap-1 border-b border-border">
       {AGNB_SUBNAV[group].map((item) => (
         <NavLink
           key={item.to}
@@ -102,10 +102,10 @@ export function AgnbSubnav({ group }: { group: AgnbSubnavGroup }) {
           end
           className={({ isActive }) =>
             cn(
-              "rounded-md px-2.5 py-1 text-[13px] font-medium transition-colors",
+              "relative inline-flex h-9 items-center px-2.5 text-sm font-medium transition-colors",
               isActive
-                ? "bg-accent text-foreground"
-                : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                ? "text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-foreground"
+                : "text-foreground/60 hover:text-foreground",
             )
           }
         >
