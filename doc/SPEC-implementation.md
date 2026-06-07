@@ -653,6 +653,8 @@ Server behavior:
 2. if updated row count is 0, return `409` with current owner/status
 3. successful checkout sets `assignee_agent_id`, `status = in_progress`, and `started_at`
 
+`POST /issues/:issueId/release` clears checkout and execution run lock fields without clearing `assignee_agent_id`. If the issue is still `in_progress`, release returns it to `todo`; issues that already moved to review, blocked, done, or another explicit state keep that state.
+
 `POST /issues/:issueId/admin/force-release` is an operator recovery endpoint for stale harness locks. It requires board access to the issue company, clears checkout and execution run lock fields, and may clear the agent assignee when `clearAssignee=true` is passed. The route must write an `issue.admin_force_release` activity log entry containing the previous checkout and execution run IDs.
 
 ## 10.5 Projects
