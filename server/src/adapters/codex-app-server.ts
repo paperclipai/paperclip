@@ -119,8 +119,6 @@ function isLoopbackHost(hostname: string): boolean {
 }
 
 function looksLikeRemoteMissingThread(message: string): boolean {
-
-function looksLikeRemoteMissingThread(message: string): boolean {
   return /thread .* not found|unknown thread|missing rollout path/i.test(message);
 }
 
