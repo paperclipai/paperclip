@@ -28,6 +28,29 @@ function hasDevServerStatusToken(providedToken: string | undefined) {
   return timingSafeEqual(expected, provided);
 }
 
+// Returns the ISO timestamp of when this Node process started, computed from
+// process.uptime(). Distinct from devServer.lastRestartAt, which tracks
+// file-watch / config-change activity in the dev-server supervisor and can
+// advance without a real process restart.
+function getProcessStartedAt(): string {
+  return new Date(Date.now() - process.uptime() * 1000).toISOString();
+}
+
+// Checks whether the JWT secret used for local-agent authentication is
+// configured and meets minimum length requirements (32 chars for HMAC-SHA256).
+// Resolution order mirrors agent-auth-jwt.ts: PAPERCLIP_AGENT_JWT_SECRET first,
+// then BETTER_AUTH_SECRET as fallback.
+function getLocalAgentJwtStatus() {
+  const secret =
+    process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() ||
+    process.env.BETTER_AUTH_SECRET?.trim() ||
+    "";
+  return {
+    configured: secret.length > 0,
+    secretLengthOk: secret.length >= 32,
+  };
+}
+
 export function healthRoutes(
   db?: Db,
   opts: {
@@ -90,7 +113,12 @@ export function healthRoutes(
     if (!db) {
       res.json(
         exposeFullDetails
-          ? { status: "ok", version: serverVersion }
+          ? {
+              status: "ok",
+              version: serverVersion,
+              processStartedAt: getProcessStartedAt(),
+              localAgentJwt: getLocalAgentJwtStatus(),
+            }
           : { status: "ok", deploymentMode: opts.deploymentMode },
       );
       return;
@@ -168,11 +196,13 @@ export function healthRoutes(
     res.json({
       status: "ok",
       version: serverVersion,
+      processStartedAt: getProcessStartedAt(),
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       bootstrapStatus,
       bootstrapInviteActive,
+      localAgentJwt: getLocalAgentJwtStatus(),
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
