@@ -19,6 +19,7 @@ export function parseClaudeStreamJson(stdout: string) {
   let model = "";
   let finalResult: Record<string, unknown> | null = null;
   const assistantTexts: string[] = [];
+  let hasThinkingBlocks = false;
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -40,7 +41,11 @@ export function parseClaudeStreamJson(stdout: string) {
       for (const entry of content) {
         if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
         const block = entry as Record<string, unknown>;
-        if (asString(block.type, "") === "text") {
+        const blockType = asString(block.type, "");
+        if (blockType === "thinking" || blockType === "redacted_thinking") {
+          hasThinkingBlocks = true;
+        }
+        if (blockType === "text") {
           const text = asString(block.text, "");
           if (text) assistantTexts.push(text);
         }
@@ -62,6 +67,7 @@ export function parseClaudeStreamJson(stdout: string) {
       usage: null as UsageSummary | null,
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
+      hasThinkingBlocks,
     };
   }
 
@@ -82,7 +88,19 @@ export function parseClaudeStreamJson(stdout: string) {
     usage,
     summary,
     resultJson: finalResult,
+    hasThinkingBlocks,
   };
+}
+
+export function isClaudeThinkingBlocksModifiedError(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+  const resultText = asString(parsed.result, "").trim();
+  const errors = extractClaudeErrorMessages(parsed);
+  const allMessages = [resultText, ...errors].filter(Boolean);
+  return allMessages.some((msg) =>
+    /thinking.*blocks.*cannot be modified|redacted_thinking.*blocks.*cannot be modified/i.test(msg) ||
+    /cannot be modified[\s\S]{0,60}thinking/i.test(msg),
+  );
 }
 
 function extractClaudeErrorMessages(parsed: Record<string, unknown>): string[] {
