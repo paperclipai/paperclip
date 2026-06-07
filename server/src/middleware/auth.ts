@@ -18,6 +18,116 @@ interface ActorMiddlewareOptions {
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
 }
 
+const TRUSTED_PROXY_AUTH_EMAIL_ENV = "PAPERCLIP_TRUST_PROXY_AUTH_EMAIL";
+const TRUSTED_PROXY_EMAIL_HEADERS = [
+  "x-auth-request-email",
+  "x-forwarded-email",
+  "x-forwarded-preferred-username",
+];
+
+function normalizeEmail(value: string | undefined | null): string | null {
+  const email = value?.split(",")[0]?.trim().toLowerCase();
+  if (!email || !email.includes("@")) return null;
+  return email;
+}
+
+function trustedProxyEmailAllowSet(): Set<string> {
+  return new Set(
+    (process.env[TRUSTED_PROXY_AUTH_EMAIL_ENV] ?? "")
+      .split(",")
+      .map((value) => normalizeEmail(value))
+      .filter((value): value is string => Boolean(value)),
+  );
+}
+
+function resolveTrustedProxyAuthEmail(req: Request): string | null {
+  const allowedEmails = trustedProxyEmailAllowSet();
+  if (allowedEmails.size === 0) return null;
+
+  for (const header of TRUSTED_PROXY_EMAIL_HEADERS) {
+    const email = normalizeEmail(req.header(header));
+    if (email && allowedEmails.has(email)) return email;
+  }
+  return null;
+}
+
+async function ensureTrustedProxyUser(db: Db, email: string) {
+  const now = new Date();
+  const existing = await db
+    .select({
+      id: authUsers.id,
+      name: authUsers.name,
+      email: authUsers.email,
+    })
+    .from(authUsers)
+    .where(eq(authUsers.email, email))
+    .then((rows) => rows[0] ?? null);
+
+  if (existing) return existing;
+
+  const userId = `trusted-proxy:${email}`;
+  return db
+    .insert(authUsers)
+    .values({
+      id: userId,
+      name: email,
+      email,
+      emailVerified: true,
+      image: null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: authUsers.id,
+      set: {
+        name: email,
+        email,
+        emailVerified: true,
+        updatedAt: now,
+      },
+    })
+    .returning({
+      id: authUsers.id,
+      name: authUsers.name,
+      email: authUsers.email,
+    })
+    .then((rows) => rows[0]);
+}
+
+async function resolveTrustedProxyActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
+  const email = resolveTrustedProxyAuthEmail(req);
+  if (!email) return null;
+
+  const user = await ensureTrustedProxyUser(db, email);
+  if (!user?.id) return null;
+
+  const memberships = await db
+    .select({
+      companyId: companyMemberships.companyId,
+      membershipRole: companyMemberships.membershipRole,
+      status: companyMemberships.status,
+    })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, user.id),
+        eq(companyMemberships.status, "active"),
+      ),
+    );
+
+  return {
+    type: "board",
+    userId: user.id,
+    userName: user.name ?? email,
+    userEmail: user.email ?? email,
+    companyIds: memberships.map((row) => row.companyId),
+    memberships,
+    isInstanceAdmin: true,
+    source: "session",
+  };
+}
+
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
@@ -42,6 +152,16 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         if (cloudTenantActor) {
           req.actor = {
             ...cloudTenantActor,
+            runId: runIdHeader ?? undefined,
+          };
+          next();
+          return;
+        }
+
+        const trustedProxyActor = await resolveTrustedProxyActor(db, req);
+        if (trustedProxyActor) {
+          req.actor = {
+            ...trustedProxyActor,
             runId: runIdHeader ?? undefined,
           };
           next();
