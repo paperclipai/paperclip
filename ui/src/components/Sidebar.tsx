@@ -100,20 +100,6 @@ export function Sidebar() {
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
           />
-        </div>
-
-        <SidebarSection label="AGNB">
-          <SidebarNavItem to="/rocket-inbox" label="Inbox" icon={Mails} />
-          <SidebarNavItem to="/campaigns" label="Campaigns" icon={Megaphone} />
-          <SidebarNavItem to="/experiments" label="Experiments" icon={Beaker} />
-          <SidebarNavItem to="/pipeline" label="Pipeline" icon={LayoutGrid} />
-          <SidebarNavItem to="/assets" label="Assets" icon={Package} />
-          <SidebarNavItem to="/competitors" label="Research" icon={FlaskConical} />
-          <SidebarNavItem to="/mentions" label="Mentions" icon={AtSign} />
-          <SidebarNavItem to="/backlog" label="Backlog" icon={ListTodo} />
-        </SidebarSection>
-
-        <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
@@ -133,6 +119,17 @@ export function Sidebar() {
             className="flex flex-col gap-0.5"
             itemClassName="text-[13px] font-medium"
           />
+        </div>
+
+        <SidebarSection label="AGNB">
+          <SidebarNavItem to="/rocket-inbox" label="Inbox" icon={Mails} />
+          <SidebarNavItem to="/campaigns" label="Campaigns" icon={Megaphone} />
+          <SidebarNavItem to="/experiments" label="Experiments" icon={Beaker} />
+          <SidebarNavItem to="/pipeline" label="Pipeline" icon={LayoutGrid} />
+          <SidebarNavItem to="/assets" label="Assets" icon={Package} />
+          <SidebarNavItem to="/competitors" label="Research" icon={FlaskConical} />
+          <SidebarNavItem to="/mentions" label="Mentions" icon={AtSign} />
+          <SidebarNavItem to="/backlog" label="Backlog" icon={ListTodo} />
         </SidebarSection>
 
         <SidebarProjects />
