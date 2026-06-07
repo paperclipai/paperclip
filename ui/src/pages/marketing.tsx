@@ -567,3 +567,116 @@ export function ChangelogPage() {
     </Shell>
   );
 }
+
+// ─── Legal (Privacy + Terms) ──────────────────────────────────────────────────
+
+const isNumHeading = (l: string) => /^\d+\.\s/.test(l);
+const isSubHeading = (l: string) => /^[A-Z]\.\s/.test(l);
+
+function LegalShell({ title, updated, lines }: { title: string; updated: string; lines: string[] }) {
+  useEffect(() => {
+    const t = (() => { try { return localStorage.getItem("paperclip.theme"); } catch { return null; } })();
+    if (t) document.documentElement.classList.toggle("dark", t === "dark");
+  }, []);
+  return (
+    <div className="agnb-scroll h-screen overflow-y-auto bg-[#F6F3EC] text-gray-900 antialiased dark:bg-neutral-950 dark:text-neutral-100">
+      <SiteNav />
+      <article className="mx-auto max-w-3xl px-6 py-16">
+        <p className="mb-3 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[#f97316]">Legal</p>
+        <h1 className="text-[clamp(32px,4.5vw,48px)] font-extrabold tracking-[-0.03em]">{title}</h1>
+        <p className="mt-3 text-[13px] text-gray-500 dark:text-neutral-400">Last updated: {updated}</p>
+        <div className="mt-10">
+          {lines.map((l, i) =>
+            isNumHeading(l) ? (
+              <h2 key={i} className="mb-3 mt-10 text-[22px] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">{l}</h2>
+            ) : isSubHeading(l) ? (
+              <h3 key={i} className="mb-2 mt-6 text-[15px] font-semibold text-gray-800 dark:text-neutral-200">{l}</h3>
+            ) : (
+              <p key={i} className="mb-4 text-[15px] leading-relaxed text-gray-600 dark:text-neutral-400">{l}</p>
+            ),
+          )}
+        </div>
+        <div className="mt-12 border-t border-black/[0.08] pt-6 dark:border-white/[0.08]">
+          <a href="/auth" className="inline-flex items-center gap-2 text-[13px] font-medium text-gray-500 transition hover:text-gray-900 dark:text-neutral-400 dark:hover:text-neutral-100">
+            <ArrowLeft className="size-4" /> Back to home
+          </a>
+        </div>
+      </article>
+      <LandingFooter />
+    </div>
+  );
+}
+
+const PRIVACY_LINES = [
+  `This Privacy Policy explains how AIforge Tech Private Limited ("All Gas No Brakes", "AGNB", "we", "us", "our") processes personal and business data. We provide an autonomous AI agent platform for growth operations ("Software" or "Platform"), accessible via allgasnobrakes.online.`,
+  "We comply with applicable global data protection frameworks, including the Digital Personal Data Protection Act, 2023 (DPDP, India), the General Data Protection Regulation (GDPR, EU/UK), and the California Consumer Privacy Act (CCPA, USA).",
+  "1. Our Role: Controller vs. Processor",
+  "To clarify our legal responsibilities, AGNB operates in two distinct capacities:",
+  `Data Controller: We act as the Controller for the personal data of our direct customers ("Users") who register for an account, manage billing, and interact with our Website.`,
+  `Data Processor: We act as a Processor for the data our Users connect to the Platform and that the agents process on their behalf — including CRM records, prospect and campaign data, and content. The User is the Controller of that data and is responsible for obtaining any necessary consent.`,
+  "2. What Data We Collect",
+  "A. Account and Billing Data (User Data)",
+  "To register for our services, we collect your first and last name, email address, and company name. If you choose a paid plan, we also collect payment details. Purpose: to fulfill our SaaS contract, manage subscriptions, and provide support.",
+  "B. Operational Data (Connected Data)",
+  "When you connect integrations (for example HubSpot, Google Search Console, PostHog, or LinkedIn), the Platform processes the records, metrics, and content needed to run your growth operations — deals, campaigns, mentions, rankings, and drafts. Keys and tokens are stored as encrypted secrets and are never exposed to agents in the clear. Purpose: to execute the core functionality of the agents on your behalf.",
+  "C. Website Log Data",
+  `When you visit our Website, we automatically collect limited "log data" stored temporarily to ensure stability and security: IP address, browser and operating system information, referral URL, and time of access. The legal basis is our legitimate interest in the proper operation of the Website.`,
+  "D. Cookies",
+  "Our Website uses session and persistent cookies to improve functionality and analyze usage. You can manage or revoke consent at any time via your browser settings or our cookie banner.",
+  "E. Contact Requests",
+  "When you contact us, we collect your name and email solely to respond to your query.",
+  "3. How We Use Data for AI Model Improvement",
+  "To improve the Platform, AGNB may use aggregated and anonymized data. We do not use Personally Identifiable Information (PII) to train foundational models. Agents run on third-party or local model providers you select; your prompts and data are subject to those providers' terms. Users retain ownership of their data, granting AGNB a license solely to provide and improve the service.",
+  "4. Security and Compliance",
+  "We implement robust technical and organizational safeguards, including encryption in transit and at rest and role-based access controls. Our infrastructure is aligned with SOC 2 standards (certification in progress). For Users processing sensitive data, specific obligations are governed by our separate Data Processing Agreement (DPA).",
+  "5. Data Retention and Deletion",
+  "We retain User account data for the duration of the active subscription and as required by law. Operational data is retained according to your configuration or until you request deletion. If an account remains entirely inactive for twelve (12) months, associated operational data may be automatically and permanently deleted.",
+  "6. Your Data Protection Rights",
+  "Depending on your jurisdiction, you have the right to access, rectify, erase, restrict or object to processing, port your data, and withdraw consent at any time. To exercise these rights, contact us at the address below.",
+  "7. International Data Transfers",
+  "If we transfer personal data outside its originating jurisdiction, we ensure appropriate legal safeguards are in place, such as Standard Contractual Clauses (SCCs).",
+  "8. Contact Information",
+  "For data protection inquiries or to request our standard Data Processing Agreement (DPA), please contact: AIforge Tech Private Limited, D-253, Kardhani Govindpura, Kalwar Road, Jaipur, Rajasthan – 302012, India. Email: hello@hirefinn.ai.",
+];
+
+const TERMS_LINES = [
+  "1. Scope",
+  `AIforge Tech Private Limited, registered under CIN U62099RJ2025PTC099494, with its registered address at D-253, Kardhani Govindpura, Kalwar Road, Jaipur, Rajasthan – 302012, India ("AGNB"), operates a platform that enables customers ("Users") to deploy autonomous AI agents ("Agents") to automate growth operations ("Software"), offered as a subscription. These general terms ("GTC") govern the relationship between AGNB and the User. AGNB provides its services exclusively to business entities, not individual consumers.`,
+  "2. Object of the Agreement",
+  "AGNB provides the Software as software-as-a-service (SaaS), operated by AGNB in a managed cloud-hosted environment and accessed via allgasnobrakes.online. To access the Software, the User creates an account by registering with an email address and password. By registering, the User agrees to these GTC.",
+  "3. Subscriptions and Fees",
+  "Subscriptions operate on base tiers with usage limits, billed per the Plan. Plans and fees on the Website are an invitation to offer; the User submits a binding offer by selecting a Plan and providing billing details. The User agrees to pay subscription fees and any usage-based overages. All fees exclude taxes. Any billing dispute must be submitted in writing within 7 days of the invoice date; failure to do so constitutes acceptance of the charges.",
+  "4. License",
+  "AGNB grants the User a non-exclusive, non-transferable, non-sublicensable license to use the Software as specified in the Plan. The User is responsible for all actions taken by their authorized users, and may not remove any of AGNB's copyright, trademark, or proprietary notices.",
+  "5. Input, Output, and AI Liability",
+  `"Input" is all data, content, or materials provided by the User or connected by integrations. "Output" is all data or materials generated by the Software. The User is responsible for the legality of and rights to Input.`,
+  "The User acknowledges that AI models can be unpredictable. The User assumes full and sole liability for all actions and communications executed by their Agents; all Agent outputs are deemed communications made directly by the User. AGNB is not liable for inaccurate information or unauthorized advice generated by an Agent. The User indemnifies AGNB against claims arising from Input or Output, except for AGNB's gross negligence.",
+  "6. Obligations and Compliance of the User",
+  "The User must comply with all applicable regulations regarding data privacy and electronic communications, including anti-spam laws (e.g., CAN-SPAM, GDPR, DPDP) for any outbound the Agents perform. The User is prohibited from unauthorized sharing, infringing content, malware, security interference, reverse engineering, and from using the Software for fraud, harassment, or unauthorized medical, legal, or financial advice. The User is responsible for resolving third-party complaints and for protecting account credentials (including using MFA).",
+  "7. Warranty",
+  "AGNB warrants the Software's functionalities as specified in the Plan; all other warranties are disclaimed to the fullest extent permitted by law. AGNB aims for high availability, excluding planned downtime and force-majeure events, and may introduce updates and new features to improve the Software.",
+  "8. Third-Party Applications and Model Providers",
+  "The Software integrates with third-party products and model providers (for example HubSpot, Google, PostHog, and Claude, Gemini, or OpenAI). Where the User supplies their own keys, the applicable third-party terms apply directly to the User. In conflicts, these GTC prevail. AGNB does not warrant non-listed third-party applications.",
+  "9. Intellectual Property",
+  "AGNB retains all rights in the Software, services, and documentation. Unless agreed otherwise, Users own their Input and Output. The User grants AGNB a non-exclusive right to use Input to provide and improve the service. Feedback may be freely used by AGNB without compensation.",
+  "10. Confidentiality",
+  "Each party uses the other's Confidential Information only to perform the Agreement, discloses it to third parties only under confidentiality obligations, and deletes it upon termination except as legally required. Obligations survive for three years post-termination.",
+  "11. Data Protection",
+  "Processing of personal data is governed by a separate Data Processing Agreement, available upon request.",
+  "12. Limitation of Liability",
+  "AGNB is liable only for intent or gross negligence. AGNB's total liability is capped at the subscription fees paid by the User in the three (3) months preceding the claim. All other liability is excluded except mandatory statutory liability.",
+  "13. Term and Termination",
+  "The Agreement's initial term is as specified in the Plan and renews automatically. Either party may terminate with notice as set out in the Plan. Termination for cause is possible for uncured material breaches or immediately for insolvency. AGNB may suspend or terminate for breaches threatening Software security or data protection.",
+  "14. Amendments",
+  "AGNB may amend these GTC for legal, security, or product-development reasons. Users receive reasonable notice and may object within the notice period; silence equals acceptance.",
+  "15. Final Provisions",
+  "Neither party may assign the Agreement without the other's consent. The Agreement is governed by the laws of India, excluding conflict-of-law rules. Exclusive jurisdiction for disputes is Jaipur. Legal inquiries can be directed to hello@hirefinn.ai.",
+];
+
+export function PrivacyPage() {
+  return <LegalShell title="Privacy Policy" updated="7 June 2026" lines={PRIVACY_LINES} />;
+}
+
+export function TermsPage() {
+  return <LegalShell title="Terms of Service" updated="7 June 2026" lines={TERMS_LINES} />;
+}

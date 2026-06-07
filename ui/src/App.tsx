@@ -138,6 +138,8 @@ import {
   ApiPage,
   BlogPage,
   ChangelogPage,
+  PrivacyPage,
+  TermsPage,
 } from "./pages/marketing";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
@@ -451,6 +453,8 @@ export function App() {
         <Route path="api" element={<ApiPage />} />
         <Route path="blog" element={<BlogPage />} />
         <Route path="changelog" element={<ChangelogPage />} />
+        <Route path="privacy" element={<PrivacyPage />} />
+        <Route path="terms" element={<TermsPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />

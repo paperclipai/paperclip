@@ -887,7 +887,10 @@ export function LandingFooter() {
           <p className="text-[13px] text-gray-500 dark:text-neutral-400">
             © 2026 All Gas No Brakes · <span className="hidden sm:inline">built in stealth.</span>
           </p>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4">
+            <a href="/privacy" className="text-[13px] text-gray-500 transition hover:text-gray-900 dark:text-neutral-400 dark:hover:text-neutral-100">Privacy</a>
+            <a href="/terms" className="text-[13px] text-gray-500 transition hover:text-gray-900 dark:text-neutral-400 dark:hover:text-neutral-100">Terms</a>
+            <span className="h-4 w-px bg-black/10 dark:bg-white/15" aria-hidden />
             <button
               onClick={toggleTheme}
               aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
@@ -895,21 +898,6 @@ export function LandingFooter() {
             >
               {theme === "dark" ? <Sun className="size-[18px]" /> : <Moon className="size-[18px]" />}
             </button>
-            <span className="h-4 w-px bg-black/10 dark:bg-white/15" aria-hidden />
-            <div className="flex items-center gap-0.5">
-              {SOCIALS.map((s) => (
-                <a
-                  key={s.label}
-                  href={s.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  aria-label={s.label}
-                  className="inline-flex size-8 items-center justify-center rounded-md text-gray-500 transition hover:bg-black/[0.05] hover:text-gray-900 dark:text-neutral-400 dark:hover:bg-white/10 dark:hover:text-neutral-100"
-                >
-                  {s.icon}
-                </a>
-              ))}
-            </div>
           </div>
         </Section>
       </div>
