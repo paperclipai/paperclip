@@ -66,7 +66,7 @@ async function createApp(actorOverrides: Record<string, unknown> = {}) {
   return app;
 }
 
-async function createAgentApp() {
+async function createAgentApp(actorOverrides: Record<string, unknown> = {}) {
   const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
     import("../middleware/index.js"),
     import("../routes/approvals.js"),
@@ -80,6 +80,7 @@ async function createAgentApp() {
       companyId: "company-1",
       source: "api_key",
       isInstanceAdmin: false,
+      ...actorOverrides,
     };
     next();
   });
@@ -296,6 +297,69 @@ describe("approval routes idempotent retries", () => {
       "approval-6",
       "user-1",
       "Need changes",
+    );
+  });
+
+  it("rejects approval resubmit from a non-requesting agent", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-8",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "revision_requested",
+      payload: {},
+      requestedByAgentId: "agent-2",
+      requestedByUserId: null,
+    });
+
+    const res = await request(await createAgentApp({ agentId: "agent-1" }))
+      .post("/api/approvals/approval-8/resubmit")
+      .send({ payload: { title: "Updated request" } });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "Only requesting agent can resubmit this approval" });
+    expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("allows the requesting agent to resubmit an approval revision", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-9",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "revision_requested",
+      payload: { title: "Original request" },
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+    });
+    mockApprovalService.resubmit.mockResolvedValue({
+      id: "approval-9",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: { title: "Updated request" },
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+    });
+
+    const res = await request(await createAgentApp({ agentId: "agent-1" }))
+      .post("/api/approvals/approval-9/resubmit")
+      .send({ payload: { title: "Updated request" } });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.resubmit).toHaveBeenCalledWith("approval-9", {
+      title: "Updated request",
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        actorType: "agent",
+        actorId: "agent-1",
+        agentId: "agent-1",
+        action: "approval.resubmitted",
+        entityType: "approval",
+        entityId: "approval-9",
+      }),
     );
   });
 
