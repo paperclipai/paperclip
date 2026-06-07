@@ -215,7 +215,7 @@ export function ProfileSettings() {
 
               <div className="min-w-0 flex-1 space-y-2 pb-1">
                 <div>
-                  <h2 className="truncate text-2xl font-semibold text-foreground">{currentName}</h2>
+                  <h2 className="truncate font-serif text-2xl font-medium text-foreground">{currentName}</h2>
                   <p className="truncate text-sm text-muted-foreground">{sessionQuery.data.user.email ?? "No email"}</p>
                 </div>
                 <p className="max-w-2xl text-sm leading-6 text-muted-foreground">

@@ -175,7 +175,7 @@ export function CompanySettings() {
     <div className="max-w-2xl space-y-6">
       <div className="flex items-center gap-2">
         <Settings className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Company Settings</h1>
+        <h1 className="font-serif text-lg font-medium">Company Settings</h1>
       </div>
 
       {/* General */}

@@ -173,7 +173,7 @@ export function CompanyInvites() {
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <MailPlus className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Company Invites</h1>
+          <h1 className="font-serif text-lg font-medium">Company Invites</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
           Invite people to request access to this company. New invite links are copied to your clipboard when they are generated.

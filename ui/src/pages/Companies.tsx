@@ -89,7 +89,16 @@ export function Companies() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-end">
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <h1 className="font-serif text-2xl font-medium tracking-tight">Companies</h1>
+          {companies.length > 0 && (
+            <p className="mt-1.5 text-[12.5px] text-muted-foreground">
+              <span className="font-mono text-foreground">{companies.length}</span>{" "}
+              {companies.length === 1 ? "company" : "companies"}
+            </p>
+          )}
+        </div>
         <Button size="sm" onClick={() => openOnboarding()}>
           <Plus className="h-3.5 w-3.5 mr-1.5" />
           New Company
@@ -158,7 +167,7 @@ export function Companies() {
                         onClick={saveEdit}
                         disabled={editMutation.isPending}
                       >
-                        <Check className="h-3.5 w-3.5 text-green-500" />
+                        <Check className="h-3.5 w-3.5 text-status-success" />
                       </Button>
                       <Button variant="ghost" size="icon-xs" onClick={cancelEdit}>
                         <X className="h-3.5 w-3.5 text-muted-foreground" />
@@ -170,9 +179,9 @@ export function Companies() {
                       <span
                         className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
                           company.status === "active"
-                            ? "bg-green-500/10 text-green-600 dark:text-green-400"
+                            ? "bg-status-success/12 text-status-success"
                             : company.status === "paused"
-                              ? "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"
+                              ? "bg-status-warning/12 text-status-warning"
                               : "bg-muted text-muted-foreground"
                         }`}
                       >

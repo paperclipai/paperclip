@@ -405,7 +405,7 @@ export function CompanyEnvironments() {
       <div className="max-w-3xl space-y-4">
         <div className="flex items-center gap-2">
           <Settings className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Company Environments</h1>
+          <h1 className="font-serif text-lg font-medium">Company Environments</h1>
         </div>
         <div className="rounded-md border border-border px-4 py-4 text-sm text-muted-foreground">
           Enable Environments in instance experimental settings to manage company execution targets.
@@ -419,7 +419,7 @@ export function CompanyEnvironments() {
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <Settings className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Company Environments</h1>
+          <h1 className="font-serif text-lg font-medium">Company Environments</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
           Define reusable execution targets for projects, issue workspaces, and remote-capable adapters.
