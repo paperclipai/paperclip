@@ -119,7 +119,15 @@ export function Activity() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-end">
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <h1 className="font-serif text-2xl font-medium tracking-tight">Activity</h1>
+          {data && data.length > 0 && (
+            <p className="mt-1.5 text-[12.5px] text-muted-foreground">
+              <span className="font-mono text-foreground">{data.length}</span> recent event{data.length === 1 ? "" : "s"}
+            </p>
+          )}
+        </div>
         <Select value={filter} onValueChange={setFilter}>
           <SelectTrigger className="w-[140px] h-8 text-xs">
             <SelectValue placeholder="Filter by type" />

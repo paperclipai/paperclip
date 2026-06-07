@@ -541,7 +541,7 @@ export function Costs() {
       <div className="space-y-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
-                <h1 className="text-3xl font-semibold tracking-tight">Costs</h1>
+                <h1 className="font-serif text-3xl font-medium tracking-tight">Costs</h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
                   Inference spend, platform fees, credits, and live quota windows.
                 </p>
@@ -688,10 +688,10 @@ export function Costs() {
                             className={cn(
                               "h-full transition-[width,background-color] duration-150",
                               spendData.summary.utilizationPercent > 90
-                                ? "bg-red-400"
+                                ? "bg-status-error"
                                 : spendData.summary.utilizationPercent > 70
-                                  ? "bg-yellow-400"
-                                  : "bg-emerald-400",
+                                  ? "bg-status-warning"
+                                  : "bg-status-success",
                             )}
                             style={{ width: `${Math.min(100, spendData.summary.utilizationPercent)}%` }}
                           />
