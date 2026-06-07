@@ -9,6 +9,13 @@ import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
+import {
+  createMobilePaperclipBoardLookups,
+  mobilePaperclipAuthGuard,
+} from "./middleware/mobile-paperclip-auth.js";
+import { mobilePaperclipCors } from "./middleware/mobile-paperclip-cors.js";
+import { buildOriginMatcher } from "./mobile-paperclip-origins.js";
+import { isMobilePaperclipJwtConfigured } from "./mobile-paperclip-jwt.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
@@ -144,6 +151,8 @@ export async function createApp(
     bindHost: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    mobilePaperclipPublicHostnames?: string[];
+    mobilePaperclipAllowedOrigins?: string[];
     instanceId?: string;
     hostVersion?: string;
     localPluginDir?: string;
@@ -182,10 +191,38 @@ export async function createApp(
       bindHost: opts.bindHost,
     }),
   );
+
+  const mobilePaperclipPublicHostnameSet = new Set(
+    (opts.mobilePaperclipPublicHostnames ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean),
+  );
+  const mobilePaperclipOriginMatcher = buildOriginMatcher(opts.mobilePaperclipAllowedOrigins ?? []);
+  const mobilePaperclipEnabled =
+    isMobilePaperclipJwtConfigured() && mobilePaperclipPublicHostnameSet.size > 0;
+
+  // CORS for the SaaS frontend hitting our public tunnel hostname. Runs before the
+  // JWT guard so preflight OPTIONS requests don't get rejected for missing the JWT.
+  app.use(
+    mobilePaperclipCors({
+      enabled: mobilePaperclipEnabled,
+      originMatcher: mobilePaperclipOriginMatcher,
+    }),
+  );
+
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
       resolveSession: opts.resolveSession,
+    }),
+  );
+
+  // Public-hostname JWT enforcement runs AFTER actorMiddleware so it can override the
+  // local_trusted "implicit board" actor with one derived from the verified mobile JWT
+  // (or reject with 401).
+  app.use(
+    mobilePaperclipAuthGuard({
+      enabled: mobilePaperclipEnabled,
+      publicHostnames: mobilePaperclipPublicHostnameSet,
+      ...createMobilePaperclipBoardLookups(db),
     }),
   );
   app.use("/api/auth", authRoutes(db));

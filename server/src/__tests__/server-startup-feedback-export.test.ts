@@ -87,6 +87,8 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     heartbeatSchedulerEnabled: false,
     heartbeatSchedulerIntervalMs: 30000,
     companyDeletionEnabled: false,
+    mobilePaperclipPublicHostnames: [],
+    mobilePaperclipAllowedOrigins: [],
     ...overrides,
   };
 }

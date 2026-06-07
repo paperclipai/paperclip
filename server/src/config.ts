@@ -87,6 +87,8 @@ export interface Config {
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
+  mobilePaperclipPublicHostnames: string[];
+  mobilePaperclipAllowedOrigins: string[];
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -239,6 +241,15 @@ export function loadConfig(): Config {
         .filter(Boolean),
     ),
   );
+  const mobilePaperclipPublicHostnames = (process.env.MOBILE_PAPERCLIP_PUBLIC_HOSTNAMES ?? "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter((value) => value.length > 0);
+  const mobilePaperclipAllowedOrigins = (process.env.MOBILE_PAPERCLIP_ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+
   const companyDeletionEnvRaw = process.env.PAPERCLIP_ENABLE_COMPANY_DELETION;
   const companyDeletionEnabled =
     companyDeletionEnvRaw !== undefined
@@ -333,5 +344,7 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    mobilePaperclipPublicHostnames,
+    mobilePaperclipAllowedOrigins,
   };
 }
