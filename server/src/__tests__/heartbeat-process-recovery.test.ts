@@ -941,6 +941,120 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("does not duplicate operator waiting activity on repeated sweeps", async () => {
+    const { companyId, issueId } = await seedAssignedTodoNoRunFixture();
+    const interactionId = randomUUID();
+    const now = new Date("2026-03-19T01:00:00.000Z");
+
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      title: "Confirm plan",
+      summary: "Operator approval required.",
+      payload: { title: "Confirm plan", summary: "Operator approval required." },
+      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const first = await heartbeat.reconcileStalledIssueThreadInteractions({ now, thresholdMs: 10 * 60 * 1000 });
+    const second = await heartbeat.reconcileStalledIssueThreadInteractions({ now, thresholdMs: 10 * 60 * 1000 });
+
+    expect(first).toMatchObject({
+      scanned: 1,
+      operatorRouted: 1,
+      agentWoken: 0,
+      skipped: 0,
+      interactionIds: [interactionId],
+      issueIds: [issueId],
+    });
+    expect(second).toMatchObject({
+      scanned: 1,
+      operatorRouted: 0,
+      agentWoken: 0,
+      skipped: 1,
+      interactionIds: [interactionId],
+      issueIds: [issueId],
+    });
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(activity.filter((event) => event.action === "issue.thread_interaction_operator_waiting")).toHaveLength(1);
+  });
+
+  it("uses project budget hard stops for stalled interaction wake recovery", async () => {
+    const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
+    const projectId = randomUUID();
+    const interactionId = randomUUID();
+    const now = new Date("2026-03-19T01:00:00.000Z");
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Budgeted project",
+      status: "active",
+    });
+    await db.update(issues).set({ projectId }).where(eq(issues.id, issueId));
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "project",
+      scopeId: projectId,
+      metric: "billed_cents",
+      windowKind: "lifetime",
+      amount: 1,
+      hardStopEnabled: true,
+      isActive: true,
+    });
+    await db.insert(costEvents).values({
+      companyId,
+      projectId,
+      agentId,
+      issueId,
+      provider: "test",
+      biller: "test",
+      billingType: "tokens",
+      model: "test-model",
+      costCents: 1,
+      occurredAt: new Date("2026-03-19T00:30:00.000Z"),
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "implementation_followup",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      title: "Resume implementation",
+      summary: "Agent needs to continue the interaction.",
+      createdByAgentId: agentId,
+      payload: { title: "Resume implementation", summary: "Agent needs to continue the interaction." },
+      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStalledIssueThreadInteractions({ now, thresholdMs: 10 * 60 * 1000 });
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      operatorRouted: 0,
+      agentWoken: 0,
+      skipped: 1,
+      interactionIds: [interactionId],
+      issueIds: [issueId],
+    });
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.filter((wakeup) => wakeup.reason === "issue_interaction_stalled")).toHaveLength(0);
+  });
+
   async function seedQueuedIssueRunFixture() {
     const companyId = randomUUID();
     const agentId = randomUUID();
