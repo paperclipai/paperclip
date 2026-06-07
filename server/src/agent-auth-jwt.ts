@@ -18,6 +18,7 @@ export interface LocalAgentJwtClaims {
 }
 
 const JWT_ALGORITHM = "HS256";
+const DENIED_RUN_IDS_ENV = "PAPERCLIP_AGENT_JWT_DENIED_RUN_IDS";
 
 function parseNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value);
@@ -63,6 +64,33 @@ function safeCompare(a: string, b: string) {
   const right = Buffer.from(b);
   if (left.length !== right.length) return false;
   return timingSafeEqual(left, right);
+}
+
+function parseDeniedRunIds(raw: string | undefined) {
+  const value = raw?.trim();
+  if (!value) return new Set<string>();
+
+  if (value.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return new Set(
+          parsed
+            .filter((item): item is string => typeof item === "string")
+            .map((item) => item.trim())
+            .filter(Boolean),
+        );
+      }
+    } catch {
+      // Fall through to delimiter parsing for malformed values.
+    }
+  }
+
+  return new Set(value.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean));
+}
+
+function isDeniedRunId(runId: string) {
+  return parseDeniedRunIds(process.env[DENIED_RUN_IDS_ENV]).has(runId);
 }
 
 export function createLocalAgentJwt(agentId: string, companyId: string, adapterType: string, runId: string) {
@@ -118,6 +146,7 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   const iat = typeof claims.iat === "number" ? claims.iat : null;
   const exp = typeof claims.exp === "number" ? claims.exp : null;
   if (!sub || !companyId || !adapterType || !runId || !iat || !exp) return null;
+  if (isDeniedRunId(runId)) return null;
 
   const now = Math.floor(Date.now() / 1000);
   if (exp < now) return null;
