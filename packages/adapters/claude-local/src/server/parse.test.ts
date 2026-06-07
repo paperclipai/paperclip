@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
+  isClaudeImageProcessingError,
   isClaudeTransientUpstreamError,
 } from "./parse.js";
 
@@ -91,6 +92,61 @@ describe("isClaudeTransientUpstreamError", () => {
     expect(
       isClaudeTransientUpstreamError({
         errorMessage: "Invalid request_error: Unknown parameter 'foo'.",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isClaudeImageProcessingError", () => {
+  it("detects 'Could not process image' in result text (exit-code-0 path)", () => {
+    expect(
+      isClaudeImageProcessingError({
+        subtype: "success",
+        is_error: true,
+        result: "API Error: 400 {\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Could not process image\"}}",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects 'Could not process image' in the errors array", () => {
+    expect(
+      isClaudeImageProcessingError({
+        is_error: true,
+        result: "",
+        errors: [{ type: "invalid_request_error", message: "Could not process image" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    expect(
+      isClaudeImageProcessingError({
+        is_error: true,
+        result: "could not process image: bad format",
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false when is_error is false even if message text matches", () => {
+    expect(
+      isClaudeImageProcessingError({
+        is_error: false,
+        result: "Task complete: could not process image due to format, but handled gracefully.",
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for unrelated errors", () => {
+    expect(
+      isClaudeImageProcessingError({
+        is_error: true,
+        result: "No conversation found with session id abc-123",
+      }),
+    ).toBe(false);
+    expect(
+      isClaudeImageProcessingError({
+        is_error: false,
+        result: "Task complete.",
       }),
     ).toBe(false);
   });
