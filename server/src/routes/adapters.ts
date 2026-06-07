@@ -300,9 +300,12 @@ export function adapterRoutes() {
       // registerServerAdapter preserves the built-in as a fallback so pausing or
       // removing the override restores the original implementation.
 
-      // Check if already registered (indicates a reinstall/update)
+      // Check if already registered (indicates a reinstall/update).
+      // For built-in types the registry always returns the built-in, so we
+      // additionally require an existing external plugin record to
+      // distinguish a true reinstall from a first-time override.
       const existing = findServerAdapter(adapterModule.type);
-      const isReinstall = existing !== null;
+      const isReinstall = existing !== null && !!getAdapterPluginByType(adapterModule.type);
       if (existing) {
         unregisterServerAdapter(adapterModule.type);
         logger.info({ type: adapterModule.type }, "Unregistered existing adapter for replacement");
