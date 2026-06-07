@@ -73,18 +73,29 @@ function MetricTile({
   value,
   subtitle,
   icon: Icon,
+  accent,
 }: {
   label: string;
   value: string;
   subtitle: string;
   icon: ComponentType<{ className?: string }>;
+  /** "money" = amber cost-tape, "credit" = green (positive finance net) */
+  accent?: "money" | "credit";
 }) {
   return (
     <div className="border border-border p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
-          <div className="mt-2 text-2xl font-semibold tabular-nums">{value}</div>
+          <div className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
+          <div
+            className={cn(
+              "mt-2 font-mono text-2xl font-medium tabular-nums",
+              accent === "money" && "text-primary",
+              accent === "credit" && "text-status-success",
+            )}
+          >
+            {value}
+          </div>
           <div className="mt-1 text-xs leading-5 text-muted-foreground">{subtitle}</div>
         </div>
         <div className="flex h-9 w-9 shrink-0 items-center justify-center border border-border">
@@ -542,17 +553,37 @@ export function Costs() {
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
                 <h1 className="font-serif text-3xl font-medium tracking-tight">Costs</h1>
-                <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                  Inference spend, platform fees, credits, and live quota windows.
-                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted-foreground">
+                  <span className="font-mono font-medium text-primary">
+                    {formatCents(spendData?.summary.spendCents ?? 0)}
+                  </span>
+                  <span>this period</span>
+                  {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0 ? (
+                    <>
+                      <span className="text-muted-foreground/50">·</span>
+                      <span className="font-mono text-foreground">{spendData.summary.utilizationPercent}%</span>
+                      <span>of</span>
+                      <span className="font-mono">{formatCents(spendData.summary.budgetCents)}</span>
+                      <span>budget</span>
+                    </>
+                  ) : null}
+                  {activeBudgetIncidents.length > 0 ? (
+                    <>
+                      <span className="text-muted-foreground/50">·</span>
+                      <span className="font-mono font-semibold text-status-error">{activeBudgetIncidents.length}</span>
+                      <span>incident{activeBudgetIncidents.length > 1 ? "s" : ""}</span>
+                    </>
+                  ) : null}
+                </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
               {PRESET_KEYS.map((key) => (
                 <Button
                   key={key}
-                  variant={preset === key ? "secondary" : "ghost"}
+                  variant="ghost"
                   size="sm"
+                  className={preset === key ? "bg-primary/15 text-foreground hover:bg-primary/20" : ""}
                   onClick={() => setPreset(key)}
                 >
                   {PRESET_LABELS[key]}
@@ -585,6 +616,7 @@ export function Costs() {
               value={formatCents(spendData?.summary.spendCents ?? 0)}
               subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
               icon={DollarSign}
+              accent="money"
             />
             <MetricTile
               label="Budget"
@@ -607,6 +639,7 @@ export function Costs() {
               value={formatCents(financeData?.summary.netCents ?? 0)}
               subtitle={`${formatCents(financeData?.summary.debitCents ?? 0)} debits · ${formatCents(financeData?.summary.creditCents ?? 0)} credits`}
               icon={ReceiptText}
+              accent={(financeData?.summary.netCents ?? 0) >= 0 ? "credit" : "money"}
             />
             <MetricTile
               label="Finance events"
