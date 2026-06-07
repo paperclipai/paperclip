@@ -9463,8 +9463,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
-        // Only human/comment-reopen interactions should revive completed issues;
-        // system follow-ups such as retry or cleanup wakes must not reopen closed work.
+        const isBlockedDeferredCommentWake =
+          deferredCommentIds.length > 0 &&
+          (issue.status === "done" || issue.status === "cancelled") &&
+          ((deferred.requestedByActorType === "agent" && deferred.requestedByActorId === run.agentId) ||
+            issue.originKind === "routine_execution");
+        if (isBlockedDeferredCommentWake) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: new Date(),
+              error: "Deferred wake suppressed: resurrection loop guard (same-agent or routine-execution issue)",
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
           (issue.status === "done" || issue.status === "cancelled") &&
