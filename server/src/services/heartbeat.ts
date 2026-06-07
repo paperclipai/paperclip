@@ -1388,6 +1388,38 @@ type SessionCompactionDecision = {
   previousRunId: string | null;
 };
 
+type AgentContextUsageBand = "ok" | "warn" | "preempt";
+type AgentRetireRebuildStatus = "completed" | "skipped" | "not_found";
+
+export interface AgentContextUsageEstimate {
+  agentId: string;
+  companyId: string;
+  agentName: string;
+  adapterType: string;
+  estimatedTokens: number;
+  contextWindowTokens: number;
+  usageRatio: number;
+  band: AgentContextUsageBand;
+  quietWindow: boolean;
+  components: {
+    capabilitiesTokens: number;
+    recentRunTokens: number;
+    assignedTicketTokens: number;
+  };
+}
+
+export interface AgentRetireRebuildResult {
+  status: AgentRetireRebuildStatus;
+  reason: string | null;
+  retiredAgentId: string;
+  replacementAgentId: string | null;
+  ticketsRedistributed: number;
+  reporteesUpdated: number;
+  wakeupsCancelled: number;
+  runsCancelled: number;
+  auditIssueId: string | null;
+}
+
 interface ParsedIssueAssigneeAdapterOverrides {
   modelProfile: ModelProfileKey | null;
   adapterConfig: Record<string, unknown> | null;
@@ -1438,6 +1470,82 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function estimateTextTokens(value: unknown) {
+  if (typeof value !== "string" || value.length === 0) return 0;
+  return Math.ceil(value.length / 4);
+}
+
+function readContextUsageConfig(agent: Pick<typeof agents.$inferSelect, "adapterConfig" | "runtimeConfig">) {
+  const runtime = parseObject(agent.runtimeConfig);
+  const adapter = parseObject(agent.adapterConfig);
+  const heartbeat = parseObject(runtime.heartbeat);
+  const contextMonitor = parseObject(heartbeat.contextMonitor ?? runtime.contextMonitor);
+  const contextWindowTokens = Math.max(
+    1,
+    Math.floor(
+      asNumber(
+        contextMonitor.contextWindowTokens ??
+          contextMonitor.modelContextTokens ??
+          runtime.contextWindowTokens ??
+          adapter.contextWindowTokens ??
+          adapter.modelContextTokens,
+        200_000,
+      ),
+    ),
+  );
+  const recentRuns = Math.max(1, Math.min(100, Math.floor(asNumber(contextMonitor.recentRuns, 20))));
+  const warningRatio = Math.min(0.99, Math.max(0.01, asNumber(contextMonitor.warningRatio, 0.8)));
+  const preemptRatio = Math.min(0.99, Math.max(warningRatio, asNumber(contextMonitor.preemptRatio, 0.9)));
+  return { contextWindowTokens, recentRuns, warningRatio, preemptRatio };
+}
+
+function isAgentContextQuietWindow(now = new Date()) {
+  const day = now.getUTCDay();
+  const hour = now.getUTCHours();
+  return day >= 1 && day <= 5 && hour >= 2 && hour < 5;
+}
+
+export function isAgentRetireRebuildAllowedNow(now = new Date(), force = false) {
+  return force || isAgentContextQuietWindow(now);
+}
+
+export function buildAgentContextUsageEstimate(input: {
+  agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "adapterType" | "adapterConfig" | "runtimeConfig" | "capabilities">;
+  recentRunUsageTokens: number;
+  assignedTicketTextTokens: number;
+  now?: Date;
+}): AgentContextUsageEstimate {
+  const config = readContextUsageConfig(input.agent);
+  const components = {
+    capabilitiesTokens: estimateTextTokens(input.agent.capabilities),
+    recentRunTokens: Math.max(0, Math.floor(input.recentRunUsageTokens)),
+    assignedTicketTokens: Math.max(0, Math.floor(input.assignedTicketTextTokens)),
+  };
+  const estimatedTokens =
+    components.capabilitiesTokens +
+    components.recentRunTokens +
+    components.assignedTicketTokens;
+  const usageRatio = estimatedTokens / config.contextWindowTokens;
+  const band: AgentContextUsageBand =
+    usageRatio >= config.preemptRatio
+      ? "preempt"
+      : usageRatio >= config.warningRatio
+        ? "warn"
+        : "ok";
+  return {
+    agentId: input.agent.id,
+    companyId: input.agent.companyId,
+    agentName: input.agent.name,
+    adapterType: input.agent.adapterType,
+    estimatedTokens,
+    contextWindowTokens: config.contextWindowTokens,
+    usageRatio,
+    band,
+    quietWindow: isAgentContextQuietWindow(input.now),
+    components,
+  };
 }
 
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
@@ -7464,6 +7572,379 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return productivityReviews.reconcileProductivityReviews(opts);
   }
 
+  async function estimateRecentRunUsageTokens(agentId: string, recentRuns: number) {
+    const rows = await db
+      .select({ usageJson: heartbeatRuns.usageJson })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(recentRuns);
+
+    return rows.reduce((total, row) => {
+      const usage = readRawUsageTotals(row.usageJson);
+      return total + (usage?.inputTokens ?? 0) + (usage?.cachedInputTokens ?? 0) + (usage?.outputTokens ?? 0);
+    }, 0);
+  }
+
+  async function estimateAssignedTicketTextTokens(agentId: string) {
+    const activeStatuses = ["todo", "in_progress", "in_review", "blocked"] as const;
+    const assigned = await db
+      .select({
+        id: issues.id,
+        title: issues.title,
+        description: issues.description,
+      })
+      .from(issues)
+      .where(and(eq(issues.assigneeAgentId, agentId), inArray(issues.status, [...activeStatuses])));
+    if (assigned.length === 0) return 0;
+
+    const issueIds = assigned.map((issue) => issue.id);
+    const commentRows = await db
+      .select({
+        issueId: issueComments.issueId,
+        body: issueComments.body,
+      })
+      .from(issueComments)
+      .where(inArray(issueComments.issueId, issueIds));
+    const commentTokensByIssue = new Map<string, number>();
+    for (const row of commentRows) {
+      commentTokensByIssue.set(
+        row.issueId,
+        (commentTokensByIssue.get(row.issueId) ?? 0) + estimateTextTokens(row.body),
+      );
+    }
+
+    return assigned.reduce(
+      (total, issue) =>
+        total +
+        estimateTextTokens(issue.title) +
+        estimateTextTokens(issue.description) +
+        (commentTokensByIssue.get(issue.id) ?? 0),
+      0,
+    );
+  }
+
+  async function findOpenAgentContextIssue(input: {
+    companyId: string;
+    originKind: string;
+    originId: string;
+    originFingerprint: string;
+  }) {
+    const rows = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, input.companyId),
+          eq(issues.originKind, input.originKind),
+          eq(issues.originId, input.originId),
+          eq(issues.originFingerprint, input.originFingerprint),
+          inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+        ),
+      )
+      .limit(1);
+    return rows[0]?.id ?? null;
+  }
+
+  async function createAgentContextUsageIssue(
+    agent: typeof agents.$inferSelect,
+    estimate: AgentContextUsageEstimate,
+    kind: "warning" | "preempt",
+    now: Date,
+  ) {
+    const originKind = kind === "warning" ? "agent_context_usage_warning" : "agent_context_usage_preempt";
+    const originFingerprint = `${originKind}:${agent.id}`;
+    const existing = await findOpenAgentContextIssue({
+      companyId: agent.companyId,
+      originKind,
+      originId: agent.id,
+      originFingerprint,
+    });
+    if (existing) return { created: false, issueId: existing };
+
+    const ratioPct = Math.round(estimate.usageRatio * 100);
+    const title =
+      kind === "warning"
+        ? `Agent context warning: ${agent.name} estimated at ${ratioPct}%`
+        : `Agent context pre-empt needed: ${agent.name} estimated at ${ratioPct}%`;
+    const description = [
+      `Automatic agent-context monitor fired at ${now.toISOString()}.`,
+      "",
+      `Agent: ${agent.name}`,
+      `Adapter: ${agent.adapterType}`,
+      `Estimated context usage: ${estimate.estimatedTokens.toLocaleString()} / ${estimate.contextWindowTokens.toLocaleString()} tokens (${ratioPct}%).`,
+      `Components: capabilities ${estimate.components.capabilitiesTokens.toLocaleString()}, recent runs ${estimate.components.recentRunTokens.toLocaleString()}, assigned ticket text/comments ${estimate.components.assignedTicketTokens.toLocaleString()}.`,
+      `Quiet window: ${estimate.quietWindow ? "yes" : "no"}.`,
+      "",
+      kind === "warning"
+        ? "Action: schedule retire+rebuild in the next quiet window before this agent reaches the pre-empt threshold."
+        : estimate.quietWindow
+          ? "Action: pre-emptive retire+rebuild is eligible now. Preserve capabilities, create a replacement agent, redistribute active tickets, and update registry/chat-routing/memory."
+          : "Action: pre-emptive retire+rebuild threshold reached, but this is outside the quiet window. Schedule it for 02:00-05:00 UTC unless there is active service impact.",
+    ].join("\n");
+
+    const issue = await issuesSvc.create(agent.companyId, {
+      title,
+      description,
+      status: "todo",
+      priority: kind === "preempt" ? "high" : "medium",
+      assigneeAgentId: agent.reportsTo ?? null,
+      originKind,
+      originId: agent.id,
+      originFingerprint,
+      createdByUserId: "system",
+    });
+    return { created: true, issueId: issue.id };
+  }
+
+  async function executeAgentRetireRebuild(input: {
+    agentId: string;
+    now?: Date;
+    force?: boolean;
+    auditIssueId?: string | null;
+    reason?: string | null;
+  }): Promise<AgentRetireRebuildResult> {
+    const now = input.now ?? new Date();
+    if (!isAgentRetireRebuildAllowedNow(now, input.force === true)) {
+      return {
+        status: "skipped",
+        reason: "outside_quiet_window",
+        retiredAgentId: input.agentId,
+        replacementAgentId: null,
+        ticketsRedistributed: 0,
+        reporteesUpdated: 0,
+        wakeupsCancelled: 0,
+        runsCancelled: 0,
+        auditIssueId: input.auditIssueId ?? null,
+      };
+    }
+
+    const activeStatuses = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
+    const source = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, input.agentId))
+      .then((rows) => rows[0] ?? null);
+    if (!source || source.status === "terminated" || source.status === "pending_approval") {
+      return {
+        status: "not_found",
+        reason: "agent_not_active",
+        retiredAgentId: input.agentId,
+        replacementAgentId: null,
+        ticketsRedistributed: 0,
+        reporteesUpdated: 0,
+        wakeupsCancelled: 0,
+        runsCancelled: 0,
+        auditIssueId: input.auditIssueId ?? null,
+      };
+    }
+
+    const runsCancelled = await cancelActiveForAgentInternal(source.id, "Cancelled due to automatic agent retire/rebuild");
+    const replacementId = randomUUID();
+    const result = await db.transaction(async (tx) => {
+      const [replacement] = await tx
+        .insert(agents)
+        .values({
+          id: replacementId,
+          companyId: source.companyId,
+          name: source.name,
+          role: source.role,
+          title: source.title,
+          icon: source.icon,
+          status: "idle",
+          reportsTo: source.reportsTo,
+          capabilities: source.capabilities,
+          adapterType: source.adapterType,
+          adapterConfig: source.adapterConfig,
+          runtimeConfig: source.runtimeConfig,
+          defaultEnvironmentId: source.defaultEnvironmentId,
+          budgetMonthlyCents: source.budgetMonthlyCents,
+          permissions: source.permissions,
+          metadata: {
+            ...parseObject(source.metadata),
+            rebuiltFromAgentId: source.id,
+            rebuiltAt: now.toISOString(),
+            rebuildReason: input.reason ?? "agent_context_preempt",
+          },
+        })
+        .returning();
+
+      const redistributedRows = await tx
+        .update(issues)
+        .set({
+          assigneeAgentId: replacement.id,
+          updatedAt: now,
+        })
+        .where(and(eq(issues.assigneeAgentId, source.id), inArray(issues.status, [...activeStatuses])))
+        .returning({ id: issues.id });
+
+      const reporteeRows = await tx
+        .update(agents)
+        .set({
+          reportsTo: replacement.id,
+          updatedAt: now,
+        })
+        .where(eq(agents.reportsTo, source.id))
+        .returning({ id: agents.id });
+
+      const wakeupRows = await tx
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: "Cancelled due to automatic agent retire/rebuild",
+          updatedAt: now,
+        })
+        .where(and(eq(agentWakeupRequests.agentId, source.id), inArray(agentWakeupRequests.status, ["queued", "claimed"])))
+        .returning({ id: agentWakeupRequests.id });
+
+      await tx
+        .update(agentRuntimeState)
+        .set({
+          agentId: replacement.id,
+          sessionId: null,
+          stateJson: {},
+          lastRunId: null,
+          lastRunStatus: null,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          totalCachedInputTokens: 0,
+          totalCostCents: 0,
+          lastError: null,
+          updatedAt: now,
+        })
+        .where(eq(agentRuntimeState.agentId, source.id));
+
+      await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, source.id));
+
+      await tx
+        .update(agents)
+        .set({
+          status: "terminated",
+          pauseReason: null,
+          pausedAt: null,
+          updatedAt: now,
+          metadata: {
+            ...parseObject(source.metadata),
+            retiredAt: now.toISOString(),
+            retiredBy: "agent_context_preempt",
+            replacementAgentId: replacement.id,
+          },
+        })
+        .where(eq(agents.id, source.id));
+
+      await tx.insert(activityLog).values({
+        companyId: source.companyId,
+        actorType: "system",
+        actorId: "agent-context-monitor",
+        action: "agent.retire_rebuild",
+        entityType: "agent",
+        entityId: source.id,
+        agentId: replacement.id,
+        details: {
+          retiredAgentId: source.id,
+          replacementAgentId: replacement.id,
+          auditIssueId: input.auditIssueId ?? null,
+          ticketsRedistributed: redistributedRows.length,
+          reporteesUpdated: reporteeRows.length,
+          wakeupsCancelled: wakeupRows.length,
+          runsCancelled,
+          forced: input.force === true,
+          reason: input.reason ?? "agent_context_preempt",
+        },
+      });
+
+      return {
+        replacementId: replacement.id,
+        ticketsRedistributed: redistributedRows.length,
+        reporteesUpdated: reporteeRows.length,
+        wakeupsCancelled: wakeupRows.length,
+      };
+    });
+
+    if (input.auditIssueId) {
+      await issuesSvc.addComment(
+        input.auditIssueId,
+        [
+          "Automatic retire/rebuild completed.",
+          "",
+          `Retired agent: ${source.name} (${source.id})`,
+          `Replacement agent: ${result.replacementId}`,
+          `Tickets redistributed: ${result.ticketsRedistributed}`,
+          `Reportees updated: ${result.reporteesUpdated}`,
+          `Queued wakeups cancelled: ${result.wakeupsCancelled}`,
+          `Active runs cancelled: ${runsCancelled}`,
+        ].join("\n"),
+        {},
+        { authorType: "system" },
+      );
+      await issuesSvc.update(input.auditIssueId, {
+        status: "done",
+      });
+    }
+
+    return {
+      status: "completed",
+      reason: null,
+      retiredAgentId: source.id,
+      replacementAgentId: result.replacementId,
+      ticketsRedistributed: result.ticketsRedistributed,
+      reporteesUpdated: result.reporteesUpdated,
+      wakeupsCancelled: result.wakeupsCancelled,
+      runsCancelled,
+      auditIssueId: input.auditIssueId ?? null,
+    };
+  }
+
+  async function scanAgentContextUsage(opts?: { now?: Date; companyId?: string }) {
+    const now = opts?.now ?? new Date();
+    const agentRows = await db
+      .select()
+      .from(agents)
+      .where(
+        opts?.companyId
+          ? and(eq(agents.companyId, opts.companyId), notInArray(agents.status, ["terminated", "pending_approval"]))
+          : notInArray(agents.status, ["terminated", "pending_approval"]),
+      );
+    const estimates: AgentContextUsageEstimate[] = [];
+    let warningsCreated = 0;
+    let preemptsCreated = 0;
+
+    for (const agent of agentRows) {
+      const config = readContextUsageConfig(agent);
+      const estimate = buildAgentContextUsageEstimate({
+        agent,
+        recentRunUsageTokens: await estimateRecentRunUsageTokens(agent.id, config.recentRuns),
+        assignedTicketTextTokens: await estimateAssignedTicketTextTokens(agent.id),
+        now,
+      });
+      estimates.push(estimate);
+
+      if (estimate.band === "preempt") {
+        const result = await createAgentContextUsageIssue(agent, estimate, "preempt", now);
+        if (result.created) preemptsCreated += 1;
+        if (estimate.quietWindow) {
+          await executeAgentRetireRebuild({
+            agentId: agent.id,
+            now,
+            auditIssueId: result.issueId,
+            reason: "agent_context_preempt",
+          });
+        }
+      } else if (estimate.band === "warn") {
+        const result = await createAgentContextUsageIssue(agent, estimate, "warning", now);
+        if (result.created) warningsCreated += 1;
+      }
+    }
+
+    return {
+      checked: estimates.length,
+      warningsCreated,
+      preemptsCreated,
+      estimates,
+    };
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -11049,6 +11530,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     scanSilentActiveRuns,
 
     reconcileProductivityReviews,
+
+    scanAgentContextUsage,
+
+    executeAgentRetireRebuild,
 
     buildRunOutputSilence,
 
