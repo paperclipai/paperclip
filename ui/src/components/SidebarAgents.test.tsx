@@ -144,6 +144,24 @@ function makeAgent(overrides: Partial<Agent>): Agent {
   };
 }
 
+function makeLiveRun(overrides: { id: string; agentId: string; status: string }) {
+  return {
+    id: overrides.id,
+    status: overrides.status,
+    invocationSource: "manual",
+    triggerDetail: null,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    finishedAt: overrides.status === "running" || overrides.status === "queued"
+      ? null
+      : "2026-01-01T00:01:00.000Z",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    agentId: overrides.agentId,
+    agentName: overrides.agentId === "agent-1" ? "Alpha" : "Beta",
+    adapterType: "process",
+    issueId: null,
+  };
+}
+
 async function flushReact() {
   await act(async () => {
     await Promise.resolve();
@@ -611,5 +629,39 @@ describe("SidebarAgents", () => {
     await flushReact();
 
     expect(mockAgentsApi.resume).not.toHaveBeenCalled();
+  });
+
+  it("counts only running and queued runs as live in sidebar badges", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-1", name: "Alpha", urlKey: "alpha" }),
+      makeAgent({ id: "agent-2", name: "Beta", urlKey: "beta" }),
+    ]);
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      makeLiveRun({ id: "run-1", agentId: "agent-1", status: "succeeded" }),
+      makeLiveRun({ id: "run-2", agentId: "agent-1", status: "failed" }),
+      makeLiveRun({ id: "run-3", agentId: "agent-1", status: "cancelled" }),
+      makeLiveRun({ id: "run-4", agentId: "agent-2", status: "running" }),
+      makeLiveRun({ id: "run-5", agentId: "agent-2", status: "queued" }),
+      makeLiveRun({ id: "run-6", agentId: "agent-2", status: "succeeded" }),
+    ]);
+    const currentRoot = createRoot(container);
+    root = currentRoot;
+
+    await act(async () => {
+      currentRoot.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAgents />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const alphaLink = Array.from(container.querySelectorAll("a"))
+      .find((element) => element.getAttribute("href") === "/agents/alpha");
+    const betaLink = Array.from(container.querySelectorAll("a"))
+      .find((element) => element.getAttribute("href") === "/agents/beta");
+
+    expect(alphaLink?.textContent).toBe("Alpha");
+    expect(betaLink?.textContent).toContain("2 live");
   });
 });

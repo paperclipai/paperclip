@@ -100,6 +100,24 @@ async function flushReact() {
   flushSync(() => {});
 }
 
+function makeLiveRun(overrides: { id: string; status: string }) {
+  return {
+    id: overrides.id,
+    status: overrides.status,
+    invocationSource: "manual",
+    triggerDetail: null,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    finishedAt: overrides.status === "running" || overrides.status === "queued"
+      ? null
+      : "2026-01-01T00:01:00.000Z",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    agentId: "agent-1",
+    agentName: "Alpha",
+    adapterType: "process",
+    issueId: null,
+  };
+}
+
 describe("Sidebar", () => {
   let container: HTMLDivElement;
 
@@ -125,6 +143,7 @@ describe("Sidebar", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
   });
 
   afterEach(() => {
@@ -281,6 +300,38 @@ describe("Sidebar", () => {
     expect(link?.getAttribute("href")).toBe("/workspaces");
 
     flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("counts only running and queued runs in the dashboard live badge", async () => {
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      makeLiveRun({ id: "run-1", status: "succeeded" }),
+      makeLiveRun({ id: "run-2", status: "failed" }),
+      makeLiveRun({ id: "run-3", status: "cancelled" }),
+      makeLiveRun({ id: "run-4", status: "running" }),
+      makeLiveRun({ id: "run-5", status: "queued" }),
+    ]);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Sidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const dashboardLink = [...container.querySelectorAll("a")]
+      .find((anchor) => anchor.getAttribute("href") === "/dashboard");
+    expect(dashboardLink?.textContent).toContain("2 live");
+    expect(dashboardLink?.textContent).not.toContain("5 live");
+
+    await act(async () => {
       root.unmount();
     });
   });

@@ -46,7 +46,7 @@ export function Sidebar() {
     enabled: !!selectedCompanyId,
     refetchInterval: 10_000,
   });
-  const liveRunCount = liveRuns?.length ?? 0;
+  const liveRunCount = liveRuns?.filter((run) => run.status === "running" || run.status === "queued").length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
   // IA flag (PAP-89): branch the sidebar nav presentation. Default OFF = classic
   // (per-project collapsible, no Projects nav link). ON = streamlined
