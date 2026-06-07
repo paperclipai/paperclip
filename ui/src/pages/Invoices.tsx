@@ -21,7 +21,7 @@ const STATUSES = ["all", "created", "paid", "expired", "cancelled"] as const;
 
 export function Invoices() {
   const { setBreadcrumbs } = useBreadcrumbs();
-  useEffect(() => setBreadcrumbs([{ label: "Assets" }, { label: "Invoices" }]), [setBreadcrumbs]);
+  useEffect(() => setBreadcrumbs([{ label: "Pipeline" }, { label: "Invoices" }]), [setBreadcrumbs]);
   const [status, setStatus] = useState<string>("all");
 
   const { data, isLoading, error } = useQuery({
@@ -45,7 +45,7 @@ export function Invoices() {
           ))}
         </div>
       </div>
-      <AgnbSubnav group="assets" />
+      <AgnbSubnav group="pipeline" />
 
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (

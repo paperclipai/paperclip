@@ -18,7 +18,7 @@ const ANGLE_OPTS = ["contrarian", "personal", "stat", "question", "listicle"];
 
 export function HookBank() {
   const { setBreadcrumbs } = useBreadcrumbs();
-  useEffect(() => setBreadcrumbs([{ label: "LinkedIn" }, { label: "Hook bank" }]), [setBreadcrumbs]);
+  useEffect(() => setBreadcrumbs([{ label: "Content" }, { label: "Hook bank" }]), [setBreadcrumbs]);
   const qc = useQueryClient();
   const [angle, setAngle] = useState("all");
   const [open, setOpen] = useState(false);
@@ -42,7 +42,7 @@ export function HookBank() {
           <Button size="sm" className="ml-1" onClick={() => setOpen(true)}>Add hook</Button>
         </div>
       </div>
-      <AgnbSubnav group="assets" />
+      <AgnbSubnav group="content" />
       {open && (
         <AgnbFormModal
           title="Add hook"

@@ -21,6 +21,7 @@ import {
   HeartPulse,
   Beaker,
   ListTodo,
+  FileText,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -128,6 +129,7 @@ export function Sidebar() {
           <SidebarNavItem to="/pipeline" label="Pipeline" icon={LayoutGrid} />
           <SidebarNavItem to="/assets" label="Assets" icon={Package} />
           <SidebarNavItem to="/competitors" label="Research" icon={FlaskConical} />
+          <SidebarNavItem to="/idea-inbox" label="Content" icon={FileText} />
           <SidebarNavItem to="/mentions" label="Mentions" icon={AtSign} />
           <SidebarNavItem to="/backlog" label="Backlog" icon={ListTodo} />
         </SidebarSection>

@@ -13,12 +13,13 @@ export const AGNB_SUBNAV = {
     { to: "/funnel", label: "Site funnel" },
     { to: "/crm-hygiene", label: "CRM hygiene" },
     { to: "/win-loss", label: "Win/loss" },
-  ],
-  assets: [
-    { to: "/assets", label: "Sales enablement" },
     { to: "/invoices", label: "Invoices" },
-    { to: "/linkedin-hooks", label: "Hooks" },
+  ],
+  content: [
+    { to: "/idea-inbox", label: "Ideas" },
+    { to: "/content", label: "Briefs" },
     { to: "/blog-automation", label: "Blog archive" },
+    { to: "/linkedin-hooks", label: "Hooks" },
   ],
   campaigns: [
     { to: "/campaigns", label: "Campaigns" },
@@ -40,10 +41,8 @@ export const AGNB_SUBNAV = {
   ],
   research: [
     { to: "/competitors", label: "Competition" },
-    { to: "/idea-inbox", label: "Idea" },
     { to: "/rss-feeds", label: "RSS" },
     { to: "/bofu", label: "BoFu" },
-    { to: "/content", label: "Briefs" },
   ],
   mentions: [
     { to: "/mentions", label: "Mentions" },

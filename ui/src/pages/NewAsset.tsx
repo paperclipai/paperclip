@@ -3,7 +3,6 @@ import { useNavigate, Link } from "@/lib/router";
 import { ArrowLeft } from "lucide-react";
 import { marketingApi } from "../api/marketing";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { AgnbSubnav } from "../components/AgnbSubnav";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -42,7 +41,6 @@ export function NewAsset() {
         <ArrowLeft className="h-3 w-3" /> Back to assets
       </Link>
       <h1 className="text-lg font-semibold">New asset</h1>
-      <AgnbSubnav group="assets" />
       <div className="grid max-w-2xl gap-3">
         <div>
           <label className="text-xs text-muted-foreground">Title</label>

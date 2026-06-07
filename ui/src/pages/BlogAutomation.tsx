@@ -19,7 +19,7 @@ function tone(s: string): "default" | "secondary" | "destructive" | "outline" {
 
 export function BlogAutomation() {
   const { setBreadcrumbs } = useBreadcrumbs();
-  useEffect(() => setBreadcrumbs([{ label: "Blog" }, { label: "Draft blogs" }]), [setBreadcrumbs]);
+  useEffect(() => setBreadcrumbs([{ label: "Content" }, { label: "Blog archive" }]), [setBreadcrumbs]);
   const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.blogDrafts, queryFn: () => blogApi.drafts() });
   const refresh = () => qc.invalidateQueries({ queryKey: queryKeys.agnb.blogDrafts });
@@ -37,7 +37,7 @@ export function BlogAutomation() {
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Blog drafts (archive)</h1>
       </div>
-      <AgnbSubnav group="assets" />
+      <AgnbSubnav group="content" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

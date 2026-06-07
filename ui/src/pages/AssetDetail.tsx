@@ -5,7 +5,6 @@ import { Download, Save, ArrowLeft } from "lucide-react";
 import { marketingApi } from "../api/marketing";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { AgnbSubnav } from "../components/AgnbSubnav";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { extractVars, render, groupVars, type AssetVar } from "../lib/agnbAssetVars";
@@ -76,7 +75,6 @@ export function AssetDetail() {
   if (error || !asset) {
     return (
       <div className="space-y-3">
-        <AgnbSubnav group="assets" />
         <p className="text-sm text-destructive">{(error as Error)?.message ?? "Asset not found"}</p>
         <Link to="/assets" className="text-sm text-muted-foreground hover:text-foreground">← Back to assets</Link>
       </div>
@@ -134,7 +132,6 @@ export function AssetDetail() {
           <button onClick={() => setTab("source")} className={cn("rounded-md border px-2.5 py-1 text-xs", tab === "source" ? "border-foreground bg-foreground text-background" : "border-border text-muted-foreground")}>Source HTML</button>
         </div>
       </div>
-      <AgnbSubnav group="assets" />
 
       {tab === "fill" ? (
         <div className="grid gap-4 lg:grid-cols-[340px_1fr]">

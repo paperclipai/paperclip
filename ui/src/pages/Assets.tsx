@@ -12,7 +12,6 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cn, relativeTime } from "../lib/utils";
-import { AgnbSubnav } from "../components/AgnbSubnav";
 
 const STAGES: Array<{ key: AssetStage | "all"; label: string }> = [
   { key: "all", label: "All" },
@@ -74,7 +73,6 @@ export function Assets() {
           </Link>
         </Button>
       </div>
-      <AgnbSubnav group="assets" />
 
       {error && (
         <p className="text-sm text-destructive">{(error as Error).message}</p>

@@ -15,7 +15,7 @@ const TYPES = ["comparison", "alternatives", "best_list", "use_case", "integrati
 
 export function ContentBriefs() {
   const { setBreadcrumbs } = useBreadcrumbs();
-  useEffect(() => setBreadcrumbs([{ label: "Research" }, { label: "Briefs" }]), [setBreadcrumbs]);
+  useEffect(() => setBreadcrumbs([{ label: "Content" }, { label: "Briefs" }]), [setBreadcrumbs]);
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.content, queryFn: () => researchApi.content() });
@@ -29,7 +29,7 @@ export function ContentBriefs() {
         <h1 className="text-lg font-semibold">Content briefs</h1>
         <Button size="sm" onClick={() => setOpen(true)}>New brief</Button>
       </div>
-      <AgnbSubnav group="research" />
+      <AgnbSubnav group="content" />
       {open && (
         <AgnbFormModal
           title="New content brief"

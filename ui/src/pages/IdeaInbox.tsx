@@ -14,7 +14,7 @@ import { relativeTime } from "../lib/utils";
 
 export function IdeaInbox() {
   const { setBreadcrumbs } = useBreadcrumbs();
-  useEffect(() => setBreadcrumbs([{ label: "Research" }, { label: "Idea inbox" }]), [setBreadcrumbs]);
+  useEffect(() => setBreadcrumbs([{ label: "Content" }, { label: "Idea inbox" }]), [setBreadcrumbs]);
   const qc = useQueryClient();
   const [text, setText] = useState("");
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.ideaInbox, queryFn: () => researchApi.ideaInbox() });
@@ -28,7 +28,7 @@ export function IdeaInbox() {
   return (
     <div className="space-y-4">
       <h1 className="text-lg font-semibold">Idea inbox</h1>
-      <AgnbSubnav group="research" />
+      <AgnbSubnav group="content" />
       <div className="flex gap-2">
         <Input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") capture(); }} placeholder="Capture an idea…" />
         <Button size="sm" onClick={capture} disabled={!text.trim()}>Capture</Button>
