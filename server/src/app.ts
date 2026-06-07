@@ -43,6 +43,7 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
+import { proxyRoutes } from "./routes/proxy.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
@@ -311,6 +312,7 @@ export async function createApp(
     ),
   );
   api.use(adapterRoutes());
+  api.use(proxyRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
