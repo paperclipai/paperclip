@@ -1205,6 +1205,91 @@ export function environmentRuntimeService(
       return released;
     },
 
+    async destroyRunLeases(
+      heartbeatRunId: string,
+    ): Promise<EnvironmentRuntimeLeaseRecord[]> {
+      const leaseRows = await db
+        .select()
+        .from(environmentLeases)
+        .where(
+          and(
+            eq(environmentLeases.heartbeatRunId, heartbeatRunId),
+            inArray(environmentLeases.status, ["active"]),
+          ),
+        );
+      if (leaseRows.length === 0) {
+        return [];
+      }
+
+      const destroyed: EnvironmentRuntimeLeaseRecord[] = [];
+      for (const leaseRow of leaseRows) {
+        const environment = await environmentsSvc.getById(leaseRow.environmentId);
+        if (!environment) continue;
+
+        const leaseSnapshot: EnvironmentLease = {
+          id: leaseRow.id,
+          companyId: leaseRow.companyId,
+          environmentId: leaseRow.environmentId,
+          executionWorkspaceId: leaseRow.executionWorkspaceId ?? null,
+          issueId: leaseRow.issueId ?? null,
+          heartbeatRunId: leaseRow.heartbeatRunId ?? null,
+          status: leaseRow.status as EnvironmentLease["status"],
+          leasePolicy: leaseRow.leasePolicy as EnvironmentLease["leasePolicy"],
+          provider: leaseRow.provider ?? null,
+          providerLeaseId: leaseRow.providerLeaseId ?? null,
+          acquiredAt: leaseRow.acquiredAt,
+          lastUsedAt: leaseRow.lastUsedAt,
+          expiresAt: leaseRow.expiresAt ?? null,
+          releasedAt: leaseRow.releasedAt ?? null,
+          failureReason: leaseRow.failureReason ?? null,
+          cleanupStatus: leaseRow.cleanupStatus as EnvironmentLease["cleanupStatus"],
+          metadata: (leaseRow.metadata as Record<string, unknown> | null) ?? null,
+          createdAt: leaseRow.createdAt,
+          updatedAt: leaseRow.updatedAt,
+        };
+        const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));
+        if (!driver) continue;
+
+        try {
+          if (driver.destroyRunLease) {
+            const lease = await driver.destroyRunLease({ environment, lease: leaseSnapshot });
+            if (lease) {
+              destroyed.push({
+                environment,
+                lease,
+                leaseContext: {
+                  executionWorkspaceId: lease.executionWorkspaceId,
+                  executionWorkspaceMode:
+                    (lease.metadata?.executionWorkspaceMode as ExecutionWorkspace["mode"] | null | undefined) ?? null,
+                },
+              });
+            }
+          } else {
+            const lease = await driver.releaseRunLease({
+              environment,
+              lease: leaseSnapshot,
+              status: "released",
+            });
+            if (lease) {
+              destroyed.push({
+                environment,
+                lease,
+                leaseContext: {
+                  executionWorkspaceId: lease.executionWorkspaceId,
+                  executionWorkspaceMode:
+                    (lease.metadata?.executionWorkspaceMode as ExecutionWorkspace["mode"] | null | undefined) ?? null,
+                },
+              });
+            }
+          }
+        } catch {
+          // Individual lease destroy failures should not block others
+        }
+      }
+
+      return destroyed;
+    },
+
     async resumeRunLease(input: EnvironmentDriverLeaseInput): Promise<PluginEnvironmentLease | EnvironmentLease | null> {
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
       if (!driver.resumeRunLease) {
