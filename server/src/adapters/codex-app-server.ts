@@ -87,9 +87,16 @@ function parseHeaderConfig(input: unknown): Record<string, string> {
 }
 
 function resolveAppServerConfig(config: Record<string, unknown>) {
+  // Keep accepting `remoteControlUrl` as an alias so existing experiments do not
+  // break when the feature name settles on `appServerUrl`.
   const url = nonEmpty(config.appServerUrl) ?? nonEmpty(config.remoteControlUrl);
   const headers = parseHeaderConfig(config.appServerHeaders);
-  return { url, headers };
+  const bearerToken = nonEmpty(config.appServerBearerToken);
+  // The dedicated token field is the operator-facing path in Paperclip. If it is
+  // set, let it define Authorization even when advanced users also supplied raw
+  // headers through appServerHeaders.
+  if (bearerToken) headers.Authorization = `Bearer ${bearerToken}`;
+  return { url, headers, bearerToken };
 }
 
 function isRemoteCodexConfig(config: Record<string, unknown>): boolean {
@@ -104,6 +111,11 @@ function parseWsUrl(rawUrl: string): URL | null {
   } catch {
     return null;
   }
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
 function isUuidLike(value: string): boolean {
@@ -172,6 +184,9 @@ function buildRemoteRuntimeNote(env: Record<string, string>): { plain: string; r
   const plainLines = entries.map(([key, value]) => `${key}=${value}`);
   const redactedEnv = redactEnvForLogs(env);
   const redactedLines = Object.entries(redactedEnv).map(([key, value]) => `${key}=${String(value)}`);
+  // Local `codex exec` inherits env directly. A remote App Server does not, so we
+  // inject an explicit note into the prompt to prevent agents from assuming the
+  // Paperclip env vars already exist in the remote shell.
   const prefix =
     "Remote Codex App Server note: these values are available for this run, but they are not automatically exported into the remote shell. Export them manually before using curl, scripts, or Paperclip API commands.\n";
   return {
@@ -253,6 +268,9 @@ function mapLegacyItemEvent(
   phase: "started" | "completed",
   itemRaw: unknown,
 ): Record<string, unknown> | null {
+  // The rest of Paperclip already understands Codex CLI JSONL. Remote App Server
+  // mode deliberately translates back into that older event shape so transcript
+  // parsing, summaries, and tests do not need a second parallel code path.
   const item = asRecord(itemRaw);
   if (!item) return null;
   const type = asString(item.type, "");
@@ -687,6 +705,9 @@ export async function executeCodexViaAppServer(
       }
     },
     async (message) => {
+      // In local CLI mode Codex can stop and ask for approvals or tool input.
+      // Paperclip's remote adapter does not currently have an interactive reviewer
+      // loop for App Server requests, so fail loudly here instead of hanging.
       client.respondError(
         message.id,
         `Paperclip does not support interactive App Server request ${message.method} in remote mode.`,
@@ -723,6 +744,9 @@ export async function executeCodexViaAppServer(
         threadId = resumedThreadId;
       } catch (err) {
         const message = toErrorMessage(err, "failed to resume Codex App Server thread");
+        // Remote threads can disappear if the server was reset or its local state
+        // was pruned. Match that behavior to the local CLI adapter: warn, drop the
+        // stale session, and start a fresh thread instead of failing the whole run.
         if (!looksLikeRemoteMissingThread(message)) throw err;
         await pushStderr(
           `[paperclip] Codex App Server thread "${threadId}" is unavailable; retrying with a fresh session.`,
@@ -846,7 +870,7 @@ export async function testCodexAppServerEnvironment(
 ): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
-  const { url, headers } = resolveAppServerConfig(config);
+  const { url, headers, bearerToken } = resolveAppServerConfig(config);
 
   if (!url) {
     checks.push({
@@ -891,6 +915,22 @@ export async function testCodexAppServerEnvironment(
       level: "info",
       message: `Configured ${Object.keys(headers).length} WebSocket header(s) for remote Codex auth.`,
     });
+  }
+
+  if (bearerToken) {
+    checks.push({
+      code: "codex_app_server_bearer_token_present",
+      level: "info",
+      message: "Configured a bearer token for the Codex App Server WebSocket handshake.",
+    });
+    if (parsedUrl.protocol !== "wss:" && !isLoopbackHost(parsedUrl.hostname)) {
+      checks.push({
+        code: "codex_app_server_bearer_token_insecure_transport",
+        level: "warn",
+        message: "Bearer-token App Server auth should use wss:// or a loopback ws:// listener.",
+        hint: "Prefer SSH port forwarding or a loopback listener when configuring appServerBearerToken.",
+      });
+    }
   }
 
   if (!asBoolean(

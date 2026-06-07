@@ -152,6 +152,7 @@ const codexAdapterConfigurationDoc = `${codexAgentConfigurationDoc}
 
 Remote App Server fields:
 - appServerUrl (string, optional): ws:// or wss:// Codex App Server endpoint. When set, Paperclip talks to the remote App Server over WebSocket instead of launching local \`codex exec\`.
+- appServerBearerToken (string, optional): bearer token sent as \`Authorization\` during the WebSocket handshake when remote auth is required.
 - appServerHeaders (object, optional): extra WebSocket handshake headers for remote auth.
 
 Remote mode notes:
@@ -160,6 +161,9 @@ Remote mode notes:
 `;
 
 async function executeCodexAdapter(ctx: Parameters<typeof codexExecute>[0]) {
+  // Keep remote App Server support under `codex_local` so existing agent records,
+  // UI labels, and downstream logic continue to treat this as "the Codex adapter"
+  // with an alternate transport, not a separate product surface.
   if (isRemoteCodexConfig(ctx.config)) {
     return executeCodexViaAppServer(ctx);
   }

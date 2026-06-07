@@ -56,8 +56,12 @@ async function startMockCodexAppServer(options: MockServerOptions = {}) {
   const server = http.createServer();
   const wss = new WebSocketServer({ server });
   const receivedMethods: string[] = [];
+  const receivedAuthorizationHeaders: string[] = [];
 
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, req) => {
+    if (typeof req.headers.authorization === "string") {
+      receivedAuthorizationHeaders.push(req.headers.authorization);
+    }
     ws.on("message", (raw) => {
       const message = JSON.parse(raw.toString("utf8")) as Record<string, unknown>;
       const method = typeof message.method === "string" ? message.method : null;
@@ -222,6 +226,7 @@ async function startMockCodexAppServer(options: MockServerOptions = {}) {
   return {
     url: `ws://127.0.0.1:${port}`,
     receivedMethods,
+    receivedAuthorizationHeaders,
     async close() {
       await new Promise<void>((resolve, reject) => {
         wss.close((err) => (err ? reject(err) : resolve()));
@@ -304,6 +309,23 @@ describe("codex app-server adapter", () => {
     expect(mock.receivedMethods).toEqual(
       expect.arrayContaining(["initialize", "thread/start", "turn/start"]),
     );
+    expect(mock.receivedAuthorizationHeaders).toEqual([]);
+  });
+
+  it("sends Authorization bearer auth only when a remote token is configured", async () => {
+    const mock = await startMockCodexAppServer();
+    cleanup.push(() => mock.close());
+
+    const { ctx } = createExecutionContext({
+      appServerUrl: mock.url,
+      appServerBearerToken: "paperclip-remote-token",
+      dangerouslyBypassApprovalsAndSandbox: true,
+    });
+
+    const result = await executeCodexViaAppServer(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(mock.receivedAuthorizationHeaders).toEqual(["Bearer paperclip-remote-token"]);
   });
 
   it("falls back to a fresh thread when the saved remote thread is missing", async () => {
@@ -348,5 +370,21 @@ describe("codex app-server adapter", () => {
     expect(result.status).toBe("pass");
     expect(result.checks.some((check) => check.code === "codex_app_server_connect_ok")).toBe(true);
     expect(result.checks.some((check) => check.code === "codex_app_server_auth_ready")).toBe(true);
+  });
+
+  it("warns when a bearer token is configured on a non-loopback ws listener", async () => {
+    const result = await testCodexAppServerEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: {
+        appServerUrl: "ws://192.168.1.50:4100",
+        appServerBearerToken: "paperclip-remote-token",
+        dangerouslyBypassApprovalsAndSandbox: true,
+      },
+    });
+
+    expect(
+      result.checks.some((check) => check.code === "codex_app_server_bearer_token_insecure_transport"),
+    ).toBe(true);
   });
 });

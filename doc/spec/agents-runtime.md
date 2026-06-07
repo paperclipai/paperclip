@@ -35,11 +35,41 @@ If an agent is already running, new wakeups are merged (coalesced) instead of la
 Common choices:
 
 - `claude_local`: runs your local `claude` CLI
-- `codex_local`: runs your local `codex` CLI
+- `codex_local`: runs either your local `codex` CLI or a remote Codex App Server, depending on config
 - `process`: generic shell command adapter
 - `http`: calls an external HTTP endpoint
 
-For `claude_local` and `codex_local`, Paperclip assumes the CLI is already installed and authenticated on the host machine.
+For `claude_local`, Paperclip assumes the CLI is already installed and authenticated on the host machine.
+
+For `codex_local`, there are two transport modes:
+
+- Local CLI mode: Paperclip launches the local `codex` binary directly on the Paperclip host.
+- Remote App Server mode: if `appServerUrl` is set in adapter config, Paperclip connects to a remote Codex App Server over WebSocket instead of spawning `codex` locally.
+
+In remote App Server mode, the remote Codex host is responsible for Codex installation/authentication, and Paperclip currently expects `dangerouslyBypassApprovalsAndSandbox=true` so runs do not block on interactive approval requests that Paperclip cannot yet review remotely.
+
+Paperclip can optionally send a bearer token during the App Server WebSocket handshake, but the preferred deployment pattern is still to forward the Codex App Server management port over SSH so the WebSocket stays encrypted in transit and Paperclip can treat it like a local listener on the Paperclip host.
+
+Paperclip accepts `ws://` and `wss://` App Server URLs, but at this time we are not aware of Codex App Server supporting a native `wss://` listener. If you need encryption in transit today, prefer SSH port forwarding or terminate TLS in front of a local `ws://` App Server listener.
+
+If you do need to test Codex App Server token auth directly, create the capability token yourself and store it in a file that only the Codex host can read:
+
+```bash
+mkdir -p "$HOME/.codex"
+openssl rand -hex 32 > "$HOME/.codex/app-server.token"
+chmod 600 "$HOME/.codex/app-server.token"
+```
+
+Then start Codex App Server on loopback with that token:
+
+```bash
+codex app-server \
+  --listen ws://127.0.0.1:4100 \
+  --ws-auth capability-token \
+  --ws-token-file "$HOME/.codex/app-server.token"
+```
+
+Set `appServerBearerToken` in the agent config if you want Paperclip to send that token as `Authorization: Bearer <token>` during the WebSocket handshake. That path is not the preferred operator setup today; prefer SSH forwarding so Paperclip connects to a forwarded local listener instead of depending on direct token-authenticated remote access.
 
 ## 3.2 Runtime behavior
 
@@ -59,6 +89,13 @@ For local adapters, set:
 - `timeoutSec` (max runtime per heartbeat)
 - `graceSec` (time before force-kill after timeout/cancel)
 - optional env vars and extra CLI args
+
+For `codex_local`, you can also set:
+
+- `appServerUrl` to switch from local CLI execution to remote Codex App Server execution
+- `appServerBearerToken` to send `Authorization: Bearer <token>` during the remote App Server WebSocket handshake when the listener requires bearer auth
+
+When using `appServerUrl`, prefer an SSH-forwarded local address such as `ws://127.0.0.1:<forwarded-port>` instead of pointing Paperclip at a token-protected external listener.
 
 ## 3.4 Prompt templates
 
