@@ -181,34 +181,35 @@ A change is done when all are true:
 
 ## 12. Fork-Specific: HenkDz/paperclip
 
-This is a fork of `paperclipai/paperclip` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/paperclip/tree/feat/externalize-hermes-adapter)).
+> **⚠️ Historical — verify against `master` before relying on this section.** Most of the original fork divergence has converged with upstream `paperclipai/paperclip`. The notes below are kept as a marker for contributors who may reintroduce fork-specific behavior.
+>
+> Audit performed 2026-06-07; flagged corrections inline below.
 
-### Branch Strategy
+### Branch Strategy *(no longer current)*
 
-- `feat/externalize-hermes-adapter` → core has **no** `hermes-paperclip-adapter` dependency and **no** built-in `hermes_local` registration. Install Hermes via the Adapter Plugin manager (`@henkey/hermes-paperclip-adapter` or a `file:` path).
-- Older fork branches may still document built-in Hermes; treat this file as authoritative for the externalize branch.
+- `feat/externalize-hermes-adapter` is **not present** in either `paperclipai/paperclip` or `HenkDz/paperclip` as of the 2026-06-07 audit. The externalize work was reverted on `master` by commit `f884cbab` ("fix(adapters): restore built-in Hermes and sync lockfile with server"). `master` currently ships **built-in** `hermes_local` plus `hermes-paperclip-adapter` as a direct dependency in `server/package.json` and `ui/package.json`.
+- If reintroducing externalization, open a new branch and rewrite this subsection before merging.
 
-### Hermes (plugin only)
+### Hermes — current state
 
-- Register through **Board → Adapter manager** (same as Droid). Type remains `hermes_local` once the package is loaded.
-- UI uses generic **config-schema** + **ui-parser.js** from the package — no Hermes imports in `server/` or `ui/` source.
-- Optional: `file:` entry in `~/.paperclip/adapter-plugins.json` for local dev of the adapter repo.
+- Built-in `hermes_local` adapter is registered in `server/src/adapters/registry.ts` and `server/src/adapters/builtin-adapter-types.ts`.
+- UI parser lives at `ui/src/adapters/hermes-local/index.ts`.
+- External-plugin install via `~/.paperclip/adapter-plugins.json` remains supported by the plugin loader for *other* adapters (Droid, etc.), but Hermes is shipped built-in on `master`.
 
-### Local Dev
+### Local Dev — surviving notes
 
-- Fork runs on port 3101+ (auto-detects if 3100 is taken by upstream instance)
-- `npx vite build` hangs on NTFS — use `node node_modules/vite/bin/vite.js build` instead
-- Server startup from NTFS takes 30-60s — don't assume failure immediately
-- Kill ALL paperclip processes before starting: `pkill -f "paperclip"; pkill -f "tsx.*index.ts"`
-- Vite cache survives `rm -rf dist` — delete both: `rm -rf ui/dist ui/node_modules/.vite`
+- Port `3101` is **upstream behavior**, not fork-specific: `server/src/worktree-config.ts:401` falls back to 3101 when 3100 is in use. Documented here for visibility, not as a fork patch.
+- `npx vite build` may hang on NTFS — fall back to `node node_modules/vite/bin/vite.js build`.
+- Server startup from NTFS can take 30–60s — don't assume failure immediately.
+- Kill stale processes before starting: `pkill -f "paperclip"; pkill -f "tsx.*index.ts"`.
+- Vite cache survives `rm -rf dist` — delete both: `rm -rf ui/dist ui/node_modules/.vite`.
 
-### Fork QoL Patches (not in upstream)
+### QoL Patches Observed in This Checkout *(verify before treating as fork-only)*
 
-These are local modifications in the fork's UI. If re-copying source, these must be re-applied:
+These items are present in the current `master` of this checkout. Whether they also exist upstream is **not verified** by the 2026-06-07 audit — confirm with `git log` / `git blame` before claiming "fork-only":
 
-1. **stderr_group** — amber accordion for MCP init noise in `RunTranscriptView.tsx`
-2. **tool_group** — accordion for consecutive non-terminal tools (write, read, search, browser)
-3. **Dashboard excerpt** — `LatestRunCard` strips markdown, shows first 3 lines/280 chars
+1. **`stderr_group` / `tool_group`** — accordion blocks in `ui/src/components/transcript/RunTranscriptView.tsx` (note: path was previously documented as `ui/src/components/RunTranscriptView.tsx` — corrected).
+2. **Dashboard excerpt** — the `LatestRunCard` component was not located at `ui/src/components/LatestRunCard.tsx` during the audit (file absent). If the excerpt logic exists, it has moved — locate before citing.
 
 ### Plugin System
 
@@ -218,4 +219,4 @@ PR #2218 (`feat/external-adapter-phase1`) added external adapter support. Key in
 - The plugin-loader should have ZERO hardcoded adapter imports — pure dynamic loading
 - `createServerAdapter()` must include ALL optional fields (especially `detectModel`)
 - Built-in UI adapters can shadow external plugin parsers — remove built-in when fully externalizing
-- Reference external adapters: Hermes (`@henkey/hermes-paperclip-adapter` or `file:`) and Droid (npm)
+- Reference external adapters: Droid (npm). Hermes is currently built-in (see "Hermes — current state" above).
