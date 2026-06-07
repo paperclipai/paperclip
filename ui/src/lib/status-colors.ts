@@ -41,34 +41,34 @@ export const issueStatusTextDefault = "text-muted-foreground";
 
 export const statusBadge: Record<string, string> = {
   // Agent statuses
-  active: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
-  running: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300",
-  scheduled_retry: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
-  paused: "bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300",
-  idle: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
+  active: "border border-status-success/30 bg-status-success/12 text-status-success",
+  running: "border border-status-running/30 bg-status-running/12 text-status-running",
+  scheduled_retry: "border border-status-info/30 bg-status-info/12 text-status-info",
+  paused: "border border-status-warning/30 bg-status-warning/12 text-status-warning",
+  idle: "border border-border text-muted-foreground",
   archived: "bg-muted text-muted-foreground",
 
   // Goal statuses
   planned: "bg-muted text-muted-foreground",
-  achieved: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
-  completed: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  achieved: "border border-status-success/30 bg-status-success/12 text-status-success",
+  completed: "border border-status-success/30 bg-status-success/12 text-status-success",
 
   // Run statuses
-  failed: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
-  timed_out: "bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300",
-  succeeded: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
-  ok: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
-  warning: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
-  error: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
-  info: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
-  terminated: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
-  pending: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
+  failed: "border border-status-error/30 bg-status-error/12 text-status-error",
+  timed_out: "border border-status-warning/30 bg-status-warning/12 text-status-warning",
+  succeeded: "border border-status-success/30 bg-status-success/12 text-status-success",
+  ok: "border border-status-success/30 bg-status-success/12 text-status-success",
+  warning: "border border-status-warning/30 bg-status-warning/12 text-status-warning",
+  error: "border border-status-error/30 bg-status-error/12 text-status-error",
+  info: "border border-status-info/30 bg-status-info/12 text-status-info",
+  terminated: "border border-status-error/30 bg-status-error/12 text-status-error",
+  pending: "border border-status-warning/30 bg-status-warning/12 text-status-warning",
 
   // Approval statuses
-  pending_approval: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
-  revision_requested: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
-  approved: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
-  rejected: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+  pending_approval: "border border-status-warning/30 bg-status-warning/12 text-status-warning",
+  revision_requested: "border border-status-warning/30 bg-status-warning/12 text-status-warning",
+  approved: "border border-status-success/30 bg-status-success/12 text-status-success",
+  rejected: "border border-status-error/30 bg-status-error/12 text-status-error",
 
   // Issue statuses — consistent hues with issueStatusIcon above
   backlog: "bg-muted text-muted-foreground",
@@ -87,13 +87,13 @@ export const statusBadgeDefault = "bg-muted text-muted-foreground";
 // ---------------------------------------------------------------------------
 
 export const agentStatusDot: Record<string, string> = {
-  running: "bg-cyan-400 animate-pulse",
-  active: "bg-green-400",
-  paused: "bg-yellow-400",
-  idle: "bg-yellow-400",
-  pending_approval: "bg-amber-400",
-  error: "bg-red-400",
-  archived: "bg-neutral-400",
+  running: "bg-status-running animate-pulse",
+  active: "bg-status-success",
+  paused: "bg-status-warning",
+  idle: "bg-muted-foreground/50",
+  pending_approval: "bg-status-warning",
+  error: "bg-status-error",
+  archived: "bg-muted-foreground/40",
 };
 
 export const agentStatusDotDefault = "bg-neutral-400";

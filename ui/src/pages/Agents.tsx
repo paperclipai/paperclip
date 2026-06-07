@@ -11,6 +11,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { EntityRow } from "../components/EntityRow";
+import { AgentIcon } from "../components/AgentIconPicker";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
@@ -115,6 +116,19 @@ export function Agents() {
     return map;
   }, [agents]);
 
+  // Roster health summary (working = has a live run right now).
+  const counts = useMemo(() => {
+    let working = 0, idle = 0, paused = 0, error = 0;
+    for (const a of agents ?? []) {
+      if (a.status === "terminated") continue;
+      if (a.status === "error") error++;
+      else if (a.status === "paused") paused++;
+      else if (liveRunByAgent.has(a.id)) working++;
+      else idle++;
+    }
+    return { working, idle, paused, error };
+  }, [agents, liveRunByAgent]);
+
   useEffect(() => {
     setBreadcrumbs([{ label: "Agents" }]);
   }, [setBreadcrumbs]);
@@ -132,6 +146,31 @@ export function Agents() {
 
   return (
     <div className="space-y-4">
+      {/* Roster masthead */}
+      <div>
+        <h1 className="font-serif text-2xl font-medium tracking-tight">Agents</h1>
+        {agents && agents.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-muted-foreground">
+            <span>
+              <span className="font-mono text-foreground">{agents.length}</span> agents
+            </span>
+            {[
+              { n: counts.working, label: "working", dot: "bg-status-running" },
+              { n: counts.idle, label: "idle", dot: "bg-muted-foreground/50" },
+              { n: counts.paused, label: "paused", dot: "bg-status-warning" },
+              { n: counts.error, label: "error", dot: "bg-status-error" },
+            ]
+              .filter((s) => s.n > 0)
+              .map((s) => (
+                <span key={s.label} className="inline-flex items-center gap-1.5">
+                  <span className={cn("h-1.5 w-1.5 rounded-full", s.dot)} />
+                  <span className="font-mono font-medium text-foreground">{s.n}</span> {s.label}
+                </span>
+              ))}
+          </div>
+        )}
+      </div>
+
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
           <PageTabBar
@@ -160,7 +199,7 @@ export function Agents() {
               {showTerminated && <span className="ml-0.5 px-1 bg-foreground/10 rounded text-[10px]">1</span>}
             </button>
             {filtersOpen && (
-              <div className="absolute right-0 top-full mt-1 z-50 w-48 border border-border bg-popover shadow-md p-1">
+              <div className="absolute right-0 top-full mt-1 z-50 w-48 border border-border bg-popover p-1">
                 <button
                   className="flex items-center gap-2 w-full px-2 py-1.5 text-xs text-left hover:bg-accent/50 transition-colors"
                   onClick={() => setShowTerminated(!showTerminated)}
@@ -182,7 +221,7 @@ export function Agents() {
               <button
                 className={cn(
                   "p-1.5 transition-colors",
-                  effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
+                  effectiveView === "list" ? "bg-primary/15 text-foreground" : "text-muted-foreground hover:bg-accent/50"
                 )}
                 onClick={() => setView("list")}
               >
@@ -191,7 +230,7 @@ export function Agents() {
               <button
                 className={cn(
                   "p-1.5 transition-colors",
-                  effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
+                  effectiveView === "org" ? "bg-primary/15 text-foreground" : "text-muted-foreground hover:bg-accent/50"
                 )}
                 onClick={() => setView("org")}
               >
@@ -199,7 +238,7 @@ export function Agents() {
               </button>
             </div>
           )}
-          <Button size="sm" variant="outline" onClick={openNewAgent}>
+          <Button size="sm" onClick={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
             New Agent
           </Button>
@@ -207,7 +246,9 @@ export function Agents() {
       </div>
 
       {filtered.length > 0 && (
-        <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
+        <p className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground/70">
+          {filtered.length} agent{filtered.length !== 1 ? "s" : ""}
+        </p>
       )}
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -231,13 +272,22 @@ export function Agents() {
                 title={agent.name}
                 subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
                 to={agentUrl(agent)}
-                className={agent.pausedAt && tab !== "paused" ? "opacity-50" : ""}
+                className={cn(
+                  agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
+                  liveRunByAgent.has(agent.id) &&
+                    "relative before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full before:bg-primary",
+                )}
                 leading={
-                  <span className="relative flex h-2.5 w-2.5">
-                    <span
-                      className={`absolute inline-flex h-full w-full rounded-full ${agentStatusDot[agent.status] ?? agentStatusDotDefault}`}
-                    />
-                  </span>
+                  <>
+                    <span className="relative flex h-2.5 w-2.5">
+                      <span
+                        className={`absolute inline-flex h-full w-full rounded-full ${agentStatusDot[agent.status] ?? agentStatusDotDefault}`}
+                      />
+                    </span>
+                    <span className="flex h-7 w-7 items-center justify-center rounded-[3px] border border-border bg-card">
+                      <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 text-muted-foreground" />
+                    </span>
+                  </>
                 }
                 trailing={
                   <div className="flex items-center gap-3">
@@ -412,15 +462,15 @@ function LiveRunIndicator({
   return (
     <Link
       to={`/agents/${agentRef}/runs/${runId}`}
-      className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
+      className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-status-running/12 hover:bg-status-running/20 transition-colors no-underline"
       onClick={(e) => e.stopPropagation()}
     >
       <span className="relative flex h-2 w-2">
-        <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-        <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-running opacity-70" />
+        <span className="relative inline-flex rounded-full h-2 w-2 bg-status-running" />
       </span>
-      <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
-        Live{liveCount > 1 ? ` (${liveCount})` : ""}
+      <span className="font-mono text-[11px] font-medium text-status-running">
+        working{liveCount > 1 ? ` ${liveCount}` : ""}
       </span>
     </Link>
   );
