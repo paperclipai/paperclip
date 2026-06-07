@@ -2497,6 +2497,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      if (issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now()) {
+        result.skipped += 1;
+        continue;
+      }
+
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
         result.skipped += 1;
         continue;

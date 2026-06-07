@@ -338,6 +338,7 @@ export function decideSuccessfulRunHandoff(input: {
   taskKey: string | null;
   hasActiveExecutionPath: boolean;
   hasQueuedWake: boolean;
+  hasScheduledMonitor: boolean;
   hasPendingInteractionOrApproval: boolean;
   hasExplicitBlockerPath: boolean;
   hasOpenRecoveryIssue: boolean;
@@ -372,6 +373,7 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (input.hasActiveExecutionPath) return { kind: "skip", reason: "issue already has an active execution path" };
   if (input.hasQueuedWake) return { kind: "skip", reason: "issue already has a queued or deferred wake" };
+  if (input.hasScheduledMonitor) return { kind: "skip", reason: "issue has a scheduled future monitor" };
   if (input.hasPendingInteractionOrApproval) {
     return { kind: "skip", reason: "pending interaction or approval owns the next action" };
   }

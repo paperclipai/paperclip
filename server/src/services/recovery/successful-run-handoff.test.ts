@@ -48,6 +48,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     taskKey: "issue-1",
     hasActiveExecutionPath: false,
     hasQueuedWake: false,
+    hasScheduledMonitor: false,
     hasPendingInteractionOrApproval: false,
     hasExplicitBlockerPath: false,
     hasOpenRecoveryIssue: false,
@@ -127,6 +128,13 @@ describe("successful run handoff decision", () => {
     expect(decide({ hasExplicitBlockerPath: true })).toEqual({
       kind: "skip",
       reason: "explicit blocker path owns the next action",
+    });
+  });
+
+  it("skips when issue has a scheduled future monitor", () => {
+    expect(decide({ hasScheduledMonitor: true })).toEqual({
+      kind: "skip",
+      reason: "issue has a scheduled future monitor",
     });
   });
 
