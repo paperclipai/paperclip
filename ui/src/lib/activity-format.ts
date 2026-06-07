@@ -28,6 +28,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.released": "released",
   "issue.comment_added": "commented on",
   "issue.comment_cancelled": "cancelled a queued comment on",
+  "issue.comment_deleted": "deleted a comment on",
   "issue.attachment_added": "attached file to",
   "issue.attachment_removed": "removed attachment from",
   "issue.document_created": "created document for",
@@ -78,6 +79,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "company.created": "created company",
   "company.updated": "updated company",
   "company.archived": "archived",
+  "company.reactivated": "reactivated",
   "company.budget_updated": "updated budget for",
 };
 
@@ -88,6 +90,7 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "issue.released": "released the issue",
   "issue.comment_added": "added a comment",
   "issue.comment_cancelled": "cancelled a queued comment",
+  "issue.comment_deleted": "deleted a comment",
   "issue.feedback_vote_saved": "saved feedback on an AI output",
   "issue.attachment_added": "added an attachment",
   "issue.attachment_removed": "removed an attachment",
@@ -178,7 +181,7 @@ function formatIssueReferenceLabel(reference: ActivityIssueReference): string {
   if (reference.identifier) return reference.identifier;
   if (reference.title) return reference.title;
   if (reference.id) return reference.id.slice(0, 8);
-  return "issue";
+  return "task";
 }
 
 function formatChangedEntityLabel(
@@ -273,7 +276,7 @@ function formatIssueUpdatedAction(details: ActivityDetails, options: ActivityFor
   }
   if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
     const assigneeName = formatAssigneeName(details, options);
-    parts.push(assigneeName ? `assigned the issue to ${assigneeName}` : "unassigned the issue");
+    parts.push(assigneeName ? `assigned the task to ${assigneeName}` : "unassigned the task");
   }
   if (details.title !== undefined) parts.push("updated the title");
   if (details.description !== undefined) parts.push("updated the description");

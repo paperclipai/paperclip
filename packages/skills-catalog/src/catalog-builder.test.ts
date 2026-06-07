@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildCatalogManifest,
   formatCatalogManifest,
@@ -13,6 +13,7 @@ const tempDirs: string[] = [];
 describe("skills catalog manifest", () => {
   afterEach(async () => {
     await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+    vi.unstubAllGlobals();
   });
 
   it("builds stable manifest entries from catalog skill directories", async () => {
@@ -59,6 +60,81 @@ describe("skills catalog manifest", () => {
     expect(result.manifest.skills[0]!.contentHash).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 
+  it("builds stable manifest entries from pinned GitHub references", async () => {
+    const packageDir = await createCatalogPackage();
+    const skillMarkdown = [
+      "---",
+      "name: Remote Research",
+      "description: Research recent discussion from a pinned upstream skill.",
+      "---",
+      "",
+      "Use this skill.",
+      "",
+    ].join("\n");
+    const script = "print('hello')\n";
+    await writeReference(packageDir, "optional", "research", "remote-research", {
+      source: {
+        type: "github",
+        hostname: "github.com",
+        owner: "example",
+        repo: "remote-skill",
+        ref: "v1.0.0",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        path: "skills/remote-research",
+      },
+      files: ["SKILL.md", "scripts/**"],
+      recommendedForRoles: ["researcher"],
+      tags: ["research"],
+    });
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/git/trees/")) {
+        return new Response(JSON.stringify({
+          tree: [
+            { path: "skills/remote-research/SKILL.md", type: "blob", size: Buffer.byteLength(skillMarkdown) },
+            { path: "skills/remote-research/scripts/run.py", type: "blob", size: Buffer.byteLength(script) },
+            { path: "README.md", type: "blob", size: 9 },
+          ],
+        }), { status: 200 });
+      }
+      if (url.endsWith("/skills/remote-research/SKILL.md")) {
+        return new Response(skillMarkdown, { status: 200 });
+      }
+      if (url.endsWith("/skills/remote-research/scripts/run.py")) {
+        return new Response(script, { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await buildCatalogManifest({
+      packageDir,
+      generatedAt: "2026-05-26T00:00:00.000Z",
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.manifest.skills[0]).toMatchObject({
+      id: "paperclipai:optional:research:remote-research",
+      key: "paperclipai/optional/research/remote-research",
+      path: "catalog/optional/research/remote-research",
+      trustLevel: "scripts_executables",
+      recommendedForRoles: ["researcher"],
+      tags: ["research"],
+      source: {
+        type: "github",
+        owner: "example",
+        repo: "remote-skill",
+        ref: "v1.0.0",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        path: "skills/remote-research",
+      },
+    });
+    expect(result.manifest.skills[0]!.files.map((file) => file.path)).toEqual([
+      "SKILL.md",
+      "scripts/run.py",
+    ]);
+    expect(result.manifest.skills[0]!.contentHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+  });
+
   it("reports frontmatter, directory, uniqueness, and inventory errors together", async () => {
     const packageDir = await createCatalogPackage();
     await writeSkill(packageDir, "bundled", "Bad_Category", "duplicate", {
@@ -87,8 +163,8 @@ describe("skills catalog manifest", () => {
 
     expect(result.errors).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("catalog/misc/SKILL.md is not under catalog/<bundled|optional>/<category>/<slug>/SKILL.md"),
-        expect.stringContaining("catalog/bundled/software-development/missing-skill is missing SKILL.md"),
+        expect.stringContaining("catalog/misc/SKILL.md is not under catalog/<bundled|optional>/<category>/<slug>/{SKILL.md,catalog-ref.json}"),
+        expect.stringContaining("catalog/bundled/software-development/missing-skill is missing SKILL.md or catalog-ref.json"),
         expect.stringContaining("has invalid category"),
         expect.stringContaining("frontmatter must include description"),
         expect.stringContaining("key must be paperclipai/bundled/Bad_Category/duplicate"),
@@ -162,4 +238,20 @@ async function writeSkill(
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     await fs.writeFile(filePath, content, "utf8");
   }
+}
+
+async function writeReference(
+  packageDir: string,
+  kind: "bundled" | "optional",
+  category: string,
+  slug: string,
+  descriptor: Record<string, unknown>,
+) {
+  const skillDir = path.join(packageDir, "catalog", kind, category, slug);
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(
+    path.join(skillDir, "catalog-ref.json"),
+    `${JSON.stringify(descriptor, null, 2)}\n`,
+    "utf8",
+  );
 }

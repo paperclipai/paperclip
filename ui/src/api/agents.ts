@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentPermissions,
   AgentDetail,
   AgentInstructionsBundle,
   AgentInstructionsFileDetail,
@@ -67,6 +68,8 @@ export interface AgentHireResponse {
 export interface AgentPermissionUpdate {
   canCreateAgents: boolean;
   canAssignTasks: boolean;
+  trustPreset?: AgentPermissions["trustPreset"];
+  authorizationPolicy?: AgentPermissions["authorizationPolicy"];
 }
 
 export interface AgentWakeRequest {

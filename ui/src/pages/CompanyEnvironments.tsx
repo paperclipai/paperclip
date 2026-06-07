@@ -422,7 +422,7 @@ export function CompanyEnvironments() {
           <h1 className="text-lg font-semibold">Company Environments</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Define reusable execution targets for projects, issue workspaces, and remote-capable adapters.
+          Define reusable execution targets for projects, task workspaces, and remote-capable adapters.
         </p>
       </div>
 

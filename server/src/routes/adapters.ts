@@ -349,6 +349,21 @@ export function adapterRoutes() {
     }
   });
 
+  router.get("/adapters/:type", async (req, res) => {
+    assertBoardOrgAccess(req);
+
+    const adapterType = req.params.type;
+    const adapter = findServerAdapter(adapterType);
+    if (!adapter) {
+      res.status(404).json({ error: `Adapter "${adapterType}" is not registered.` });
+      return;
+    }
+
+    const externalRecord = getAdapterPluginByType(adapterType);
+    const disabledSet = new Set(getDisabledAdapterTypes());
+    res.json(buildAdapterInfo(adapter, externalRecord, disabledSet));
+  });
+
   /**
    * PATCH /api/adapters/:type
    *

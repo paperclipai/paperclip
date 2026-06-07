@@ -228,7 +228,7 @@ The command uses the current Paperclip API token and company from `PAPERCLIP_API
 
 The smoke is deterministic and intentionally non-comparable. It does not start Terminal-Bench, Harbor, an agent model, or a provider runtime. It verifies only the control-plane shape:
 
-- local `skills/terminal-bench-loop/SKILL.md` contains the loop contract terms;
+- local `.agents/skills/terminal-bench-loop/SKILL.md` contains the loop contract terms;
 - a top-level loop issue can be created and updated into a blocker posture;
 - an iteration child issue can be created under the loop parent;
 - mocked benchmark artifact paths are recorded on a `run` document;
