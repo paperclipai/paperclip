@@ -880,7 +880,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
     const parsedIsError = asBoolean(parsed.is_error, false);
-    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
+    // A clean terminal `result` event (parsedStream.resultJson set,
+    // is_error=false) means Claude finished the turn successfully even
+    // if the wrapper process was force-terminated afterwards by the
+    // adapter's terminalResultCleanup grace timer (exit code 143 from
+    // SIGTERM). Without this guard the grace SIGTERM is misread as a
+    // failure, which then trips the transient-upstream regex on words
+    // like "limit" or "reached" in the agent's own result text and
+    // marks the run `claude_transient_upstream`, triggering needless
+    // retry wakes.
+    const hasSuccessfulTerminalResult =
+      parsedStream.resultJson !== null && !parsedIsError;
+    const failed = !hasSuccessfulTerminalResult && ((proc.exitCode ?? 0) !== 0 || parsedIsError);
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
