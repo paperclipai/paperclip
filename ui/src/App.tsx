@@ -167,7 +167,6 @@ function boardRoutes() {
       <Route path="company/settings/cloud-upstream" element={<CloudUpstream />} />
       <Route path="company/settings/members" element={<CompanyAccess />} />
       <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
-      <Route path="company/settings/cloud-upstream" element={<CloudUpstream />} />
       <Route path="company/settings/invites" element={<CompanyInvites />} />
       <Route path="company/export/*" element={<CompanyExport />} />
       <Route path="company/import" element={<CompanyImport />} />
@@ -464,7 +463,9 @@ export function App() {
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
-        <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
+        {import.meta.env.DEV ? (
+          <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
+        ) : null}
         <Route path="ux-lab/cloud-upstream" element={<CloudUpstreamUxLab />} />
         <Route path="ux-lab/bootstrap-setup" element={<BootstrapSetupUxLab />} />
 

@@ -275,7 +275,8 @@ export function registerCatalog(router: Router, db: Db) {
         VALUES ('bucket', ${id}, 'create', ${diff}::jsonb, ${email})
       `);
     } catch {
-      /* swallow */
+      // Audit row is non-critical; a failure here must not fail the bucket
+      // create above. Intentionally swallowed (no logger in this layer).
     }
 
     res.json({ ok: true, id });

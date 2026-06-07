@@ -621,10 +621,17 @@ describe("heartbeat comment wake batching", () => {
       expect(String(promotedPayload.message ?? "")).toContain("Queued follow-up");
 
       gateway.releaseFirstWait();
+      // Wait until every run for this agent has settled to a terminal state.
+      // We don't pin an exact count: a successful promoted run may legitimately
+      // spawn a follow-up "successful run handoff" run, so the agent can end up
+      // with the cancelled first run, the promoted run, and a handoff run.
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));
+        return runs.length >= 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));
       }, 90_000);
+      const settledRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      expect(settledRuns.find((run) => run.id === firstRun!.id)?.status).toBe("cancelled");
+      expect(settledRuns.some((run) => run.status === "succeeded")).toBe(true);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();

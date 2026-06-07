@@ -248,8 +248,7 @@ function Shot({
         alt={alt}
         className="block w-full"
         loading={eager ? "eager" : "lazy"}
-        // @ts-expect-error fetchpriority is valid HTML, not yet in React types
-        fetchpriority={eager ? "high" : undefined}
+        fetchPriority={eager ? "high" : undefined}
       />
     </div>
   );

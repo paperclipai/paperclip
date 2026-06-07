@@ -11,6 +11,10 @@ import { buildSameOriginWebSocketUrl } from "../../lib/websocket-url";
 const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
 const EMPTY_RUN_LOG_CHUNKS: RunLogChunk[] = [];
+// Consecutive log 404s tolerated for a non-terminal run before we stop polling
+// it. Covers the brief window where a freshly-created run's log row hasn't
+// committed yet, while still capping a phantom/pruned run that 404s forever.
+const MAX_NON_TERMINAL_LOG_404S = 3;
 
 export interface RunTranscriptSource {
   id: string;
@@ -114,6 +118,7 @@ export function useLiveRunTranscripts({
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
   const missingTerminalLogRunIdsRef = useRef(new Set<string>());
+  const log404CountByRunRef = useRef(new Map<string, number>());
   const transcriptCacheRef = useRef(new Map<string, {
     adapterType: string;
     chunks: RunLogChunk[];
@@ -201,6 +206,11 @@ export function useLiveRunTranscripts({
         missingTerminalLogRunIdsRef.current.delete(runId);
       }
     }
+    for (const runId of log404CountByRunRef.current.keys()) {
+      if (!knownRunIds.has(runId)) {
+        log404CountByRunRef.current.delete(runId);
+      }
+    }
     for (const runId of transcriptCacheRef.current.keys()) {
       if (!knownRunIds.has(runId)) {
         transcriptCacheRef.current.delete(runId);
@@ -222,6 +232,7 @@ export function useLiveRunTranscripts({
         const result = await heartbeatsApi.log(run.id, offset, logReadLimitBytes);
         if (cancelled) return;
 
+        log404CountByRunRef.current.delete(run.id);
         appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));
 
         if (result.nextOffset !== undefined) {
@@ -232,8 +243,20 @@ export function useLiveRunTranscripts({
           logOffsetByRunRef.current.set(run.id, offset + result.content.length);
         }
       } catch (error) {
-        if (error instanceof ApiError && error.status === 404 && isTerminalStatus(run.status)) {
-          missingTerminalLogRunIdsRef.current.add(run.id);
+        // Stop re-polling a run whose log keeps 404ing. Terminal runs are
+        // suppressed immediately; non-terminal runs get a short grace window
+        // (a just-created run can briefly 404 before its log row commits)
+        // before we give up, so a phantom/pruned active run can't loop forever.
+        if (error instanceof ApiError && error.status === 404) {
+          if (isTerminalStatus(run.status)) {
+            missingTerminalLogRunIdsRef.current.add(run.id);
+          } else {
+            const next = (log404CountByRunRef.current.get(run.id) ?? 0) + 1;
+            log404CountByRunRef.current.set(run.id, next);
+            if (next >= MAX_NON_TERMINAL_LOG_404S) {
+              missingTerminalLogRunIdsRef.current.add(run.id);
+            }
+          }
         }
       } finally {
         if (!cancelled) {
