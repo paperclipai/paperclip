@@ -277,6 +277,17 @@ export const ISSUE_RECOVERY_ACTION_KINDS = [
 ] as const;
 export type IssueRecoveryActionKind = (typeof ISSUE_RECOVERY_ACTION_KINDS)[number];
 
+// Disposition-kind labels carried on done/cancelled transitions made by a recovery owner (§14 Condition C).
+export const ISSUE_RECOVERY_DISPOSITION_KINDS = [
+  "liveness_exhausted",
+  "sweeper_recovery",
+  "explicit_recovery_owner",
+] as const;
+export type IssueRecoveryDispositionKind = (typeof ISSUE_RECOVERY_DISPOSITION_KINDS)[number];
+
+// Label names that mark an issue as part of a measurement context (§14 Condition D).
+export const MEASUREMENT_CONTEXT_LABEL_NAMES = ["canary", "bake-off", "bakeoff", "measurement"] as const;
+
 export const ISSUE_RECOVERY_ACTION_STATUSES = [
   "active",
   "escalated",

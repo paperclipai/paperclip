@@ -555,9 +555,9 @@ A recovery owner acting on an issue whose `assigneeAgentId` is a different agent
 
 **Condition A — Original assignee declared dead**: The stranded-work sweeper (§9.2) has exhausted auto-continuation and has recorded that the original assignee is no longer viable for this issue.
 
-**Condition B — Explicit reassignment event recorded**: `assigneeAgentId` is updated to the recovery owner by an explicit reassignment event before any disposition action. The original assignee identity is preserved in the recovery record (field name TBD in Phase 2 engineering review).
+**Condition B — Explicit reassignment event recorded**: `assigneeAgentId` is updated to the recovery owner by an explicit reassignment event before any disposition action. The original assignee identity is preserved in the issue's `previousAssigneeAgentId` field.
 
-**Condition C — Recovery-kind label on closure**: The status transition to `done`/`cancelled` must carry a `recoveryKind` field distinguishing this closure from self-disposal by the original assignee. (Field name TBD in Phase 2 engineering review.)
+**Condition C — Recovery-kind label on closure**: The status transition to `done`/`cancelled` must carry a `recoveryKind` field (values: `liveness_exhausted`, `sweeper_recovery`, `explicit_recovery_owner`) distinguishing this closure from self-disposal by the original assignee.
 
 **Condition D — Measurement-context bar**: For issues tagged as canary / bake-off / measurement, a recovery owner is barred from deliverable-work completion entirely. Its only allowed actions are route-to-`blocked` (named owner) or record the closure as `recoveryKind` + harness-FAIL. No deliverable answer is produced.
 
