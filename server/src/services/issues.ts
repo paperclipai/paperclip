@@ -381,6 +381,7 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+const QUEUED_STALE_MS = 10 * 60 * 1000; // 10 min = 2× default heartbeatSchedulerIntervalMs
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
@@ -3671,12 +3672,20 @@ export function issueService(db: Db) {
 
   async function isTerminalOrMissingHeartbeatRun(runId: string) {
     const run = await db
-      .select({ status: heartbeatRuns.status })
+      .select({ status: heartbeatRuns.status, createdAt: heartbeatRuns.createdAt })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     if (!run) return true;
-    return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+    if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+    // A run stuck in `queued` past the grace window never successfully
+    // transitioned to `running` — treat it as abandoned so the lock can be
+    // adopted/evicted (paperclipai/paperclip#PRI-349).
+    if (run.status === "queued" && run.createdAt) {
+      const age = Date.now() - new Date(run.createdAt).getTime();
+      if (age > QUEUED_STALE_MS) return true;
+    }
+    return false;
   }
 
   async function adoptStaleCheckoutRun(input: {
