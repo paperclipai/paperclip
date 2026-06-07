@@ -1,16 +1,16 @@
 ---
 title: AWS ECS Fargate
-summary: Deploy Paperclip to AWS using ECS Fargate, RDS Postgres, and EFS
+summary: Deploy AGNB to AWS using ECS Fargate, RDS Postgres, and EFS
 ---
 
-Deploy Paperclip to AWS with ECS Fargate (compute), RDS Postgres 17 (database), and EFS (persistent storage). This guide uses the AWS CLI and produces a single-task ECS service behind an ALB with HTTPS.
+Deploy AGNB to AWS with ECS Fargate (compute), RDS Postgres 17 (database), and EFS (persistent storage). This guide uses the AWS CLI and produces a single-task ECS service behind an ALB with HTTPS.
 
 ## Prerequisites
 
 - AWS CLI v2 configured with a profile that has admin-level permissions
 - Docker installed locally (for building and pushing the image)
 - A registered domain with DNS you control (for the TLS certificate)
-- The Paperclip repo cloned locally
+- The AGNB repo cloned locally
 
 Set these shell variables for the rest of the guide:
 
@@ -77,7 +77,7 @@ Create security groups:
 # ALB security group — inbound HTTPS
 ALB_SG=$(aws ec2 create-security-group \
   --group-name paperclip-alb \
-  --description "Paperclip ALB" \
+  --description "AGNB ALB" \
   --vpc-id $VPC_ID \
   --query 'GroupId' --output text)
 
@@ -93,7 +93,7 @@ aws ec2 authorize-security-group-ingress \
 # ECS task security group — inbound from ALB only
 ECS_SG=$(aws ec2 create-security-group \
   --group-name paperclip-ecs \
-  --description "Paperclip ECS tasks" \
+  --description "AGNB ECS tasks" \
   --vpc-id $VPC_ID \
   --query 'GroupId' --output text)
 
@@ -105,7 +105,7 @@ aws ec2 authorize-security-group-ingress \
 # RDS security group — inbound from ECS only
 RDS_SG=$(aws ec2 create-security-group \
   --group-name paperclip-rds \
-  --description "Paperclip RDS" \
+  --description "AGNB RDS" \
   --vpc-id $VPC_ID \
   --query 'GroupId' --output text)
 
@@ -117,7 +117,7 @@ aws ec2 authorize-security-group-ingress \
 # EFS security group — inbound NFS from ECS only
 EFS_SG=$(aws ec2 create-security-group \
   --group-name paperclip-efs \
-  --description "Paperclip EFS" \
+  --description "AGNB EFS" \
   --vpc-id $VPC_ID \
   --query 'GroupId' --output text)
 
@@ -134,7 +134,7 @@ aws ec2 authorize-security-group-ingress \
 # that spans our two subnets so RDS can place the instance.
 aws rds create-db-subnet-group \
   --db-subnet-group-name paperclip-db-subnet \
-  --db-subnet-group-description "Paperclip RDS subnets" \
+  --db-subnet-group-description "AGNB RDS subnets" \
   --subnet-ids $SUBNET_1 $SUBNET_2
 
 aws rds create-db-instance \

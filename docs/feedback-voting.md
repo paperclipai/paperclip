@@ -1,6 +1,6 @@
 # Feedback Voting — Local Data Guide
 
-When you rate an agent's response with **Helpful** (thumbs up) or **Needs work** (thumbs down), Paperclip saves your vote locally alongside your running instance. This guide covers what gets stored, how to access it, and how to export it.
+When you rate an agent's response with **Helpful** (thumbs up) or **Needs work** (thumbs down), AGNB saves your vote locally alongside your running instance. This guide covers what gets stored, how to access it, and how to export it.
 
 ## How voting works
 
@@ -17,9 +17,9 @@ Each vote creates two local records:
 | **Vote** | Your vote (up/down), optional reason text, sharing preference, consent version, timestamp |
 | **Trace bundle** | Full context snapshot: the voted-on comment/revision text, issue title, agent info, your vote, and reason — everything needed to understand the feedback in isolation |
 
-All data lives in your local Paperclip database. Nothing leaves your machine unless you explicitly choose to share.
+All data lives in your local AGNB database. Nothing leaves your machine unless you explicitly choose to share.
 
-When a vote is marked for sharing, Paperclip immediately tries to upload the trace bundle through the Telemetry Backend. The upload is compressed in transit so full trace bundles stay under gateway size limits. If that immediate push fails, the trace is left in a retriable failed state for later flush attempts. The app server never uploads raw feedback trace bundles directly to object storage.
+When a vote is marked for sharing, AGNB immediately tries to upload the trace bundle through the Telemetry Backend. The upload is compressed in transit so full trace bundles stay under gateway size limits. If that immediate push fails, the trace is left in a retriable failed state for later flush attempts. The app server never uploads raw feedback trace bundles directly to object storage.
 
 ## Viewing your votes
 
@@ -100,7 +100,7 @@ feedback-export-20260331T120000Z/
   votes/
     PAP-123-a1b2c3d4.json      # vote metadata (one per vote)
   traces/
-    PAP-123-e5f6g7h8.json      # Paperclip feedback envelope (one per trace)
+    PAP-123-e5f6g7h8.json      # AGNB feedback envelope (one per trace)
   full-traces/
     PAP-123-e5f6g7h8/
       bundle.json              # full export manifest for the trace
@@ -108,7 +108,7 @@ feedback-export-20260331T120000Z/
 feedback-export-20260331T120000Z.zip
 ```
 
-Exports are full by default. `traces/` keeps the Paperclip envelope, while `full-traces/` contains the richer per-trace bundle plus any recoverable adapter-native files.
+Exports are full by default. `traces/` keeps the AGNB envelope, while `full-traces/` contains the richer per-trace bundle plus any recoverable adapter-native files.
 
 ```bash
 # Custom server and output directory
@@ -183,7 +183,7 @@ Votes you choose to share are sent to the Telemetry Backend immediately from the
 - App server responsibility: build the bundle, POST it to Telemetry Backend, update trace status
 - Telemetry Backend responsibility: authenticate the request, validate payload shape, compress/store the bundle, return the final object key
 - Retry behavior: failed uploads move to `failed` with an error message in `failureReason`, and the worker retries them on later ticks
-- Default endpoint: when no feedback export backend URL is configured, Paperclip falls back to `https://telemetry.paperclip.ing`
+- Default endpoint: when no feedback export backend URL is configured, AGNB falls back to `https://telemetry.paperclip.ing`
 - Important nuance: the uploaded object is a snapshot of the full bundle at vote time. If you fetch a local bundle later and the underlying adapter session file has continued to grow, the local regenerated bundle may be larger than the already-uploaded snapshot for that same trace.
 
 Exported objects use a deterministic key pattern so they are easy to inspect:

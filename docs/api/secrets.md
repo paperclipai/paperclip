@@ -25,7 +25,7 @@ POST /api/companies/{companyId}/secrets
 
 The value is encrypted at rest. Only the secret ID and metadata are returned.
 
-To link a provider-owned secret without copying the value into Paperclip, create
+To link a provider-owned secret without copying the value into AGNB, create
 an external-reference secret:
 
 ```json
@@ -38,7 +38,7 @@ an external-reference secret:
 }
 ```
 
-Paperclip stores the provider reference and a non-sensitive fingerprint only.
+AGNB stores the provider reference and a non-sensitive fingerprint only.
 The value is resolved, when the provider is configured, through the server
 runtime path that enforces binding context and records access events.
 
@@ -54,7 +54,7 @@ responses must not include secret values or provider credentials.
 For `aws_secrets_manager`, an unready health response names the missing
 non-secret provider environment variables, the AWS SDK default credential source
 expected by the server runtime, and the custody rule that AWS bootstrap
-credentials must not be stored in Paperclip `company_secrets`.
+credentials must not be stored in AGNB `company_secrets`.
 
 The equivalent CLI check is:
 
@@ -229,9 +229,9 @@ Every route in this surface enforces the same redaction contract:
 
 ## Remote Import From AWS Secrets Manager
 
-Remote import links existing AWS Secrets Manager entries into Paperclip as
+Remote import links existing AWS Secrets Manager entries into AGNB as
 `external_reference` secrets. Import stores provider reference metadata only; it
-does not copy the remote secret plaintext into Paperclip.
+does not copy the remote secret plaintext into AGNB.
 
 The routes are board-only and company-scoped. `providerConfigId` must point to
 a same-company AWS provider vault with status `ready` or `warning`. Disabled,
@@ -293,13 +293,13 @@ decisions:
 Candidate statuses:
 
 - `ready`: the row can be selected for import.
-- `duplicate`: a Paperclip secret already links the same canonical provider
+- `duplicate`: a AGNB secret already links the same canonical provider
   reference for the same provider vault.
 - `conflict`: the row has a name/key collision or provider guardrail failure.
 
 Conflict types are `exact_reference`, `name`, `key`, and
-`provider_guardrail`. AWS refs under Paperclip's own managed namespace are
-blocked as external references; use the Paperclip-managed secret flow for those
+`provider_guardrail`. AWS refs under AGNB's own managed namespace are
+blocked as external references; use the AGNB-managed secret flow for those
 resources instead.
 
 ### Import Selected Remote References
@@ -324,9 +324,9 @@ POST /api/companies/{companyId}/secrets/remote-import
 ```
 
 The `secrets` array accepts 1-100 rows. Each row may override the suggested
-Paperclip `name`, `key`, optional Paperclip `description`,
+AGNB `name`, `key`, optional AGNB `description`,
 `providerVersionRef`, and sanitized `providerMetadata`. Blank descriptions are
-stored as `null`; AWS provider descriptions are not copied into Paperclip
+stored as `null`; AWS provider descriptions are not copied into AGNB
 descriptions. The backend re-checks duplicate refs and name/key conflicts at
 submit time; a stale preview does not bypass those checks.
 
@@ -355,7 +355,7 @@ The import response is row-level:
 
 Row statuses:
 
-- `imported`: Paperclip created an active `external_reference` secret and one
+- `imported`: AGNB created an active `external_reference` secret and one
   metadata-only version row.
 - `skipped`: the row had an exact-reference duplicate or name/key conflict.
 - `error`: the provider rejected the reference or the row failed validation.
@@ -394,7 +394,7 @@ Reference secrets in agent adapter config instead of inline values:
 ```
 
 The server resolves and decrypts secret references at runtime, injecting the
-real value into the agent process environment. Paperclip's custody guarantees
+real value into the agent process environment. AGNB's custody guarantees
 end at injection: the agent process can read, log, or forward the value, so
 treat any secret bound to an agent as exposed to that agent. See the custody
 boundaries note in the [secrets deploy guide](/deploy/secrets#custody-boundaries).

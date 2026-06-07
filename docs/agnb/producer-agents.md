@@ -14,7 +14,7 @@ AGNB ships as a real org: a manager layer directing producer agents, all aligned
 
 ## How they work
 
-Producers are Paperclip agents (researcher role, durable instruction bundles) hired into projects and triggered by **Routines** (cron) and a **heartbeat**. Each wakes on schedule, picks up where it left off, and does its reps.
+Producers are AGNB agents (researcher role, durable instruction bundles) hired into projects and triggered by **Routines** (cron) and a **heartbeat**. Each wakes on schedule, picks up where it left off, and does its reps.
 
 ## Bring your own model
 

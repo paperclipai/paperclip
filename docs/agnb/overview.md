@@ -3,9 +3,9 @@ title: What is All Gas No Brakes?
 summary: Your growth team, now autonomous
 ---
 
-All Gas No Brakes (AGNB) is an autonomous growth platform built on Paperclip. It fuses an entire **growth cockpit** — outbound, inbound, content, and revenue — with a **company of AI agents** that runs it around the clock.
+All Gas No Brakes (AGNB) is an autonomous growth platform. It fuses an entire **growth cockpit** — outbound, inbound, content, and revenue — with a **company of AI agents** that runs it around the clock.
 
-Where Paperclip is the control plane for autonomous companies, AGNB is a ready-made growth company you can hire: a CEO, a CMO, a CFO, and a roster of producer agents, all working a single mission while you set direction and approve what matters.
+AGNB is a ready-made growth company you can hire: a CEO, a CMO, a CFO, and a roster of producer agents, all working a single mission while you set direction and approve what matters.
 
 ## Two layers, fused
 

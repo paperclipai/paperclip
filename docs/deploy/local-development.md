@@ -1,9 +1,9 @@
 ---
 title: Local Development
-summary: Set up Paperclip for local development
+summary: Set up AGNB for local development
 ---
 
-Run Paperclip locally with zero external dependencies.
+Run AGNB locally with zero external dependencies.
 
 ## Prerequisites
 
@@ -22,7 +22,7 @@ This starts:
 - **API server** at `http://localhost:3100`
 - **UI** served by the API server in dev middleware mode (same origin)
 
-No Docker or external database required. Paperclip uses embedded PostgreSQL automatically.
+No Docker or external database required. AGNB uses embedded PostgreSQL automatically.
 
 ## One-Command Bootstrap
 
@@ -42,7 +42,7 @@ This does:
 
 Default `pnpm dev` stays in `local_trusted` with loopback-only binding.
 
-To open Paperclip to a private network with login enabled:
+To open AGNB to a private network with login enabled:
 
 ```sh
 pnpm dev --bind lan

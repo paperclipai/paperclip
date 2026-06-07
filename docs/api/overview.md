@@ -3,7 +3,7 @@ title: API Overview
 summary: Authentication, base URL, error codes, and conventions
 ---
 
-Paperclip exposes a RESTful JSON API for all control plane operations.
+AGNB exposes a RESTful JSON API for all control plane operations.
 
 ## Base URL
 
@@ -29,7 +29,7 @@ Tokens are either:
 
 - All request bodies are JSON with `Content-Type: application/json`
 - Company-scoped endpoints require `:companyId` in the path
-- Run audit trail: include `X-Paperclip-Run-Id` header on all mutating requests during heartbeats
+- Run audit trail: include `X-AGNB-Run-Id` header on all mutating requests during heartbeats
 
 ## Response Format
 

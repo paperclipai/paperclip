@@ -3,7 +3,7 @@ title: Creating an Adapter
 summary: Guide to building a custom adapter
 ---
 
-Build a custom adapter to connect Paperclip to any agent runtime.
+Build a custom adapter to connect AGNB to any agent runtime.
 
 <Tip>
 If you're using Claude Code, the `.agents/skills/create-agent-adapter` skill can guide you through the full adapter creation process interactively. Just ask Claude to create a new adapter and it will walk you through each step.
@@ -14,12 +14,12 @@ If you're using Claude Code, the `.agents/skills/create-agent-adapter` skill can
 | | Built-in | External Plugin |
 |---|---|---|
 | Source | Inside `paperclip-fork` | Separate npm package |
-| Distribution | Ships with Paperclip | Independent npm publish |
+| Distribution | Ships with AGNB | Independent npm publish |
 | UI parser | Static import | Dynamic load from API |
 | Registration | Edit 3 registries | Auto-loaded at startup |
 | Best for | Core adapters, contributors | Third-party adapters, internal tools |
 
-For most cases, **build an external adapter plugin**. It's cleaner, independently versioned, and doesn't require modifying Paperclip's source. See [External Adapters](/adapters/external-adapters) for the full guide.
+For most cases, **build an external adapter plugin**. It's cleaner, independently versioned, and doesn't require modifying AGNB's source. See [External Adapters](/adapters/external-adapters) for the full guide.
 
 The rest of this page covers the shared internals that both paths use.
 
@@ -75,7 +75,7 @@ export { createServerAdapter } from "./server/index.js";
 Key responsibilities:
 
 1. Read config using safe helpers (`asString`, `asNumber`, etc.) from `@paperclipai/adapter-utils/server-utils`
-2. Build environment with `buildPaperclipEnv(agent)` plus context vars
+2. Build environment with `buildAGNBEnv(agent)` plus context vars
 3. Resolve session state from `runtime.sessionParams`
 4. Render prompt with `renderTemplate(template, data)`
 5. Spawn the process with `runChildProcess()` or call via `fetch()`
@@ -87,7 +87,7 @@ Key responsibilities:
 | Helper | Source | Purpose |
 |--------|--------|---------|
 | `runChildProcess(cmd, opts)` | `@paperclipai/adapter-utils/server-utils` | Spawn with timeout, grace, streaming |
-| `buildPaperclipEnv(agent)` | `@paperclipai/adapter-utils/server-utils` | Inject `PAPERCLIP_*` env vars |
+| `buildAGNBEnv(agent)` | `@paperclipai/adapter-utils/server-utils` | Inject `PAPERCLIP_*` env vars |
 | `renderTemplate(tpl, data)` | `@paperclipai/adapter-utils/server-utils` | `{{variable}}` substitution |
 | `asString(v)` | `@paperclipai/adapter-utils` | Safe config value extraction |
 | `asNumber(v)` | `@paperclipai/adapter-utils` | Safe number extraction |
@@ -155,7 +155,7 @@ export async function testEnvironment(
 
 ## Step 4: UI Module (Built-in Only)
 
-For built-in adapters registered in Paperclip's source:
+For built-in adapters registered in AGNB's source:
 
 - `parse-stdout.ts` — converts stdout lines to `TranscriptEntry[]` for the run viewer
 - `build-config.ts` — converts form values to `adapterConfig` JSON
@@ -236,13 +236,13 @@ export function createServerAdapter(): ServerAdapterModule {
 }
 ```
 
-With these flags set, the Paperclip UI will automatically show the instructions bundle editor, skills management tab, and working directory field for agents using this adapter — no Paperclip source changes required.
+With these flags set, the AGNB UI will automatically show the instructions bundle editor, skills management tab, and working directory field for agents using this adapter — no AGNB source changes required.
 
 If capability flags are not set, the server falls back to legacy hardcoded lists for built-in adapter types. External adapters that omit the flags will default to `false` for all capabilities.
 
 ## Skills Injection
 
-Make Paperclip skills discoverable to your agent runtime without writing to the agent's working directory:
+Make AGNB skills discoverable to your agent runtime without writing to the agent's working directory:
 
 1. **Best: tmpdir + flag** — create tmpdir, symlink skills, pass via CLI flag, clean up after
 2. **Acceptable: global config dir** — symlink to the runtime's global plugins directory

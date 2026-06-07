@@ -184,7 +184,7 @@ Fires a run immediately, bypassing the schedule. Concurrency policy still applie
 POST /api/routine-triggers/public/{publicId}/fire
 ```
 
-Fires a webhook trigger from an external system. Requires a valid `Authorization` or `X-Paperclip-Signature` + `X-Paperclip-Timestamp` header pair matching the trigger's signing mode.
+Fires a webhook trigger from an external system. Requires a valid `Authorization` or `X-AGNB-Signature` + `X-AGNB-Timestamp` header pair matching the trigger's signing mode.
 
 ## List Runs
 

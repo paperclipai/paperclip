@@ -1,8 +1,8 @@
-# AGNB → Paperclip Consolidation Plan
+# AGNB → AGNB Consolidation Plan
 
-**Goal:** Make Paperclip the single repo for landing + UI + API + worker + data. Phase out the standalone AGNB Next.js app.
+**Goal:** Make AGNB the single repo for landing + UI + API + worker + data. Phase out the standalone AGNB Next.js app.
 
-**Status when written:** UI already ported (first-party React pages). Backend still 100% AGNB (236 Next.js routes + Supabase). DB decision: **consolidate Supabase `internal` schema into Paperclip's own Postgres.**
+**Status when written:** UI already ported (first-party React pages). Backend still 100% AGNB (236 Next.js routes + Supabase). DB decision: **consolidate Supabase `internal` schema into AGNB's own Postgres.**
 
 **Date:** 2026-06-02
 
@@ -10,7 +10,7 @@
 
 ## 0. EXECUTION STATUS (updated 2026-06-02)
 
-Phases 0–5 executed. Core consolidation **done** — Paperclip now serves landing, UI, API, worker, and data locally with zero prod dependency.
+Phases 0–5 executed. Core consolidation **done** — AGNB now serves landing, UI, API, worker, and data locally with zero prod dependency.
 
 | Phase | State | Notes |
 |---|---|---|
@@ -47,7 +47,7 @@ Phases 0–5 executed. Core consolidation **done** — Paperclip now serves land
 
 ```
 ┌─────────────────────────────┐         cross-origin fetch          ┌──────────────────────────────┐
-│  Paperclip UI (React/Vite)  │  ───────────────────────────────▶  │  AGNB Next.js app             │
+│  AGNB UI (React/Vite)  │  ───────────────────────────────▶  │  AGNB Next.js app             │
 │  ui/src/pages/Campaigns.tsx │   credentials: include              │  www.allgasnobrakes.online    │
 │  ui/src/api/agnb*.ts (14)   │   cookie .allgasnobrakes.online     │  236 routes /api/agnb/*       │
 └─────────────────────────────┘                                     │  27 worker jobs /api/internal │
@@ -55,13 +55,13 @@ Phases 0–5 executed. Core consolidation **done** — Paperclip now serves land
             │ same-origin /api/* (core)                                              │ supabase-js
             ▼                                                                        ▼
 ┌─────────────────────────────┐                                     ┌──────────────────────────────┐
-│  Paperclip server (Express) │                                     │  Supabase project             │
+│  AGNB server (Express) │                                     │  Supabase project             │
 │  better-auth + Postgres     │                                     │  bcslmvndyrdnacbaxjpg         │
 │  core: companies/issues/... │                                     │  `internal` schema, 100 tbls  │
 └─────────────────────────────┘                                     └──────────────────────────────┘
 ```
 
-Two deploys, two auth systems, two databases. The Paperclip UI is just a cross-origin client of AGNB.
+Two deploys, two auth systems, two databases. The AGNB UI is just a cross-origin client of AGNB.
 
 ### Key facts (verified)
 - **UI ported:** `ui/src/pages/` has Campaigns, Mentions, Blog, Experiments, Inbox, Renewals, YoutubeTrends, LinkedinSeries, LinkedinRepurpose, WinLoss, Demos, Newsletter, IdeaInbox, etc. API clients: `ui/src/api/agnb{Blog,Campaigns,Client,Experiments,Inbox,LinkedinQueue,Mentions,Misc,Ops,Pages,Renewals,Research,Team,Youtube}.ts` + `marketing.ts`.
@@ -70,7 +70,7 @@ Two deploys, two auth systems, two databases. The Paperclip UI is just a cross-o
 - **Worker:** 27 jobs under `app/all-gas-no-brakes/api/internal/*`, triggered via `POST /api/agnb/crons/run?path=/api/internal/<job>` (external scheduler hits this). Jobs listed in §6.
 - **Data:** Supabase `internal` schema, 100 tables. Sample row counts: `rocket_campaigns` 26, `rocket_senders` 13, `blog_drafts` 34, `hubspot_deals` 4.
 - **Auth (AGNB):** custom HMAC cookie (`agnb_session`), allowlist (`AGNB_USERS` / domain `AGNB_DOMAIN`+password). RBAC in `lib/agnb/rbac.ts` (admin/operator/viewer). Google OAuth only for GSC.
-- **Auth (Paperclip):** better-auth, email+password, `instance_user_roles`. Landing+login already built (`ui/src/pages/Landing.tsx`).
+- **Auth (AGNB):** better-auth, email+password, `instance_user_roles`. Landing+login already built (`ui/src/pages/Landing.tsx`).
 
 ---
 
@@ -78,7 +78,7 @@ Two deploys, two auth systems, two databases. The Paperclip UI is just a cross-o
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
-│  Paperclip monorepo (one deploy)                                │
+│  AGNB monorepo (one deploy)                                │
 │                                                                 │
 │  ui/  React SPA   ── same-origin /api/* ──┐                     │
 │                                           ▼                     │
@@ -89,7 +89,7 @@ Two deploys, two auth systems, two databases. The Paperclip UI is just a cross-o
 │                                           │                     │
 │                                           ▼                     │
 │  Postgres (embedded local / hosted prod)                        │
-│    public   schema  → Paperclip core                            │
+│    public   schema  → AGNB core                            │
 │    agnb     schema  → migrated AGNB data (ex-Supabase internal) │
 └───────────────────────────────────────────────────────────────┘
 ```
@@ -104,30 +104,30 @@ One repo, one deploy, one DB, one auth, one cron mechanism.
 - [ ] Full backup of Supabase `internal` schema (see §5 dump step). Keep raw SQL dump in cold storage.
 - [ ] Snapshot list of all 236 routes + 27 jobs into a tracking sheet (port checklist).
 - [ ] Add `VITE_AGNB_BASE_URL` to `ui/.env.local` pointing at a **local** AGNB (`http://localhost:3000`) so dev never touches prod.
-- [ ] Confirm Paperclip server `DATABASE_URL` strategy (local embedded for dev; hosted for prod).
+- [ ] Confirm AGNB server `DATABASE_URL` strategy (local embedded for dev; hosted for prod).
 
 ### Phase 1 — Auth cutover (1–2 days)
-AGNB cookie allowlist → Paperclip better-auth (already the login path on the landing page).
+AGNB cookie allowlist → AGNB better-auth (already the login path on the landing page).
 - [ ] Create real better-auth users for each AGNB allowlist entry (`AGNB_USERS`).
-- [ ] Map AGNB RBAC roles → Paperclip roles: `admin`→`instance_admin`; `operator`→company `owner`/`member`; `viewer`→read-only membership. Port the write-lock (viewer blocks mutating verbs) into Paperclip middleware if needed.
-- [ ] Replace any `lib/agnb/session.ts` / `rbac.ts` checks in ported routes with Paperclip's `resolveSession` + access guards.
+- [ ] Map AGNB RBAC roles → AGNB roles: `admin`→`instance_admin`; `operator`→company `owner`/`member`; `viewer`→read-only membership. Port the write-lock (viewer blocks mutating verbs) into AGNB middleware if needed.
+- [ ] Replace any `lib/agnb/session.ts` / `rbac.ts` checks in ported routes with AGNB's `resolveSession` + access guards.
 - [ ] Keep Google OAuth (GSC) as-is initially — it's orthogonal (token storage in `oauth_tokens`).
 - **Exit:** every protected surface gated by better-auth; no `agnb_session` dependency.
 
 ### Phase 2 — Local end-to-end (1 day)
 - [ ] Run AGNB locally (`cd agnb && pnpm dev`, port 3000) against a **local copy** of the data (Phase 3 dump) or read-only prod.
-- [ ] Point Paperclip UI at it via `VITE_AGNB_BASE_URL=http://localhost:3000`.
+- [ ] Point AGNB UI at it via `VITE_AGNB_BASE_URL=http://localhost:3000`.
 - [ ] Verify all AGNB pages render locally end-to-end. This is the safety net before backend port.
 - **Exit:** full app works locally, zero prod calls.
 
-### Phase 3 — Data migration: Supabase `internal` → Paperclip `agnb` schema (2–3 days)
+### Phase 3 — Data migration: Supabase `internal` → AGNB `agnb` schema (2–3 days)
 See §5 for exact commands.
 - [ ] `pg_dump` the `internal` schema (schema + data) from Supabase.
 - [ ] Rename target schema `internal` → `agnb` (avoid colliding with any reserved usage; explicit & greppable).
-- [ ] Load into Paperclip's Postgres alongside `public` (core). They coexist — different schemas, one DB, one connection.
-- [ ] Add a Paperclip db migration that **adopts** the `agnb` schema (or document it as plugin/external-owned so Paperclip's migration runner doesn't try to manage it). See `packages/db/src/check-migration-numbering.ts` conventions.
+- [ ] Load into AGNB's Postgres alongside `public` (core). They coexist — different schemas, one DB, one connection.
+- [ ] Add a AGNB db migration that **adopts** the `agnb` schema (or document it as plugin/external-owned so AGNB's migration runner doesn't try to manage it). See `packages/db/src/check-migration-numbering.ts` conventions.
 - [ ] Decide ongoing ownership: AGNB tables evolve via their own SQL migrations checked into `server/src/agnb/migrations/` (kept separate from core `packages/db/src/migrations/`).
-- **Exit:** all 100 tables + rows live in Paperclip's DB under `agnb` schema; queryable via the server's pool.
+- **Exit:** all 100 tables + rows live in AGNB's DB under `agnb` schema; queryable via the server's pool.
 
 ### Phase 4 — Backend port: 236 routes → `server/src/agnb/*` (the big lift, incremental)
 Port **group by group**, highest-value first. After each group, flip the UI's client for that group from cross-origin to same-origin and delete the AGNB routes.
@@ -146,31 +146,31 @@ Order (by UI value & row counts):
 
 Per-group mechanics:
 - [ ] Create `server/src/agnb/routes/<group>.ts` Express router. Mount under `/api/agnb/<group>` in `server/src/app.ts` (next to `app.use("/api/auth", ...)`).
-- [ ] Port the Next.js `route.ts` handler bodies → Express handlers. Logic is mostly Supabase CRUD → swap `supabase-js` calls for Paperclip's `pg` pool against the `agnb` schema (schema-qualify table names or set `search_path`).
-- [ ] Port needed `lib/agnb/*` helpers → `server/src/agnb/lib/*` (see §7 helper inventory). Replace `lib/agnb/supabaseAdmin` with the server pool; replace `lib/agnb/session`/`rbac` with Paperclip auth.
+- [ ] Port the Next.js `route.ts` handler bodies → Express handlers. Logic is mostly Supabase CRUD → swap `supabase-js` calls for AGNB's `pg` pool against the `agnb` schema (schema-qualify table names or set `search_path`).
+- [ ] Port needed `lib/agnb/*` helpers → `server/src/agnb/lib/*` (see §7 helper inventory). Replace `lib/agnb/supabaseAdmin` with the server pool; replace `lib/agnb/session`/`rbac` with AGNB auth.
 - [ ] Flip `ui/src/api/agnb<Group>.ts`: drop the cross-origin base, call same-origin `/api/agnb/<group>`. (Often a one-line change if all clients route through `agnbClient.ts` — consider switching its `AGNB_BASE` to `""` once **all** groups are ported.)
 - [ ] Delete the corresponding AGNB `route.ts` files.
-- **Exit per group:** UI group served same-origin from Paperclip; AGNB routes for it removed.
+- **Exit per group:** UI group served same-origin from AGNB; AGNB routes for it removed.
 - **Phase exit:** `agnbClient.ts` `AGNB_BASE = ""` (same-origin); zero cross-origin calls remain.
 
-### Phase 5 — Worker port: 27 cron jobs → Paperclip routines (2–3 days)
-AGNB worker = external scheduler hitting `POST /api/agnb/crons/run?path=/api/internal/<job>`. Replace with Paperclip's native scheduling.
+### Phase 5 — Worker port: 27 cron jobs → AGNB routines (2–3 days)
+AGNB worker = external scheduler hitting `POST /api/agnb/crons/run?path=/api/internal/<job>`. Replace with AGNB's native scheduling.
 
 Two options per job:
-- **Routine (preferred for agentic jobs):** model as a Paperclip routine (cron trigger → agent run). Good for `blog-auto-drafter`, `daily-brief`, `daily-digest`, `gap-analyzer`, `newsletter-drafter`, `changelog-drafter`, `tag-replies`.
+- **Routine (preferred for agentic jobs):** model as a AGNB routine (cron trigger → agent run). Good for `blog-auto-drafter`, `daily-brief`, `daily-digest`, `gap-analyzer`, `newsletter-drafter`, `changelog-drafter`, `tag-replies`.
 - **Server scheduled task (for pure data syncs):** a lightweight server-side scheduler entry calling the ported handler directly. Good for `gsc-rank-tracker`, `rss-sync`, `posthog-sync`, `inbox-sync`, `*-sync`, `*-hygiene-scan`, `renewal-reminders`, `notification-dispatcher`, `sitemap-scraper`, `link-strength`, `backlink-*`, `preview-leads`, `whatsapp-intake`, `rocket/personas`, `rocket/products`.
 - [ ] Port each `app/.../api/internal/<job>/route.ts` body → `server/src/agnb/jobs/<job>.ts`.
 - [ ] Register schedules (map each job's external cron cadence → routine cron trigger or server scheduler).
 - [ ] Keep the `crons/run` HTTP entry temporarily as a manual trigger for parity testing.
-- **Exit:** all 27 jobs run from Paperclip; external scheduler decommissioned.
+- **Exit:** all 27 jobs run from AGNB; external scheduler decommissioned.
 
 ### Phase 6 — Retire AGNB (½ day)
 - [ ] Confirm `agnbClient.ts` is fully same-origin and all 236 routes deleted.
-- [ ] Move sidecars (`LINKEDIN_SIDECAR_URL`, `JUSTDIAL_SIDECAR_URL`) config into Paperclip env.
-- [ ] Tear down `www.allgasnobrakes.online` Next.js deploy; repoint domain to Paperclip.
+- [ ] Move sidecars (`LINKEDIN_SIDECAR_URL`, `JUSTDIAL_SIDECAR_URL`) config into AGNB env.
+- [ ] Tear down `www.allgasnobrakes.online` Next.js deploy; repoint domain to AGNB.
 - [ ] Archive the `agnb` repo (keep for reference; tag final commit).
 - [ ] Remove `VITE_AGNB_BASE_URL` usage.
-- **Exit:** single Paperclip deploy serves everything.
+- **Exit:** single AGNB deploy serves everything.
 
 ---
 
@@ -179,7 +179,7 @@ Two options per job:
 ⚠️ **Irreversible steps marked 🔴. Do NOT start until the freeze + fresh data sync (steps 1–3) are complete — the local `agnb` schema is a point-in-time snapshot and prod keeps diverging until frozen.**
 
 ### Pre-cutover (reversible, do anytime)
-- [ ] **Pick the deploy target DB.** Prod Paperclip needs a Postgres with BOTH `public` (core) and `agnb` schemas. Either a fresh hosted PG, or reuse the existing Supabase project (`bcslmvndyrdnacbaxjpg`) — Paperclip core in `public`, AGNB in `agnb`. Set `DATABASE_URL` accordingly.
+- [ ] **Pick the deploy target DB.** Prod AGNB needs a Postgres with BOTH `public` (core) and `agnb` schemas. Either a fresh hosted PG, or reuse the existing Supabase project (`bcslmvndyrdnacbaxjpg`) — AGNB core in `public`, AGNB in `agnb`. Set `DATABASE_URL` accordingly.
 - [ ] **Stage env on the deploy target.** Copy the instance `.env` keys: `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL=https://allgasnobrakes.online`, `BETTER_AUTH_TRUSTED_ORIGINS=https://allgasnobrakes.online`, `PAPERCLIP_DEPLOYMENT_MODE=authenticated`, `PAPERCLIP_DEPLOYMENT_EXPOSURE=public`, `PAPERCLIP_AGNB_JOBS=true`, and all 28 AGNB integration keys (+`GSC_PROPERTY`, `OPENPAGERANK_API_KEY`). Generate a NEW `BETTER_AUTH_SECRET` for prod.
 - [ ] **Build passes** on the deploy artifact: `pnpm run build`.
 - [ ] **Create real users** for each AGNB allowlist member; plan board-claim for the first admin.
@@ -190,17 +190,17 @@ Two options per job:
    - Preferred: `pg_dump` the live `internal` schema → load into deploy DB as `agnb` (see §5 — needs the Supabase DB password).
    - Or re-run `~/agnb-backup-2026-06-02/dump.mjs` then `load-local.mjs` pointed at the deploy DB (`LOCAL_DSN=...`). Then re-run `server/src/agnb/migrations/0001_*.sql` (views + unique indexes + defaults).
    - [ ] Verify row counts match prod (campaigns, deals, blog_drafts, etc.).
-3. [ ] **Re-auth Google (GSC).** The stored refresh token is expired (`invalid_grant`). Reconnect via the Google OAuth start flow on the new instance so `gsc-rank-tracker` works; re-point the OAuth redirect URI to the Paperclip domain in Google Cloud console.
-4. [ ] **Deploy Paperclip** to prod infra with the staged env + `DATABASE_URL`. Boot, confirm `/api/health` shows `authenticated` + bootstrap, claim board as admin.
+3. [ ] **Re-auth Google (GSC).** The stored refresh token is expired (`invalid_grant`). Reconnect via the Google OAuth start flow on the new instance so `gsc-rank-tracker` works; re-point the OAuth redirect URI to the AGNB domain in Google Cloud console.
+4. [ ] **Deploy AGNB** to prod infra with the staged env + `DATABASE_URL`. Boot, confirm `/api/health` shows `authenticated` + bootstrap, claim board as admin.
 5. [ ] **Smoke test on the deploy URL** (pre-DNS): sign in, load campaigns/mentions/pipeline/blog, `GET /api/agnb/jobs` lists 26, run one job manually.
-6. [ ] 🔴 **Repoint DNS** `allgasnobrakes.online` → Paperclip deploy. Wait for propagation.
+6. [ ] 🔴 **Repoint DNS** `allgasnobrakes.online` → AGNB deploy. Wait for propagation.
 7. [ ] **Verify prod** end-to-end on the real domain. Watch logs for `agnb job` errors; toggle the 5 default-OFF jobs on only after confirming external creds.
 8. [ ] 🔴 **Decommission AGNB**: stop the old Vercel Next.js deploy; archive the `agnb` repo (`git tag agnb-final && git push --tags`, then archive on GitHub).
 
 ### Post-cutover cleanup
 - [ ] Port/retire the remaining cross-origin **write/LLM** endpoints (createPersona, pipeline move/create, invoices/create, *ai* drafts). Until done, set prod `VITE_AGNB_BASE_URL` to a still-running headless AGNB API, OR finish porting them first. **Do not flip `agnbClient.ts` `AGNB_BASE=""` until every endpoint it serves exists same-origin.**
 - [ ] Remove the local dev test user `test-agnb@local.dev` (instance_admin) from any shared DB.
-- [ ] Move sidecars (`LINKEDIN_SIDECAR_URL`, `JUSTDIAL_SIDECAR_URL`, WhatsApp) into Paperclip env or fold in.
+- [ ] Move sidecars (`LINKEDIN_SIDECAR_URL`, `JUSTDIAL_SIDECAR_URL`, WhatsApp) into AGNB env or fold in.
 - [ ] Delete AGNB CORS allowances + `.allgasnobrakes.online` cookie scoping.
 
 ### Rollback (if cutover fails)
@@ -226,7 +226,7 @@ Phase 4 dominates; it's mechanical (mostly Supabase CRUD → pg) and paralleliza
 
 ## 5. Data migration commands (Phase 3)
 
-Supabase project `bcslmvndyrdnacbaxjpg`, schema `internal`. Use the Supabase **direct connection string** (Project Settings → Database) or run via the Management API. Dump then load into Paperclip's Postgres.
+Supabase project `bcslmvndyrdnacbaxjpg`, schema `internal`. Use the Supabase **direct connection string** (Project Settings → Database) or run via the Management API. Dump then load into AGNB's Postgres.
 
 ```bash
 # 1. Dump internal schema (structure + data) from Supabase
@@ -239,7 +239,7 @@ pg_dump "postgresql://postgres:<PW>@db.bcslmvndyrdnacbaxjpg.supabase.co:5432/pos
 sed -i '' 's/\binternal\./agnb./g; s/SCHEMA internal/SCHEMA agnb/g; s/schema internal/schema agnb/g' agnb_internal_dump.sql
 #    (review the diff — only schema-qualified refs should change)
 
-# 3. Load into Paperclip's Postgres
+# 3. Load into AGNB's Postgres
 #    Local embedded PG is at 127.0.0.1:54329 (user/pass paperclip/paperclip, db paperclip).
 psql "postgresql://paperclip:paperclip@127.0.0.1:54329/paperclip" \
   -c "CREATE SCHEMA IF NOT EXISTS agnb;" \
@@ -262,7 +262,7 @@ Ownership going forward: AGNB schema migrations live in `server/src/agnb/migrati
 
 Port these into `server/src/agnb/lib/` as routes need them. Group by concern:
 
-- **Auth/session (replace with Paperclip auth):** `session.ts`, `rbac.ts`, `api-token.ts`, `login-log.ts`, `cors.ts`
+- **Auth/session (replace with AGNB auth):** `session.ts`, `rbac.ts`, `api-token.ts`, `login-log.ts`, `cors.ts`
 - **Data access (replace supabase-js with pg pool):** anything importing `supabaseAdmin`; `events.ts`, `audit.ts`, `entity-audit` helpers, `notification-reads.ts`, `notify.ts`
 - **AI:** `gemini-json.ts`, `gemini-summary.ts`, `blog-style-rag.ts`, `reply-tagger.ts`, `channel-classifier.ts`, `seo-score.ts`, `serp-analysis.ts`, `keyword-research.ts`, `search-knowledge.ts`
 - **Integrations:** `apollo.ts`, `razorpay.ts`, `google-oauth.ts`, `justdial-sidecar.ts`, `linkedin-sidecar.ts`, `rss-parser.ts`, `sitemap-scraper.ts`, `backlink-discovery.ts`, `community-research.ts`, `paperclip.ts`
@@ -274,11 +274,11 @@ Port these into `server/src/agnb/lib/` as routes need them. Group by concern:
 ## 8. Open decisions / risks to track
 
 1. **DB password** for the dump — must come from Supabase dashboard; service-role key won't work for `pg_dump`. Resetting it breaks live AGNB until its env updates (do dump before any reset, or schedule downtime).
-2. **Google OAuth (GSC) tokens** in `oauth_tokens` — migrate with the schema; re-verify redirect URIs point at Paperclip's domain after Phase 6.
-3. **Sidecars** (LinkedIn `:8080`, JustDial `:8787`) — external processes; decide whether to fold into Paperclip or keep as separate services it calls.
+2. **Google OAuth (GSC) tokens** in `oauth_tokens` — migrate with the schema; re-verify redirect URIs point at AGNB's domain after Phase 6.
+3. **Sidecars** (LinkedIn `:8080`, JustDial `:8787`) — external processes; decide whether to fold into AGNB or keep as separate services it calls.
 4. **Migration numbering** — keep `agnb` schema migrations off the core numbering track to avoid `check:migrations` failures.
 5. **CORS removal** — once same-origin, delete AGNB's `lib/agnb/cors.ts` allowances and the `.allgasnobrakes.online` cookie scoping.
-6. **Secrets** — AGNB env has ~20 integration keys (Apollo, Razorpay, HubSpot, PostHog, Deepgram, Resend, Sentry, Slack, Rocket MCP). Move into Paperclip's secret store / env.
+6. **Secrets** — AGNB env has ~20 integration keys (Apollo, Razorpay, HubSpot, PostHog, Deepgram, Resend, Sentry, Slack, Rocket MCP). Move into AGNB's secret store / env.
 
 ---
 

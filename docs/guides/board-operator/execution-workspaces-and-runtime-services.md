@@ -3,9 +3,9 @@ title: Execution Workspaces And Runtime Services
 summary: How project runtime configuration, execution workspaces, and issue runs fit together
 ---
 
-This guide documents the intended runtime model for projects, execution workspaces, and issue runs in Paperclip.
+This guide documents the intended runtime model for projects, execution workspaces, and issue runs in AGNB.
 
-Paperclip now presents this as a workspace-command model:
+AGNB now presents this as a workspace-command model:
 
 - `Services` are long-running commands that stay supervised.
 - `Jobs` are one-shot commands that run once and exit.
@@ -25,8 +25,8 @@ Workspace commands are manually controlled from the UI.
 
 - Project workspace services are started and stopped from the project workspace UI, and project jobs can be run on demand there.
 - Execution workspace services are started and stopped from the execution workspace UI, and execution-workspace jobs can be run on demand there.
-- Paperclip does not automatically start or stop these workspace services as part of issue execution.
-- Paperclip also does not automatically restart workspace services on server boot.
+- AGNB does not automatically start or stop these workspace services as part of issue execution.
+- AGNB also does not automatically restart workspace services on server boot.
 
 ## Execution workspace inheritance
 
@@ -59,8 +59,8 @@ Execution workspaces are durable until a human closes them.
 Heartbeat still resolves a workspace for the run, but that is about code location and session continuity, not runtime-service control.
 
 1. Heartbeat resolves a base workspace for the run.
-2. Paperclip realizes the effective execution workspace, including creating or reusing a worktree when needed.
-3. Paperclip persists execution-workspace metadata such as paths, refs, and provisioning settings.
+2. AGNB realizes the effective execution workspace, including creating or reusing a worktree when needed.
+3. AGNB persists execution-workspace metadata such as paths, refs, and provisioning settings.
 4. Heartbeat passes the resolved code workspace to the agent run.
 5. Workspace runtime services remain manual UI-managed controls rather than automatic heartbeat-managed services.
 
