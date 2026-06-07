@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog } from "@paperclipai/db";
+import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
@@ -62,6 +63,26 @@ export interface LogActivityInput {
   details?: Record<string, unknown> | null;
 }
 
+/**
+ * Returns `runId` only when a matching `heartbeat_runs` row still exists,
+ * otherwise `null`. Use this before persisting a run attribution so a reaped
+ * run (process-lost, retention pruning, company/agent deletion) cannot trip
+ * the `run_id` foreign key and fail an otherwise-valid write.
+ */
+export async function resolveExistingRunId(
+  db: Db,
+  runId: string | null | undefined,
+): Promise<string | null> {
+  if (!runId) return null;
+  const exists = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runId))
+    .limit(1)
+    .then((rows) => rows.length > 0);
+  return exists ? runId : null;
+}
+
 export async function logActivity(db: Db, input: LogActivityInput) {
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
@@ -70,6 +91,11 @@ export async function logActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = sanitizedDetails
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
+  // The originating heartbeat run may have been reaped (e.g. process-lost or
+  // retention pruning) while its agent turn was still in flight. Attributing
+  // the activity to a now-missing run violates the run_id foreign key and 500s
+  // the whole write, so drop the attribution when the run no longer exists.
+  const runId = await resolveExistingRunId(db, input.runId);
   await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -78,7 +104,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId,
     details: redactedDetails,
   });
 
@@ -92,7 +118,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       entityType: input.entityType,
       entityId: input.entityId,
       agentId: input.agentId ?? null,
-      runId: input.runId ?? null,
+      runId,
       details: redactedDetails,
     },
   });
@@ -111,7 +137,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       payload: {
         ...redactedDetails,
         agentId: input.agentId ?? null,
-        runId: input.runId ?? null,
+        runId,
       },
     };
     publishPluginDomainEvent(event);

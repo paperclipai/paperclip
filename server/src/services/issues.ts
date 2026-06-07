@@ -70,6 +70,7 @@ import {
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { resolveExistingRunId } from "./activity-log.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
@@ -5880,6 +5881,10 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
+      // The acting run may have been reaped while the agent was still posting;
+      // drop a now-missing run attribution rather than letting the
+      // created_by_run_id foreign key 500 the comment write.
+      const createdByRunId = await resolveExistingRunId(db, actor.runId);
       const [comment] = await db
         .insert(issueComments)
         .values({
@@ -5888,7 +5893,7 @@ export function issueService(db: Db) {
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
           authorType,
-          createdByRunId: actor.runId ?? null,
+          createdByRunId,
           body: redactedBody,
           presentation,
           metadata,

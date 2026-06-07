@@ -36,6 +36,7 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
 } from "../services/issues.ts";
+import { logActivity } from "../services/activity-log.ts";
 import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -4533,5 +4534,113 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     );
     expect(record).not.toHaveProperty("requestedChildren");
     expect(record?.childIssues.every((child) => typeof child.title === "string")).toBe(true);
+  });
+});
+
+describeEmbeddedPostgres("run attribution survives a reaped heartbeat run", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-run-attribution-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompanyAgentIssue() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Marketer",
+      role: "marketer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Distribution sprint",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: agentId,
+    });
+    return { companyId, agentId, issueId };
+  }
+
+  it("nulls the comment attribution when the acting run no longer exists", async () => {
+    const { agentId, issueId } = await seedCompanyAgentIssue();
+    const missingRunId = randomUUID();
+
+    const comment = await svc.addComment(issueId, "Posting after my run was reaped", {
+      agentId,
+      runId: missingRunId,
+    });
+
+    expect(comment.createdByRunId).toBeNull();
+    expect(comment.body).toContain("reaped");
+  });
+
+  it("preserves the comment attribution when the acting run still exists", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId });
+
+    const comment = await svc.addComment(issueId, "Posting from a live run", {
+      agentId,
+      runId,
+    });
+
+    expect(comment.createdByRunId).toBe(runId);
+  });
+
+  it("logActivity drops a missing run attribution instead of failing the write", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    const missingRunId = randomUUID();
+
+    await expect(
+      logActivity(db, {
+        companyId,
+        actorType: "agent",
+        actorId: agentId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        agentId,
+        runId: missingRunId,
+      }),
+    ).resolves.not.toThrow();
+
+    const [row] = await db
+      .select({ runId: activityLog.runId })
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(row?.runId).toBeNull();
   });
 });
