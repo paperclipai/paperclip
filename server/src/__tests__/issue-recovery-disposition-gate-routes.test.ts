@@ -376,7 +376,7 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
       const res = await request(app)
         .patch(`/api/issues/${issueId}`)
         .set("Content-Type", "application/json")
-        .send({ status: "done", recoveryKind: "liveness_exhausted" });
+        .send({ status: "done", recoveryKind: "recovery_completion" });
 
       expect(res.status).not.toBe(422);
       expect(res.body.code).not.toBe("recovery_disposition_condition_c_violation");
@@ -397,7 +397,7 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
       const res = await request(app)
         .patch(`/api/issues/${issueId}`)
         .set("Content-Type", "application/json")
-        .send({ status: "done", recoveryKind: "liveness_exhausted" });
+        .send({ status: "done", recoveryKind: "recovery_completion" });
 
       // 409 from checkout ownership check — recoveryOwner is not yet the assignee
       expect(res.status).toBe(409);
@@ -414,7 +414,7 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
         .set("Content-Type", "application/json")
         .send({
           status: "done",
-          recoveryKind: "liveness_exhausted",
+          recoveryKind: "recovery_completion",
           assigneeAgentId: recoveryOwnerAgentId,
         });
 
@@ -434,7 +434,7 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
       const res = await request(app)
         .patch(`/api/issues/${issueId}`)
         .set("Content-Type", "application/json")
-        .send({ status: "done", recoveryKind: "liveness_exhausted" });
+        .send({ status: "done", recoveryKind: "recovery_completion" });
 
       expect(res.status).toBe(422);
       expect(res.body.code).toBe("recovery_disposition_condition_d_violation");
@@ -449,7 +449,7 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
       const res = await request(app)
         .patch(`/api/issues/${issueId}`)
         .set("Content-Type", "application/json")
-        .send({ status: "done", recoveryKind: "sweeper_recovery" });
+        .send({ status: "done", recoveryKind: "recovery_completion" });
 
       expect(res.status).toBe(422);
       expect(res.body.code).toBe("recovery_disposition_condition_d_violation");
@@ -464,7 +464,7 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
       const res = await request(app)
         .patch(`/api/issues/${issueId}`)
         .set("Content-Type", "application/json")
-        .send({ status: "cancelled", recoveryKind: "liveness_exhausted" });
+        .send({ status: "cancelled", recoveryKind: "measurement_bar" });
 
       expect(res.status).not.toBe(422);
       // Condition D only blocks "done" — "cancelled" with recoveryKind is the harness-FAIL path
