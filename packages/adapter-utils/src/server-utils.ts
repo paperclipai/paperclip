@@ -24,6 +24,7 @@ export interface RunProcessResult {
 export interface TerminalResultCleanupOptions {
   hasTerminalResult: (output: { stdout: string; stderr: string }) => boolean;
   graceMs?: number;
+  forceAfterMs?: number;
 }
 
 interface RunningProcess {
@@ -2185,7 +2186,7 @@ export async function runChildProcess(
             terminalCleanupKillTimer = setTimeout(() => {
               terminalCleanupKillTimer = null;
               signalRunningProcess({ child, processGroupId }, "SIGKILL");
-            }, Math.max(1, opts.graceSec) * 1000);
+            }, Math.max(1, terminalCleanup.forceAfterMs ?? Math.max(1, opts.graceSec) * 1000));
           }, graceMs);
         };
 

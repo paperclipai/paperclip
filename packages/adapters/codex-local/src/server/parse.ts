@@ -10,6 +10,10 @@ const CODEX_TRANSIENT_UPSTREAM_RE =
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
+const CODEX_AUTH_REQUIRED_RE =
+  /(?:not\s+logged\s+in|login\s+required|authentication\s+required|\bunauthorized\b(?:\s+(?:access|request|user|token|client))?|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|openai[_\s-]?api[_\s-]?key.{0,40}\b(?:missing|invalid|required|not\s+set)\b|api[_\s-]?key.{0,40}\brequired\b|please\s+run\s+`?codex\s+(?:auth|login)`?)/i;
+const CODEX_AUTH_REFRESH_FAILED_RE =
+  /(?:failed\s+to\s+refresh(?:\s+your)?\s+(?:login|auth(?:entication)?|session)|(?:login|auth(?:entication)?|session)\s+refresh\s+failed|refresh(?:ing)?\s+(?:login|auth(?:entication)?|session).{0,40}\bfailed|oauth(?:2)?\s+token\s+refresh\s+failed|refresh token.{0,40}\b(?:invalid|expired|revoked))/i;
 
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
@@ -87,10 +91,11 @@ function buildCodexErrorHaystack(input: {
   stdout?: string | null;
   stderr?: string | null;
   errorMessage?: string | null;
+  includeStdout?: boolean;
 }): string {
   return [
     input.errorMessage ?? "",
-    input.stdout ?? "",
+    input.includeStdout === false ? "" : (input.stdout ?? ""),
     input.stderr ?? "",
   ]
     .join("\n")
@@ -243,6 +248,23 @@ export function extractCodexRetryNotBefore(input: {
   const usageLimitMatch = haystack.match(CODEX_USAGE_LIMIT_RE);
   if (!usageLimitMatch) return null;
   return parseLocalClockTime(usageLimitMatch[1] ?? "", now);
+}
+
+export function isCodexAuthRefreshFailure(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  return CODEX_AUTH_REFRESH_FAILED_RE.test(buildCodexErrorHaystack({ ...input, includeStdout: false }));
+}
+
+export function isCodexAuthRequiredError(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const haystack = buildCodexErrorHaystack({ ...input, includeStdout: false });
+  return CODEX_AUTH_REQUIRED_RE.test(haystack) || CODEX_AUTH_REFRESH_FAILED_RE.test(haystack);
 }
 
 export function isCodexTransientUpstreamError(input: {

@@ -40,6 +40,8 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseCodexJsonl,
+  isCodexAuthRefreshFailure,
+  isCodexAuthRequiredError,
   extractCodexRetryNotBefore,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -714,6 +716,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timeoutSec,
       graceSec,
       onSpawn,
+      terminalResultCleanup: {
+        graceMs: 250,
+        forceAfterMs: 1_000,
+        hasTerminalResult: ({ stdout, stderr }) =>
+          isCodexAuthRequiredError({
+            stdout,
+            stderr,
+          }),
+      },
       onLog: async (stream, chunk) => {
         if (stream !== "stderr") {
           await onLog(stream, chunk);
@@ -774,8 +785,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsedError ||
       stderrLine ||
       `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
+    const failedRun = (attempt.proc.exitCode ?? 0) !== 0 || attempt.proc.signal !== null;
     const transientRetryNotBefore =
-      (attempt.proc.exitCode ?? 0) !== 0
+      failedRun
         ? extractCodexRetryNotBefore({
             stdout: attempt.proc.stdout,
             stderr: attempt.proc.stderr,
@@ -783,26 +795,51 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           })
         : null;
     const transientUpstream =
-      (attempt.proc.exitCode ?? 0) !== 0 &&
+      failedRun &&
       isCodexTransientUpstreamError({
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
         errorMessage: fallbackErrorMessage,
       });
+    const authRefreshFailure =
+      failedRun &&
+      isCodexAuthRefreshFailure({
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+      errorMessage: fallbackErrorMessage,
+    });
+    const authRequired =
+      failedRun &&
+      isCodexAuthRequiredError({
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+      errorMessage: fallbackErrorMessage,
+    });
 
     return {
       exitCode: attempt.proc.exitCode,
       signal: attempt.proc.signal,
       timedOut: false,
       errorMessage:
-        (attempt.proc.exitCode ?? 0) === 0
+        !failedRun
           ? null
           : fallbackErrorMessage,
       errorCode:
         transientUpstream
           ? "codex_transient_upstream"
+          : authRefreshFailure
+            ? "codex_auth_refresh_failed"
+            : authRequired
+              ? "codex_auth_required"
           : null,
       errorFamily: transientUpstream ? "transient_upstream" : null,
+      errorMeta:
+        authRequired
+          ? {
+              category: "auth",
+              ...(authRefreshFailure ? { subtype: "refresh_failed" } : {}),
+            }
+          : undefined,
       retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
