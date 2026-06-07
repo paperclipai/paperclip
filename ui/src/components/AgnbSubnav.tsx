@@ -33,8 +33,6 @@ export const AGNB_SUBNAV = {
     { to: "/icps", label: "ICPs" },
   ],
   experiments: [
-    { to: "/buckets", label: "Buckets" },
-    { to: "/icps", label: "ICPs" },
     { to: "/bucket-compare", label: "Compare" },
     { to: "/cohorts", label: "Cohorts" },
     { to: "/subjects", label: "Subjects" },

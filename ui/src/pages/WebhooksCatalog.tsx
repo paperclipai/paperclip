@@ -1,6 +1,5 @@
 import { useEffect } from "react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { AgnbSubnav } from "../components/AgnbSubnav";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
@@ -24,7 +23,6 @@ export function WebhooksCatalog() {
   return (
     <div className="space-y-4">
       <h1 className="text-lg font-semibold">Event catalog</h1>
-      <AgnbSubnav group="ops" />
       <p className="text-xs text-muted-foreground">Events AGNB emits for outbound webhook subscriptions.</p>
       <div className="grid gap-2 sm:grid-cols-2">
         {CATALOG.map((e) => (

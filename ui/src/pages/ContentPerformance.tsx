@@ -6,7 +6,6 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { AgnbSubnav } from "../components/AgnbSubnav";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatNumber } from "../lib/utils";
 
@@ -24,7 +23,6 @@ export function ContentPerformance() {
         <h1 className="text-lg font-semibold">Content performance</h1>
         <div className="flex gap-1">{DAYS.map((d) => <button key={d} onClick={() => setDays(d)} className={cn("rounded-md border px-2 py-0.5 text-xs", days === d ? "border-foreground bg-foreground text-background" : "border-border text-muted-foreground")}>{d}d</button>)}</div>
       </div>
-      <AgnbSubnav group="ops" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

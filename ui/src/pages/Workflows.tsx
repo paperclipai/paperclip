@@ -6,7 +6,6 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { AgnbSubnav } from "../components/AgnbSubnav";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { relativeTime } from "../lib/utils";
@@ -23,7 +22,6 @@ export function Workflows() {
   return (
     <div className="space-y-4">
       <h1 className="text-lg font-semibold">Workflow recipes</h1>
-      <AgnbSubnav group="ops" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

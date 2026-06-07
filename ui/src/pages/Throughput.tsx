@@ -6,7 +6,6 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { AgnbSubnav } from "../components/AgnbSubnav";
 
 export function Throughput() {
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -27,7 +26,6 @@ export function Throughput() {
   return (
     <div className="space-y-4">
       <h1 className="text-lg font-semibold">Throughput (7d)</h1>
-      <AgnbSubnav group="team" />
       {loading ? (
         <PageSkeleton variant="list" />
       ) : rows.length === 0 ? (

@@ -6,7 +6,6 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { AgnbSubnav } from "../components/AgnbSubnav";
 import { cn, relativeTime } from "../lib/utils";
 
 const sevColor: Record<string, string> = { critical: "#dc2626", warn: "#d97706", info: "#1d4ed8" };
@@ -30,7 +29,6 @@ export function AgnbNotifications() {
           ))}
         </div>
       </div>
-      <AgnbSubnav group="ops" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

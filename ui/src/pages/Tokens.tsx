@@ -6,7 +6,6 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { AgnbSubnav } from "../components/AgnbSubnav";
 import { AgnbFormModal } from "../components/AgnbFormModal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,7 +27,6 @@ export function Tokens() {
         <h1 className="text-lg font-semibold">API tokens</h1>
         <Button size="sm" onClick={() => setOpen(true)}>New token</Button>
       </div>
-      <AgnbSubnav group="ops" />
       {open && (
         <AgnbFormModal
           title="New API token"
