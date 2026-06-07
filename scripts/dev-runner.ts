@@ -544,16 +544,20 @@ function killProcessTreeWindows(pid: number) {
 async function stopChildForRestart() {
   if (!child) return { code: 0, signal: null };
   childExitWasExpected = true;
-  if (process.platform === "win32" && child.pid) {
-    killProcessTreeWindows(child.pid);
+  if (process.platform === "win32") {
+    if (child.pid) {
+      killProcessTreeWindows(child.pid);
+    }
+    // If child.pid is undefined the process likely failed to spawn; fall through
+    // to waitForChildExit which will resolve immediately.
   } else {
     child.kill("SIGTERM");
   }
   const killTimer = setTimeout(() => {
     if (child) {
       console.warn("[paperclip] graceful shutdown timed out, forcing kill");
-      if (process.platform === "win32" && child.pid) {
-        killProcessTreeWindows(child.pid);
+      if (process.platform === "win32") {
+        if (child.pid) killProcessTreeWindows(child.pid);
       } else {
         child.kill("SIGKILL");
       }
@@ -610,7 +614,7 @@ async function startServerChild() {
 async function maybeAutoRestartChild() {
   if (mode !== "dev" || restartInFlight || !child) {
     if (restartInFlight) {
-      console.warn("[paperclip] restart skipped: restartInFlight is true (previous restart may be stuck)");
+      console.debug("[paperclip] restart skipped: restartInFlight is true (restart in progress)");
     }
     return;
   }
