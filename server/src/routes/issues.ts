@@ -1638,12 +1638,12 @@ export function issueRoutes(
       res.status(422).json({
         error:
           "Recovery owner must supply recoveryKind when closing a recovery-reassigned issue (Condition C). " +
-          "Valid values: liveness_exhausted, sweeper_recovery, explicit_recovery_owner.",
+          "Valid values: recovery_completion (done, non-measurement), measurement_bar (cancelled, Condition D path).",
         code: "recovery_disposition_condition_c_violation",
         details: {
           issueId: input.existing.id,
           previousAssigneeAgentId: input.existing.previousAssigneeAgentId,
-          validRecoveryKinds: ["liveness_exhausted", "sweeper_recovery", "explicit_recovery_owner"],
+          validRecoveryKinds: ["recovery_completion", "measurement_bar"],
           securityPrinciples: ["Separation of Disposition Authority"],
         },
       });

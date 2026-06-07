@@ -278,10 +278,14 @@ export const ISSUE_RECOVERY_ACTION_KINDS = [
 export type IssueRecoveryActionKind = (typeof ISSUE_RECOVERY_ACTION_KINDS)[number];
 
 // Disposition-kind labels carried on done/cancelled transitions made by a recovery owner (§14 Condition C).
+// These values are keyed by the Phase 3 canary harness to determine FAIL vs non-FAIL outcomes:
+//   "measurement_bar"    — Condition D fired; task was canary/bake-off/measurement; recovery owner was
+//                          barred from done and routes to cancelled+this kind → harness records FAIL.
+//   "recovery_completion" — Conditions A+B+C met; recovery owner completed a non-measurement task after
+//                           the original assignee was declared dead → NOT a FAIL for production tasks.
 export const ISSUE_RECOVERY_DISPOSITION_KINDS = [
-  "liveness_exhausted",
-  "sweeper_recovery",
-  "explicit_recovery_owner",
+  "measurement_bar",
+  "recovery_completion",
 ] as const;
 export type IssueRecoveryDispositionKind = (typeof ISSUE_RECOVERY_DISPOSITION_KINDS)[number];
 
