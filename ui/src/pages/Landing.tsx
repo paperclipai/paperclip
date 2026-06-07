@@ -661,13 +661,6 @@ const INTEGRATIONS = [
   { name: "Claude AI", abbr: "CLX" },
 ];
 
-const LOOP = [
-  { icon: Zap, t: "Drain", d: "Event queue flushed every 60s — nothing sits." },
-  { icon: Network, t: "Sync", d: "CRM, GSC, mentions, Rocket — pulled on schedule." },
-  { icon: PenTool, t: "Draft & ship", d: "Blog, LinkedIn, PRs — written and merged while you sleep." },
-  { icon: Gauge, t: "Observe", d: "Attribution, costs, anomalies — flagged before they bite." },
-];
-
 const FAQS = [
   {
     q: "What is All Gas No Brakes?",
@@ -921,6 +914,249 @@ function Faq({ q, a }: { q: string; a: string }) {
         </p>
       )}
     </button>
+  );
+}
+
+// ─── Scroll-driven story timeline (GitHub/Xapien-style draw line) ──────────────
+
+function FinaleMetric() {
+  return (
+    <div className="rounded-2xl border border-black/[0.07] bg-white p-6 shadow-sm dark:border-white/[0.08] dark:bg-[#261f19]">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[40px] font-bold tracking-[-0.03em] text-gray-900 dark:text-neutral-100">
+          $<CountUp to={1240} />k
+        </span>
+        <span className="inline-flex items-center gap-0.5 rounded-md bg-[#16a34a]/10 px-1.5 py-0.5 text-[12px] font-semibold text-[#16a34a]">
+          <ArrowRight className="size-3 -rotate-45" /> live
+        </span>
+      </div>
+      <p className="mt-1 text-[13px] text-gray-500 dark:text-neutral-400">Pipeline generated this quarter</p>
+      <div className="mt-5 flex items-end gap-1.5">
+        {[28, 34, 31, 46, 52, 49, 63, 71, 68, 84, 92, 100].map((h, i) => (
+          <span
+            key={i}
+            className="flex-1 rounded-sm bg-gradient-to-t from-[#f97316]/30 to-[#f97316]"
+            style={{ height: `${h * 0.7}px` }}
+          />
+        ))}
+      </div>
+      <div className="mt-4 grid grid-cols-3 gap-3 border-t border-black/[0.06] pt-4 dark:border-white/[0.06]">
+        {[
+          { k: "Deals", v: "3" },
+          { k: "SoV runs", v: "482" },
+          { k: "Reviews", v: "4.47★" },
+        ].map((m) => (
+          <div key={m.k}>
+            <div className="text-[18px] font-bold text-gray-900 dark:text-neutral-100">{m.v}</div>
+            <div className="text-[11px] text-gray-400 dark:text-neutral-500">{m.k}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const STORY: {
+  n: string;
+  t: string;
+  icon: typeof Gauge;
+  d: string;
+  visual: React.ReactNode;
+}[] = [
+  {
+    n: "01",
+    t: "Set the North Star",
+    icon: Gauge,
+    d: "One metric the whole company optimizes — pipeline, content shipped, share of voice, reviews resolved. Every action traces back to it.",
+    visual: <GoalTrace />,
+  },
+  {
+    n: "02",
+    t: "Build the org",
+    icon: Network,
+    d: "Hire a CEO, then a CMO, CFO, and the producers beneath them. Reporting lines, budgets, and tools — your company, your structure.",
+    visual: <OrgChart />,
+  },
+  {
+    n: "03",
+    t: "Agents wake on heartbeats",
+    icon: Activity,
+    d: "Scheduled or on demand, agents fire, check their assignments, and pick up work. No prompting, no babysitting.",
+    visual: <Heartbeat />,
+  },
+  {
+    n: "04",
+    t: "They do the work",
+    icon: Terminal,
+    d: "Draft blogs, run outreach, sync the CRM, track rank, watch reviews — in parallel, around the clock.",
+    visual: <LiveConsole />,
+  },
+  {
+    n: "05",
+    t: "You stay in control",
+    icon: CheckSquare,
+    d: "Budgets cap the spend. Approvals gate the risky moves. Step in any time — or let it run.",
+    visual: <BudgetTable />,
+  },
+  {
+    n: "06",
+    t: "The metric moves",
+    icon: BarChart3,
+    d: "Work compounds. Pipeline fills, content ships, rank climbs — reported back on the cockpit in real time.",
+    visual: <FinaleMetric />,
+  },
+];
+
+function StoryBeat({
+  s,
+  active,
+  left,
+}: {
+  s: (typeof STORY)[number];
+  active: boolean;
+  left: boolean;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [seen, setSeen] = useState(false);
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setSeen(true);
+      return;
+    }
+    const el = ref.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      ([e]) => {
+        if (e.isIntersecting) {
+          setSeen(true);
+          io.disconnect();
+        }
+      },
+      { threshold: 0.2 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+
+  return (
+    <div ref={ref} className="relative md:grid md:grid-cols-2 md:items-center md:gap-14">
+      {/* node on the spine */}
+      <span className="absolute left-5 top-0.5 z-10 -translate-x-1/2 md:left-1/2">
+        <span
+          className={cn(
+            "flex size-9 items-center justify-center rounded-full border transition-all duration-500",
+            active
+              ? "border-[#f97316] bg-[#f97316] text-white shadow-[0_0_0_6px_rgba(249,115,22,0.12)]"
+              : "border-black/10 bg-white text-gray-400 dark:border-white/15 dark:bg-[#1b1410]",
+          )}
+        >
+          <s.icon className="size-4" />
+        </span>
+      </span>
+
+      {/* text */}
+      <div
+        className={cn(
+          "pl-14 transition-all duration-700 md:pl-0",
+          seen ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0",
+          left ? "md:order-1 md:pr-14 md:text-right" : "md:order-2 md:pl-14",
+        )}
+      >
+        <span className="font-mono text-[12px] font-semibold text-[#f97316]">{s.n}</span>
+        <h3 className="mt-1 text-[21px] font-bold tracking-[-0.01em] text-gray-900 dark:text-neutral-100">
+          {s.t}
+        </h3>
+        <p
+          className={cn(
+            "mt-2 text-[15px] leading-relaxed text-gray-500 dark:text-neutral-400",
+            left ? "md:ml-auto md:max-w-sm" : "md:max-w-sm",
+          )}
+        >
+          {s.d}
+        </p>
+      </div>
+
+      {/* visual */}
+      <div
+        className={cn(
+          "mt-5 pl-14 transition-all duration-700 md:mt-0 md:pl-0",
+          seen ? "translate-y-0 opacity-100 delay-100" : "translate-y-6 opacity-0",
+          left ? "md:order-2 md:pl-14" : "md:order-1 md:pr-14",
+        )}
+      >
+        {s.visual}
+      </div>
+    </div>
+  );
+}
+
+function StoryTimeline() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [p, setP] = useState(0);
+
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setP(1);
+      return;
+    }
+    let raf = 0;
+    const onScroll = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const el = ref.current;
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        const anchor = window.innerHeight * 0.55;
+        setP(Math.max(0, Math.min(1, (anchor - r.top) / r.height)));
+      });
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
+
+  return (
+    <Section id="how" className="scroll-mt-20 py-20">
+      <div className="mb-16 text-center">
+        <Eyebrow>
+          <span className="inline-flex items-center gap-1.5">
+            <GitBranch className="size-3.5" /> From goal to growth
+          </span>
+        </Eyebrow>
+        <h2 className="mx-auto max-w-2xl text-[clamp(26px,3.4vw,42px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
+          One story, start to finish.
+        </h2>
+        <p className="mx-auto mt-4 max-w-xl text-[16px] leading-relaxed text-gray-500 dark:text-neutral-400">
+          Watch a company come alive — set the goal, build the team, and let it run while you sleep.
+        </p>
+      </div>
+
+      <div ref={ref} className="relative">
+        {/* base spine */}
+        <div className="pointer-events-none absolute left-5 top-1 h-[calc(100%-0.25rem)] w-px -translate-x-1/2 bg-black/[0.08] dark:bg-white/[0.10] md:left-1/2" />
+        {/* drawn fill */}
+        <div
+          className="pointer-events-none absolute left-5 top-1 w-px -translate-x-1/2 bg-gradient-to-b from-[#f97316] to-[#fb923c] md:left-1/2"
+          style={{ height: `${p * 100}%` }}
+        />
+        <div className="space-y-16 md:space-y-28">
+          {STORY.map((s, i) => (
+            <StoryBeat
+              key={s.n}
+              s={s}
+              left={i % 2 === 0}
+              active={p >= (i + 0.5) / STORY.length - 0.03}
+            />
+          ))}
+        </div>
+      </div>
+    </Section>
   );
 }
 
@@ -1265,41 +1501,8 @@ export function LandingPage() {
         </div>
       </Section>
 
-      {/* ── How it runs ── */}
-      <Section className="scroll-mt-20 py-20" id="how">
-        <div className="grid grid-cols-1 items-center gap-12 lg:grid-cols-2">
-          <div>
-            <Eyebrow>
-              <span className="inline-flex items-center gap-1.5">
-                <GitBranch className="size-3.5" /> It runs while you sleep
-              </span>
-            </Eyebrow>
-            <h2 className="max-w-md text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
-              The pipeline never goes cold.
-            </h2>
-            <p className="mt-4 max-w-md text-[16px] leading-relaxed text-gray-500 dark:text-neutral-400">
-              35 jobs + your agents fire on schedule or on demand — campaigns,
-              content, syncs, PRs. Watch the real loop — drain, sync, draft,
-              observe — running nonstop.
-            </p>
-            <div className="mt-8 grid grid-cols-2 gap-6">
-              {LOOP.map((s, i) => (
-                <div key={s.t}>
-                  <div className="mb-2 flex items-center gap-2">
-                    <span className="flex size-8 items-center justify-center rounded-lg bg-[#f97316]/10 text-[#f97316]">
-                      <s.icon className="size-4" />
-                    </span>
-                    <span className="font-mono text-[11px] text-gray-400 dark:text-neutral-500">0{i + 1}</span>
-                  </div>
-                  <h4 className="text-[14px] font-semibold text-gray-900 dark:text-neutral-100">{s.t}</h4>
-                  <p className="mt-0.5 text-[12.5px] leading-snug text-gray-500 dark:text-neutral-400">{s.d}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-          <LiveConsole />
-        </div>
-      </Section>
+      {/* ── How it runs — scroll-driven story timeline ── */}
+      <StoryTimeline />
 
       {/* ── Integrations ── */}
       <Section className="scroll-mt-20 py-16" id="integrations">
