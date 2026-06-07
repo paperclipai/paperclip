@@ -1546,6 +1546,53 @@ export function resolveModelProfileApplication(input: {
   };
 }
 
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
+}
+
+function configUsesCodexOssLocalProvider(config: Record<string, unknown>): boolean {
+  const extraArgs = readStringArray(config.extraArgs);
+  const usesOss = extraArgs.includes("--oss");
+  const usesLocalProvider = extraArgs.some((arg) =>
+    arg === "--local-provider=ollama" || arg.startsWith("--local-provider="),
+  );
+  return usesOss && usesLocalProvider;
+}
+
+function isHostedCodexModelId(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  return (
+    normalized.startsWith("gpt-") ||
+    normalized === "o3" ||
+    normalized === "o4-mini" ||
+    normalized === "o3-mini" ||
+    normalized === "codex-mini-latest"
+  );
+}
+
+function modelProfileAdapterConfigForBase(input: {
+  baseConfig: Record<string, unknown>;
+  modelProfile: ModelProfileApplication;
+}): Record<string, unknown> {
+  const adapterConfig = input.modelProfile.adapterConfig ?? {};
+  const profileModel = readNonEmptyString(adapterConfig.model);
+
+  if (
+    input.modelProfile.configSource === "adapter_default" &&
+    profileModel &&
+    isHostedCodexModelId(profileModel) &&
+    readNonEmptyString(input.baseConfig.model) &&
+    configUsesCodexOssLocalProvider(input.baseConfig)
+  ) {
+    const { model: _model, ...withoutModel } = adapterConfig;
+    return withoutModel;
+  }
+
+  return adapterConfig;
+}
+
 export function mergeModelProfileAdapterConfig(input: {
   baseConfig: Record<string, unknown>;
   modelProfile: ModelProfileApplication;
@@ -1553,7 +1600,10 @@ export function mergeModelProfileAdapterConfig(input: {
 }): Record<string, unknown> {
   return {
     ...input.baseConfig,
-    ...(input.modelProfile.adapterConfig ?? {}),
+    ...modelProfileAdapterConfigForBase({
+      baseConfig: input.baseConfig,
+      modelProfile: input.modelProfile,
+    }),
     ...(input.issueAdapterConfig ?? {}),
   };
 }
