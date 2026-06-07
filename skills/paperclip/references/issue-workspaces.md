@@ -20,6 +20,12 @@ Read `currentExecutionWorkspace`:
 
 If `currentExecutionWorkspace` is `null`, the issue does not currently have a realized execution workspace. For child/follow-up work, create the child with `parentId` or use `inheritExecutionWorkspaceFromIssueId` so Paperclip preserves workspace continuity.
 
+## Branch preflight
+
+On checkout/wake for git-backed project workspaces, Paperclip derives an expected branch (execution workspace `branchName`, project/issue `branchTemplate`, PR links in the description, or `ff-<issueNumber>-*` style prefixes) and injects `PAPERCLIP_EXPECTED_BRANCH` into the adapter environment. Before the agent starts, the server compares `git branch --show-current` under `PAPERCLIP_WORKSPACE_CWD` and **fails the run** with `workspace_branch_preflight` when they disagree. Shared `project_primary` paths also refuse a second concurrent `in_progress` issue on the same cwd.
+
+Repo scripts such as `scripts/paperclip_verify_branch.sh` (FF DW) are a second line of defense inside the workspace; they read the same `PAPERCLIP_EXPECTED_BRANCH` variable when set.
+
 ## Control Services
 
 Prefer Paperclip-managed runtime service controls over manual `pnpm dev &` or ad-hoc background processes. These endpoints keep service state, URLs, logs, and ownership visible to other agents and the board.

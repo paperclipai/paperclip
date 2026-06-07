@@ -67,6 +67,8 @@ Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLI
 
 If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
 
+**Step 5.5 — Branch preflight (code issues on shared project workspaces).** Before editing or running repo tools, the harness enforces that `git branch --show-current` in `PAPERCLIP_WORKSPACE_CWD` matches the checked-out issue. The server injects `PAPERCLIP_EXPECTED_BRANCH` (and persists `currentExecutionWorkspace.branchName` when possible). A mismatch fails the heartbeat **before** the adapter runs, with `workspace_branch_preflight` in the run log. For `project_primary` paths, a second in-progress issue on the same cwd is refused. Override only when intentional: project `branchPolicy.enforcement: "off"`, or server env `PAPERCLIP_SKIP_BRANCH_PREFLIGHT=true`. Comment re-opens that inherit another issue's workspace via `inheritExecutionWorkspaceFromIssueId` should reuse that issue's branch metadata.
+
 **Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
 
 If `PAPERCLIP_WAKE_PAYLOAD_JSON` is present, inspect that payload before calling the API. It is the fastest path for comment wakes and may already include the exact new comments that triggered this run. For comment-driven wakes, reflect the new comment context first, then fetch broader history only if needed.

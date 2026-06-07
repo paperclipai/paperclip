@@ -215,6 +215,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const workspaceId = asString(workspaceContext.workspaceId, "");
   const workspaceRepoUrl = asString(workspaceContext.repoUrl, "");
   const workspaceRepoRef = asString(workspaceContext.repoRef, "");
+  const workspaceBranch = asString(workspaceContext.branchName, "");
+  const workspaceExpectedBranch =
+    asString(context.paperclipExpectedBranch, "") ||
+    asString(workspaceContext.expectedBranch, "") ||
+    workspaceBranch;
   const agentHome = asString(workspaceContext.agentHome, "");
   const workspaceHints = Array.isArray(context.paperclipWorkspaces)
     ? context.paperclipWorkspaces.filter(
@@ -297,6 +302,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
+    workspaceBranch,
+    workspaceExpectedBranch,
     workspaceHints,
     agentHome,
     executionTargetIsRemote,

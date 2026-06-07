@@ -961,6 +961,7 @@ export function applyPaperclipWorkspaceEnv(
     workspaceRepoUrl?: string | null;
     workspaceRepoRef?: string | null;
     workspaceBranch?: string | null;
+    workspaceExpectedBranch?: string | null;
     workspaceWorktreePath?: string | null;
     agentHome?: string | null;
   },
@@ -973,6 +974,7 @@ export function applyPaperclipWorkspaceEnv(
     ["PAPERCLIP_WORKSPACE_REPO_URL", input.workspaceRepoUrl],
     ["PAPERCLIP_WORKSPACE_REPO_REF", input.workspaceRepoRef],
     ["PAPERCLIP_WORKSPACE_BRANCH", input.workspaceBranch],
+    ["PAPERCLIP_EXPECTED_BRANCH", input.workspaceExpectedBranch],
     ["PAPERCLIP_WORKSPACE_WORKTREE_PATH", input.workspaceWorktreePath],
     ["AGENT_HOME", input.agentHome],
   ] as const;
@@ -1106,6 +1108,7 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
   workspaceRepoUrl?: string | null;
   workspaceRepoRef?: string | null;
   workspaceBranch?: string | null;
+  workspaceExpectedBranch?: string | null;
   workspaceWorktreePath?: string | null;
   workspaceHints?: Array<Record<string, unknown>>;
   agentHome?: string | null;
@@ -1136,6 +1139,7 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
     workspaceRepoUrl: input.workspaceRepoUrl,
     workspaceRepoRef: input.workspaceRepoRef,
     workspaceBranch: input.workspaceBranch,
+    workspaceExpectedBranch: input.workspaceExpectedBranch,
     workspaceWorktreePath: shapedWorkspaceEnv.workspaceWorktreePath,
     agentHome: input.agentHome,
   });

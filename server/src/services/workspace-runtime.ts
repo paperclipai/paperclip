@@ -799,6 +799,7 @@ function buildWorkspaceCommandEnv(input: {
   repoRoot: string;
   worktreePath: string;
   branchName: string;
+  expectedBranchName?: string | null;
   issue: ExecutionWorkspaceIssueRef | null;
   agent: ExecutionWorkspaceAgentRef;
   created: boolean;
@@ -823,6 +824,9 @@ function buildWorkspaceCommandEnv(input: {
   env.PAPERCLIP_ISSUE_IDENTIFIER = input.issue?.identifier ?? "";
   env.PAPERCLIP_ISSUE_TITLE = input.issue?.title ?? "";
   env.PAPERCLIP_ISSUE_WORK_MODE = input.issue?.workMode ?? "";
+  if (input.expectedBranchName) {
+    env.PAPERCLIP_EXPECTED_BRANCH = input.expectedBranchName;
+  }
   return env;
 }
 
