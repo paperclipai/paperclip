@@ -378,7 +378,7 @@ function LiveConsole() {
 
 const cardCls = "rounded-2xl border border-black/[0.07] bg-white p-6 shadow-sm dark:border-white/[0.08] dark:bg-neutral-900";
 
-function OrgChart() {
+export function OrgChart() {
   const node = (role: string, agent: string, accent = false) => (
     <div className={cn(
       "rounded-xl border px-3.5 py-2.5 text-center",
@@ -429,7 +429,7 @@ const HEARTBEAT = [
   { job: "daily-brief", every: "1d", n: 1 },
 ];
 
-function Heartbeat() {
+export function Heartbeat() {
   return (
     <div className={cardCls}>
       <div className="mb-4 flex items-center justify-between">
@@ -471,7 +471,7 @@ const BUDGET = [
   { agent: "SEO Analyst", budget: 30 },
 ];
 
-function BudgetTable() {
+export function BudgetTable() {
   const total = BUDGET.reduce((a, b) => a + b.budget, 0);
   return (
     <div className={cardCls}>
@@ -505,7 +505,7 @@ function BudgetTable() {
   );
 }
 
-function GoalTrace() {
+export function GoalTrace() {
   const rows: { sym: string; label: string; text: string; indent: number }[] = [
     { sym: "◎", label: "Mission", text: "Own the AI-voice category", indent: 0 },
     { sym: "◉", label: "Project", text: "Rank #1 for “AI call center”", indent: 1 },
@@ -532,7 +532,7 @@ function GoalTrace() {
 
 const ORBIT_ENGINES = ["Outbound", "Inbound", "Content", "Revenue", "Agents", "Work OS"];
 
-function Orbit() {
+export function Orbit() {
   const R = 42; // radius %
   return (
     <div className="relative mx-auto aspect-square w-full max-w-[380px]">
