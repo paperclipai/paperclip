@@ -123,7 +123,7 @@ export function Sidebar() {
         </div>
 
         <SidebarSection label="AGNB">
-          <SidebarNavItem to="/rocket-inbox" label="Inbox" icon={Mails} />
+          <SidebarNavItem to="/rocket-inbox" label="Outreach" icon={Mails} />
           <SidebarNavItem to="/campaigns" label="Campaigns" icon={Megaphone} />
           <SidebarNavItem to="/experiments" label="Experiments" icon={Beaker} />
           <SidebarNavItem to="/pipeline" label="Pipeline" icon={LayoutGrid} />
@@ -131,7 +131,8 @@ export function Sidebar() {
           <SidebarNavItem to="/competitors" label="Research" icon={FlaskConical} />
           <SidebarNavItem to="/idea-inbox" label="Content" icon={FileText} />
           <SidebarNavItem to="/mentions" label="Mentions" icon={AtSign} />
-          <SidebarNavItem to="/backlog" label="Backlog" icon={ListTodo} />
+          <SidebarNavItem to="/my-queue" label="Team" icon={ListTodo} />
+          <SidebarNavItem to="/agnb-health" label="Ops" icon={HeartPulse} />
         </SidebarSection>
 
         <SidebarProjects />
@@ -143,7 +144,6 @@ export function Sidebar() {
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem to="/agnb-health" label="Ops" icon={HeartPulse} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>
 

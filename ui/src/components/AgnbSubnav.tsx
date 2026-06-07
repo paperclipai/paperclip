@@ -34,10 +34,10 @@ export const AGNB_SUBNAV = {
     { to: "/icps", label: "ICPs" },
   ],
   experiments: [
+    { to: "/experiments", label: "Auto-experiments" },
     { to: "/bucket-compare", label: "Compare" },
     { to: "/cohorts", label: "Cohorts" },
     { to: "/subjects", label: "Subjects" },
-    { to: "/experiments", label: "Auto-experiments" },
   ],
   research: [
     { to: "/competitors", label: "Competition" },
@@ -58,8 +58,8 @@ export const AGNB_SUBNAV = {
     { to: "/press-releases", label: "Press releases" },
   ],
   ops: [
-    { to: "/north-star", label: "North star" },
     { to: "/agnb-health", label: "Health" },
+    { to: "/north-star", label: "North star" },
     { to: "/producers", label: "Producers" },
     { to: "/jobs", label: "Jobs" },
     { to: "/agnb-sync", label: "Sync" },
@@ -78,7 +78,6 @@ export const AGNB_SUBNAV = {
   ],
   youtube: [
     { to: "/youtube", label: "Ideas" },
-    { to: "/youtube-trends", label: "Trends" },
     { to: "/youtube-scripts", label: "Scripts" },
     { to: "/youtube-titles", label: "Title tester" },
     { to: "/youtube-thumbnails", label: "Thumbnails" },

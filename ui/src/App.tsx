@@ -84,7 +84,6 @@ import { BacklinkProspects } from "./pages/BacklinkProspects";
 import { BlogAutomation } from "./pages/BlogAutomation";
 import { HookBank } from "./pages/HookBank";
 import { YoutubeIdeas } from "./pages/YoutubeIdeas";
-import { YoutubeTrends } from "./pages/YoutubeTrends";
 import { YoutubeScripts } from "./pages/YoutubeScripts";
 import { YoutubeTitles } from "./pages/YoutubeTitles";
 import { YoutubeThumbnails } from "./pages/YoutubeThumbnails";
@@ -104,7 +103,6 @@ import { Jobs } from "./pages/Jobs";
 import { Northstar } from "./pages/Northstar";
 import { AgnbSync } from "./pages/AgnbSync";
 import { AgnbEvents } from "./pages/AgnbEvents";
-import { WebhooksCatalog } from "./pages/WebhooksCatalog";
 import { ApiAudit } from "./pages/ApiAudit";
 import { EntityAudit } from "./pages/EntityAudit";
 import { PendingActions } from "./pages/PendingActions";
@@ -210,7 +208,6 @@ function boardRoutes() {
       <Route path="blog-automation" element={<BlogAutomation />} />
       <Route path="linkedin-hooks" element={<HookBank />} />
       <Route path="youtube" element={<YoutubeIdeas />} />
-      <Route path="youtube-trends" element={<YoutubeTrends />} />
       <Route path="youtube-scripts" element={<YoutubeScripts />} />
       <Route path="youtube-titles" element={<YoutubeTitles />} />
       <Route path="youtube-thumbnails" element={<YoutubeThumbnails />} />
@@ -230,7 +227,6 @@ function boardRoutes() {
       <Route path="north-star" element={<Northstar />} />
       <Route path="agnb-sync" element={<AgnbSync />} />
       <Route path="events" element={<AgnbEvents />} />
-      <Route path="webhooks-catalog" element={<WebhooksCatalog />} />
       <Route path="audit" element={<ApiAudit />} />
       <Route path="entity-audit" element={<EntityAudit />} />
       <Route path="pending-actions" element={<PendingActions />} />
@@ -524,7 +520,6 @@ export function App() {
           <Route path="blog-automation" element={<UnprefixedBoardRedirect />} />
           <Route path="linkedin-hooks" element={<UnprefixedBoardRedirect />} />
           <Route path="youtube" element={<UnprefixedBoardRedirect />} />
-          <Route path="youtube-trends" element={<UnprefixedBoardRedirect />} />
           <Route path="youtube-scripts" element={<UnprefixedBoardRedirect />} />
           <Route path="youtube-titles" element={<UnprefixedBoardRedirect />} />
           <Route path="youtube-thumbnails" element={<UnprefixedBoardRedirect />} />
@@ -541,7 +536,6 @@ export function App() {
           <Route path="agnb-health" element={<UnprefixedBoardRedirect />} />
           <Route path="agnb-sync" element={<UnprefixedBoardRedirect />} />
           <Route path="events" element={<UnprefixedBoardRedirect />} />
-          <Route path="webhooks-catalog" element={<UnprefixedBoardRedirect />} />
           <Route path="audit" element={<UnprefixedBoardRedirect />} />
           <Route path="entity-audit" element={<UnprefixedBoardRedirect />} />
           <Route path="pending-actions" element={<UnprefixedBoardRedirect />} />
