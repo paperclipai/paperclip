@@ -880,7 +880,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
     const parsedIsError = asBoolean(parsed.is_error, false);
-    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
+    // When Claude has already emitted a structured success result, the
+    // terminalResultCleanup path tears the process group down with SIGTERM
+    // (exit code 143). Trust Claude's own outcome over the exit code in that
+    // case — otherwise successful heartbeats get re-classified as
+    // claude_transient_upstream and trigger pointless retries.
+    const parsedReportedSuccess =
+      asString(parsed.subtype, "") === "success" && !parsedIsError;
+    const failed = parsedReportedSuccess
+      ? false
+      : (proc.exitCode ?? 0) !== 0 || parsedIsError;
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
