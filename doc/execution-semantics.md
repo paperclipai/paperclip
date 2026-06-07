@@ -1,7 +1,7 @@
 # Execution Semantics
 
 Status: Current implementation guide
-Date: 2026-05-23
+Date: 2026-06-07
 Audience: Product and engineering
 
 This document explains how Paperclip interprets issue assignment, issue status, execution runs, wakeups, parent/sub-issue structure, and blocker relationships.
@@ -418,6 +418,8 @@ Cheap model profiles are only for status-only operational recovery overhead. Pap
 
 Automatic retries that can continue source work must use the original/normal model lane. This includes failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, assigned-todo dispatch recovery, and any run that can update repo files, issue documents, plans, work products, or attachments. When a cheap status-only recovery determines that actual work remains, it must hand back to a normal-model worker run before source work or persistent deliverable updates resume. Cheap recovery hints must be scrubbed from copied retry, resume, child, and downstream source-work contexts.
 
+The `allowDeliverableWork: false` guard applies to cheap-model recovery wakes, but the §14 Separation of Disposition Authority rule applies regardless of model tier (including Opus 4.8).
+
 ## 10. Startup and Periodic Reconciliation
 
 Startup recovery and periodic recovery are different from normal wakeup delivery.
@@ -500,6 +502,8 @@ Examples:
 
 Auto-recovery preserves the existing owner. It does not choose a replacement agent.
 
+A recovery owner must not complete deliverable work for an issue whose `assigneeAgentId` is a different agent without satisfying Conditions A–D of the §14 Separation of Disposition Authority contract.
+
 ### Explicit Recovery Action
 
 Paperclip opens an explicit recovery action when the system can identify a problem but cannot safely complete the work itself.
@@ -545,7 +549,23 @@ The recovery model is intentionally conservative:
 - open an explicit recovery action when the system can identify a bounded recovery owner/action
 - escalate visibly when the system cannot safely keep going
 
-## 14. Practical Interpretation
+## 14. Recovery Containment — Separation of Disposition Authority
+
+A recovery owner acting on an issue whose `assigneeAgentId` is a different agent must not perform deliverable-work completion unless ALL of the following conditions are satisfied:
+
+**Condition A — Original assignee declared dead**: The stranded-work sweeper (§9.2) has exhausted auto-continuation and has recorded that the original assignee is no longer viable for this issue.
+
+**Condition B — Explicit reassignment event recorded**: `assigneeAgentId` is updated to the recovery owner by an explicit reassignment event before any disposition action. The original assignee identity is preserved in the issue's `previousAssigneeAgentId` field.
+
+**Condition C — Recovery-kind label on closure**: The status transition to `done`/`cancelled` must carry a `recoveryKind` field (values: `liveness_exhausted`, `sweeper_recovery`, `explicit_recovery_owner`) distinguishing this closure from self-disposal by the original assignee.
+
+**Condition D — Measurement-context bar**: For issues tagged as canary / bake-off / measurement, a recovery owner is barred from deliverable-work completion entirely. Its only allowed actions are route-to-`blocked` (named owner) or record the closure as `recoveryKind` + harness-FAIL. No deliverable answer is produced.
+
+When conditions are not met, the recovery owner's only allowed actions are: move to `blocked` with named owner, escalate to board/CTO via explicit recovery action, or create an issue-backed recovery action.
+
+Recovery closures are never equivalent to self-disposal by the original assignee in any audit, canary, or bake-off context.
+
+## 15. Practical Interpretation
 
 For a board operator, the intended meaning is:
 

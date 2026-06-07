@@ -63,6 +63,8 @@ export const issues = pgTable(
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
+    recoveryKind: text("recovery_kind"),
+    previousAssigneeAgentId: uuid("previous_assignee_agent_id").references(() => agents.id),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),

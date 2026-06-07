@@ -18,6 +18,7 @@ import {
   ISSUE_RECOVERY_ACTION_OUTCOMES,
   ISSUE_RECOVERY_ACTION_OWNER_TYPES,
   ISSUE_RECOVERY_ACTION_STATUSES,
+  ISSUE_RECOVERY_DISPOSITION_KINDS,
   ISSUE_WORK_MODES,
   clampIssueRequestDepth,
   ISSUE_STATUSES,
@@ -439,6 +440,7 @@ export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  recoveryKind: z.enum(ISSUE_RECOVERY_DISPOSITION_KINDS).optional().nullable(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;

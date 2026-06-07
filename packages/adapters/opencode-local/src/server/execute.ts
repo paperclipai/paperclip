@@ -194,6 +194,59 @@ async function buildOpenCodeSkillsDir(config: Record<string, unknown>): Promise<
   return target;
 }
 
+const ISSUE_TERMINAL_STATUSES = new Set(["done", "cancelled"]);
+const ISSUE_DONE_POLL_INTERVAL_MS = 10_000;
+
+interface IssueDonePoller {
+  signal: Promise<void>;
+  cancel: () => void;
+}
+
+function startIssueDonePoller(
+  apiUrl: string,
+  authToken: string,
+  issueId: string,
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
+): IssueDonePoller {
+  let cancelled = false;
+  let timer: NodeJS.Timeout | null = null;
+
+  const signal = new Promise<void>((resolve) => {
+    const poll = () => {
+      if (cancelled) return;
+      void fetch(`${apiUrl}/api/issues/${encodeURIComponent(issueId)}`, {
+        headers: { authorization: `Bearer ${authToken}` },
+        signal: AbortSignal.timeout(8_000),
+      })
+        .then((res) => (res.ok ? (res.json() as Promise<{ status?: unknown }>) : null))
+        .then((data) => {
+          if (cancelled) return;
+          if (data && typeof data.status === "string" && ISSUE_TERMINAL_STATUSES.has(data.status)) {
+            void onLog("stderr", `[paperclip] Issue ${issueId} set to ${data.status}; terminating opencode process to prevent zombie run\n`).catch(() => {});
+            resolve();
+            return;
+          }
+          if (!cancelled) timer = setTimeout(poll, ISSUE_DONE_POLL_INTERVAL_MS);
+        })
+        .catch(() => {
+          if (!cancelled) timer = setTimeout(poll, ISSUE_DONE_POLL_INTERVAL_MS);
+        });
+    };
+    timer = setTimeout(poll, ISSUE_DONE_POLL_INTERVAL_MS);
+  });
+
+  return {
+    signal,
+    cancel: () => {
+      cancelled = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    },
+  };
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
@@ -557,6 +610,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return args;
     };
 
+    let issuePoller: IssueDonePoller | null = null;
+
     const runAttempt = async (resumeSessionId: string | null) => {
       const args = buildArgs(resumeSessionId);
       if (onMeta) {
@@ -581,6 +636,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         graceSec,
         onSpawn,
         onLog,
+        killSignalPromise: issuePoller?.signal,
       });
       return {
         proc,
@@ -662,6 +718,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
+    if (wakeTaskId && authToken && env.PAPERCLIP_API_URL) {
+      issuePoller = startIssueDonePoller(env.PAPERCLIP_API_URL, authToken, wakeTaskId, onLog);
+    }
+
     try {
       const initial = await runAttempt(sessionId);
       const initialFailed =
@@ -681,6 +741,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       return toResult(initial);
     } finally {
+      issuePoller?.cancel();
       await Promise.all([
         paperclipBridge?.stop(),
         restoreRemoteWorkspace?.(),

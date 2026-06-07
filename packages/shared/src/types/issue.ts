@@ -19,6 +19,7 @@ import type {
   IssueRecoveryActionOutcome,
   IssueRecoveryActionOwnerType,
   IssueRecoveryActionStatus,
+  IssueRecoveryDispositionKind,
   IssueWorkMode,
   ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
@@ -554,6 +555,8 @@ export interface Issue {
   blockedInboxAttention?: IssueBlockedInboxAttention | null;
   productivityReview?: IssueProductivityReview | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
+  recoveryKind?: IssueRecoveryDispositionKind | null;
+  previousAssigneeAgentId?: string | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
   relatedWork?: IssueRelatedWorkSummary;

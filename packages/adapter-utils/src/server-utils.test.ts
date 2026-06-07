@@ -506,6 +506,53 @@ describe("runChildProcess", () => {
     expect(await waitForPidExit(descendantPid, 2_000)).toBe(true);
   });
 
+  it.skipIf(process.platform === "win32")("terminates a long-running child when killSignalPromise resolves", async () => {
+    let resolveKillSignal!: () => void;
+    const killSignalPromise = new Promise<void>((resolve) => {
+      resolveKillSignal = resolve;
+    });
+
+    const resultPromise = runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000);"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0,
+        graceSec: 1,
+        onLog: async () => {},
+        killSignalPromise,
+      },
+    );
+
+    setTimeout(resolveKillSignal, 100);
+
+    const result = await resultPromise;
+    expect(result.timedOut).toBe(false);
+    expect(result.signal).toBe("SIGTERM");
+  });
+
+  it.skipIf(process.platform === "win32")("does not hang when killSignalPromise is already resolved on entry", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "process.stdout.write('done\\n');"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+        killSignalPromise: Promise.resolve(),
+      },
+    );
+
+    // Process either completed naturally or was SIGTERM'd — both are correct;
+    // the important invariant is that it does not hang.
+    expect(result.timedOut).toBe(false);
+  });
+
   it.skipIf(process.platform === "win32")("cleans up a still-running child after terminal output", async () => {
     const result = await runChildProcess(
       randomUUID(),
