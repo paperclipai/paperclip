@@ -753,7 +753,7 @@ export const FOOTER_COLS: { title: string; links: { label: string; href: string;
   {
     title: "Developers",
     links: [
-      { label: "Documentation", href: "/docs" },
+      { label: "Documentation", href: "https://docs.allgasnobrakes.online", external: true },
       { label: "API reference", href: "/api" },
     ],
   },

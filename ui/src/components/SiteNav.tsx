@@ -6,7 +6,7 @@ const LINKS = [
   { label: "Agents", href: "/platform/agents" },
   { label: "Governance", href: "/platform/governance" },
   { label: "Integrations", href: "/platform/integrations" },
-  { label: "Docs", href: "/docs" },
+  { label: "Docs", href: "https://docs.allgasnobrakes.online", external: true },
 ];
 
 const CONTACT = "/contact";
@@ -49,7 +49,14 @@ export function SiteNav() {
         {/* Center links */}
         <nav className="absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 items-center gap-1 lg:flex">
           {LINKS.map((l) => (
-            <a key={l.href} href={l.href} className={linkCls}>{l.label}</a>
+            <a
+              key={l.href}
+              href={l.href}
+              {...(("external" in l && l.external) ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+              className={linkCls}
+            >
+              {l.label}
+            </a>
           ))}
         </nav>
 
@@ -74,7 +81,13 @@ export function SiteNav() {
       {mobileOpen && (
         <div className="border-t border-black/[0.06] bg-[#F6F3EC]/95 px-6 py-3 backdrop-blur dark:border-white/[0.06] dark:bg-[#1b1410]/95 lg:hidden">
           {LINKS.map((l) => (
-            <a key={l.href} href={l.href} onClick={() => setMobileOpen(false)} className="block py-2.5 text-[15px] font-medium text-gray-600 transition hover:text-gray-900 dark:text-neutral-400 dark:hover:text-neutral-100">
+            <a
+              key={l.href}
+              href={l.href}
+              {...(("external" in l && l.external) ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+              onClick={() => setMobileOpen(false)}
+              className="block py-2.5 text-[15px] font-medium text-gray-600 transition hover:text-gray-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+            >
               {l.label}
             </a>
           ))}
