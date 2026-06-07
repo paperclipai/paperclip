@@ -194,6 +194,10 @@
     @apply bg-background text-foreground font-sans antialiased;
     height: 100%;
     overflow: hidden;
+    /* DESIGN.md: "Numbers are always tabular." Default the whole app to tabular
+       figures so live counts / cost tape / metrics never reflow as digits tick.
+       Local `proportional-nums` utility can still override where needed. */
+    font-variant-numeric: tabular-nums;
   }
   h1,
   h2,
