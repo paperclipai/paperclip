@@ -291,7 +291,7 @@ export async function touchLocalServiceRegistryRecord(
 
 export async function terminateLocalService(
   record: Pick<LocalServiceRegistryRecord, "pid" | "processGroupId">,
-  opts?: { signal?: NodeJS.Signals; forceAfterMs?: number },
+  opts?: { signal?: NodeJS.Signals; forceAfterMs?: number; cleanupPort?: number | null },
 ) {
   const signal = opts?.signal ?? "SIGTERM";
   const targetProcessGroup = process.platform !== "win32" && record.processGroupId && record.processGroupId > 0;
@@ -302,7 +302,7 @@ export async function terminateLocalService(
       process.kill(record.pid, signal);
     }
   } catch {
-    return;
+    // PID or process group is already gone; continue to port cleanup below.
   }
 
   const deadline = Date.now() + (opts?.forceAfterMs ?? 2_000);
@@ -311,7 +311,7 @@ export async function terminateLocalService(
       ? isProcessGroupAlive(record.processGroupId)
       : isPidAlive(record.pid);
     if (!targetAlive) {
-      return;
+      break;
     }
     await delay(100);
   }
@@ -319,13 +319,49 @@ export async function terminateLocalService(
   const stillAlive = targetProcessGroup
     ? isProcessGroupAlive(record.processGroupId)
     : isPidAlive(record.pid);
-  if (!stillAlive) return;
-  try {
-    if (targetProcessGroup) {
-      process.kill(-record.processGroupId!, "SIGKILL");
-    } else {
-      process.kill(record.pid, "SIGKILL");
+  if (stillAlive) {
+    try {
+      if (targetProcessGroup) {
+        process.kill(-record.processGroupId!, "SIGKILL");
+      } else {
+        process.kill(record.pid, "SIGKILL");
+      }
+    } catch {
+      // Ignore cleanup races.
     }
+  }
+
+  // Kill any remaining listener on the registered port (catches orphaned child processes that
+  // survive after the watcher PID dies — e.g. the API server spawned several levels deep).
+  const cleanupPort = opts?.cleanupPort;
+  if (cleanupPort && Number.isInteger(cleanupPort) && cleanupPort > 0) {
+    await terminatePortListener(cleanupPort, opts?.forceAfterMs ?? 5_000);
+  }
+}
+
+async function terminatePortListener(port: number, forceAfterMs: number) {
+  const ownerPid = await readLocalServicePortOwner(port);
+  if (!ownerPid || !isPidAlive(ownerPid)) return;
+
+  try {
+    process.kill(ownerPid, "SIGTERM");
+  } catch {
+    return;
+  }
+
+  const deadline = Date.now() + forceAfterMs;
+  while (Date.now() < deadline) {
+    const remaining = await readLocalServicePortOwner(port);
+    if (!remaining) return;
+    await delay(100);
+  }
+
+  const remaining = await readLocalServicePortOwner(port);
+  if (!remaining) return;
+
+  process.stderr.write(`[paperclip] port ${port} still held by PID ${remaining} after graceful timeout, sending SIGKILL\n`);
+  try {
+    process.kill(remaining, "SIGKILL");
   } catch {
     // Ignore cleanup races.
   }
@@ -334,7 +370,7 @@ export async function terminateLocalService(
 export async function readLocalServicePortOwner(port: number) {
   if (!Number.isInteger(port) || port <= 0 || process.platform === "win32") return null;
   try {
-    const { stdout } = await execFileAsync("lsof", ["-nPiTCP", `:${port}`, "-sTCP:LISTEN", "-t"]);
+    const { stdout } = await execFileAsync("lsof", [`-nPiTCP:${port}`, "-sTCP:LISTEN", "-t"]);
     const firstPid = stdout
       .split("\n")
       .map((line) => Number.parseInt(line.trim(), 10))

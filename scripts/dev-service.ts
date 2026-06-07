@@ -1,5 +1,5 @@
 #!/usr/bin/env -S node --import tsx
-import { listLocalServiceRegistryRecords, removeLocalServiceRegistryRecord, terminateLocalService } from "../server/src/services/local-service-supervisor.ts";
+import { isPidAlive, listLocalServiceRegistryRecords, removeLocalServiceRegistryRecord, terminateLocalService } from "../server/src/services/local-service-supervisor.ts";
 import { repoRoot } from "./dev-service-profile.ts";
 
 function toDisplayLines(records: Awaited<ReturnType<typeof listLocalServiceRegistryRecords>>) {
@@ -33,7 +33,16 @@ if (command === "stop") {
     process.exit(0);
   }
   for (const record of records) {
-    await terminateLocalService(record);
+    const childPid = typeof record.metadata?.childPid === "number" ? record.metadata.childPid : null;
+
+    // Kill the dev-runner watcher and free the bound port (handles orphaned grandchild API servers).
+    await terminateLocalService(record, { cleanupPort: record.port });
+
+    // Also kill the intermediate pnpm child process if it survived the cascade.
+    if (childPid && isPidAlive(childPid)) {
+      await terminateLocalService({ pid: childPid, processGroupId: null });
+    }
+
     await removeLocalServiceRegistryRecord(record.serviceKey);
     console.log(`Stopped ${record.serviceName} (pid ${record.pid})`);
   }
