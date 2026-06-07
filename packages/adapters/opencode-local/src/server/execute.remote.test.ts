@@ -3,6 +3,16 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+type MockRunChildProcessResult = {
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+  pid: number | null;
+  startedAt: string | null;
+};
+
 const {
   runChildProcess,
   ensureCommandResolvable,
@@ -13,7 +23,12 @@ const {
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
 } = vi.hoisted(() => ({
-  runChildProcess: vi.fn(async (_runId: string, _command: string, args: string[]) => {
+  runChildProcess: vi.fn(async (
+    _runId: string,
+    _command: string,
+    args: string[],
+    _opts?: { killSignalPromise?: Promise<void> },
+  ): Promise<MockRunChildProcessResult> => {
     if (args.includes("models")) {
       return {
         exitCode: 0,
@@ -100,15 +115,56 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 
 import { execute } from "./execute.js";
 
+function mockDefaultRunChildProcess() {
+  runChildProcess.mockImplementation(async (
+    _runId: string,
+    _command: string,
+    args: string[],
+    _opts?: { killSignalPromise?: Promise<void> },
+  ): Promise<MockRunChildProcessResult> => {
+    if (args.includes("models")) {
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "opencode/gpt-5-nano\nopenai/gpt-4.1\n",
+        stderr: "",
+        pid: 122,
+        startedAt: new Date().toISOString(),
+      };
+    }
+    return {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: [
+        JSON.stringify({ type: "step_start", sessionID: "session_123" }),
+        JSON.stringify({ type: "text", sessionID: "session_123", part: { text: "hello" } }),
+        JSON.stringify({
+          type: "step_finish",
+          sessionID: "session_123",
+          part: { cost: 0.001, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } },
+        }),
+      ].join("\n"),
+      stderr: "",
+      pid: 123,
+      startedAt: new Date().toISOString(),
+    };
+  });
+}
+
 describe("opencode remote execution", () => {
   const cleanupDirs: string[] = [];
   const originalOpenCodeAllowAllModels = process.env.OPENCODE_ALLOW_ALL_MODELS;
 
   beforeEach(() => {
+    mockDefaultRunChildProcess();
     delete process.env.OPENCODE_ALLOW_ALL_MODELS;
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
     vi.clearAllMocks();
     if (originalOpenCodeAllowAllModels === undefined) {
       delete process.env.OPENCODE_ALLOW_ALL_MODELS;
@@ -285,6 +341,9 @@ describe("opencode remote execution", () => {
         config: {
           command: "opencode",
           model: "opencode/gpt-5-nano",
+          env: {
+            PAPERCLIP_API_URL: "http://127.0.0.1:4310",
+          },
         },
         context: {
           paperclipWorkspace: {
@@ -375,5 +434,186 @@ describe("opencode remote execution", () => {
       | undefined;
     expect(call?.[2]).toContain("--session");
     expect(call?.[2]).toContain("session-123");
+  });
+
+  it.each(["done", "cancelled"] as const)(
+    "terminates the OpenCode run when the assigned issue becomes %s",
+    async (status) => {
+      vi.useFakeTimers();
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-poller-"));
+      cleanupDirs.push(rootDir);
+      const workspaceDir = path.join(rootDir, "workspace");
+      await mkdir(workspaceDir, { recursive: true });
+
+      const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status }), { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      runChildProcess.mockImplementation(async (
+        _runId: string,
+        _command: string,
+        args: string[],
+        opts?: { killSignalPromise?: Promise<void> },
+      ): Promise<MockRunChildProcessResult> => {
+        if (args.includes("models")) {
+          return {
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            stdout: "opencode/gpt-5-nano\n",
+            stderr: "",
+            pid: 122,
+            startedAt: new Date().toISOString(),
+          };
+        }
+        await expect(opts?.killSignalPromise).resolves.toBeUndefined();
+        return {
+          exitCode: null,
+          signal: "SIGTERM",
+          timedOut: false,
+          stdout: [
+            JSON.stringify({ type: "step_start", sessionID: "session_terminated" }),
+            JSON.stringify({
+              type: "step_finish",
+              sessionID: "session_terminated",
+              part: { cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
+            }),
+          ].join("\n"),
+          stderr: "",
+          pid: 123,
+          startedAt: new Date().toISOString(),
+        };
+      });
+
+      const logs: string[] = [];
+      const resultPromise = execute({
+        runId: `run-issue-${status}`,
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "OpenCode Builder",
+          adapterType: "opencode_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "opencode",
+          model: "opencode/gpt-5-nano",
+          env: {
+            PAPERCLIP_API_URL: "http://127.0.0.1:4310",
+          },
+        },
+        context: {
+          taskId: "issue-123",
+          paperclipWorkspace: {
+            cwd: workspaceDir,
+            source: "project_primary",
+          },
+        },
+        executionTransport: {
+          remoteExecution: {
+            host: "127.0.0.1",
+            port: 2222,
+            username: "fixture",
+            remoteWorkspacePath: "/remote/workspace",
+            remoteCwd: "/remote/workspace",
+            privateKey: "PRIVATE KEY",
+            knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+            strictHostKeyChecking: true,
+          },
+        },
+        authToken: "run-token",
+        onLog: async (_stream, chunk) => {
+          logs.push(chunk);
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(runChildProcess.mock.calls.some((entry) => (entry[2] as string[]).includes("run"))).toBe(true);
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await resultPromise;
+
+      const runCall = runChildProcess.mock.calls.find((entry) => (entry[2] as string[]).includes("run")) as
+        | [string, string, string[], { killSignalPromise?: Promise<void> }]
+        | undefined;
+      expect(runCall?.[3].killSignalPromise).toBeInstanceOf(Promise);
+      expect(fetchMock).toHaveBeenCalledWith(
+        "http://127.0.0.1:4310/api/issues/issue-123",
+        expect.objectContaining({
+          headers: { authorization: "Bearer run-token" },
+        }),
+      );
+      expect(logs.join("")).toContain(`Issue issue-123 set to ${status}; terminating opencode process`);
+      expect(result.signal).toBe("SIGTERM");
+    },
+  );
+
+  it("cancels the issue-done poller when the OpenCode run exits naturally", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-poller-cleanup-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: "in_progress" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+
+    const result = await execute({
+      runId: "run-natural-exit",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OpenCode Builder",
+        adapterType: "opencode_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "opencode",
+        model: "opencode/gpt-5-nano",
+        env: {
+          PAPERCLIP_API_URL: "http://127.0.0.1:4310",
+        },
+      },
+      context: {
+        taskId: "issue-natural",
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    expect(result.exitCode).toBe(0);
+    const runCall = runChildProcess.mock.calls.find((entry) => (entry[2] as string[]).includes("run")) as
+      | [string, string, string[], { killSignalPromise?: Promise<void> }]
+      | undefined;
+    expect(runCall?.[3].killSignalPromise).toBeInstanceOf(Promise);
+    expect(clearTimeoutSpy).toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
