@@ -26,6 +26,7 @@ const mockIssueApprovalService = vi.hoisted(() => ({
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   getById: vi.fn(),
+  listComments: vi.fn(),
   update: vi.fn(),
 }));
 
@@ -118,6 +119,7 @@ describe("approval routes idempotent retries", () => {
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.addComment.mockReset();
     mockIssueService.getById.mockReset();
+    mockIssueService.listComments.mockReset();
     mockIssueService.update.mockReset();
     mockSecretService.normalizeHireApprovalPayloadForPersistence.mockReset();
     mockLogActivity.mockReset();
@@ -131,6 +133,7 @@ describe("approval routes idempotent retries", () => {
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
     mockIssueService.addComment.mockResolvedValue({ id: "comment-1", body: "Approval approved" });
+    mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.getById.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
@@ -140,7 +143,7 @@ describe("approval routes idempotent retries", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
-  it("does not emit duplicate approval side effects when approve is already resolved", async () => {
+  it("does not emit duplicate approval side effects when approve is already resolved and artifacts exist", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-1",
       companyId: "company-1",
@@ -160,18 +163,39 @@ describe("approval routes idempotent retries", () => {
       },
       applied: false,
     });
+    mockIssueService.listComments.mockResolvedValue([
+      {
+        id: "comment-1",
+        issueId: "issue-1",
+        deletedAt: null,
+        body: "Approval approved: approval-1",
+        metadata: {
+          version: 1,
+          sections: [
+            {
+              title: "Approval resolution",
+              rows: [
+                { type: "key_value", label: "approvalId", value: "approval-1" },
+                { type: "key_value", label: "outcome", value: "approved" },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
 
     const res = await request(await createApp())
       .post("/api/approvals/approval-1/approve")
       .send({});
 
     expect(res.status).toBe(200);
-    expect(mockIssueApprovalService.listIssuesForApproval).not.toHaveBeenCalled();
+    expect(mockIssueApprovalService.listIssuesForApproval).toHaveBeenCalledWith("approval-1");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
-  it("does not emit duplicate rejection logs when reject is already resolved", async () => {
+  it("does not emit duplicate rejection logs when reject is already resolved and artifacts exist", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-1",
       companyId: "company-1",
@@ -189,13 +213,127 @@ describe("approval routes idempotent retries", () => {
       },
       applied: false,
     });
+    mockIssueService.listComments.mockResolvedValue([
+      {
+        id: "comment-1",
+        issueId: "issue-1",
+        deletedAt: null,
+        body: "Approval rejected: approval-1",
+        metadata: {
+          version: 1,
+          sections: [
+            {
+              title: "Approval resolution",
+              rows: [
+                { type: "key_value", label: "approvalId", value: "approval-1" },
+                { type: "key_value", label: "outcome", value: "rejected" },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
 
     const res = await request(await createApp())
       .post("/api/approvals/approval-1/reject")
       .send({});
 
     expect(res.status).toBe(200);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("recovers missing linked approval artifacts after an approve write failure without duplicating existing artifacts", async () => {
+    const approval = {
+      id: "approval-retry",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "approved",
+      payload: {
+        title: "Approve plan",
+        planRevisionId: "revision-1",
+      },
+      decisionNote: "Approved by board",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+    };
+    mockApprovalService.getById.mockResolvedValue({
+      ...approval,
+      status: "pending",
+    });
+    mockApprovalService.approve
+      .mockResolvedValueOnce({ approval, applied: true })
+      .mockResolvedValueOnce({ approval, applied: false });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      { id: "issue-1" },
+      { id: "issue-2" },
+    ]);
+    mockIssueService.listComments
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "comment-issue-1",
+          issueId: "issue-1",
+          deletedAt: null,
+          body: "Approval approved: approval-retry",
+          metadata: {
+            version: 1,
+            sections: [
+              {
+                title: "Approval resolution",
+                rows: [
+                  { type: "key_value", label: "approvalId", value: "approval-retry" },
+                  { type: "key_value", label: "outcome", value: "approved" },
+                ],
+              },
+            ],
+          },
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    mockIssueService.addComment
+      .mockResolvedValueOnce({ id: "comment-issue-1", body: "Approval approved: approval-retry" })
+      .mockRejectedValueOnce(new Error("comment write failed"))
+      .mockResolvedValueOnce({ id: "comment-issue-2", body: "Approval approved: approval-retry" });
+
+    const first = await request(await createApp())
+      .post("/api/approvals/approval-retry/approve")
+      .send({ decisionNote: "Approved by board" });
+
+    expect(first.status).toBe(500);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(2);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+
+    const retry = await request(await createApp())
+      .post("/api/approvals/approval-retry/approve")
+      .send({ decisionNote: "Approved by board" });
+
+    expect(retry.status).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(3);
+    expect(mockIssueService.addComment).toHaveBeenLastCalledWith(
+      "issue-2",
+      expect.stringContaining("Approval approved: approval-retry"),
+      {},
+      expect.objectContaining({ authorType: "system" }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({
+        reason: "approval_approved",
+        payload: expect.objectContaining({
+          approvalId: "approval-retry",
+          approvalStatus: "approved",
+          issueIds: ["issue-1", "issue-2"],
+          linkedIssueIds: ["issue-1", "issue-2"],
+        }),
+        contextSnapshot: expect.objectContaining({
+          taskId: "issue-1",
+          wakeReason: "approval_approved",
+        }),
+      }),
+    );
   });
 
   it("rejects approval decisions for companies outside the caller scope", async () => {
