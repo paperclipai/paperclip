@@ -1016,37 +1016,36 @@ export function LandingPage() {
           <span className="font-medium">New: agents now run your full growth stack.</span>
         </a>
 
+        {/* Brand kicker */}
+        <p
+          className="mb-3 bg-gradient-to-r from-amber-400 via-orange-500 to-red-600 bg-clip-text text-[clamp(15px,1.8vw,20px)] font-black uppercase italic tracking-[0.02em] text-transparent"
+          style={{ transform: "skewX(-9deg)" }}
+        >
+          All gas, no brakes.
+        </p>
+
         {/* Headline */}
-        <h1 className="mx-auto max-w-[920px] text-[clamp(46px,7vw,80px)] font-extrabold leading-[1.0] tracking-[-0.04em] text-gray-900 dark:text-neutral-100">
-          Your growth team,
-          <br />
-          now autonomous.
-          <span
-            className="mt-2 block bg-gradient-to-r from-amber-400 via-orange-500 to-red-600 bg-clip-text text-[0.92em] font-black uppercase italic tracking-[-0.01em] text-transparent"
-            style={{ transform: "skewX(-9deg)" }}
-          >
-            All gas, no brakes.
-          </span>
+        <h1 className="mx-auto max-w-[18ch] text-[clamp(44px,6.6vw,76px)] font-extrabold leading-[1.02] tracking-[-0.04em] text-gray-900 dark:text-neutral-100">
+          Your growth team, now autonomous.
         </h1>
 
         {/* Subtitle */}
-        <p className="mx-auto mb-8 mt-6 max-w-[680px] text-[19px] leading-[1.55] text-gray-500 dark:text-neutral-400">
+        <p className="mx-auto mb-8 mt-6 max-w-[600px] text-[19px] leading-[1.55] text-gray-500 dark:text-neutral-400">
           Outbound, inbound, content, and revenue — run by autonomous agents in
-          one cockpit. They do the reps across every channel and your dev work
-          too, while you sleep. Twelve dashboards become one.
+          one cockpit, while you sleep. Twelve dashboards become one.
         </p>
 
         {/* CTAs */}
         <div className="inline-flex flex-wrap items-center justify-center gap-3">
           <a
             href="#signin"
-            className="group inline-flex items-center gap-2 rounded-lg bg-[#f97316] px-7 py-3.5 text-sm font-semibold text-white transition hover:bg-[#ea6a0c]"
+            className="group inline-flex items-center gap-2 rounded-lg bg-[#f97316] px-7 py-3.5 text-sm font-semibold text-white shadow-[0_8px_24px_-6px_rgba(249,115,22,0.5)] transition hover:bg-[#ea6a0c]"
           >
             Floor it <ArrowRight className="size-4 transition group-hover:translate-x-0.5" />
           </a>
           <a
             href="#how"
-            className="inline-flex items-center gap-2 rounded-lg border border-black/[0.12] dark:border-white/15 bg-white dark:bg-[#261f19] px-7 py-3.5 text-sm font-semibold text-gray-900 dark:text-neutral-100 transition hover:bg-[#FAF8F4] dark:bg-[#261f19] dark:hover:bg-neutral-800"
+            className="inline-flex items-center gap-2 rounded-lg border border-black/[0.12] bg-white px-7 py-3.5 text-sm font-semibold text-gray-900 transition hover:bg-[#FAF8F4] dark:border-white/15 dark:bg-[#261f19] dark:text-neutral-100 dark:hover:bg-[#2f271f]"
           >
             Watch it run
           </a>
