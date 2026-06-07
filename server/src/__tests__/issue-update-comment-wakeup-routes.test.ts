@@ -298,4 +298,95 @@ describe("issue update comment wakeups", () => {
     ));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
+
+  it("wakes the same assignee when an issue moves into review", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    const updated = {
+      ...existing,
+      status: "in_review",
+    };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_status_changed",
+        payload: expect.objectContaining({
+          issueId: existing.id,
+          mutation: "update",
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: existing.id,
+          taskId: existing.id,
+          wakeReason: "issue_status_changed",
+          source: "issue.status_change",
+        }),
+      }),
+    );
+  });
+
+  it("keeps execution-stage review wakes singular when status also moves into review", async () => {
+    const reviewAgentId = "22222222-2222-4222-8222-222222222222";
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+      executionState: null,
+    });
+    const updated = {
+      ...existing,
+      status: "in_review",
+      executionState: {
+        status: "pending",
+        currentStageId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewAgentId },
+        returnAssignee: { type: "agent", agentId: ASSIGNEE_AGENT_ID },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      reviewAgentId,
+      expect.objectContaining({
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "execution_review_requested",
+        payload: expect.objectContaining({
+          issueId: existing.id,
+          mutation: "update",
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: existing.id,
+          taskId: existing.id,
+          wakeReason: "execution_review_requested",
+          source: "issue.execution_stage",
+        }),
+      }),
+    );
+  });
 });
