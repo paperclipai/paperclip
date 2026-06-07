@@ -139,19 +139,6 @@
             ]
           }
         ]
-      },
-      {
-        "tab": "CLI",
-        "groups": [
-          {
-            "group": "CLI Reference",
-            "pages": [
-              "cli/overview",
-              "cli/setup-commands",
-              "cli/control-plane-commands"
-            ]
-          }
-        ]
       }
     ]
   }
