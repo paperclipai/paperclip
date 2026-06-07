@@ -517,6 +517,29 @@ function parseYamlScalar(rawValue: string): unknown {
   return trimmed;
 }
 
+function renderYamlScalar(value: string) {
+  return JSON.stringify(value);
+}
+
+export function buildLocalSkillMarkdown(input: Pick<CompanySkillCreateRequest, "name" | "description" | "markdown">) {
+  if (input.markdown?.trim().length) {
+    return input.markdown;
+  }
+
+  const description = input.description?.trim();
+  return [
+    "---",
+    `name: ${renderYamlScalar(input.name)}`,
+    ...(description ? [`description: ${renderYamlScalar(description)}`] : []),
+    "---",
+    "",
+    `# ${input.name}`,
+    "",
+    description ? description : "Describe what this skill does.",
+    "",
+  ].join("\n");
+}
+
 function parseYamlBlock(
   lines: Array<{ indent: number; content: string }>,
   startIndex: number,
@@ -2344,19 +2367,7 @@ export function companySkillService(db: Db) {
 
     await fs.mkdir(skillDir, { recursive: true });
 
-    const markdown = (input.markdown?.trim().length
-      ? input.markdown
-      : [
-        "---",
-        `name: ${input.name}`,
-        ...(input.description?.trim() ? [`description: ${input.description.trim()}`] : []),
-        "---",
-        "",
-        `# ${input.name}`,
-        "",
-        input.description?.trim() ? input.description.trim() : "Describe what this skill does.",
-        "",
-      ].join("\n"));
+    const markdown = buildLocalSkillMarkdown(input);
 
     await fs.writeFile(skillFilePath, markdown, "utf8");
 
