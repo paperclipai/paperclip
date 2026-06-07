@@ -30,7 +30,11 @@ describe("prepareClaudeConfigSeed", () => {
     cleanupDirs.push(root);
     const sourceDir = path.join(root, "claude-source");
     await fs.mkdir(sourceDir, { recursive: true });
-    await fs.writeFile(path.join(sourceDir, "settings.json"), JSON.stringify({ theme: "light" }), "utf8");
+    await fs.writeFile(path.join(sourceDir, "settings.json"), JSON.stringify({
+      theme: "light",
+      permissions: { defaultMode: "bypassPermissions" },
+    }), "utf8");
+    await fs.writeFile(path.join(sourceDir, ".credentials.json"), JSON.stringify({ token: "local" }), "utf8");
 
     const onLog = vi.fn(async () => {});
     const env = createEnv(root, sourceDir);
@@ -40,7 +44,9 @@ describe("prepareClaudeConfigSeed", () => {
 
     expect(first).toBe(second);
     await expect(fs.readFile(path.join(first, "settings.json"), "utf8"))
-      .resolves.toBe(JSON.stringify({ theme: "light" }));
+      .resolves.toBe(JSON.stringify({ theme: "light", permissions: { defaultMode: "default" } }));
+    await expect(fs.access(path.join(first, ".credentials.json")))
+      .rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("keeps an existing snapshot intact when the seeded files change", async () => {
@@ -59,8 +65,45 @@ describe("prepareClaudeConfigSeed", () => {
 
     expect(second).not.toBe(first);
     await expect(fs.readFile(path.join(first, "settings.json"), "utf8"))
-      .resolves.toBe(JSON.stringify({ theme: "light" }));
+      .resolves.toBe(JSON.stringify({ theme: "light", permissions: { defaultMode: "default" } }));
     await expect(fs.readFile(path.join(second, "settings.json"), "utf8"))
-      .resolves.toBe(JSON.stringify({ theme: "dark" }));
+      .resolves.toBe(JSON.stringify({ theme: "dark", permissions: { defaultMode: "default" } }));
+  });
+
+  it("strips local-only settings from remote Claude config seeds", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-config-boundary-"));
+    cleanupDirs.push(root);
+    const sourceDir = path.join(root, "claude-source");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(path.join(sourceDir, "settings.json"), JSON.stringify({
+      permissions: {
+        defaultMode: "bypassPermissions",
+        allow: ["Bash(op item *)"],
+      },
+      hooks: { PreToolUse: [{ matcher: "*" }] },
+      mcpServers: { local: { command: "secret-local-server" } },
+      skipDangerousModePermissionPrompt: true,
+    }), "utf8");
+    await fs.writeFile(path.join(sourceDir, "settings.local.json"), JSON.stringify({
+      permissions: { defaultMode: "bypassPermissions" },
+    }), "utf8");
+    await fs.writeFile(path.join(sourceDir, "credentials.json"), JSON.stringify({ token: "local" }), "utf8");
+    await fs.writeFile(path.join(sourceDir, "CLAUDE.md"), "local instructions", "utf8");
+
+    const onLog = vi.fn(async () => {});
+    const env = createEnv(root, sourceDir);
+    const seedDir = await prepareClaudeConfigSeed(env, onLog, "company-1");
+    const remoteSettings = JSON.parse(await fs.readFile(path.join(seedDir, "settings.json"), "utf8"));
+
+    expect(remoteSettings.permissions).toEqual({ defaultMode: "default" });
+    expect(remoteSettings.hooks).toBeUndefined();
+    expect(remoteSettings.mcpServers).toBeUndefined();
+    expect(remoteSettings.skipDangerousModePermissionPrompt).toBeUndefined();
+    await expect(fs.access(path.join(seedDir, "settings.local.json")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(path.join(seedDir, "credentials.json")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.readFile(path.join(seedDir, "CLAUDE.md"), "utf8"))
+      .resolves.toBe("local instructions");
   });
 });

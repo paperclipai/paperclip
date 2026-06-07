@@ -9,14 +9,14 @@ const SANDBOX_ALLOWED_TOOLS =
 
 describe("claude-local sandbox permission args", () => {
   it("uses the canonical Bash tool grant for sandbox execution", () => {
-    expect(buildClaudeExecutionPermissionArgs({ dangerouslySkipPermissions: true, targetIsSandbox: true })).toEqual([
+    expect(buildClaudeExecutionPermissionArgs({ dangerouslySkipPermissions: true, targetIsRemote: true })).toEqual([
       "--allowedTools",
       SANDBOX_ALLOWED_TOOLS,
     ]);
   });
 
   it("uses the canonical Bash tool grant for sandbox probes", () => {
-    expect(buildClaudeProbePermissionArgs({ dangerouslySkipPermissions: true, targetIsSandbox: true })).toEqual([
+    expect(buildClaudeProbePermissionArgs({ dangerouslySkipPermissions: true, targetIsRemote: true })).toEqual([
       "--allowedTools",
       SANDBOX_ALLOWED_TOOLS,
     ]);
@@ -25,7 +25,7 @@ describe("claude-local sandbox permission args", () => {
   it("does not use Bash(*) because Claude Code treats Bash grants as command-prefix patterns", () => {
     const [, allowedTools] = buildClaudeExecutionPermissionArgs({
       dangerouslySkipPermissions: true,
-      targetIsSandbox: true,
+      targetIsRemote: true,
     });
 
     expect(allowedTools.split(" ")).toContain("Bash");
@@ -33,18 +33,18 @@ describe("claude-local sandbox permission args", () => {
   });
 
   it("does not pass permission flags when skip-permissions is disabled", () => {
-    expect(buildClaudeExecutionPermissionArgs({ dangerouslySkipPermissions: false, targetIsSandbox: true })).toEqual([]);
-    expect(buildClaudeProbePermissionArgs({ dangerouslySkipPermissions: false, targetIsSandbox: true })).toEqual([]);
+    expect(buildClaudeExecutionPermissionArgs({ dangerouslySkipPermissions: false, targetIsRemote: true })).toEqual([]);
+    expect(buildClaudeProbePermissionArgs({ dangerouslySkipPermissions: false, targetIsRemote: true })).toEqual([]);
   });
 
-  it("uses dangerously-skip-permissions outside sandbox execution", () => {
-    expect(buildClaudeExecutionPermissionArgs({ dangerouslySkipPermissions: true, targetIsSandbox: false })).toEqual([
+  it("uses dangerously-skip-permissions for local execution", () => {
+    expect(buildClaudeExecutionPermissionArgs({ dangerouslySkipPermissions: true, targetIsRemote: false })).toEqual([
       "--dangerously-skip-permissions",
     ]);
   });
 
-  it("uses dangerously-skip-permissions outside sandbox probes", () => {
-    expect(buildClaudeProbePermissionArgs({ dangerouslySkipPermissions: true, targetIsSandbox: false })).toEqual([
+  it("uses dangerously-skip-permissions for local probes", () => {
+    expect(buildClaudeProbePermissionArgs({ dangerouslySkipPermissions: true, targetIsRemote: false })).toEqual([
       "--dangerously-skip-permissions",
     ]);
   });
