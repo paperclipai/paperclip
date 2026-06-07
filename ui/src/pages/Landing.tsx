@@ -636,12 +636,11 @@ const TESTIMONIALS = [
 ];
 
 const TRUSTED_LOGOS = [
-  { name: "Snazzy", file: "/customers/snazzy.svg", h: "h-6" },
+  { name: "Rocket SDR", file: "/customers/rocketsdr.svg", h: "h-7" },
   { name: "Orbit Wallet", file: "/customers/orbit.svg", h: "h-7" },
-  { name: "Frinks AI", file: "/customers/frinks.svg", h: "h-6" },
-  { name: "RocketSDR", file: "/customers/rocketsdr.svg", h: "h-5" },
-  { name: "PBS", file: "/customers/pbs.svg", h: "h-7" },
-  { name: "Tofa", file: "/customers/tofa.svg", h: "h-6" },
+  { name: "Pillar Bridge Solutions", file: "/customers/pbs.svg", h: "h-8" },
+  { name: "Snazzy", file: "/customers/snazzy.svg", h: "h-6" },
+  { name: "Frinks", file: "/customers/frinks.svg", h: "h-7" },
 ];
 
 const INTEGRATIONS = [
